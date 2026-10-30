@@ -1011,10 +1011,10 @@ describe("the link /s/<id>", () => {
     expect(remember.status, remember.body).toBeGreaterThanOrEqual(403);
     expect(remember.status, remember.body).toBeLessThanOrEqual(404);
     expect(remember.body).not.toContain("correction");
-    // The React route is wired too: a body that is not strict is refused by the learning route (400), not answered as an unknown path.
+    // The React route is wired too, and learning writes are browser-only: a bearer-token caller is refused (403) before the body or anything else is read.
     const react = await t.dev(MAYA, "POST", "/v1/app/projects/payments/learning/remember", { standing: "member" });
-    expect(react.status, JSON.stringify(react.body)).toBe(400);
-    expect(JSON.stringify(react.body)).toContain("CONFIG_INVALID");
+    expect(react.status, JSON.stringify(react.body)).toBe(403);
+    expect(JSON.stringify(react.body)).toContain("live browser session");
     const take = await t.browser(`/review/${taskId}/task/api/people/take-ownership`, OMAR, { method: "POST", body: { requestId: randomUUID(), expectedPeopleRevision: 1 } });
     expect(take.status, take.body).toBe(404);
     const decide = await t.browser(`/review/${taskId}/task/api/decision`, OMAR, { method: "POST", body: { requestId: randomUUID(), expectedRevision: 1, artifactDigest: "a".repeat(64), decision: "APPROVE", answers: [], includedCommentIds: [] } });

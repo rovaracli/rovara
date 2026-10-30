@@ -1724,7 +1724,7 @@ describe("the sweeper's remaining cares (round 2)", () => {
       const run = s.handler({ source: "agentx.spend-settlement" });
       await vi.advanceTimersByTimeAsync(MODEL_SOURCE_SWEEP_BUDGET_MS);
       const jobs = (JSON.parse((await run).body) as { jobs: Array<{ name: string; ok: boolean; result?: { complete: boolean } }> }).jobs;
-      expect(jobs.map((job) => job.name)).toEqual(["drain-member-merges", "expire-approvals", "escalate-owner-requests", "sweep-model-sources", "sweep-spend", "audit-model-keys"]);
+      expect(jobs.map((job) => job.name)).toEqual(["drain-member-merges", "expire-approvals", "escalate-owner-requests", "sweep-model-sources", "sweep-spend", "audit-model-keys", "resume-learning-walks"]);
       expect(jobs.find((job) => job.name === "sweep-model-sources")).toMatchObject({ ok: true, result: { complete: false } });
     } finally {
       vi.useRealTimers();

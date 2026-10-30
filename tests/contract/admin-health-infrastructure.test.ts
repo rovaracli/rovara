@@ -230,6 +230,8 @@ describe("the health route's grants (A13)", () => {
       // v1.2 learning loop (B1): corrections, their source records, dismissed patterns and ended suggestions are kept 180 days, then deleted by the TTL (named environments) or by
       // the learning sweep (a table without one). The contract names the field on the items, retention.ts judges it, store.ts writes it, sweep.ts reads it to delete. Nothing else may.
       "packages/contracts/src/project-learning.ts", "packages/broker/src/learning/retention.ts", "packages/broker/src/learning/store.ts", "packages/broker/src/learning/sweep.ts",
+      // B6: a dismissed pattern carries the same 180-day expiry when Dismiss writes it.
+      "packages/broker/src/learning/decide.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
