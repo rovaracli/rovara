@@ -1,6 +1,7 @@
 // "Suggested rules": every fixed word of the section, and how a refusal is read. Who may decide, what is less safe and whose standing counts come from the server; nothing here works any of that out.
-import { LEARNING_DISMISS_KINDS, LEARNING_PROJECT_WIDE, parseStageRefusalMessage } from "@agentx/contracts/web";
+import { LEARNING_DISMISS_KINDS, LEARNING_PROJECT_WIDE, STAGE_IDS, type StageRefusal } from "@agentx/contracts/web";
 import { ApiError } from "../../api/errors.js";
+import { isRefusalCode } from "../../api/stage-models.js";
 import { safeAppPath } from "../../text/links.js";
 import { visibleText } from "../../design/VisibleText.js";
 import { STAGE_LABELS, refusalText } from "./stage-model-text.js";
@@ -109,7 +110,8 @@ export function learningFailure(error: unknown, fallback: string, action?: Learn
  const own = action === undefined ? undefined : PER_ACTION[error.code]?.[action];
  if (own !== undefined) return { kind: "fixed", text: own, reload: error.code === "AGENT_REVISION_CONFLICT" };
  if (Object.hasOwn(FIXED, error.code)) return { kind: "fixed", text: FIXED[error.code]!, reload: error.code === "AGENT_REVISION_CONFLICT" };
- const refusals = error.code === "CONFIG_INVALID" ? parseStageRefusalMessage(error.message) : undefined;
+ // A model refusal is lane C's 409 `{code, stage, fixHref}` (as on a hand publish): the fixed sentence, never the code.
+ const refusals = isRefusalCode(error.code) && error.refusal !== undefined && (STAGE_IDS as readonly string[]).includes(error.refusal.stage) ? [{ code: error.code, stage: error.refusal.stage as StageRefusal["stage"], fixHref: error.refusal.fixHref }] : undefined;
  if (refusals !== undefined) return { kind: "refusals", items: refusals.map(refusal => ({ text: `${STAGE_LABELS[refusal.stage]}: ${refusalText(refusal.code)}`, ...(refusal.fixHref !== undefined && safeAppPath(refusal.fixHref) ? { href: refusal.fixHref } : {}) })) };
  return { kind: "message", parts: messageParts(error.message) };
 }

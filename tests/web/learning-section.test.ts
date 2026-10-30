@@ -260,10 +260,18 @@ describe("accepting", () => {
  });
 
  it("shows the resolver's refusal in its fixed sentence, with a link only to this app", async () => {
-  await open({ learn: request => request.method === "POST" ? refuse("CONFIG_INVALID", "Model choices can't be published: STAGE_LOCKED build /app/admin/how-we-work", 400) : undefined });
+  // Lane C's 409 `{code, stage, fixHref}`.
+  await open({ learn: request => request.method === "POST" ? { status: 409, body: { error: { code: "STAGE_LOCKED", message: "build: STAGE_LOCKED", stage: "build", fixHref: "/app/admin/how-we-work" } } } : undefined });
   accept();
   await screen.findByText("Build: Your company locked this stage's model choice.");
   expect(screen.getByRole("link", { name: "How to fix this" }).getAttribute("href")).toBe("/app/admin/how-we-work");
+ });
+
+ it("shows a refusal's fixed sentence without a link when its fixHref is not this app's", async () => {
+  await open({ learn: request => request.method === "POST" ? { status: 409, body: { error: { code: "STAGE_LOCKED", message: "build: STAGE_LOCKED", stage: "build", fixHref: "https://evil.example/fix" } } } : undefined });
+  accept();
+  await screen.findByText("Build: Your company locked this stage's model choice.");
+  expect(screen.queryByRole("link", { name: "How to fix this" })).toBeNull();
  });
 
  it("shows another refusal as the server wrote it, linking only a same-site app path", async () => {
