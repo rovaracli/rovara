@@ -1,9 +1,10 @@
+import {takeRateAt} from "../developer/page-comments.js";
 import {sealCursor,openCursor,cursorKeyOf} from "../agent-sessions/read.js";
 // Bounded read-only company proposal preview. A page is never a count or complete impact inventory.
 import {createHash} from "node:crypto";
 import {QueryCommand} from "@aws-sdk/lib-dynamodb";
 import {z} from "zod";
-import {ModelPolicyPreviewRequestSchema,ModelPolicyPreviewResponseSchema,canonicalJson,agentXError,orgProjectCatalogPk,type ModelSelectionPolicyResponse} from "@agentx/contracts";
+import {ModelPolicyPreviewRequestSchema,ModelPolicyPreviewResponseSchema,canonicalJson,agentXError,orgProjectCatalogPk,orgScoped,type ModelSelectionPolicyResponse} from "@agentx/contracts";
 import {requireCompanyModelPolicyAuthority} from "./company-read.js";
 import {readModelSelectionPolicy,type ModelPolicyReader} from "./policy-store.js";
 import {validateStageChoices,type StageModelSnapshot,type StageModelCaller} from "./read.js";
@@ -26,6 +27,8 @@ export async function previewCompanyModelPolicy(deps:ModelPolicyPreviewDependenc
  try{cursorKeyOf(deps);}catch{throw unavailable();}
  let after:string|undefined;
  if(body.cursor!==undefined){try{after=CursorAfter.parse(openCursor(deps,caller,context,body.cursor));}catch{throw invalid();}}
+ // Each admitted page can load ten snapshots. Bound that work before catalog or snapshot reads.
+ if(!await takeRateAt(deps,{pk:orgScoped(caller.orgId,"MODEL_POLICY_PREVIEW_RATE"),sk:caller.developerId},5,60_000))throw agentXError("TOO_MANY_REQUESTS","Too many model policy previews. Try again in a minute.");
  let page:{Items?:Record<string,unknown>[];LastEvaluatedKey?:Record<string,unknown>};
  try{page=await deps.documentClient.send(new QueryCommand({TableName:deps.tableName,KeyConditionExpression:"pk = :pk AND begins_with(sk, :prefix)",ExpressionAttributeValues:{":pk":pk,":prefix":"PROJECT#"},Limit:5,ConsistentRead:true,...(after===undefined?{}:{ExclusiveStartKey:{pk,sk:after}})})) as typeof page;}catch{throw unavailable();}
  if((page.Items?.length??0)>5)throw unavailable();

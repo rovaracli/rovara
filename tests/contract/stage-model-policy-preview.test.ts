@@ -2,7 +2,7 @@ import {expect,it} from "vitest";
 import {QueryCommand} from "@aws-sdk/lib-dynamodb";
 import {previewCompanyModelPolicy} from "../../packages/broker/src/model-selection/policy-preview.js";
 import {FakeDynamoDb} from "../support/fake-dynamodb.js";
-import {orgMemberKey,developerOrgKey,orgMetaKey,orgProjectCatalogKey,projectRevisionKey,STAGE_IDS} from "../../packages/contracts/src/index.js";
+import {orgMemberKey,developerOrgKey,orgMetaKey,orgScoped,orgProjectCatalogKey,projectRevisionKey,STAGE_IDS} from "../../packages/contracts/src/index.js";
 import type {StageModelSnapshot} from "../../packages/broker/src/model-selection/read.js";
 const org="org_aaaaaaaaaaaaaaaaaaaa",person="a".repeat(64),model={provider:"anthropic",modelId:"claude-sonnet-4"},other={provider:"anthropic",modelId:"claude-opus-4"};
 function fixture(role="owner",count=1){
@@ -51,7 +51,9 @@ it("exposes only strict read-only preview bodies on the actual app router",async
  const {bedrockClaudeModelIds}=await import("../../packages/model-runtime/src/catalog.js");
  expect(await invoke({version:1,expectedRevision:0,stepOverrides:{build:{model:{provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!}}}})).toMatchObject({projects:[{project:"web0",impact:"changed"}]});
  await expect(invoke({version:1,expectedRevision:0,stepOverrides:{},orgId:"foreign"})).rejects.toThrow("CONFIG_INVALID");
- expect([...f.db.items]).toEqual(before);
+ const rate=f.db.get({pk:orgScoped(org,"MODEL_POLICY_PREVIEW_RATE"),sk:person});
+ expect(rate).toMatchObject({entityType:"TASK_RATE",count:2,windowStart:0});
+ expect([...f.db.items].filter(([,row])=>row.pk!==rate!.pk||row.sk!==person)).toEqual(before);
 });
 
 for(const changed of ["selection","playbook"] as const)it(`marks ${changed} races between comparison snapshots unavailable`,async()=>{
@@ -65,4 +67,18 @@ it("rejects a cursor whose scope was rewritten to another authorized person",asy
  const page=await previewCompanyModelPolicy(f.deps,f.caller,body),cursor=page.nextCursor!;let forged:string;
  try{const decoded=JSON.parse(Buffer.from(cursor,"base64url").toString("utf8")) as Record<string,unknown>;decoded.developerId=nextPerson;forged=Buffer.from(JSON.stringify(decoded)).toString("base64url");}catch{forged=cursor.slice(0,-3)+(cursor.endsWith("AAA")?"BBB":"AAA");}
  await expect(previewCompanyModelPolicy(f.deps,{orgId:org,developerId:nextPerson},{...body,cursor:forged})).rejects.toThrow("CONFIG_INVALID");
+});
+
+it("throttles per company and person before any excess snapshot work",async()=>{
+ const f=fixture(),body={version:1 as const,expectedRevision:0,stepOverrides:{}};
+ for(let n=0;n<5;n++)await previewCompanyModelPolicy(f.deps,f.caller,body);
+ const reads=f.snapshots.length;
+ await expect(previewCompanyModelPolicy(f.deps,f.caller,body)).rejects.toMatchObject({code:"TOO_MANY_REQUESTS",statusCode:429});
+ expect(f.snapshots).toHaveLength(reads);
+ const nextPerson="b".repeat(64);
+ f.db.set({...orgMemberKey(org,nextPerson),orgId:org,developerId:nextPerson,role:"owner"});
+ f.db.set({...developerOrgKey(nextPerson),orgId:org,role:"owner"});
+ await expect(previewCompanyModelPolicy(f.deps,{orgId:org,developerId:nextPerson},body)).resolves.toMatchObject({mayBeIncomplete:true});
+ f.deps.now=()=>60_000;
+ await expect(previewCompanyModelPolicy(f.deps,f.caller,body)).resolves.toMatchObject({mayBeIncomplete:true});
 });
