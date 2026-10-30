@@ -1627,7 +1627,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
       }
       if (originalRequestIndex !== undefined && failed?.has(originalRequestIndex)) {
         const currentRequest = await getSpendRequest(deps, record.orgId, record.spendRequestId);
-        if (currentRequest?.status === "PENDING") { await expireOne(deps, record, "figures_changed"); throw staleApproval(); }
+        if (currentRequest?.status === "PENDING") { await expireOne(deps, currentRequest, "figures_changed"); throw staleApproval(); }
       }
       if (approvalTerms !== undefined && originalSourceIndex !== undefined && failed?.has(originalSourceIndex)) {
         const current = await readTask(deps, record.orgId, task!.taskId);
@@ -2026,13 +2026,40 @@ export async function escalateOwnerRequests(deps: SpendRequestDependencies, opti
 }
 
 /** Ends a request as EXPIRED (by its time, or early, `because`), audited in the same transaction. False when it was no longer PENDING. */
+/** Exact ask and index source for a terminal stop/owner-cap expiry. A due-item
+ * move must retry, otherwise ending the old due key could leave a live index. */
+function expirySource(record: SpendRequestRecord) {
+  const fields = ["orgId", "spendRequestId", "kind", "scope", "slotSubject", "taskId", "agentId", "chainId", "forOwner", "newOwner",
+    "amountUsd", "newLimitUsd", "change", "approvalSource", "approvalTerms", "requestedBy", "requestedFor", "createdAt", "expiresAt", "dueAt"] as const;
+  const source = record as unknown as Record<string, unknown>, names: Record<string, string> = {}, values: Record<string, unknown> = {};
+  const terms = Object.fromEntries(fields.flatMap(field => source[field] === undefined ? [] : [[field, source[field]]]));
+  const condition = fields.map((field, index) => {
+    const name = `#expirySource${index}`, value = `:expirySource${index}`; names[name] = field;
+    if (source[field] === undefined) return `attribute_not_exists(${name})`;
+    values[value] = source[field]; return `${name} = ${value}`;
+  }).join(" AND ");
+  return { termsDigest: createHash("sha256").update(canonicalJson({ version: 1, terms })).digest("hex"), condition, names, values };
+}
+
 async function expireOne(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName" | "now" | "audit">, record: SpendRequestRecord, because?: SpendRequestRecord["endedBecause"]): Promise<boolean> {
   const at = iso(deps.now());
   const events = await audited(deps, () => [auditSpendRequestExpired({ orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: record.spendRequestId, ...facts(record) })]);
+  const items = endItems(deps, record, { status: "EXPIRED", expiredAt: at, ...(because === undefined ? {} : { endedBecause: because }) });
+  // Monthly-room requests retain their existing lifecycle; M47 expires stops
+  // and owner-cap terms, and never turns an expiry into an approval.
+  if (record.kind !== "month") {
+    const source = expirySource(record), update = items[0]?.Update;
+    if (update === undefined) throw staleApproval();
+    update.ConditionExpression = `(${update.ConditionExpression}) AND (${source.condition})`;
+    update.ExpressionAttributeNames = { ...update.ExpressionAttributeNames, ...source.names };
+    update.ExpressionAttributeValues = { ...update.ExpressionAttributeValues, ...source.values };
+    const Key = spendRequestKey(record.orgId, record.spendRequestId);
+    items.push({ Put: { TableName: deps.tableName, Item: { pk: Key.pk, sk: "EXPIRY", entityType: "SPEND_REQUEST_EXPIRY", version: 1,
+      orgId: record.orgId, spendRequestId: record.spendRequestId, kind: record.kind, status: "EXPIRED", reason: because ?? "expired",
+      actor: { kind: "system" }, occurredAt: at, termsDigest: source.termsDigest }, ConditionExpression: "attribute_not_exists(pk)" } });
+  }
   try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
-      ...endItems(deps, record, { status: "EXPIRED", expiredAt: at, ...(because === undefined ? {} : { endedBecause: because }) }), ...events.flatMap((event) => auditPending(deps, event)),
-    ] }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...items, ...events.flatMap((event) => auditPending(deps, event))] }));
   } catch (error) {
     if (failedIndexes(error)?.has(0) === true) return false;
     throw error;
