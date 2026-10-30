@@ -41,6 +41,7 @@ import { latestRevision } from "../org/project-settings.js";
 import { readCodeSettings } from "../rovara-code/code-settings.js";
 import { existingLayer } from "./process-layer.js";
 import { processUpdate } from "./process-update.js";
+import { readStageTrackRecord } from "./track-record.js";
 import { isReviewingStage, wholeAgentLayers } from "./process-reviewers.js";
 import { readProjectPlaybook } from "./project-playbook-store.js";
 import { requireProcessLayer } from "./project-process.js";
@@ -204,11 +205,17 @@ export async function computeHowWeWork(deps: HowWeWorkDependencies, orgId: OrgId
   const [guardrails, revision, codeSettings] = await Promise.all([readGuardrails(deps, orgId), latestRevision(deps, orgId, name), readCodeSettings(deps, orgId, name)]);
   if (running.recipe.steps.length === 0) throw agentXError("CONFIG_INVALID", "this project's process has no stages");
   const inputs: Inputs = { running, guardrails, definition: revision?.definition, codeSettings };
+  // v1.2 track record: what each checking stage has earned. A read that fails leaves the field out (no record, never a zero); the resolver's model fields are not repeated here.
+  const stages = await Promise.all(running.recipe.steps.map(async (step) => {
+    const stage = stageOf(step, inputs);
+    const trackRecord = await readStageTrackRecord(deps, orgId, name, step.kind);
+    return trackRecord === undefined ? stage : { ...stage, trackRecord };
+  }));
   return {
     project: name,
     playbookRevision: playbook.revision,
     process: running.process,
-    stages: running.recipe.steps.map((step) => stageOf(step, inputs)),
+    stages,
     rules: layerRows(running.recipe, running.recipe.instructions),
     modelsEditable: false,
   };

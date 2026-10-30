@@ -3,7 +3,7 @@ import { Link } from "react-router";
 import { parseStageRefusalMessage, type StageRefusal } from "@agentx/contracts/web";
 import { useQueryClient } from "@tanstack/react-query";
 import { useBuilderApi } from "../../api/builder.js";
-import { howWeWorkKey, useHowWeWorkApi } from "../../api/how-we-work.js";
+import { howWeWorkKey, useHowWeWork, useHowWeWorkApi } from "../../api/how-we-work.js";
 import { ApiError } from "../../api/errors.js";
 import type { SendResult } from "../../api/client.js";
 import { Button } from "../../design/Button.js";
@@ -14,12 +14,13 @@ import { failureText } from "../agents/agent-context.js";
 import { RecipeDiffView, useRecipeDiff } from "../builder/RecipeDiffView.js";
 import { summariseChange } from "./how-we-work-summary.js";
 import { PendingConfirmation, publishedMessage } from "./PendingConfirmation.js";
+import { ReasonRecord } from "./StageRecord.js";
 import { STAGE_LABELS, refusalText } from "./stage-model-text.js";
 import { safeAppPath } from "../../text/links.js";
 /** "Review changes": what the draft changes against what runs now, the less-safe reasons, and Publish. A less-safe change waits for a second person; the page says so and never claims it is live. */
 export function ReviewChangesDialog({ project, agentId, from, revision, disabled, notInUse = false, openRequest = 0, onPublished }: { project: string; agentId: string; from: number | "base"; revision: number; disabled: boolean; /** The project runs the built-in, not this layer: a publish saves a version only. */ notInUse?: boolean; /** Opens the dialog when it goes up (the page moved the draft and wants it reviewed), unless it is disabled: that request is dropped. */ openRequest?: number; onPublished: () => void }) {
  const [open, setOpen] = useState(false), [note, setNote] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [refusals, setRefusals] = useState<StageRefusal[]>(), [published, setPublished] = useState<number>(), [pending, setPending] = useState<Exclude<SendResult<unknown>, { kind: "done" }>>(), [checking, setChecking] = useState(false);
- const sending = useRef(false), intent = useRef<{ body: string; id: string } | undefined>(undefined), builder = useBuilderApi(), how = useHowWeWorkApi(), query = useQueryClient(), diff = useRecipeDiff(agentId, from, "draft", open, revision);
+ const stages = useHowWeWork(project).data?.stages, sending = useRef(false), intent = useRef<{ body: string; id: string } | undefined>(undefined), builder = useBuilderApi(), how = useHowWeWorkApi(), query = useQueryClient(), diff = useRecipeDiff(agentId, from, "draft", open, revision);
  const [seenRequest, setSeenRequest] = useState(openRequest);
  if (openRequest !== seenRequest) { setSeenRequest(openRequest);if (openRequest > 0 && !disabled) { setNote("");setError(undefined);setRefusals(undefined);setPublished(undefined);setPending(undefined);setOpen(true); } }
  const summary = diff.data === undefined ? undefined : (() => { try { return summariseChange(diff.data); } catch { return undefined; } })(), empty = diff.data !== undefined && diff.data.changes.length === 0;
@@ -51,13 +52,13 @@ export function ReviewChangesDialog({ project, agentId, from, revision, disabled
   <p>{notInUse ? "This project runs Rovara Code's defaults. Publishing saves a new version but does not switch the project to it." : "Publishing changes how new tasks work. Running tasks keep their version."}</p>
   {diff.isPending ? <p role="status">Loading the changes</p> : diff.isError ? <p role="alert"><VisibleText text={failureText(diff.error, "Couldn't read these changes. Close this and try again.")} /></p> : <>
    {empty ? <p>There are no changes to publish.</p> : summary !== undefined && <section aria-label="What changes"><h3>What changes</h3><ul>{summary.changes.map((change, index) => <li key={index}><VisibleText text={change} /></li>)}</ul></section>}
-   {summary !== undefined && summary.lessSafe.length > 0 && <section aria-label="Needs someone else to confirm"><h3>Needs someone else to confirm</h3><p>These changes are less safe. Someone else who can approve changes in this project confirms them before they apply.</p><ul>{summary.lessSafe.map((reason, index) => <li key={index}><VisibleText text={reason} /></li>)}</ul></section>}
+   {summary !== undefined && summary.lessSafe.length > 0 && <section aria-label="Needs someone else to confirm"><h3>Needs someone else to confirm</h3><p>These changes are less safe. Someone else who can approve changes in this project confirms them before they apply.</p><ul>{summary.lessSafe.map((reason, index) => <li key={index}><VisibleText text={reason} /><ReasonRecord reason={reason} stages={stages} /></li>)}</ul></section>}
    {!empty && diff.data?.comparison !== undefined && <RecipeDiffView id={agentId} from={from} to="draft" revision={revision} />}
   </>}
   <TextArea label="Version note" maxLength={200} value={note} disabled={busy || pending !== undefined || published !== undefined} onChange={event => setNote(event.target.value)} />
   <Button variant="primary" busy={busy} disabled={pending !== undefined || published !== undefined || diff.isPending || diff.isError || empty} onClick={() => { void publish(); }}>Publish</Button>
   {error !== undefined && (refusals === undefined ? <p role="alert"><VisibleText text={error} /></p> : <div role="alert"><p>These model choices can't be published yet.</p><ul>{refusals.map(refusal => <li key={refusal.stage}><VisibleText text={`${STAGE_LABELS[refusal.stage]}: ${refusalText(refusal.code)}`} />{refusal.fixHref !== undefined && safeAppPath(refusal.fixHref) && <> <Link to={refusal.fixHref}>How to fix this</Link></>}</li>)}</ul></div>)}
   {published !== undefined && <p role="status">{publishedMessage(published)}</p>}
-  {pending !== undefined && <PendingConfirmation result={pending} checking={checking} onCheck={() => { void check(); }} />}
+  {pending !== undefined && <PendingConfirmation result={pending} checking={checking} onCheck={() => { void check(); }} stages={stages} />}
  </Dialog>;
 }

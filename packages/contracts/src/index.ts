@@ -21,6 +21,7 @@ export * from "./workflow-autofix.js";
 export * from "./rovara-code.js";
 export * from "./project-playbook.js";
 export * from "./how-we-work.js";
+export * from "./how-we-work-track-record.js";
 export * from "./rovara-code-node.js";
 export * from "./rovara-code-intent.js";
 export * from "./rovara-code-understand.js";
