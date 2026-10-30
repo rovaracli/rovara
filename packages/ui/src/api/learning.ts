@@ -16,6 +16,14 @@ export type DismissedView = ViewAnswer["dismissed"][number];
 export type Decision = { kind: "applied"; version?: number } | { kind: "awaiting"; confirmUrl?: string; changes: string[] } | { kind: "needs_editor"; stage: string } | { kind: "done" };
 
 const base = (project: string) => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(project)) + "/learning";
+/** The answer of Dismiss. The contract's reader wants a whole suggestion view, but the route answers `{ suggestion: { id, status } }` (broker/learning/decide.ts); both are read, because the screen only needs to know it worked. */
+const DismissAnswerReader = { parse(value: unknown): unknown {
+ const whole = LearningDismissAnswerReaderSchema.safeParse(value);
+ if (whole.success) return whole.data;
+ const body = typeof value === "object" && value !== null ? value as Record<string, unknown> : {}, suggestion = typeof body.suggestion === "object" && body.suggestion !== null ? body.suggestion as Record<string, unknown> : undefined;
+ if (suggestion === undefined || typeof suggestion.id !== "string" || typeof suggestion.status !== "string") throw new Error("Unreadable dismiss answer");
+ return { suggestion: { id: suggestion.id, status: suggestion.status } };
+} };
 const NEVER = { retry: "never" } as const;
 type AcceptInput = Omit<z.input<typeof LearningAcceptBodySchema>, "requestId">;
 type DismissInput = z.input<typeof LearningDismissBodySchema>;
@@ -40,7 +48,7 @@ export function createLearningApi(host: AppHost) {
    return decision(await api.send("POST", `${base(project)}/suggestions/${encodeURIComponent(suggestionId)}/accept`, LearningAcceptBodySchema.parse({ requestId: crypto.randomUUID(), ...input }), LearningAcceptAnswerReaderSchema as { parse(value: unknown): Answer }, NEVER));
   },
   async dismiss(project: string, suggestionId: string, input: DismissInput): Promise<void> {
-   await api.send("POST", `${base(project)}/suggestions/${encodeURIComponent(suggestionId)}/dismiss`, LearningDismissBodySchema.parse(input), LearningDismissAnswerReaderSchema, NEVER);
+   await api.send("POST", `${base(project)}/suggestions/${encodeURIComponent(suggestionId)}/dismiss`, LearningDismissBodySchema.parse(input), DismissAnswerReader, NEVER);
   },
   async reopen(project: string, suggestionId: string): Promise<void> {
    await api.send("POST", `${base(project)}/dismissed/${encodeURIComponent(suggestionId)}/reopen`, {}, LearningReopenAnswerReaderSchema, NEVER);

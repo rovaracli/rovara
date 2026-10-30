@@ -13,7 +13,9 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  // Lane C14: owned Models source guidance styles.
  "screens/admin/models/model-source-guidance.css",
  // Playbook v1.1: the company How we work page.
- "screens/admin/how-we-work/how-we-work.css"]) {
+ "screens/admin/how-we-work/how-we-work.css",
+ // v1.2 learning loop: the Suggested rules section of the project How we work tab.
+ "screens/project/learning.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

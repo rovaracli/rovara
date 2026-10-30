@@ -256,6 +256,14 @@ describe("dismissing", () => {
   expect(LearningDismissBodySchema.parse(write!.body)).toEqual({ expectedRevision: 4, dismissKind: "one_off", note: "Only for the migration." });
  });
 
+ it("reads the short answer the route really gives ({ suggestion: { id, status } })", async () => {
+  const f = await open({ learn: request => request.method === "POST" ? ok({ suggestion: { id: "sug_1", status: "dismissed" } }) : undefined });
+  startDismiss();fireEvent.click(screen.getByRole("radio", { name: "Other" }));fireEvent.click(screen.getByRole("button", { name: "Dismiss suggestion" }));
+  expect((await screen.findByRole("status")).textContent).toContain("Dismissed.");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(f.learningWrites()).toHaveLength(1);
+ });
+
  it("leaves the note out when it is empty, and limits it to 500 characters", async () => {
   const f = await open({ learn: request => request.method === "POST" ? ok({ suggestion: suggestion({ status: "dismissed" }) }) : undefined });
   startDismiss();
