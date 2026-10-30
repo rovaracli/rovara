@@ -2260,6 +2260,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // Plan 3, Task 15: the frozen recipe, the agent's task index, an agent-step run's state and (for startAgentRun) the run's request item.
     ...(prepared === undefined ? [] : runStartItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, {
       orgId: deps.orgId, taskId, createdAt: receivedAt, project: request.project, developerId: caller.developerId, prepared,
+      ...(spendingStop === undefined ? {} : { policySnapshotCaptured: true }),
       ...(run?.requestFingerprint === undefined ? {} : { request: { requestId: request.requestId, fingerprint: run.requestFingerprint } }),
       ...(sessionId === undefined ? {} : { sessionId }),
     })),

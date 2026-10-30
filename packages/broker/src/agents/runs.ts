@@ -207,7 +207,7 @@ export async function resolveRunPayer(deps: AgentRunDependencies, input: {
   orgId: OrgId; project: string; agentId: AgentId; origin: WorkOrigin; startedBy?: { developerId: string } | undefined; payer?: Payer | undefined; payerFacts?: PayerFacts | undefined;
   /** The payer was worked out by an earlier read of the same settings, not named by the caller: a difference now is the setting changing under the start. */
   payerFromRules?: boolean | undefined;
-}): Promise<{ payer: Payer; place: Place; projectAiRevision: number }> {
+}): Promise<{ payer: Payer; place: Place; projectAiRevision: number; projectPays: boolean }> {
   const { settings, revision } = await readProjectAiWithRevision(deps, input.orgId, input.project);
   const payer = resolvePayer({
     origin: input.origin, project: input.project, projectPays: settings.projectPays, agentId: input.agentId,
@@ -219,7 +219,7 @@ export async function resolveRunPayer(deps: AgentRunDependencies, input: {
     if (input.payerFromRules === true) throw agentXError("WORKSPACE_BUSY", "the project's payment settings changed while starting; try again with the same request_id");
     throw agentXError("CONFIG_INVALID", "payer: this run's payer is not the one its origin names");
   }
-  return { payer, place: { project: input.project }, projectAiRevision: revision };
+  return { payer, place: { project: input.project }, projectAiRevision: revision, projectPays: settings.projectPays };
 }
 
 /**
@@ -256,6 +256,8 @@ export interface PreparedRun {
   payer: Payer;
   place: Place;
   projectAiRevision: number;
+  /** Exact payment input, kept separately from unrelated numeric policy revisions. */
+  projectPays?: boolean;
 }
 
 export interface PrepareRunInput {
@@ -325,7 +327,7 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
     if (!contract.success) throw agentXError("CONFIG_INVALID", `resultContract: ${contract.error.issues[0]?.message ?? "is not valid"}`);
   }
   const origin: WorkOrigin = resolved.testRun ? "test_run" : input.origin;
-  const { payer, place, projectAiRevision } = await resolveRunPayer(deps, { orgId: input.orgId, project: input.project, agentId: ref.agentId, origin, startedBy: input.startedBy, payer: input.payer, payerFromRules: input.payerFromRules, payerFacts: input.payerFacts });
+  const { payer, place, projectAiRevision, projectPays } = await resolveRunPayer(deps, { orgId: input.orgId, project: input.project, agentId: ref.agentId, origin, startedBy: input.startedBy, payer: input.payer, payerFromRules: input.payerFromRules, payerFacts: input.payerFacts });
   if (autonomous && input.startedBy !== undefined) throw agentXError("CONFIG_INVALID", "startedBy: a run no person started has no one who started it");
   const program = runner === "coding" ? codingProgram(recipe) : undefined;
   if (program !== undefined) {
@@ -344,7 +346,7 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
     ...limits,
     ...(input.resultContract === undefined ? {} : { resultContract: input.resultContract }),
     ...(input.chain === undefined ? {} : { chain: input.chain }),
-    checkout, payer, place, projectAiRevision,
+    checkout, payer, place, projectAiRevision, projectPays,
   };
 }
 
@@ -427,12 +429,15 @@ export function runStartItems(table: TableInput, input: {
   project: string;
   developerId: string;
   prepared: PreparedRun;
+  /** Enrolled starts already captured numeric policy; fence payment independently. */
+  policySnapshotCaptured?: boolean;
   /** `startAgentRun`'s request: its item is written with the run, so a repeat of the request is answered from it. */
   request?: { requestId: string; fingerprint: string };
   /** Plan 5: the run's session, remembered on the request item so a repeat answers the same one. */
   sessionId?: string;
 }): TransactItem[] {
   const { prepared } = input;
+  if (input.policySnapshotCaptured === true && typeof prepared.projectPays !== "boolean") throw agentXError("TASK_STOP_CONFIG_INVALID", "The project payer binding is missing. Start again after reviewing Spending.");
   const nowSeconds = Math.floor(table.now() / 1000);
   const expires = nowSeconds + RUN_RECORD_MEMORY_DAYS * 86_400;
   const items: TransactItem[] = [
@@ -457,9 +462,11 @@ export function runStartItems(table: TableInput, input: {
     ConditionCheck: {
       TableName: table.tableName,
       Key: projectAiKey(input.orgId, input.project),
-      ...(prepared.projectAiRevision === 0
-        ? { ConditionExpression: "attribute_not_exists(pk)" }
-        : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": prepared.projectAiRevision } }),
+      ...(input.policySnapshotCaptured === true
+        ? { ConditionExpression: "#type = :type AND #org = :org AND #project = :project AND #pays = :pays", ExpressionAttributeNames: { "#type": "entityType", "#org": "orgId", "#project": "project", "#pays": "projectPays" }, ExpressionAttributeValues: { ":type": "PROJECT_AI", ":org": input.orgId, ":project": input.project, ":pays": prepared.projectPays } }
+        : prepared.projectAiRevision === 0
+          ? { ConditionExpression: "attribute_not_exists(pk)" }
+          : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": prepared.projectAiRevision } }),
     },
   });
   if (input.request !== undefined) {

@@ -75,8 +75,8 @@ export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies
     if (key === undefined || found.pk !== key.pk || found.sk !== key.sk || found.orgId !== orgId) throw authority ? forbidden() : invalid();
     return found;
   }
-  const member = row(0, true), pointer = row(1, true), org = row(2, true);
-  if (member.developerId !== developerId || member.role !== role || pointer.role !== role || org.closingAt !== undefined || org.closedAt !== undefined) throw forbidden();
+  const org = row(2, true);
+  if (org.closingAt !== undefined || org.closedAt !== undefined) throw forbidden();
   // Immutable, non-TTL seed receipts distinguish a never-enrolled legacy org
   // from a seeded org whose canonical policy disappeared. Read them in the
   // SAME snapshot; absence is never translated into configured inheritance.
@@ -97,6 +97,10 @@ export async function captureTaskStopAdmission(deps: TaskStopCaptureDependencies
   if (!object(enrollment) || enrollment.version !== 1) throw invalid();
   if (enrollment.state === "disabled" || enrollment.state === "ready") return { kind: "disabled" };
   if (enrollment.state !== "enabled") throw invalid();
+  // Only enabled cutover requires migrated exact native identities. Disabled
+  // and ready preserve the already-authorized legacy path, never inheritance.
+  const member = row(0, true), pointer = row(1, true);
+  if (member.developerId !== developerId || member.role !== role || pointer.role !== role) throw forbidden();
   if (receipts.length === 0) throw missing();
   if (receipts.some(receipt => Number(receipt.policyRevision) > Number(company.revision))) throw invalid();
   const ceiling = row(4), catalog = row(5), settings = row(6), agent = row(7);
