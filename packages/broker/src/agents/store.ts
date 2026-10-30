@@ -74,6 +74,9 @@ export { REQUEST_MEMORY_DAYS, type RequestMark };
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 
 export interface AgentRecord {
+  /** Present after the reviewed task-stop seed; absent legacy metadata is never guessed. */
+  stopKind?: "inherit" | "limited";
+  revision?: number;
   orgId: OrgId;
   agentId: AgentId;
   name: string;
@@ -123,6 +126,8 @@ export { MAX_SHARE_CHANGES_PER_SAVE, type AgentShareLevel, type AgentShareRecord
 export { isOwnerCapRefusal, type OwnerCap } from "../spend/owner-budgets.js";
 
 export interface BuiltinSettings {
+  stopKind?: "inherit" | "limited";
+  revision?: number;
   pinnedVersion: number;
   monthlyBudgetUsd?: number;
   maxPerRunUsd?: number;
@@ -766,11 +771,18 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       current = await this.require(orgId, agentId);
       key = agentKey(orgId, agentId, "META");
     }
+    let taskStopMetadata: { stopKind: "inherit" | "limited"; revision: number } | undefined;
+    if (budget.maxPerRunUsd !== undefined && current.stopKind !== undefined) {
+      if (!Number.isSafeInteger(current.revision) || current.revision === undefined || current.revision < 1 || current.revision >= Number.MAX_SAFE_INTEGER
+        || current.stopKind !== (current.maxPerRunUsd === undefined ? "inherit" : "limited")) throw coded("TASK_STOP_CONFIG_INVALID", "The agent spending setting is invalid. Ask an admin to repair it before editing the stop.");
+      taskStopMetadata = { stopKind: budget.maxPerRunUsd === null ? "inherit" : "limited", revision: current.revision + 1 };
+      Object.assign(set, taskStopMetadata);
+    }
     if (options.expectedMaxPerRunUsd !== undefined && options.expectedMaxPerRunUsd !== (current.maxPerRunUsd ?? null)) throw budgetConflict();
     const monthlyBudgetUsd = typeof budget.monthlyUsd === "number" ? budget.monthlyUsd : budget.monthlyUsd === null ? undefined : current.monthlyBudgetUsd;
     const maxPerRunUsd = typeof budget.maxPerRunUsd === "number" ? budget.maxPerRunUsd : budget.maxPerRunUsd === null ? undefined : current.maxPerRunUsd;
     const { monthlyBudgetUsd: _monthly, maxPerRunUsd: _perRun, ...others } = current; // eslint-disable-line @typescript-eslint/no-unused-vars -- replaced below
-    const written = { ...others, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }), updatedAt, ...(isBuiltinAgentId(agentId) ? { updatedBy: by } : {}) };
+    const written = { ...others, ...taskStopMetadata, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }), updatedAt, ...(isBuiltinAgentId(agentId) ? { updatedBy: by } : {}) };
     const totals = await this.totalsFor(orgId, current, written, options.ownerCap);
     const event = this.newEvent(orgId, agentId, "budget_changed", by, { ...withoutUndefined(detail), ...overrideDetail(options) });
     const audit = await this.audited(() => agentBudgetEvents({
@@ -782,7 +794,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
         const field = aliases.name("maxPerRunUsd");
         const perRun = current.maxPerRunUsd === undefined ? `attribute_not_exists(${field})` : `${field} = ${aliases.value(current.maxPerRunUsd)}`;
         const manage = options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(aliases)}`;
-        return `${budgetGuard(current)(aliases)} AND ${perRun}${manage}`;
+        const metadata = budget.maxPerRunUsd === undefined ? "" : ["stopKind", "revision"].map(field => {
+          const value = field === "stopKind" ? current.stopKind : current.revision;
+          return value === undefined ? ` AND attribute_not_exists(${aliases.name(field)})` : ` AND ${aliases.name(field)} = ${aliases.value(value)}`;
+        }).join("");
+        return `${budgetGuard(current)(aliases)} AND ${perRun}${metadata}${manage}`;
       } }),
       ...totals.items,
       event.item,

@@ -1,3 +1,4 @@
+import { taskStartAgentAuthorityChecks } from "../org/task-start-agent-authority.js";
 import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
 import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
@@ -2127,6 +2128,13 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
           const fresh = await deps.checkAccess(request.project);
           await requireNewWorkAllowed(deps, deps.orgId, request.project, fresh.role, "task");
         });
+        if (deps.agentRuns !== undefined && prepared !== undefined) {
+          const agentId = prepared.ref.agentId, draft = prepared.ref.version === "draft";
+          spendingScopeChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: request.project, agentId, draft, process: prepared.ref.process === true }, async () => {
+            if (deps.agentRuns === undefined) throw budgetActorRefused();
+            await requireAgentAccess(deps.agentRuns, caller, agentId, draft ? "edit" : "use");
+          }));
+        }
         const exactUsd = captured.effectiveStopMicrousd / 1_000_000;
         if (usdToWholeMicrodollars(exactUsd) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
         if (exactUsd === 0 && !paused) return refused(agentXError("TASK_STOP_BUDGET_EXCEEDED", "Work can't start: its spending stop is zero. Ask an admin to review Spending."));
