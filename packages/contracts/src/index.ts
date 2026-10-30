@@ -12,6 +12,7 @@ export * from "./model-sources.js";
 export * from "./model-providers.js";
 export * from "./errors.js";
 export * from "./edition.js";
+export * from "./sso.js";
 export * from "./plugins/index.js";
 export * from "./connectors-node.js";
 export * from "./credentials.js";
