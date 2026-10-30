@@ -92,6 +92,9 @@ export { isPlaceholderDisplayName, isReservedDisplayName } from "./display-name.
 export * from "./project-playbook.js";
 export * from "./how-we-work.js";
 
+// v1.2 learning loop: the schemas of a project's learning (stored shapes and the API the screens use).
+export * from "./project-learning.js";
+
 // Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
 export * from "./org-slack-workspace-evidence.js";
 
