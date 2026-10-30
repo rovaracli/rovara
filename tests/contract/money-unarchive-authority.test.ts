@@ -56,3 +56,16 @@ for (const kind of ["agent", "chain"] as const) {
     expect(f.t.db.get(f.key)?.status).toBe("active");
   });
 }
+it("agent unarchive pins the per-run figure even if a concurrent edit shares its millisecond timestamp", async () => {
+  const f = await fixture("agent"), send = f.t.db.send.bind(f.t.db);
+  let raced = false;
+  f.t.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === f.key.pk && item.Update.Key.sk === f.key.sk)) {
+      raced = true;
+      f.t.db.set({ ...f.t.db.get(f.key), maxPerRunUsd: 7 });
+    }
+    return send(command);
+  };
+  expect((await f.t.api(DEB, "POST", f.path + "/unarchive", {})).status).toBe(409);
+  expect(raced).toBe(true); expect(f.t.db.get(f.key)?.status).toBe("archived");
+});
