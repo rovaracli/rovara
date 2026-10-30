@@ -7,7 +7,7 @@ import { expect, it } from "vitest";
 import { TransactWriteCommand, TransactGetCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey, projectAgentKey } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
-import { setup, CODING, TRIAGE, DEB, ADA } from "../support/spend-world.js";
+import { setup, CODING, TRIAGE, BEN, DEB, ADA } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 async function fixture(amount = 1_234_567) {
   const t = await setup(), policy = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), project = projectAiKey(TEST_ORG, "payments"), agent = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);
@@ -699,4 +699,26 @@ for (const drift of [false, true]) it(`platform source fence shares one task act
   await f.t.handler({ source: "agentx.workflow-dispatch-recovery" }); expect(checked).toBe(true);
   expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + (drift ? 0 : 1));
   expect(f.t.meta(f.task.taskId).threadNotesFedThrough).toBe(drift ? undefined : note.receivedAt);
+});
+
+it("an enrolled new run-limit approval above the current ceiling refuses without raising or resuming its task", async () => {
+  const f = await fixture(), task = await f.t.plainTask(); await f.t.pauseAndEnd(task);
+  const request = f.t.requestOf(task.taskId, "run_limit")[0]!; expect(request.newLimitUsd).toBeGreaterThan(1);
+  const before = f.t.meta(task.taskId), operations = f.t.taskOps(task.workspaceId).map(op => op.id);
+  await expect(f.t.decide(MAYA, request.spendRequestId)).rejects.toMatchObject({ code: "TASK_STOP_APPROVAL_ABOVE_CEILING" });
+  expect(f.t.meta(task.taskId)).toEqual(before); expect(f.t.taskOps(task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.requestOf(task.taskId, "run_limit")[0]!.status).not.toBe("APPROVED");
+});
+it("a disabled org retains legacy run-limit approval behavior above a lower ceiling", async () => {
+  const f = await fixture(); f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const task = await f.t.plainTask(); await f.t.pauseAndEnd(task);
+  const request = f.t.requestOf(task.taskId, "run_limit")[0]!; expect(request.newLimitUsd).toBeGreaterThan(1);
+  const result = await f.t.decide(BEN, request.spendRequestId); expect(result.spendRequest.status).toBe("APPROVED");
+  expect(f.t.meta(task.taskId).budgetUsd).toBe(request.newLimitUsd);
+});
+it("denying an enrolled above-ceiling request remains allowed and grants no new money", async () => {
+  const f = await fixture(), task = await f.t.plainTask(); await f.t.pauseAndEnd(task);
+  const request = f.t.requestOf(task.taskId, "run_limit")[0]!, before = f.t.meta(task.taskId).budgetUsd;
+  const result = await f.t.decide(MAYA, request.spendRequestId, "DENY"); expect(result.spendRequest.status).toBe("DENIED");
+  expect(f.t.meta(task.taskId).budgetUsd).toBe(before);
 });
