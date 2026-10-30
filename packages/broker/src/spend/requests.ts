@@ -1,3 +1,4 @@
+import { OwnerFinancialTermsSchema, ownerFinancialChecks } from "./owner-approval-terms.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { taskRunLimitMicrousd, makeTaskApprovalTerms, TaskApprovalTermsSchema, taskApprovalPolicyDigest, taskApprovalRecordMatches, taskApprovalSourceMatches, pinTaskApprovalSource, pinTaskApprovalRequest, type TaskApprovalTerms } from "./task-approval-terms.js";
@@ -212,8 +213,9 @@ export async function ownerEffectiveTotal(deps: SpendRequestDependencies, input:
  * The owner's effective total this month as Task 28's budget writes are held to it (fix round 1, I-1): the total, the base the owner counter holds, and the
  * counter's version, so the write is conditional on nothing having moved since (`OwnerCap.seen`).
  */
-export function effectiveOwnerCap(deps: SpendRequestDependencies, orgId: OrgId, owner: string): Promise<{ totalUsd: number; counterUsd: number; version: number }> {
-  return ownerEffectiveTotal(deps, { orgId, owner, month: iso(deps.now()).slice(0, 7) });
+export async function effectiveOwnerCap(deps: SpendRequestDependencies, orgId: OrgId, owner: string): Promise<{ totalUsd: number; counterUsd: number; version: number; month: string }> {
+  const month = iso(deps.now()).slice(0, 7);
+  return { ...await ownerEffectiveTotal(deps, { orgId, owner, month }), month };
 }
 
 /** An agent's monthly limit for `month` before the guardrail's clamp: its base plus the month's top-up (fix round 1, I-4). */
@@ -553,6 +555,7 @@ export interface CreateSpendRequestInput {
   requestedFor?: { developerId: string };
   resume?: SpendRequestRecord["resume"];
   change?: OwnerCapChange;
+  ownerFinancialTerms?: SpendRequestRecord["ownerFinancialTerms"];
   approvalSource?: ApprovalSource;
   /** The subject the one-pending rule is kept for: the task, by default; an `owner_cap` request's agent or person. */
   subject?: string;
@@ -607,6 +610,7 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
       approverRole: "org_admin", approverIds: [], status: "PENDING",
       ...(input.resume === undefined ? {} : { resume: input.resume }), ...(input.change === undefined ? {} : { change: input.change }),
       ...(input.approvalSource === undefined ? {} : { approvalSource: input.approvalSource }),
+      ...(input.ownerFinancialTerms === undefined ? {} : { ownerFinancialTerms: input.ownerFinancialTerms }),
       createdAt, expiresAt: iso(input.kind === "month" ? monthRequestExpiry(now) : now + SPEND_REQUEST_TTL_DAYS * DAY_MS),
     };
     if (draft.taskId !== undefined && (draft.kind === "run_limit" || draft.kind === "max_per_run" || draft.kind === "planning")) {
@@ -1120,7 +1124,7 @@ export const ownerCapMessage = (reason: string) => `${reason} I asked an org adm
  * request and the words the route answers with.
  */
 export async function requestOwnerCap(deps: SpendRequestDependencies, input: {
-  orgId: OrgId; agentId?: string; chainId?: string; requestedBy: string; owner: string; wouldBeUsd: number; capUsd: number; newLimitUsd?: number; newOwner?: string; change: OwnerCapChange; request?: RequestMark; before: BudgetSubject;
+  orgId: OrgId; agentId?: string; chainId?: string; requestedBy: string; owner: string; wouldBeUsd: number; capUsd: number; newLimitUsd?: number; newOwner?: string; ownerFinancialTerms?: SpendRequestRecord["ownerFinancialTerms"]; change: OwnerCapChange; request?: RequestMark; before: BudgetSubject;
 }): Promise<{ record: SpendRequestRecord; message: string }> {
   const chainId = input.chainId;
   if ((input.agentId === undefined) === (chainId === undefined)) throw new Error("an owner_cap request is about an agent or a chain");
@@ -1136,8 +1140,8 @@ export async function requestOwnerCap(deps: SpendRequestDependencies, input: {
     ...(chainId === undefined ? { scope: { kind: "agent" as const, agentId: input.agentId as never }, agentId: input.agentId as string } : { scope: { kind: "chain" as const, chainId: chainId }, chainId, subject: `CHAIN#${chainId}` }),
     ...(input.newOwner === undefined ? {} : { newOwner: { developerId: input.newOwner } }), forOwner: input.owner,
     amountUsd: cleanUsd(input.wouldBeUsd - input.capUsd), ...(input.newLimitUsd === undefined ? {} : { newLimitUsd: input.newLimitUsd }),
-    reason, requestedBy: { kind: "member", developerId: input.requestedBy }, change: input.change, approvalSource,
-    extraItems: () => [{ ConditionCheck: { TableName: deps.tableName, Key: key, ...sourceCondition(approvalSource) } }],
+    reason, requestedBy: { kind: "member", developerId: input.requestedBy }, change: input.change, approvalSource, ownerFinancialTerms: input.ownerFinancialTerms,
+    extraItems: () => [{ ConditionCheck: { TableName: deps.tableName, Key: key, ...sourceCondition(approvalSource) } }, ...(input.ownerFinancialTerms === undefined ? [] : ownerFinancialChecks(deps.tableName, input.orgId, input.ownerFinancialTerms))],
     ...(input.request === undefined ? {} : { request: input.request }),
     requestResult: (record) => ({ status: "NEEDS_ADMIN_APPROVAL", spendRequestId: record.spendRequestId, message: ownerCapMessage(record.reason) }),
   });
@@ -1419,7 +1423,7 @@ async function applyOwnerCap(deps: SpendRequestDependencies, record: SpendReques
         ExpressionAttributeValues: { ":destinationGrantRole": "developer", ":destinationProjectRole": "maintainer" } } });
     }
   }
-  const options = { actor: decisionActor, overrideCap: { actor: decisionActor, destinationChecks, spendRequestId: record.spendRequestId, items, ...(change === undefined || change.op === "confirm_move" ? {} : { source: record.approvalSource }), closed: () => closed({ status: "APPROVED" }) } };
+  const options = { actor: decisionActor, overrideCap: { actor: decisionActor, destinationChecks, financialChecks: record.ownerFinancialTerms === undefined ? [] : ownerFinancialChecks(deps.tableName, record.orgId, record.ownerFinancialTerms), spendRequestId: record.spendRequestId, items, ...(change === undefined || change.op === "confirm_move" ? {} : { source: record.approvalSource }), closed: () => closed({ status: "APPROVED" }) } };
   if (change === undefined || change.op === "confirm_move") {
     const checks = budgetActorChecks(deps.tableName, record.orgId, decisionActor);
     try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...items, ...checks] })); }
@@ -1522,6 +1526,15 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
   if (record.kind === "owner_cap") {
     const change = status === "APPROVED" ? await recheckedChange(deps, caller, record) : undefined;
     if (status === "APPROVED") await requireSameOwner(deps, record, change);
+    if (status === "APPROVED" && record.ownerFinancialTerms !== undefined) {
+      const parsed = OwnerFinancialTermsSchema.safeParse(record.ownerFinancialTerms);
+      const terms = parsed.success ? parsed.data : undefined;
+      const current = terms === undefined ? undefined : await effectiveOwnerCap(deps, record.orgId, terms.owner);
+      const policy = await readSpendPolicyWithRevision(deps, record.orgId);
+      if (terms === undefined || terms.owner !== record.forOwner || terms.month !== iso(deps.now()).slice(0, 7) || current?.version !== terms.counterVersion || current.totalUsd !== terms.totalUsd || current.counterUsd !== terms.counterUsd || policy.revision !== terms.policyRevision || policy.policy.ownerAgentBudgetCapUsd !== terms.capUsd) {
+        await expireOne(deps, record, "figures_changed"); throw staleApproval();
+      }
+    }
     if (status === "APPROVED" && change !== undefined && change.op !== "confirm_move") {
       const parsedSource = ApprovalSourceSchema.safeParse(record.approvalSource);
       const source = parsedSource.success ? parsedSource.data : undefined;
@@ -2050,7 +2063,7 @@ export async function escalateOwnerRequests(deps: SpendRequestDependencies, opti
  * move must retry, otherwise ending the old due key could leave a live index. */
 function expirySource(record: SpendRequestRecord) {
   const fields = ["orgId", "spendRequestId", "kind", "scope", "slotSubject", "taskId", "agentId", "chainId", "forOwner", "newOwner",
-    "amountUsd", "newLimitUsd", "change", "approvalSource", "approvalTerms", "requestedBy", "requestedFor", "createdAt", "expiresAt", "dueAt"] as const;
+    "amountUsd", "newLimitUsd", "change", "approvalSource", "approvalTerms", "ownerFinancialTerms", "requestedBy", "requestedFor", "createdAt", "expiresAt", "dueAt"] as const;
   const source = record as unknown as Record<string, unknown>, names: Record<string, string> = {}, values: Record<string, unknown> = {};
   const terms = Object.fromEntries(fields.flatMap(field => source[field] === undefined ? [] : [[field, source[field]]]));
   const condition = fields.map((field, index) => {

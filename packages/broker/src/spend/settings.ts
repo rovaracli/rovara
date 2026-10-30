@@ -1,3 +1,4 @@
+import type { OwnerFinancialTerms } from "./owner-approval-terms.js";
 // Plan 3 Task 28: the budget settings the spend engine reads. A scope's limit is its base (the org's, a member's, a project's, an agent's
 // own) plus the month's top-up, held to the guardrails; `effectiveLimits` answers it for any list of scopes. This file also holds the
 // project AI settings, the org's spend policy and the one monthly total each person's agent budgets count against. Task 31's `admitWork`
@@ -419,9 +420,9 @@ export async function ownerBudgetRefusal(
   orgId: OrgId,
   before: OwnerShare | undefined,
   after: OwnerShare | undefined,
-  effective?: (owner: string) => Promise<{ totalUsd: number; counterUsd: number; version: number }>,
+  effective?: (owner: string) => Promise<{ totalUsd: number; counterUsd: number; version: number; month?: string }>,
   carriedUsd = 0,
-): Promise<{ over: { owner: string; wouldBeUsd: number; capUsd: number } } | { ownerCap: OwnerCap }> {
+): Promise<{ over: { owner: string; wouldBeUsd: number; capUsd: number; ownerFinancialTerms?: OwnerFinancialTerms } } | { ownerCap: OwnerCap }> {
   const joins = after !== undefined && before?.owner !== after.owner;
   const carried = joins ? carriedUsd : 0;
   const deltaUsd = after === undefined ? 0 : joins ? cleanUsd(after.usd + carried) : cleanUsd(after.usd - before!.usd);
@@ -435,7 +436,7 @@ export async function ownerBudgetRefusal(
     const read = await effective(owner);
     const capUsd = policy.ownerAgentBudgetCapUsd;
     const wouldBeUsd = cleanUsd(read.totalUsd + deltaUsd);
-    if (deltaUsd > 0 && wouldBeUsd > capUsd) return { over: { owner, wouldBeUsd, capUsd } };
+    if (deltaUsd > 0 && wouldBeUsd > capUsd) return { over: { owner, wouldBeUsd, capUsd, ownerFinancialTerms: { version: 1, owner, month: read.month ?? new Date().toISOString().slice(0, 7), totalUsd: read.totalUsd, counterUsd: read.counterUsd, counterVersion: read.version, capUsd, policyRevision: revision, carriedUsd: carried, wouldBeUsd } } };
     return { ownerCap: { usd: capUsd, policyRevision: revision, seen: { owner, version: read.version, extraUsd: cleanUsd(read.totalUsd - read.counterUsd + carried) } } };
   }
   const check = await checkOwnerBudget(deps, { orgId, owner, deltaUsd });

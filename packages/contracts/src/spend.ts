@@ -346,6 +346,8 @@ export interface SpendRequestRecord {
     originalFields: Record<string, unknown>; askedFiguresMicrousd: { budget: number; runLimit: number; amount: number; maxPerRun: number | null; baseline: number }; proposedFiguresMicrousd: { budget: number; runLimit: number; maxPerRun: number | null; window: "keep" | "reset" };
     countedOwner: string | null; totalsRevision: null; policyDigest: string; admissionId: string; operation: "run_limit" | "max_per_run" | "planning";
   };
+  /** Original counted owner figures for a newly captured owner-cap request. */
+  ownerFinancialTerms?: { version: 1; owner: string; month: string; totalUsd: number; counterUsd: number; counterVersion: number; capUsd: number; policyRevision: number; carriedUsd: number; wouldBeUsd: number };
   /** Original native money-source state; absence is meaningful. */
   approvalSource?: { version: 1; key: { pk: string; sk: string }; exists: boolean; fields: Record<string, unknown> };
   /** The agent an `owner_cap` request is about. */

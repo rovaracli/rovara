@@ -1,3 +1,4 @@
+import type { OwnerFinancialTerms } from "../spend/owner-approval-terms.js";
 // Plan 3 Task 7: the app's routes to build, version, publish, share and update agents (`/v1/app/agents*`). Every body is strict and
 // carries a `requestId` (R18). Each route checks access first, with `requireAgentAccess`: an agent the caller can't see answers the
 // same 404 as one that doesn't exist. A change that decides which recipe runs and makes anything less safe answers
@@ -821,11 +822,11 @@ export async function holdingOwnerCap<T>(
     const carried = to !== undefined && from?.owner !== to.owner ? await readTopUp(deps, caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), topUpScope) : 0;
     return ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
   };
-  const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number }): Promise<StatusReply> => {
+  const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number; ownerFinancialTerms?: OwnerFinancialTerms }): Promise<StatusReply> => {
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;
     const monthly = ownerShare(after)?.usd || undefined; // a $0 base has no new limit to name
     const { record, message } = await requestOwnerCap(deps, {
-      orgId: caller.orgId, ...(subject.kind === "agent" ? { agentId: subject.agentId } : { chainId: subject.chainId }), requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark, before,
+      orgId: caller.orgId, ...(subject.kind === "agent" ? { agentId: subject.agentId } : { chainId: subject.chainId }), requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, ownerFinancialTerms: over.ownerFinancialTerms, change, request: mark, before,
       ...(monthly === undefined ? {} : { newLimitUsd: monthly }), ...(newOwner === undefined ? {} : { newOwner }),
     });
     return new StatusReply(202, { status: "NEEDS_ADMIN_APPROVAL", spendRequestId: record.spendRequestId, message });

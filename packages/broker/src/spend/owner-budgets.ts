@@ -1,3 +1,4 @@
+import { pinOwnerFinancialChecks } from "./owner-approval-terms.js";
 // The one monthly total each person's agent and chain budgets count against (R65), as one implementation for both. The total is a counter
 // (`OWNER_AGENT_BUDGET#<developer>`) that the agent store and the chain store change in the same transaction as the item whose budget moves, so
 // it can't drift from the budgets it adds up. Each store registers a source that adds up its own budgets; the counter is built from every source
@@ -43,6 +44,7 @@ export interface OverrideCap {
   source?: ApprovalSource;
   /** Current destination membership; never a replacement for the deciding actor. */
   destinationChecks?: TransactItem[];
+  financialChecks?: TransactItem[];
   items: TransactItem[];
   /** The error when one of `items` is refused (the request was decided meanwhile). */
   closed: () => Error;
@@ -54,13 +56,14 @@ export function withOverride(items: TransactItem[], refuse: (failed: Set<number>
   if (override === undefined) return [items, refuse];
   if (override.actor === undefined || override.actor.developerId !== scope.by) throw budgetActorRefused();
   const sourceIndex = override.source === undefined ? undefined : pinSourceWrite(items, override.source);
+  const financialIndexes = pinOwnerFinancialChecks(items, override.financialChecks ?? []);
   const checks = budgetActorChecks(scope.tableName, scope.orgId, override.actor);
   const destinationChecks = (override.destinationChecks ?? []).filter(item => !checks.some(actor => actor.ConditionCheck?.Key?.pk === item.ConditionCheck?.Key?.pk && actor.ConditionCheck?.Key?.sk === item.ConditionCheck?.Key?.sk));
   const actorStart = items.length, destinationStart = actorStart + checks.length, start = destinationStart + destinationChecks.length;
   return [[...items, ...checks, ...destinationChecks, ...override.items], (failed) => (
     [...failed].some(index => index >= actorStart && index < destinationStart) ? budgetActorRefused()
       : [...failed].some(index => index >= destinationStart && index < start) ? staleApproval()
-      : [...failed].some(index => index >= start && index < start + override.items.length) ? override.closed() : sourceIndex !== undefined && failed.has(sourceIndex) ? staleApproval() : refuse(failed)
+      : [...failed].some(index => index >= start && index < start + override.items.length) ? override.closed() : financialIndexes.some(index => failed.has(index)) || (sourceIndex !== undefined && failed.has(sourceIndex)) ? staleApproval() : refuse(failed)
   )];
 }
 
