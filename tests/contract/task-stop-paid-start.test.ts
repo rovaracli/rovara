@@ -1992,3 +1992,21 @@ for (const input of [{ limit: 0 }, { limit: 101 }, { limit: 2, cursor: { pk: "OT
   const f = await fixture();
   await expect(spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, ...input })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
 });
+
+it("legacy expiry retries its original page after a native request-source conflict", async () => {
+  const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
+  const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, kind: "run_limit", taskId, scope: { kind: "task", taskId }, amountUsd: 1, newLimitUsd: 5, reason: "Legacy ask", requestedBy: { kind: "member", developerId: MAYA.developerId } });
+  const key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" };
+  const { approvalTerms: _terms, ...legacy } = f.t.db.get(key)!; void _terms; f.t.db.set(legacy);
+  const send = f.t.db.send.bind(f.t.db); let raced = false;
+  f.t.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === key.pk && Object.values(item.Update.ExpressionAttributeValues ?? {}).includes("EXPIRED"))) {
+      raced = true; f.t.db.set({ ...f.t.db.get(key)!, amountUsd: 2 });
+    }
+    return send(command);
+  };
+  const first = await spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, limit: 1 });
+  expect(raced).toBe(true); expect(first).toMatchObject({ expired: 0, complete: false }); expect(first.cursor).toBeUndefined();
+  expect(f.t.db.get(key)).toMatchObject({ status: "PENDING", amountUsd: 2 }); expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toBeUndefined();
+  expect(await spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, limit: 1 })).toMatchObject({ expired: 1, complete: true });
+});
