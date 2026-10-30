@@ -2043,7 +2043,7 @@ for (const failure of ["actor", "seed", "project"] as const) it(`unenrolled cuto
   expect(f.t.meta(taskId)).toEqual(before); expect(f.t.db.get(f.policy)).toEqual(policy); expect(f.t.requests().find(item => item.spendRequestId === record.spendRequestId)?.status).toBe("PENDING");
 });
 
-for (const race of ["none", "ceiling", "actor", "task", "company", "project", "agent", "org_close", "pointer", "seed", "agent_raw", "company_raw", "enrollment_raw", "agent_status"] as const) it(`cutover expiry binds reviewed native policy, actor and task: ${race}`, async () => {
+for (const bounded of [false, true]) for (const race of ["none", "ceiling", "actor", "task", "company", "project", "agent", "org_close", "pointer", "seed", "agent_raw", "company_raw", "enrollment_raw", "agent_status"] as const) it(`cutover expiry binds reviewed native policy, actor and task: ${race}, bounded=${bounded}`, async () => {
   const f = await fixture(), started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
   const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId, kind: "run_limit", scope: { kind: "task", taskId }, amountUsd: 5, newLimitUsd: 5, reason: "Complete above-ceiling ask", requestedBy: { kind: "member", developerId: MAYA.developerId } });
   f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
@@ -2068,10 +2068,10 @@ for (const race of ["none", "ceiling", "actor", "task", "company", "project", "a
     }
     return send(command);
   };
-  const fn: unknown = Reflect.get(spendRequests, "expireTaskStopCutoverApproval"); expect(typeof fn).toBe("function");
+  const fn: unknown = Reflect.get(spendRequests, bounded ? "expireUnapprovableTaskStopRequests" : "expireTaskStopCutoverApproval"); expect(typeof fn).toBe("function");
   if (typeof fn !== "function") throw new Error("fenced cutover expiry missing");
-  const invoke = fn as (deps: unknown, actor: unknown, id: string) => Promise<unknown>;
-  expect(await invoke(f.t.deps(), { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" }, record.spendRequestId)).toMatchObject({ kind: race === "none" ? "expired" : "retry" });
+  const invoke = fn as (deps: unknown, actor: unknown, input: unknown) => Promise<unknown>;
+  expect(await invoke(f.t.deps(), { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" }, bounded ? { orgId: TEST_ORG, limit: 1 } : record.spendRequestId)).toMatchObject(bounded ? { expired: race === "none" ? 1 : 0, complete: race === "none" } : { kind: race === "none" ? "expired" : "retry" });
   expect(attempted).toBe(true); expect(snapshots).toBe(1);
   expect(f.t.db.get(key)?.status).toBe(race === "none" ? "EXPIRED" : "PENDING");
   if (race === "none") expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toMatchObject({ reason: "spending_rules_changed", actor: { kind: "system" } });
@@ -2093,4 +2093,21 @@ for (const kind of ["run_limit", "max_per_run", "planning"] as const) it(`bounde
   expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
   expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toMatchObject({ reason: "spending_rules_changed", actor: { kind: "system" } });
   expect(f.t.meta(taskId)).toEqual(before); expect(f.t.db.get(f.policy)).toEqual(policy);
+});
+
+it("bounded task cutover retains below-cap task asks and never clamps monthly owner or room asks", async () => {
+  const f = await fixture(); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN); const agentId = await f.t.budgeted(40);
+  const ownerAsk = await f.t.api(ADA, "PUT", `/v1/app/agents/${agentId}/owner`, { owner: { kind: "member", developerId: BEN.developerId } }); expect(ownerAsk.status).toBe(202);
+  const started = await f.start(), taskId = (started.body.task as { taskId: string }).taskId;
+  const records = [];
+  for (const [kind, limit] of [["run_limit", 0.5], ["max_per_run", 5], ["month", 120]] as const) records.push((await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId, agentId: ROVARA_CODE_AGENT_ID, kind, scope: kind === "month" ? { kind: "org" } : { kind: "task", taskId }, amountUsd: limit, newLimitUsd: limit, reason: "Cutover review", requestedBy: { kind: "member", developerId: MAYA.developerId } })).record);
+  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+  const before = f.t.meta(taskId), actor = { orgId: TEST_ORG, developerId: ADA.developerId, orgRole: "owner" as const };
+  const first = await spendRequests.expireUnapprovableTaskStopRequests(f.t.deps(), actor, { orgId: TEST_ORG, limit: 2 });
+  expect(first.complete).toBe(false); expect(first.cursor).toBeDefined();
+  const second = await spendRequests.expireUnapprovableTaskStopRequests(f.t.deps(), actor, { orgId: TEST_ORG, limit: 2, cursor: first.cursor! });
+  expect(second.complete).toBe(true); expect(first.expired + second.expired).toBe(1);
+  for (const record of records) expect(f.t.requests().find(item => item.spendRequestId === record.spendRequestId)?.status).toBe(record.kind === "max_per_run" ? "EXPIRED" : "PENDING");
+  expect(f.t.requests().find(item => item.spendRequestId === ownerAsk.body.spendRequestId)?.status).toBe("PENDING");
+  expect(f.t.ownerTotal(BEN)).toBe(80); expect(f.t.meta(taskId)).toEqual(before);
 });

@@ -2144,7 +2144,18 @@ export async function expireTaskStopCutoverApproval(deps: SpendRequestDependenci
 /** Explicit maintenance phase for old asks without complete terms. This does
  * not enroll an org or certify ceiling/cutover readiness. The controller retains
  * the returned native cursor; each expiry already has an immutable receipt. */
-export async function expireLegacySpendingRequests(deps: SpendRequestDependencies, input: { orgId: OrgId; limit: number; cursor?: Record<string, unknown> }): Promise<{ examined: number; expired: number; complete: boolean; cursor?: Record<string, unknown> }> {
+type SpendingRequestPageInput = { orgId: OrgId; limit: number; cursor?: Record<string, unknown> };
+type SpendingRequestPageResult = { examined: number; expired: number; complete: boolean; cursor?: Record<string, unknown> };
+export async function expireLegacySpendingRequests(deps: SpendRequestDependencies, input: SpendingRequestPageInput): Promise<SpendingRequestPageResult> {
+  return expireSpendingRequestPage(deps, input);
+}
+/** Explicit bounded task-approval phase. Page exhaustion is not enrollment
+ * readiness: owner financial terms and rollout/editing gates remain separate. */
+export async function expireUnapprovableTaskStopRequests(deps: SpendRequestDependencies, actor: AgentCaller, input: SpendingRequestPageInput): Promise<SpendingRequestPageResult> {
+  if (actor.orgId !== input.orgId || (actor.orgRole !== "owner" && actor.orgRole !== "admin") || await orgRoleOf(deps, actor.orgId, actor.developerId) !== actor.orgRole) throw budgetActorRefused();
+  return expireSpendingRequestPage(deps, input, actor);
+}
+async function expireSpendingRequestPage(deps: SpendRequestDependencies, input: SpendingRequestPageInput, actor?: AgentCaller): Promise<SpendingRequestPageResult> {
   const partition = openSpendRequestsKey(input.orgId, "2000-01-01T00:00:00.000Z", "spr_0").pk;
   if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > PAGE || (input.cursor !== undefined && (input.cursor.pk !== partition || typeof input.cursor.sk !== "string" || Object.keys(input.cursor).some(key => key !== "pk" && key !== "sk")))) throw agentXError("CONFIG_INVALID", "Invalid spending-request maintenance page.");
   const page = await deps.documentClient.send(new QueryCommand({ TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": partition }, ConsistentRead: true, Limit: input.limit,
@@ -2163,12 +2174,16 @@ export async function expireLegacySpendingRequests(deps: SpendRequestDependencie
       try { completeTerms = terms.success && taskApprovalRecordMatches(terms.data, record); } catch { completeTerms = false; }
     }
     if (!completeTerms) {
-      if (!await expireOne(deps, record, "spending_rules_changed")) {
+      if (!await expireOne(deps, record, "spending_rules_changed", actor === undefined ? [] : budgetActorChecks(deps.tableName, input.orgId, { developerId: actor.developerId, role: actor.orgRole }))) {
         // Revisit this page after a source race. Earlier expiries are already
         // receipt-backed; advancing past the pending loser would skip it.
         return { examined: (page.Items ?? []).length, expired, complete: false, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) };
       }
       expired += 1;
+    } else if (actor !== undefined && record.kind !== "owner_cap") {
+      const result = await expireTaskStopCutoverApproval(deps, actor, record.spendRequestId);
+      if (result.kind === "retry") return { examined: (page.Items ?? []).length, expired, complete: false, ...(input.cursor === undefined ? {} : { cursor: input.cursor }) };
+      if (result.kind === "expired") expired += 1;
     }
   }
   return { examined: (page.Items ?? []).length, expired, complete: page.LastEvaluatedKey === undefined, ...(page.LastEvaluatedKey === undefined ? {} : { cursor: page.LastEvaluatedKey }) };
