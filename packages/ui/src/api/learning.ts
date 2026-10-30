@@ -1,11 +1,11 @@
 // The v1.2 learning loop calls of the project page: the suggestions a project's corrections produced, and deciding them (design §6.2). The server decides who may, what is less safe and which standing counts; this file only sends and reads.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LearningCompanySettingsAnswerReaderSchema, LearningCompanySettingsBodySchema, LearningAcceptAnswerReaderSchema, LearningDismissAnswerReaderSchema, LearningReopenAnswerReaderSchema, LearningRuleRemoveAnswerReaderSchema, LearningViewAnswerReaderSchema, ProjectOverviewProjectSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningRuleRemoveBodySchema } from "@agentx/contracts/web";
+import { LearningCompanySettingsAnswerReaderSchema, LearningCompanySettingsBodySchema, LearningAcceptAnswerReaderSchema, LearningDismissAnswerReaderSchema, LearningReopenAnswerReaderSchema, LearningRuleRemoveAnswerReaderSchema, LearningViewAnswerReaderSchema, ProjectOverviewProjectSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningRuleRemoveBodySchema, LearningProposalDecisionAnswerReaderSchema, LearningProposalDecisionBodySchema, LearningSettingsAnswerReaderSchema, LearningSettingsBodySchema } from "@agentx/contracts/web";
 import type { z } from "zod";
 import { useAppHost, type AppHost } from "../host.js";
 import { isConfirmUrl } from "../text/links.js";
-import { createApiClient } from "./client.js";
+import { createApiClient, type SendResult } from "./client.js";
 import { ApiError } from "./errors.js";
 
 type ViewAnswer = ReturnType<typeof LearningViewAnswerReaderSchema.parse>;
@@ -16,12 +16,17 @@ export type DismissedView = ViewAnswer["dismissed"][number];
 /** What a decision came to: it applied (`version` when the server says which), it waits for a second person (the confirmation page, when it is this site's), the rule was edited by hand, or an answer this build does not know. */
 export type CompanySuggestionsSettings = ReturnType<typeof LearningCompanySettingsAnswerReaderSchema.parse>;
 export const COMPANY_SETTINGS_PATH = "/v1/app/org/learning-settings";
+export type SettingsView = ViewAnswer["settings"];
+/** The project setting "Learn from PR review comments": turned off it applies at once, turned on it waits for a second person (`applied: false`). */
+export type SettingsChange = { applied: true; settings: SettingsView } | { applied: false; proposalId: string };
 export type Decision = { kind: "applied"; version?: number } | { kind: "awaiting"; confirmUrl?: string; changes: string[] } | { kind: "needs_editor"; stage: string } | { kind: "done" };
 
 const base = (project: string) => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(project)) + "/learning";
 const NEVER = { retry: "never" } as const;
 type AcceptInput = Omit<z.input<typeof LearningAcceptBodySchema>, "requestId">;
 type DismissInput = z.input<typeof LearningDismissBodySchema>;
+/** The settings routes answer 200 only; anything else (a 202 this build does not know) is an unreadable answer, never a success. */
+const settled = <T,>(result: SendResult<T>): T => { if (result.kind !== "done") throw new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page.");return result.value; };
 type Answer = { outcome: string; version?: number; confirmUrl?: string; changes?: string[]; stage?: string };
 
 /** The learning calls. Every write is sent once, from the browser session: a refusal is thrown as an `ApiError` for the screen to show, never retried here (`retry: "never"` stops the client's own repeat of a write that carries a request id). */
@@ -55,6 +60,12 @@ export function createLearningApi(host: AppHost) {
   },
   async reopen(project: string, suggestionId: string): Promise<void> {
    await api.send("POST", `${base(project)}/dismissed/${encodeURIComponent(suggestionId)}/reopen`, {}, LearningReopenAnswerReaderSchema, NEVER);
+  },
+  async changeSettings(project: string, input: z.input<typeof LearningSettingsBodySchema>): Promise<SettingsChange> {
+   return settled(await api.send("PUT", `${base(project)}/settings`, LearningSettingsBodySchema.parse(input), LearningSettingsAnswerReaderSchema, NEVER));
+  },
+  async decideSettingsProposal(project: string, proposalId: string, input: z.input<typeof LearningProposalDecisionBodySchema>): Promise<SettingsView> {
+   return settled(await api.send("POST", `${base(project)}/settings/proposals/${encodeURIComponent(proposalId)}/decide`, LearningProposalDecisionBodySchema.parse(input), LearningProposalDecisionAnswerReaderSchema, NEVER)).settings;
   },
   async removeRule(project: string, ruleId: string): Promise<Decision> {
    return decision(await api.send("POST", `${base(project)}/rules/${encodeURIComponent(ruleId)}/remove`, LearningRuleRemoveBodySchema.parse({ requestId: crypto.randomUUID() }), LearningRuleRemoveAnswerReaderSchema as { parse(value: unknown): Answer }, NEVER));

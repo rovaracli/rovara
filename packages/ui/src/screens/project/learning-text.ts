@@ -140,3 +140,32 @@ export const lastMonthChange = (thisPercent: number, lastShare: number): { arrow
 /** The listed repeats added up. When the server stopped reading corrections at its cap (`repeatsAfterRuleLabel`), the real number can only be larger, so it is "at least"; the label's own number is never shown. */
 export const afterRuleText = (total: number, capped: boolean) => `${capped ? "At least " : ""}${plural(total, "repeat", "repeats")} came after a rule was accepted`;
 export const ruleRepeatsText = (stageName: string, repeats: number, capped: boolean) => `${stageName} rule: ${capped ? "at least " : ""}${plural(repeats, "repeat", "repeats")}`;
+
+/** The project setting "Learn from PR review comments" (design §2.5): its words, and how a refused change reads. The server decides who may and whether a second person is needed. */
+export const SETTINGS_TEXT = {
+ LABEL: "Learn from PR review comments",
+ HELP: "Off by default. Turning it on needs a second person; turning it off applies at once.",
+ STATE_ON: "Status: On",
+ STATE_OFF: "Status: Off",
+ LOCKED: "Your company has turned this off.",
+ TURN_ON: "Turn on…",
+ TURN_OFF: "Turn off",
+ APPROVE: "Approve",
+ DECLINE: "Decline",
+ WAITING: "Waiting for a second person to approve",
+ PENDING: "Turning on is waiting for a second person",
+ SOLE_OWNER: "I'm the only person who can approve this (an audited exception)",
+ READ_ONLY: "Only a project maintainer can change this.",
+ STALE: "Someone else changed this. The setting was refreshed.",
+ TOO_MANY: "Too many changes. Try again in a minute.",
+ FAILED: "Couldn't change this setting. Try again.",
+} as const;
+export const expiresText = (at: string) => { const date = new Date(at);return Number.isNaN(date.getTime()) ? undefined : "Expires " + date.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }); };
+export const skippedUnlinkedText = (count: number) => `${String(count)} PR ${count === 1 ? "comment" : "comments"} skipped because the author's GitHub account isn't linked to Rovara.`;
+/** A refused change: two codes have fixed words (and `stale` asks for a re-read); every other refusal is the server's own message, shown as text. */
+export function settingsFailure(error: unknown): { text: string; stale: boolean } {
+ if (!(error instanceof ApiError)) return { text: SETTINGS_TEXT.FAILED, stale: false };
+ if (error.code === "CHANGE_STALE") return { text: SETTINGS_TEXT.STALE, stale: true };
+ if (error.code === "TOO_MANY_REQUESTS") return { text: SETTINGS_TEXT.TOO_MANY, stale: false };
+ return { text: error.message === "" ? SETTINGS_TEXT.FAILED : error.message, stale: false };
+}
