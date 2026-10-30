@@ -2811,6 +2811,23 @@ export interface SpendResumeInput {
  * retry, made by the system); a task with no workflow gets the system's Continue, "Your AI budget was raised. Continue where you stopped." The cap window is
  * reset only where the approval reset it (`resetRunWindow`). A task still paused on another limit, closed, or not the org's is left as it is.
  */
+/** Carries an existing approved admission into a workflow's actual paid write.
+ * The source condition merges with the workflow's task update, never a second
+ * action for that key. Identical native checks are held exactly once. */
+function taskStopGuardedPaidDispatch(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, checks: readonly TransactItem[]): DeveloperTaskRouteDependencies {
+  return { ...deps, actions: { ...deps.actions,
+    acceptTask: (identity, workspaceId, request, extra, options) => deps.actions.acceptTask(identity, workspaceId, request, (operation) => {
+      const items = [...extra(operation)];
+      for (const guard of checks) {
+        const key = guard.ConditionCheck?.Key;
+        const existing = items.find(item => { const other = item.ConditionCheck?.Key ?? item.Update?.Key ?? item.Put?.Item ?? item.Delete?.Key; return key !== undefined && other !== undefined && key.pk === other.pk && key.sk === other.sk; });
+        if (existing !== undefined) { if (canonicalJson(existing) !== canonicalJson(guard)) throw budgetActorRefused(); } else items.push(guard);
+      }
+      return withAdmittedTaskSource(deps.tableName, task, items).items;
+    }, options),
+  } };
+}
+
 export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDependencies, owner: DeveloperCaller, input: SpendResumeInput): Promise<void | "STALE"> {
   const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
   if (task === undefined || task.orgId !== deps.orgId || task.orgId !== input.orgId || task.closedAt !== undefined) return;
@@ -2823,6 +2840,8 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
     const receipt = await readTaskStopTransition(deps, { orgId: deps.orgId, taskId: task.taskId, requestId: reference.requestId, actorId: reference.actorId,
       intentHash: reference.intentHash, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID });
     if (receipt === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved spending admission is missing.");
+    if (receipt.transitionKind === "spend-approval" && receipt.spendRequestId !== input.spendRequestId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The recovery does not name the approved spending request.");
+    if (input.resume === "implement" && (receipt.transitionKind !== "spend-approval" || receipt.workflowRevision === null || usdToWholeMicrodollars(input.runLimitUsd) !== receipt.spendingStop.effectiveStopMicrousd)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The implementation limit does not match the approved spending admission.");
     if (receipt.agentRunRevision !== null) input = { ...input, expectedPausedAgentRevision: receipt.agentRunRevision };
   }
   if (input.firstDispatch) {
@@ -2833,7 +2852,8 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   if (input.resume === "implement") {
     if (input.runLimitUsd === undefined) throw agentXError("CONFIG_INVALID", "a run limit approval names the limit it approved");
     // STALE (the plan was not blocked on its run limit any more) is answered, so a caller that counts starts does not count it.
-    return await resumeAfterRunLimitApproval(deps, task.taskId, { requestId: resumeRequestId(input.spendRequestId, "implement"), runLimitUsd: input.runLimitUsd }) === "STALE" ? "STALE" : undefined;
+    const guarded = input.spendingAdmission === undefined ? deps : taskStopGuardedPaidDispatch(deps, task, input.nativeRecoveryChecks ?? []);
+    return await resumeAfterRunLimitApproval(guarded, task.taskId, { requestId: resumeRequestId(input.spendRequestId, "implement"), runLimitUsd: input.runLimitUsd }) === "STALE" ? "STALE" : undefined;
   }
   if (task.budgetPause !== undefined) return;
   // A chain's step hears that its task went on, so the step and the run show running again before the task ends and a second stop can be told as a pause.
@@ -2847,17 +2867,7 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   const requestId = resumeRequestId(input.spendRequestId, "resume");
   if (task.workflow !== undefined) {
     if (task.workflow.state !== "BLOCKED" || task.workflow.blockReason !== WORKFLOW_BLOCK_REASONS.budgetPaused) return;
-    const guarded: DeveloperTaskRouteDependencies = input.spendingAdmission === undefined ? resumed : { ...resumed, actions: { ...deps.actions,
-      acceptTask: (identity, workspaceId, request, extra, options) => deps.actions.acceptTask(identity, workspaceId, request, (operation) => {
-        const items = [...extra(operation)];
-        for (const guard of input.nativeRecoveryChecks ?? []) {
-          const key = guard.ConditionCheck?.Key;
-          const existing = items.find(item => { const other = item.ConditionCheck?.Key ?? item.Update?.Key ?? item.Put?.Item ?? item.Delete?.Key; return key !== undefined && other !== undefined && key.pk === other.pk && key.sk === other.sk; });
-          if (existing !== undefined) { if (canonicalJson(existing) !== canonicalJson(guard)) throw budgetActorRefused(); } else items.push(guard);
-        }
-        return withAdmittedTaskSource(deps.tableName, task, items).items;
-      }, options),
-    } };
+    const guarded = input.spendingAdmission === undefined ? resumed : taskStopGuardedPaidDispatch(resumed, task, input.nativeRecoveryChecks ?? []);
     await retryTaskWorkflow(guarded, owner, task.taskId, { requestId, instructions: SPEND_RESUME_INSTRUCTIONS, expectedRevision: task.workflow.revision });
     return;
   }

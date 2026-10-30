@@ -1880,7 +1880,11 @@ async function retryHeldStarts(deps: SpendRequestDependencies, deadline: number)
           continue;
         }
         try {
-          await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: item["resetRunWindow"] === true, firstDispatch: false, spendingAdmission: reference.data });
+          const implementing = item["resume"] === "implement", runLimitUsd = item["runLimitUsd"];
+          if (item["resume"] !== undefined && !implementing) throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved recovery intent is invalid.");
+          if (implementing && (typeof runLimitUsd !== "number" || !Number.isFinite(runLimitUsd) || runLimitUsd <= 0 || usdToWholeMicrodollars(runLimitUsd) === undefined)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved implementation limit is invalid.");
+          await host.resumeTask({ orgId, taskId, spendRequestId, resetRunWindow: item["resetRunWindow"] === true, firstDispatch: task.budgetPause?.firstDispatch !== undefined, spendingAdmission: reference.data,
+            ...(implementing && typeof runLimitUsd === "number" ? { resume: "implement", runLimitUsd } : {}) });
           if (await clearHeldStart(deps, key, orgId, taskId, false)) dispatched += 1;
         } catch (error) { logLine(deps, "spend_request.admission_resume_failed", { spendRequestId, taskId, error: errorName(error) }); }
         continue;
