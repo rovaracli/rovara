@@ -1,3 +1,10 @@
+import {stageChoiceOf} from "../model-selection/stage-inputs.js";
+import {ProcessModelRefusal} from "../model-selection/process-refusal.js";
+import {registerCompanyModelPolicyApprovals} from "../model-selection/company-approval.js";
+import {processModelAuthorityChecks,mergeProcessModelAuthorityChecks,modelAuthorityRefused} from "../model-selection/authority.js";
+import {parseStageModelApprovalProof,processApprovalRecipeDigest,type StageModelApprovalProof} from "../model-selection/approval-proof.js";
+import {loadStageModelSnapshot} from "../model-selection/snapshot.js";
+import {validateStageChoices} from "../model-selection/read.js";
 import { budgetActorRefused } from "./budget-authority.js";
 // Plan 3 Task 7: the changes to an agent that decide which recipe runs or who can use it (publish, rollback, adopting a built-in's
 // version, a company-wide share) and the approvals behind them. Each starts from the caller's request: a change that makes nothing
@@ -6,11 +13,14 @@ import { budgetActorRefused } from "./budget-authority.js";
 // then apply exactly that.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
+  ApprovalIdSchema,
+  STAGE_EDIT_RULES,
   EMPTY_RECIPE,
   ROVARA_CODE_V2_FOR_NEW_ORGS,
   agentXError,
   atLeast,
   canonicalJson,
+  canonicalModelName,
   diffRecipes,
   orgPk,
   projectAllows,
@@ -23,6 +33,7 @@ import {
 } from "@agentx/contracts";
 import { agentAccess, checkShares, orgRoleOf, resolveSurvivor, saveShares, sharesAlreadyStored, type AgentCaller, type AgentShare } from "./access.js";
 import {
+  getApproval,
   confirmUrlFor,
   createPendingChange,
   registerApprovalDecisionGuard,
@@ -43,7 +54,6 @@ import { requireRovaraCodeBaseForProcess } from "../playbook/process-base.js";
 import { requireNoSharesOnProcess } from "../playbook/process-closed-routes.js";
 import { requireNoSequenceForProcess } from "../playbook/process-sequence.js";
 import { requireNoSkillsForProcess } from "../playbook/process-skills.js";
-import { requireResolvableStageChoices, requireVersionStageChoices, runningChoices } from "../playbook/process-stage-models.js";
 import { requireNoNewPullRequestInstructionsToPublish } from "../playbook/process-pull-request.js";
 import { GUARDRAILS_CONFLICT_TEXT, resolveAgent, type AgentDraft, type AgentRecord, type AgentVersion, type RecipeProblemsError, type RequestMark } from "./store.js";
 
@@ -82,6 +92,103 @@ const skillDigestsOf = (recipe: ResolvedRecipe): Record<string, string> => Objec
 async function requireWithinGuardrails(deps: ApprovalDependencies, orgId: OrgId, recipe: ResolvedRecipe): Promise<void> {
   const [first] = await validateRecipeForOrg(deps, orgId, recipe);
   if (first !== undefined) throw agentXError("CONFIG_INVALID", `${first.path}: ${first.message}`);
+}
+
+/** Current model evidence for this exact server-resolved process draft, never the active process by accident. */
+async function processModelRevisions(deps:ApprovalDependencies,caller:AgentCaller,agent:AgentRecord,draft:Pick<AgentDraft,"overlay">,recipe:ResolvedRecipe,approvalId?:string,existingProof?:StageModelApprovalProof,deciderId?:string,approvedTupleDigest?:string,strictPointerLocks=false) {
+  if(agent.purpose!=="process") return undefined;
+  if(agent.owner.kind!=="project") throw agentXError("CONFIG_INVALID","A process must belong to its project.");
+  const project=agent.owner.project;
+  const developerId=await resolveSurvivor(deps,agent.orgId,caller.developerId);
+  const effectiveCaller={...caller,developerId};
+  const role=await orgRoleOf(deps,agent.orgId,developerId);
+  if(role===undefined) throw agentXError("FORBIDDEN","Your company access changed.");
+  const projectRole=await deps.projectMembers.roleOf(agent.orgId,project,{developerId,orgRole:role});
+  if(projectRole===undefined || !projectAllows(projectRole,"edit_settings")) throw agentXError("FORBIDDEN","Only a project maintainer can change model choices.");
+  const snapshot=await loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,store:deps.store,now:deps.now,routing:deps.modelRouting??{},chatgpt:deps.stageChatgpt},effectiveCaller,project,undefined,{record:agent,recipe,overlay:draft.overlay});
+  if(strictPointerLocks&&snapshot.stages.some(row=>row.companyLock!==undefined)) {
+    const active=await loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,store:deps.store,now:deps.now,routing:deps.modelRouting??{},chatgpt:deps.stageChatgpt},effectiveCaller,project);
+    if(active.companyRevision!==snapshot.companyRevision||active.registeredAt!==snapshot.registeredAt)throw agentXError("POLICY_STALE","The active process model settings changed. Reload and review again.");
+    for(const row of snapshot.stages) {
+      if(row.companyLock===undefined)continue;
+      const prior=active.stages.find(value=>value.stage===row.stage);
+      if(prior===undefined||canonicalJson(prior.projectChoice??null)!==canonicalJson(row.projectChoice??null))throw new ProcessModelRefusal("STAGE_LOCKED",row.stage,"/app/admin/how-we-work");
+      row.projectChoice=undefined;
+    }
+  }
+  // A later company lock governs runtime. It must not block an unrelated publish
+  // that preserves the exact choice already stored in this process's current version.
+  if(!strictPointerLocks&&agent.currentVersion!==undefined&&snapshot.stages.some(row=>row.companyLock!==undefined&&row.projectChoice!==undefined)) {
+    const prior=await deps.store.getVersion(agent.orgId,agent.agentId,agent.currentVersion);
+    if(prior===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The published model choices could not be read.");
+    const priorRecipe=await resolveRecipe(deps,agent.orgId,agent.agentId,agent.currentVersion);
+    for(const row of snapshot.stages) {
+      if(row.companyLock===undefined)continue;
+      const step=priorRecipe.steps.find(step=>step.kind===STAGE_EDIT_RULES[row.stage].stepKind);
+      const priorChoice=step===undefined?undefined:stageChoiceOf(prior.overlay.steps?.[step.id],row.stage,priorRecipe);
+      if(priorChoice!==undefined&&canonicalJson(priorChoice)===canonicalJson(row.projectChoice))row.projectChoice=undefined;
+    }
+  }
+  const readDeps={now:deps.now,projectFor:async()=>({name:project,canEdit:true}),snapshot:async()=>snapshot,
+   verifySameModelApproval:async(context:{approvalId:string;tupleDigest:string})=>{
+    const record=await getApproval(deps,agent.orgId,ApprovalIdSchema.parse(context.approvalId));
+    if(record===undefined||!["EXECUTING","APPROVED","APPROVED_DONE"].includes(record.status)||record.requestedBy===undefined)return false;
+    const subject=record.subject;
+    if((subject.kind!=="agent_publish"&&subject.kind!=="agent_rollback")||subject.agentId!==agent.agentId||subject.modelContext?.tupleDigest!==context.tupleDigest)return false;
+    return await resolveSurvivor(deps,agent.orgId,record.requestedBy)===developerId;
+   }};
+  const result=await validateStageChoices(readDeps,effectiveCaller,project,{});
+  const exceptions:StageModelApprovalProof["exceptions"]=result.sameModelExceptions;
+  if(approvalId!==undefined) {
+    const confirmed=await validateStageChoices(readDeps,effectiveCaller,project,{}, {},{approvalId,tupleDigest:approvedTupleDigest??""});
+    if(!confirmed.ok) {
+      const refusal=confirmed.stages.find(row=>row.kind==="refusal");
+      if(refusal?.kind==="refusal")throw new ProcessModelRefusal(refusal.code,refusal.stage,refusal.fixHref??"/app/admin/how-we-work");
+      throw agentXError("AGENT_REVISION_CONFLICT","The approved model tuple changed. Publish again.");
+    }
+  }
+  if(!result.ok&&!result.requiresConfirmation) {
+    const refusal=result.stages.find(row=>row.kind==="refusal");
+    if(refusal?.kind==="refusal")throw new ProcessModelRefusal(refusal.code,refusal.stage,refusal.fixHref??"/app/admin/how-we-work");
+    throw agentXError("RUNTIME_UNAVAILABLE","The model evidence could not be read.");
+  }
+  const revisions=new Set(snapshot.stages.map(row=>row.sourcesRevision));
+  if(revisions.size!==1 || snapshot.registeredAt===undefined) throw agentXError("RUNTIME_UNAVAILABLE","The model settings changed while validating.");
+  const modelRevisions={companyRevision:snapshot.companyRevision,sourcesRevision:snapshot.stages[0]!.sourcesRevision};
+  const modelContext={...modelRevisions,registeredAt:snapshot.registeredAt,...(exceptions.length===0?{}:{tupleDigest:result.approvalTupleDigest})};
+  let priorProof:StageModelApprovalProof|undefined;
+  if(existingProof!==undefined && existingProof.companyRevision===snapshot.companyRevision) {
+    try {priorProof=parseStageModelApprovalProof(existingProof,{orgId:agent.orgId,project,registeredAt:snapshot.registeredAt,agentId:agent.agentId,recipeDigest:processApprovalRecipeDigest(recipe,agent.agentId)});} catch { /* A proof for another identity/version is not an approval. */ }
+  }
+  const priorCovers=exceptions.length>0 && priorProof!==undefined && exceptions.every(row=>priorProof.exceptions.some(prior=>prior.stage===row.stage&&canonicalModelName(prior.model)===canonicalModelName(row.model)&&canonicalModelName(prior.referenceModel)===canonicalModelName(row.referenceModel)));
+  const changes=priorCovers?[]:exceptions.map(row=>`Makes ${row.stage} use the same model as ${row.stage==="plan_check"?"plan":"build"}`);
+  const proof=approvalId===undefined || exceptions.length===0?undefined:parseStageModelApprovalProof({version:1,orgId:agent.orgId,project,registeredAt:snapshot.registeredAt,agentId:agent.agentId,recipeDigest:processApprovalRecipeDigest(recipe,agent.agentId),companyRevision:snapshot.companyRevision,approvalId,exceptions},{orgId:agent.orgId,project,registeredAt:snapshot.registeredAt,agentId:agent.agentId,recipeDigest:processApprovalRecipeDigest(recipe,agent.agentId)});
+  const requesterChecks=await processModelAuthorityChecks(deps,{orgId:agent.orgId,project,registeredAt:snapshot.registeredAt,signedInId:caller.developerId,developerId,role});
+  let deciderChecks:typeof requesterChecks=[];
+  if(deciderId!==undefined) {
+    const decidingDeveloper=await resolveSurvivor(deps,agent.orgId,deciderId);
+    const decidingRole=await orgRoleOf(deps,agent.orgId,decidingDeveloper);
+    if(decidingRole===undefined) throw modelAuthorityRefused();
+    const decidingProjectRole=await deps.projectMembers.roleOf(agent.orgId,project,{developerId:decidingDeveloper,orgRole:decidingRole});
+    if(decidingProjectRole===undefined||!projectAllows(decidingProjectRole,"edit_settings")) throw modelAuthorityRefused();
+    deciderChecks=await processModelAuthorityChecks(deps,{orgId:agent.orgId,project,registeredAt:snapshot.registeredAt,signedInId:deciderId,developerId:decidingDeveloper,role:decidingRole});
+  }
+  const authorityChecks=mergeProcessModelAuthorityChecks([requesterChecks,deciderChecks]);
+  return {modelRevisions,modelContext,changes,proof,authorityChecks,exceptions};
+}
+
+/** Pointer changes use the exact publication validator; they cannot create an unconfirmed exception. */
+export async function assertProcessModelsResolvable(
+ deps:ApprovalDependencies,caller:AgentCaller,agent:AgentRecord,draft:Pick<AgentDraft,"overlay">,recipe:ResolvedRecipe,
+ options:{approvalBinding?:{approvalId:string;tupleDigest:string};existingProof?:StageModelApprovalProof;deciderId?:string}={},
+) {
+ const result=await processModelRevisions(deps,caller,agent,draft,recipe,options.approvalBinding?.approvalId,options.existingProof,options.deciderId,options.approvalBinding?.tupleDigest,true);
+ if(result===undefined)throw agentXError("CONFIG_INVALID","A project process is required.");
+ if(result.changes.length>0&&result.proof===undefined) {
+  const exception=result.exceptions[0];
+  if(exception!==undefined)throw new ProcessModelRefusal("DIFFERENT_FROM_UNSATISFIABLE",exception.stage,"/app/admin/how-we-work");
+ }
+ return result;
 }
 
 // ---- who is asked
@@ -193,18 +300,18 @@ export async function publishDraft(
   const running = agent.currentVersion === undefined ? undefined : await deps.store.getVersion(agent.orgId, agent.agentId, agent.currentVersion);
   if (running !== undefined && running.digest === digest && running.name === agent.name && running.description === agent.description) {
     // A process layer's first version whose playbook write was lost with the broker is repaired by asking again (a no-op once the playbook points at it).
-    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId, { publishedAt: running.publishedAt, before: () => requireVersionStageChoices(deps, agent.orgId, agent.agentId, running.version, caller.developerId) });
+    await pointPlaybookAtFirstVersion(deps, agent, running.version, caller.developerId, { publishedAt: running.publishedAt });
     return { applied: true, value: running };
   }
   await requireWithinGuardrails(deps, agent.orgId, next);
-  // V3: a process layer's model choices must resolve before the draft can become effective (nothing is stored or asked otherwise).
-  await requireResolvableStageChoices(deps, { layer: agent, recipe: next, overlay: draft.overlay, developerId: caller.developerId, running: runningChoices(deps, agent) });
-  const changes = lessSafeChangesFor(agent, await runningNow(deps, agent, draft.extends), next, { firstPublish: agent.currentVersion === undefined });
+  const modelValidation=await processModelRevisions(deps,caller,agent,draft,next);
+  const changes = [...lessSafeChangesFor(agent, await runningNow(deps, agent, draft.extends), next, { firstPublish: agent.currentVersion === undefined }),...(modelValidation?.changes??[])];
   if (changes.length === 0) {
     // Only while what was compared against is still what runs: a rollback that lands in between changes the baseline.
     const version = await deps.store.publish({
       orgId: agent.orgId, agentId: agent.agentId, expectedDraftRevision: input.expectedRevision, digest, by: caller.developerId, expectedCurrentVersion: agent.currentVersion ?? null,
       skillDigests: skillDigestsOf(next),
+      ...(modelValidation===undefined?{}:{modelRevisions:modelValidation.modelRevisions,modelAuthorityChecks:modelValidation.authorityChecks}),
       ...(input.note === undefined ? {} : { note: input.note }), ...(input.request === undefined ? {} : { request: input.request }),
     });
     await pointPlaybookAtFirstVersion(deps, agent, version.version, caller.developerId);
@@ -213,6 +320,7 @@ export async function publishDraft(
   requireActiveForConfirmation(agent);
   const subject: AgentChangeSubject = {
     kind: "agent_publish", agentId: agent.agentId, draftRevision: input.expectedRevision, digest,
+    ...(modelValidation===undefined?{}:{modelContext:modelValidation.modelContext}),
     ...(agent.currentVersion === undefined ? {} : { expectedCurrentVersion: agent.currentVersion }),
     ...(input.note === undefined ? {} : { note: input.note }),
   };
@@ -234,13 +342,14 @@ export async function rollbackAgent(
   const current = await resolveRecipe(deps, agent.orgId, agent.agentId, agent.currentVersion);
   const target = await resolveRecipe(deps, agent.orgId, agent.agentId, input.version);
   await requireWithinGuardrails(deps, agent.orgId, target);
-  await requireResolvableStageChoices(deps, { layer: agent, recipe: target, overlay: stored.overlay, version: input.version, developerId: caller.developerId, running: runningChoices(deps, agent) });
+  const modelValidation=await processModelRevisions(deps,caller,agent,stored,target,undefined,stored.modelApproval);
+  if(modelValidation!==undefined && modelValidation.changes.length>0) throw agentXError("CONFIG_INVALID","This rollback needs a new model approval. Publish a reviewed process version instead.");
   const changes = lessSafeChangesFor(agent, current, target, { firstPublish: false });
   if (changes.length === 0) {
-    return { applied: true, value: await deps.store.rollback({ orgId: agent.orgId, agentId: agent.agentId, version: input.version, expectedCurrentVersion: agent.currentVersion, by: caller.developerId, ...(input.request === undefined ? {} : { request: input.request }) }) };
+    return { applied: true, value: await deps.store.rollback({ orgId: agent.orgId, agentId: agent.agentId, version: input.version, expectedCurrentVersion: agent.currentVersion, by: caller.developerId, ...(modelValidation===undefined?{}:{modelRevisions:modelValidation.modelRevisions,modelAuthorityChecks:modelValidation.authorityChecks}), ...(input.request === undefined ? {} : { request: input.request }) }) };
   }
   requireActiveForConfirmation(agent);
-  const subject: AgentChangeSubject = { kind: "agent_rollback", agentId: agent.agentId, version: input.version, digest: recipeDigest(target), expectedCurrentVersion: agent.currentVersion };
+  const subject: AgentChangeSubject = { kind: "agent_rollback", agentId: agent.agentId, version: input.version, digest: recipeDigest(target), expectedCurrentVersion: agent.currentVersion,...(modelValidation===undefined?{}:{modelContext:modelValidation.modelContext}) };
   return waitForPerson(deps, caller, input.requestId, subject, changes, await agentApprovers(deps, agent, "agent_publish"));
 }
 
@@ -341,7 +450,7 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
     // The store write committed and the broker died before the record ended: the sweep drives this again and finds the version that was approved (m-1).
     const landed = agent.currentVersion !== undefined && agent.currentVersion > (subject.expectedCurrentVersion ?? 0) ? await deps.store.getVersion(record.orgId, subject.agentId, agent.currentVersion) : undefined;
     if (landed !== undefined && landed.digest === subject.digest) {
-      await pointPlaybookAtFirstVersion(deps, agent, landed.version, by, { publishedAt: landed.publishedAt, before: () => requireVersionStageChoices(deps, record.orgId, subject.agentId, landed.version, record.requestedBy) });
+      await pointPlaybookAtFirstVersion(deps, agent, landed.version, by, { publishedAt: landed.publishedAt });
       return;
     }
     throw stale("The published version changed after this was asked. Publish again.");
@@ -351,10 +460,11 @@ async function confirmPublish(deps: ApprovalDependencies, record: ApprovalRecord
   if (recipeDigest(draftRecipe) !== subject.digest) throw stale(STALE_DRAFT);
   // The guardrails may have tightened since this was asked.
   await requireWithinGuardrails(deps, record.orgId, draftRecipe);
-  // The choices are checked again as they stand now, for the person who asked: a model that stopped resolving since this was asked is not published.
-  await requireResolvableStageChoices(deps, { layer: agent, recipe: draftRecipe, overlay: draft.overlay, developerId: record.requestedBy, running: runningChoices(deps, agent) });
+  const modelValidation=await processModelRevisions(deps,{orgId:record.orgId,developerId:record.requestedBy,orgRole:"member"},agent,draft,draftRecipe,record.approvalId,undefined,by,subject.modelContext?.tupleDigest);
+  if(modelValidation!==undefined && canonicalJson(modelValidation.modelContext)!==canonicalJson(subject.modelContext??null)) throw stale("The model policy, sources or project changed. Publish again.");
   const published = await deps.store.publish({
     orgId: record.orgId, agentId: subject.agentId, expectedDraftRevision: subject.draftRevision, digest: subject.digest, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null,
+    ...(modelValidation===undefined?{}:{modelRevisions:modelValidation.modelRevisions,modelAuthorityChecks:modelValidation.authorityChecks,...(modelValidation.proof===undefined?{}:{modelApproval:modelValidation.proof})}),
     skillDigests: skillDigestsOf(draftRecipe), safety: "less_safe", selfConfirmedSoleOwner: await confirmedBySoleOwner(deps, agent, record, by),
     ...(subject.note === undefined ? {} : { note: subject.note }),
   });
@@ -374,10 +484,11 @@ async function confirmRollback(deps: ApprovalDependencies, record: ApprovalRecor
   const target = await resolveRecipe(deps, record.orgId, subject.agentId, subject.version);
   if (recipeDigest(target) !== subject.digest) throw stale("That version changed after this was asked. Roll back again.");
   await requireWithinGuardrails(deps, record.orgId, target);
-  const targetVersion = await deps.store.getVersion(record.orgId, subject.agentId, subject.version);
-  if (targetVersion === undefined) throw stale("That version changed after this was asked. Roll back again.");
-  await requireResolvableStageChoices(deps, { layer: agent, recipe: target, overlay: targetVersion.overlay, version: subject.version, developerId: record.requestedBy, running: runningChoices(deps, agent) });
-  await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by, safety: "less_safe" });
+  const stored=await deps.store.getVersion(record.orgId,subject.agentId,subject.version);
+  if(stored===undefined) throw stale("The process version is unavailable.");
+  const modelValidation=await processModelRevisions(deps,{orgId:record.orgId,developerId:record.requestedBy,orgRole:"member"},agent,stored,target,undefined,stored.modelApproval,by);
+  if(modelValidation!==undefined && (modelValidation.changes.length>0 || canonicalJson(modelValidation.modelContext)!==canonicalJson(subject.modelContext??null))) throw stale("The model policy, sources or project changed. Roll back again.");
+  await deps.store.rollback({ orgId: record.orgId, agentId: subject.agentId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, by, safety: "less_safe",...(modelValidation===undefined?{}:{modelRevisions:modelValidation.modelRevisions,modelAuthorityChecks:modelValidation.authorityChecks}) });
   await deps.triggerHooks?.recheckTriggersForTarget(record.orgId, { kind: "agent", agentId: subject.agentId });
 }
 
@@ -437,6 +548,7 @@ async function managesAgent(deps: ApprovalDependencies, record: ApprovalRecord, 
  * guardrail relaxations), and the handlers for each subject kind. Safe to call more than once.
  */
 export function registerAgentApprovals(): void {
+  registerCompanyModelPolicyApprovals();
   registerApproverRule("agent_publish", managesAgent);
   registerApproverRule("agent_manager", managesAgent);
   // The person who asked for a change to a project's process cannot confirm it while someone else could ("How we work", H4).

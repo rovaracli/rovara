@@ -343,6 +343,8 @@ export async function routeStep(deps: RoutingDependencies, input: {
   orgId: OrgId; project: string; agent: string; step: string; model: ModelSelection | undefined;
   /** The plan's model and whose plan, when the task is on one. */
   plan?: { developerId: string; model: ModelSelection } | undefined;
+  /** Server resolver source for governed dispatches; fresh routing must agree. */
+  expectedSourceId?: string | undefined;
 }): Promise<RoutedStep> {
   const requested: ModelIdentifier = input.model === undefined ? defaultWorkerModel(deps.rovaraGeography) : { provider: input.model.provider, modelId: input.model.modelId };
   const base = { orgId: input.orgId, project: input.project };
@@ -355,6 +357,8 @@ export async function routeStep(deps: RoutingDependencies, input: {
   const route = keepChatgpt
     ? (await servingRoutes(deps, { ...base, model: requested }))[0] ?? null
     : await routeModel(deps, { ...base, model: requested, subject: { agent: input.agent, step: input.step } });
+  const actualSourceId = keepChatgpt ? "personal-chatgpt" : route?.sourceId ?? "rovara";
+  if (input.expectedSourceId !== undefined && actualSourceId !== input.expectedSourceId) throw agentXError("MODEL_NOT_ALLOWED", "The task's verified model source changed. Reload and try again.");
   const wire = route === null ? undefined : routeOnWire(route, requested);
   return { keepChatgpt, route, requested, ...(wire === undefined ? {} : { wire }) };
 }

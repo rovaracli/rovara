@@ -226,6 +226,8 @@ export abstract class OwnedStore<Id extends string, Rec extends OwnedRecord, Ver
     orgId: OrgId; id: Id; version: number; expectedCurrentVersion: number; by: string; request?: RequestMark;
     /** Whether the rollback made anything less safe, which a person confirmed; only a project's process layer's event says so. */
     safety?: "safe" | "less_safe";
+    /** Optional tighter bound for a reviewed protocol, including audit and request mark. */
+    maxTransactionItems?: number;
     /** Condition checks that must hold when the write commits (a chain's agents), and what a failed one means; the item's own conditions give the draft conflict. */
     checks?: { items: TransactItem[]; refused: () => Error };
   }): Promise<Rec> {
@@ -244,7 +246,7 @@ export abstract class OwnedStore<Id extends string, Rec extends OwnedRecord, Ver
         orgId: input.orgId, actor: auditActorOf(input.by), occurredAt: event.at, occurrence: event.sk, scope: this.spec.kind, targetId: input.id,
         fromVersion: input.expectedCurrentVersion, toVersion: input.version,
       })]);
-    await this.commit([
+    const items:TransactItem[]=[
       this.update(this.spec.key(input.orgId, input.id, "META"), {
         set: { currentVersion: input.version, updatedAt },
         when: (a) => `${a.name("currentVersion")} = ${a.value(input.expectedCurrentVersion)}`,
@@ -252,7 +254,9 @@ export abstract class OwnedStore<Id extends string, Rec extends OwnedRecord, Ver
       event.item,
       ...(input.checks?.items ?? []),
       ...audit.items,
-    ], (failed) => (input.checks !== undefined && [...failed].some((index) => index >= 2 && index < 2 + input.checks!.items.length) ? input.checks.refused() : this.conflict()), input.request, rolled);
+    ];
+    if(input.maxTransactionItems!==undefined&&items.length+(input.request===undefined?0:1)>input.maxTransactionItems) throw coded("CONFIG_INVALID","The model rollback exceeds the transaction limit.");
+    await this.commit(items, (failed) => (input.checks !== undefined && [...failed].some((index) => index >= 2 && index < 2 + input.checks!.items.length) ? input.checks.refused() : this.conflict()), input.request, rolled);
     await flushAuditEvents(this.input, audit.events);
     return rolled;
   }

@@ -10,3 +10,11 @@ test("a confirmation popup severs its app opener and no decision is posted", asy
  expect(requests.filter(value => value.method === "POST" && value.path.startsWith("/v1/app/approve/"))).toEqual([]);await confirmation.close();
 });
 declare global { interface Window { __confirmationPopup?: Window | null } }
+
+test("a refused model confirmation exposes a keyboard-accessible safe repair link",async({page})=>{
+ const {resultPage}=await import("../../packages/broker/src/developer/confirm-page.js");
+ const result=resultPage("Approved, but it did not go through","build: STAGE_LOCKED: Review How we work.","/app/admin/how-we-work");
+ await page.route("**/__c53-confirmation-result",route=>route.fulfill({status:result.statusCode,headers:result.headers,body:result.body}));
+ await page.goto("/__c53-confirmation-result");const link=page.getByRole("link",{name:"Review model settings"});await expect(link).toHaveAttribute("href","/app/admin/how-we-work");await page.keyboard.press("Tab");await expect(link).toBeFocused();
+ await page.screenshot({path:"/private/tmp/c53-confirmation-repair-chromium.png",fullPage:true});
+});

@@ -1,3 +1,4 @@
+import {ProcessModelRefusal,processModelRefusalBody} from "./model-selection/process-refusal.js";
 import {
   AgentXError,
   OperationRequestSchema,
@@ -134,6 +135,7 @@ export function createBrokerHandler(dependencies: {
 
       throw agentXError("NOT_FOUND", "route not found");
     } catch (error) {
+      if (error instanceof ProcessModelRefusal) return json(error.statusCode,{error:processModelRefusalBody(error)},requestId);
       if (error instanceof AgentXError) {
         return json(error.statusCode, { error: { code: error.code, message: error.message } }, requestId);
       }

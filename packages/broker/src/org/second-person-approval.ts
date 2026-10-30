@@ -18,7 +18,10 @@ export interface ApprovalDecision {
   membershipVersion: number;
 }
 const COOL_OFF_MS = 86_400_000;
-const refuse = (): never => { throw agentXError("FORBIDDEN", "a fresh eligible second-person approval is required"); };
+const refuse = (reasonCode="ELIGIBILITY_UNAVAILABLE", availableAtMs?:number): never => {
+  const at=availableAtMs===undefined?undefined:new Date(availableAtMs);
+  throw Object.assign(agentXError("FORBIDDEN", "a fresh eligible second-person approval is required"),{soleOwner:{available:false,availableAt:at!==undefined&&Number.isFinite(at.getTime())?at.toISOString():null,reasonCode}});
+};
 
 export function decideSecondPersonApproval(input: ApprovalDecisionInput): ApprovalDecision {
   const { proposerId, approverId, eligibleIds, ownerIds, membershipVersion, nowMs } = input;
@@ -28,9 +31,10 @@ export function decideSecondPersonApproval(input: ApprovalDecisionInput): Approv
     || new Set(eligibleIds).size !== eligibleIds.length || new Set(ownerIds).size !== ownerIds.length
     || !eligibleIds.includes(proposerId) || !eligibleIds.includes(approverId)) return refuse();
   if (proposerId !== approverId) return { mode: "second_person", membershipVersion };
-  if (ownerIds.length !== 1 || ownerIds[0] !== proposerId || eligibleIds.length !== 1) return refuse();
+  if (ownerIds.length !== 1 || ownerIds[0] !== proposerId || eligibleIds.length !== 1) return refuse("SECOND_PERSON_REQUIRED");
   const loss = input.lastEligibleLossAtMs;
-  if (loss !== null && (!Number.isFinite(loss) || loss < 0 || loss > nowMs || nowMs - loss < COOL_OFF_MS)) return refuse();
+  if (loss !== null && (!Number.isFinite(loss) || loss < 0 || loss > nowMs)) return refuse();
+  if (loss !== null && nowMs - loss < COOL_OFF_MS) return refuse("SOLE_OWNER_COOL_OFF",loss+COOL_OFF_MS);
   return { mode: "sole_owner_exception", membershipVersion };
 }
 

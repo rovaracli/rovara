@@ -1,3 +1,4 @@
+import type {TurnModelPin} from "../model-selection/turn-policy.js";
 // The operation records and the cancel path shared by the broker and, for issue 173, the session
 // reconciler's backstop: moved here unchanged from broker.ts, so both cancel through the same code.
 // No module-level state and no environment reads, so the reconciler can load it without the broker's.
@@ -7,10 +8,12 @@ import type { StoredBaselineSource } from "./baseline-source.js";
 import type { StoredCandidateBuildSource } from "./candidate-build-source.js";
 import {
   OperationSchema,
+  TaskModelPolicyBindingSchema,
   agentXError,
   unhandledDeploymentMode,
   type CodeBuildGateDefinition,
   type ModelIdentifier,
+  type TaskModelPolicyBinding,
   type ModelSelection,
   type Operation,
   type OperationRequester,
@@ -39,6 +42,12 @@ export interface CancellationDependencies extends StateTable {
 export const TERMINAL = new Set<OperationStatus>(["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"]);
 
 export interface OperationRecord extends Operation {
+  /** Frozen developer task identity for governed fallback callbacks. */
+  modelTaskId?: string;
+  modelTurnPin?: TurnModelPin;
+  modelFallbackReceipts?: unknown;
+  modelFallbackRevision?: number;
+  modelPolicy?: TaskModelPolicyBinding;
   pk: string;
   sk: string;
   entityType: "OPERATION";
@@ -144,10 +153,11 @@ export interface OperationRecord extends Operation {
 }
 
 export interface CallbackClaims {
+  modelPolicy?: TaskModelPolicyBinding;
   workspaceId: string;
   operationId: string;
   fence: number;
-  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-access" | "agent-skills" | "agent-tools">;
+  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools">;
   expiresAt: number;
 }
 
@@ -196,6 +206,7 @@ export function publicOperation(record: OperationRecord): Operation {
     id: record.id,
     workspaceId: record.workspaceId,
     kind: record.kind,
+    ...(record.modelFallbacks===undefined?{}:{modelFallbacks:record.modelFallbacks}),
     ...(record.discardUnpublished === true ? { discardUnpublished: true } : {}),
     ...(record.workflowMode === undefined ? {} : { workflowMode: record.workflowMode }),
     ...(record.workflowFeedbackReview === undefined ? {} : { workflowFeedbackReview: record.workflowFeedbackReview }),
@@ -249,6 +260,8 @@ export function outboxRecord(
  * a flag left out, or false, adds none.
  */
 export interface CapabilityOptions {
+  /** Server-owned frozen task stage binding; never inferred from model access or ChatGPT permissions. */
+  modelPolicy?: unknown;
   /** Open or update the task's pull request and run its CodeBuild checks. */
   pullRequest?: boolean;
   feedbackBundles?: boolean;
@@ -276,7 +289,9 @@ export function issueCapability(
   fence: number,
   options: CapabilityOptions = {},
 ): string {
+  const modelPolicy=options.modelPolicy===undefined?undefined:TaskModelPolicyBindingSchema.parse(options.modelPolicy);
   const claims: CallbackClaims = {
+    ...(modelPolicy===undefined?{}:{modelPolicy}),
     workspaceId,
     operationId,
     fence,
@@ -284,6 +299,7 @@ export function issueCapability(
       "artifacts",
       "events",
       "result",
+      ...(modelPolicy===undefined?[]:["model-fallback" as const]),
       ...(options.candidateExport === true ? ["candidate-export" as const, "candidate-build-source" as const, "baseline-source" as const] : options.groundingSource === true ? ["baseline-source" as const] : []),
       ...(options.workflowE2E === true ? ["e2e-admission" as const, "e2e-evidence" as const] : []),
       // M1.4 Task 4.3a: only a round whose admission has AI navigation steps charges the project's day budget.
