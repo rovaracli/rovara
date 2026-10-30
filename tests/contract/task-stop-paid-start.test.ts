@@ -2169,3 +2169,35 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   expect(f.t.db.get(entityKey)).toEqual(before); expect(f.t.ownerTotal(BEN)).toBe(totalBefore);
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "META" })).toMatchObject({ status: "EXPIRED" });
 });
+
+for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) it(`direct ${resource} ${operation} refuses a carried topup race past the monthly owner cap`, async () => {
+  const f = await fixture(); f.t.grantRole(MAYA, "maintainer"); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN);
+  const projectOwned = operation === "accountable";
+  let id: string;
+  if (resource === "agent") {
+    id = await f.t.agentOf(TRIAGE, projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: MAYA } : {});
+    expect((await f.t.setBudget(MAYA, id, { monthlyUsd: 15 })).status).toBe(200);
+  } else {
+    const created = await f.t.api(MAYA, "POST", "/v1/app/chains", { name: `M47 ${randomUUID().slice(0, 8)}`,
+      ...(projectOwned ? { owner: { kind: "project", project: "payments" }, accountable: { developerId: MAYA.developerId } } : {}) });
+    expect(created.status).toBe(201); id = (created.body.chain as { chainId: string }).chainId;
+    expect((await f.t.api(MAYA, "PUT", `/v1/app/chains/${id}/budget`, { monthlyUsd: 15 })).status).toBe(200);
+  }
+  const path = resource === "agent" ? "agents" : "chains";
+  const entityKey = { pk: orgScoped(TEST_ORG, `${resource === "agent" ? "AGENT" : "CHAIN"}#${id}`), sk: "META" }, before = f.t.db.get(entityKey), send = f.t.db.send.bind(f.t.db); let raced = false;
+  const scope = resource === "agent" ? { kind: "agent" as const, agentId: id } : { kind: "chain" as const, chainId: id };
+  const month = new Date().toISOString().slice(0, 7);
+  f.t.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === entityKey.pk && item.Update.Key.sk === entityKey.sk)) {
+      raced = true;
+      const monthly = (await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, kind: "month", scope, subject: `MONTH#${month}#${resource}#${id}#${randomUUID()}`, amountUsd: 6, newLimitUsd: 21, reason: "Concurrent source monthly topup", requestedBy: { kind: "system" } })).record;
+      expect((await f.t.decide(MAYA, monthly.spendRequestId)).spendRequest.status).toBe("APPROVED");
+    }
+    return send(command);
+  };
+  const reply = await f.t.api(operation === "owner" ? ADA : MAYA, "PUT", `/v1/app/${path}/${id}/${operation}`, operation === "owner"
+    ? { owner: { kind: "member", developerId: BEN.developerId } } : { accountable: { developerId: BEN.developerId } });
+  expect(raced).toBe(true); expect(reply.status).toBe(409);
+  expect(f.t.db.get(entityKey)).toEqual(before); expect(f.t.ownerTotal(BEN)).toBe(80);
+  expect(f.t.db.get(topUpKey(TEST_ORG, month, scope))).toMatchObject({ amountUsd: 6 });
+});
