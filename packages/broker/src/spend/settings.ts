@@ -252,9 +252,13 @@ const POLICY_FIELDS = ["leadApprovalThresholdUsd", "adminApprovalThresholdUsd", 
 /** The org's spend policy and its revision: the defaults while it has never been written. */
 export async function readSpendPolicyWithRevision(deps: SpendSettingsDependencies, orgId: OrgId): Promise<StoredSpendPolicy> {
   const item = await getItem(deps, orgSettingsKey(orgId, "SPEND_POLICY"));
+  return decodeSpendPolicySnapshot(item, item === undefined ? (await deps.orgs?.getOrg(orgId))?.plan : undefined);
+}
+
+/** Decode the same canonical policy from an existing atomic snapshot. */
+export function decodeSpendPolicySnapshot(item: Record<string, unknown> | undefined, plan: unknown): StoredSpendPolicy {
   if (item === undefined) {
-    // R49 (the Task 28 ruling): a trial org's owner cap is the member analogue until an admin writes a policy; that read refuses as the policy's does.
-    const trial = (await deps.orgs?.getOrg(orgId))?.plan === "trial";
+    const trial = plan === "trial";
     const policy = defaultSpendPolicy();
     return { policy: trial ? { ...policy, ownerAgentBudgetCapUsd: Math.min(policy.ownerAgentBudgetCapUsd, TRIAL_LIMITS_R49.ownerAgentBudgetCapUsd) } : policy, revision: 0 };
   }

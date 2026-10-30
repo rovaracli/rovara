@@ -1,3 +1,4 @@
+import { nativeSnapshotConditions } from "./native-snapshot-conditions.js";
 import type { TransactItem } from "../agents/table-writes.js";
 // A captured numeric policy is not paid-work permission: callers still commit
 // live authority, lifecycle, monthly admission, audit and their idempotent work.
@@ -181,18 +182,7 @@ async function captureTaskStopSnapshot(deps: TaskStopCaptureDependencies, value:
   const policyDigest = createHash("sha256").update(JSON.stringify([orgId, project, agentId, sourceRevisions, data.data])).digest("hex");
   if (nativeChecks !== undefined) {
     const presenceFields = ["orgId", "developerId", "role", "closingAt", "closedAt", "revision", "latestRevision", "policy", "enrollment", "guardrails", "taskStopPolicy", "stopKind", "stopMicrousd", "maxPerRunUsd", "status", "owner", "accountable", "shares", "pinnedVersion", "version", "source", "outcome", "policyRevision"];
-    keys.forEach((key, index) => {
-      const source = rows[index];
-      if (source === undefined) { nativeChecks.push({ ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: "attribute_not_exists(pk)" } }); return; }
-      const names: Record<string, string> = {}, values: Record<string, unknown> = {};
-      const fields = [...new Set([...Object.keys(source), ...presenceFields])];
-      const clauses = fields.map((field, fieldIndex) => {
-        const name = `#cutoverSource${index}_${fieldIndex}`, value = `:cutoverSource${index}_${fieldIndex}`; names[name] = field;
-        if (source[field] === undefined) return `attribute_not_exists(${name})`;
-        values[value] = source[field]; return `${name} = ${value}`;
-      });
-      nativeChecks.push({ ConditionCheck: { TableName: deps.tableName, Key: key, ConditionExpression: clauses.join(" AND "), ExpressionAttributeNames: names, ExpressionAttributeValues: values } });
-    });
+    nativeChecks.push(...nativeSnapshotConditions(deps.tableName, keys, rows, presenceFields));
   }
   return { kind: "captured", schemaVersion: 2, orgId, project, agentId, capturedAt: new Date(deps.now?.() ?? Date.now()).toISOString(),
     policyDigest, effectiveStopMicrousd: calculation.effectiveStopMicrousd, approvalCapMicrousd: calculation.approvalCapMicrousd,

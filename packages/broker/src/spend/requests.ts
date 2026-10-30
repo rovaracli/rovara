@@ -1,3 +1,4 @@
+import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
 import { OwnerFinancialTermsSchema, ownerFinancialChecks } from "./owner-approval-terms.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
@@ -16,12 +17,12 @@ import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agen
 // it stopped (`SpendRequestHost.resumeTask`, which is `resumeTaskAfterSpendApproval` in developer-tasks.ts).
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { createHash } from "node:crypto";
-import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, QueryCommand, TransactGetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
   projectMemberKey, agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
-  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
+  suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, developerOrgKey, orgMetaKey, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
   SpendingAdmissionReferenceSchema, type SpendingAdmissionReference, type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
@@ -44,7 +45,7 @@ import { auditActorOf, centsOf, decisionProofOf } from "../audit/plan3-hooks.js"
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { endOfFailure, settleSession, type DecisionEnd } from "../developer/decide-session.js";
 import { effectiveTaskOwner, isTaskTakenOver, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord, type TaskOwnerSource } from "../developer/task-records.js";
-import { effectiveLimits, readSpendPolicy, readSpendPolicyWithRevision } from "./settings.js";
+import { effectiveLimits, decodeSpendPolicySnapshot, readSpendPolicy, readSpendPolicyWithRevision } from "./settings.js";
 import { cleanUsd, readTopUp } from "./top-ups.js";
 
 /** What the broker does for a request once it is approved: the parts that live with the developer tasks. */
@@ -2144,6 +2145,34 @@ export async function expireTaskStopCutoverApproval(deps: SpendRequestDependenci
 /** Explicit maintenance phase for old asks without complete terms. This does
  * not enroll an org or certify ceiling/cutover readiness. The controller retains
  * the returned native cursor; each expiry already has an immutable receipt. */
+/** Owner monthly figures are reviewed independently of the task ceiling. */
+export async function expireOwnerCapCutoverApproval(deps: SpendRequestDependencies, actor: AgentCaller, spendRequestId: string): Promise<{ kind: "retain" | "expired" | "retry" | "not_applicable" }> {
+  if (actor.orgRole !== "owner" && actor.orgRole !== "admin") throw budgetActorRefused();
+  const record = await getSpendRequest(deps, actor.orgId, spendRequestId);
+  if (record === undefined) throw notFound();
+  if (record.kind !== "owner_cap" || record.status !== "PENDING") return { kind: "not_applicable" };
+  const parsed = OwnerFinancialTermsSchema.safeParse(record.ownerFinancialTerms);
+  if (!parsed.success || parsed.data.owner !== record.forOwner) throw staleApproval();
+  const terms = parsed.data, confirm = record.change?.op === "confirm_move";
+  const sourceKey = confirm ? undefined : record.chainId !== undefined ? chainKey(record.orgId, record.chainId, "META") : isBuiltinAgentId(record.agentId as never) ? builtinSettingsKey(record.orgId, record.agentId as never) : agentKey(record.orgId, record.agentId as never, "META");
+  const source = confirm ? undefined : ApprovalSourceSchema.safeParse(record.approvalSource);
+  if (!confirm && (source === undefined || !source.success || source.data.key.pk !== sourceKey?.pk || source.data.key.sk !== sourceKey.sk)) throw staleApproval();
+  const keys = [ownerBudgetKey(record.orgId, terms.owner), orgSettingsKey(record.orgId, "SPEND_POLICY"), orgMemberKey(record.orgId, actor.developerId), developerOrgKey(actor.developerId), orgMetaKey(record.orgId), ...(sourceKey === undefined ? [] : [sourceKey])];
+  const response = await deps.documentClient.send(new TransactGetCommand({ TransactItems: keys.map(Key => ({ Get: { TableName: deps.tableName, Key } })) }));
+  const snapshot = z.object({ Responses: z.array(z.object({ Item: z.record(z.string(), z.unknown()).optional() })) }).safeParse(response);
+  if (!snapshot.success || snapshot.data.Responses.length !== keys.length) throw staleApproval();
+  const rows = snapshot.data.Responses.map(row => row.Item), counter = rows[0], member = rows[2], pointer = rows[3], org = rows[4];
+  if (member?.orgId !== record.orgId || member.developerId !== actor.developerId || member.role !== actor.orgRole || pointer?.orgId !== record.orgId || pointer.role !== actor.orgRole || org?.orgId !== record.orgId || org.closingAt !== undefined || org.closedAt !== undefined) throw budgetActorRefused();
+  const counterVersion = counter?.version === undefined ? 0 : counter.version;
+  if (counter === undefined || usdToWholeMicrodollars(counter.totalUsd) === undefined || typeof counterVersion !== "number" || !Number.isSafeInteger(counterVersion) || counterVersion < 0) throw staleApproval();
+  const policy = decodeSpendPolicySnapshot(rows[1], org.plan);
+  const guards = nativeSnapshotConditions(deps.tableName, keys, rows, ["orgId", "developerId", "role", "closingAt", "closedAt", "plan", "totalUsd", "version", "revision", "ownerAgentBudgetCapUsd", "owner", "accountable", "status", "monthlyBudgetUsd", "maxPerRunUsd", "updatedAt", "updatedBy", "pinnedVersion"]);
+  const sourceChanged = !confirm && source?.success === true && (source.data.exists !== (rows[5] !== undefined) || canonicalJson(source.data.fields) !== canonicalJson(sourceFields(rows[5])));
+  const changed = sourceChanged || terms.month !== iso(deps.now()).slice(0, 7) || terms.counterVersion !== counterVersion || terms.counterUsd !== counter.totalUsd || terms.policyRevision !== policy.revision || terms.capUsd !== policy.policy.ownerAgentBudgetCapUsd;
+  if (!changed) return { kind: "retain" };
+  return { kind: await expireOne(deps, record, "spending_rules_changed", guards) ? "expired" : "retry" };
+}
+
 type SpendingRequestPageInput = { orgId: OrgId; limit: number; cursor?: Record<string, unknown> };
 type SpendingRequestPageResult = { examined: number; expired: number; complete: boolean; cursor?: Record<string, unknown> };
 export async function expireLegacySpendingRequests(deps: SpendRequestDependencies, input: SpendingRequestPageInput): Promise<SpendingRequestPageResult> {
