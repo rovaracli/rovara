@@ -1544,6 +1544,11 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     if (status === "APPROVED") await requireSameOwner(deps, record, change);
     if (status === "APPROVED" && record.ownerFinancialTerms !== undefined) {
       const parsed = OwnerFinancialTermsSchema.safeParse(record.ownerFinancialTerms);
+      const countedOwnerMoved = parsed.success && record.forOwner !== undefined && parsed.data.owner !== record.forOwner;
+      if (!ownerApprovalTermsComplete(record) && !countedOwnerMoved) {
+        await expireOne(deps, record, "spending_rules_changed", budgetActorChecks(deps.tableName, record.orgId, decisionActor));
+        throw agentXError("SPENDING_APPROVAL_STALE", "Spending rules changed; ask again.");
+      }
       const terms = parsed.success ? parsed.data : undefined;
       if (terms !== undefined) assertOwnerCarriedSource(terms, record.orgId, record);
       const base = terms?.basis === "base" ? await getItem(deps, ownerBudgetKey(record.orgId, terms.owner)) : undefined;
@@ -2154,6 +2159,7 @@ export async function expireOwnerCapCutoverApproval(deps: SpendRequestDependenci
   const record = await getSpendRequest(deps, actor.orgId, spendRequestId);
   if (record === undefined) throw notFound();
   if (record.kind !== "owner_cap" || record.status !== "PENDING") return { kind: "not_applicable" };
+  if (!ownerApprovalTermsComplete(record)) return { kind: await expireOne(deps, record, "spending_rules_changed", budgetActorChecks(deps.tableName, record.orgId, { developerId: actor.developerId, role: actor.orgRole })) ? "expired" : "retry" };
   const parsed = OwnerFinancialTermsSchema.safeParse(record.ownerFinancialTerms);
   if (!parsed.success || parsed.data.owner !== record.forOwner) throw staleApproval();
   const terms = parsed.data, confirm = record.change?.op === "confirm_move";

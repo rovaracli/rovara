@@ -2259,3 +2259,19 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   if (consumer === "single_cutover") expect(await spendRequests.expireOwnerCapCutoverApproval(f.t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, orgRole: "admin" }, requestId)).toMatchObject({ kind: "expired" });
   expect(f.t.db.get(key)).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
 });
+
+for (const resource of ["agent", "chain"] as const) it(`strict owner terms retain a same-owner ${resource} budget raise without inventing a carrier proof`, async () => {
+  const f = await fixture(); await f.t.budgeted(30); await f.t.budgeted(30);
+  let id: string;
+  if (resource === "agent") id = await f.t.budgeted(40);
+  else {
+    const created = await f.t.api(MAYA, "POST", "/v1/app/chains", { name: `M47 ${randomUUID().slice(0, 8)}` }); expect(created.status).toBe(201);
+    id = (created.body.chain as { chainId: string }).chainId; expect((await f.t.api(MAYA, "PUT", `/v1/app/chains/${id}/budget`, { monthlyUsd: 40 })).status).toBe(200);
+  }
+  const reply = resource === "agent" ? await f.t.setBudget(MAYA, id, { monthlyUsd: 41 }) : await f.t.api(MAYA, "PUT", `/v1/app/chains/${id}/budget`, { monthlyUsd: 41 });
+  expect(reply.status).toBe(202); const requestId = String(reply.body.spendRequestId), record = f.t.requests().find(item => item.spendRequestId === requestId)!;
+  expect(record.ownerFinancialTerms?.carriedSource).toBeUndefined(); expect(record.ownerFinancialTerms).toMatchObject({ owner: MAYA.developerId, wouldBeUsd: 101 });
+  expect(await spendRequests.expireLegacySpendingRequests(f.t.deps(), { orgId: TEST_ORG, limit: 100 })).toMatchObject({ expired: 0 });
+  expect(await spendRequests.expireOwnerCapCutoverApproval(f.t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, orgRole: "admin" }, requestId)).toMatchObject({ kind: "retain" });
+  expect((await f.t.decide(DEB, requestId)).spendRequest.status).toBe("APPROVED"); expect(f.t.ownerTotal(MAYA)).toBe(101);
+});
