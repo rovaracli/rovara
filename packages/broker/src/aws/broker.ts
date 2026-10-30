@@ -7105,6 +7105,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     if (current.fence !== claims.fence || TERMINAL.has(current.status)) throw agentXError("STALE_FENCE", "The operation can no longer ask for model access.");
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
     const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+    if ((current.spendingTaskId !== undefined || current.spendingAdmission !== undefined) && (pointer === undefined || task === undefined)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The admitted operation lost its task binding.");
     // Task 29: with agents set up a key says who pays and what ran, and carries a member's name only when a member pays. Without them
     // (an install that never had agents) the key is minted exactly as it always was.
     const withAgents = dependencies.agents !== undefined;
@@ -7120,6 +7121,13 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       }
       await requireTaskStopWindowContext(dependencies, task);
       const keyAuthority = task.spendingStop === undefined ? [] : await taskStopKeyActorChecks(dependencies, task, effectiveTaskOwner(task).developerId, payment?.payer.kind === "member" ? payment.payer.developerId : undefined, agentRouteDependencies(dependencies, developerTaskActions(dependencies)));
+      if (task.spendingStop !== undefined) {
+        if (pointer === undefined || pointer.entityType !== "DEVELOPER_TASK_POINTER" || pointer.taskId !== task.taskId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task pointer could not be checked.");
+        keyAuthority.push({ ConditionCheck: { TableName: dependencies.tableName, Key: taskPointerKey(current.workspaceId),
+          ConditionExpression: "#pointerType = :pointerType AND taskId = :pointerTask AND developerId = :pointerDeveloper",
+          ExpressionAttributeNames: { "#pointerType": "entityType" },
+          ExpressionAttributeValues: { ":pointerType": pointer.entityType, ":pointerTask": pointer.taskId, ":pointerDeveloper": pointer.developerId } } });
+      }
       const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
       const taskKeyIds = task.modelKeyIds ?? [];
