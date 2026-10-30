@@ -204,3 +204,11 @@ it("refuses unsupported locks on the default-only company source instead of assu
   const f = fixture(); f.policy(1, { policy: { schemaVersion: 1, defaultStopMicrousd: 1, locks: { project: false, agent: false } } });
   expect((await f.call()).status).toBe(503);
 });
+
+it("reads explicit project inheritance under a seeded typed company estimate", async () => {
+  const f = fixture();
+  f.policy(0, { policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.ai({ taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+  expect(await f.call()).toMatchObject({ status: 200, body: { projectOverride: { kind: "inherit" }, sourceKind: "project_ai", settingsRevision: 1, calculation: "unavailable", enforcement: "not_connected" } });
+  expect(f.db.transactions()).toHaveLength(0);
+});
