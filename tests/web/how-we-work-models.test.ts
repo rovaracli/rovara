@@ -218,8 +218,9 @@ describe("editable model rows", () => {
 
  it("reads the stale draft by its code only: a PLAYBOOK_STALE refusal is not the draft having changed", async () => {
   await open({ read: draft => draft === null ? stageModelsBody() : { status: 409, body: { error: { code: "PLAYBOOK_STALE", message: "DRAFT_STALE: This process draft changed. Reload and try again." } } } });
-  await waitFor(() => expect(screen.queryByText(DRAFT_CHANGED_TEXT)).toBeNull());
-  expect(screen.queryByText("This draft changed. Reload and try again.")).toBeNull();
+  // The draft read failed (the page says it can't show the models), and that is not the stale-draft notice.
+  await waitFor(() => expect(within(card("Build")).getByText("The models of this stage can't be shown right now. Reload to try again.")).toBeTruthy());
+  expect(screen.queryByRole("region", { name: "Draft changed" })).toBeNull();
  });
 
  it("says the draft changed when the read is refused as stale", async () => {

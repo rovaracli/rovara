@@ -72,7 +72,7 @@ function Editor({ policy, notice, setNotice, reload, reread }: { policy: Company
  const busy = saving || reviewing, outOfDate = notice?.kind === "stale" || notice?.kind === "saved_reload_failed";
  function edit(next: CompanyOverrides) { ticket.current += 1;setDraft(next);setReview(undefined);setReviewing(false);setBlocked(undefined);setNotice(undefined); }
  const body = () => ({ expectedRevision: policy.revision, stepOverrides: normalize(draft) });
- function failure(error: unknown): Notice { return error instanceof ApiError && error.code === "POLICY_STALE" ? { kind: "stale" } : { kind: "failed", text: error instanceof ApiError && error.status === 403 ? T.DENIED : error instanceof ApiError && isRefusalCode(error.code) ? REFUSAL_TEXT[error.code] : T.SAVE_FAILED }; }
+ function failure(error: unknown): Notice { return error instanceof ApiError && error.code === "POLICY_STALE" ? { kind: "stale" } : { kind: "failed", text: error instanceof ApiError && error.status === 403 && error.code === "MODEL_NOT_ALLOWED" ? T.SAME_MODEL_REFUSED : error instanceof ApiError && error.status === 403 ? T.DENIED : error instanceof ApiError && isRefusalCode(error.code) ? REFUSAL_TEXT[error.code] : T.SAVE_FAILED }; }
  async function openReview() {
   if (busy || !dirty || outOfDate) return;
   const missing = incompleteLocks(draft);

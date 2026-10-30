@@ -17,6 +17,8 @@ export const PREVIEW_INCOMPLETE = "This list may be incomplete.";
 export const PREVIEW_FAILED = "Couldn't check which projects are affected. You can still save.";
 export const SAVED_RELOAD_FAILED = "Saved, but the page couldn't reload. Reload to see the latest.";
 export const SAVE_FAILED = "Couldn't save the company defaults. Try again.";
+/** Lane C refuses (403 `MODEL_NOT_ALLOWED`) a company checking stage set to the same model as the stage it checks; same-model exceptions are per project. */
+export const SAME_MODEL_REFUSED = "A checking stage can't use the same model as the stage it checks. Set a same-model exception for one project in its How we work.";
 export const DENIED = "You don't have permission to change the company defaults.";
 const SPLIT_TAIL = " have different settings today. Saving a change here sets both the same.";
 /** The note on a row whose stages differ, by the row's first stage. */
