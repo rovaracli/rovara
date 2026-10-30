@@ -2140,7 +2140,7 @@ for (const bounded of [false, true]) for (const drift of ["none", "total_before"
   if (drift.endsWith("_commit")) expect(raced).toBe(true);
 });
 
-for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) for (const consumer of ["approve", "cutover"] as const) it(`owner-cap ${resource} ${operation} pins carried source topup for ${consumer}`, async () => {
+for (const resource of ["agent", "chain"] as const) for (const operation of ["owner", "accountable"] as const) for (const consumer of ["approve", "cutover", "cutover_commit"] as const) it(`owner-cap ${resource} ${operation} pins carried source topup for ${consumer}`, async () => {
   const f = await fixture(); f.t.grantRole(MAYA, "maintainer"); await f.t.budgeted(40, BEN); await f.t.budgeted(40, BEN);
   const projectOwned = operation === "accountable";
   let id: string;
@@ -2161,6 +2161,26 @@ for (const resource of ["agent", "chain"] as const) for (const operation of ["ow
   const scope = resource === "agent" ? { kind: "agent" as const, agentId: id } : { kind: "chain" as const, chainId: id };
   const month = new Date().toISOString().slice(0, 7);
   const monthly = (await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, kind: "month", scope, subject: `MONTH#${month}#${resource}#${id}#${randomUUID()}`, amountUsd: 1, newLimitUsd: 41, reason: "Source month topup", requestedBy: { kind: "system" } })).record;
+  let raced = false;
+  const send = f.t.db.send.bind(f.t.db);
+  if (consumer === "cutover_commit") {
+    // Make expiry necessary, then change its captured carried row at the final write.
+    await f.t.budgeted(1, BEN);
+    f.t.db.send = async command => {
+      if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`) && Object.values(item.Update.ExpressionAttributeValues ?? {}).includes("EXPIRED"))) {
+        raced = true;
+        expect((await f.t.decide(MAYA, monthly.spendRequestId)).spendRequest.status).toBe("APPROVED");
+      }
+      return send(command);
+    };
+    expect(await spendRequests.expireOwnerCapCutoverApproval(f.t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, orgRole: "admin" }, requestId)).toMatchObject({ kind: "retry" });
+    expect(raced).toBe(true);
+    expect(f.t.db.get(entityKey)).toEqual(before); expect(f.t.ownerTotal(BEN)).toBe(totalBefore + 1);
+    expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "META" })).toMatchObject({ status: "PENDING" });
+    expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${requestId}`), sk: "EXPIRY" })).toBeUndefined();
+    expect(await spendRequests.expireOwnerCapCutoverApproval(f.t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, orgRole: "admin" }, requestId)).toMatchObject({ kind: "expired" });
+    return;
+  }
   expect((await f.t.decide(MAYA, monthly.spendRequestId)).spendRequest.status).toBe("APPROVED");
   expect(f.t.db.get(topUpKey(TEST_ORG, month, scope))).toMatchObject({ amountUsd: 1 });
   expect(f.t.db.get(entityKey)).toEqual(before); expect(f.t.ownerTotal(BEN)).toBe(totalBefore);
