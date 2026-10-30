@@ -3,6 +3,7 @@
 // and a few fixed-vocabulary or numeric facts; names, emails and reasons belong in `details` only.
 import { sha256Hex } from "@rovara/audit-verifier";
 import { z } from "zod";
+import {StageIdSchema,ModelFallbackReasonCodeSchema} from "./stage-model-shared.js";
 import { OrgIdSchema } from "./org.js";
 
 // The writers (the appender) and readers of the chain use the verifier's own record, commitment and JSON functions,
@@ -171,6 +172,10 @@ export const AUDIT_ACTIONS = [
   "model_source.saved",
   "model_source.removed",
   "model_source.order_changed",
+  "model_policy.changed",
+  "model_policy.lock_set",
+  "model_policy.lock_removed",
+  "model.fallback_used",
   "audit.read",
   "audit.exported",
   "audit.staff_read",
@@ -307,6 +312,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "model_source.saved": ["kind", "change"],
   "model_source.removed": ["kind"],
   "model_source.order_changed": ["count"],
+  "model_policy.changed": ["revision","policyDigest","previousDigest","stage","mode"],
+  "model_policy.lock_set": ["revision","policyDigest","previousDigest","stage","mode"],
+  "model_policy.lock_removed": ["revision","policyDigest","previousDigest","stage","mode"],
+  "model.fallback_used": ["stage","usedModelDigest","wantedModelDigest","cause","companyRevision"],
   "audit.read": ["fromSeq", "toSeq", "count", "via"],
   "audit.exported": ["fromSeq", "toSeq", "withDetails"],
   "audit.staff_read": ["fromSeq", "toSeq", "count", "via"],
@@ -392,6 +401,9 @@ const AuditFactValueSchema = z.union([
   z.boolean(),
 ]);
 
+const ModelAuditDigest=z.string().regex(/^[a-f0-9]{64}$/u);
+export const ModelPolicyAuditFactsSchema=z.object({revision:z.number().int().min(1),policyDigest:ModelAuditDigest,previousDigest:ModelAuditDigest.optional(),stage:StageIdSchema.optional(),mode:z.enum(["second_person","sole_owner_exception"]).optional()}).strict();
+export const ModelFallbackAuditFactsSchema=z.object({stage:StageIdSchema,usedModelDigest:ModelAuditDigest,wantedModelDigest:ModelAuditDigest.optional(),cause:ModelFallbackReasonCodeSchema,companyRevision:z.number().int().min(0)}).strict();
 export const AuditEventInputSchema = z.object({
   eventId: AuditEventIdSchema,
   orgId: OrgIdSchema,
@@ -404,6 +416,8 @@ export const AuditEventInputSchema = z.object({
   proof: AuditProofSchema.optional(),
   details: z.array(AuditDetailPartSchema).max(AUDIT_DETAIL_PARTS_MAX).optional(),
 }).strict().superRefine((event, context) => {
+  const modelFacts=event.action==="model.fallback_used"?ModelFallbackAuditFactsSchema:event.action.startsWith("model_policy.")?ModelPolicyAuditFactsSchema:undefined;
+  if(modelFacts!==undefined&&!modelFacts.safeParse(event.facts).success) context.addIssue({code:"custom",path:["facts"],message:"invalid model audit facts"});
   if (event.facts === undefined) return;
   const keys = Object.keys(event.facts);
   if (keys.length > AUDIT_MAX_FACTS) {

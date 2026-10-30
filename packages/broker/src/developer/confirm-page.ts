@@ -7,6 +7,7 @@ import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 // instead of `'none'` so its form can post, plus `X-Frame-Options: DENY`. The referrer policy is `same-origin`, NOT `no-referrer`: with
 // `no-referrer` a browser sends `Origin: null` on the form's post, which the strict Origin check refuses. Nothing is sent to another
 // origin either way.
+import {StageModelFixHrefSchema} from "@agentx/contracts";
 import type { ConfirmView } from "./decide-kinds.js";
 
 export interface PageResponse { statusCode: number; headers: Record<string, string>; body: string }
@@ -67,7 +68,7 @@ export function confirmPage(view: ConfirmView, input: { approvalId: string; csrf
 export const decidedPage = (words: string, how: "decided" | "expired" = "decided"): PageResponse => shell(409, how === "expired" ? "This request expired" : "Already decided", paragraphs([words]));
 export const forbiddenPage = (words: string): PageResponse => shell(403, "You can't decide this", paragraphs([words]));
 export const notFoundPage = (): PageResponse => shell(404, "Approval not found", paragraphs(["This approval was not found. Open it again from Rovara."]));
-export const resultPage = (title: string, message: string): PageResponse => shell(200, title, paragraphs([message]));
+export const resultPage = (title: string, message: string, fixHref?:string): PageResponse => shell(200, title, paragraphs([message])+(fixHref!==undefined&&StageModelFixHrefSchema.safeParse(fixHref).success?`<a class="method" href="${escape(fixHref)}">Review model settings</a>`:""));
 export const refusedPage = (statusCode: number, title: string, words: string): PageResponse => shell(statusCode, title, paragraphs([words]));
 /** The session ended or never was fresh (a post that arrived late): the way back in. */
 export const reauthPage = (signInUrl: string): PageResponse =>

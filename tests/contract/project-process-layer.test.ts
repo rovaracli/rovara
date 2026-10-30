@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ROVARA_CODE_AGENT_ID, agentKey, agentXError, projectPlaybookKey, recipeDigest, type AgentId, type OrgRole } from "../../packages/contracts/src/index.js";
-import { getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
+import { getApproval, getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { listVisibleAgents, saveShares } from "../../packages/broker/src/agents/access.js";
 import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
 import { addToRoster, listRoster } from "../../packages/broker/src/agents/roster.js";
@@ -144,13 +144,14 @@ describe("publishing a process layer", () => {
   it("does the same through the confirmation path (a less safe first version confirmed on the page)", async () => {
     const w = mergeWorld();
     const { agentId } = await post(w, MAX);
-    const agent = (await w.store.get(ORG_A, agentId))!;
-    const digest = recipeDigest(await resolveRecipe(w.deps, ORG_A, agentId, "draft"));
-    const record = {
-      orgId: ORG_A, approvalId: "apr_x", decidedBy: OLA,
-      subject: { kind: "agent_publish", agentId, draftRevision: agent.draftRevision, digest },
-    } as unknown as ApprovalRecord;
-    await getApprovalSubjectHandler("agent_publish")!(w.deps, record);
+    let agent = (await w.store.get(ORG_A, agentId))!;
+    await w.store.saveDraft({ orgId: ORG_A, agentId, overlay: { steps: { review: { instructions: "Check the migrations." } } }, expectedRevision: agent.draftRevision, by: MAX });
+    agent = (await w.store.get(ORG_A, agentId))!;
+    const pending = await publishDraft(w.deps, w.caller(MAX), agent, { requestId: randomUUID(), expectedRevision: agent.draftRevision });
+    expect(pending.applied).toBe(false);
+    if (pending.applied) throw new Error("expected publication confirmation");
+    const record = (await getApproval(w.deps, ORG_A, w.approvalIdOf(pending.confirmUrl)))!;
+    await getApprovalSubjectHandler("agent_publish")!(w.deps, { ...record, decidedBy: OLA });
     expect(document(w)).toMatchObject({ revision: 1, defaultProcess: { kind: "project_process", agentId } });
     expect(w.audit.recordedBy("process.published")).toMatchObject([{ actor: { id: OLA }, target: { kind: "process", id: agentId }, facts: { version: 1, safety: "less_safe", selfConfirmedSoleOwner: false } }]);
     expect(w.audit.recordedBy("agent.published")).toEqual([]);

@@ -190,6 +190,8 @@ export * from "./reviewed-project-restore.js";
 
 // Lane B: browser-safe project-scoped working-branch page data.
 export * from "./app-working-branches.js";
+
+export * from "./stage-models.js";
 export * from "./app-allowed-websites.js";
 
 export * from "./app-project-slack.js";

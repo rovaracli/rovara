@@ -1,9 +1,10 @@
+import {StageIdSchema} from "./stage-model-shared.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowReviewBaseSchema } from "./task-workflow.js";
 import { ProjectCommandSchema } from "./project.js";
 import { StoredProjectDefinitionSchema } from "./project-node.js";
-import { ModelSelectionSchema } from "./models.js";
+import { ModelIdentifierSchema,ModelSelectionSchema } from "./models.js";
 import { type ModelSelection } from "./models-node.js";
 import { WorkflowDependencyInvocationSchema } from "./workflow-dependencies-node.js";
 import { E2EFeaturePlanIntentAnySchema } from "./e2e-application.js";
@@ -23,7 +24,7 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1"] as const;
+export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1"] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -205,6 +206,18 @@ export const ModelRouteSchema = z.object({
   catalog: z.string().min(1).max(256),
 }).strict();
 export type InvocationModelRoute = z.infer<typeof ModelRouteSchema>;
+/** Broker-created task context, never a client choice or permission to fallback. */
+export const TaskModelPolicyBindingSchema=z.object({version:z.literal(1),stage:StageIdSchema,companyRevision:z.number().int().min(0),recipeDigest:z.string().regex(/^[a-f0-9]{64}$/u)}).strict();
+export type TaskModelPolicyBinding=z.infer<typeof TaskModelPolicyBindingSchema>;
+/** A worker must match the binding before using a server-authorized replacement. No credentials are carried. */
+export const TaskModelFallbackAuthorizationSchema=z.object({version:z.literal(1),binding:TaskModelPolicyBindingSchema,model:ModelSelectionSchema,modelRoute:ModelRouteSchema.optional(),sourcesRevision:z.number().int().min(0)}).strict();
+export type TaskModelFallbackAuthorization=z.infer<typeof TaskModelFallbackAuthorizationSchema>;
+export const TaskModelFallbackRequestSchema=z.object({version:z.literal(1),binding:TaskModelPolicyBindingSchema,reason:z.enum(["unavailable","limit","revoked","model","missing_key"]),failedModel:ModelIdentifierSchema,environmentFallback:ModelIdentifierSchema.optional()}).strict().superRefine((request,context)=>{
+ if(request.environmentFallback!==undefined&&request.reason!=="missing_key")context.addIssue({code:"custom",path:["environmentFallback"],message:"only a missing-key fallback names an environment candidate"});
+});
+export type TaskModelFallbackRequest=z.infer<typeof TaskModelFallbackRequestSchema>;
+
+
 
 const InvocationBaseSchema = z.object({
   protocolVersion: z.literal(AGENTX_PROTOCOL_VERSION),
@@ -344,8 +357,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         agentStep: AgentStepPayloadSchema.optional(),
         /** The model proxy alias to use in place of the install's default route. Sent only to a worker that lists "model.route"; never dropped. */
         modelRoute: ModelRouteSchema.optional(),
+        /** Governed tasks require broker authorization before any worker-side replacement; never dropped. */
+        modelPolicy:TaskModelPolicyBindingSchema.optional(),
       })
       .strict().superRefine((payload, context) => {
+        if(payload.modelPolicy!==undefined&&payload.model===undefined)context.addIssue({code:"custom",path:["model"],message:"a governed task requires an explicit server-resolved model"});
         if ((payload.workflowMode === "FEEDBACK_REVIEW") !== (payload.workflowFeedbackReview !== undefined)) {
           context.addIssue({ code: "custom", path: ["workflowFeedbackReview"], message: "feedback review mode requires its exact task workflow binding" });
         }

@@ -1,4 +1,11 @@
 import { readOrgServiceStatus, type ServiceStatusDependencies } from "../org/service-status.js";
+import {CompanySameModelPolicyRefusal} from "../model-selection/company-prepare.js";
+import {updateCompanyModelPolicy} from "../model-selection/company-approval.js";
+import {ModelSelectionPolicyAppliedSchema,ModelSelectionPolicyPendingSchema} from "@agentx/contracts";
+import {previewCompanyModelPolicy} from "../model-selection/policy-preview.js";
+import { requireCompanyModelPolicyAuthority,getCompanyModelSelectionPolicy } from "../model-selection/company-read.js";
+import { getStageModels } from "../model-selection/read.js";
+import { loadStageModelSnapshot } from "../model-selection/snapshot.js";
 import { projectSlackBrowserHttp } from "../org/project-slack-browser-http.js";
 import { projectAllowedDomainsHttp, type AllowedDomainBrowserDependencies } from "../org/project-allowed-domains-http.js";
 import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
@@ -1938,6 +1945,7 @@ export function developerTaskRouteDependencies(
 }
 
 export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, request: AdaptedHttpRequest, url: URL, authenticated?: { caller: DeveloperCaller; csrf: string }): Promise<unknown> {
+  if(request.method==="PUT"&&url.pathname==="/v1/app/org/model-selection-policy"&&authenticated?.caller.browserSession!==true)throw agentXError("FORBIDDEN","Use a live browser session to change company model policy.");
   // Website proposal routes accept only the trusted opaque-cookie adapter.
   // Reject token callers before authentication or any project/proposal lookup.
   if (/^\/v1\/app\/projects\/[^/]+\/allowed-websites(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
@@ -2138,6 +2146,45 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return routeProjectPlaybook(playbookDeps, caller, request.method as "GET" | "PUT", playbookRoute![1]!, () => jsonBody(request));
   }
   // "How we work": the project's process as the tab shows it. Anyone who can see the project reads it.
+  if (request.method === "POST" && url.pathname === "/v1/app/org/model-selection-policy/preview") {
+    if ([...url.searchParams].length !== 0) throw agentXError("CONFIG_INVALID", "The company model-policy preview query is invalid.");
+    return previewCompanyModelPolicy({documentClient:deps.documentClient,tableName:deps.tableName,now:deps.now,...(deps.agentSessions?.cursorKey===undefined?{}:{cursorKey:deps.agentSessions.cursorKey}),
+      loadSnapshot:(who,name,policy)=>loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,now:deps.now,store:deps.agents?.store,routing:deps.agents?.modelRouting??{}},who,name,undefined,undefined,policy),
+    },caller,jsonBody(request));
+  }
+  if(request.method==="PUT"&&url.pathname==="/v1/app/org/model-selection-policy"){
+    if([...url.searchParams].length!==0)throw agentXError("CONFIG_INVALID","The company model-policy query is invalid.");
+    await requireCompanyModelPolicyAuthority({documentClient:deps.documentClient,tableName:deps.tableName},caller);
+    if(deps.agents===undefined)throw agentXError("RUNTIME_UNAVAILABLE","Company model approvals are unavailable.");
+    try {
+      const result=await updateCompanyModelPolicy(deps.agents,caller,jsonBody(request));
+      if(result.status==="NEEDS_CONFIRMATION")return new StatusReply(202,ModelSelectionPolicyPendingSchema.parse(result));
+      return ModelSelectionPolicyAppliedSchema.parse({status:result.status,revision:result.revision,requestId:result.requestId});
+    }catch(error){
+      if(error instanceof CompanySameModelPolicyRefusal)return new StatusReply(403,{error:{code:error.code,reason:error.reason,fixHref:error.fixHref,message:"Company reviewer models must differ. Configure same-model exceptions per project in How we work."}});
+      throw error;
+    }
+  }
+  if (request.method === "GET" && url.pathname === "/v1/app/org/model-selection-policy") {
+    if ([...url.searchParams].length !== 0) throw agentXError("CONFIG_INVALID", "The company model-policy query is invalid.");
+    return getCompanyModelSelectionPolicy({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, routing: deps.agents?.modelRouting ?? {} }, caller);
+  }
+  // Lane C G3: the same server resolver powers the model rows and publish validation.
+  const stageModelsRoute = /^\/v1\/app\/projects\/([^/]+)\/stage-models$/.exec(url.pathname);
+  if (request.method === "GET" && stageModelsRoute !== null) {
+    const pairs = [...url.searchParams.entries()];
+    if (pairs.length > 1 || pairs.some(([key, value]) => key !== "draft" || !/^(0|[1-9][0-9]{0,9})$/u.test(value))) throw agentXError("CONFIG_INVALID", "The stage-model query is invalid.");
+    const draft = url.searchParams.get("draft");
+    return getStageModels({
+      now: deps.now,
+      projectFor: async (who, rawName) => {
+        if (who.orgId !== caller.orgId || who.developerId !== caller.developerId) throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+        const found = await projectRoleForRoute(deps, caller, rawName);
+        return { name: found.name, canEdit: projectAllows(found.role, "edit_settings") };
+      },
+      snapshot: (who, name, revision) => loadStageModelSnapshot({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, routing: deps.agents?.modelRouting ?? {}, chatgpt: deps.chatgpt }, who, name, revision),
+    }, caller, stageModelsRoute[1]!, draft === null ? {} : { draft: Number(draft) });
+  }
   const howWeWorkRoute = HOW_WE_WORK_PATH.exec(url.pathname);
   if (request.method === "GET" && howWeWorkRoute !== null) {
     return getProjectHowWeWork({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) }, caller, howWeWorkRoute[1]!);

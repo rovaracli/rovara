@@ -51,6 +51,8 @@
   "packages/contracts/src/rovara-code.ts",
   "packages/contracts/src/session-views.ts",
   "packages/contracts/src/spend.ts",
+  "packages/contracts/src/stage-model-shared.ts",
+  "packages/contracts/src/stage-models.ts",
   "packages/contracts/src/task-stop-agent.ts",
   "packages/contracts/src/task-stop-ceiling.ts",
   "packages/contracts/src/task-stop-company.ts",
