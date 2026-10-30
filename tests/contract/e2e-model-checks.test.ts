@@ -385,3 +385,22 @@ it("M47 platform model check rechecks runtime qualification before dispatching t
   await expect(startModelCheck(h.deps, { kind: "drive", modelId: MODEL }, "linux-arm64-web-api-v1")).rejects.toMatchObject({ status: 409, code: "no-ready-runtime" });
   expect(reads).toBe(2); expect(h.puts).toEqual([]);
 });
+
+it("M47 platform model check refuses a new qualification generation at the same runner prefix", async () => {
+  const h = harness(), read = h.deps.readRuntimeRow; let reads = 0;
+  h.deps.readRuntimeRow = async () => {
+    reads += 1; const row = await read();
+    if (reads === 1) return row;
+    const key = e2eModelCheckRunnerKey("linux-arm64-web-api-v1");
+    h.db.set({ ...h.db.get(key)!, transportCorrelationId: "replacement-generation" });
+    return { ...row, transportCorrelationId: "replacement-generation" };
+  };
+  await expect(startModelCheck(h.deps, { kind: "drive", modelId: MODEL }, "linux-arm64-web-api-v1")).rejects.toMatchObject({ status: 409, code: "no-model-check-runner" });
+  expect(h.puts).toEqual([]);
+});
+it("M47 platform model check refuses an unreadable qualification expiry", async () => {
+  const h = harness(), read = h.deps.readRuntimeRow;
+  h.deps.readRuntimeRow = async () => ({ ...await read(), expiresAt: "not-a-date" });
+  await expect(startModelCheck(h.deps, { kind: "drive", modelId: MODEL }, "linux-arm64-web-api-v1")).rejects.toMatchObject({ status: 409, code: "no-ready-runtime" });
+  expect(h.puts).toEqual([]);
+});
