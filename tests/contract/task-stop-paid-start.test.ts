@@ -990,6 +990,7 @@ for (const recovery of ["valid", "closing", "cap_source"] as const) it(`workflow
   const task = await f.t.runOf(agentId); expect(f.t.taskOps(task.workspaceId).at(-1)).toMatchObject({ workflowMode: "PLAN" });
   await f.t.pauseAndEnd(task, { kind: "planning", taskId: task.taskId });
   const request = f.t.requestOf(task.taskId, "planning")[0]!, decisionId = randomUUID(), operations = f.t.taskOps(task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db); let lost = false, captures = 0, changed = false;
+  expect(request.approvalTerms).toMatchObject({ operation: "planning", askedFiguresMicrousd: { budget: 2_000_000, maxPerRun: null, baseline: 0, amount: 5_000_000 }, proposedFiguresMicrousd: { budget: 5_000_000, maxPerRun: null, window: "reset" } });
   f.t.db.send = async command => {
     if (command instanceof TransactGetCommand) captures += 1;
     if (lost && !changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === task.workspaceId)) {
@@ -1139,4 +1140,18 @@ for (const timing of ["before_decision", "at_commit"] as const) it(`held prepara
   await expect(f.t.decide(MAYA, record.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" }); expect(changed).toBe(true);
   expect(f.t.meta(started.taskId).budgetUsd).toBe(0);
   expect(f.t.db.get({ pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${record.spendRequestId}`), sk: "META" })).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+});
+
+it("a max-per-run ask retains distinct original/proposed run limit, per-run stop and window facts", async () => {
+  const f = await pausedTestTransition();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  const agentKeyOf = agentKey(TEST_ORG, f.agentId, "META");
+  f.t.db.set({ ...f.t.db.get(agentKeyOf)!, revision: 2, stopKind: "limited", maxPerRunUsd: 4 });
+  expect((await f.transition()).status).toBe(200); expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 4 });
+  const inherited = { ...f.t.db.get(agentKeyOf)!, revision: 3, stopKind: "inherit" }; delete inherited.maxPerRunUsd; f.t.db.set(inherited);
+  await f.t.pauseAndEnd(f.task, { kind: "max_per_run", taskId: f.task.taskId });
+  const request = f.t.requestOf(f.task.taskId, "max_per_run")[0]!; expect(request.newLimitUsd).toBe(9);
+  expect(request.approvalTerms).toMatchObject({ operation: "max_per_run", askedFiguresMicrousd: { budget: 4_000_000, maxPerRun: 4_000_000, baseline: 0, amount: 5_000_000 },
+    proposedFiguresMicrousd: { budget: 4_000_000, maxPerRun: 9_000_000, window: "keep" } });
 });
