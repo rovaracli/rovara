@@ -1,3 +1,4 @@
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 // Plan 3 Task 32: run-limit, planning and max-per-run requests that resume in place, and the owner-cap requests of agent budget changes. A run that reached
 // one of its own limits asks the person who may raise it (`spendApprovers`, read live); the approval raises the limit in the same transaction that ends the
 // request, and the task goes on where it stopped: a plain task with a system Continue, a workflow task with its stage's retry, an agent-step run with the same
@@ -13,7 +14,7 @@ import { runSpendSweep, settlementBudgets, SETTLEMENT_BUDGETS_MS } from "../../p
 import { supersedeKeys, finalizeKey } from "../../packages/broker/src/spend/ledger.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import {
-  DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
+  defaultSpendPolicy, ownerBudgetKey, orgSettingsKey, DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
   modelKeyKey, openSpendRequestsKey, orgMemberKey, orgRemovedKey, spendCounterKey, spendRequestKey, suggestedTopUpUsd,
 } from "@agentx/contracts";
 import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -1396,4 +1397,26 @@ describe("a removal in an org with no owner left", () => {
     await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, by: ADA.developerId });
     expect(recordOf()).toEqual(before);
   });
+});
+
+for (const drift of ["unchanged", "total_before", "policy_before", "counter_commit"] as const) it(`M47 existing counted-move confirmation retains original base figures: ${drift}`, async () => {
+  const t = await setup();
+  const first = await t.budgeted(50, ADA); await t.budgeted(40, ADA); await t.budgeted(30, OMAR);
+  await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: OMAR.developerId, by: ADA.developerId });
+  const record = t.requests().find(item => item.change?.op === "confirm_move")!;
+  expect(record).toBeDefined(); expect(t.ownerTotal(ADA)).toBe(120);
+  if (drift === "total_before") expect((await t.setBudget(ADA, first, { monthlyUsd: 49 })).status).toBe(200);
+  if (drift === "policy_before") t.db.set({ ...orgSettingsKey(TEST_ORG, "SPEND_POLICY"), orgId: TEST_ORG, ...defaultSpendPolicy(), revision: 1, ownerAgentBudgetCapUsd: 99 });
+  const key = ownerBudgetKey(TEST_ORG, ADA.developerId), send = t.db.send.bind(t.db); let raced = false;
+  t.db.send = async command => {
+    if (drift === "counter_commit" && !raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === spendRequestKey(TEST_ORG, record.spendRequestId).pk && Object.values(item.Update.ExpressionAttributeValues ?? {}).includes("APPROVED"))) {
+      raced = true; const counter = t.db.get(key)!; t.db.set({ ...counter, totalUsd: 119, version: Number(counter.version) + 1 });
+    }
+    return send(command);
+  };
+  const before = t.agentItem(first), decision = t.decide(DEB, record.spendRequestId);
+  if (drift === "unchanged") expect((await decision).spendRequest.status).toBe("APPROVED");
+  else await expect(decision).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  expect(t.agentItem(first)).toEqual(before); expect(t.ownerTotal(ADA)).toBe(drift === "total_before" || drift === "counter_commit" ? 119 : 120);
+  if (drift === "counter_commit") expect(raced).toBe(true);
 });
