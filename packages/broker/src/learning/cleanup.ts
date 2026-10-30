@@ -269,6 +269,7 @@ export async function resumeOpenLearningWalks(deps: LearningDeps, limits: { writ
           report.walks += 1;
           const cleared = await clearProjectWithin(deps, orgId, project, { ...left, before });
           report.writes += cleared.writes;
+          log({ event: "learning.walk_progress", orgId, kind: `clear#${project}`, writes: cleared.writes, status: cleared.status === "done" ? "done" : "running" });
           if (cleared.status === "done") {
             await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: entry["pk"], sk: entry["sk"] } }));
             report.done += 1;
@@ -293,6 +294,8 @@ export async function resumeOpenLearningWalks(deps: LearningDeps, limits: { writ
         report.walks += 1;
         const result = kind === "close" ? await clearOrgLearning(deps, orgId, left) : await eraseLearningSubject(deps, orgId, kind.slice("erase#".length), left);
         report.writes += result.writes;
+        // Ids and counts only, so a walk that makes no progress tick after tick shows in the logs.
+        log({ event: "learning.walk_progress", orgId, kind, writes: result.writes, status: result.status === "done" ? "done" : "running", projectsDone: result.projectsDone });
         if (result.status === "done") report.done += 1;
         else if (result.status === "busy") report.busy += 1;
         else report.running += 1;

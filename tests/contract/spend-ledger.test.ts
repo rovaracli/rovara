@@ -1082,6 +1082,8 @@ describe("a key the broker mints", () => {
       expect.objectContaining({ name: "sweep-model-sources", ok: true }),
       expect.objectContaining({ name: "sweep-spend", ok: true, result: expect.objectContaining({ settled: 1, complete: true }) as unknown }),
       expect.objectContaining({ name: "audit-model-keys", ok: true }),
+      // v1.2 learning loop: after every settlement job.
+      expect.objectContaining({ name: "resume-learning-walks", ok: true }),
     ]);
     for (const sk of ["ORG", "PROJECT#payments", `MEMBER#${DEV_MAYA.developerId}`, "SOURCE#rovara", agentUsageCounter("rovara-code")]) near(t.counter(sk)?.spentUsd, 1.2);
     await t.finish(workspaceId, operationId, "SUCCEEDED", {});
@@ -1108,13 +1110,13 @@ describe("a key the broker mints", () => {
       const run = await t.sweep();
       expect(t.access.auditKeys).toHaveBeenCalledWith({ budgetMs: 4_000 });
       const jobs = (JSON.parse(run.body) as { jobs: Array<{ name: string; ok: boolean; result?: unknown }> }).jobs;
-      expect(jobs.map((job) => job.name)).toEqual(["drain-member-merges", "expire-approvals", "escalate-owner-requests", "sweep-model-sources", "sweep-spend", "audit-model-keys"]);
-      expect(jobs.at(-1)).toMatchObject({ ok: true, result: { checked: 7, blocked: 1, truncated: true } });
+      expect(jobs.map((job) => job.name)).toEqual(["drain-member-merges", "expire-approvals", "escalate-owner-requests", "sweep-model-sources", "sweep-spend", "audit-model-keys", "resume-learning-walks"]);
+      expect(jobs.at(-2)).toMatchObject({ ok: true, result: { checked: 7, blocked: 1, truncated: true } });
       expect(logged.mock.calls.map((call) => String(call[0])).some((line) => line.includes("model_keys.audit_truncated"))).toBe(true);
       // An audit that fails does not stop the sweeps that ran before it, and is reported by its error's name alone.
       t.access.auditKeys.mockRejectedValueOnce(Object.assign(new Error("secret detail"), { name: "BlockFailed" }));
       const failed = await t.sweep();
-      expect(JSON.parse(failed.body)).toMatchObject({ jobs: [{ ok: true }, { ok: true }, { ok: true }, { ok: true }, { name: "sweep-spend", ok: true }, { name: "audit-model-keys", ok: false, error: "BlockFailed" }] });
+      expect(JSON.parse(failed.body)).toMatchObject({ jobs: [{ ok: true }, { ok: true }, { ok: true }, { ok: true }, { name: "sweep-spend", ok: true }, { name: "audit-model-keys", ok: false, error: "BlockFailed" }, { name: "resume-learning-walks", ok: true }] });
       expect(failed.body).not.toContain("secret detail");
       // What an audit that threw had done is logged: the counts travel in its error's words.
       t.access.auditKeys.mockRejectedValueOnce(Object.assign(new Error("MODEL_PROXY_UNAVAILABLE: the audit could not block 1 of 3 drifted keys (checked 9, blocked 2)"), { name: "AgentXError" }));
@@ -1127,9 +1129,10 @@ describe("a key the broker mints", () => {
     const t = await brokerSetup({ agents: false });
     const run = await t.sweep();
     expect(run.statusCode).toBe(200);
-    expect(JSON.parse(run.body)).toMatchObject({ skipped: true });
+    // Only the learning walk-resume job runs there (it needs neither agents nor a proxy); the spend jobs are not run.
+    expect((JSON.parse(run.body) as { jobs: Array<{ name: string }> }).jobs.map((job) => job.name)).toEqual(["resume-learning-walks"]);
     const bare = createBroker({ extra: {} });
-    expect(JSON.parse((await bare.handler({ source: "agentx.spend-settlement" })).body)).toMatchObject({ skipped: true });
+    expect((JSON.parse((await bare.handler({ source: "agentx.spend-settlement" })).body) as { jobs: Array<{ name: string }> }).jobs.map((job) => job.name)).toEqual(["resume-learning-walks"]);
   });
 
   it("reports a job that cannot run at all by its error's name, without its detail", async () => {
@@ -1145,6 +1148,8 @@ describe("a key the broker mints", () => {
       expect.objectContaining({ name: "sweep-model-sources", ok: true }),
       { name: "sweep-spend", ok: false, error: "InternalServerError" },
       expect.objectContaining({ name: "audit-model-keys", ok: true }),
+      // v1.2 learning loop: after every settlement job.
+      expect.objectContaining({ name: "resume-learning-walks", ok: true }),
     ]);
     expect(run.body).not.toContain("secret detail");
   });
@@ -1460,12 +1465,12 @@ describe("the scheduled run's time", () => {
     // Each later job gets what remains: spend keeps the audit's reserve, and nothing is ever negative or past the deadline.
     expect(settlementBudgets(2_000)).toMatchObject({ spend: 21_000, audit: 4_000 });
     expect(settlementBudgets(12_000)).toMatchObject({ drain: 5_000, spend: 11_000, audit: 4_000 });
-    expect(settlementBudgets(24_000)).toStrictEqual({ drain: 3_000, approvals: 3_000, escalate: 2_000, sources: 3_000, learning: 3_000, spend: 0, audit: 3_000 });
+    expect(settlementBudgets(24_000)).toStrictEqual({ drain: 3_000, approvals: 3_000, escalate: 2_000, sources: 3_000, learning: 0, spend: 0, audit: 3_000 });
     expect(settlementBudgets(26_500)).toMatchObject({ drain: 500, spend: 0, audit: 500 });
     expect(settlementBudgets(40_000)).toStrictEqual({ drain: 0, approvals: 0, escalate: 0, sources: 0, learning: 0, spend: 0, audit: 0 });
     // Run one after another, each taking all it is given, the jobs end at the deadline and not after it.
     let elapsed = 0;
-    for (const name of ["drain", "approvals", "escalate", "sources", "learning", "spend", "audit"] as const) elapsed += settlementBudgets(elapsed)[name];
+    for (const name of ["drain", "approvals", "escalate", "sources", "spend", "audit", "learning"] as const) elapsed += settlementBudgets(elapsed)[name];
     expect(elapsed).toBeLessThanOrEqual(SETTLEMENT_TOTAL_LIMIT_MS);
   });
 

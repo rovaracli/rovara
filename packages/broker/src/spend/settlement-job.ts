@@ -10,6 +10,8 @@ import { sweepSpend, type LedgerDependencies } from "./ledger.js";
  * sweep, which resumes from its cursor, takes what is left (see `settlementBudgets`), and the key audit is last and has the least.
  */
 export const SETTLEMENT_BUDGETS_MS = { drain: 5_000, approvals: 4_000, escalate: 2_000, sources: 5_000, learning: 3_000, audit: 4_000 } as const;
+/** The learning walk-resume job runs after every settlement job. It needs its whole slice plus this margin to be left, or it is skipped: it can never take time settlement needs. */
+export const LEARNING_SLICE_MARGIN_MS = 1_000;
 export const SETTLEMENT_TOTAL_LIMIT_MS = 27_000;
 
 /**
@@ -21,7 +23,8 @@ export function settlementBudgets(elapsedMs: number): { drain: number; approvals
   const capped = (cap: number) => Math.min(cap, left);
   return {
     drain: capped(SETTLEMENT_BUDGETS_MS.drain), approvals: capped(SETTLEMENT_BUDGETS_MS.approvals), escalate: capped(SETTLEMENT_BUDGETS_MS.escalate), sources: capped(SETTLEMENT_BUDGETS_MS.sources),
-    learning: capped(SETTLEMENT_BUDGETS_MS.learning),
+    // Computed from what is left AFTER everything else, and never borrowed from the others: settlement's own budgets above do not read it. Less than the slice plus the margin left is no slice.
+    learning: left >= SETTLEMENT_BUDGETS_MS.learning + LEARNING_SLICE_MARGIN_MS ? SETTLEMENT_BUDGETS_MS.learning : 0,
     spend: Math.max(0, left - SETTLEMENT_BUDGETS_MS.audit), audit: capped(SETTLEMENT_BUDGETS_MS.audit),
   };
 }
@@ -42,12 +45,18 @@ export function timedSettlementJob(input: {
   startedAt: number;
   now: () => number;
   run: (budgetMs: number) => Promise<unknown>;
+  /** Called (with the job's name) when the job is skipped for want of time, so a skipped job leaves a log line. */
+  onSkip?: (name: string) => void;
 }): SettlementJob {
   return {
     name: input.name,
     run: async () => {
       const budgetMs = settlementBudgets(input.now() - input.startedAt)[input.pick];
-      return budgetMs <= 0 ? { skipped: "no time left in this run" } : input.run(budgetMs);
+      if (budgetMs <= 0) {
+        input.onSkip?.(input.name);
+        return { skipped: "no time left in this run" };
+      }
+      return input.run(budgetMs);
     },
   };
 }

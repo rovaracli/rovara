@@ -373,7 +373,7 @@ import { runAuditDrain } from "../audit/drain.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
 import { exportInvoker, exportLinkSigner, exportPurger } from "../audit/export-wiring.js";
 import type { AuditEraseDeps } from "../audit/erase.js";
-import { learningEraseHook } from "../learning/cleanup.js";
+import { learningEraseHook, resumeOpenLearningWalks } from "../learning/cleanup.js";
 import { setLearningHomeSettler } from "../learning/home-source.js";
 import { learningSettler } from "../learning/settle.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
@@ -2014,6 +2014,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         ...(ledger === undefined ? [] : [timed("sweep-spend", "spend", (budgetMs) => runSpendSweep(ledger, { budgetMs }))]),
         // Last: it reads the proxy's keys over several calls and must not take time the sweeps need (Task 26).
         ...(keyAudit === undefined ? [] : [timed("audit-model-keys", "audit", (budgetMs) => auditModelKeys(keyAudit, budgetMs))]),
+        // v1.2 learning loop: finishes the cleanup walks of closed companies and erased people. After every settlement job (spend settlement is a money job and is never delayed or starved by
+        // it); it has its own 3 s slice and is skipped, with a log line, unless that and a safety margin are left.
+        timedSettlementJob({
+          name: "resume-learning-walks", pick: "learning", startedAt, now: Date.now,
+          onSkip: (name) => console.log(JSON.stringify({ component: "broker", event: "spend.settlement_job_skipped", job: name, reason: "not enough time left" })),
+          run: (budgetMs) => resumeOpenLearningWalks({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))),
+        }),
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
       return json({ jobs: await runSettlementJobs(jobs, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))) }, "spend-settlement");
