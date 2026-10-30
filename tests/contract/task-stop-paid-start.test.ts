@@ -1346,3 +1346,19 @@ for (const corruption of ["valid", "cap", "baseline", "reference", "receipt"] as
   expect(reply.status).toBe(corruption === "valid" ? 200 : 409);
   expect(f.t.access.mintedKeys().length).toBe(before + (corruption === "valid" ? 1 : 0));
 });
+
+it("model key record refuses a competing admitted cap write and returns no key", async () => {
+  const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
+  f.t.db.send = async command => {
+    if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
+      raced = true; f.t.db.set({ ...f.t.meta(task.taskId), budgetUsd: 100 });
+    }
+    return send(command);
+  };
+  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers: {
+    "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability } });
+  expect(raced).toBe(true); expect(reply.status).not.toBe(200);
+  expect(f.t.meta(task.taskId).modelKeyIds).toBeUndefined();
+});
