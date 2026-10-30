@@ -8,7 +8,7 @@ it("native financial snapshot preserves missing positions and returns independen
   expect(result).toMatchObject({ Responses: [{ Item: { ...a, policy: { amount: 1 } } }, {}, { Item: { ...b, policy: { amount: 2 } } }] });
   expect(db.commandNames()).toEqual(["TransactGetCommand"]);
   db.set({ ...a, policy: { amount: 3 } });
-  expect(result).toMatchObject({ Responses: [{ Item: { policy: { amount: 1 } } }] });
+  expect(result).toMatchObject({ Responses: [{ Item: { ...a, policy: { amount: 1 } } }, {}, { Item: { ...b, policy: { amount: 2 } } }] });
 });
 it("native financial snapshot sees committed values even when ordinary eventual Gets are stale", async () => {
   const db = new FakeDynamoDb({ consistency: "eventual" }), key = { pk: "POLICY", sk: "A" };

@@ -218,6 +218,14 @@ export class FakeDynamoDb {
         }
         return { Item: item === undefined ? undefined : this.readClone(item) };
       }
+      case "TransactGetCommand": {
+        const entries = input.TransactItems as Array<{ Get: { TableName: string; Key: { pk: string; sk: string } } }>;
+        if (entries.length === 0 || entries.length > 100) throw Object.assign(new Error("TransactGetItems requires 1 to 100 items"), { name: "ValidationException", $metadata: {} });
+        // One synchronous view after the call's await: no individual eventual
+        // Gets, per-key retry, or await can mix revisions within this snapshot.
+        const snapshot = entries.map(({ Get }) => this.get(Get.Key));
+        return { Responses: snapshot.map(item => item === undefined ? {} : { Item: this.readClone(item) }) };
+      }
       case "BatchGetCommand": {
         // As DynamoDB takes it: at most 100 keys in all, none named twice; items come back in no promised order, and a key with no item is simply absent.
         const request = input.RequestItems as Record<string, { Keys: Array<{ pk: string; sk: string }> }>;
