@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { PER_TASK_BUDGET_USD, spendRequestKey, agentXError, type SpendRequestRecord } from "@agentx/contracts";
+import { RunCheckoutSchema, PER_TASK_BUDGET_USD, spendRequestKey, agentXError, type SpendRequestRecord } from "@agentx/contracts";
 import { taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { CapturedTaskStop } from "../org/task-stop-admission.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
@@ -16,11 +16,12 @@ const micros = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER), sha = z.str
 export const TaskApprovalTermsSchema = z.object({
   version: z.literal(1), sourcePresence: z.literal(true), sourceKey: z.object({ pk: z.string(), sk: z.literal("META") }).strict(),
   sourceRevision: z.string().datetime().nullable(), sourceDigest: sha,
+  firstDispatch: z.object({ operationId: z.string().uuid(), checkout: z.array(RunCheckoutSchema).optional(), readOnly: z.literal(true).optional() }).strict().nullable(),
   originalFields: z.record(z.string(), z.unknown()).refine(value => Object.keys(value).every(key => fields.some(field => field === key))),
   askedFiguresMicrousd: z.object({ budget: micros, amount: micros }).strict(), proposedFiguresMicrousd: z.object({ budget: micros }).strict(),
   countedOwner: sha.nullable(), totalsRevision: z.null(), policyDigest: sha, admissionId: z.string().min(1).max(256), operation: z.enum(["run_limit", "max_per_run", "planning"]),
 }).strict().superRefine((value, context) => {
-  if (digest(value.originalFields) !== value.sourceDigest) context.addIssue({ code: "custom", message: "Original source digest does not agree." });
+  if (digest({ originalFields: value.originalFields, firstDispatch: value.firstDispatch }) !== value.sourceDigest) context.addIssue({ code: "custom", message: "Original source digest does not agree." });
 });
 export type TaskApprovalTerms = z.infer<typeof TaskApprovalTermsSchema>;
 /** Financial policy evidence excludes path/approved/request amounts, which are
@@ -30,15 +31,15 @@ export function taskApprovalPolicyDigest(snapshot: CapturedTaskStop): string {
   return digest([snapshot.sourceRevisions, input.companyDefault, input.ceilingMicrousd, input.projectStop, input.agentStop]);
 }
 export function makeTaskApprovalTerms(task: DeveloperTaskRecord, snapshot: CapturedTaskStop, record: SpendRequestRecord): TaskApprovalTerms {
-  const originalFields = taskApprovalFields(task);
+  const originalFields = taskApprovalFields(task), firstDispatch = task.budgetPause?.firstDispatch ?? null;
   return TaskApprovalTermsSchema.parse({ version: 1, sourcePresence: true, sourceKey: taskKey(task.taskId), sourceRevision: task.spendingStop?.capturedAt ?? null,
-    sourceDigest: digest(originalFields), originalFields,
+    sourceDigest: digest({ originalFields, firstDispatch }), originalFields, firstDispatch,
     askedFiguresMicrousd: { budget: usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD), amount: usdToWholeMicrodollars(record.amountUsd) },
     proposedFiguresMicrousd: { budget: usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd) },
     countedOwner: tryEffectiveTaskOwner(task)?.developerId ?? null, totalsRevision: null, policyDigest: taskApprovalPolicyDigest(snapshot),
     admissionId: `task:${task.taskId}:${task.spendingStop?.capturedAt ?? "existing"}`, operation: record.kind });
 }
-export const taskApprovalSourceMatches = (terms: TaskApprovalTerms, task: DeveloperTaskRecord): boolean => terms.sourceKey.pk === taskKey(task.taskId).pk && digest(taskApprovalFields(task)) === terms.sourceDigest;
+export const taskApprovalSourceMatches = (terms: TaskApprovalTerms, task: DeveloperTaskRecord): boolean => terms.sourceKey.pk === taskKey(task.taskId).pk && digest({ originalFields: taskApprovalFields(task), firstDispatch: task.budgetPause?.firstDispatch ?? null }) === terms.sourceDigest;
 export function taskApprovalRecordMatches(terms: TaskApprovalTerms, record: SpendRequestRecord): boolean {
   return terms.operation === record.kind && terms.askedFiguresMicrousd.amount === usdToWholeMicrodollars(record.amountUsd)
     && terms.proposedFiguresMicrousd.budget === usdToWholeMicrodollars(record.newLimitUsd ?? record.amountUsd);
@@ -46,8 +47,10 @@ export function taskApprovalRecordMatches(terms: TaskApprovalTerms, record: Spen
 /** Merge the original source into the request's existing task write, or append
  * one condition when it has none. Never duplicate a DynamoDB key. */
 export function pinTaskApprovalSource(tableName: string, items: TransactItem[], terms: TaskApprovalTerms): number {
-  const names: Record<string, string> = {}, values: Record<string, unknown> = {};
-  const condition = ["attribute_exists(pk)", ...fields.map(field => {
+  const names: Record<string, string> = { "#askedPause": "budgetPause", "#askedFirstDispatch": "firstDispatch" }, values: Record<string, unknown> = {};
+  const firstDispatchCondition = terms.firstDispatch === null ? "attribute_not_exists(#askedPause.#askedFirstDispatch)" : "#askedPause.#askedFirstDispatch = :askedFirstDispatch";
+  if (terms.firstDispatch !== null) values[":askedFirstDispatch"] = terms.firstDispatch;
+  const condition = ["attribute_exists(pk)", firstDispatchCondition, ...fields.map(field => {
     const name = `#askedTask_${field}`; names[name] = field;
     if (!Object.hasOwn(terms.originalFields, field)) return `attribute_not_exists(${name})`;
     const value = `:askedTask_${field}`; values[value] = terms.originalFields[field]; return `${name} = ${value}`;

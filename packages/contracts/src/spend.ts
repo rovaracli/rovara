@@ -1,3 +1,4 @@
+import type { RunCheckout } from "./agent-run-node.js";
 // Budget and approval placeholder constants for agents. Other tasks read these before the budget engine that
 // owns them exists, so they live here from the start; the budget tasks add keys, types and functions beside them.
 import { z } from "zod";
@@ -341,6 +342,7 @@ export interface SpendRequestRecord {
   /** Original task approval terms. Owner-budget requests use their own source proof. */
   approvalTerms?: {
     version: 1; sourcePresence: true; sourceKey: { pk: string; sk: string }; sourceRevision: string | null; sourceDigest: string;
+    firstDispatch: { operationId: string; checkout?: RunCheckout[] | undefined; readOnly?: true | undefined } | null;
     originalFields: Record<string, unknown>; askedFiguresMicrousd: { budget: number; amount: number }; proposedFiguresMicrousd: { budget: number };
     countedOwner: string | null; totalsRevision: null; policyDigest: string; admissionId: string; operation: "run_limit" | "max_per_run" | "planning";
   };
