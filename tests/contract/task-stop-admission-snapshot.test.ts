@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { TransactGetCommand } from "@aws-sdk/lib-dynamodb";
-import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgSettingsKey, projectAiKey } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgSettingsKey, orgScoped, projectAiKey } from "@agentx/contracts";
 import * as company from "../../packages/broker/src/org/task-stop-company.js";
 
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa", who = "a".repeat(64), agentId = "agt_aaaaaaaaaaaaaaaaaaaa", project = "project";
@@ -17,6 +17,7 @@ function fixture() {
     { ...orgProjectCatalogKey(orgId, project), entityType: "PROJECT_CATALOG", orgId, name: project, latestRevision: 2 },
     { ...projectAiKey(orgId, project), entityType: "PROJECT_AI", orgId, project, revision: 3, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } },
     { ...agentKey(orgId, agentId, "META"), entityType: "AGENT", orgId, agentId, status: "active", revision: 4, stopKind: "inherit" },
+    { pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#bootstrap", entityType: "TASK_STOP_SEED", orgId, source: "bootstrap", version: 1, outcome: "created", policyRevision: 1 },
   ];
   const deps = { tableName: "state", now: () => now,
     requireScopeAccess: async () => { order.push("authorized"); },
@@ -89,4 +90,22 @@ it("does not return raw member, guardrail or private source metadata in the capt
   const result = await f.capture();
   expect(JSON.stringify(result)).not.toContain("private source value");
   expect(JSON.stringify(result)).not.toContain("forbiddenModels");
+});
+
+it("keeps an unseeded legacy org disabled only when both immutable seed receipts and policy are absent", async () => {
+  const f = fixture(); f.rows.splice(8, 1); f.rows.splice(3, 1);
+  expect(await f.capture()).toEqual({ kind: "disabled" });
+  expect(f.calls).toHaveLength(1);
+});
+it("does not enable an apparent policy without an immutable seed receipt", async () => {
+  const f = fixture(); f.rows.splice(8, 1);
+  await expect(f.capture()).rejects.toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
+});
+it("does not fall back to legacy behavior when a seeded company's policy disappears", async () => {
+  const f = fixture(); f.rows.splice(3, 1);
+  await expect(f.capture()).rejects.toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
+});
+it("rejects a foreign seed receipt instead of considering it absent", async () => {
+  const f = fixture(); f.rows[8]!.orgId = "org_bbbbbbbbbbbbbbbbbbbb";
+  await expect(f.capture()).rejects.toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
 });
