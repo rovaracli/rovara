@@ -722,3 +722,26 @@ it("denying an enrolled above-ceiling request remains allowed and grants no new 
   const result = await f.t.decide(MAYA, request.spendRequestId, "DENY"); expect(result.spendRequest.status).toBe("DENIED");
   expect(f.t.meta(task.taskId).budgetUsd).toBe(before);
 });
+
+async function approvalWindow(scope?: "company" | "project" | "agent") {
+  const f = await fixture();
+  f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: scope === "company" ? { kind: "limited", stopMicrousd: 2_000_000 } : { kind: "rovara_estimate" } } });
+  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  if (scope === "project") f.t.db.set({ ...f.t.db.get(f.project)!, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 2_000_000 } });
+  if (scope === "agent") f.t.db.set({ ...f.t.db.get(f.agent)!, stopKind: "limited", maxPerRunUsd: 2 });
+  const task = await f.t.plainTask(); await f.t.pauseAndEnd(task);
+  const request = f.t.requestOf(task.taskId, "run_limit")[0]!; expect(request).toBeDefined();
+  return { ...f, task, spendRequest: request };
+}
+it("an allowed run-limit approval commits its newly calculated stop envelope with the existing task cap", async () => {
+  const f = await approvalWindow(); expect(f.spendRequest.newLimitUsd).toBe(15);
+  const result = await f.t.decide(BEN, f.spendRequest.spendRequestId); expect(result.spendRequest.status).toBe("APPROVED");
+  expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 15, spendingStop: { effectiveStopMicrousd: 15_000_000, approvalCapMicrousd: 20_000_000, calculationInput: { approvedRunLimitMicrousd: 15_000_000 } } });
+});
+for (const scope of ["company", "project", "agent"] as const) it(`a new run-limit approval cannot lift its explicit ${scope} stop`, async () => {
+  const f = await approvalWindow(scope), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
+  expect(f.spendRequest.newLimitUsd).toBe(7);
+  await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE", message: expect.stringContaining("Spending rules changed; ask again.") });
+  expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
+  expect(f.t.requestOf(f.task.taskId, "run_limit")[0]).toMatchObject({ status: "EXPIRED", endedBecause: "spending_rules_changed" });
+});
