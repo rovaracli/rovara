@@ -193,3 +193,6 @@ export * from "./app-working-branches.js";
 
 export * from "./stage-models.js";
 export * from "./app-allowed-websites.js";
+
+// V3: the fixed line a refused process publish carries.
+export * from "./stage-model-publish-refusal.js";
