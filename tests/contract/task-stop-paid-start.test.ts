@@ -1,7 +1,8 @@
+import { fixtureProject } from "../support/project-ai-source.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, builtinSettingsKey, orgSettingsKey, orgScoped, projectAiKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, orgMetaKey, projectMetaKey, projectMemberKey, agentKey, projectRevisionKey } from "@agentx/contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { setup, CODING, DEB, ADA } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -190,6 +191,34 @@ for (const loss of ["settings_missing", "disabled"] as const) it(`paid builtin s
     return send(command);
   };
   const reply = await f.start(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
+
+async function otherProjectAgent() {
+  const f = await fixture(), project = "platform", grant = projectMemberKey(TEST_ORG, MAYA.developerId, project);
+  fixtureProject(f.t.db, TEST_ORG, project);
+  const revision = projectRevisionKey(TEST_ORG, project, 1);
+  f.t.db.set({ ...f.t.db.get(revision)!, ...revision, entityType: "PROJECT", orgId: TEST_ORG });
+  f.t.db.set({ ...orgProjectCatalogKey(TEST_ORG, project), entityType: "PROJECT_CATALOG", orgId: TEST_ORG, name: project, latestRevision: 1 });
+  f.t.db.set({ ...grant, entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: project, grantId: randomUUID(), role: "developer", projectRole: "maintainer" });
+  const agentId = await f.t.agentOf(CODING, { owner: { kind: "project", project }, accountable: ADA }), key = agentKey(TEST_ORG, agentId, "META");
+  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  return { ...f, grant, agentId, key, startOther: () => f.t.dev(MAYA, "POST", "/v1/dev/tasks", { ...f.request, agent: { agentId } }) };
+}
+it("a legitimate agent owned by another project can start with live use authority", async () => {
+  const f = await otherProjectAgent(), reply = await f.startOther(); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+});
+it("paid start fences a real use-grant loss in the agent's owning project", async () => {
+  const f = await otherProjectAgent(), send = f.t.db.send.bind(f.t.db); let changed = false;
+  f.t.db.send = async command => {
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "DEVELOPER_TASK")) {
+      changed = true; const saved = await f.t.api(ADA, "PUT", `/v1/app/projects/platform/members/${MAYA.developerId}`, { role: "viewer" });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    }
+    return send(command);
+  };
+  const reply = await f.startOther(); expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
   expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
 });
