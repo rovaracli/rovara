@@ -19,7 +19,7 @@ const CaptureIdentity = z.object({
   pathLimitMicrousd: z.unknown(), approvedRunLimitMicrousd: z.unknown().optional(),
   committedMaxPerRunMicrousd: z.unknown().optional(), requestedMicrousd: z.unknown().optional(), chainMicrousd: z.unknown().optional(), testingMicrousd: z.unknown().optional(),
 }).strict();
-const EvalCaptureIdentity = CaptureIdentity.omit({ agentId: true }).extend({ agentScope: z.literal("none_eval") }).strict();
+const EvalCaptureIdentity = CaptureIdentity.omit({ agentId: true, role: true }).extend({ agentScope: z.literal("none_eval"), role: OrgRoleSchema.optional() }).strict();
 export type TaskStopEvalCaptureRequest = z.infer<typeof EvalCaptureIdentity>;
 export type TaskStopCaptureRequest = z.infer<typeof CaptureIdentity>;
 export interface TaskStopCaptureDependencies {
@@ -145,7 +145,8 @@ async function captureTaskStopSnapshot(deps: SnapshotDependencies, value: unknow
   // Admission after enrollment and explicit read-only cutover review both
   // require migrated native identities. Ordinary disabled admission stays legacy.
   const member = row(0, true), pointer = row(1, true);
-  if (member.developerId !== developerId || member.role !== role || pointer.role !== role) throw forbidden();
+  const capturedRole = role ?? member.role;
+  if (!OrgRoleSchema.safeParse(capturedRole).success || member.developerId !== developerId || member.role !== capturedRole || pointer.role !== capturedRole) throw forbidden();
   if (receipts.length === 0) throw missing();
   if (receipts.some(receipt => Number(receipt.policyRevision) > Number(company.revision))) throw invalid();
   const ceiling = row(4), catalog = row(5), settings = row(6), agent = agentId === undefined ? undefined : row(7);

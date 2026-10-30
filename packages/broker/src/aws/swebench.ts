@@ -1,3 +1,9 @@
+import type { TransactItem } from "../agents/table-writes.js";
+import { captureTaskStopEvalAdmission } from "../org/task-stop-admission.js";
+import { usdToWholeMicrodollars } from "../org/budget-amount.js";
+import { budgetActorChecks } from "../agents/budget-authority.js";
+import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
+import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 // Spec 043: SWE-bench runs from Slack. The broker records each run, holds it a slot under the
 // deployment's limit on concurrent runs (spec 052), writes the run's launch file, starts the eval
 // state machine, and applies the runner's callbacks. The Slack service polls the run and posts to
@@ -6,6 +12,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import {
+  OrgIdSchema, OrgRoleSchema, orgMemberKey,
   SWEBENCH_COST_CEILING_DEFAULT_USD,
   SWEBENCH_RUN_TIME_LIMIT_SECONDS,
   SWEBENCH_TERMINAL_STATUSES,
@@ -212,6 +219,22 @@ export async function startSwebenchRun(
   const runnerFeatures = runnerImage === deployment.runnerImage ? deployment.runnerFeatures : options.runnerFeatures ?? [];
   // The record says what the runner was given: no level when the runner image cannot parse one.
   const model = modelSelectionFor(await context.projectModel(request.model) ?? deployment.defaultModel, runnerFeatures);
+  const pathLimitMicrousd = usdToWholeMicrodollars(options.maxCostUsd ?? channel.maxCostUsd);
+  const parsedOrg = OrgIdSchema.safeParse(context.orgId);
+  if (!parsedOrg.success) throw agentXError("TASK_STOP_CONFIG_MISSING", "The eval company scope is missing.");
+  const orgId = parsedOrg.data;
+  if (context.developerId === undefined) throw agentXError("TASK_STOP_CONFIG_MISSING", "The eval requesting principal is missing.");
+  const snapshot = await captureTaskStopEvalAdmission({ ...dependencies, now: () => now(dependencies).getTime(), requireScopeAccess: async () => { await context.projectModel(request.model); } },
+    { orgId, developerId: context.developerId, project: context.projectName, agentScope: "none_eval", pathLimitMicrousd });
+  let authority: TransactItem[] = [];
+  if (snapshot.kind === "captured") {
+    const member = await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: orgMemberKey(orgId, context.developerId), ConsistentRead: true }));
+    const role = OrgRoleSchema.parse(member.Item?.role);
+    const actor = { orgId, developerId: context.developerId, role, project: context.projectName };
+    authority = [...budgetActorChecks(dependencies.tableName, orgId, actor), ...await taskStartProjectAuthorityChecks(dependencies, actor,
+      () => requireNativeProjectWorkRole(dependencies, { project: context.projectName }, { orgId, developerId: context.developerId!, orgRole: role }))];
+    if (snapshot.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
+  }
   const createdAt = now(dependencies).toISOString();
   const run: SwebenchRun = SwebenchRunSchema.parse({
     runId,
@@ -221,7 +244,8 @@ export async function startSwebenchRun(
     dataset: request.dataset,
     instanceId: request.instanceId,
     model,
-    maxCostUsd: options.maxCostUsd ?? channel.maxCostUsd,
+    maxCostUsd: snapshot.kind === "captured" ? snapshot.effectiveStopMicrousd / 1_000_000 : options.maxCostUsd ?? channel.maxCostUsd,
+    ...(snapshot.kind === "captured" ? { spendingStop: snapshot } : {}),
     thread: context.thread,
     requestedBy: context.requester,
     status: "STARTING",
@@ -237,6 +261,7 @@ export async function startSwebenchRun(
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({
       TransactItems: [
+        ...authority,
         { Put: { TableName: dependencies.tableName, Item: { ...swebenchRunKey(runId), entityType: "SWEBENCH_RUN", projectName: context.projectName, ...run }, ConditionExpression: "attribute_not_exists(pk)" } },
         {
           Update: {
@@ -262,6 +287,8 @@ export async function startSwebenchRun(
     }));
   } catch (error) {
     if (!isConditionFailure(error)) throw error;
+    const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+    if (reasons?.slice(0, authority.length).some(reason => reason.Code === "ConditionalCheckFailed")) throw agentXError("FORBIDDEN", "Your eval start authority changed.");
     // A concurrent delivery of the same request, or no free slot.
     const raced = await readRun(dependencies, runId);
     if (raced !== undefined) return { outcome: "STARTED", run: raced };

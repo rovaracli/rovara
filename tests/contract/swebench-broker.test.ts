@@ -1,4 +1,4 @@
-import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgSettingsKey, orgScoped, orgMemberKey, developerOrgKey, orgProjectCatalogKey, projectAiKey } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgSettingsKey, orgScoped, orgMemberKey, developerOrgKey, orgProjectCatalogKey, projectAiKey, projectMemberKey } from "@agentx/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { randomUUID } from "node:crypto";
@@ -545,7 +545,7 @@ describe("eval batches on the broker's run path (spec 052)", () => {
     });
     const model = { provider: "amazon-bedrock", modelId: "us.vendor.batch-v1" };
     const batch = await createBatch(dependencies, {
-      thread: slackThread, requester: { teamId: SLACK_TEAM, userId: member }, projectName: "payments", projectModel: async () => model,
+      orgId: TEST_ORG, developerId: developerIdForSlackUser(member), thread: slackThread, requester: { teamId: SLACK_TEAM, userId: member }, projectName: "payments", projectModel: async () => model,
     }, { benchmark: "verified", tasks: ["django__django-11099", "django__django-11100"], models: [{ ...model, thinkingLevel: "low" }], costCapUsd: 100 });
     await topUpBatches(dependencies);
     const first = evalBatchRunId(batch.batchId, 0, 1);
@@ -647,6 +647,7 @@ it("M47 actual eval start captures the strict project stop without applying the 
   const developerId = developerIdForSlackUser(member);
   h.db.set({ ...orgMemberKey(TEST_ORG, developerId), orgId: TEST_ORG, developerId, role: "member" });
   h.db.set({ ...developerOrgKey(developerId), orgId: TEST_ORG, role: "member" });
+  h.db.set({ ...projectMemberKey(TEST_ORG, developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "payments", role: "developer", projectRole: "contributor", grantId: "eval-grant" });
   h.db.set({ ...orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1,
     policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, enrollment: { version: 1, state: "enabled" } });
   h.db.set({ pk: orgScoped(TEST_ORG, "TASK_STOP_SEED"), sk: "V1#bootstrap", entityType: "TASK_STOP_SEED", orgId: TEST_ORG, source: "bootstrap", version: 1, outcome: "created", policyRevision: 1 });
