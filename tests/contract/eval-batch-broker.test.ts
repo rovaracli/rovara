@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgMemberKey, developerOrgKey, orgSettingsKey, orgScoped, orgProjectCatalogKey, projectAiKey, projectMemberKey } from "@agentx/contracts";
 // Spec 052 Task 3: batch records, top-up under a cost cap, the single infrastructure retry, and stop.
 // Offline: FakeDynamoDb, a vi.fn state machine and S3, and a fake clock.
 import { describe, expect, it, vi, type Mock } from "vitest";
@@ -952,4 +953,33 @@ it("M47 an old batch without org scope refuses a new refill instead of falling b
   expect(result.failures[0]?.error).toContain("TASK_STOP_CONFIG_MISSING");
   expect(h.startExecution).not.toHaveBeenCalled();
   expect(h.db.find(item => item.entityType === "SWEBENCH_RUN")).toHaveLength(0);
+});
+
+async function enrolledBatchHarness(inherit = false) {
+  const h = await harness({ maxConcurrentEvals: 2 }), orgId = "org_aaaaaaaaaaaaaaaaaaaa", developerId = "a".repeat(64), project = "payments";
+  h.db.set({ ...orgMemberKey(orgId, developerId), orgId, developerId, role: "member" });
+  h.db.set({ ...developerOrgKey(developerId), orgId, role: "member" });
+  h.db.set({ ...projectMemberKey(orgId, developerId, project), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: project, role: "developer", projectRole: "contributor", grantId: "eval-batch-grant" });
+  h.db.set({ ...orgSettingsKey(orgId, "TASK_STOP_POLICY"), entityType: "ORG_TASK_STOP_POLICY", orgId, revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, enrollment: { version: 1, state: "enabled" } });
+  h.db.set({ pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#bootstrap", entityType: "TASK_STOP_SEED", orgId, source: "bootstrap", version: 1, outcome: "created", policyRevision: 1 });
+  h.db.set({ ...agentGuardrailsKey(orgId), entityType: "AGENT_GUARDRAILS", orgId, revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 1 } });
+  h.db.set({ ...orgProjectCatalogKey(orgId, project), entityType: "PROJECT_CATALOG", orgId, name: project, latestRevision: 1 });
+  h.db.set({ ...projectAiKey(orgId, project), entityType: "PROJECT_AI", orgId, project, revision: 1, taskStopPolicy: inherit ? { schemaVersion: 2, kind: "inherit" } : { schemaVersion: 1, stopMicrousd: 1234567 } });
+  return { ...h, orgId, project };
+}
+it("M47 every actual batch refill captures the current project stop", async () => {
+  const h = await enrolledBatchHarness(), batch = await createBatch(h.dependencies, h.context, file({ models: [cheap] }));
+  await topUpBatches(h.dependencies);
+  const firstId = evalBatchRunId(batch.batchId, 0, 1);
+  expect(h.db.get(`SWEBENCH_RUN#${firstId}`, "META")).toMatchObject({ maxCostUsd: 1.234567, spendingStop: { agentScope: "none_eval", effectiveStopMicrousd: 1234567 } });
+  const key = projectAiKey(h.orgId, h.project);
+  h.db.set({ ...h.db.get(key)!, revision: 2, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 2000000 } });
+  await finish(h, firstId, graded(0.5));
+  expect(h.db.get(`SWEBENCH_RUN#${evalBatchRunId(batch.batchId, 1, 1)}`, "META")).toMatchObject({ maxCostUsd: 2, spendingStop: { agentScope: "none_eval", effectiveStopMicrousd: 2000000, approvalCapMicrousd: 1000000 } });
+  expect(h.startExecution).toHaveBeenCalledTimes(2);
+});
+it("M47 a seeded estimate batch keeps its ordinary per-run cap above the approval ceiling", async () => {
+  const h = await enrolledBatchHarness(true), batch = await createBatch(h.dependencies, h.context, file({ models: [cheap] }));
+  await topUpBatches(h.dependencies);
+  expect(h.db.get(`SWEBENCH_RUN#${evalBatchRunId(batch.batchId, 0, 1)}`, "META")).toMatchObject({ maxCostUsd: 10, spendingStop: { agentScope: "none_eval", effectiveStopMicrousd: 10000000, approvalCapMicrousd: 1000000 } });
 });
