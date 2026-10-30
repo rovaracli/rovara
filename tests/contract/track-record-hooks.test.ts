@@ -474,6 +474,15 @@ describe("the task ends", () => {
     expect(samples(w.db).every((item) => item.state === "no_outcome" && item.reason === "task_closed")).toBe(true);
   });
 
+  it("a task reached with under two seconds of the pass left is skipped with no read, not settled on a few milliseconds", async () => {
+    const w = await seeded();
+    let reads = 0;
+    const counting: EndedPullRequestReader = async (...args) => { reads += 1; return readerOf({}, status()).read(...args); };
+    expect(await settleTaskOutcomes(w.deps, withReader(counting, [{ number: 7, state: "MERGED" }]), T2, counting, 8_000, Date.now() + 1_500)).toBe("skipped");
+    expect(reads).toBe(0);
+    expect(samples(w.db).every((item) => item.state === "pending")).toBe(true);
+  });
+
   it("a settle never fails the close", async () => {
     const w = world({ failing: true });
     await expect(settleTaskOutcomes(w.deps, task, T2)).resolves.toBe("incomplete");

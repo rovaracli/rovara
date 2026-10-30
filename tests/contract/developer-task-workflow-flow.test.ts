@@ -5469,7 +5469,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     const b = await finishedBatch(10);
     const hanging = () => () => new Promise<never>(() => undefined);
     const started = Date.now();
-    const result = await releasePendingFinishedTasks({ tableName: "state", actions: b.harness.actions, documentClient: b.harness.db, outcomeReader: hanging, outcomeSettleBudgetMs: 120, outcomeSettleUntil: Date.now() + 300 });
+    const result = await releasePendingFinishedTasks({ tableName: "state", actions: b.harness.actions, documentClient: b.harness.db, outcomeReader: hanging, outcomeSettleBudgetMs: 120, outcomeSettleUntil: Date.now() + 2_150 });
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(result.attempted).toBe(10);
     expect(b.ids.every((id) => b.released(id))).toBe(true);
@@ -5478,6 +5478,8 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     expect(left.length).toBeLessThan(10);
     // What was not settled keeps its mark, due at once; what was settled lost it.
     expect(left.every((id) => b.mark(id) !== undefined)).toBe(true);
+    // Skipped marks go to the back of the queue (due from now), so they do not starve the marks already waiting.
+    expect(left.every((id) => String((b.mark(id) as { nextAttemptAt?: string }).nextAttemptAt) >= new Date(started).toISOString())).toBe(true);
     // Later passes (with a reader that answers) settle the rest.
     const answering = () => async () => ({ status: { number: 42, state: "merged", draft: false, headSha: "d".repeat(40), baseBranch: "main", mergeableState: "clean", checks: [], requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [] } as never, permission: async () => "write" as const });
     for (let pass = 0; pass < 3 && b.ids.some((id) => b.pending(id).length > 0); pass += 1) {
@@ -5486,6 +5488,30 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     }
     expect(b.ids.every((id) => b.pending(id).length === 0)).toBe(true);
     expect(b.ids.every((id) => b.mark(id) === undefined)).toBe(true);
+  });
+
+  it("a settle that keeps failing is given up after five tries of its own (busy retries before do not count): every open sample is scored github_unavailable by writes alone, and the mark goes", async () => {
+    const b = await finishedBatch(1);
+    const [id] = b.ids;
+    const reader = () => async () => ({ status: { number: 42, state: "merged", draft: false, headSha: "d".repeat(40), baseBranch: "main", mergeableState: "clean", checks: [], requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [] } as never, permission: async () => "write" as const });
+    const release = async () => {
+      b.harness.db.set({ ...b.mark(id!)!, nextAttemptAt: new Date(Date.now() - 1_000).toISOString() });
+      await releasePendingFinishedTasks({ tableName: "state", actions: b.harness.actions, documentClient: b.harness.db, outcomeReader: reader });
+    };
+    // Earlier busy retries are on the mark already; the settle's own count starts at none.
+    b.harness.db.set({ ...b.mark(id!)!, attempts: 4 });
+    let failing = 1;
+    b.harness.db.injectFault({ command: "TransactWriteCommand", match: (input) => failing > 0 && JSON.stringify(input).includes("OUTCOME_SAMPLE") && (failing -= 1) >= 0, error: { name: "ProvisionedThroughputExceededException" }, times: 1_000 });
+    await release();
+    expect(b.mark(id!)).toMatchObject({ settleAttempts: 1 });
+    expect(b.pending(id!).length).toBeGreaterThan(0);
+    // The fourth failed settle is not yet the end; the fifth is.
+    b.harness.db.set({ ...b.mark(id!)!, settleAttempts: 4 });
+    failing = 1;
+    await release();
+    expect(b.pending(id!)).toEqual([]);
+    expect(b.mark(id!)).toBeUndefined();
+    expect(b.harness.db.find((item) => item.entityType === "OUTCOME_SAMPLE" && item.taskId === id).every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
   });
 
   it("a settle that did not finish after the release is tried again by the next sweep (the release mark stays until it completes)", async () => {

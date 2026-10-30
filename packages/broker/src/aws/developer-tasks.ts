@@ -343,7 +343,7 @@ import { loadProofContext } from "../rovara-code/proof-inputs.js";
 import { proofTableView } from "../rovara-code/proof-view.js";
 import { breakLinearKeys, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
 import { loadTestProofLines, readTestProofForCandidate } from "../developer/test-proof-lines.js";
-import { outcomeDepsOf, recordPlanOutcome, recordPublicationOutcomes, settleSuperseded, settleTaskOutcomes, type EndedPullRequestReader } from "../rovara-code/outcome-hooks.js";
+import { outcomeDepsOf, recordPlanOutcome, recordPublicationOutcomes, settleSuperseded, settleTaskOutcomes, abandonTaskOutcomes, type EndedPullRequestReader } from "../rovara-code/outcome-hooks.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -8319,10 +8319,10 @@ const RELEASE_SWEEP_SCAN = 200;
 /** After a release that did not go through, the next try waits this long, doubling each time up to the cap. */
 const RELEASE_RETRY_FIRST_MS = 5 * 60_000;
 const RELEASE_RETRY_MAX_MS = 6 * 3_600_000;
-/** After this many settles that did not finish, a released task's mark is given up (its open samples expire on their own). */
+/** After this many settles of their own that did not finish, a released task's open samples are closed out as `github_unavailable` by writes alone, and its mark goes. */
 const SETTLE_ATTEMPTS_MAX = 5;
 
-interface FinishedReleaseMark { taskId: string; markedAt?: string; attempts?: number; nextAttemptAt?: string }
+interface FinishedReleaseMark { taskId: string; markedAt?: string; attempts?: number; settleAttempts?: number; nextAttemptAt?: string }
 
 /**
  * Durably queues a finished task for the existing release worker. This intentionally performs no workspace or compute
@@ -8363,6 +8363,16 @@ export async function releaseFinishedTaskQuietly(deps: ReleaseDeps, taskId: stri
       UpdateExpression: "SET attempts = :attempts, nextAttemptAt = :next",
       ExpressionAttributeValues: { ":attempts": attempts, ":next": new Date(Date.now() + wait).toISOString() } }));
   };
+  /** A settle that did not finish: tried again later, counted on its own (a task that was busy before keeps its full tries), with the same backoff. */
+  const putOffSettle = async (tries: number) => {
+    const wait = Math.min(RELEASE_RETRY_FIRST_MS * 2 ** (tries - 1), RELEASE_RETRY_MAX_MS);
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key,
+      UpdateExpression: "SET settleAttempts = :tries, nextAttemptAt = :next", ExpressionAttributeValues: { ":tries": tries, ":next": new Date(Date.now() + wait).toISOString() } }));
+  };
+  /** A settle the pass had no time for: due again at once, but behind the marks already waiting. */
+  const requeue = async () => {
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET nextAttemptAt = :now", ExpressionAttributeValues: { ":now": new Date().toISOString() } }));
+  };
   let marked = false;
   try {
     const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
@@ -8376,8 +8386,14 @@ export async function releaseFinishedTaskQuietly(deps: ReleaseDeps, taskId: stri
       const left = await get<FinishedReleaseMark>(deps, key);
       if (left === undefined) return undefined;
       const settled = await settleReleasedTask(deps, task);
-      if (settled === "done" || (settled === "incomplete" && (left.attempts ?? 0) >= SETTLE_ATTEMPTS_MAX)) await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
-      else if (settled === "incomplete") await putOff();
+      const tries = (left.settleAttempts ?? 0) + 1;
+      if (settled === "incomplete" && tries >= SETTLE_ATTEMPTS_MAX) {
+        // The settle keeps failing: what is still open is closed out by writes alone, and the mark goes.
+        await abandonTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
+        await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
+      } else if (settled === "done") await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
+      else if (settled === "incomplete") await putOffSettle(tries);
+      else await requeue();
       return undefined;
     }
     await enqueueFinishedTaskRelease(deps, taskId);
@@ -8385,8 +8401,10 @@ export async function releaseFinishedTaskQuietly(deps: ReleaseDeps, taskId: stri
     const outcome = await releaseFinishedTaskNow(deps, task);
     // The mark stays until the release is done AND the task's open samples are settled (or the pass ran out of time for it: then it stays due).
     const settled = outcome === "released" || outcome === "already_released" ? await settleReleasedTask(deps, task) : "done";
-    if (outcome === "busy" || settled === "incomplete") await putOff();
-    else if (settled === "done") await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
+    if (outcome === "busy") await putOff();
+    else if (settled === "incomplete") await putOffSettle(1);
+    else if (settled === "skipped") await requeue();
+    else await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
     if (outcome === "released" || outcome === "busy") console.log(JSON.stringify({ component: "broker", event: `developer.finished_task_${outcome}`, taskId }));
     return outcome;
   } catch (error) {

@@ -324,6 +324,8 @@ export type EndedPullRequestReader = (repositoryId: string, number: number) => P
 
 /** What one scoring may wait on GitHub in all, and what a settle may (one deadline for all its reads, never one for each). */
 const READ_BUDGET_MS = 8_000;
+/** The least time a settle in a pass is started with. */
+const MIN_SETTLE_MS = 2_000;
 /** A GitHub read is bounded by a deadline (an absolute time): a hung one, or one asked for after it, is a failed one, and what waits on it goes on. */
 function bounded<T>(work: Promise<T>, deadline: number, signal?: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -412,7 +414,8 @@ export async function settleTaskOutcomes(
   try {
     if (task.orgId === undefined) return "done";
     // A pass that settles many tasks has one overall time (`until`): once it is reached nothing more is settled, and what is left stays open for the next pass.
-    if (until !== undefined && Date.now() >= until) return "skipped";
+    // A task reached with too little of it left is not settled on a few milliseconds (its samples would end `github_unavailable` for want of time): it is left for the next pass.
+    if (until !== undefined && until - Date.now() < MIN_SETTLE_MS) return "skipped";
     const deadline = Math.min(Date.now() + budgetMs, until ?? Number.POSITIVE_INFINITY);
     const unavailable = (round: string) => scoreClaims(deps, task, round, allPending({ state: "no_outcome", reason: "github_unavailable" }), now);
     for (const pointer of await pointersOf(deps, task.taskId)) {
@@ -453,5 +456,14 @@ export async function settleTaskOutcomes(
   } catch (error) {
     noteFailure(deps, "settle", error);
     return "incomplete";
+  }
+}
+
+/** A settle that could not finish after its tries is given up: every sample of the task still open is scored `no_outcome` / `github_unavailable`, by writes alone (no read). Never throws. */
+export async function abandonTaskOutcomes(deps: OutcomeDependencies, task: OutcomeTask, now: string): Promise<void> {
+  try {
+    for (const pointer of await pointersOf(deps, task.taskId)) await scoreClaims(deps, task, pointer.round, allPending({ state: "no_outcome", reason: "github_unavailable" }), now);
+  } catch (error) {
+    noteFailure(deps, "abandon", error);
   }
 }
