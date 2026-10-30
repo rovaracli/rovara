@@ -20,7 +20,8 @@ import { approvalIdFor } from "../agents/approvals-store.js";
 import { publishDraft } from "../agents/changes.js";
 import type { AgentDraft, AgentRecord, AgentVersion } from "../agents/store.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
-import { inertRuleText, RULE_TEXT_MAX } from "../playbook/inert-rule-text.js";
+import { inertRuleText } from "../playbook/inert-rule-text.js";
+import { appendRuleToOverlay, removeRuleFromOverlay } from "./overlay.js";
 import { existingLayer, postProjectProcess } from "../playbook/process-layer.js";
 import { dismissedEvent, flushLearningEvents, learningEvents, memberActor, rolledBackEvent } from "./audit.js";
 import { dismissedSetKey, groupCorrections, prCaptureOff } from "./grouping.js";
@@ -40,7 +41,6 @@ export type RemoveAnswer = AcceptAnswer | { outcome: "needs_editor"; stage: stri
 
 const CHANGED = "This suggestion changed. Refresh the page and try again.";
 const BUSY_LAYER = "How we work has unpublished changes. Publish or discard them first.";
-const RULES_FULL = "This stage's rules are full. Make room in How we work first.";
 const SOURCES_GONE = "This suggestion no longer has enough sources.";
 const MAINTAINERS_ONLY = "Only a project maintainer can decide on suggested rules.";
 
@@ -83,39 +83,6 @@ export function cleanRuleText(raw: string): string {
   if (text === "") throw failure("CONFIG_INVALID", "text: a rule needs some words");
   if (Array.from(text).length > 1000) throw failure("CONFIG_INVALID", "text: must be at most 1,000 characters");
   return text;
-}
-
-type StepSettings = { instructions?: string } & Record<string, unknown>;
-const stageText = (overlay: RecipeOverlay, stage: string): string => stage === "*" ? overlay.instructions ?? "" : (overlay.steps?.[stage] as StepSettings | undefined)?.instructions ?? "";
-
-function withStageText(overlay: RecipeOverlay, stage: string, text: string): RecipeOverlay {
-  const next = structuredClone(overlay) as Record<string, unknown>;
-  if (stage === "*") {
-    if (text === "") delete next["instructions"]; else next["instructions"] = text;
-    return next as RecipeOverlay;
-  }
-  const steps: Record<string, StepSettings> = { ...((next["steps"] as Record<string, StepSettings> | undefined) ?? {}) };
-  const settings: StepSettings = { ...(steps[stage] ?? {}) };
-  if (text === "") delete settings.instructions; else settings.instructions = text;
-  if (Object.keys(settings).length === 0) delete steps[stage]; else steps[stage] = settings;
-  if (Object.keys(steps).length === 0) delete next["steps"]; else next["steps"] = steps;
-  return next as RecipeOverlay;
-}
-
-/** The overlay with `rule` appended as its own paragraph. The resulting stage text is checked against 4,000 characters BEFORE anything is written. */
-export function appendRuleToOverlay(overlay: RecipeOverlay, stage: string, rule: string): RecipeOverlay {
-  const existing = stageText(overlay, stage);
-  const combined = existing === "" ? rule : `${existing}\n\n${rule}`;
-  if (Array.from(combined).length > RULE_TEXT_MAX) throw failure("LEARNING_RULES_FULL", RULES_FULL);
-  return withStageText(overlay, stage, combined);
-}
-
-/** How many paragraphs of the stage's text equal `rule` exactly, and the overlay without the first of them. */
-export function removeRuleFromOverlay(overlay: RecipeOverlay, stage: string, rule: string): { matches: number; overlay: RecipeOverlay } {
-  const paragraphs = stageText(overlay, stage).split("\n\n");
-  const matches = paragraphs.filter((paragraph) => paragraph === rule).length;
-  if (matches !== 1) return { matches, overlay };
-  return { matches, overlay: withStageText(overlay, stage, paragraphs.filter((paragraph) => paragraph !== rule).join("\n\n")) };
 }
 
 // ---- the process layer
@@ -426,3 +393,5 @@ export async function removeRule(deps: LearningDecideDeps, caller: DeveloperCall
   }
   return { outcome: "published", version: result.value.version };
 }
+
+export { appendRuleToOverlay, removeRuleFromOverlay };

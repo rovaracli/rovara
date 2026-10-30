@@ -195,6 +195,28 @@ describe("settlement of waiting rules from Home", () => {
     } finally { off(); }
   });
 
+  it("counts the settling window from the start of the source: a slow batch read leaves less time for approvals, never more", async () => {
+    const w = world();
+    const { settled, off } = await settling();
+    try {
+      w.state("web", { pendingRules: 1 });
+      await w.awaitingRule("web", 1);
+      // The source has 400 ms, so approvals may be read in the first 200 ms of it. The batch read alone takes 250 ms, so no approval is read at all.
+      const slow = { send: async (command: { constructor: { name: string } }) => { if (command.constructor.name === "BatchGetCommand") await new Promise((resolve) => setTimeout(resolve, 250)); return w.db.send(command as never); } };
+      const c = counting(w);
+      const answer = await w.home(MAX, ORG_A, { approvals: c.approvals, homeSourceTimeoutMs: 400, documentClient: slow as never });
+      expect(answer.cards.filter((card) => card.kind === "rule_suggestion")).toHaveLength(1);
+      expect(c.reads).toEqual([]);
+      expect(settled).toEqual([]);
+      // With a fast batch read the same rule is read and settled.
+      const fast = counting(w);
+      await w.home(MAX, ORG_A, { approvals: fast.approvals, homeSourceTimeoutMs: 400 });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(fast.reads.length).toBe(1);
+      expect(settled).toHaveLength(1);
+    } finally { off(); }
+  });
+
   it("does not fail the card when the settler fails", async () => {
     const w = world();
     const { setLearningHomeSettler } = await import("../../packages/broker/src/learning/home-source.js");

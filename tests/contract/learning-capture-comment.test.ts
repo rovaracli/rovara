@@ -8,6 +8,7 @@ import { openSuggestion, readLearningState, suggestionSk } from "../../packages/
 import { githubMemberKey, projectMemberKey } from "../../packages/contracts/src/index.js";
 import type { PageTaskFixture } from "../support/page-tasks.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import {
   LEO, MAYA_ADMIN, OMAR, PRIYA, PROJECT, PROJECT_CREATED_AT, RETRY_TEXT, SAM, learningItems, learningTask, seedComment, seedGrant, seedMember, seedPerson, seedProject, takeOver,
 } from "../support/learning-page.js";
@@ -388,5 +389,28 @@ describe("Forget", () => {
     fixture.db.set({ ...fixture.db.get(key)!, status: "accepted" });
     expect(await refusal(forget(fixture, PRIYA, commentId))).toMatchObject({ pageReason: "refused" });
     expect(corrections(fixture)).toHaveLength(2);
+  });
+});
+
+describe("audit: Remember and Forget emit rule.correction_remembered", () => {
+  it("writes the event in the capture's own transaction (remember), and again for the forget; a repeat of a Remember records nothing more", async () => {
+    const fixture = membersTask();
+    const audit = capturingAuditDeps({ db: fixture.db, now: () => fixture.deps.now() });
+    const comment = seedComment(fixture, SAM, RETRY_TEXT);
+    const answer = await rememberTaskComment(fixture.deps, PRIYA, fixture.taskId, comment.commentId, { audit: audit.audit });
+    await rememberTaskComment(fixture.deps, PRIYA, fixture.taskId, comment.commentId, { audit: audit.audit });
+    expect(audit.recordedBy("rule.correction_remembered")).toEqual([
+      expect.objectContaining({ actor: { kind: "member", id: PRIYA.developerId }, target: { kind: "project", name: PROJECT }, facts: { correctionId: answer.correction.id, stage: "plan", standing: "member", op: "remember" } }),
+    ]);
+    await forgetTaskComment(fixture.deps, PRIYA, fixture.taskId, comment.commentId, { audit: audit.audit });
+    expect(audit.recordedBy("rule.correction_remembered").map((event) => event.facts?.op)).toEqual(["remember", "forget"]);
+    expect(JSON.stringify(audit.recorded())).not.toContain("retry");
+  });
+
+  it("an install with no ledger records nothing and still remembers", async () => {
+    const fixture = membersTask();
+    const comment = seedComment(fixture, SAM, RETRY_TEXT);
+    await remember(fixture, PRIYA, comment.commentId);
+    expect(corrections(fixture)).toHaveLength(1);
   });
 });

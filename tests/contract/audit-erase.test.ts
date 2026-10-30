@@ -191,6 +191,22 @@ describe("eraseAuditSubject and the learning loop (B7)", () => {
   });
 });
 
+describe("the learning erase hook is required", () => {
+  it("a wiring that forgot it fails loudly after the details are erased, and never reads as nothing to erase", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    const { eraseLearning: _hook, ...without } = b.erase; // eslint-disable-line @typescript-eslint/no-unused-vars
+    await expect(eraseAuditSubject(without as unknown as AuditEraseDeps, request())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(b.logs.some((entry) => entry.event === "audit.erase_learning_failed")).toBe(true);
+  });
+
+  it("the broker wires it into the erase dependencies", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    expect(source).toMatch(/purgeExports: exportPurger[^\n]*\n[^\n]*\n\s*eraseLearning: learningEraseHook\(/);
+  });
+});
+
 describe("eraseAuditSubject", () => {
   it("replaces the person's key with a tombstone and puts audit.subject_erased in one transaction across the keys and State tables", async () => {
     const b = bench();

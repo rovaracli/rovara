@@ -7,12 +7,13 @@
 // for the same request exists it is `awaiting_approval`, otherwise it was never published and goes back to `open` like a rule that was not applied.
 import { QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  LearningCorrectionSchema, LearningRuleSchema, LearningSuggestionSchema, isTerminalSuggestionStatus, projectLearningKey,
+  LearningCorrectionSchema, LearningRuleSchema, canonicalJson, LearningSuggestionSchema, isTerminalSuggestionStatus, projectLearningKey,
   type LearningCorrection, type LearningRule, type LearningSuggestion, type OrgId,
 } from "@agentx/contracts";
 import type { ApprovalDependencies } from "../agents/approvals.js";
 import { approvalIdFor, getAnyApproval } from "../agents/approvals-store.js";
 import type { LearningHomeSettler } from "./home-source.js";
+import { appendRuleToOverlay } from "./overlay.js";
 import type { ProjectPlaybookDependencies } from "../playbook/routes.js";
 import { acceptedEvent, flushLearningEvents, learningEvents, memberActor, notAppliedEvent, rolledBackEvent } from "./audit.js";
 import { ensureMetricCurrent, metricMonth, metricUpdateItem } from "./metric.js";
@@ -223,9 +224,27 @@ export async function commitNotApplied(deps: LearningSettleDeps, scope: Learning
       throw error;
     }
     await flushLearningEvents(learning, audited.events);
+    await restoreDraftOf(deps, scope, rule);
     return rule;
   }
   return undefined;
+}
+
+/**
+ * Best effort, after a rule was not applied: the draft the request wrote is put back to the published overlay, so the layer is not left with unpublished changes. Only when the draft is
+ * exactly the published overlay plus this rule (anyone's other edit is left alone). Never throws.
+ */
+async function restoreDraftOf(deps: LearningSettleDeps, scope: LearningScope, rule: LearningRule): Promise<void> {
+  try {
+    const store = deps.approvals.store;
+    const agent = await store.get(scope.orgId, rule.processAgentId);
+    const draft = await store.getDraft(scope.orgId, rule.processAgentId);
+    if (agent === undefined || draft === undefined) return;
+    const published = agent.currentVersion === undefined ? undefined : (await store.getVersion(scope.orgId, rule.processAgentId, agent.currentVersion))?.overlay ?? {};
+    const base = published ?? {};
+    if (JSON.stringify(canonicalJson(draft.overlay)) !== JSON.stringify(canonicalJson(appendRuleToOverlay(base, rule.stage, rule.text)))) return;
+    await store.saveDraft({ orgId: scope.orgId, agentId: rule.processAgentId, overlay: base, expectedRevision: draft.revision, by: rule.requestedBy ?? "system" });
+  } catch { /* the draft stays; the next Accept sees it as unpublished changes */ }
 }
 
 // ---- settling

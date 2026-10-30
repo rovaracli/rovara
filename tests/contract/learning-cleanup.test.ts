@@ -167,6 +167,7 @@ describe("person erase", () => {
     suggestion(world, "web", "mine", "open", ["c1", "c4"]);
     suggestion(world, "web", "theirs", "open", ["c3", "c4"]);
     suggestion(world, "web", "waiting", "awaiting_approval", ["c1", "c3"]);
+    suggestion(world, "web", "accepting3", "accepting", ["c1", "c3", "c4"]);
     seedItem(world.db, TEST_ORG, "web", "RATE#dev1#2976#1", { projectCreatedAt: PROJECT_CREATED, rememberCount: 3, indexExpiresAt: epochSeconds(NOW_MS) + 100 });
     seedItem(world.db, TEST_ORG, "web", "RATE#dev2#2976#1", { projectCreatedAt: PROJECT_CREATED, rememberCount: 1, indexExpiresAt: epochSeconds(NOW_MS) + 100 });
     seedItem(world.db, TEST_ORG, "web", "METRIC#2026-10", { projectCreatedAt: PROJECT_CREATED, memberCorrections: 4, repeats: 2 });
@@ -203,9 +204,13 @@ describe("person erase", () => {
     expect(mine).toMatchObject({ status: "withdrawn", terminalAt: iso(NOW_MS) });
     expect(mine).not.toHaveProperty("proposedText");
     expect(find(world, "web", "SUGGESTION#theirs")).toMatchObject({ status: "open", proposedText: "Use the shared retry helper." });
-    // A rule waiting for a second person is not undone by an erasure.
-    expect(find(world, "web", "SUGGESTION#waiting")).toMatchObject({ status: "awaiting_approval" });
-    expect(find(world, "web", "STATE")).toMatchObject({ openSuggestions: 1, liveCorrections: 5 });
+    // Privacy comes before "open only": a suggestion being accepted or waiting for a second person is withdrawn when fewer than 2 sources from 2 tasks are left without this person...
+    expect(find(world, "web", "SUGGESTION#waiting")).toMatchObject({ status: "withdrawn" });
+    expect(find(world, "web", "SUGGESTION#waiting")).not.toHaveProperty("proposedText");
+    // ...and kept when 2 sources from 2 tasks remain; the person's own correction text is gone either way.
+    expect(find(world, "web", "SUGGESTION#accepting3")).toMatchObject({ status: "accepting" });
+    expect(find(world, "web", "#c1")).not.toHaveProperty("text");
+    expect(find(world, "web", "STATE")).toMatchObject({ openSuggestions: 0, liveCorrections: 5 });
     expect(find(world, "web", "METRIC#2026-10")).toMatchObject({ memberCorrections: 4, repeats: 2 });
   });
 
