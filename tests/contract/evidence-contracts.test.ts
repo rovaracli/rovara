@@ -72,6 +72,12 @@ describe("EvidencePack", () => {
     expect(evidence.EvidencePackSchema.safeParse(pack({ checks: [findings(1)] })).success).toBe(false);
     expect(evidence.EvidencePackSchema.safeParse(pack({ selection: { method: "full", selected: 11, total: 10 } })).success).toBe(false);
   });
+  it("takes the skips among untouched tests as a pair that is some of the skips", () => {
+    const tests = (extra: Record<string, unknown>) => pack({ checks: [check({ tests: { ...check().tests, ...extra } })] });
+    expect(evidence.EvidencePackSchema.safeParse(tests({ skippedBefore: 0, skippedAfter: 1 })).success).toBe(true);
+    expect(evidence.EvidencePackSchema.safeParse(tests({ skippedBefore: 0 })).success).toBe(false);
+    expect(evidence.EvidencePackSchema.safeParse(tests({ skippedBefore: 0, skippedAfter: 2 })).success).toBe(false);
+  });
   it("refuses duplicate check ids, service names and scenario ids", () => {
     expect(evidence.EvidencePackSchema.safeParse(pack({ checks: [check(), check()] })).success).toBe(false);
     expect(evidence.EvidencePackSchema.safeParse(pack({ environment: { ...pack().environment, services: [pack().environment.services[0], pack().environment.services[0]] } })).success).toBe(false);

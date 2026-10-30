@@ -229,6 +229,7 @@ export interface EvidenceTests {
   skipped: number;
   errored: number;
   skippedBefore?: number;
+  skippedAfter?: number;
   names: EvidenceTest[];
   newTests: string[];
 }
@@ -238,8 +239,8 @@ export interface EvidenceTestsOptions {
   changedTestPaths?: readonly string[];
   /** TESTPROOF's verdict per test, by the reported name (only per-test items). */
   proofByTest?: ReadonlyMap<string, TestProofVerdict>;
-  /** The skips among untouched tests on the run before (see `skipRise`). */
-  skippedBefore?: number;
+  /** The skips among untouched tests on the run before and on this run (`skipRise`'s numbers): both go in the evidence, so the broker can judge a rise itself. */
+  skippedOutside?: { before: number; after: number };
 }
 
 /**
@@ -264,7 +265,7 @@ export function evidenceTests(report: ParsedTestReport, options: EvidenceTestsOp
   const newTests = [...new Set(report.tests.filter((test) => test.status !== "skipped" && touched(test)).map((test) => test.name))].slice(0, EVIDENCE_NEW_TESTS_MAX);
   return {
     total: report.total, passed: report.passed, failed: report.failed, skipped: report.skipped, errored: report.errored,
-    ...(options.skippedBefore === undefined ? {} : { skippedBefore: options.skippedBefore }),
+    ...(options.skippedOutside === undefined ? {} : { skippedBefore: options.skippedOutside.before, skippedAfter: options.skippedOutside.after }),
     names, newTests,
   };
 }

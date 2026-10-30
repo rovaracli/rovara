@@ -150,6 +150,11 @@ describe("evidence tests", () => {
     const tests = [{ file: "a.py", name: "t", status: "passed" as const }, { file: "a.py", name: "t", status: "passed" as const }, { file: "b.py", name: "t", status: "passed" as const }];
     expect(evidenceTests({ format: "junit", total: 3, passed: 3, failed: 0, skipped: 0, errored: 0, tests }).names).toHaveLength(2);
   });
+  it("carries the skips among untouched tests before and after, so the broker can judge a rise", () => {
+    const withSkips = evidenceTests(report, { changedTestPaths: changed, skippedOutside: { before: 0, after: 1 } });
+    expect(withSkips).toMatchObject({ skippedBefore: 0, skippedAfter: 1 });
+    expect(view).not.toHaveProperty("skippedBefore");
+  });
   it("is accepted by the evidence pack's own schema for a check", () => {
     const pack = {
       schemaVersion: 1, candidateDigest: "a".repeat(64),
