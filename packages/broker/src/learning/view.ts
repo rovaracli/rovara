@@ -96,7 +96,7 @@ async function throttle(deps: LearningViewDeps, caller: DeveloperCaller): Promis
   ];
   for (const bucket of buckets) {
     let accepted: boolean;
-    try { accepted = await takeRateAt({ documentClient: deps.documentClient as never, tableName: deps.tableName, now: deps.now }, { pk: orgScoped(caller.orgId, "LEARNING_VIEW_READS"), sk: bucket.actor }, bucket.limit, RATE_WINDOW_MS); }
+    try { accepted = await takeRateAt({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { pk: orgScoped(caller.orgId, "LEARNING_VIEW_READS"), sk: bucket.actor }, bucket.limit, RATE_WINDOW_MS); }
     catch { throw agentXError("RUNTIME_UNAVAILABLE", "Learning could not be loaded. Try again."); }
     if (!accepted) throw agentXError("TOO_MANY_REQUESTS", "Too many requests for this page. Try again in a minute.");
   }

@@ -13,7 +13,8 @@ import { postProjectProcess } from "../../packages/broker/src/playbook/process-l
 import { acceptRequestId, acceptSuggestion, appendRuleToOverlay, dismissSuggestion, removeRule, removeRuleFromOverlay, reopenDismissed } from "../../packages/broker/src/learning/decide.js";
 import { routeLearning } from "../../packages/broker/src/learning/routes.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
-import { eraseLearningSubject } from "../../packages/broker/src/learning/cleanup.js";
+import { eraseLearningSubject, learningWalkDeps, resumeOpenLearningWalks } from "../../packages/broker/src/learning/cleanup.js";
+import { readFileSync } from "node:fs";
 import { viewLearning } from "../../packages/broker/src/learning/view.js";
 import { forgetCorrection, groupCorrections } from "../../packages/broker/src/learning/grouping.js";
 import { learningSettler, settleProject } from "../../packages/broker/src/learning/settle.js";
@@ -1070,3 +1071,57 @@ describe("canDecide is per suggestion, from the rule Accept authorises by", () =
     expect((await viewOf(w, ARJUN)).proposedText).toBeDefined();
   });
 });
+
+
+describe("erase emits rule.withdrawn with the cause `erased`, through the wiring the broker uses", () => {
+  const erasedEvents = (w: MergeWorld) => eventsOf(w, "rule.withdrawn").filter((event) => event.facts?.cause === "erased");
+
+  it("the helper the broker builds its erase and resume dependencies with carries the ledger", () => {
+    const w = world();
+    expect(learningWalkDeps({ documentClient: w.db, tableName: "state", now: () => 1, audit: w.audit.audit }).audit).toBe(w.audit.audit);
+    expect("audit" in learningWalkDeps({ documentClient: w.db, tableName: "state", now: () => 1 })).toBe(false);
+  });
+
+  it("broker.ts builds both the erase hook and the walk-resume job through it, with the install's ledger", () => {
+    const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    expect(source).toMatch(/eraseLearning: learningEraseHook\(learningWalkDeps\(\{[^}]*audit[^}]*\}\)\)/);
+    expect(source).toMatch(/resumeOpenLearningWalks\(learningWalkDeps\(\{[^}]*audit: dependencies\.audit[^}]*\}\)/);
+  });
+
+  it("an erase run with those dependencies writes one rule.withdrawn (erased) per withdrawn suggestion", async () => {
+    const w = world();
+    await processLayer(w);
+    const first = await suggest(w, { sources: [{ author: PRIYA, task: "t1", text: MARK_A_TEXT }, { author: ARJUN, task: "t2", text: MARK_B_TEXT }] });
+    await eraseLearningSubject(learningWalkDeps({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit }), ORG_A, PRIYA);
+    expect(suggestionOf(w, first)).toMatchObject({ status: "withdrawn" });
+    expect(erasedEvents(w)).toHaveLength(1);
+    expect(erasedEvents(w)[0]).toMatchObject({ actor: { kind: "system" }, facts: { suggestionId: first, stage: "build", cause: "erased" } });
+    expect(JSON.stringify(erasedEvents(w))).not.toContain(PRIYA);
+  });
+
+  it("a walk that stopped at its budget and was finished by the scheduled resume emits it too", async () => {
+    const w = world();
+    await processLayer(w);
+    const first = await suggest(w, { sources: [{ author: PRIYA, task: "t1", text: MARK_A_TEXT }, { author: ARJUN, task: "t2", text: MARK_B_TEXT }] });
+    const deps = learningWalkDeps({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit });
+    expect((await eraseLearningSubject(deps, ORG_A, PRIYA, { writes: 1 })).status).toBe("running");
+    for (let tick = 0; tick < 10 && w.db.find((entry) => entry.pk === "LEARNING_WALKS_OPEN").length > 0; tick += 1) await resumeOpenLearningWalks(deps, { writes: 5 });
+    expect(suggestionOf(w, first)).toMatchObject({ status: "withdrawn" });
+    expect(erasedEvents(w)).toHaveLength(1);
+  });
+
+  it("a suggestion of an earlier project instance that is withdrawn by the erase has its event too", async () => {
+    const w = world();
+    await processLayer(w);
+    const old = "2026-01-01T00:00:00.000Z";
+    w.db.set({ ...projectLearningKey(ORG_A, "web", "CORRECTION#2026-01-02T00:00:00.000Z#oldc"), entityType: "LEARNING_CORRECTION", orgId: ORG_A, id: "oldc", stage: "build", source: "comment", taskId: "told", sourceRef: { taskId: "told" }, signature: ["h"], author: PRIYA, standing: "member", text: "old words", createdAt: "2026-01-02T00:00:00.000Z", projectCreatedAt: old });
+    w.db.set({ ...projectLearningKey(ORG_A, "web", "SUGGESTION#olds"), entityType: "LEARNING_SUGGESTION", orgId: ORG_A, id: "olds", stage: "plan", status: "open", correctionIds: ["oldc", "oldd"], allFromOnePerson: false, proposedText: "old words", signature: ["h"], lessSafe: false, kinds: [], overlaps: [], revision: 0, createdAt: "2026-01-02T00:00:00.000Z", projectCreatedAt: old });
+    await suggest(w);
+    await eraseLearningSubject(learningWalkDeps({ documentClient: w.db, tableName: "state", now: () => w.clock.now, audit: w.audit.audit }), ORG_A, PRIYA);
+    expect(item(w, "SUGGESTION#olds")).toMatchObject({ status: "withdrawn" });
+    expect(item(w, "SUGGESTION#olds")).not.toHaveProperty("proposedText");
+    expect(erasedEvents(w).some((event) => event.facts?.suggestionId === "olds" && event.facts?.stage === "plan")).toBe(true);
+  });
+});
+const MARK_A_TEXT = "Use the shared retry helper for network calls, with exponential backoff, ZEBRAMARK.";
+const MARK_B_TEXT = "Use the shared retry helper for network calls, with exponential backoff and jitter, QUOKKAMARK.";

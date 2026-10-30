@@ -373,7 +373,7 @@ import { runAuditDrain } from "../audit/drain.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
 import { exportInvoker, exportLinkSigner, exportPurger } from "../audit/export-wiring.js";
 import type { AuditEraseDeps } from "../audit/erase.js";
-import { learningEraseHook, resumeOpenLearningWalks } from "../learning/cleanup.js";
+import { learningEraseHook, learningWalkDeps, resumeOpenLearningWalks } from "../learning/cleanup.js";
 import { setLearningHomeSettler } from "../learning/home-source.js";
 import { learningSettler } from "../learning/settle.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
@@ -2021,7 +2021,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         timedSettlementJob({
           name: "resume-learning-walks", pick: "learning", startedAt, now: Date.now, ...learningPriority,
           onSkip: (name) => console.log(JSON.stringify({ component: "broker", event: "learning.settlement_job_skipped", job: name, reason: "not enough time left" })),
-          run: (budgetMs) => resumeOpenLearningWalks({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))),
+          run: (budgetMs) => resumeOpenLearningWalks(learningWalkDeps({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }), { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))),
         }),
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
@@ -19136,7 +19136,7 @@ const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undef
   log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
   purgeExports: exportPurger(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
   // v1.2 learning loop: a person's erase clears their corrections' text and the suggestions that hold their words, in every project of the company.
-  eraseLearning: learningEraseHook({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now }),
+  eraseLearning: learningEraseHook(learningWalkDeps({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, audit })),
 };
 
 const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";

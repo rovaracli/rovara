@@ -13,6 +13,7 @@
 // Nothing here logs or returns text.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, agentKey, agentVersionSk, canonicalJson, learningWalkKey, projectLearningKey, type OrgId, type RecipeOverlay } from "@agentx/contracts";
+import { flushLearningEvents, learningEvents, withdrawnEvent } from "./audit.js";
 import { appendRuleToOverlay } from "./overlay.js";
 import { learningItemKind, sameProject } from "./retention.js";
 import { closeSuggestion, readLearningPartition, type LearningDeps } from "./store.js";
@@ -219,13 +220,22 @@ export function eraseProjectJob(deps: LearningDeps, developerId: string): Projec
         } else {
           // A suggestion of an earlier project: no counter of the present project to move, only the text to remove.
           if (item["status"] !== "open") { budget.spend(1); continue; }
+          // The same event as a withdrawal in the present project: by the system, cause `erased` (ids and fixed words only), in the transaction that withdraws it.
+          const earlier = { orgId, project, projectCreatedAt: typeof item["projectCreatedAt"] === "string" ? item["projectCreatedAt"] : "" };
+          const audited = await learningEvents(deps, () => [withdrawnEvent(deps, earlier, { suggestionId: id, stage: String(item["stage"]), cause: "erased" })]);
           try {
-            await deps.documentClient.send(new UpdateCommand({
-              TableName: deps.tableName, Key: { pk: item["pk"], sk: item["sk"] }, UpdateExpression: "SET #status = :withdrawn REMOVE proposedText, dismissNote",
-              ConditionExpression: "attribute_exists(pk) AND #status = :open", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":withdrawn": "withdrawn", ":open": "open" },
-            }));
+            await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+              {
+                Update: {
+                  TableName: deps.tableName, Key: { pk: item["pk"], sk: item["sk"] }, UpdateExpression: "SET #status = :withdrawn REMOVE proposedText, dismissNote",
+                  ConditionExpression: "attribute_exists(pk) AND #status = :open", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":withdrawn": "withdrawn", ":open": "open" },
+                },
+              },
+              ...audited.items,
+            ] }));
+            await flushLearningEvents(deps, audited.events);
           } catch (error) {
-            if (!isConditionFailure(error)) throw error;
+            if (!(error instanceof Error && (error.name === "TransactionCanceledException" || isConditionFailure(error)))) throw error;
           }
         }
         budget.spend(1);
@@ -424,6 +434,14 @@ export async function resumeOpenLearningWalks(deps: LearningDeps, limits: { writ
 }
 
 // ---- wiring helpers
+
+/**
+ * The dependencies the erase hook and the scheduled walk resume are built with in production: the table, the clock and, where the install has one, its Audit Ledger (so the
+ * `rule.withdrawn` events of an erase are written). One function for both, so neither can be wired without the ledger.
+ */
+export function learningWalkDeps(input: { documentClient: LearningDeps["documentClient"]; tableName: string; now: () => number; audit?: LearningDeps["audit"] }): LearningDeps {
+  return { documentClient: input.documentClient, tableName: input.tableName, now: input.now, ...(input.audit === undefined ? {} : { audit: input.audit }) };
+}
 
 /**
  * The function for `AuditEraseDeps.eraseLearning`: runs the erase walk and answers only when it finished. A walk that stopped on its budget is an error so the erasure request is answered
