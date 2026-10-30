@@ -658,7 +658,7 @@ for (const source of ["project", "agent"] as const) for (const when of ["before_
   const change = async () => {
     changed = true;
     const reply = source === "project" ? await f.t.api(ADA, "PUT", `/v1/app/projects/payments/members/${MAYA.developerId}`, { role: "viewer" })
-      : await f.t.api(MAYA, "POST", `/v1/app/agents/${f.t.meta(f.task.taskId).agent!.agentId}/archive`, {});
+      : await f.t.api(MAYA, "POST", `/v1/app/agents/${(f.t.db.get(taskKey(f.task.taskId))!.agent as { agentId: string }).agentId}/archive`, {});
     expect(reply.status, JSON.stringify(reply.body)).toBe(200);
   };
   if (when === "before_sweep") await change();
@@ -1087,7 +1087,7 @@ for (const recovery of ["valid", "bounded_valid", "closing", "cap_source", "inva
   if (recovery === "bounded_valid") {
     const settings: Record<string, unknown> = { ...f.t.db.get(f.agent)!, revision: 2, stopKind: "inherit" }; delete settings.maxPerRunUsd; f.t.db.set(settings);
   }
-  const workflow = f.t.meta(taskId).workflow as { revision: number; artifacts: Array<{ sha256: string }> };
+  const workflow = f.t.db.get(taskKey(taskId))!.workflow as { revision: number; artifacts: Array<{ sha256: string }> };
   expect((await f.t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256 })).status).toBe(200);
   const request = f.t.requestOf(taskId, "run_limit")[0]!; expect(request).toMatchObject({ resume: "implement", newLimitUsd: 20 });
   const decisionId = randomUUID(), send = f.t.db.send.bind(f.t.db); let lost = false, changed = false, captures = 0;

@@ -254,7 +254,7 @@ for (const [name, extra] of [
   ["unknown provenance", { seedProvenance: { source: "future", reviewRequired: true, seededAt: "2026-10-27T18:00:00.000Z" } }],
   ["bad review state", { seedProvenance: { source: "upgrade", reviewRequired: "yes", seededAt: "2026-10-27T18:00:00.000Z" } }],
 ] as const) it(`refuses typed company ${name} without a numeric fallback`, async () => {
-  const f = fixture(); f.policy(0, { policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, ...extra });
+  const f = fixture(); f.policy(0, Object.assign({ policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } }, extra));
   expect((await f.call()).status).toBe(503); expect(f.db.transactions()).toHaveLength(0);
 });
 it("typed company digest distinguishes estimate and numeric policies while read time is irrelevant", async () => {

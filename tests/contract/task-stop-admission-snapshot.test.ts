@@ -26,7 +26,7 @@ function fixture() {
       calls.push(command); order.push("snapshot");
       expect(command).toBeInstanceOf(TransactGetCommand);
       if (!(command instanceof TransactGetCommand)) throw new Error("nontransactional read");
-      return { Responses: command.input.TransactItems?.map(item => ({ Item: structuredClone(rows.find(row => row.pk === item.Get?.Key?.pk && row.sk === item.Get.Key.sk)) })) };
+      return { Responses: command.input.TransactItems?.map(item => ({ Item: structuredClone(rows.find(row => row.pk === item.Get?.Key?.pk && row.sk === item.Get?.Key?.sk)) })) };
     } },
   };
   const input = { orgId, developerId: who, role: "member", project, agentId, pathLimitMicrousd: 20_000_000 };
