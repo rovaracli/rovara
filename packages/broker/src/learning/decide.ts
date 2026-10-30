@@ -25,6 +25,7 @@ import { appendRuleToOverlay, removeRuleFromOverlay } from "./overlay.js";
 import { postProjectProcess } from "../playbook/process-layer.js";
 import { dismissedEvent, flushLearningEvents, learningEvents, memberActor, rolledBackEvent } from "./audit.js";
 import { dismissedSetKey, groupCorrections, prCaptureOff } from "./grouping.js";
+import { requireSuggestionsOn } from "./suggestions-switch.js";
 import { ensureMetricCurrent, metricMonth, metricUpdateItem } from "./metric.js";
 import {
   acceptNote, commitApplied, commitAwaiting, commitNotApplied, findVersionByNote, learningOf, parseSuggestionItem, readMembers, readRule, removeNote, ruleSk, ruleTransition, settleProject,
@@ -194,7 +195,9 @@ export async function acceptSuggestion(deps: LearningDecideDeps, caller: Develop
   const learning = learningOf(deps);
   const auth = await authorize(deps, caller, rawProject, PUBLISH_FORBIDDEN);
   const { scope, project } = auth;
+  // Settlement is never gated by the master switch; deciding is. Settle first, so a waiting rule that ended while the switch was off is still settled.
   await settleProject(deps, scope);
+  await requireSuggestionsOn(deps, caller.orgId);
 
   const suggestion = parseSuggestionItem(await getLearningItem(learning, scope, suggestionSk(suggestionId)));
   if (suggestion === undefined) throw failure("NOT_FOUND", "That suggestion is gone.");
@@ -352,6 +355,7 @@ export async function dismissSuggestion(deps: LearningDecideDeps, caller: Develo
   const auth = await authorize(deps, caller, rawProject, MAINTAINERS_ONLY);
   const { scope } = auth;
   await settleProject(deps, scope);
+  await requireSuggestionsOn(deps, caller.orgId);
   const suggestion = parseSuggestionItem(await getLearningItem(learning, scope, suggestionSk(suggestionId)));
   if (suggestion === undefined) throw failure("NOT_FOUND", "That suggestion is gone.");
   if (suggestion.status === "accepting" || suggestion.status === "awaiting_approval") throw failure("LEARNING_LAYER_BUSY", "This suggestion is being accepted. Try again once it is decided.");
@@ -389,6 +393,7 @@ export async function dismissSuggestion(deps: LearningDecideDeps, caller: Develo
 export async function reopenDismissed(deps: LearningDecideDeps, caller: DeveloperCaller, rawProject: string, dismissedId: string): Promise<{ reopened: true }> {
   const learning = learningOf(deps);
   const auth = await authorize(deps, caller, rawProject, MAINTAINERS_ONLY);
+  await requireSuggestionsOn(deps, caller.orgId);
   if (!/^[a-f0-9]{32}$/.test(dismissedId)) throw failure("NOT_FOUND", "That is not on the dismissed list.");
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [

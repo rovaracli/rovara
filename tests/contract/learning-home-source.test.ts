@@ -2,15 +2,17 @@
 // is bounded (one approval read per awaiting rule, at most 5, inside the source's time) and its writes are left to a port. The first test imports no learning module: the card comes
 // from the Home route itself, which proves the source is registered where Home is built.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { HOME_CARD_ID_PATTERN, HomeResponseSchema, approvalKey, type HomeResponse, type OrgId } from "../../packages/contracts/src/index.js";
 import { routeAgentSessionRequest, type SessionRouteDependencies } from "../../packages/broker/src/agent-sessions/routes.js";
 import { createPendingChange, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import type { AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgLearningSettingsKey, projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { ARJUN, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
+
+afterEach(() => { vi.unstubAllEnvs(); });
 
 const PC = "2026-10-02T00:00:00.000Z";
 type Item = Record<string, unknown>;
@@ -227,6 +229,48 @@ describe("settlement of waiting rules from Home", () => {
       expect((await w.cardsOf(MAX)).length).toBe(1);
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(JSON.stringify(w.logs)).not.toContain("SECRET-DETAIL");
+    } finally { setLearningHomeSettler(undefined); }
+  });
+});
+
+describe("the company's master suggestions switch", () => {
+  const setSwitch = (w: ReturnType<typeof world>, suggestions: "on" | "off", revision = 1) => w.db.set({
+    ...orgLearningSettingsKey(ORG_A), entityType: "LEARNING_COMPANY_SETTINGS", orgId: ORG_A, revision, suggestions, changedBy: MAX, changedAt: PC,
+  });
+
+  it("makes no rule_suggestion card while off, for a maintainer and an admin alike, and the card is back when it is on", async () => {
+    const w = world();
+    w.state("web");
+    expect((await w.cardsOf(MAX)).length).toBe(1);
+    setSwitch(w, "off");
+    expect(await w.cardsOf(MAX)).toEqual([]);
+    expect(await w.cardsOf(OLA)).toEqual([]);
+    setSwitch(w, "on", 2);
+    expect((await w.cardsOf(MAX)).length).toBe(1);
+  });
+
+  it("follows the install default when the company never chose", async () => {
+    const w = world();
+    w.state("web");
+    vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "off");
+    expect(await w.cardsOf(MAX)).toEqual([]);
+    vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "on");
+    expect((await w.cardsOf(MAX)).length).toBe(1);
+  });
+
+  it("still hands ended approvals to the settler while off (settlement is never gated)", async () => {
+    const w = world();
+    const { setLearningHomeSettler } = await import("../../packages/broker/src/learning/home-source.js");
+    const settled: Array<Record<string, unknown>> = [];
+    setLearningHomeSettler(async (input) => { settled.push(input as never); });
+    try {
+      setSwitch(w, "off");
+      w.state("web", { pendingRules: 1 });
+      await w.awaitingRule("web", 1, "DECLINED");
+      expect(await w.cardsOf(MAX)).toEqual([]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(settled).toHaveLength(1);
+      expect(settled[0]).toMatchObject({ ruleId: "r1", approvalStatus: "DECLINED" });
     } finally { setLearningHomeSettler(undefined); }
   });
 });

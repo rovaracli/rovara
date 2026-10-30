@@ -1,9 +1,11 @@
 // v1.2 learning loop, B7: the overview's maintainer-only `learning` block (design 6.2 and 6.4): this month's repeats and corrections, last month's share, repeats after each accepted rule.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectOverviewSchema } from "../../packages/contracts/src/index.js";
 import { projectOverview } from "../../packages/broker/src/agent-sessions/project-overview.js";
-import { projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgLearningSettingsKey, projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { CELL, MAX, MIA, OLA, ORG_A, PRIYA, sessionWorld } from "../support/agent-session-world.js";
+
+afterEach(() => { vi.unstubAllEnvs(); });
 
 const PC = "2026-10-02T00:00:00.000Z";
 
@@ -37,7 +39,7 @@ describe("project overview, learning block", () => {
     const view = await w.overview(MAX);
     expect(view.learning).toEqual({
       thisMonth: { repeats: 3, corrections: 12, enoughData: true }, lastMonthShare: 0.25,
-      repeatsAfterRule: [{ ruleId: "rule-1", stage: "build", repeats: 2 }],
+      repeatsAfterRule: [{ ruleId: "rule-1", stage: "build", repeats: 2 }], suggestions: { state: "on" },
     });
     expect(ProjectOverviewSchema.safeParse(view).success).toBe(true);
     // An org admin is a maintainer of every project.
@@ -53,17 +55,17 @@ describe("project overview, learning block", () => {
 
   it("says there is not enough data below 10 corrections, and a project with no learning yet has zeros and no last-month share", async () => {
     const w = world();
-    expect((await w.overview(MAX)).learning).toEqual({ thisMonth: { repeats: 0, corrections: 0, enoughData: false }, repeatsAfterRule: [] });
+    expect((await w.overview(MAX)).learning).toEqual({ thisMonth: { repeats: 0, corrections: 0, enoughData: false }, repeatsAfterRule: [], suggestions: { state: "on" } });
     w.put("METRIC#2026-10", { memberCorrections: 4, repeats: 3 });
     w.put("METRIC#2026-09", { memberCorrections: 4, repeats: 2 });
     const view = await w.overview(MAX);
-    expect(view.learning).toEqual({ thisMonth: { repeats: 3, corrections: 4, enoughData: false }, repeatsAfterRule: [] });
+    expect(view.learning).toEqual({ thisMonth: { repeats: 3, corrections: 4, enoughData: false }, repeatsAfterRule: [], suggestions: { state: "on" } });
   });
 
   it("leaves a project created again with nothing old", async () => {
     const w = world();
     w.put("METRIC#2026-10", { memberCorrections: 12, repeats: 3, projectCreatedAt: "2026-01-01T00:00:00.000Z" });
-    expect((await w.overview(MAX)).learning).toEqual({ thisMonth: { repeats: 0, corrections: 0, enoughData: false }, repeatsAfterRule: [] });
+    expect((await w.overview(MAX)).learning).toEqual({ thisMonth: { repeats: 0, corrections: 0, enoughData: false }, repeatsAfterRule: [], suggestions: { state: "on" } });
   });
 });
 
@@ -111,5 +113,29 @@ describe("project overview, learning block: bounded reads", () => {
     } as never, w.caller(MAX), "web");
     expect(view).not.toHaveProperty("learning");
     expect(view.project.name).toBe("web");
+  });
+});
+
+describe("project overview, learning block: the company's master suggestions switch", () => {
+  it("says collecting with the project's live corrections while off, and keeps counting this month's corrections and repeats", async () => {
+    const w = world();
+    w.put("STATE", { revision: 2, openSuggestions: 1, liveCorrections: 7, pendingRules: 0 });
+    w.put("METRIC#2026-10", { memberCorrections: 12, repeats: 3 });
+    w.db.set({ ...orgLearningSettingsKey(ORG_A), entityType: "LEARNING_COMPANY_SETTINGS", orgId: ORG_A, revision: 1, suggestions: "off", changedBy: MAX, changedAt: PC });
+    const view = await w.overview(MAX);
+    expect(view.learning).toEqual({ thisMonth: { repeats: 3, corrections: 12, enoughData: true }, repeatsAfterRule: [], suggestions: { state: "collecting", corrections: 7 } });
+    expect(ProjectOverviewSchema.safeParse(view).success).toBe(true);
+    w.db.set({ ...orgLearningSettingsKey(ORG_A), entityType: "LEARNING_COMPANY_SETTINGS", orgId: ORG_A, revision: 2, suggestions: "on", changedBy: MAX, changedAt: PC });
+    expect((await w.overview(MAX)).learning?.suggestions).toEqual({ state: "on" });
+  });
+
+  it("follows the install default with no company record, and an older server's block without the field still reads", async () => {
+    const w = world();
+    vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "off");
+    expect((await w.overview(MAX)).learning?.suggestions).toEqual({ state: "collecting", corrections: 0 });
+    vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "on");
+    expect((await w.overview(MAX)).learning?.suggestions).toEqual({ state: "on" });
+    const { ProjectOverviewLearningSchema } = await import("../../packages/contracts/src/index.js");
+    expect(ProjectOverviewLearningSchema.safeParse({ thisMonth: { repeats: 0, corrections: 0, enoughData: false }, repeatsAfterRule: [] }).success).toBe(true);
   });
 });

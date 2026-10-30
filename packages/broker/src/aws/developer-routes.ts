@@ -211,6 +211,7 @@ import { getCodeSettings, putCodeSettings } from "../rovara-code/code-settings.j
 import { projectProcessOf } from "../playbook/project-process.js";
 import { forgetTaskComment, rememberTaskComment } from "../learning/capture-comment.js";
 import { LEARNING_PATH, routeLearning } from "../learning/routes.js";
+import { LEARNING_SETTINGS_PATH, routeLearningSettings } from "../learning/settings-routes.js";
 import { HOW_WE_WORK_PATH, PLAYBOOK_PATH, PLAYBOOK_PROCESS_PATH, getProjectHowWeWork, routeProjectPlaybook, routeProjectProcess } from "../playbook/routes.js";
 import { mergeViewOf } from "../rovara-code/merge.js";
 import { applySetupDraft, getSetupDraft, startSetupDraft, type SetupDraftDependencies } from "../rovara-code/setup-draft.js";
@@ -1975,6 +1976,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (/^\/v1\/app\/projects\/[^/]+\/learning(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
   }
+  // The company's master suggestions switch is browser-only too: no token, CLI or Slack path reads or changes it.
+  if (url.pathname === LEARNING_SETTINGS_PATH && authenticated?.caller.browserSession !== true) {
+    throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
+  }
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
   if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
@@ -2214,6 +2219,9 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const howWeWorkRoute = HOW_WE_WORK_PATH.exec(url.pathname);
   if (request.method === "GET" && howWeWorkRoute !== null) {
     return getProjectHowWeWork({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) }, caller, howWeWorkRoute[1]!);
+  }
+  if (url.pathname === LEARNING_SETTINGS_PATH && (request.method === "GET" || request.method === "PUT")) {
+    return routeLearningSettings({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, audit: deps.agents?.audit }, caller, request.method, () => jsonBody(request));
   }
   // v1.2 learning loop: Remember and Forget (more routes are added to learning/routes.ts by later steps).
   if (LEARNING_PATH.test(url.pathname)) {

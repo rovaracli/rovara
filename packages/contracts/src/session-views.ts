@@ -298,6 +298,11 @@ export const ProjectOverviewLearningSchema = z
     repeatsAfterRule: z.array(z.object({ ruleId: z.string().min(1).max(100), stage: z.string().min(1).max(100), repeats: z.number().int().min(1) }).strict()).max(50),
     /** Present (as `500+`) only when the month's corrections read to count `repeatsAfterRule` hit the read cap, so those counts are at least what they say. */
     repeatsAfterRuleLabel: z.string().min(1).max(12).optional(),
+    /** The company's master "suggestions" switch (optional: an absent field, from an older server, means `on`). `collecting`: corrections are kept, no suggestion is made. */
+    suggestions: z.discriminatedUnion("state", [
+      z.object({ state: z.literal("on") }).strict(),
+      z.object({ state: z.literal("collecting"), corrections: z.number().int().min(0) }).strict(),
+    ]).optional(),
   })
   .strict();
 export type ProjectOverviewLearning = z.infer<typeof ProjectOverviewLearningSchema>;

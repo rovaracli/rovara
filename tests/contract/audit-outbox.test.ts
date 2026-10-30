@@ -773,6 +773,7 @@ describe("I4: the builders", () => {
     ["auditRuleRolledBack", (occurrence) => builders.auditRuleRolledBack({ ...base, occurrence, details, projectName: "Secret Project", ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 })],
     ["auditRuleCorrectionRemembered", (occurrence) => builders.auditRuleCorrectionRemembered({ ...base, occurrence, details, projectName: "Secret Project", correctionId: "cor_1", stage: "build", standing: "member", op: "remember" })],
     ["auditProjectLearningChanged", (occurrence) => builders.auditProjectLearningChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, enabled: true, selfConfirmedSoleOwner: false })],
+    ["auditRuleSuggestionsSet", (occurrence) => builders.auditRuleSuggestionsSet({ ...base, occurrence, details, setting: "on", previous: "off", source: "company" })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
