@@ -1,3 +1,4 @@
+import { writeLearningSettings, decideLearningSettings, skippedPrCommentCount, type LearningSettingsDeps } from "./settings.js";
 // v1.2 learning loop: the React routes under `/v1/app/projects/{p}/learning` (design 6.2). B3 owns Remember and Forget; B6 and B8 add the rest to `routeLearning`, which answers
 // `undefined` for a path or method it does not own, so the caller falls through to its own "not found".
 //
@@ -22,6 +23,7 @@ const REOPEN_PATH = /^dismissed\/([A-Za-z0-9_-]{1,100})\/reopen$/;
 const REMOVE_PATH = /^rules\/([A-Za-z0-9_-]{1,100})\/remove$/;
 
 export interface LearningRouteDependencies {
+  settings?: LearningSettingsDeps;
   /** The task route dependencies for the caller (task access is checked by the task's own rules, then standing on top of it). */
   task: DeveloperTaskRouteDependencies;
   /** The caller's role in the project: its name, or the one `PROJECT_NOT_FOUND` for no access, no such project and another company's. */
@@ -32,7 +34,7 @@ export interface LearningRouteDependencies {
   audit?: LearningDecideDeps["audit"];
 }
 
-export type LearningAnswer = RememberAnswer | ForgetAnswer | AcceptAnswer | RemoveAnswer | StatusReply | { suggestion: { id: string; status: "dismissed" } } | { reopened: true } | LearningViewAnswer;
+export type LearningAnswer = Awaited<ReturnType<typeof writeLearningSettings>> | Awaited<ReturnType<typeof decideLearningSettings>> | RememberAnswer | ForgetAnswer | AcceptAnswer | RemoveAnswer | StatusReply | { suggestion: { id: string; status: "dismissed" } } | { reopened: true } | LearningViewAnswer;
 
 /**
  * A publish that waits for a person answers the way a hand publish does: `202 { status: "NEEDS_CONFIRMATION", confirmUrl, changes }`. The `outcome` the screens read stays in the body, so a reader
@@ -55,10 +57,26 @@ export async function routeLearning(deps: LearningRouteDependencies, caller: Dev
   const matched = LEARNING_PATH.exec(url.pathname);
   // `GET …/learning`: the screen's one read. Anyone who can see the project; what they get depends on their live standing (view.ts). It needs only the table, so it is answered even where agents are not set up.
   if (method === "GET" && matched !== null && matched[2] === undefined) {
-    return viewLearning({ documentClient: deps.task.documentClient, tableName: deps.task.tableName, now: () => deps.task.now(), projectFor: (who, rawName) => deps.projectFor(who, rawName) }, caller, matched[1]!);
+    const learning = { documentClient: deps.task.documentClient, tableName: deps.task.tableName, now: () => deps.task.now() };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const page = async () => {
+      const answer = await viewLearning({ ...learning, projectFor: (who, rawName) => deps.projectFor(who, rawName) }, caller, matched[1]!);
+      if (answer.settings.prComments !== "on") return answer;
+      return { ...answer, skippedUnlinked: await skippedPrCommentCount(learning, caller.orgId, decodeURIComponent(matched[1]!)) };
+    };
+    try { return await Promise.race([page(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(agentXError("RUNTIME_UNAVAILABLE", "Learning took too long to load. Try again.")), 4000); })]); }
+    finally { clearTimeout(timer); }
   }
   if (matched === null || matched[2] === undefined) return undefined;
   const rest = matched[2];
+  const settingDecision = /^settings\/proposals\/([A-Za-z0-9_-]{1,100})\/decide$/.exec(rest);
+  if ((method === "PUT" && rest === "settings") || (method === "POST" && settingDecision !== null)) {
+    if (caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session for learning settings.");
+    if (deps.settings === undefined) throw agentXError("NOT_FOUND", "Learning settings are not available.");
+    const { name } = await deps.projectFor(caller, matched[1]!);
+    return settingDecision === null ? writeLearningSettings(deps.settings, caller, name, body()) : decideLearningSettings(deps.settings, caller, name, settingDecision[1]!, body());
+  }
+
   if (method === "POST" && rest === "remember") {
     const { name } = await deps.projectFor(caller, matched[1]!);
     const input = strictBody(LearningRememberBodySchema, body());

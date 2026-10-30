@@ -209,6 +209,8 @@ export interface ReconcileTaskPullRequestFeedbackInput {
   repositoryFullName: string; number: number; deliveryId: string;
   /** Broker-local bounded polling mode; omitted callers retain the full feedback behavior. */
   observationMode?: "feedback" | "merge";
+  /** B8: in-memory identity only, after a successful reconcile commit; failures never fail delivery. */
+  onFeedbackRead?(task: { taskId: string; project: string; orgId: OrgId | undefined; repositoryId: string }, comments: GitHubPullRequestFeedback["comments"]): Promise<void>;
   /** The head a push event says the pull request now has (a hint): until GitHub's own read shows it, nothing is decided. */
   expectedHeadSha?: string;
   loadTask(taskId: string): Promise<{ project: string; startingRevision: number; orgId?: OrgId | undefined; sessionId?: string | undefined; closedAt?: string; workflow?: WorkflowSnapshot } | undefined>;
@@ -375,6 +377,13 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       throw new GithubWebhookRefusal("linked workflow no longer matches the PR candidate");
     }
     const reads: Array<{ pr: NonNullable<WorkflowSnapshot["pullRequests"]>[number]; feedback: GitHubPullRequestFeedback; url: string; fullName: string }> = [];
+    const captureFeedback = async () => {
+      if (input.observationMode === "merge" || input.onFeedbackRead === undefined) return;
+      for (const { pr, feedback } of reads) {
+        try { await input.onFeedbackRead({ taskId: linked.taskId, project: task.project, orgId: task.orgId, repositoryId: pr.repositoryId }, feedback.comments); }
+        catch { console.log(JSON.stringify({ component: "broker", event: "learning.pr_capture_failed" })); }
+      }
+    };
     for (const pr of [...(current.pullRequests ?? [])].sort((a, b) => a.repositoryId.localeCompare(b.repositoryId) || a.number - b.number)) {
       const url = await input.repositoryUrl(task.project, task.startingRevision, pr.repositoryId, task.orgId);
       if (!url) throw new GithubWebhookRefusal("linked PR repository is missing from the pinned project");
@@ -535,7 +544,7 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
     } else {
       const observations: WorkflowFeedbackThreadObservation[] = [];
       const bundles = open.map(({ pr, feedback }): WorkflowFeedbackBundle => {
-        const comments = feedback.comments.map(c => ({ ...c, bodyDigest: digest(c.body), bodyBytes: Buffer.byteLength(c.body, "utf8") }));
+        const comments = feedback.comments.map(({ authorId, authorType, ...c }) => { void authorId; void authorType; return { ...c, bodyDigest: digest(c.body), bodyBytes: Buffer.byteLength(c.body, "utf8") }; });
         const eligible = new Set(comments.filter(c => c.kind !== "REVIEW_COMMENT").map(c => c.id));
         const threadIds = new Set<string>();
         for (const thread of feedback.threads) {
@@ -592,14 +601,15 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
       const nothingToReview = prior === undefined && (alreadyReviewed
         || (observations.every(o => o.eligibleCommentIds.length === 0) && bundles.every(b => b.comments.length === 0)));
       if (same && sameThreadObservations(prior.threadObservations ?? [], observations) && next === current) {
-        if (headTrees.length === 0) return false;
+        // This snapshot is already committed. A new delivery may finish a previously capped or failed capture without rewriting its bundles.
+        if (headTrees.length === 0) { await captureFeedback();return false; }
       } else if (nothingToReview) {
         // Feedback only in resolved threads: nothing to review, but the threads are remembered as seen, so a later reply
         // in one of them is compared with what was there.
         if (observations.length > 0 && !sameThreadObservations(current.feedbackThreadObservations ?? [], observations)) {
           next = WorkflowSnapshotSchema.parse({ ...next, revision: next.revision + 1, feedbackThreadObservations: observations, updatedAt: input.now });
         }
-        if (next === current && headTrees.length === 0) return false;
+        if (next === current && headTrees.length === 0) { await captureFeedback();return false; }
       } else {
         // A step is running (the review of earlier feedback): nothing can be collected now, so nothing is stored. The
         // delivery is kept, and the recovery sweep collects again once the step is done.
@@ -626,6 +636,7 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
         ? input.saveLandedPushes!(linked.taskId, current.revision, next, recordedPushes, extraItems)
         : input.saveWorkflow(linked.taskId, current.revision, next, extraItems));
       await flushAuditEvents(input, events);
+      await captureFeedback();
       if (reopenedFeedback) {
         const measure = feedbackReopenedMeasure(input.now);
         if (measure !== undefined) input.measure?.(measure);
@@ -660,7 +671,7 @@ export async function verifyTaskPullRequestFeedbackCurrent(input: Pick<Reconcile
     if (feedback.pullRequest.state !== "open" || feedback.pullRequest.headCommit !== pr.headSha
       || feedback.pullRequest.headTreeSha !== workflow.candidate.repositories.find(repo => repo.repositoryId === pr.repositoryId)?.treeSha
       || feedback.pullRequest.url !== pr.url || feedback.comments.some(comment => !comment.url.startsWith(`${pr.url}#`))) return false;
-    const comments = feedback.comments.map(comment => ({ ...comment, bodyDigest: digest(comment.body), bodyBytes: Buffer.byteLength(comment.body, "utf8") }));
+    const comments = feedback.comments.map(({ authorId, authorType, ...comment }) => { void authorId; void authorType; return { ...comment, bodyDigest: digest(comment.body), bodyBytes: Buffer.byteLength(comment.body, "utf8") }; });
     const eligible = new Set(comments.filter(comment => comment.kind !== "REVIEW_COMMENT").map(comment => comment.id));
     const seenThreads = new Set<string>();
     for (const thread of feedback.threads) {

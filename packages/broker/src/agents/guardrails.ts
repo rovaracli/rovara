@@ -101,6 +101,7 @@ const modelLabel = (model: ModelIdentifier): string => `${model.provider}/${mode
  */
 export function lessSafeGuardrailChanges(current: AgentGuardrails, next: AgentGuardrails): string[] {
   const changes: string[] = [];
+  if (current.prCommentLearning === "locked_off" && next.prCommentLearning !== "locked_off") changes.push("Allows learning from PR review comments again");
   const stillForbidden = new Set(next.forbiddenModels.map(canonicalModelName));
   for (const model of current.forbiddenModels) {
     if (!stillForbidden.has(canonicalModelName(model))) changes.push(`Allows the model ${modelLabel(model)} again`);

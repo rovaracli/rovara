@@ -400,6 +400,21 @@ describe("task-wide current PR feedback reconciliation", () => {
       setRemotePr: (state: "open" | "merged", headSha: string, headTreeSha: string) => { publishedState = state; publishedHeadSha = headSha; publishedHeadTreeSha = headTreeSha; },
       edit: (body: string) => { currentBody = body; }, addInline: () => { inlineIds.push("review_comment:5"); }, reopen: () => { resolved = false; }, deleteInline: () => { inlineIds = []; }, conflict: () => { conflict = true; }, wrongScope: () => { wrongScope = true; } };
   }
+  it("B8 I12 identity leaves normalized bytes and strict refs unchanged and capture follows commit", async () => {
+    const before = await fixture(), after = await fixture();
+    const read = after.input.getCurrentFeedback.bind(after.input);after.input.getCurrentFeedback = async (...args) => {
+      const feedback = await read(...args);return { ...feedback, comments: feedback.comments.map(c => ({ ...c, authorId: "12345", authorType: "User" })) };
+    };
+    let callbacks = 0;after.input.onFeedbackRead = async (_task, comments) => {
+      expect(after.workflow().feedbackReview?.status).toBe("COLLECTING");expect(comments[0]?.authorId).toBe("12345");callbacks++;
+      throw new Error("capture unavailable, delivery still succeeds");
+    };
+    expect(await before.module.reconcileTaskPullRequestFeedback(before.input)).toBe(true);
+    expect(await after.module.reconcileTaskPullRequestFeedback(after.input)).toBe(true);
+    expect(after.artifacts.map(a => a.bytes)).toEqual(before.artifacts.map(a => a.bytes));
+    expect(after.workflow().feedbackReview?.bundleRefs).toEqual(before.workflow().feedbackReview?.bundleRefs);expect(callbacks).toBe(2);
+    after.input.deliveryId = "delivery-2";expect(await after.module.reconcileTaskPullRequestFeedback(after.input)).toBe(false);expect(callbacks).toBe(4);
+  });
   it("persists both current PR bundles and ignores duplicate or delayed event bodies", async () => {
     const f = await fixture();
     expect(f.module.reconcileTaskPullRequestFeedback).toBeTypeOf("function");

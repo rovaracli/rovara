@@ -1,3 +1,4 @@
+import { prCaptureOff as effectivePrCaptureOff } from "./settings.js";
 // v1.2 learning loop, B5: spotting repeats, grouping, dismissed sets and Forget (design 4, 7.2). New logic of B5; B3, B4, B6 and B8 call it.
 //
 // What a run (`groupCorrections`) does, in this order:
@@ -85,8 +86,7 @@ const keyOf = (scope: { orgId: OrgId; project: string }, sk: string) => projectL
 
 /** Whether PR-comment capture is off for the project: the `SETTINGS` item says `on`, otherwise it is off (design 2.5: off by default). B8 adds the company lock to the check it passes in `GroupingOptions`. */
 export async function prCaptureOff(deps: LearningDeps, scope: LearningScope): Promise<boolean> {
-  const item = await getLearningItem(deps, scope, "SETTINGS");
-  return item?.["prComments"] !== "on";
+  return effectivePrCaptureOff(deps, scope);
 }
 
 // ---- dismissed member sets
