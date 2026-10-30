@@ -56,13 +56,12 @@ export function createAdminDirectory() {
  const documentClient = { async send(command: unknown): Promise<unknown> {
   if (command instanceof GetCommand) return { Item: rows.get(keyOf(command.input.Key ?? {})) };
   if (command instanceof BatchGetCommand) {
-   const Responses: Record<string, Row[]> = {};let count = 0;
-   for (const [table, request] of Object.entries(command.input.RequestItems ?? {})) {
-    const keys = request.Keys ?? [];count += keys.length;
-    if (count > 100 || request.ProjectionExpression !== undefined) throw new Error("Unsupported fixture batch read.");
-    if (keys.some(key => typeof key.pk === "string" && key.pk.startsWith("DEVELOPER_NAME#")) && request.ConsistentRead !== true) throw new Error("Unsupported fixture batch read.");
-    Responses[table] = keys.flatMap(key => { if (typeof key.pk !== "string" || typeof key.sk !== "string") throw new Error("Invalid fixture batch key.");const row = rows.get(keyOf(key));return row === undefined ? [] : [structuredClone(row)]; });
-   }
+   // Strict like the earlier fixture: one table, at most 100 keys, always a consistent read, no projection. Callers read chosen names and agent sessions this way; anything else is a new access pattern that needs a deliberate fixture change.
+   const entries = Object.entries(command.input.RequestItems ?? {});
+   if (entries.length !== 1) throw new Error("Unsupported fixture batch read.");
+   const [table, request] = entries[0]!, keys = request.Keys ?? [];
+   if (keys.length > 100 || request.ConsistentRead !== true || request.ProjectionExpression !== undefined) throw new Error("Unsupported fixture batch read.");
+   const Responses: Record<string, Row[]> = { [table]: keys.flatMap(key => { if (typeof key.pk !== "string" || typeof key.sk !== "string") throw new Error("Invalid fixture batch key.");const row = rows.get(keyOf(key));return row === undefined ? [] : [structuredClone(row)]; }) };
    return { Responses };
   }
   if (command instanceof QueryCommand) {
