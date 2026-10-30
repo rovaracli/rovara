@@ -1,6 +1,9 @@
 // Plan 2, Task 18: egress items. A domain a project asks for is `pending` on Rovara Cloud until Rovara staff approve it (and `approved` on
 // a private install at once); every request, decision and removal is audited; the approved union of active items is what the DNS firewall
 // layer serves (Task 19). Owners are keyed so Plan 3's model sources use the same items.
+import { capturingAuditDeps } from "../support/audit-capture.js";
+import { readProjectAllowedDomainsReview, proposeProjectAllowedDomains, commitReviewedProjectAllowedDomains, commitDirectProjectAllowedDomains } from "../../packages/broker/src/org/project-allowed-domains.js";
+import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,7 +11,7 @@ import { join } from "node:path";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  EGRESS_DOMAINS_PK, EGRESS_SYNC_KEY, developerOrgKey, egressDomainsKey, orgMemberKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId,
+  EGRESS_DOMAINS_PK, EGRESS_SYNC_KEY, developerOrgKey, egressDomainsKey, orgMemberKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, projectMemberKey, orgMetaKey, AgentXErrorCodeSchema, errorStatus, type EgressAuditItem, type EgressDomainsItem, type EgressOwner, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import { tokenStoreKey } from "../../packages/cli/src/auth.js";
 import { executeCli } from "../../packages/cli/src/main.js";
@@ -55,8 +58,9 @@ type Detail = { settings: { allowedDomains: Array<{ domain: string; status: stri
 /** A cloud broker with an org admin (Omar), the project `web`, and a sync that records its calls. */
 async function install(options: { sync?: () => Promise<{ ok: boolean }> } = {}) {
   const sync = vi.fn(options.sync ?? (async () => ({ ok: true })));
+  const audit = capturingAuditDeps();
   const h = await createDeveloperTaskBroker({
-    register: false,
+    register: false, audit,
     brokerExtra: {
       cloud: true, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" }, egressDomainsSync: sync,
       githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn() },
@@ -64,12 +68,24 @@ async function install(options: { sync?: () => Promise<{ ok: boolean }> } = {}) 
   });
   seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "admin" });
   seedProject(h.db);
-  let expectedRevision = 1;
-  const put = async (domains: string[], who: Developer = OMAR) => {
-    const answer = await h.dev(who, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision, allowedDomains: domains });
-    // A save that changes nothing in the definition stays at the revision the person saw.
-    if (answer.status === 200) expectedRevision = (answer.body.project as { latestRevision: number }).latestRevision;
-    return answer as { status: number; body: { warnings: string[]; project: Detail; error?: { code: string; message: string } } };
+  // Staff-policy tests arrange company-approved changes through the real B33 core.
+  // This helper returns the actual core receipt, never a fabricated settings response.
+  audit.attach(h.db);audit.audit.documentClient = h.db as unknown as typeof audit.audit.documentClient;
+  h.db.set({ ...h.db.get(orgMetaKey(TEST_ORG)), ...orgMetaKey(TEST_ORG), orgId: TEST_ORG, approvalMembershipVersion: 1, approvalTrackingSince: "2026-10-01T00:00:00.000Z" });
+  h.db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "web"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "web", role: "developer", projectRole: "maintainer", grantId: randomUUID() });
+  const companyDeps = { documentClient: h.db, tableName: "state", signInTableName: "signin", now: Date.now, audit: audit.audit };
+  const changeSites = async (domains: string[], who: Developer = OMAR) => {
+    try {
+      const review = await readProjectAllowedDomainsReview(companyDeps, { orgId: TEST_ORG, project: "web", by: who.developerId });
+      const body = { requestId: randomUUID(), expectedRevision: review.baseRevision, expectedContextDigest: review.contextDigest, allowedDomains: domains };
+      let result: unknown;
+      if (domains.some(domain => !review.allowedDomains.includes(domain))) {
+        const proposal = await proposeProjectAllowedDomains(companyDeps, { orgId: TEST_ORG, project: "web", by: who.developerId, body });
+        const sole = h.db.get(orgMemberKey(TEST_ORG, MAYA.developerId)) === undefined;
+        result = await commitReviewedProjectAllowedDomains(companyDeps, { orgId: TEST_ORG, project: "web", by: sole ? who.developerId : MAYA.developerId, body: { requestId: randomUUID(), proposalId: proposal.proposalId, soleOwnerAcknowledged: sole } });
+      } else result = await commitDirectProjectAllowedDomains(companyDeps, { orgId: TEST_ORG, project: "web", by: who.developerId, body });
+      return { status: 200, body: result as Record<string, unknown> };
+    } catch (error) { const checked = z.object({ code: AgentXErrorCodeSchema, message: z.string() }).safeParse(error);if (!checked.success) throw error;return { status: errorStatus(checked.data.code), body: { error: checked.data } }; }
   };
   const detail = async () => ((await h.dev(OMAR, "GET", "/v1/app/projects/web")).body as unknown as Detail).settings.allowedDomains;
   const staff = (method: string, path: string, body?: unknown) => call(h.handler, { method, path, user: STAFF, ...(body === undefined ? {} : { body }) });
@@ -78,7 +94,7 @@ async function install(options: { sync?: () => Promise<{ ok: boolean }> } = {}) 
   const deps: EgressDomainsDependencies = { documentClient: h.db, tableName: "state", cloud: true, now: () => new Date(), sync };
   const item = (orgId: OrgId = TEST_ORG, owner: EgressOwner = WEB) => h.db.get(egressDomainsKey(orgId, owner)) as unknown as EgressDomainsItem | undefined;
   const audits = () => h.db.find((candidate) => candidate.pk === "EGRESS_AUDIT") as unknown as Array<EgressAuditItem & { pk: string; sk: string }>;
-  return { ...h, sync, put, detail, staff, decide, deps, item, audits };
+  return { ...h, sync, changeSites, detail, staff, decide, deps, item, audits, companyAudit: audit };
 }
 
 function plain(options: { cloud?: boolean; sync?: () => Promise<{ ok: boolean }>; now?: () => Date } = {}) {
@@ -89,82 +105,75 @@ function plain(options: { cloud?: boolean; sync?: () => Promise<{ ok: boolean }>
   return { db, sync, deps, audits };
 }
 
-describe("a settings save on Rovara Cloud", () => {
-  it("stores a new domain as pending, warns with the exact copy, writes a requested audit item and serves nothing", async () => {
-    const h = await install();
-    const saved = await h.put(["a.acme.dev"]);
-    expect(saved.status).toBe(200);
-    expect(saved.body.warnings).toEqual([PENDING("a.acme.dev")]);
-    expect(saved.body.project.settings.allowedDomains).toEqual([{ domain: "a.acme.dev", status: "pending" }]);
-    expect(h.item()).toMatchObject({ orgId: TEST_ORG, owner: WEB, active: true, domains: [{ domain: "a.acme.dev", status: "pending", requestedBy: OMAR.developerId }] });
-    const [audit, ...rest] = h.audits();
-    expect(rest).toEqual([]);
-    expect(audit).toMatchObject({ orgId: TEST_ORG, owner: WEB, domain: "a.acme.dev", action: "requested", actor: { kind: "developer", id: OMAR.developerId } });
-    expect(audit!.sk).toMatch(/^\d{4}-\d\d-\d\dT[\d:.]+Z#[0-9a-f-]{36}$/);
-    expect(audit).not.toHaveProperty("ttl");
-    expect(await approvedUnion(h.deps)).toEqual([]);
-    // Nothing the firewall serves changed, so it was not asked to sync.
-    expect(h.sync).not.toHaveBeenCalled();
+describe("company-approved website changes on Rovara Cloud", () => {
+  it("keeps a company-approved addition staff-pending, with one summary audit and nothing served", async () => {
+    const h = await install(), saved = await h.changeSites(["a.acme.dev"]);
+    expect(saved.status).toBe(200);expect(await h.detail()).toEqual([{ domain: "a.acme.dev", status: "pending" }]);
+    expect(h.item()).toMatchObject({ orgId: TEST_ORG, owner: WEB, active: true, domains: [{ domain: "a.acme.dev", status: "pending", requestedBy: MAYA.developerId }] });
+    expect(h.audits()).toEqual([]);
+    expect(h.companyAudit.recordedBy("project.allowed_domains_changed")).toMatchObject([{ facts: { mode: "second_person", added: 1, removed: 0 } }]);
+    expect(h.companyAudit.recordedBy("project.allowed_domains_changed")[0]?.facts).not.toHaveProperty("domain");
+    expect(await approvedUnion(h.deps)).toEqual([]);expect(h.sync).not.toHaveBeenCalled();
   });
 
   it("serves the domain once staff approve it: the audit names the operator and the sync runs", async () => {
     const h = await install();
-    await h.put(["a.acme.dev"]);
+    await h.changeSites(["a.acme.dev"]);
     const approved = await h.decide("approve", "a.acme.dev");
     expect(approved).toMatchObject({ status: 200, body: { orgId: TEST_ORG, owner: WEB, domain: "a.acme.dev", status: "approved" } });
     expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
-    expect(h.item()!.domains[0]).toMatchObject({ domain: "a.acme.dev", status: "approved", decidedBy: STAFF.subject, requestedBy: OMAR.developerId });
+    expect(h.item()!.domains[0]).toMatchObject({ domain: "a.acme.dev", status: "approved", decidedBy: STAFF.subject, requestedBy: MAYA.developerId });
     expect(h.audits().find((audit) => audit.action === "approved")).toMatchObject({ domain: "a.acme.dev", orgId: TEST_ORG, owner: WEB, actor: { kind: "operator", id: STAFF.subject } });
     expect(h.sync).toHaveBeenCalledTimes(1);
     expect(h.db.get(EGRESS_SYNC_KEY)).toMatchObject({ dirtyAt: expect.any(String) as string });
     expect(await h.detail()).toEqual([{ domain: "a.acme.dev", status: "approved" }]);
     // A later save of the same list keeps the decision, says nothing and asks for no second approval.
-    expect((await h.put(["a.acme.dev"])).body.warnings).toEqual([]);
+    expect((await h.changeSites(["a.acme.dev"])).body).toMatchObject({ state: "unchanged" });
     expect(h.item()!.domains[0]).toMatchObject({ status: "approved" });
-    expect(h.audits()).toHaveLength(2);
+    expect(h.audits()).toHaveLength(1);expect(h.companyAudit.recordedBy("project.allowed_domains_changed")).toHaveLength(1);
   });
 
   it("records a rejection with its reason, tells the maintainers, and asks again only when the domain is removed and added back", async () => {
     const h = await install();
-    await h.put(["a.acme.dev", "b.acme.dev"]);
+    await h.changeSites(["a.acme.dev", "b.acme.dev"]);
     const rejected = await h.decide("reject", "a.acme.dev", { reason: "not an artifact host" });
     expect(rejected).toMatchObject({ status: 200, body: { domain: "a.acme.dev", status: "rejected" } });
     expect(h.item()!.domains.find((entry) => entry.domain === "a.acme.dev")).toMatchObject({ status: "rejected", reason: "not an artifact host", decidedBy: STAFF.subject });
     expect(h.audits().find((audit) => audit.action === "rejected")).toMatchObject({ domain: "a.acme.dev", reason: "not an artifact host", actor: { kind: "operator", id: STAFF.subject } });
     expect(await approvedUnion(h.deps)).toEqual([]);
-    const again = await h.put(["a.acme.dev", "b.acme.dev"]);
-    expect(again.body.warnings).toEqual(["Rovara did not approve a.acme.dev: not an artifact host", PENDING("b.acme.dev")]);
+    const again = await h.changeSites(["a.acme.dev", "b.acme.dev"]);
+    expect(again.body).toMatchObject({ state: "unchanged" });
     expect(await h.detail()).toEqual([{ domain: "a.acme.dev", status: "rejected", reason: "not an artifact host" }, { domain: "b.acme.dev", status: "pending" }]);
     // Removing and re-adding makes it a new request.
-    await h.put(["b.acme.dev"]);
-    expect(h.audits().filter((audit) => audit.domain === "a.acme.dev").map((audit) => audit.action).sort()).toEqual(["rejected", "removed", "requested"]);
-    const back = await h.put(["a.acme.dev", "b.acme.dev"]);
-    expect(back.body.warnings).toEqual([PENDING("a.acme.dev"), PENDING("b.acme.dev")]);
+    await h.changeSites(["b.acme.dev"]);
+    expect(h.audits().filter((audit) => audit.domain === "a.acme.dev").map((audit) => audit.action).sort()).toEqual(["rejected"]);expect(h.companyAudit.recordedBy("project.allowed_domains_changed")).toMatchObject([{ facts: { added: 2 } }, { facts: { mode: "direct_narrowing", removed: 1 } }]);
+    const back = await h.changeSites(["a.acme.dev", "b.acme.dev"]);
+    expect(back.status).toBe(200);expect(h.companyAudit.recordedBy("project.allowed_domains_changed")).toHaveLength(3);
     expect(h.item()!.domains.find((entry) => entry.domain === "a.acme.dev")).toMatchObject({ status: "pending" });
     expect(h.item()!.domains.find((entry) => entry.domain === "a.acme.dev")).not.toHaveProperty("reason");
   });
 
   it("is not asked about a domain every project already has", async () => {
     const h = await install();
-    const saved = await h.put(["registry.npmjs.org", "a.acme.dev"]);
-    expect(saved.body.warnings).toEqual(["registry.npmjs.org is already allowed for every project", PENDING("a.acme.dev")]);
+    const saved = await h.changeSites(["registry.npmjs.org", "a.acme.dev"]);
+    expect(saved.status).toBe(200);
     expect(h.item()!.domains.map((entry) => entry.domain)).toEqual(["a.acme.dev"]);
-    expect(await h.detail()).toEqual([{ domain: "registry.npmjs.org", status: "approved" }, { domain: "a.acme.dev", status: "pending" }]);
+    expect(await h.detail()).toEqual([{ domain: "a.acme.dev", status: "pending" }, { domain: "registry.npmjs.org", status: "approved" }]);
   });
 
-  it("drops a domain that is no longer listed, audited as removed, and syncs when it was approved", async () => {
+  it("drops a domain with one narrowing summary and marks the changed approved union dirty", async () => {
     const h = await install();
-    await h.put(["a.acme.dev", "b.acme.dev"]);
+    await h.changeSites(["a.acme.dev", "b.acme.dev"]);
     await h.decide("approve", "a.acme.dev");
     h.sync.mockClear();
-    await h.put(["b.acme.dev"]);
+    await h.changeSites(["b.acme.dev"]);
     expect(h.item()!.domains.map((entry) => entry.domain)).toEqual(["b.acme.dev"]);
-    expect(h.audits().filter((audit) => audit.action === "removed")).toMatchObject([{ domain: "a.acme.dev", actor: { kind: "developer", id: OMAR.developerId } }]);
+    expect(h.companyAudit.recordedBy("project.allowed_domains_changed").at(-1)).toMatchObject({ facts: { mode: "direct_narrowing", removed: 1 } });
     expect(await approvedUnion(h.deps)).toEqual([]);
-    expect(h.sync).toHaveBeenCalledTimes(1);
-    await h.put([]);
+    expect(h.sync).not.toHaveBeenCalled();expect(h.db.get(EGRESS_SYNC_KEY)).toHaveProperty("dirtySeq");
+    await h.changeSites([]);
     expect(h.item()!.domains).toEqual([]);
-    expect(h.audits().filter((audit) => audit.action === "removed").map((audit) => audit.domain).sort()).toEqual(["a.acme.dev", "b.acme.dev"]);
+    expect(h.companyAudit.recordedBy("project.allowed_domains_changed").map(event => event.facts?.removed)).toEqual([0, 1, 1]);
   });
 
   it("asks for approval of the domains a project already stored before approvals existed, and shows them pending until then", async () => {
@@ -186,10 +195,10 @@ describe("a settings save on Rovara Cloud", () => {
 
   it("makes no revision when the egress write fails on the save that removes the last domain, and the retry then takes it out of the union (ruling C29)", async () => {
     const h = await install();
-    await h.put(["a.acme.dev"]);
+    await h.changeSites(["a.acme.dev"]);
     await h.decide("approve", "a.acme.dev");
     expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
-    // The egress write comes first now: when it fails, no revision with no domains is stored.
+    // The revision and egress removal commit together; a failed transaction leaves both unchanged.
     h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
     const failed = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 2, allowedDomains: [] });
     expect(failed.status).toBe(503);
@@ -201,27 +210,23 @@ describe("a settings save on Rovara Cloud", () => {
     expect(await approvedUnion(h.deps)).toEqual([]);
   });
 
-  it("repairs, on the schedule, the item of a save whose revision then failed to land (final review I2)", async () => {
-    const h = await install();
-    await h.put(["a.acme.dev"]);
-    await h.decide("approve", "a.acme.dev");
-    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes('"entityType":"PROJECT"') && !JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
+  it("never leaves a partial narrowing for the schedule to repair when its combined transaction fails", async () => {
+    const h = await install();await h.changeSites(["a.acme.dev"]);await h.decide("approve", "a.acme.dev");
+    const before = structuredClone(h.item());
+    h.db.injectFault({ command: "TransactWriteCommand", match: input => JSON.stringify(input).includes('"entityType":"PROJECT"') && JSON.stringify(input).includes("EGRESS_DOMAINS"), error: { name: "InternalServerError" } });
     const failed = await h.dev(OMAR, "PUT", "/v1/app/projects/web/settings", { requestId: randomUUID(), expectedRevision: 2, allowedDomains: [] });
-    expect(failed.status).toBeGreaterThanOrEqual(500);
-    // The item lost the domain but the project (revision 2) still lists it.
-    expect(h.item()!.domains).toEqual([]);
-    const later = { ...h.deps, now: () => new Date(Date.now() + 600_000) };
-    expect(await reconcileEgressWithRevisions(later)).toEqual({ repaired: 1 });
-    expect(h.item()!.domains.map((entry) => entry.domain)).toEqual(["a.acme.dev"]);
+    expect(failed.status).toBeGreaterThanOrEqual(500);expect(h.item()).toEqual(before);expect(h.db.get(projectRevisionKey(TEST_ORG, "web", 3))).toBeUndefined();
+    expect(await reconcileEgressWithRevisions({ ...h.deps, now: () => new Date(Date.now() + 600_000) })).toEqual({ repaired: 0 });
+    expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
   });
 
   it("does not put an archived project's first domains in the union (Task 18 Minor 7)", async () => {
     const h = await install();
     h.db.set({ ...(h.db.get(projectMetaKey(TEST_ORG, "web")) as object), status: "archived" });
     // A settings save on an archived project is refused (Task 20); the egress write itself still starts an archived project's item inactive.
-    const refused = await h.put(["a.acme.dev"]);
+    const refused = await h.changeSites(["a.acme.dev"]);
     expect(refused.status).toBe(409);
-    expect(refused.body.error).toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(refused.body.error).toMatchObject({ code: "CHANGE_STALE" });
     expect(h.item()).toBeUndefined();
     await putEgressDomains(h.deps, TEST_ORG, WEB, ["a.acme.dev"], { developerId: OMAR.developerId });
     expect(h.item()).toMatchObject({ active: false });
@@ -284,7 +289,7 @@ describe("a settings save on Rovara Cloud", () => {
     seedProject(h.db, OTHER_ORG);
     await putEgressDomains({ ...h.deps }, OTHER_ORG, WEB, ["theirs.acme.dev"], { developerId: "someone-else" });
     expect(await h.detail()).toEqual([]);
-    await h.put(["a.acme.dev"]);
+    await h.changeSites(["a.acme.dev"]);
     expect(await h.detail()).toEqual([{ domain: "a.acme.dev", status: "pending" }]);
     expect(h.item(OTHER_ORG)!.domains.map((entry) => entry.domain)).toEqual(["theirs.acme.dev"]);
   });
@@ -293,7 +298,7 @@ describe("a settings save on Rovara Cloud", () => {
 describe("the admin routes", () => {
   it("refuse a developer token and a caller without the administrator claim, and decide nothing", async () => {
     const h = await install();
-    await h.put(["a.acme.dev"]);
+    await h.changeSites(["a.acme.dev"]);
     const token = await bearerFor(OMAR, { orgId: TEST_ORG, role: "owner" });
     for (const [method, path, body] of [
       ["GET", "/v1/admin/egress/pending", undefined],
@@ -306,12 +311,12 @@ describe("the admin routes", () => {
       expect(member.status, `${method} ${path} without the claim`).toBe(403);
     }
     expect(h.item()!.domains[0]).toMatchObject({ status: "pending" });
-    expect(h.audits()).toHaveLength(1);
+    expect(h.audits()).toHaveLength(0);expect(h.companyAudit.recordedBy("project.allowed_domains_changed")).toHaveLength(1);
   });
 
   it("list what waits: org name, owner, domain, when and who asked; never the sync marker", async () => {
     const h = await install();
-    await h.put(["a.acme.dev", "b.acme.dev"]);
+    await h.changeSites(["a.acme.dev", "b.acme.dev"]);
     await h.decide("approve", "b.acme.dev");
     expect(h.db.get(EGRESS_SYNC_KEY)).toBeDefined();
     await putEgressDomains(h.deps, TEST_ORG, SOURCE, ["m.model.dev"], { developerId: "dev-x" });
@@ -319,7 +324,7 @@ describe("the admin routes", () => {
     expect(listed.status).toBe(200);
     const pending = (listed.body as { pending: Array<Record<string, unknown>> }).pending;
     expect(pending).toHaveLength(2);
-    expect(pending[0]).toMatchObject({ orgId: TEST_ORG, orgName: "staging", owner: WEB, domain: "a.acme.dev", requestedBy: { developerId: OMAR.developerId, name: "Omar Diaz" } });
+    expect(pending[0]).toMatchObject({ orgId: TEST_ORG, orgName: "staging", owner: WEB, domain: "a.acme.dev", requestedBy: { developerId: MAYA.developerId, name: "Maya Chen" } });
     expect(pending[0]!.requestedAt).toEqual(expect.any(String));
     expect(pending[1]).toMatchObject({ owner: SOURCE, domain: "m.model.dev", requestedBy: { developerId: "dev-x", name: "Unknown" } });
     expect(JSON.stringify(listed.body)).not.toContain("SYNC");
@@ -328,14 +333,14 @@ describe("the admin routes", () => {
 
   it("refuse a domain that is not waiting for approval, and a reason that is empty or too long", async () => {
     const h = await install();
-    await h.put(["a.acme.dev"]);
+    await h.changeSites(["a.acme.dev"]);
     await h.decide("approve", "a.acme.dev");
     for (const answer of [await h.decide("approve", "a.acme.dev"), await h.decide("reject", "a.acme.dev", { reason: "late" }), await h.decide("approve", "never.acme.dev"), await h.decide("approve", "a.acme.dev", {}, OTHER_ORG)]) {
       expect(answer).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
     }
     expect((await h.decide("approve", "a.acme.dev")).body.error).toMatchObject({ message: "a.acme.dev is not waiting for approval" });
     expect(h.item()!.domains[0]).toMatchObject({ status: "approved" });
-    await h.put(["a.acme.dev", "c.acme.dev"]);
+    await h.changeSites(["a.acme.dev", "c.acme.dev"]);
     for (const reason of [undefined, "", "   ", "x".repeat(201)]) {
       const refused = await h.decide("reject", "c.acme.dev", reason === undefined ? {} : { reason });
       expect(refused, JSON.stringify(reason)).toMatchObject({ status: 400, body: { error: { code: "CONFIG_INVALID" } } });
@@ -350,7 +355,7 @@ describe("a staff decision's request id (final review M2)", () => {
 
   it("stores the request in the same transaction as the decision, bound to the operator and with an expiry", async () => {
     const h = await install();
-    await h.put(["a.acme.dev"]);
+    await h.changeSites(["a.acme.dev"]);
     const id = randomUUID();
     const sent: Array<Array<Record<string, unknown>>> = [];
     const send = h.db.send.bind(h.db);
@@ -370,7 +375,7 @@ describe("a staff decision's request id (final review M2)", () => {
 
   it("leaves no record when the decision fails, and the same id then decides", async () => {
     const h = await install();
-    await h.put(["a.acme.dev"]);
+    await h.changeSites(["a.acme.dev"]);
     const id = randomUUID();
     h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("EGRESS_DECISION_REQUEST"), error: { name: "InternalServerError" } });
     expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBeGreaterThanOrEqual(500);
@@ -381,12 +386,12 @@ describe("a staff decision's request id (final review M2)", () => {
 
   it("answers a repeat of the same id with the same outcome and writes nothing, even after the domain was removed and asked for again", async () => {
     const h = await install();
-    await h.put(["a.acme.dev"]);
+    await h.changeSites(["a.acme.dev"]);
     const id = randomUUID();
     const first = await h.decide("approve", "a.acme.dev", { requestId: id });
     expect(first.status).toBe(200);
-    await h.put(["b.acme.dev"]);
-    await h.put(["a.acme.dev", "b.acme.dev"]);
+    await h.changeSites(["b.acme.dev"]);
+    await h.changeSites(["a.acme.dev", "b.acme.dev"]);
     expect(h.item()!.domains.find((entry) => entry.domain === "a.acme.dev")).toMatchObject({ status: "pending" });
     const auditsBefore = h.audits().length;
     const syncs = h.sync.mock.calls.length;
@@ -399,7 +404,7 @@ describe("a staff decision's request id (final review M2)", () => {
 
   it("refuses the same id for another decision, another domain, or another operator with IDEMPOTENCY_CONFLICT, and decides nothing", async () => {
     const h = await install();
-    await h.put(["a.acme.dev", "b.acme.dev"]);
+    await h.changeSites(["a.acme.dev", "b.acme.dev"]);
     const id = randomUUID();
     expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBe(200);
     const other = [
@@ -413,7 +418,7 @@ describe("a staff decision's request id (final review M2)", () => {
 
   it("takes an expired record the State table has not yet deleted as no record", async () => {
     const h = await install();
-    await h.put(["a.acme.dev"]);
+    await h.changeSites(["a.acme.dev"]);
     const id = randomUUID();
     h.db.set({ pk: "EGRESS_DECISION_REQUEST", sk: id, entityType: "EGRESS_DECISION_REQUEST", by: "staff-2", bodyHash: "x", indexExpiresAt: Math.floor(Date.now() / 1000) - 10 });
     expect((await h.decide("approve", "a.acme.dev", { requestId: id })).status).toBe(200);
@@ -422,7 +427,7 @@ describe("a staff decision's request id (final review M2)", () => {
 
   it("answers two identical requests sent together as one decision and one replay", async () => {
     const h = await install();
-    await h.put(["a.acme.dev"]);
+    await h.changeSites(["a.acme.dev"]);
     const id = randomUUID();
     const answers = await Promise.all([h.decide("approve", "a.acme.dev", { requestId: id }), h.decide("approve", "a.acme.dev", { requestId: id })]);
     expect(answers.map((answer) => answer.status)).toEqual([200, 200]);
@@ -461,7 +466,7 @@ describe("egress items", () => {
 
   it("leave the union when the owner is archived and return, without approval, when it is restored", async () => {
     const h = await install();
-    await h.put(["a.acme.dev", "b.acme.dev"]);
+    await h.changeSites(["a.acme.dev", "b.acme.dev"]);
     await h.decide("approve", "a.acme.dev");
     h.sync.mockClear();
     await setEgressOwnerActive(h.deps, TEST_ORG, WEB, false);
@@ -471,7 +476,7 @@ describe("egress items", () => {
     await setEgressOwnerActive(h.deps, TEST_ORG, WEB, true);
     expect(await approvedUnion(h.deps)).toEqual(["a.acme.dev"]);
     expect(h.item()!.domains.map((entry) => entry.status)).toEqual(["approved", "pending"]);
-    expect(h.audits().map((audit) => audit.action).sort()).toEqual(["approved", "requested", "requested"]);
+    expect(h.audits().map((audit) => audit.action)).toEqual(["approved"]);expect(h.companyAudit.recordedBy("project.allowed_domains_changed")).toHaveLength(1);
     expect(h.sync).toHaveBeenCalledTimes(2);
     // An owner with no item has nothing to flip.
     await expect(setEgressOwnerActive(h.deps, TEST_ORG, SOURCE, false)).resolves.toEqual({});
@@ -507,10 +512,10 @@ describe("egress items", () => {
     expect(await approvedUnion(thrown.deps)).toEqual(["a.acme.dev"]);
   });
 
-  it("show the sync warning in the settings response and after an approval", async () => {
+  it("keep defaults separate and report an eventual sync failure after staff approval", async () => {
     const h = await install({ sync: async () => ({ ok: false }) });
-    await h.put(["a.acme.dev"]);
-    expect((await h.put(["a.acme.dev", "registry.npmjs.org"])).body.warnings).toEqual(["registry.npmjs.org is already allowed for every project", PENDING("a.acme.dev")]);
+    await h.changeSites(["a.acme.dev"]);
+    expect((await h.changeSites(["a.acme.dev", "registry.npmjs.org"])).status).toBe(200);expect(await h.detail()).toEqual([{ domain: "a.acme.dev", status: "pending" }, { domain: "registry.npmjs.org", status: "approved" }]);
     const approved = await h.decide("approve", "a.acme.dev");
     expect(approved).toMatchObject({ status: 200, body: { warning: "allowed domains will apply within 5 minutes" } });
     const sibling = await h.staff("POST", "/v1/admin/egress/approve", { requestId: randomUUID(), orgId: TEST_ORG, owner: WEB, domain: "a.acme.dev" });
@@ -663,7 +668,8 @@ describe("closing an org", () => {
     h.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
     h.db.delete(developerOrgKey(MAYA.developerId));
     seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
-    await h.put(["a.acme.dev"]);
+    h.db.set({ ...h.db.get(orgMetaKey(TEST_ORG)), approvalMembershipVersion: 1, approvalTrackingSince: "2026-10-01T00:00:00.000Z" });
+    await h.changeSites(["a.acme.dev"]);
     await putEgressDomains(h.deps, OTHER_ORG, WEB, ["c.beta.dev"], { developerId: "dev-2" });
     const left = await h.dev(OMAR, "POST", "/v1/app/org/leave", {});
     expect(left.status, JSON.stringify(left.body)).toBe(200);

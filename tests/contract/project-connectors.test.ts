@@ -2128,3 +2128,11 @@ describe("Plan 4 Task 15: pagerduty and vercel on the project connectors", () =>
 });
 
 it("refuses the connectors registerRevision path with a fixed409 when latest has working branch selections",async()=>{const s=await install(),id=await s.connection({type:"linear",label:"Team Linear",access:"read"}),key=projectRevisionKey(TEST_ORG,"web",1),before=s.h.db.get(key)!;s.h.db.set({...before,workingBranchSelections:{web:{branch:"release/current"}}});const result=await s.put(MIA,"linear",linear(id));expect(result.status,JSON.stringify(result.body)).toBe(409);expect(result.body.error).toMatchObject({code:"PROJECT_REVISION_MISMATCH",message:STALE});expect(s.revision(2)).toBeUndefined();expect(s.h.db.get(key)?.workingBranchSelections).toEqual({web:{branch:"release/current"}});});
+it("B33 connector requests refuse client website widening and approval capability fields", async () => {
+ const s = await install(), id = await s.connection({ type: "linear", label: "Team Linear", access: "read" });
+ const before = structuredClone(s.revision(1));
+ for (const extra of [{ allowedDomains: ["bypass.acme.dev"] }, { network: { allowedDomains: ["bypass.acme.dev"] } }, { appliedDomainProposal: { proposalId: randomUUID(), baseRevision: 1, afterDigest: "a".repeat(64) } }]) {
+  const reply = await s.put(MIA, "linear", linear(id), extra);expect(reply.status, JSON.stringify(reply.body)).toBe(400);expect(reply.body.error?.code).toBe("CONFIG_INVALID");
+  expect(s.revision(1)).toEqual(before);expect(s.revision(2)).toBeUndefined();
+ }
+});

@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  ProjectMemberChangeResponseSchema, ProjectMembersResponseSchema, orgMemberKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey,
+  ProjectMemberChangeResponseSchema, ProjectMembersResponseSchema, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey,
   type OrgId, type OrgRole, type ProjectRole,
 } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
@@ -614,8 +614,8 @@ describe("request ids (a replay answers the stored outcome)", () => {
     expect((await remove(h, PRIYA, NEO)).status).toBe(200);
     // A removal of someone with no grant still records its request.
     expect((await remove(h, PRIYA, NEO)).status).toBe(200);
-    // The grant, the check that the person is still in the org (M7) and the request; then the removal and its request; then the request alone.
-    expect(sent).toEqual([{ name: "TransactWriteCommand", items: 3 }, { name: "TransactWriteCommand", items: 2 }, { name: "TransactWriteCommand", items: 1 }]);
+    // Grant/member check/request plus approval generation; removal/request plus generation; absent grant records only the request.
+    expect(sent).toEqual([{ name: "TransactWriteCommand", items: 4 }, { name: "TransactWriteCommand", items: 3 }, { name: "TransactWriteCommand", items: 1 }]);
     const stored = h.db.get({ pk: `ORG#${TEST_ORG}#PROJECT#payments`, sk: `MEMBER_REQUEST#${requestId}` });
     expect(stored).toMatchObject({ entityType: "PROJECT_MEMBER_REQUEST", action: "put", by: PRIYA.developerId, response: { developerId: NEO.developerId, role: "viewer" } });
     expect(stored!.indexExpiresAt).toBeGreaterThan(Date.now() / 1000 + 80_000);
@@ -905,10 +905,12 @@ describe("the grant item and the E2E direct-membership proof", () => {
 
   it("the creator's grant from creating a project is a maintainer grant naming them", async () => {
     const h = await createDeveloperTaskBroker({ register: false });
+    h.db.set({ ...h.db.get(orgMetaKey(TEST_ORG)), ...orgMetaKey(TEST_ORG), entityType: "ORG", approvalMembershipVersion: 8 });
     await (await brokerModule()).registerProjectFor(h.brokerInput, { orgId: TEST_ORG, ownerKey: OMAR.developerId }, {
       definition: { name: "web", revision: 1, repositories: [{ name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [], orchestratorInstructions: "Delegate." },
       runtimeBinding: BINDING,
     }, { creatorMembership: "developer", requireNewName: true });
+    expect(h.db.get(orgMetaKey(TEST_ORG))?.approvalMembershipVersion).toBe(9);
     expect(grantOf(h.db, OMAR, "web")).toMatchObject({
       entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "web", role: "developer", projectRole: "maintainer", grantedBy: { developerId: OMAR.developerId }, grantedAt: expect.any(String) as string,
     });

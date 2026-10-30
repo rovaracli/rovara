@@ -1,3 +1,7 @@
+import { directDomainReceiptKey, domainRequestHash, planLegacyDomainNarrowing } from "./legacy-domain-narrowing.js";
+import { flushAuditEvents } from "../audit/flush.js";
+import type { TransactItem } from "../audit/outbox.js";
+import { isAllowedDomainWidening, refuseAllowedDomainWidening } from "./allowed-domain-policy.js";
 // Plan 2, Task 17: a project maintainer changes the project's commands, devcontainer, repositories, allowed domains and description.
 // Each change but the description is a new immutable revision, built from the one the person was looking at (`expectedRevision`) and
 // registered through the same code every project revision goes through. Cloud only: another install's projects change through an administrator.
@@ -47,7 +51,8 @@ export interface ProjectSettingsDependencies<Caller extends ProjectSettingsCalle
   /** The caller's role in the project (an org owner or admin is a maintainer of every project of the org), or undefined when they have no access. */
   effectiveRole(caller: Caller, project: string): Promise<ProjectRole | undefined>;
   /** Registers one revision through the broker's registration (`registerProjectFor`, with no creator membership). */
-  registerRevision(actor: { orgId: OrgId; ownerKey: string }, input: { definition: ProjectDefinition; runtimeBinding: unknown }): Promise<void>;
+  registerRevision(actor: { orgId: OrgId; ownerKey: string }, input: { definition: ProjectDefinition; runtimeBinding: unknown }, extraItems?: TransactItem[]): Promise<void>;
+  allowedDomainAuthorityConditions?(caller: Caller, project: string): Promise<TransactItem[]>;
   /**
    * Plan 2, Task 18: where the allowed domains are recorded. A domain waits there for Rovara's approval (on cloud) and is audited. Required:
    * a save that cannot record its domains must not look as if it did.
@@ -230,11 +235,26 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   // An archived project's settings are as they were when it was archived; restoring it is how they change again (Task 20).
   if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(name));
   const body = parseProjectSettingsBody(rawBody);
+  const domainAuthority = body.allowedDomains === undefined ? undefined : await deps.allowedDomainAuthorityConditions?.(caller, name);
+  const recoverOwnedDomainReceipt = async (): Promise<boolean> => {
+    if (body.allowedDomains === undefined) return false;
+    const key = directDomainReceiptKey(caller.orgId, name, body.requestId);
+    const stored = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+    if (stored === undefined) return false;
+    // Recovery is status-only and still requires fresh live access. A matching
+    // immutable revision alone never proves that this request's effects landed.
+    if (await deps.allowedDomainAuthorityConditions?.(caller, name) === undefined) throw agentXError("FORBIDDEN", "Live website change authority is required.");
+    if (stored.entityType !== "EGRESS_PROPOSAL" || stored.orgId !== caller.orgId || stored.project !== name || stored.by !== caller.developerId || stored.bodyHash !== domainRequestHash(caller.orgId, name, caller.developerId, body)
+      || stored.state !== "applied" || stored.mode !== "direct_narrowing" || stored.baseRevision !== body.expectedRevision || stored.resultRevision !== body.expectedRevision + 1) throw agentXError("IDEMPOTENCY_CONFLICT", "Use a fresh request id for a different website change.");
+    return true;
+  };
+  if (await recoverOwnedDomainReceipt()) return { project: await deps.readProject(caller, name), warnings: [] };
 
   const latest = await latestRevision(deps, caller.orgId, name);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   const current = latest.definition;
   if (current.revision !== body.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
+  if (deps.cloud && body.allowedDomains !== undefined && isAllowedDomainWidening(current.network?.allowedDomains ?? [], body.allowedDomains)) refuseAllowedDomainWidening();
   if (current.e2e !== undefined || latest.setupApproval !== undefined) {
     throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register");
   }
@@ -295,20 +315,29 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   const previous = ProjectDefinitionSchema.safeParse(current);
   const withoutRevision = (definition: unknown) => canonicalJson({ ...(definition as Record<string, unknown>), revision: 0 });
   const changed = !previous.success || withoutRevision(previous.data) !== withoutRevision(parsed.data);
-  // Ruling C29: the egress item first. Its refusal (a concurrent edit) then leaves no revision, and a revision that fails to land leaves an item
-  // the scheduled reconcile compares with the project's current revision and repairs (`reconcileEgressWithRevisions`). The other order left a
-  // revision with no item, which nothing noticed: a domain the maintainer removed stayed in the cell-wide union.
-  const egressWarnings = await recordEgress(deps.egress, caller, name, parsed.data.network?.allowedDomains ?? []);
+  const beforeDomains = [...new Set(current.network?.allowedDomains ?? [])].sort();
+  const afterDomains = [...new Set(parsed.data.network?.allowedDomains ?? [])].sort();
+  const domainChanged = canonicalJson(beforeDomains) !== canonicalJson(afterDomains);
+  if (domainChanged && domainAuthority === undefined) throw agentXError("FORBIDDEN", "Live website change authority is required.");
+  const domainPlan = domainChanged && domainAuthority !== undefined ? await planLegacyDomainNarrowing({ ...deps.egress }, {
+    orgId: caller.orgId, project: name, by: caller.developerId, body, before: beforeDomains, after: afterDomains, authority: domainAuthority,
+  }) : undefined;
+  // Actual website changes commit with revision/audit. Existing no-change repair
+  // remains in its legacy path and cannot authorize new desired domains.
+  const egressWarnings = domainPlan === undefined ? await recordEgress(deps.egress, caller, name, afterDomains) : [];
   if (changed) {
     try {
-      await deps.registerRevision({ orgId: caller.orgId, ownerKey: caller.developerId }, { definition: parsed.data, runtimeBinding: latest.runtimeBinding });
+      await deps.registerRevision({ orgId: caller.orgId, ownerKey: caller.developerId }, { definition: parsed.data, runtimeBinding: latest.runtimeBinding }, domainPlan?.items);
     } catch (error) {
       // Another save took this revision number first (its content differs), or the catalog moved under this one.
-      if (error instanceof AgentXError && error.code === "PROJECT_REVISION_MISMATCH") throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
-      throw error;
+      if (domainPlan === undefined || !await recoverOwnedDomainReceipt()) {
+        if (error instanceof AgentXError && error.code === "PROJECT_REVISION_MISMATCH") throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
+        throw error;
+      }
     }
   }
-  if (body.description !== undefined) await writeDescription(deps, caller.orgId, name, body.description);
+  if (domainPlan !== undefined) await flushAuditEvents(deps.egress, [domainPlan.event]);
+  if (body.description !== undefined && domainPlan === undefined) await writeDescription(deps, caller.orgId, name, body.description);
   warnings.push(...egressWarnings);
   console.log(JSON.stringify({
     component: "broker", event: "developer.project_settings_changed", orgId: caller.orgId, project: name, revision: changed ? parsed.data.revision : current.revision,

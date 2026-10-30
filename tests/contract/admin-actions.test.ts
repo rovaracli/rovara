@@ -1,7 +1,7 @@
 // tests/contract/admin-actions.test.ts
 // Spec 025 E8, E9, E19: the handlers 25e's change tools apply that had no admin command before.
 import { describe, expect, it, vi } from "vitest";
-import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { developerIdForSlackUser, endSessions, grantProjectAccess, projectGrant, resolveDeveloper, revokeProjectAccess, setWorkspaceLimits, type AdminActionDependencies } from "../../packages/broker/src/aws/admin-actions.js";
 import { MAX_PER_ORGANIZATION, MAX_PER_PERSON, isWholeLimit, readWorkspaceLimits } from "../../packages/broker/src/developer/limits.js";
 import { emailIndexKey } from "../../packages/broker/src/developer/store.js";
@@ -100,9 +100,9 @@ describe("a grant that races another write (FR-013.1)", () => {
     const d = deps();
     const id = developerIdForSlackUser("U0ADA00001");
     const send = d.documentClient.send.bind(d.documentClient);
-    // Another writer adds the row between the grant's read and its conditional put.
+    // Another writer adds the row between the grant's read and its conditional transaction.
     d.documentClient = { send: vi.fn<AdminActionDependencies["documentClient"]["send"]>(async (command) => {
-      if (command instanceof PutCommand) d.db.set({ ...projectMemberKey(TEST_ORG, id, "payments"), entityType: "MEMBERSHIP", ownerKey: id, projectName: "payments", role });
+      if (command instanceof TransactWriteCommand) d.db.set({ ...projectMemberKey(TEST_ORG, id, "payments"), entityType: "MEMBERSHIP", ownerKey: id, projectName: "payments", role });
       return send(command);
     }) };
     return { d, id };

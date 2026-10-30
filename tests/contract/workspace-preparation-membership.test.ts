@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { projectMemberKey } from "@agentx/contracts";
+import { projectMemberKey, orgMetaKey } from "@agentx/contracts";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, ensureWorkspace, issuer, lazyEnsureWorkspace } from "../support/slack-broker.js";
@@ -76,9 +76,11 @@ describe("admin prepareWorkspace and the target's project membership", () => {
   it("records who granted a developer membership it creates, and when", async () => {
     const broker = await harness();
     const before = Date.now();
+    broker.db.set({ ...broker.db.get(orgMetaKey(TEST_ORG)), ...orgMetaKey(TEST_ORG), approvalMembershipVersion: 8 });
     expect(broker.membership(ownerKeyOf(NEW_DEVELOPER_SUBJECT))).toBeUndefined();
     const prepared = await broker.prepare(NEW_DEVELOPER_SUBJECT);
     expect(prepared.status, JSON.stringify(prepared.body)).toBe(202);
+    expect(broker.db.get(orgMetaKey(TEST_ORG))?.approvalMembershipVersion).toBe(9);
     const created = broker.membership(ownerKeyOf(NEW_DEVELOPER_SUBJECT))!;
     expect(created).toMatchObject({ role: "developer", projectName: "payments", grantedBy: { issuer, subject: FIRST.subject } });
     expect(typeof created.grantId).toBe("string");
@@ -126,9 +128,11 @@ describe("admin prepareWorkspace and the target's project membership", () => {
     const broker = await harness();
     const ownerKey = ownerKeyOf(NEW_DEVELOPER_SUBJECT);
     const planted = broker.plantLegacy(ownerKey, "developer");
+    broker.db.set({ ...broker.db.get(orgMetaKey(TEST_ORG)), ...orgMetaKey(TEST_ORG), approvalMembershipVersion: 8 });
     const prepared = await broker.prepare(NEW_DEVELOPER_SUBJECT);
     expect(prepared.status, JSON.stringify(prepared.body)).toBe(202);
     const after = broker.membership(ownerKey)!;
+    expect(broker.db.get(orgMetaKey(TEST_ORG))?.approvalMembershipVersion).toBe(9);
     expect(after.grantId).toMatch(/^[0-9a-f-]{36}$/);
     expect(after).toEqual({ ...planted, grantId: after.grantId });
   });
@@ -178,8 +182,10 @@ describe("a Slack thread's first workspace and the thread owner's project member
 
   it("creates a developer membership when none exists, and leaves an existing row alone", async () => {
     const broker = await harness();
+    broker.db.set({ ...broker.db.get(orgMetaKey(TEST_ORG)), ...orgMetaKey(TEST_ORG), approvalMembershipVersion: 8 });
     const created = await lazyEnsureWorkspace(broker.handler, THREAD, SLACK_USER);
     expect(created.status, JSON.stringify(created.body)).toBe(200);
+    expect(broker.db.get(orgMetaKey(TEST_ORG))?.approvalMembershipVersion).toBe(9);
     const [row] = broker.db.find((item) => item.entityType === "MEMBERSHIP" && item.role === "developer" && item.projectName === "payments" && item.ownerKey !== ownerKeyOf(FIRST.subject));
     expect(row).toBeDefined();
     // The same thread again finds its workspace and does not touch the membership.

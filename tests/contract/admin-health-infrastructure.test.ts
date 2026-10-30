@@ -223,6 +223,9 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/e2e/requalify-hold.ts",
       // C53: replay only reads the existing AGENT_REQUEST receipt expiry in a ConditionCheck; it creates no new TTL-bearing entity.
       "packages/broker/src/model-selection/selection-write.ts",
+      // B33: proposal and atomic narrowing receipts expire after the explicit authority window plus cleanup retention.
+      "packages/broker/src/org/project-allowed-domains.ts",
+      "packages/broker/src/org/legacy-domain-narrowing.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

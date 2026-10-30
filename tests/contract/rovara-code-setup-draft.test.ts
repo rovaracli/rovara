@@ -495,19 +495,16 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply", () => {
     expect(t.pointer()).toMatchObject({ appliedRevision: 2 });
   });
 
-  it("applies setup commands, test commands and domains together, merging the domains with the ones the project already allows", async () => {
+  it("refuses merging suggested domains into an existing Cloud list and leaves setup commands untouched", async () => {
     const t = await setup();
     const revision = t.db.get(projectRevisionKey(TEST_ORG, NAME, 1)) as { definition: Record<string, unknown> };
     t.db.set({ ...revision, ...projectRevisionKey(TEST_ORG, NAME, 1), definition: { ...revision.definition, network: { allowedDomains: ["artifacts.acme.dev"] } } });
     await t.drafted({ ...NODE_DRAFT, allowedDomains: ["pypi.example.org"] });
+    const before = structuredClone(t.latestSettings()), egressBefore = structuredClone(t.db.find(item => item.pk === egressDomainsKey(TEST_ORG, { kind: "project", project: NAME }).pk));
     const reply = await t.apply({ include: { setupCommands: true, testCommands: true, allowedDomains: true } });
-    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
-    const settings = t.latestSettings();
-    expect(settings.setup.map((command) => [command.executable, ...command.args])).toEqual([["npm", "ci"]]);
-    expect(settings.network!.allowedDomains.sort()).toEqual(["artifacts.acme.dev", "pypi.example.org"]);
-    // On cloud a new domain waits for Rovara's approval, and the person is told.
-    expect((reply.body.warnings as string[]).join(" ")).toMatch(/pypi\.example\.org/);
-    expect(t.db.find((item) => item.pk === egressDomainsKey(TEST_ORG, { kind: "project", project: NAME }).pk)).not.toEqual([]);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(403);expect(errorOf(reply).code).toBe("FORBIDDEN");expect(errorOf(reply).message).toContain("proposal");
+    expect(t.latestSettings()).toEqual(before);expect(t.meta()?.setupCheck).toBeUndefined();expect(t.pointer()?.appliedRevision).toBeUndefined();
+    expect(t.db.find(item => item.pk === egressDomainsKey(TEST_ORG, { kind: "project", project: NAME }).pk)).toEqual(egressBefore);
   });
 
   it("applies nothing that was not named: an empty choice is refused and nothing changes", async () => {
@@ -1068,4 +1065,11 @@ describe("round trip: the setup-draft answers, as the broker sends them", () => 
       expect(SetupDraftResponseSchema.safeParse(own).success).toBe(true);
     }
   });
+});
+it("B33 setup-draft apply refuses a Cloud website widening before revision or command writes", async () => {
+ const t = await setup();await t.drafted({ ...NODE_DRAFT, allowedDomains: ["new.acme.dev"] });
+ const before = structuredClone(t.latestSettings());
+ const reply = await t.apply({ include: { setupCommands: true, testCommands: true, allowedDomains: true } });
+ expect(reply.status, JSON.stringify(reply.body)).toBe(403);expect(errorOf(reply).code).toBe("FORBIDDEN");expect(errorOf(reply).message).toContain("proposal");
+ expect(t.latestSettings()).toEqual(before);expect(t.pointer()?.appliedRevision).toBeUndefined();
 });

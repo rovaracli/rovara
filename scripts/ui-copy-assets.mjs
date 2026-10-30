@@ -1,6 +1,8 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.css", "screens/live/live.css", "screens/project/project.css", "screens/session/session.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
+ // Lane B: allowed-websites editor, shared by admin and own-project surfaces.
+ "screens/admin/projects/allowed-websites.css",
  // Lane C: owned waiting-queue filter styles.
  "screens/admin/waiting/waiting.css",
  // Lane C2: owned audit filter styles.
