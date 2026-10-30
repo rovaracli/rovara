@@ -6,7 +6,7 @@ import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@
 import {
   AGENTX_ANSWER_MAX_CHARS, AGENTX_ASK_RATE, ANSWER_STALE_MS, COMMENT_RATE, COMMENT_THREAD_REPLIES_MAX, NUDGE_WINDOW_MS, SlackPageCommentMessageSchema, TASK_COMMENT_ITEMS_MAX, TaskCommentSchema,
   TaskSuggestionSchema, agentXError, agentxAnswerCommentId, cleanCommentText, diffPlanDocuments, pageCommentAttributes, pageCommentEventId, pageCommentId,
-  containsEmailAddress, planClaimIds, plannerReplyCommentId, redactText, sharedTaskKey,
+  INDEX_EXPIRY_ATTRIBUTE, containsEmailAddress, indexExpiresAt, planClaimIds, plannerReplyCommentId, redactText, sharedTaskKey,
   type AgentXError, type AgentXErrorCode, type CommentAnswer, type CommentDocument, type CommentTarget, type PlanDocument, type TaskComment,
   type TaskSuggestion, type WorkflowDecisionDetail, type WorkflowSnapshot,
 } from "@agentx/contracts";
@@ -256,9 +256,10 @@ export async function takeRateAt(
   if (await increment()) return true;
   try {
     await write({
-      TableName: deps.tableName, Key, UpdateExpression: "SET entityType = :type, windowStart = :window, #count = :one",
+      // A window's row is the table's to delete once the retention after its start is over (a later window rewrites it).
+      TableName: deps.tableName, Key, UpdateExpression: "SET entityType = :type, windowStart = :window, #count = :one, #expires = :expires",
       ConditionExpression: "attribute_not_exists(windowStart) OR windowStart < :window",
-      ExpressionAttributeNames: { "#count": "count" }, ExpressionAttributeValues: { ":type": "TASK_RATE", ":window": window, ":one": units },
+      ExpressionAttributeNames: { "#count": "count", "#expires": INDEX_EXPIRY_ATTRIBUTE }, ExpressionAttributeValues: { ":type": "TASK_RATE", ":window": window, ":one": units, ":expires": indexExpiresAt(new Date(window).toISOString()) },
     });
     return true;
   } catch (error) {
