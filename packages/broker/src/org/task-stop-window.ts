@@ -5,7 +5,7 @@ import { taskStartAgentAuthorityChecks } from "./task-start-agent-authority.js";
 import { isDeepStrictEqual } from "node:util";
 import { budgetActorChecks } from "../agents/budget-authority.js";
 import { taskAccessFence } from "../developer/task-people.js";
-import type { DeveloperTaskRecord } from "../developer/task-records.js";
+import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 // An accepted-operation receipt is durable replay evidence, never a free-standing
 // permission to start paid work. The caller commits it with work and authority.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
@@ -97,4 +97,35 @@ export async function taskStopTransitionRecoveryChecks(deps: AgentAccessDeps, ta
     () => requireAgentAccess(deps, actor, agentId, draft ? "edit" : "use").then(() => undefined), () => deps.store.listShares(actor.orgId, agentId));
   return [...budgetActorChecks(deps.tableName, task.orgId, { developerId: receipt.actorId, role: receipt.actorRole }),
     taskAccessFence(deps.tableName, task.taskId, receipt.peopleRevision ?? undefined), ...projectChecks, ...agentChecks];
+}
+
+const admittedTaskFields = ["orgId", "project", "agent", "payer", "origin", "developerId", "ownerKey", "startedBy", "place", "budgetUsd", "budgetBaselineUsd", "maxPerRunUsd", "spendingStop", "closedAt"] as const;
+export async function admittedTaskSourceUnchanged(deps: Pick<TableInput, "documentClient" | "tableName">, task: DeveloperTaskRecord): Promise<boolean> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(task.taskId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+  return response.Item !== undefined && admittedTaskFields.every(field => isDeepStrictEqual(response.Item?.[field], task[field]));
+}
+/** DynamoDB allows one action per key. Keep a task-notes update and the money
+ * source condition on the same action rather than adding a duplicate key. */
+export function withAdmittedTaskSource(tableName: string, task: DeveloperTaskRecord, input: readonly TransactItem[]): { items: TransactItem[]; sourceIndex: number } {
+  const Key = taskKey(task.taskId), names: Record<string, string> = {}, values: Record<string, unknown> = {};
+  const condition = admittedTaskFields.map(field => {
+    const name = `#admitted_${field}`; names[name] = field;
+    if (task[field] === undefined) return `attribute_not_exists(${name})`;
+    const value = `:admitted_${field}`; values[value] = task[field]; return `${name} = ${value}`;
+  }).join(" AND ");
+  const items = [...input];
+  const sourceIndex = items.findIndex(item => {
+    const key = item.Update?.Key ?? item.ConditionCheck?.Key ?? item.Put?.Item ?? item.Delete?.Key;
+    return key?.pk === Key.pk && key.sk === Key.sk;
+  });
+  const source = { ConditionExpression: condition, ExpressionAttributeNames: names, ExpressionAttributeValues: values };
+  if (sourceIndex < 0) return { items: [...items, { ConditionCheck: { TableName: tableName, Key, ...source } }], sourceIndex: items.length };
+  const existing = items[sourceIndex];
+  const update = existing?.Update, check = existing?.ConditionCheck, action = update ?? check;
+  if (action === undefined) throw invalid();
+  if (Object.keys(names).some(name => action.ExpressionAttributeNames?.[name] !== undefined) || Object.keys(values).some(name => action.ExpressionAttributeValues?.[name] !== undefined)) throw invalid();
+  const merged = { ...action, ConditionExpression: action.ConditionExpression === undefined ? condition : `(${action.ConditionExpression}) AND (${condition})`,
+    ExpressionAttributeNames: { ...action.ExpressionAttributeNames, ...names }, ExpressionAttributeValues: { ...action.ExpressionAttributeValues, ...values } };
+  items[sourceIndex] = update === undefined ? { ConditionCheck: { ...merged, ConditionExpression: merged.ConditionExpression } } : { Update: { ...update, ...merged } };
+  return { items, sourceIndex };
 }

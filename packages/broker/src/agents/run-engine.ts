@@ -1,4 +1,4 @@
-import { taskStopTransitionRecoveryChecks } from "../org/task-stop-window.js";
+import { admittedTaskSourceUnchanged, withAdmittedTaskSource, taskStopTransitionRecoveryChecks } from "../org/task-stop-window.js";
 import { budgetActorRefused } from "./budget-authority.js";
 import { failedIndexes } from "./table-writes.js";
 // Plan 3, Task 22: the agent-step engine. A run of an agent made of agent steps (`recipeRunner(recipe) === "agent_steps"`) is a task that holds ONE
@@ -525,19 +525,26 @@ async function dispatchStep(
         ...(notes === undefined || existing.notesFrom !== undefined ? {} : { notesFrom: notes.before }),
       }),
     };
+    let sourceIndex: number | undefined;
     try {
       await host.startStep({
         task, requestId, operationId, prompt: `Agent step: ${step.name}`, step, inputs,
         ...(step.id === lastAgentStepId(recipe) && run.resultContract !== undefined ? { resultContract: run.resultContract } : {}),
         ...(run.checkout === undefined ? {} : { checkout: run.checkout }),
         // The messages' mark moves in the step's own transaction, last: it holds only while the task's note count is the one read.
-        extra: (id) => [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, text), dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id), ...(notes?.markItem === undefined ? [] : [notes.markItem]), ...nativeRecoveryChecks],
+        extra: (id) => {
+          const items = [putRun(deps, task.taskId, run, next), eventItem(deps, task, run.revision + 1, text), dispatchRow(deps, task, run.revision + 1, watchdogMs(step), id), ...(notes?.markItem === undefined ? [] : [notes.markItem]), ...nativeRecoveryChecks];
+          if (run.spendingAdmission === undefined) return items;
+          const fenced = withAdmittedTaskSource(deps.tableName, task, items); sourceIndex = fenced.sourceIndex; return fenced.items;
+        },
       });
       return "moved";
     } catch (error) {
       const nativeCount = nativeRecoveryChecks.length;
       const extraCancellation = error instanceof AgentXError ? (error as { extraCancellation?: string[] }).extraCancellation : undefined;
-      if (nativeCount > 0 && extraCancellation?.slice(-nativeCount).includes("ConditionalCheckFailed")) throw budgetActorRefused();
+      const nativeStart = 3 + (notes?.markItem === undefined ? 0 : 1);
+      if (nativeCount > 0 && extraCancellation?.slice(nativeStart, nativeStart + nativeCount).includes("ConditionalCheckFailed")) throw budgetActorRefused();
+      if (sourceIndex !== undefined && extraCancellation?.[sourceIndex] === "ConditionalCheckFailed" && !await admittedTaskSourceUnchanged(deps, task)) throw agentXError("CHANGE_STALE", "The task's payer or spending window changed. Review it before continuing.");
       // The run moved on while the operation was being made (another process dispatched it, or ended the run): look again.
       if (error instanceof AgentXError && (error.code === "WORKSPACE_BUSY" || error.code === "STALE_FENCE")) {
         const fresh = await load(deps, task.taskId);

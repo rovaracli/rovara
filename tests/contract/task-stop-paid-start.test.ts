@@ -1,3 +1,4 @@
+import { AppNoteSchema } from "../../packages/contracts/src/task-workflow-node.js";
 import { call } from "../support/slack-broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { fixtureProject } from "../support/project-ai-source.js";
@@ -678,4 +679,24 @@ it("platform recovery keeps its committed stop after a numeric policy edit at th
   await f.t.handler({ source: "agentx.workflow-dispatch-recovery" }); expect(changed).toBe(true);
   expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + 1);
   expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 0.5, spendingStop: { effectiveStopMicrousd: 500_000 } });
+});
+
+for (const drift of [false, true]) it(`platform source fence shares one task action with a pending note update, drift=${drift}`, async () => {
+  const f = await queuedPayerTransition(), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id), send = f.t.db.send.bind(f.t.db);
+  const note = AppNoteSchema.parse({ schemaVersion: 1, source: "app", taskId: f.task.taskId, developerId: MAYA.developerId, name: "Maya", isOwner: true,
+    sessionId: String(f.t.meta(f.task.taskId).sessionId), messageId: "msg_00000000000000000001", text: "Keep the accepted task scope.", truncated: false, receivedAt: new Date().toISOString(), workflowRevision: 1 });
+  f.t.db.set({ pk: `DEVTASK#${f.task.taskId}`, sk: `NOTE#${note.messageId}`, entityType: "TASK_THREAD_NOTE", ...note });
+  await f.t.set(f.task.taskId, "SET threadNoteCount = :count", { ":count": 1 }); let checked = false;
+  f.t.db.send = async command => {
+    if (!checked && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "OPERATION" && item.Put.Item.kind === "task" && item.Put.Item.workspaceId === f.task.workspaceId)) {
+      checked = true;
+      const taskActions = command.input.TransactItems.filter(item => (item.Update?.Key ?? item.ConditionCheck?.Key)?.pk === `DEVTASK#${f.task.taskId}` && (item.Update?.Key ?? item.ConditionCheck?.Key)?.sk === "META");
+      expect(taskActions).toHaveLength(1); expect(taskActions[0]?.Update?.UpdateExpression).toContain("threadNotesFedThrough");
+      if (drift) f.t.db.set({ ...f.t.meta(f.task.taskId), budgetUsd: 0.25 });
+    }
+    return send(command);
+  };
+  await f.t.handler({ source: "agentx.workflow-dispatch-recovery" }); expect(checked).toBe(true);
+  expect(f.t.taskOps(f.task.workspaceId)).toHaveLength(operations.length + (drift ? 0 : 1));
+  expect(f.t.meta(f.task.taskId).threadNotesFedThrough).toBe(drift ? undefined : note.receivedAt);
 });
