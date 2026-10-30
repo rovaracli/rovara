@@ -2875,6 +2875,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Complete Secrets Manager ARN containing the GitHub App private key PEM",
       "Type": "String",
     },
+    "LearningSuggestionsDefault": {
+      "AllowedValues": [
+        "on",
+        "off",
+      ],
+      "Default": "off",
+      "Description": "Whether a company that has not chosen gets suggested rules from Rovara's learning (on) or only has its corrections collected (off). A company's own choice always wins. Off unless an operator turns it on",
+      "Type": "String",
+    },
     "McpConfirmElicitation": {
       "AllowedValues": [
         "enabled",
@@ -3368,6 +3377,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "fx=",
                   {
                     "Ref": "AutofixEnabled",
+                  },
+                  ",lg=",
+                  {
+                    "Ref": "LearningSuggestionsDefault",
                   },
                   ",mc=",
                   {

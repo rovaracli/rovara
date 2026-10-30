@@ -150,6 +150,8 @@ export const BROKER_SETTINGS = {
   // Mainline #408 kill switches (stack parameters PlanSelfCheckEnabled and AutofixEnabled, on by default): the broker reads them as PLAN_SELF_CHECK_ENABLED and AUTOFIX_ENABLED. Packed settings, not Lambda variables (ENV-ROOM).
   planSelfCheck: { code: "pc", variable: "PLAN_SELF_CHECK_ENABLED" },
   autofix: { code: "fx", variable: "AUTOFIX_ENABLED" },
+  // v1.2 learning loop: the install-wide default of the company's master "suggestions" switch (stack parameter LearningSuggestionsDefault, off by default): learning/suggestions-switch.ts reads it.
+  learningSuggestionsDefault: { code: "lg", variable: "LEARNING_SUGGESTIONS_DEFAULT" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

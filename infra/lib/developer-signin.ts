@@ -27,6 +27,8 @@ export interface DeveloperSignInParameters {
   /** Mainline #408: the plan self-check (a coding plan is checked, and the planner asked again once) and automatic fixing of blocked checks and reviews. On unless an operator turns them off. */
   planSelfCheckEnabled: CfnParameter;
   autofixEnabled: CfnParameter;
+  /** v1.2 learning loop: whether a company that never chose gets suggested rules (the install-wide default of its master switch). Off unless an operator turns it on. */
+  learningSuggestionsDefault: CfnParameter;
 }
 
 /** Declared on the stack itself, so the parameter names are exactly these. */
@@ -50,6 +52,7 @@ export function developerSignInParameters(stack: Stack): DeveloperSignInParamete
     rovaraCodeV2Enabled: new CfnParameter(stack, "RovaraCodeV2Enabled", { type: "String", default: "false", allowedValues: ["true", "false"], description: "Whether Rovara Code version 2 (Understand, the plan check, parallel parts, merge tracking) is available in this environment: an admin may adopt it and new tasks of an org that did run it. Off unless an operator turns it on (agentx config set rovaraCode.v2 true)" }),
     planSelfCheckEnabled: new CfnParameter(stack, "PlanSelfCheckEnabled", { type: "String", default: "true", allowedValues: ["true", "false"], description: "Whether every coding plan is checked before the owner sees it, and the planner asked again once when the check finds a fixable problem (agentx config set planSelfCheck.enabled false turns it off; it also turns off checking the plan against the current app)" }),
     autofixEnabled: new CfnParameter(stack, "AutofixEnabled", { type: "String", default: "true", allowedValues: ["true", "false"], description: "Whether Rovara sends blocked checks or reviews back to coding by itself, before any pull request exists (agentx config set autofix.enabled false turns it off)" }),
+    learningSuggestionsDefault: new CfnParameter(stack, "LearningSuggestionsDefault", { type: "String", default: "off", allowedValues: ["on", "off"], description: "Whether a company that has not chosen gets suggested rules from Rovara's learning (on) or only has its corrections collected (off). A company's own choice always wins. Off unless an operator turns it on" }),
     mcpConfirmElicitation: new CfnParameter(stack, "McpConfirmElicitation", { type: "String", default: "enabled", allowedValues: ["enabled", "disabled"], description: "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button (or the CLI)" }),
   };
 }
