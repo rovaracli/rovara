@@ -694,3 +694,16 @@ it("M47 eval exact replay keeps its captured stop and a fresh request sees proje
   expect(fresh.body.error).toMatchObject({ code: "TASK_STOP_ZERO" });
   expect(h.startExecution).toHaveBeenCalledTimes(1);
 });
+
+for (const corrupt of ["digest", "cap"] as const) it(`M47 eval replay refuses a corrupted captured ${corrupt}`, async () => {
+  const h = await enrolledEvalBroker(), requestId = randomUUID();
+  const first = await start(h.handler, { requestId }); expect(first.status).toBe(200);
+  const row = h.db.find(item => item.entityType === "SWEBENCH_RUN")[0]!;
+  if (corrupt === "digest") row.spendingStop = { ...(row.spendingStop as Record<string, unknown>), policyDigest: "f".repeat(64) };
+  else row.maxCostUsd = 2;
+  h.db.set(row);
+  const replay = await start(h.handler, { requestId });
+  expect(replay.status, JSON.stringify(replay.body)).toBe(409);
+  expect(replay.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
+  expect(h.startExecution).toHaveBeenCalledTimes(1);
+});
