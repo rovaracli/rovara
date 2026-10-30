@@ -3,7 +3,7 @@
 //
 // Bodies are strict: standing, author and stage are never read from a request (I3). The person is the signed-in caller. The project is found through `projectFor`, so another company's
 // project and one the caller cannot see answer the same way.
-import { LearningForgetBodySchema, LearningReopenBodySchema, LearningRememberBodySchema, agentXError, type ProjectRole } from "@agentx/contracts";
+import { LearningForgetBodySchema, LearningReopenBodySchema, LearningRememberBodySchema, agentXError, type LearningViewAnswer, type ProjectRole } from "@agentx/contracts";
 import type { ZodType } from "zod";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
@@ -11,6 +11,7 @@ import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { forgetCorrectionById, rememberTaskComment, type ForgetAnswer, type RememberAnswer } from "./capture-comment.js";
 import { acceptSuggestion, dismissSuggestion, removeRule, reopenDismissed, type AcceptAnswer, type RemoveAnswer } from "./decide.js";
 import type { LearningDecideDeps } from "./settle.js";
+import { viewLearning } from "./view.js";
 
 /** Everything under a project's `learning` path; the project name is group 1 and the rest (without a leading slash) group 2. */
 export const LEARNING_PATH = /^\/v1\/app\/projects\/([^/]+)\/learning(?:\/(.+))?$/;
@@ -31,7 +32,7 @@ export interface LearningRouteDependencies {
   audit?: LearningDecideDeps["audit"];
 }
 
-export type LearningAnswer = RememberAnswer | ForgetAnswer | AcceptAnswer | RemoveAnswer | StatusReply | { suggestion: { id: string; status: "dismissed" } } | { reopened: true };
+export type LearningAnswer = RememberAnswer | ForgetAnswer | AcceptAnswer | RemoveAnswer | StatusReply | { suggestion: { id: string; status: "dismissed" } } | { reopened: true } | LearningViewAnswer;
 
 /**
  * A publish that waits for a person answers the way a hand publish does: `202 { status: "NEEDS_CONFIRMATION", confirmUrl, changes }`. The `outcome` the screens read stays in the body, so a reader
@@ -52,6 +53,10 @@ function strictBody<T>(schema: ZodType<T>, raw: unknown): T {
 
 export async function routeLearning(deps: LearningRouteDependencies, caller: DeveloperCaller, method: string, url: URL, body: () => unknown): Promise<LearningAnswer | undefined> {
   const matched = LEARNING_PATH.exec(url.pathname);
+  // `GET …/learning`: the screen's one read. Anyone who can see the project; what they get depends on their live standing (view.ts). It needs only the table, so it is answered even where agents are not set up.
+  if (method === "GET" && matched !== null && matched[2] === undefined) {
+    return viewLearning({ documentClient: deps.task.documentClient, tableName: deps.task.tableName, now: () => deps.task.now(), projectFor: (who, rawName) => deps.projectFor(who, rawName) }, caller, matched[1]!);
+  }
   if (matched === null || matched[2] === undefined) return undefined;
   const rest = matched[2];
   if (method === "POST" && rest === "remember") {

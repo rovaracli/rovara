@@ -16,6 +16,7 @@ import { planAnswer } from "../support/plan-documents.js";
 import { pagePlan } from "../support/page-tasks.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { validatingDocumentClient } from "../support/validating-document-client.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { PROJECT, PROJECT_CREATED_AT, learningItems, seedPerson, seedProject, type GrantKind } from "../support/learning-page.js";
 
@@ -36,8 +37,9 @@ const MAYA_CALLER = callerOf(MAYA);
 const operations = (harness: Harness, workspaceId: string) => harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
 const workflowOf = (harness: Harness, taskId: string) => (harness.db.get(`DEVTASK#${taskId}`, "META") as { workflow: WorkflowSnapshot }).workflow;
 
-function routeDeps(harness: Harness, log: DeveloperTaskRouteDependencies["log"] = () => undefined): DeveloperTaskRouteDependencies {
+function routeDeps(harness: Harness, log: DeveloperTaskRouteDependencies["log"] = () => undefined, audit?: DeveloperTaskRouteDependencies["learningAudit"]): DeveloperTaskRouteDependencies {
   return {
+    ...(audit === undefined ? {} : { learningAudit: audit }),
     documentClient: validatingDocumentClient(harness.db), tableName: "state", actions: harness.actions,
     orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL], role: "contributor" as const }),
     projectChannelIds: async () => [SLACK_CHANNEL], now: () => Date.now(), log,
@@ -45,8 +47,8 @@ function routeDeps(harness: Harness, log: DeveloperTaskRouteDependencies["log"] 
 }
 
 /** A Quick task of project "payments" whose plan waits for its owner, Maya. The project has its META; nobody is a member until `person` says so. */
-async function waitingPlan(options: { slackThread?: { teamId: string; channelId: string; threadTs: string } } = {}) {
-  const harness = await createSingleAnswerPlanBroker();
+async function waitingPlan(options: { slackThread?: { teamId: string; channelId: string; threadTs: string }; audit?: ReturnType<typeof capturingAuditDeps> } = {}) {
+  const harness = await createSingleAnswerPlanBroker(options.audit === undefined ? undefined : { audit: options.audit });
   seedProject(harness.db);
   let taskId: string;
   if (options.slackThread === undefined) {
@@ -588,6 +590,68 @@ describe("send-back capture: grouping", () => {
     expect(planted.ok).toBe(true);
     await t.page(MAYA_CALLER, "Run the linter before you commit any changes to the repository.");
     expect(items(t.harness, "SUGGESTION#")).toHaveLength(1);
+  });
+
+  it("emits rule.suggested (by the system, ids and counts only) when a send-back opens a suggestion, and not for a send-back that opens nothing", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const ledger = capturingAuditDeps({ db: t.harness.db, now: () => Date.now() });
+    const salt = learningSalt(scope);
+    const text = "Always run the linter before committing changes to the repository.";
+    await captureCorrection(learningDeps(t.harness), scope, {
+      id: "earlier-correction", stage: "plan", source: "send_back", sourceKey: "decision#other-task#other-request", sourceRef: { taskId: "other-task" }, taskId: "other-task",
+      text, signature: [...signatureOf(text, salt)], author: SAM_ID, standing: "member", limit: "automatic",
+    });
+    const requestId = randomUUID();
+    await captureSendBack(routeDeps(t.harness, undefined, ledger.audit), { caller: MAYA_CALLER, taskId: t.taskId, project: PROJECT, requestId, reason: "Run the linter before you commit any changes to the repository.", included: [] });
+    const [suggestion] = items(t.harness, "SUGGESTION#");
+    expect(suggestion).toBeDefined();
+    expect(ledger.recordedBy("rule.suggested")).toEqual([expect.objectContaining({
+      actor: { kind: "system", id: "rovara" }, target: { kind: "project", name: PROJECT },
+      facts: { suggestionId: suggestion!.id, stage: "plan", sourceCount: 2, sourceKinds: "send_back", lessSafe: false, fromOnePerson: false },
+    })]);
+    expect(JSON.stringify(ledger.recorded())).not.toContain("linter");
+  });
+
+  it("emits rule.suggested through the hook the page send-back reaches, with no capture failure logged", async () => {
+    const t = await waitingPlan();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const ledger = capturingAuditDeps({ db: t.harness.db, now: () => Date.now() });
+    const text = "Always run the linter before committing changes to the repository.";
+    await captureCorrection(learningDeps(t.harness), scope, {
+      id: "earlier-correction", stage: "plan", source: "send_back", sourceKey: "decision#other-task#other-request", sourceRef: { taskId: "other-task" }, taskId: "other-task",
+      text, signature: [...signatureOf(text, learningSalt(scope))], author: SAM_ID, standing: "member", limit: "automatic",
+    });
+    const logs: Array<Record<string, unknown>> = [];
+    const answer = await decideTaskWorkflow(routeDeps(t.harness, (entry) => logs.push(entry), ledger.audit), MAYA_CALLER, t.taskId, {
+      requestId: randomUUID(), expectedRevision: workflowOf(t.harness, t.taskId).revision, decision: "REQUEST_CHANGES", artifactDigest: workflowOf(t.harness, t.taskId).artifacts.at(-1)!.sha256,
+      reason: "Run the linter before you commit any changes to the repository.", includedCommentIds: [],
+    }, { via: "PAGE", note: "Run the linter before you commit any changes to the repository." });
+    expect(answer.task).toBeDefined();
+    expect(ledger.recordedBy("rule.suggested")).toHaveLength(1);
+    expect(logs.filter((entry) => typeof entry.event === "string" && entry.event.startsWith("learning.send_back_capture"))).toEqual([]);
+  });
+
+  it("emits rule.suggested for a send-back through the developer API (the broker's own wiring), and through the Slack modal", async () => {
+    const salt = learningSalt(scope);
+    const text = "Always run the linter before committing changes to the repository.";
+    const earlier = (t: Awaited<ReturnType<typeof waitingPlan>>) => captureCorrection(learningDeps(t.harness), scope, {
+      id: "earlier-correction", stage: "plan", source: "send_back", sourceKey: "decision#other-task#other-request", sourceRef: { taskId: "other-task" }, taskId: "other-task",
+      text, signature: [...signatureOf(text, salt)], author: SAM_ID, standing: "member", limit: "automatic",
+    });
+    const viaApi = capturingAuditDeps();
+    const a = await waitingPlan({ audit: viaApi });
+    seedPerson(a.harness.db, MAYA_CALLER, "maintainer");
+    await earlier(a);
+    expect((await a.api(MAYA, "Run the linter before you commit any changes to the repository.")).status).toBe(200);
+    expect(viaApi.recordedBy("rule.suggested")).toHaveLength(1);
+
+    const viaSlack = capturingAuditDeps();
+    const b = await waitingPlan({ slackThread: THREAD, audit: viaSlack });
+    seedPerson(b.harness.db, b.owner, "contributor");
+    await earlier(b);
+    expect((await b.slack(THREAD, "REQUEST_CHANGES", "Run the linter before you commit any changes to the repository.")).statusCode).toBe(200);
+    expect(viaSlack.recordedBy("rule.suggested")).toHaveLength(1);
   });
 
   it("an outsider's send-back never opens a suggestion, even beside a similar member correction", async () => {

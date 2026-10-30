@@ -18,7 +18,7 @@ import {
   LEARNING_OPEN_SUGGESTIONS_MAX, LEARNING_SUGGESTION_SOURCES_MAX, LEARNING_SUGGESTION_SOURCES_MIN, LearningCorrectionSchema, LearningRuleSchema, LearningSuggestionSchema, agentXError,
   projectLearningKey, type LearningCorrection, type LearningRule, type LearningSuggestion, type OrgId,
 } from "@agentx/contracts";
-import { dismissedEvent, flushLearningEvents, learningEvents, memberActor, rememberedEvent, suggestedEvent, systemActor } from "./audit.js";
+import { flushLearningEvents, learningEvents, memberActor, rememberedEvent, suggestedEvent, withdrawnEvent } from "./audit.js";
 import { metricMonth, metricUpdateItem, ensureMetricCurrent, type MetricCounters } from "./metric.js";
 import { visibility } from "./retention.js";
 import {
@@ -519,7 +519,7 @@ export async function withdrawPrDependentSuggestions(deps: LearningDeps, rawScop
     const rest = members.filter((entry) => entry.c.source !== "pr_comment");
     const fields = rest.length >= LEARNING_SUGGESTION_SOURCES_MIN && tasksOf(rest) >= 2 ? fieldsFor(rest) : undefined;
     if (fields === undefined) {
-      const closed = await closeSuggestion(deps, scope, { id: suggestion.id, expectedRevision: suggestion.revision, status: "withdrawn" });
+      const closed = await closeSuggestion(deps, scope, { id: suggestion.id, expectedRevision: suggestion.revision, status: "withdrawn", cause: "pr_capture_off" });
       if (closed.ok) withdrawn.push(suggestion.id);
       continue;
     }
@@ -610,7 +610,7 @@ export async function forgetCorrection(deps: LearningDeps, rawScope: LearningSco
   // The events of this forget, in the same transaction: the correction forgotten (when a person did it) and the suggestion it left withdrawn (by the system).
   const audited = await learningEvents(deps, () => [
     ...(input.actor === undefined ? [] : [rememberedEvent(deps, scope, memberActor(input.actor), { correctionId: c.id, stage: c.stage, standing: c.standing, op: "forget" })]),
-    ...(withdrawing && readSuggestion !== undefined ? [dismissedEvent(deps, scope, systemActor(), { suggestionId: readSuggestion.id, stage: readSuggestion.stage, dismissKind: "withdrawn" })] : []),
+    ...(withdrawing && readSuggestion !== undefined ? [withdrawnEvent(deps, scope, { suggestionId: readSuggestion.id, stage: readSuggestion.stage, cause: "forgotten" })] : []),
   ]);
   items.push(...audited.items);
 

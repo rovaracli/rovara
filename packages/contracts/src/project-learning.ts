@@ -250,7 +250,8 @@ export const LearningSettingsViewSchema = z.object({
 export const LearningSuggestionSourceViewSchema = z.object({
   kind: LearningCorrectionSourceSchema,
   taskId: IdSchema,
-  label: z.string().max(200),
+  /** The member correction's text, plain (what the card shows), or a fixed phrase for a caller who may not read it. */
+  label: z.string().max(LEARNING_TEXT_MAX),
   at: IsoInstantSchema,
   standing: LearningStandingSchema,
   href: z.string().max(500).optional(),
@@ -284,7 +285,10 @@ export const LearningViewAnswerSchema = z.object({
   rules: z.array(LearningRuleViewSchema).max(500),
   skippedUnlinked: CountSchema,
   canDecide: z.boolean(),
+  /** Present only when a list was cut at its limit (the read is bounded): which lists. */
+  truncated: z.array(z.enum(["suggestions", "dismissed", "rules"])).max(3).optional(),
 }).strict();
+export type LearningViewAnswer = z.infer<typeof LearningViewAnswerSchema>;
 
 export const LearningAcceptAnswerSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("published"), version: z.number().int().positive() }).strict(),

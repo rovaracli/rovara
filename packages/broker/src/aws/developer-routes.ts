@@ -1857,6 +1857,7 @@ export function developerTaskRouteDependencies(
     };
   };
   const agents = deps.agents;
+  const ledger = agents?.audit ?? deps.audit;
   const agentSessions = sessionDependenciesOf(deps);
   return {
     documentClient: deps.documentClient,
@@ -1884,6 +1885,8 @@ export function developerTaskRouteDependencies(
     ...(agents?.codeMerge !== undefined ? { mergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => mergeViewOf(agents, task, items, caller.developerId) }
       : deps.codeMergeView === undefined ? {} : { mergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => deps.codeMergeView!(task, items, caller.developerId) }),
     ...(agents === undefined ? {} : { agentRuns: agents, agentEngine: agents, withdrawSpendRequests: (task: DeveloperTaskRecord) => withdrawTaskSpendRequests(agents, task), pausedTaskGate: (who, task: DeveloperTaskRecord) => pausedTaskGate(agents, who, task) }),
+    // v1.2 learning loop: the ledger a send-back's `rule.suggested` goes to (learning/capture-decision.ts).
+    ...(ledger === undefined ? {} : { learningAudit: ledger }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),
     checkTaskPerson: async (task, developerId, admission) => {

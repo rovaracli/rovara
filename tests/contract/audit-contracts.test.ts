@@ -176,7 +176,7 @@ describe("the event catalog", () => {
       "project.models_changed", "project.checks_changed", "project.e2e_policy_changed", "project.model_selection_changed", "project.roster_changed",
       "process.published", "process.rolled_back", "playbook.default_process_changed", "company.change_applied_to_project",
       // v1.2 learning loop (B7)
-      "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
+      "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.withdrawn", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -217,6 +217,7 @@ describe("the event catalog", () => {
     "rule.accepted": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "ruleId", "stage", "processAgentId", "outcome", "processVersion", "approvalId", "edited", "lessSafe"], sample: { suggestionId: "sug_1", ruleId: "rul_1", stage: "build", processAgentId: "agt_1", outcome: "published", processVersion: 4, edited: true, lessSafe: false } },
     "rule.not_applied": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "ruleId", "approvalOutcome"], sample: { suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "declined" } },
     "rule.dismissed": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "stage", "dismissKind"], sample: { suggestionId: "sug_1", stage: "build", dismissKind: "wrong" } },
+    "rule.withdrawn": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "stage", "cause"], sample: { suggestionId: "sug_1", stage: "build", cause: "forgotten" } },
     "rule.rolled_back": { target: { kind: "project", name: "web" }, keys: ["ruleId", "processAgentId", "processVersion"], sample: { ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 } },
     "rule.correction_remembered": { target: { kind: "project", name: "web" }, keys: ["correctionId", "stage", "standing", "op"], sample: { correctionId: "cor_1", stage: "build", standing: "member", op: "remember" } },
     "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
@@ -225,7 +226,7 @@ describe("the event catalog", () => {
   // I10: the learning events hold no text.
   it("I10: no rule.* or project.learning_changed fact can hold text, and a text-like fact is refused", () => {
     const learning = AUDIT_ACTIONS.filter((action) => action.startsWith("rule.") || action === "project.learning_changed");
-    expect(learning).toHaveLength(7);
+    expect(learning).toHaveLength(8);
     const textLike = /text|note|body|wording|comment|message|content|title|label/i;
     for (const action of learning) {
       for (const key of AUDIT_FACT_KEYS[action]) expect(key, `${action}.${key}`).not.toMatch(textLike);

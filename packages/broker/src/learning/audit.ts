@@ -5,7 +5,7 @@ import type { AuditActor, AuditEventInput } from "@agentx/contracts";
 import { SYSTEM_ACTOR, auditActorOf } from "../audit/plan3-hooks.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import {
-  auditOccurrence, auditRuleAccepted, auditRuleCorrectionRemembered, auditRuleDismissed, auditRuleNotApplied, auditRuleRolledBack, auditRuleSuggested,
+  auditOccurrence, auditRuleAccepted, auditRuleCorrectionRemembered, auditRuleDismissed, auditRuleNotApplied, auditRuleRolledBack, auditRuleSuggested, auditRuleWithdrawn,
 } from "../audit/events.js";
 import { auditedWrite } from "../playbook/project-settings-audit.js";
 import type { LearningDeps, LearningScope } from "./store.js";
@@ -40,9 +40,14 @@ export const acceptedEvent = (deps: Pick<LearningDeps, "now">, scope: LearningSc
 export const notAppliedEvent = (deps: Pick<LearningDeps, "now">, scope: LearningScope, input: { suggestionId: string; ruleId: string; approvalOutcome: "declined" | "expired" | "failed" }): AuditEventInput =>
   auditRuleNotApplied({ ...base(deps, scope, systemActor(), input.ruleId), ...input });
 
-/** A person dismisses (`dismissKind` wrong, already_covered, one_off, other), or Rovara withdraws a suggestion whose sources went away (`withdrawn`, by the system). */
+/** A person dismisses (`dismissKind` wrong, already_covered, one_off, other). Rovara's own withdrawals are `withdrawnEvent`, never this. */
 export const dismissedEvent = (deps: Pick<LearningDeps, "now">, scope: LearningScope, actor: AuditActor, input: { suggestionId: string; stage: string; dismissKind: string }): AuditEventInput =>
   auditRuleDismissed({ ...base(deps, scope, actor, input.suggestionId), ...input });
+
+/** Rovara withdraws a suggestion whose sources went away: the system acts, with a fixed cause. */
+export type WithdrawCause = "forgotten" | "sources_gone" | "pr_capture_off" | "erased";
+export const withdrawnEvent = (deps: Pick<LearningDeps, "now">, scope: LearningScope, input: { suggestionId: string; stage: string; cause: WithdrawCause }): AuditEventInput =>
+  auditRuleWithdrawn({ ...base(deps, scope, systemActor(), input.suggestionId), ...input });
 
 export const rolledBackEvent = (deps: Pick<LearningDeps, "now">, scope: LearningScope, actor: AuditActor, input: { ruleId: string; processAgentId: string; processVersion: number }): AuditEventInput =>
   auditRuleRolledBack({ ...base(deps, scope, actor, auditOccurrence(input.processAgentId, String(input.processVersion))), ...input });

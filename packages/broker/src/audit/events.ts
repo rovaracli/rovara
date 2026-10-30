@@ -558,6 +558,11 @@ export function auditRuleDismissed(input: AuditBuilderBase & { projectName: stri
   return build("rule.dismissed", input, { kind: "project", name: input.projectName }, { suggestionId: input.suggestionId, stage: input.stage, dismissKind: input.dismissKind });
 }
 
+/** `occurrence`: the suggestion id. Rovara withdrew a suggestion whose sources went away (the actor is the system). `cause` is a fixed word: `forgotten`, `sources_gone`, `pr_capture_off` or `erased`. */
+export function auditRuleWithdrawn(input: AuditBuilderBase & { projectName: string; suggestionId: string; stage: string; cause: "forgotten" | "sources_gone" | "pr_capture_off" | "erased" }): AuditEventInput {
+  return build("rule.withdrawn", input, { kind: "project", name: input.projectName }, { suggestionId: input.suggestionId, stage: input.stage, cause: input.cause });
+}
+
 /** `occurrence`: the id of the published version that took the rule out. */
 export function auditRuleRolledBack(input: AuditBuilderBase & { projectName: string; ruleId: string; processAgentId: string; processVersion: number }): AuditEventInput {
   return build("rule.rolled_back", input, { kind: "project", name: input.projectName }, { ruleId: input.ruleId, processAgentId: input.processAgentId, processVersion: input.processVersion });
