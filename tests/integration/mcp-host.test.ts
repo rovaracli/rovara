@@ -14,7 +14,9 @@ import { NOW, ORG } from "../unit/context-sources/fixtures.js";
 const FIXTURE = join(import.meta.dirname, "..", "support", "stdio-mcp-fixture.mjs");
 const TOKEN = "t".repeat(40);
 const INTEGRITY = `sha512-${"A".repeat(86)}==`;
-const spec: McpStdioSpec = { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [], integrity: INTEGRITY };
+/** What an admin proposes: the install computes the two hashes, so they are not sent. */
+const proposalOf = (full: McpStdioSpec) => { const rest: Record<string, unknown> = { ...full }; delete rest.lockfileHash; delete rest.bundleHash; return rest as Omit<McpStdioSpec, "lockfileHash" | "bundleHash">; };
+const spec: McpStdioSpec = { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [], integrity: INTEGRITY, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64), destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } };
 /** Runs the fixture in place of an installed package; like the real launcher it refuses a package whose tarball is not the pinned one. */
 const launcher = (actual = INTEGRITY, counter?: { prepared: number }): HostLauncher => ({
   prepare: async (wanted) => { if (counter) counter.prepared += 1; if (wanted.integrity !== undefined && wanted.integrity !== actual) throw new Error("integrity mismatch"); return { command: process.execPath, args: [FIXTURE], integrity: actual }; },
@@ -125,18 +127,18 @@ describe("the MCP host", () => {
   it("probes a package for the admin before it is approved, and shows its tools", async () => {
     const { url } = await startHost({ approved: [] });
     const prober = gatewayProber({ host: hostProbeClient({ url, token: TOKEN }) });
-    const probed = await prober.stdio(spec);
+    const probed = await prober.stdio(proposalOf(spec));
     expect(probed.tools.map((tool) => tool.name).sort()).toEqual(["echo", "env_keys"]);
     // the fingerprint shown to the admin is the one the host computed from what it installed
     expect(probed.integrity).toBe(INTEGRITY);
     // with no integrity typed, the host's own is returned, to be shown and pinned
-    expect((await prober.stdio({ ...spec, integrity: undefined })).integrity).toBe(INTEGRITY);
+    expect((await prober.stdio({ ...proposalOf(spec), integrity: undefined })).integrity).toBe(INTEGRITY);
   }, 60_000);
 
   it("refuses to probe or serve a package whose tarball is not the pinned one, and says only that the host refused", async () => {
     const { url } = await startHost({ approved: ["mcpsim000001"], launcher: launcher(`sha512-${"B".repeat(86)}==`) });
     const prober = gatewayProber({ host: hostProbeClient({ url, token: TOKEN }) });
-    await expect(prober.stdio(spec)).rejects.toMatchObject({ code: "host_refused" });
+    await expect(prober.stdio(proposalOf(spec))).rejects.toMatchObject({ code: "host_refused" });
     const port = await portFor(url, [entry("mcpsim000001")]);
     await expect(port.open(ORG, stdioServer("mcpsim000001"), AbortSignal.timeout(20_000), ["echo"])).rejects.toBeDefined();
   }, 30_000);

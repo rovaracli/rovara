@@ -9,7 +9,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  MCP_PROBE_FAILURES, McpServerEntrySchema, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, featureEnabled, orgScoped, requireFeature,
+  MCP_PROBE_FAILURES, McpServerEntrySchema, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, featureEnabled, orgScoped, readStoredMcpServerEntry, requireFeature, stdioSpecIfComplete,
   type Edition, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type McpStdioProposal, type OrgId,
 } from "@agentx/contracts";
 import { parsePrivateTarget, type AllowedTarget } from "../connections/private-endpoints.js";
@@ -29,8 +29,11 @@ export class McpProbeError extends Error {
 export interface McpProber {
   /** Connects to the address (checked and pinned by the caller's guard) and lists its tools. `token` is the auth connection's, if the entry has one. */
   http(address: string, token: string | undefined): Promise<DiscoveredTool[]>;
-  /** Asks the MCP host to install the package for a moment and list its tools. `integrity` is the tarball's, computed by the host from the bytes it installed. */
-  stdio(spec: McpStdioProposal): Promise<{ tools: DiscoveredTool[]; integrity: string }>;
+  /**
+   * Asks the MCP host to install the package for a moment and list its tools. `integrity` is the tarball's, computed by the host from the bytes it installed. `lockfileHash` and
+   * `bundleHash` are the install's: the approval binds them. A host that returns neither (the lane E host) cannot complete a proposal.
+   */
+  stdio(spec: McpStdioProposal): Promise<{ tools: DiscoveredTool[]; integrity: string; lockfileHash?: string | undefined; bundleHash?: string | undefined }>;
 }
 
 export interface McpServerStore {
@@ -55,8 +58,8 @@ export function dynamoMcpServerStore(deps: { documentClient: DocumentClient; tab
     const rest: Record<string, unknown> = { ...item };
     delete rest.pk;
     delete rest.sk;
-    const parsed = McpServerEntrySchema.safeParse(rest);
-    return parsed.success ? parsed.data : undefined;
+    // An entry stored before the approval bound its install is read as `needs_reapproval` (never served, never approvable as it is).
+    return readStoredMcpServerEntry(rest);
   };
   const cancelled = (error: unknown): boolean => ["TransactionCanceledException", "ConditionalCheckFailedException"].includes(String((error as { name?: unknown } | null)?.name));
   return {
@@ -96,12 +99,15 @@ export function dynamoMcpServerStore(deps: { documentClient: DocumentClient; tab
       }
     },
     async decide({ orgId, serverId, from, to, by, at, toolsHash }) {
+      // `needs_reapproval` is how a legacy row is READ; the row itself still says approved or waiting. It can only be turned off, and never moved to any other status.
+      const legacy = from === "needs_reapproval";
+      if (legacy && to !== "disabled") return "stale";
       try {
         await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: {
           TableName: deps.tableName, Key: key(orgId, serverId), UpdateExpression: "SET #status = :to, decidedBy = :by, decidedAt = :at",
-          ConditionExpression: toolsHash === undefined ? "#status = :from" : "#status = :from AND #probe.toolsHash = :hash",
+          ConditionExpression: legacy ? "(#status = :from OR #status = :legacyApproved OR #status = :legacyWaiting)" : toolsHash === undefined ? "#status = :from" : "#status = :from AND #probe.toolsHash = :hash",
           ExpressionAttributeNames: { "#status": "status", ...(toolsHash === undefined ? {} : { "#probe": "probe" }) },
-          ExpressionAttributeValues: { ":from": from, ":to": to, ":by": by, ":at": at, ...(toolsHash === undefined ? {} : { ":hash": toolsHash }) },
+          ExpressionAttributeValues: { ":from": from, ":to": to, ":by": by, ":at": at, ...(legacy ? { ":legacyApproved": "approved", ":legacyWaiting": "awaiting_approval" } : {}), ...(toolsHash === undefined || legacy ? {} : { ":hash": toolsHash }) },
         } }] }));
         return "ok";
       } catch (error) {
@@ -227,22 +233,28 @@ export function probeLimiter(options: { max: number; windowMs: number; now: () =
   return Object.assign(limiter, { size: () => seen.size });
 }
 
-async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerTransport | { kind: "stdio"; spec: McpStdioProposal }, token: string | undefined): Promise<{ probe: McpServerProbe; integrity?: string }> {
+async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerEntry["transport"] | { kind: "stdio"; spec: McpStdioProposal }, token: string | undefined): Promise<{ probe: McpServerProbe; integrity?: string; lockfileHash?: string | undefined; bundleHash?: string | undefined }> {
   if (deps.probeAllowed !== undefined && !deps.probeAllowed(orgId)) throw agentXError("TOO_MANY_REQUESTS", "Too many server tests just now. Wait a few minutes and try again.");
   let tools: DiscoveredTool[];
   let integrity: string | undefined;
+  let lockfileHash: string | undefined;
+  let bundleHash: string | undefined;
   try {
     if (transport.kind === "http") {
       tools = await deps.prober.http(transport.address, token);
     } else {
-      ({ tools, integrity } = await deps.prober.stdio(transport.spec));
+      // The spec is passed on as the admin's proposal: the install computes the hashes, so the ones an entry holds are not sent back to be trusted.
+      const proposal: Record<string, unknown> = { ...transport.spec };
+      delete proposal.lockfileHash;
+      delete proposal.bundleHash;
+      ({ tools, integrity, lockfileHash, bundleHash } = await deps.prober.stdio(proposal as McpStdioProposal));
     }
   } catch (error) {
     // Only a fixed sentence is shown: a server's own error can hold addresses, banners and paths.
     const code = error instanceof McpProbeError ? error.code : "unreachable";
     throw agentXError("CONFIG_INVALID", MCP_PROBE_FAILURES[code]);
   }
-  return { probe: summariseProbe(tools, deps.now()), ...(integrity === undefined ? {} : { integrity }) };
+  return { probe: summariseProbe(tools, deps.now()), ...(integrity === undefined ? {} : { integrity }), ...(lockfileHash === undefined ? {} : { lockfileHash }), ...(bundleHash === undefined ? {} : { bundleHash }) };
 }
 
 export async function proposeMcpServer(deps: McpServerDependencies, actor: McpServerActor, body: { label: unknown; transport: unknown; secret?: string | undefined }): Promise<McpServerEntry> {
@@ -265,8 +277,10 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
   }
   const serverId = `mcp${(deps.newId ?? (() => randomBytes(8).toString("hex")))().replace(/[^a-z0-9]/gu, "").slice(0, 16)}`;
   const shown = await probe(deps, actor.orgId, transport.data, body.secret);
-  // A stdio package is pinned by its tarball's integrity: the one the admin gave (the host refused anything else), or the one the host computed, which the admin sees now.
-  const stored: McpServerTransport = transport.data.kind === "http" ? transport.data : { kind: "stdio", spec: { ...transport.data.spec, integrity: shown.integrity! } };
+  // A stdio package is pinned by its tarball's integrity (the one the admin gave, which the host refused anything else than, or the one the host computed and the admin sees now)
+  // AND by the install's lockfile and bundle hashes. A host that did not return the hashes cannot complete a proposal: nothing is stored.
+  if (transport.data.kind === "stdio" && (shown.integrity === undefined || shown.lockfileHash === undefined || shown.bundleHash === undefined)) throw agentXError("CONFIG_INVALID", MCP_PROBE_FAILURES.host_refused);
+  const stored: McpServerTransport = transport.data.kind === "http" ? transport.data : { kind: "stdio", spec: { ...transport.data.spec, integrity: shown.integrity!, lockfileHash: shown.lockfileHash!, bundleHash: shown.bundleHash! } };
   // The token is stored only after the test passed with it, under this server's id, and is never returned (the entry holds only that there is one).
   const secretVersion = body.secret === undefined ? undefined : await deps.secrets.put(actor.orgId, serverId, body.secret);
   const entry: McpServerEntry = McpServerEntrySchema.parse({
@@ -289,6 +303,7 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
 export async function approveMcpServer(deps: McpServerDependencies, actor: McpServerActor, serverId: string): Promise<McpServerEntry> {
   guard(deps, actor);
   const entry = await deps.store.get(actor.orgId, serverId);
+  if (entry?.status === "needs_reapproval") throw agentXError("CHANGE_STALE", "This server was added before approvals pinned the install. Add the package again to look at it now.");
   if (entry === undefined || entry.status !== "awaiting_approval") throw agentXError("NOT_FOUND", "no MCP server is waiting for approval with that id");
   if (deps.secondAdminToApprove === true && entry.requestedBy === actor.developerId) throw agentXError("FORBIDDEN", "A second admin must approve this server.");
   if (entry.transport.kind === "stdio" && !stdioAvailable(deps)) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
@@ -298,9 +313,12 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
     token = await deps.secrets.read(actor.orgId, serverId, entry.secretVersion).catch(() => undefined);
     if (token === undefined) throw agentXError("CONFIG_INVALID", "This server's token can no longer be read. Add the server again.");
   }
+  // A package-run entry is approved only with its install pinned (both hashes); the strict schema already refuses to store one without.
+  const pinned = entry.transport.kind === "stdio" ? stdioSpecIfComplete(entry) : undefined;
+  if (entry.transport.kind === "stdio" && pinned === undefined) throw agentXError("CHANGE_STALE", "This server was added before approvals pinned the install. Add the package again to look at it now.");
   const again = await probe(deps, actor.orgId, entry.transport, token);
-  // The host installed the tarball again and checked it against the pinned integrity; a different tarball never gets here, and the tools must be the ones that were shown.
-  if (entry.transport.kind === "stdio" && again.integrity !== entry.transport.spec.integrity) throw agentXError("CHANGE_STALE", "The package is not the one you were shown. Add it again to look at it now.");
+  // The host installed the tarball again and checked it against the pinned integrity; a different tarball or bundle never gets here, and the tools must be the ones that were shown.
+  if (pinned !== undefined && (again.integrity !== pinned.integrity || again.lockfileHash !== pinned.lockfileHash || again.bundleHash !== pinned.bundleHash)) throw agentXError("CHANGE_STALE", "The package is not the one you were shown. Add it again to look at it now.");
   if (again.probe.toolsHash !== entry.probe.toolsHash) throw agentXError("CHANGE_STALE", "The server's tools are not the ones you were shown. Add it again to look at what it offers now.");
   const at = new Date(deps.now()).toISOString();
   if (await deps.store.decide({ orgId: actor.orgId, serverId, from: "awaiting_approval", to: "approved", by: actor.developerId, at, toolsHash: entry.probe.toolsHash }) === "stale") {

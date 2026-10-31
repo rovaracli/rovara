@@ -4,7 +4,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createServer } from "node:http";
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema, stdioSpecIfComplete } from "@agentx/contracts";
 import { createMcpHost, npmLauncher, type HostRegistry } from "@agentx/gateway";
 import { dynamoMcpServerStore } from "../context-sources/mcp-servers.js";
 
@@ -20,7 +20,8 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
   return {
     async approvedStdio(serverId) {
       const entry = await store.get(org, serverId);
-      return entry?.status === "approved" && entry.transport.kind === "stdio" ? entry.transport.spec : undefined;
+      // Only an approved entry with its install pinned is served; a needs_reapproval or incomplete one is not.
+      return entry?.status === "approved" ? stdioSpecIfComplete(entry) : undefined;
     },
   };
 }
