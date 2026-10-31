@@ -39,7 +39,7 @@ describe("the sign-in Lambda hands its handler the edition, the stores, the ledg
   it("reads the stamp with the cloud method as the cross-check, builds the stores from it and runs the guard before every request", () => {
     expect(identity).toMatch(/const editionPolicy = installEditionPolicy\(env, config\.cloud !== undefined\);/);
     expect(identity).toMatch(/const ssoStores = ssoStoresFor\(\{[^}]*policy: editionPolicy/);
-    expect(identity).toMatch(/built \?\?= build\(process\.env\);\n  await editionGuard\?\.\(\);/);
+    expect(identity).toMatch(/built \?\?= build\(process\.env\);\n {2}await editionGuard\?\.\(\);/);
   });
 });
 
