@@ -108,3 +108,19 @@ export * from "./stage-model-publish-refusal.js";
 export * from "./app-project-slack.js";
 
 export * from "./app-service-status.js";
+
+// Proof and evidence (W4/W5): browser-safe schemas for the evidence view, decision cards and the test environment.
+export * from "./evidence.js";
+export * from "./decision-cards.js";
+export * from "./decision-card-tabs.js";
+export * from "./plan-one-screen.js";
+export * from "./test-environment.js";
+// K1 C5b: what the agent loaded (browser-safe readers).
+export * from "./knowledge-skills.js";
+export * from "./loaded-knowledge.js";
+
+// Meta repo lane B: the setup agent's proposal, its review rows and the per-item apply, and the contracts they cite (provenance, the meta project body).
+export * from "./provenance.js";
+export * from "./setup-proposal.js";
+export { CreateProjectFromMetaBodySchema, type CreateProjectFromMetaBody, META_KNOWLEDGE_DEFAULTS } from "./meta-project.js";
+export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseReaderSchema, SetupDraftStartBodySchema, type SetupDraftStartBody, SETUP_DRAFT_STATUSES } from "./rovara-code.js";

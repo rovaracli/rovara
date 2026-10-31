@@ -14,7 +14,7 @@ import { sessionDiff, type SessionDiffDependencies } from "./diff.js";
 import { readSessionEvents } from "./events.js";
 import { mayCreateAgentIn, makeAgentFromSession } from "./make-agent.js";
 import { followSession, recordPresence, unfollowSession } from "./followers.js";
-import { DeleteBodySchema, EditBodySchema, SendBodySchema, deleteSessionMessage, editSessionMessage, listSessionMessages, parseMessageBody, sendSessionMessage } from "./messages.js";
+import { DeleteBodySchema, EditBodySchema, SendBodySchema, deleteSessionMessage, editSessionMessage, listSessionMessages, parseMessageBody, sendSessionMessage, type SessionMessageDependencies } from "./messages.js";
 import { dismissHomeCard, homeCards, type HomeDependencies } from "./home.js";
 import { liveSessions, type LiveQuery } from "./live.js";
 import { projectOverview, type ProjectPageReader } from "./project-overview.js";
@@ -43,8 +43,12 @@ export interface SessionRouteDependencies extends SessionReadDependencies, Pick<
   realtimePublish?: RealtimeConfig | undefined;
   /** What a chain run is doing now, for a message to a chain (Task 11a): Plan 4's `chainSteerReadsFor`, built for each request. Without it a message to a chain session is refused before it is written. */
   chainSteer?: ChainSteerReads | undefined;
+  /** Live steer (`live-steer.ts`): the broker's signing key, so a message to a running step also reaches its session. Without it every message is a note only. */
+  liveSteer?: SessionMessageDependencies["liveSteer"];
   /** How long one of Home's sources may take (Task 15; default two seconds). */
   homeSourceTimeoutMs?: number | undefined;
+  /** The Home card kinds that decision cards carry now (see `HomeDependencies.retiredKinds`); set by the wiring that mounts the decision routes. */
+  retiredHomeKinds?: HomeDependencies["retiredKinds"];
   /** Task 19 (Plan 6's `HandoffRuntime`, H1): moving a session between a Mac and the cloud. Without it the move route answers `RUNTIME_UNAVAILABLE`. */
   handoff?: HandoffRuntime | undefined;
   /** Task 16: the project's card (repositories, setup, channels) for a person who already has a role in it. Without it the project page answers `NOT_FOUND`. */
@@ -187,7 +191,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   }
   if (url.pathname === HOME_PATH || url.pathname.startsWith(`${HOME_PATH}/`)) {
     // Task 15: Home's cards, and a dismissal of one of them.
-    const home: HomeDependencies = { ...read, ...(approvals === undefined ? {} : { approvals }), ...(deps.homeSourceTimeoutMs === undefined ? {} : { homeSourceTimeoutMs: deps.homeSourceTimeoutMs }) };
+    const home: HomeDependencies = { ...read, ...(approvals === undefined ? {} : { approvals }), ...(deps.retiredHomeKinds === undefined ? {} : { retiredKinds: deps.retiredHomeKinds }), ...(deps.homeSourceTimeoutMs === undefined ? {} : { homeSourceTimeoutMs: deps.homeSourceTimeoutMs }) };
     if (url.pathname === HOME_PATH) {
       if (request.method !== "GET") throw notFound();
       return homeCards(home, caller);
@@ -269,7 +273,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   }
   if (messages !== undefined) {
     // Comments (Task 10) and messages to the agent (Task 11a: `kind: "steer"`, which needs "can use").
-    const messageDeps = { ...read, realtimePublish: deps.realtimePublish, chainSteer: deps.chainSteer };
+    const messageDeps = { ...read, realtimePublish: deps.realtimePublish, chainSteer: deps.chainSteer, liveSteer: deps.liveSteer };
     if (rawMessageId === undefined) {
       if (method === "GET") return listSessionMessages(messageDeps, caller, sessionId, { after: url.searchParams.get("after") ?? undefined, anchor: url.searchParams.get("anchor") ?? undefined });
       if (method === "POST") return sendSessionMessage(messageDeps, caller, sessionId, parseMessageBody(SendBodySchema, jsonBody(request)));

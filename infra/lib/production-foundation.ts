@@ -8,11 +8,14 @@ import {
   aws_iam as iam,
   aws_kms as kms,
   aws_logs as logs,
+  aws_ssm as ssm,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
+import type { Edition } from "@agentx/contracts";
 import { AgentDnsFirewall, EGRESS_ALLOW_DOMAINS_CONTEXT_KEY, parseExtraAllowDomains } from "./agent-dns-firewall.js";
 import { EgressAlarms, alertsTopicFromName } from "./egress-alarms.js";
 import { Ec2WorkerFoundation } from "./ec2-workers.js";
+import { EnterpriseVpcEndpoints, endpointPolicyDocument, enterpriseAllowDomains, type InternetEgress } from "./vpc-endpoints.js";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
 export const AGENTX_PRODUCTION_DEPLOYMENT_MODE = "ec2-ebs";
@@ -42,6 +45,21 @@ export interface ProductionFoundationStackProps extends StackProps {
   naming?: AgentXNaming;
   /** The hosted Rovara cloud (agentxCloud context, named environments only): adds the DNS firewall that limits which websites agent machines can resolve. */
   cloud?: boolean;
+  /**
+   * The edition of this install (task N1). Absent: today's network, unchanged. `enterprise` (named environments only): the install's own interface endpoints,
+   * worker and caller security groups with no route to the whole internet, and the DNS firewall in allow-list mode. `public`: today's network, unchanged.
+   */
+  edition?: Edition;
+  /**
+   * Enterprise only. Default `none`: the install is built with no internet route at all (nothing leaves unless the customer approves a path); `nat` keeps the NAT
+   * gateways. `none` needs at least one approved range (`enterpriseEgressCidrs`), because workers must reach the control plane. Refused on any other edition.
+   */
+  internetEgress?: InternetEgress;
+  /**
+   * Enterprise only: IPv4 ranges (each no wider than a /8) that workers and callers may reach over HTTPS besides the VPC itself, approved by the customer's
+   * network team (for example the broker's address, an internal code host). Refused on any other edition.
+   */
+  enterpriseEgressCidrs?: readonly string[];
 }
 
 export function defaultProductionAvailabilityZoneIds(
@@ -76,6 +94,16 @@ export class ProductionFoundationStack extends Stack {
   constructor(scope: Construct, id: string, props: ProductionFoundationStackProps) {
     super(scope, id, props);
     const naming = props.naming ?? legacyNaming();
+    const enterprise = props.edition === "enterprise";
+    // A network setting that would do nothing on this edition is refused, never ignored.
+    if (!enterprise && (props.internetEgress !== undefined || props.enterpriseEgressCidrs !== undefined)) {
+      throw new Error("internetEgress and enterpriseEgressCidrs are Enterprise edition settings");
+    }
+    if (enterprise && naming.env === undefined) throw new Error("the Enterprise edition needs a named environment");
+    const noNat = enterprise && props.internetEgress !== "nat";
+    if (noNat && (props.enterpriseEgressCidrs ?? []).length === 0) {
+      throw new Error("an Enterprise install with no internet route needs at least one approved range (rovaraEnterpriseEgressCidrs): the workers must reach the control plane, which is public until the private control-plane path exists");
+    }
     const configuration = validateProductionFoundationConfiguration({
       region: props.deploymentRegion,
       availabilityZoneIds:
@@ -130,16 +158,19 @@ export class ProductionFoundationStack extends Stack {
       });
       publicRoute.addResourceDependency(gatewayAttachment);
 
-      const eip = new ec2.CfnEIP(this, `NatEip${suffix}`, { domain: "vpc" });
-      eip.addResourceDependency(gatewayAttachment);
-      const natGateway = new ec2.CfnNatGateway(this, `NatGateway${suffix}`, {
-        allocationId: eip.attrAllocationId,
-        connectivityType: "public",
-        subnetId: publicSubnet.ref,
-        tags: resourceTags(`${naming.resourcePrefix}-nat-${suffix}`, naming),
-      });
-      natGateway.addResourceDependency(publicRoute);
-      natGateways.push({ az: configuration.availabilityZoneIds[index], natGateway });
+      let natGateway: ec2.CfnNatGateway | undefined;
+      if (!noNat) {
+        const eip = new ec2.CfnEIP(this, `NatEip${suffix}`, { domain: "vpc" });
+        eip.addResourceDependency(gatewayAttachment);
+        natGateway = new ec2.CfnNatGateway(this, `NatGateway${suffix}`, {
+          allocationId: eip.attrAllocationId,
+          connectivityType: "public",
+          subnetId: publicSubnet.ref,
+          tags: resourceTags(`${naming.resourcePrefix}-nat-${suffix}`, naming),
+        });
+        natGateway.addResourceDependency(publicRoute);
+        natGateways.push({ az: configuration.availabilityZoneIds[index], natGateway });
+      }
 
       const privateSubnet = new ec2.CfnSubnet(this, `PrivateSubnet${suffix}`, {
         availabilityZoneId: configuration.availabilityZoneIds[index],
@@ -156,15 +187,17 @@ export class ProductionFoundationStack extends Stack {
         routeTableId: privateRouteTable.ref,
         subnetId: privateSubnet.ref,
       });
-      const privateRoute = new ec2.CfnRoute(this, `PrivateDefaultRoute${suffix}`, {
-        destinationCidrBlock: "0.0.0.0/0",
-        natGatewayId: natGateway.ref,
-        routeTableId: privateRouteTable.ref,
-      });
-      privateRoute.addResourceDependency(natGateway);
+      if (natGateway !== undefined) {
+        const privateRoute = new ec2.CfnRoute(this, `PrivateDefaultRoute${suffix}`, {
+          destinationCidrBlock: "0.0.0.0/0",
+          natGatewayId: natGateway.ref,
+          routeTableId: privateRouteTable.ref,
+        });
+        privateRoute.addResourceDependency(natGateway);
+        privateRoutes.push(privateRoute);
+      }
       privateSubnets.push(privateSubnet);
       privateRouteTables.push(privateRouteTable);
-      privateRoutes.push(privateRoute);
     }
 
     new ec2.CfnVPCEndpoint(this, "S3GatewayEndpoint", {
@@ -172,6 +205,7 @@ export class ProductionFoundationStack extends Stack {
       vpcEndpointType: "Gateway",
       vpcId: vpc.ref,
       routeTableIds: privateRouteTables.map((routeTable) => routeTable.ref),
+      ...(enterprise ? { policyDocument: endpointPolicyDocument("s3", props.deploymentRegion) } : {}),
     });
 
     const flowLogGroup = new logs.LogGroup(this, "VpcFlowLogs", {
@@ -202,6 +236,25 @@ export class ProductionFoundationStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    // Enterprise: AWS is reached through the install's own endpoints, and the security groups below let traffic out only to the VPC and the ranges the customer approved.
+    if (enterprise) {
+      new EnterpriseVpcEndpoints(this, "EnterpriseEndpoints", {
+        vpcId: vpc.ref,
+        vpcCidr: AGENTX_PRODUCTION_VPC_CIDR,
+        ingressCidrs: privateCidrs,
+        region: props.deploymentRegion,
+        privateSubnets,
+        privateRouteTables,
+        resourcePrefix: naming.resourcePrefix,
+        tags: (name) => resourceTags(name, naming),
+      });
+    }
+
+    // The edition is recorded: an install's edition is set once, and `rovara deploy` refuses a redeploy that asks for another (`rovara deploy` will read this and call assertEditionUnchanged once wired).
+    if (enterprise) {
+      new ssm.CfnParameter(this, "EditionRecord", { name: `/agentx/${naming.env!}/edition`, type: "String", value: "enterprise", description: "The edition this install was deployed as. It never changes." });
+    }
+
     // EC2 worker launch template, role and security groups.
     new Ec2WorkerFoundation(this, "Ec2Workers", {
       naming,
@@ -209,14 +262,17 @@ export class ProductionFoundationStack extends Stack {
       privateSubnets,
       workspaceKey,
       instanceType: configuration.instanceType,
+      ...(enterprise ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...(props.enterpriseEgressCidrs ?? [])] } : {}),
     });
 
-    // Cloud installs: agent machines (and the proxy, orchestrator and other tasks in this VPC) resolve only an allowlist.
-    if (props.cloud === true && naming.env !== undefined) {
+    // Cloud and Enterprise installs: agent machines (and the proxy, orchestrator and other tasks in this VPC) resolve only an allowlist.
+    if ((props.cloud === true || enterprise) && naming.env !== undefined) {
       const dnsFirewall = new AgentDnsFirewall(this, "AgentDnsFirewall", {
         env: naming.env,
         vpcId: vpc.ref,
-        extraAllowDomains: parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY)),
+        // An Enterprise install starts from its own endpoint names; the public defaults are not on its list.
+        ...(enterprise ? { baseAllowDomains: enterpriseAllowDomains(props.deploymentRegion) } : {}),
+        extraAllowDomains: parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseAllowDomains(props.deploymentRegion) : undefined),
       });
       // The control plane's broker keeps this list equal to the approved egress domains (it takes the id as a parameter, like the VPC's).
       new CfnOutput(this, "ProjectAllowListId", { value: dnsFirewall.projectAllowListId });

@@ -11,6 +11,8 @@ import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonic
 import { SlackThreadWorkspaceResultSchema } from "@agentx/contracts";
 import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, collectWorkflowFeedbackBundles, createWorkflowSnapshot, sharedTaskKey, SharedTaskRecordSchema, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, WorkflowThreadNoteSchema, type WorkflowCheckPolicyInput, type WorkflowSnapshot } from "@agentx/contracts";
 import * as workflowContracts from "../../packages/contracts/src/task-workflow-node.js";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, liveSteerOperationId } from "../../packages/contracts/src/live-steer.js";
+import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { plainBlockReason, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
@@ -2348,6 +2350,81 @@ describe("exits for blocked work (Task 16)", () => {
     expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "PLAN", state: "RUNNING" });
     expect((await harness.dev(MAYA, "POST", route, body)).status).toBe(200);
     expect(operations(harness, workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(2);
+  });
+
+  // Live steer: the owner's live message asked for a change outside the approved plan and the step stopped for it: its own fixed block reason (the owner decides), never a generic failure, and nothing starts again by itself.
+  it("blocks planning with the fixed re-approval reason when the owner's live message asked for a change outside the approved plan", async () => {
+    const harness = await createSingleAnswerPlanBroker();
+    const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "test-client", workflow: true, workflowPath: "QUICK" });
+    const taskId = String((started.body.task as { taskId: string }).taskId);
+    const workspaceId = (harness.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId;
+    await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
+    await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN")?.id), "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE} (msg_0123456789abcdefghij)` });
+    expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "PLAN", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.liveSteerReapproval });
+    expect(operations(harness, workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
+  });
+
+  it("blocks coding with the fixed re-approval reason (the one that offers Revise the plan) when the owner's live message asked for a change outside the approved plan, and does not send it back by itself", async () => {
+    const harness = await createSingleAnswerPlanBroker();
+    const { taskId, workspaceId } = await workflowAtVerification(harness);
+    const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    await harness.finish(workspaceId, String(implementation.id), "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE} (msg_0123456789abcdefghij)` });
+    expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise });
+    expect(operations(harness, workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toHaveLength(1);
+  });
+
+  // Minor (c): a live-delivered note loses its mark when the attempt that took it does not succeed (the re-run never received it), and keeps it when the step succeeds.
+  const liveNote = (harness: Harness, taskId: string, messageId: string, liveDeliveredAt: string) => harness.db.set({
+    pk: `DEVTASK#${taskId}`, sk: `NOTE#${messageId}`, entityType: "WORKFLOW_THREAD_NOTE", source: "app", messageId, sessionId: "sess_0123456789abcdefghij", developerId: MAYA.developerId,
+    text: "also add a retry", receivedAt: new Date().toISOString(), liveDeliveredAt,
+  });
+  it("clears the live mark of a note given to a coding attempt that then failed, so the re-run reads it as an ordinary message", async () => {
+    const harness = await createSingleAnswerPlanBroker();
+    const { taskId, workspaceId } = await workflowAtVerification(harness);
+    const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    const during = new Date(Date.parse(String(implementation.createdAt)) + 1000).toISOString();
+    liveNote(harness, taskId, "msg_0123456789abcdefghij", during);
+    await harness.finish(workspaceId, String(implementation.id), "FAILED", { error: "CONFIG_INVALID: the model stopped" });
+    expect(harness.db.get(`DEVTASK#${taskId}`, "NOTE#msg_0123456789abcdefghij")).not.toHaveProperty("liveDeliveredAt");
+    expect(harness.db.get(`DEVTASK#${taskId}`, "NOTE#msg_0123456789abcdefghij")).toMatchObject({ text: "also add a retry" });
+  });
+
+  it("keeps the mark of a note given before the failed attempt began (an earlier step's)", async () => {
+    const harness = await createSingleAnswerPlanBroker();
+    const { taskId, workspaceId } = await workflowAtVerification(harness);
+    const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    const before = new Date(Date.parse(String(implementation.createdAt)) - 60_000).toISOString();
+    liveNote(harness, taskId, "msg_0123456789abcdefghij", before);
+    await harness.finish(workspaceId, String(implementation.id), "FAILED", { error: "CONFIG_INVALID: the model stopped" });
+    expect(harness.db.get(`DEVTASK#${taskId}`, "NOTE#msg_0123456789abcdefghij")).toMatchObject({ liveDeliveredAt: before });
+  });
+
+  it("keeps the mark of a note given to a coding step that succeeded", async () => {
+    const harness = await createSingleAnswerPlanBroker();
+    const { taskId, workspaceId, finishImplementation } = await workflowAtVerification(harness);
+    const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
+    const during = new Date(Date.parse(String(implementation.createdAt)) + 1000).toISOString();
+    liveNote(harness, taskId, "msg_0123456789abcdefghij", during);
+    await finishImplementation();
+    expect(harness.db.get(`DEVTASK#${taskId}`, "NOTE#msg_0123456789abcdefghij")).toMatchObject({ liveDeliveredAt: during });
+  });
+
+  // M10: the steer invocation carries a callback capability for an operation id that has no OPERATION record; every callback made with it is refused and writes nothing.
+  it("M10: a callback made with a live steer's capability is refused for events, artifacts and result, and writes nothing", async () => {
+    const harness = await createSingleAnswerPlanBroker();
+    const { workspaceId } = await workflowAtVerification(harness);
+    const workspace = harness.db.get(`WORKSPACE#${workspaceId}`, "META") as { fence: number };
+    const operationId = liveSteerOperationId("msg_0123456789abcdefghij");
+    const capability = issueCapability({ callbackSigningKey: "c".repeat(64) }, workspaceId, operationId, workspace.fence);
+    const before = harness.db.find(() => true).length;
+    const post = (action: string, body: unknown) => call(harness.handler, { method: "POST", path: `/v1/internal/workspaces/${workspaceId}/operations/${operationId}/${action}`, headers: { "x-agentx-callback-capability": capability }, body });
+    for (const [action, body] of [["events", { events: [{ type: "log", message: "x", timestamp: new Date().toISOString() }] }], ["artifacts", { name: "a.txt", mediaType: "text/plain", content: "x" }],
+      ["result", { operationId, status: "SUCCEEDED" }]] as const) {
+      const answer = await post(action, body);
+      expect(answer.status, action).toBeGreaterThanOrEqual(400);
+    }
+    expect(harness.db.find(() => true).length).toBe(before);
+    expect(harness.db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${operationId}`)).toBeUndefined();
   });
 
   it("never lets the agent's own check claims stand in when no check was selected: review only records none, and no stored policy stops", async () => {

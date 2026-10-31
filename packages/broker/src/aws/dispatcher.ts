@@ -19,6 +19,7 @@ import { guardTaskDispatch, isTaskDispatchGuardRetryError } from "./task-dispatc
 import { createTaskAuthorityAdmission } from "./task-authority-admission.js";
 import { createTaskPersonRuntime, stateAuthorityWitnessForDispatch, type TaskPersonDeveloperRecordProjection, type TaskPersonRuntimePorts } from "./task-person-runtime.js";
 import { taskPersonProofThroughLambda } from "./task-person-proof-transport.js";
+import { createLiveSteerDispatch } from "../agent-sessions/live-steer-dispatch.js";
 
 const DEFAULT_MAX_DISPATCH_ATTEMPTS = 5;
 
@@ -195,7 +196,7 @@ export function createProjectSetupBindingReader(input: { documentClient: DynamoD
 
 export interface DispatchLogEntry {
   level: "warn" | "error";
-  event: "dispatch.attempt_failed" | "dispatch.terminal_transition_failed";
+  event: "dispatch.attempt_failed" | "dispatch.terminal_transition_failed" | "dispatch.live_steer_unconfigured";
   operationId?: string;
   workspaceId?: string;
   outboxId?: string;
@@ -222,6 +223,8 @@ export function createDispatcherHandler(dependencies: {
   completeWorkflowE2EReadiness?: (record: DurableOutboxRecord, generation: number) => Promise<void>;
   /** Delivers an ec2-ebs record; without it such records fail like any undeliverable one. */
   deliverEc2?: (record: Ec2OutboxRecord, invocation: WorkerInvocation, context?: { remainingTimeMs: () => number }) => Promise<Ec2Delivery>;
+  /** Live steer (agent-sessions/live-steer-dispatch.ts): a `steer` item has its own delivery and its own end, and never an operation record or compute. */
+  liveSteer?: ReturnType<typeof createLiveSteerDispatch>;
   maxAttempts?: number;
   log?: (entry: DispatchLogEntry) => void;
 }) {
@@ -242,6 +245,11 @@ export function createDispatcherHandler(dependencies: {
         const parsed = JSON.parse(message.body) as DurableOutboxRecord;
         const invocation = WorkerInvocationSchema.parse(parsed.invocation);
         record = { ...parsed, invocation };
+        if (invocation.kind === "steer") {
+          if (dependencies.liveSteer === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "live steer is not configured");
+          await dependencies.liveSteer.deliver(record, invocation);
+          continue;
+        }
         if (invocation.kind === "project-setup-smoke") {
           if (record.operationId !== invocation.operationId || record.workspaceId !== invocation.workspaceId
             || invocation.payload.transportCorrelationId !== invocation.workspaceId) {
@@ -296,6 +304,11 @@ export function createDispatcherHandler(dependencies: {
           try {
             const setup = record.invocation.kind === "project-setup-smoke" ? dependencies.projectSetupLifecycle : undefined;
             if (setup) await setup.markFailed(record, terminalDispatchError(error, attempt));
+            else if (record.invocation.kind === "steer") {
+              // A live steer has no operation record: its own end, or (a dispatcher without live steer) none at all, never the operation's markFailed. The message stays the note it already is.
+              if (dependencies.liveSteer !== undefined) await dependencies.liveSteer.fail(record);
+              else logDispatchFailure(dependencies.log, { level: "warn", event: "dispatch.live_steer_unconfigured", outboxId: record.id, messageId: message.messageId, attempt, maxAttempts, terminal: true, errorName: "AgentXError", errorCode: "RUNTIME_UNAVAILABLE" });
+            }
             else await dependencies.markFailed(record, terminalDispatchError(error, attempt));
             continue;
           } catch (transitionError) {
@@ -583,6 +596,25 @@ export async function workerPingFeatures(url: string, fetchPing: typeof fetch = 
   return Array.isArray(features) ? features.filter((feature): feature is string => typeof feature === "string") : [];
 }
 
+async function signInvocation(message: Uint8Array): Promise<Uint8Array> {
+  const response = await kms.send(new SignCommand({
+    KeyId: requiredEnvironment("INVOKE_SIGNING_KEY_ARN"),
+    Message: message,
+    MessageType: "RAW",
+    SigningAlgorithm: "ECDSA_SHA_256",
+  }));
+  return response.Signature!;
+}
+async function postToWorker(url: string, init: { authorization: string; body: string }): Promise<{ status: number; body: string }> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { authorization: init.authorization, "content-type": "application/json" },
+    body: init.body,
+    signal: AbortSignal.timeout(WORKER_POST_TIMEOUT_MS),
+  });
+  return { status: response.status, body: await response.text() };
+}
+
 const deliverEc2 = createEc2Delivery({
   sessions: new SessionManager({
     documentClient,
@@ -598,24 +630,8 @@ const deliverEc2 = createEc2Delivery({
   projectSetupSessions: new ProjectSetupSessionManager({ documentClient, tableName: tableName ?? "" }),
   projectSetupBinding: createProjectSetupBindingReader({ documentClient, orgId: installOrgIdFromEnvironment(), ...(tableName === undefined ? {} : { tableName }) }),
   binding: (workspaceId) => workspaceBinding(documentClient, tableName ?? requiredEnvironment("STATE_TABLE_NAME"), installOrgIdFromEnvironment(), workspaceId),
-  async sign(message) {
-    const response = await kms.send(new SignCommand({
-      KeyId: requiredEnvironment("INVOKE_SIGNING_KEY_ARN"),
-      Message: message,
-      MessageType: "RAW",
-      SigningAlgorithm: "ECDSA_SHA_256",
-    }));
-    return response.Signature!;
-  },
-  async post(url, init) {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { authorization: init.authorization, "content-type": "application/json" },
-      body: init.body,
-      signal: AbortSignal.timeout(WORKER_POST_TIMEOUT_MS),
-    });
-    return { status: response.status, body: await response.text() };
-  },
+  sign: signInvocation,
+  post: postToWorker,
   workerFeatures: (url) => workerPingFeatures(url),
   // Reads the admission a CHECKS reference names to hold its `kind` to it. Without the artifact bucket (a deployment that has not granted it) only the kind decides.
   ...(process.env.ARTIFACT_BUCKET_NAME === undefined || process.env.ARTIFACT_BUCKET_NAME === "" ? {} : {
@@ -695,6 +711,10 @@ export const handler = createDispatcherHandler({
     },
   },
   deliverEc2,
+  liveSteer: createLiveSteerDispatch({
+    documentClient, tableName: tableName ?? "", now: Date.now, sign: signInvocation, post: postToWorker, workerFeatures: (url) => workerPingFeatures(url),
+    log: (entry) => process.stderr.write(`${JSON.stringify(entry)}\n`),
+  }),
   maxAttempts: parseMaximumAttempts(process.env.MAX_DISPATCH_ATTEMPTS),
   async markDispatching(record) {
     try {

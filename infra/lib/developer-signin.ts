@@ -27,6 +27,8 @@ export interface DeveloperSignInParameters {
   /** Mainline #408: the plan self-check (a coding plan is checked, and the planner asked again once) and automatic fixing of blocked checks and reviews. On unless an operator turns them off. */
   planSelfCheckEnabled: CfnParameter;
   autofixEnabled: CfnParameter;
+  /** Live steer: a person's message to a running step. "0" (the default) keeps every message a note; "1" turns it on. Turn it on only after the dispatcher, publisher, broker and the worker image carrying task.liveSteer.v1 are deployed. */
+  liveSteerEnabled: CfnParameter;
 }
 
 /** Declared on the stack itself, so the parameter names are exactly these. */
@@ -50,6 +52,7 @@ export function developerSignInParameters(stack: Stack): DeveloperSignInParamete
     rovaraCodeV2Enabled: new CfnParameter(stack, "RovaraCodeV2Enabled", { type: "String", default: "false", allowedValues: ["true", "false"], description: "Whether Rovara Code version 2 (Understand, the plan check, parallel parts, merge tracking) is available in this environment: an admin may adopt it and new tasks of an org that did run it. Off unless an operator turns it on (agentx config set rovaraCode.v2 true)" }),
     planSelfCheckEnabled: new CfnParameter(stack, "PlanSelfCheckEnabled", { type: "String", default: "true", allowedValues: ["true", "false"], description: "Whether every coding plan is checked before the owner sees it, and the planner asked again once when the check finds a fixable problem (agentx config set planSelfCheck.enabled false turns it off; it also turns off checking the plan against the current app)" }),
     autofixEnabled: new CfnParameter(stack, "AutofixEnabled", { type: "String", default: "true", allowedValues: ["true", "false"], description: "Whether Rovara sends blocked checks or reviews back to coding by itself, before any pull request exists (agentx config set autofix.enabled false turns it off)" }),
+    liveSteerEnabled: new CfnParameter(stack, "LiveSteerEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: a person's message to a running step is given to it live (only after the dispatcher, publisher, broker and worker image that carry live steer are deployed); 0: every message waits as a note for the next step (agentx config set liveSteer.enabled 1)" }),
     mcpConfirmElicitation: new CfnParameter(stack, "McpConfirmElicitation", { type: "String", default: "enabled", allowedValues: ["enabled", "disabled"], description: "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button (or the CLI)" }),
   };
 }

@@ -14,7 +14,7 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission",
   // M1.2 to M1.4: the application plan, application and baseline rounds, AI navigation steps, replay, and the model-free time limits and model choice (mainline's worker implements each).
   "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource",
-  "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1",
+  "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1",
   "model.route", "task.agentStep", "task.agentRun", "task.agentGrounding.v1",
   // Rovara Code version 2 (Plan 6): Understand runs read-only and answers with a `rovara-intent` block.
   "task.workflowUnderstand",
@@ -22,6 +22,7 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowPlanCritique",
   // Rovara Code (Plan 6 Task 10): a read-only run that drafts a project's dev setup.
   "task.setupDraft",
+  "task.setupProposal.v2",
   // Plan 6 Task 13: the code review of a Rovara Code version 2 task states a risk level.
   "task.workflowReviewRisk",
   // Plan 6 Task 15: a coding run that fixes a pull request that is already open (CI, a conflict or comments).
@@ -36,4 +37,8 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1",
   // Mainline #413 (MIDSTEPCOOKIE): the executor syncs the browser's session values before every model call; the application-runtime monitor withholds it on a host whose executor image lacks the session-sync label.
   "task.workflowE2EMidStepSync.v1",
+  // Live steer: a person's message reaches the running Understand, Plan or Implement step's session (steer-invocation.ts).
+  "task.liveSteer.v1",
+  // Meta repo lane A3: the prepare invocation's `meta` request (the project's meta repository, read-only and sparse; meta-checkout.ts).
+  "prepare.metaRepo",
 ] as const satisfies readonly WorkerInvocationFeature[];

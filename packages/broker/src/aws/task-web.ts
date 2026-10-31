@@ -67,6 +67,8 @@ export interface TaskDocumentView {
   access?: { role: TaskRole; canComment: boolean; canSuggest: boolean; canDecide: boolean; canAsk: boolean };
   /** Present while the task is blocked on an approved browser and API round that one retry can fix; `canRetry` is whether this reader (the owner) may make it. */
   applicationRetry?: { canRetry: boolean };
+  /** Live steer: present while coding is blocked for the owner's live message that asked for a change outside the approved plan and the plan can take it in; `canRevise` is whether this reader (the owner) may press Revise the plan. */
+  reviseOffer?: { canRevise: boolean };
   /** A coding run that ended with no code change: what the agent found (rebuilt, redacted and bounded again, when the page is written). Absent for any other stop; an older worker sent none, and the page then says only that no change was needed. */
   noChange?: { findings?: NoChangeFindings };
   /** AUTOFIX: what Rovara already tried on its own and why it asks, as plain sentences (nothing a worker or model said); absent when it did nothing on this task. */
@@ -369,6 +371,7 @@ function pageData(view: TaskDocumentView, csrf: string): Record<string, unknown>
     ...(view.askAvailable === undefined ? {} : { askAvailable: view.askAvailable }),
     ...(current === undefined ? {} : { current }), commentSeq: view.commentSeq ?? 0,
     ...(view.applicationRetry?.canRetry === true ? { canRetry: true } : {}),
+    ...(view.reviseOffer?.canRevise === true ? { canRevise: true } : {}),
   };
 }
 
@@ -414,6 +417,18 @@ function applicationRetrySection(view: TaskDocumentView): string {
         + '<p><button type="button" id="retry-application" hidden>Retry the browser and API checks</button> <span id="retry-status" role="status" aria-live="polite"></span></p>'
         + '<p id="retry-error" class="error" role="alert" hidden></p>'
       : '<p class="muted">Only the task owner can retry these checks.</p>')
+    + "</section>";
+}
+
+/** Live steer: Revise the plan for a coding step that stopped for the owner's live message: the owner's button (on with the script, as the decide buttons are) or who may press it. */
+function revisePlanSection(view: TaskDocumentView): string {
+  if (view.reviseOffer === undefined) return "";
+  return '<section id="revise-plan" aria-label="Revise the plan"><h2>Revise the plan</h2>'
+    + (view.reviseOffer.canRevise
+      ? "<p>Rovara plans again with the change your live message asked for, and you approve the revised plan before coding continues. Retry coding, in the task's Slack thread, builds the approved plan without that change instead.</p>"
+        + '<p><button type="button" id="revise-plan-button" hidden>Revise the plan</button> <span id="revise-status" role="status" aria-live="polite"></span></p>'
+        + '<p id="revise-error" class="error" role="alert" hidden></p>'
+      : '<p class="muted">Only the task owner can revise the plan.</p>')
     + "</section>";
 }
 
@@ -492,6 +507,7 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
     + noChangeSection(view)
     + autofixSection(view)
     + applicationRetrySection(view)
+    + revisePlanSection(view)
     + `<section id="findings" aria-label="Review findings"><h2>Review findings</h2>${findings}</section>`
     + `<section id="pull-requests" aria-label="Pull requests"><h2>Pull requests</h2>${pullRequests}</section>`
     + (view.people === undefined ? renderTaskPeopleUnavailable() : renderTaskPeoplePanel(view.taskId, view.people))

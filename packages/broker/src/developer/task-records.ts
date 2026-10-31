@@ -35,6 +35,7 @@ import {
   type PauseScope,
   type RunCheckout,
   type SetupDraft,
+  type SetupProposal,
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
@@ -131,6 +132,8 @@ export interface DeveloperTaskRecord {
   reviewSameModel?: { candidateDigest: string };
   /** The commit each repository's preparation checked out, from the prepare result; the task's base until one is pinned. */
   preparedBase?: WorkflowReviewBase;
+  /** Meta repo lane A: the meta repository's default-branch head the broker pinned for this task's preparation (the worker reported the same one). Every stage reads the team's knowledge at this commit. */
+  knowledgeCommit?: string;
   /** Spec 061: why the planner's last answer could not be read, kept for Retry planning; `workflowRevision` is the blocked step's revision. */
   planUnreadable?: { workflowRevision: number; errors: string[]; /** The fixed category of the problem (never the validator's words), for the owner's message. */ category?: PlanUnreadableCategory; /** Whether AgentX already asked the planner once more by itself. */ autoRetried?: true };
   /** AUTOFIX: why Rovara asked the owner instead of fixing a blocked step by itself, for the blocked revision `workflowRevision` (see autofix-messages.ts). */
@@ -201,7 +204,8 @@ export interface DeveloperTaskRecord {
    */
   purpose?: "setup_draft";
   /** Plan 6, Task 10: what a setup-draft task ended with, written in the same transaction as `agentRunEnd`: the sanitized draft, or a fixed sentence saying why there is none. */
-  setupDraftResult?: { status: "ready"; draft: SetupDraft } | { status: "failed"; failure: string };
+  /** The setup agent's result (meta repo lane B). `draft` is a version 1 draft stored by the earlier code: it reads as outdated and is never applied. */
+  setupDraftResult?: { status: "ready"; proposal: SetupProposal } | { status: "ready"; draft: SetupDraft } | { status: "failed"; failure: string };
   /**
    * Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit that follows (`estimateRun`), written when a plan reaches
    * review on an install with a model proxy. Approving the plan accepts `runLimitUsd` (`acceptRunLimit`); the plan-ready message and the task view show it.

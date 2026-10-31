@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { E2EApplicationPlanIntentSchema, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, canonicalJson, deriveE2EApplicationRuntimeAccountRef, e2eApplicationMetadataSourceRefs, type E2EScenario } from "@agentx/contracts";
 import { decodeE2EApplicationExecutionAdmission, e2eApplicationGroupAgentSteps, e2eApplicationGroupUsesModel, validateE2EApplicationExecutionAdmission } from "@agentx/verifier";
@@ -11,6 +10,7 @@ import { createWorkflowE2EAdmissionAgentStepsReader } from "../../packages/broke
 import { createRealCandidate, disposeRealCandidates } from "../support/e2e-application-candidate.js";
 import { ordersManifestWith, registryFor } from "../support/e2e-account-registry-fixtures.js";
 import { PROFILE, approvedSetup, binding, csvScenario, snapshotOf, webApiRow } from "../support/e2e-application-plan-fixtures.js";
+import { readBrokerSource } from "../support/broker-source.js";
 
 afterEach(disposeRealCandidates);
 
@@ -160,7 +160,7 @@ describe("an audit replay of a verified application round runs the cases the rou
 });
 
 describe("the broker derives a replay's plan identity from the one function the candidate round uses", () => {
-  const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+  const source = readBrokerSource();
   const bodyOf = (name: string) => {
     const start = source.indexOf(`async function ${name}(`);
     expect(start, name).toBeGreaterThan(-1);

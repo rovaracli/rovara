@@ -55,6 +55,8 @@ export interface OperationRecord extends Operation {
   /** Broker-internal purpose binding for a resume used only to warm feature-E2E compute. */
   workflowE2EReadiness?: WorkflowE2EReadinessMarker & { outboxId: string; readyGeneration?: number };
   targetOperationId?: string;
+  /** Meta repo lane A: the meta repository's default-branch head the BROKER read and sent in this prepare invocation; the task keeps it only when the worker reports the same one. */
+  knowledgeCommit?: string;
   /** The model proxy keys minted for this operation's worker by key id (a hash), when no task record keeps them (Slack work, ruling R31). */
   modelKeyIds?: string[];
   /** The project revision whose non-disk settings applied, which may be newer than the workspace's. */

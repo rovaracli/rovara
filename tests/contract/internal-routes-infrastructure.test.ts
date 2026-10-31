@@ -4,12 +4,12 @@
 // operation's callback capability (verifyCapability, an `x-agentx-callback-capability` header it signed). Found on staging 0.4.5: GET /v1/internal/agent-tools
 // (and GET /v1/internal/agent-skills) had none, so no agent or chain step with tools could run. This test reads the broker's own route table, so a new
 // internal GET cannot be added without its gateway route.
-import { readFileSync } from "node:fs";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
+import { readBrokerSource } from "../support/broker-source.js";
 
 skipLambdaBundling();
 
@@ -54,7 +54,7 @@ function brokerInternalRouteKeys(source: string): { keys: string[]; unmapped: st
   return { keys: [...keys].sort(), unmapped: [...unmapped] };
 }
 
-const brokerSource = () => readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+const brokerSource = () => readBrokerSource();
 
 describe("the scan of the broker's dispatch", () => {
   it("finds a route whose condition runs over several lines, and one written with startsWith or a helper it cannot map", () => {

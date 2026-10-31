@@ -87,6 +87,16 @@ export function auditTsaSettings(context: { tsa?: unknown; tsaUrls?: unknown; ts
   return { kind: "custom", urls: urls.length === 1 ? [urls[0]!] : [urls[0]!, urls[1]!], rootsParameter };
 }
 
+/**
+ * An Enterprise install must not leave the audit anchor on the two public timestamp authorities: the customer names its own (`custom`) or switches it off
+ * (`off`, the last resort). Unset or `public` is refused at synth.
+ */
+export function requireEnterpriseAuditTsa(tsa: unknown): void {
+  if (tsa === undefined || tsa === "" || tsa === "public") {
+    throw new Error("audit ledger: an Enterprise install must not use the public timestamp authorities; set agentxAuditTsa to custom (with agentxAuditTsaUrls and agentxAuditTsaRootsParameter) or off");
+  }
+}
+
 export interface AuditReplicaSettings {
   readonly bucketArn: string;
 }

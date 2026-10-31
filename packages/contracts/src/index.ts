@@ -11,11 +11,15 @@ export * from "./models-node.js";
 export * from "./model-sources.js";
 export * from "./model-providers.js";
 export * from "./errors.js";
+export * from "./edition.js";
+export * from "./sso.js";
+export * from "./plugins/index.js";
 export * from "./connectors-node.js";
 export * from "./credentials.js";
 export * from "./developer.js";
 export * from "./developer-tasks-node.js";
 export * from "./task-workflow-node.js";
+export * from "./task-workflow-revise.js";
 export * from "./no-change-findings.js";
 export * from "./workflow-autofix.js";
 export * from "./rovara-code.js";
@@ -29,6 +33,7 @@ export * from "./workflow-proposed-checks.js";
 export * from "./canonical-json.js";
 export * from "./workflow-plan-document.js";
 export * from "./plan-quality.js";
+export * from "./plan-one-screen.js";
 export * from "./plan-grounding.js";
 export * from "./workflow-dependencies-node.js";
 export * from "./display-name.js";
@@ -39,8 +44,11 @@ export * from "./github-mcp.js";
 export * from "./oauth-profiles.js";
 export * from "./operation.js";
 export * from "./project-node.js";
+export * from "./provenance.js";
+export * from "./meta-project.js";
 export * from "./project-commands.js";
 export * from "./protocol.js";
+export * from "./live-steer.js";
 export * from "./redaction.js";
 export * from "./review-output.js";
 export * from "./release.js";
@@ -146,6 +154,8 @@ export * from "./agent-web-views.js";
 export * from "./onboarding.js";
 
 export * from "./setup-draft.js";
+export * from "./setup-proposal.js";
+export * from "./setup-proposal-read.js";
 
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
 
@@ -177,6 +187,11 @@ export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-age
 export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy, TaskStopProjectReadSchema, type TaskStopProjectRead } from "./task-stop-project.js";
 export * from "./test-proof.js";
 
+// Proof and evidence (W4/W5): the evidence pack, decision cards, the test environment and service mocks.
+export * from "./evidence.js";
+export * from "./api-samples.js";
+export * from "./media-gate.js";
+
 // Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
 export * from "./org-slack-workspace-evidence.js";
 
@@ -205,3 +220,18 @@ export * from "./lesson-text.js";
 export * from "./learned-context.js";
 export * from "./lesson-citation.js";
 export * from "./code-identifiers.js";
+export * from "./decision-cards.js";
+export * from "./decision-card-tabs.js";
+export * from "./test-environment.js";
+export * from "./service-mocks.js";
+export * from "./team-record-storage.js";
+
+// K1 C4: skills in the meta repo.
+export * from "./knowledge-skills.js";
+
+// K1 C5a: what the agent loaded (references only).
+export * from "./loaded-knowledge.js";
+export * from "./test-environment-prod-deny.js";
+export * from "./service-mock-additions.js";
+export * from "./test-env-nightly.js";
+export * from "./e2e-model-spend.js";

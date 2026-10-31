@@ -1,0 +1,166 @@
+// Enterprise foundations, task P3: the GitHub CodeHost adapter. It wraps `GitHubAppCredentialProvider` one method to one method, mapping its types to the
+// neutral ones (`mapping.ts`); `github-app.ts` is not edited, and no behaviour changes. This is the port's first implementation and the proof that the port
+// fits: the contract suite (tests/plugins/code-host.contract.ts) runs against it with GitHub-shaped fixtures.
+//
+// What GitHub's provider restricts stays restricted here, and is stated rather than hidden:
+//  - `branchHead` reads Rovara's own working branches only (`agentx/<uuid>`): the provider refuses any other name.
+//  - `listBranches` is org-scoped and needs the installation binding (cloud installs); a system scope is refused.
+//  - `reply` posts Rovara's own fixed text only (200 characters, one line, no mention).
+//  - The webhook normaliser (`events.normalise`) is task P6; until then this adapter says it receives webhooks and verifies none.
+import {
+  agentXError, ChangeRequestInputSchema, ChangeRequestUpdateSchema, HostScopeSchema,
+  type BranchPage, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled, type ChangeRequestRef,
+  type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type CodeHostCapabilities, type GitAccess, type GitCredential, type HostAccount, type HostScope,
+  type HostStanding, type MergeMethod, type MergeResult, type ReadBudget, type RepositoryIdentity, type RepositoryRef,
+} from "@agentx/contracts";
+import { parseGitHubRepository, type GitHubAppCredentialProvider } from "../../../github-app.js";
+import { detailsOf, feedbackOf, fileOf, mergeResultOf, pullRequestNumber, refOf, replyTargetOf, statusOf } from "./mapping.js";
+
+export const GITHUB_HOST_KIND = "github";
+
+export const GITHUB_CODE_HOST_CAPABILITIES: CodeHostCapabilities = {
+  drafts: true, threadedComments: true, requiredApprovals: true, codeOwners: true, webhooks: true,
+  // Re-running a GitHub check is not wired to the provider yet.
+  rerunChecks: false,
+  // GitHub user-to-server tokens exist, but nothing here asks a person for one.
+  perPersonCredentials: false,
+  merge: true, markReady: true, requestReviewers: true,
+  // `resolve` hands back a username and an installation token, which is a basic credential.
+  credentialKinds: ["basic"],
+};
+
+/** The provider methods the adapter uses: a narrow type, so a test can stand in for the rest. */
+export type GitHubCodeHostProvider = Pick<GitHubAppCredentialProvider,
+  | "getRepositoryIdentity" | "checkRepository" | "getRepositoryStanding" | "resolve" | "getFileAtCommit" | "getCommitTree" | "getBranchHead" | "listWorkingBranches"
+  | "installationForRepository" | "readCodeOwners" | "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "getPullRequestStatus" | "listPullRequestFiles"
+  | "getPullRequestFeedback" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest">;
+
+export interface GitHubCodeHostOptions {
+  /** The credential reference the provider was configured with; a repository registered under another one is refused by the provider. */
+  credentialRef: string;
+  /** The clock, in milliseconds. Default `Date.now`. */
+  now?: () => number;
+}
+
+/** GitHub's installation tokens last an hour; the adapter states the expiry a little short of that, so a credential is never used on its last minutes. */
+export const GITHUB_CREDENTIAL_LIFETIME_MS = 55 * 60_000;
+
+function checkedScope(scope: HostScope): HostScope {
+  const parsed = HostScopeSchema.safeParse(scope);
+  if (!parsed.success) throw agentXError("CONFIG_INVALID", "the plug-in call has no valid scope");
+  return parsed.data;
+}
+
+export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHubCodeHostOptions): CodeHost {
+  const host: CodeHost = {
+    kind: GITHUB_HOST_KIND,
+    capabilities: GITHUB_CODE_HOST_CAPABILITIES,
+    // Webhooks arrive at the broker's existing route today; the neutral normaliser is task P6.
+    events: { mode: "webhook" },
+
+    async repositoryIdentity(repository: RepositoryRef, scope: HostScope): Promise<RepositoryIdentity | undefined> {
+      const identity = await provider.getRepositoryIdentity(repository.url, checkedScope(scope));
+      return identity === undefined ? undefined : { id: String(identity.repositoryId), fullName: identity.fullName, ...(identity.defaultBranch === undefined ? {} : { defaultBranch: identity.defaultBranch }) };
+    },
+
+    async checkRepository(repository: RepositoryRef, scope: HostScope): Promise<void> {
+      await provider.checkRepository({ credentialRef: options.credentialRef, url: repository.url }, checkedScope(scope));
+    },
+
+    async standing(repository: RepositoryRef, person: HostAccount, scope: HostScope): Promise<HostStanding> {
+      const standing = await provider.getRepositoryStanding(repository.url, person.login, checkedScope(scope));
+      return { permission: standing.permission, ...(standing.userType === undefined ? {} : { accountType: standing.userType }) };
+    },
+
+    async issueGitCredential(repository: RepositoryRef, access: GitAccess, scope: HostScope): Promise<GitCredential> {
+      const credential = await provider.resolve(options.credentialRef, repository.url, access, checkedScope(scope));
+      // An empty answer means the provider does not serve this credential reference: never hand out nothing as if it were a credential.
+      if (credential.username === undefined || credential.password === undefined || credential.username === "" || credential.password === "") {
+        throw agentXError("CONFIG_INVALID", "the repository does not use the configured GitHub App");
+      }
+      return { kind: "basic", username: credential.username, password: credential.password, expiresAt: new Date((options.now ?? Date.now)() + GITHUB_CREDENTIAL_LIFETIME_MS).toISOString() };
+    },
+
+    async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, fileOptions?: { untilLine?: number; timeoutMs?: number }): Promise<string | undefined> {
+      return provider.getFileAtCommit(repository.url, path, revision, checkedScope(scope), fileOptions);
+    },
+
+    async tree(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string> {
+      return provider.getCommitTree(repository.url, revision, checkedScope(scope));
+    },
+
+    async branchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string> {
+      return provider.getBranchHead(repository.url, branch, checkedScope(scope));
+    },
+
+    async listBranches(repository: RepositoryRef, page: number, scope: HostScope): Promise<BranchPage> {
+      const checked = checkedScope(scope);
+      const identity = await provider.getRepositoryIdentity(repository.url, checked);
+      const parsed = parseGitHubRepository(repository.url);
+      const installation = await provider.installationForRepository(parsed.owner, parsed.name);
+      if (identity === undefined || installation === undefined) throw agentXError("CONFIG_INVALID", "the repository is not reachable through the GitHub App");
+      const listed = await provider.listWorkingBranches(repository.url, { installationId: installation.installationId, repositoryId: identity.repositoryId }, checked, page);
+      return { branches: listed.branches, page: listed.page, mayHaveMore: listed.mayHaveMore, omittedUnsupported: listed.omittedUnsupported };
+    },
+
+    async codeOwners(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string | undefined> {
+      return provider.readCodeOwners(repository.url, branch, checkedScope(scope));
+    },
+
+    async reconcileChangeRequest(input: ChangeRequestInput, scope: HostScope): Promise<ChangeRequestReconciled> {
+      const parsed = ChangeRequestInputSchema.parse(input);
+      const result = await provider.reconcilePullRequest({
+        repositoryUrl: parsed.repository.url, headBranch: parsed.sourceBranch, baseBranch: parsed.targetBranch, title: parsed.title,
+        ...(parsed.body === undefined ? {} : { body: parsed.body }), ...(parsed.draft === undefined ? {} : { draft: parsed.draft }),
+      }, checkedScope(scope));
+      return { ref: refOf(parsed.repository.url, result.number, result.url), reconciled: result.reconciled, ...(result.draftRefused === true ? { draftRefused: true as const } : {}) };
+    },
+
+    async getChangeRequest(ref: ChangeRequestRef, scope: HostScope): Promise<ChangeRequestDetails> {
+      return detailsOf(ref.repository.url, await provider.getPullRequest(ref.repository.url, pullRequestNumber(ref), checkedScope(scope)));
+    },
+
+    async updateChangeRequest(ref: ChangeRequestRef, update: ChangeRequestUpdate, scope: HostScope): Promise<void> {
+      const parsed = ChangeRequestUpdateSchema.parse(update);
+      await provider.updatePullRequest(ref.repository.url, pullRequestNumber(ref), {
+        ...(parsed.title === undefined ? {} : { title: parsed.title }), ...(parsed.body === undefined ? {} : { body: parsed.body }), ...(parsed.state === undefined ? {} : { state: parsed.state }),
+      }, checkedScope(scope));
+    },
+
+    async changeRequestStatus(ref: ChangeRequestRef, scope: HostScope, budget?: ReadBudget): Promise<ChangeRequestStatus> {
+      return statusOf(await provider.getPullRequestStatus(ref.repository.url, pullRequestNumber(ref), checkedScope(scope), budget));
+    },
+
+    async changedFiles(ref: ChangeRequestRef, page: number, scope: HostScope): Promise<ChangeRequestFilesPage> {
+      const listed = await provider.listPullRequestFiles(ref.repository.url, pullRequestNumber(ref), { page }, checkedScope(scope));
+      return { files: listed.files.map(fileOf), ...(listed.nextPage === undefined ? {} : { nextPage: listed.nextPage }) };
+    },
+
+    async feedback(ref: ChangeRequestRef, scope: HostScope): Promise<ChangeRequestFeedback> {
+      return feedbackOf(ref.repository.url, await provider.getPullRequestFeedback(ref.repository.url, pullRequestNumber(ref), checkedScope(scope)));
+    },
+
+    async reply(ref: ChangeRequestRef, commentId: string, body: string, scope: HostScope): Promise<"replied" | "gone"> {
+      const number = pullRequestNumber(ref);
+      const checked = checkedScope(scope);
+      const target = replyTargetOf(commentId);
+      // The text is checked first, whatever the comment: Rovara posts its own fixed text or nothing.
+      if (body.length === 0 || body.length > 200 || /[\p{Cc}@]/u.test(body)) throw agentXError("CONFIG_INVALID", "the reply is not Rovara's fixed text");
+      if (target.kind === "none") return "gone";
+      return provider.replyToReviewThread(ref.repository.url, number, target.id, body, checked);
+    },
+
+    async markReady(ref: ChangeRequestRef, scope: HostScope): Promise<"ready" | "already_ready"> {
+      return provider.markPullRequestReady(ref.repository.url, pullRequestNumber(ref), checkedScope(scope));
+    },
+
+    async requestReviewers(ref: ChangeRequestRef, reviewers: readonly string[], scope: HostScope): Promise<"requested" | "refused"> {
+      return provider.requestReviewers(ref.repository.url, pullRequestNumber(ref), reviewers, checkedScope(scope));
+    },
+
+    async merge(ref: ChangeRequestRef, input: { revision: string; method: MergeMethod }, scope: HostScope): Promise<MergeResult> {
+      return mergeResultOf(await provider.mergePullRequest(ref.repository.url, pullRequestNumber(ref), { sha: input.revision, method: input.method }, checkedScope(scope)));
+    },
+  };
+  return host;
+}

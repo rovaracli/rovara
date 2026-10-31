@@ -159,9 +159,9 @@ export function githubAppJwt(input: { appId: string; privateKey: string; nowSeco
 
 /**
  * The events AgentX handles: a pull request's (its feedback, and the events that start triggers), and the issues, deployment statuses and workflow runs that start triggers (Plan 4
- * Task 21), and the check suites, check runs and commit statuses that wake merge tracking (Plan 6 Task 14). The broker answers any other with 202 and does nothing.
+ * Task 21), and the check suites, check runs and commit statuses that wake merge tracking (Plan 6 Task 14), and pushes (a meta repo's config file changing; meta repo lane A; needs only the contents read the App already has). The broker answers any other with 202 and does nothing.
  */
-export const GITHUB_WEBHOOK_EVENTS = ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status"] as const;
+export const GITHUB_WEBHOOK_EVENTS = ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status", "push"] as const;
 
 /**
  * What the deployment and workflow events need on top of the App's pull request, issue and contents permissions: read access to Actions and Deployments; and what following a

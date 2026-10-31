@@ -1,7 +1,7 @@
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { AgentXNameSchema, RelativeWorkspacePathSchema, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, agentXError } from "@agentx/contracts";
-import { inertContextText } from "./context-text.js";
+import { inertContextText, inertLabel, quotedContextText } from "./context-text.js";
 import type { PreparationManifest } from "./prepare.js";
 import { runFileOp } from "./sandbox-file-ops.js";
 import { readVerifiedBaseRuleFile, type BaseRuleFile } from "./trusted-base-objects.js";
@@ -204,7 +204,7 @@ function ruleFileSignature(read: RuleFileRead): string {
   return "";
 }
 
-async function locateRepository(
+export async function locateRepository(
   canonicalRoot: string,
   repository: WorkspaceRepositoryReference,
 ): Promise<{ directory?: string; diagnostic?: string }> {
@@ -356,22 +356,8 @@ function labelledContent(
   return `${candidate} of the "${name}" repository, checked out at ${path} in this workspace. Its guidance applies to the files under ${path}.\n\n${content}`;
 }
 
-/** A name or path as one inert piece of text: no hidden characters, and the angle brackets that could close Pi's tag escaped. */
-function inert(value: string): string {
-  return quoted(inertContextText(value).text).slice(1, -1);
-}
-
-/**
- * A JSON string literal, with the line separators JSON leaves raw escaped as well, and the angle
- * brackets that could close the tag Pi wraps context files in.
- */
-function quoted(value: string): string {
-  return JSON.stringify(value)
-    .replace(/\u2028/g, "\\u2028")
-    .replace(/\u2029/g, "\\u2029")
-    .replace(/</g, "\\u003c")
-    .replace(/>/g, "\\u003e");
-}
+const inert = inertLabel;
+const quoted = quotedContextText;
 
 function containedPath(rootPath: string, configuredPath: string): string {
   if (isAbsolute(configuredPath)) throw new Error("repository path must be relative");

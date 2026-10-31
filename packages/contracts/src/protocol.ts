@@ -2,6 +2,7 @@ import {StageIdSchema} from "./stage-model-shared.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowReviewBaseSchema } from "./task-workflow.js";
+import { AgentXNameSchema } from "./names.js";
 import { ProjectCommandSchema } from "./project.js";
 import { StoredProjectDefinitionSchema } from "./project-node.js";
 import { ModelIdentifierSchema,ModelSelectionSchema } from "./models.js";
@@ -14,6 +15,8 @@ import { AgentIdSchema, SkillIdSchema } from "./agent.js";
 import { MAX_RESOLVED_SKILLS, PI_TOOL_NAMES, PiToolNameSchema, StepIdSchema } from "./agent-recipe.js";
 import { ResultContractSchema, RunCheckoutSchema } from "./agent-run-node.js";
 import { WorkflowFixPayloadSchema } from "./rovara-code.js";
+import { LiveSteerPayloadSchema } from "./live-steer.js";
+import { PrepareMetaSchema } from "./meta-project.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
 
@@ -24,7 +27,7 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1"] as const;
+export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", "prepare.metaRepo"] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -254,6 +257,8 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
       checkout: z.array(RunCheckoutSchema).max(10).optional(),
       /** An agent-step run's preparation clones and checks out only: no devcontainer, no setup command, no readiness command (Plan 3 final fix wave). Sent only to a worker that lists `task.agentRun`. */
       readOnly: z.literal(true).optional(),
+      /** Meta repo lane A3: the project's meta repository, read-only and sparse, beside the code. Sent only to a worker that lists `prepare.metaRepo`. */
+      meta: PrepareMetaSchema.optional(),
     }).strict(),
   }).strict(),
   InvocationBaseSchema.extend({
@@ -266,6 +271,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         conversationStarted: z.boolean().optional(),
         /** The broker-selected tool boundary for the current native workflow stage (spec 056). */
         workflowMode: z.enum(["PLAN", "IMPLEMENT", "REVIEW", "CHECKS", "FEEDBACK_REVIEW", "UNDERSTAND", "PLAN_CRITIQUE", "SETUP_DRAFT"]).optional(),
+        /**
+         * Meta repo lane B: a setup proposal run is told which of the project's repositories is its meta repository (the team's rules, specs and runbooks live there), so it
+         * knows where to look for them. Sent only with `workflowMode: "SETUP_DRAFT"`, and only to a worker whose /ping lists "task.setupProposal.v2".
+         */
+        setupMetaRepo: AgentXNameSchema.optional(),
         /**
          * The document a planning run writes in the Full path (a Quick plan has none). The worker uses it to read the
          * planner's answer as that kind of plan. Sent only to a worker whose /ping lists "task.structuredPlans"; an older
@@ -557,6 +567,8 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
     kind: z.literal("cancel"),
     payload: z.object({ targetOperationId: z.string().uuid() }).strict(),
   }).strict(),
+  // Live steer: a person's message for the pi session of the running step `payload.targetOperationId` (live-steer.ts).
+  InvocationBaseSchema.extend({ kind: z.literal("steer"), payload: LiveSteerPayloadSchema }).strict(),
   InvocationBaseSchema.extend({ kind: z.literal("resume"), payload: z.object({}).strict() }).strict(),
   InvocationBaseSchema.extend({ kind: z.literal("close"), payload: z.object({}).strict() }).strict(),
 ]);

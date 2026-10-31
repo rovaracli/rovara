@@ -7,6 +7,7 @@ import { ProjectCommandSchema } from "./project.js";
 import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
 import { WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema } from "./workflow-dependencies.js";
 import { NO_CODE_CHANGED_REASON, NoChangeFindingsSchema } from "./no-change-findings.js";
+import { CheckKindSchema } from "./evidence.js";
 
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -35,6 +36,21 @@ export const WORKFLOW_BLOCK_REASONS = {
   ruleFilesUnverified: "AgentX couldn't verify the base rule files, so the review did not run. Retry the review, or close the task.",
   /** The same stop for Understand and the plan check (Cloud only), which are not reviews. */
   stepRuleFilesUnverified: "AgentX couldn't verify the base rule files, so this step did not run. Retry it, or close the task.",
+  /**
+   * Understand or Plan stopped because the owner's live message asked for a change outside what was approved (WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE). Retry plans again with the message, and the
+   * new plan is what the owner approves before anything is built.
+   */
+  liveSteerReapproval: "A live message from the owner asks for a change outside what was approved, so this step stopped. Choose Retry: Rovara plans again with that message, and you approve the new plan before anything is built.",
+  /**
+   * The same stop at Coding for a task whose plan cannot take the change in (a custom sequence, an open pull request or a fix round: `workflowReviseOffered` is false). Retry coding and Send back both keep the
+   * approved plan, so the words say what the ways do: the run's work was not kept, Retry builds the approved plan without the change, and a new task is how to include it.
+   */
+  liveSteerReapprovalCoding: "A live message from the owner asks for a change outside the approved plan, so coding stopped and this run's work was not kept. Retry coding builds the approved plan without that change. To include the change, close this task and start a new task that asks for it.",
+  /**
+   * The same stop at Coding for a task whose plan can take the change in (`workflowReviseOffered`): the card and the page offer Revise the plan, which plans again with the owner's message and asks the
+   * owner to approve the revised plan before coding continues; Retry coding still builds the approved plan without it.
+   */
+  liveSteerReapprovalRevise: "A live message from the owner asks for a change outside the approved plan, so coding stopped and this run's work was not kept. Choose Revise the plan (in the task's Slack thread or on the task page): Rovara plans again with that change, and you approve the revised plan before coding continues. Or choose Retry coding to build the approved plan without that change.",
   /** A step that only reads the code could not first stop the programs earlier work left running (WORKFLOW_LEFTOVER_PROCESSES_MESSAGE). */
   leftoverProcesses: "AgentX couldn't stop the programs left running from earlier work, so this step did not run.",
   /** The checks' fresh dev container ran its setup commands and they changed the project's files (WORKFLOW_SETUP_CHANGED_FILES_MESSAGE); the files are left as they are. */
@@ -601,6 +617,8 @@ export const WorkflowCheckSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
   label: z.string().trim().min(1).max(80),
   command: ProjectCommandSchema,
+  /** What the check is for; the setup agent proposes it and a maintainer confirms it. Absent reads as `other`. */
+  kind: CheckKindSchema.optional(),
 }).strict().refine((check) => check.id !== E2E_PROJECT_CHECK_ID, "project-e2e is reserved for trusted E2E aggregation");
 
 export type WorkflowCheck = z.infer<typeof WorkflowCheckSchema>;

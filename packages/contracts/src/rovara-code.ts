@@ -4,8 +4,10 @@
 import { z } from "zod";
 import { OrgIdSchema, SessionBindingSchema, SessionIdSchema } from "./browser-ids.js";
 import { forwardReader } from "./forward-reader.js";
+import { EVIDENCE_NOT_TESTED_KINDS, ProofDetailSchema } from "./evidence.js";
 import { ModelIdentifierSchema } from "./models.js";
 import { redactText } from "./redaction.js";
+import { SetupApplyBodySchema, SetupProposalSchema, SetupReviewEntrySchema } from "./setup-proposal.js";
 
 // ---- limits (placeholder values, exact names)
 
@@ -565,15 +567,19 @@ export const ProofTableViewSchema = z
     rows: z.array(z.object({
       claimId: z.string().min(1).max(64),
       requirement: z.string().max(300),
-      evidence: z.array(z.object({ kind: z.enum(["check", "scenario"]), label: z.string().max(120), state: z.enum(["proven", "passed", "failed", "not_checked"]) }).strict()).max(100),
+      evidence: z.array(z.object({ kind: z.enum(["check", "scenario"]), label: z.string().max(120), state: z.enum(["proven", "passed", "failed", "not_checked"]), /** Fixed words only (proof and evidence design, 3.2). */ detail: ProofDetailSchema.optional() }).strict()).max(100),
       result: z.enum(PROOF_RESULT_VALUES),
     }).strict()).min(1).max(50),
-    notTested: z.array(z.object({ kind: z.enum(["claim", "scenario", "check"]), id: z.string().min(1).max(64), text: z.string().max(300), reason: z.string().min(1).max(100) }).strict()).max(200),
+    notTested: z.array(z.object({ kind: z.enum(EVIDENCE_NOT_TESTED_KINDS), id: z.string().min(1).max(64), text: z.string().max(300), reason: z.string().min(1).max(100) }).strict()).max(200),
     testProofLines: z.array(z.string().max(600)).max(4),
   })
   .strict();
 export type ProofTableView = z.infer<typeof ProofTableViewSchema>;
 
+/**
+ * The version 1 draft (Plan 6 Task 10). Kept ONLY so a draft stored before the setup agent (meta repo lane B) still parses: it reads as failed with a fixed "ask again" sentence,
+ * and nothing applies it. New drafts are `SetupProposal` (setup-proposal.ts).
+ */
 export const SetupDraftSchema = z
   .object({
     basedOnRevision: CountSchema,
@@ -604,7 +610,9 @@ export const SetupDraftResponseSchema = z
   .object({
     status: z.enum(SETUP_DRAFT_STATUSES),
     basedOnRevision: CountSchema,
-    draft: SetupDraftSchema.optional(),
+    /** Meta repo lane B: the setup agent's proposal, once ready, and what the page shows beside each of its items. */
+    proposal: SetupProposalSchema.optional(),
+    review: z.array(SetupReviewEntrySchema).max(300).optional(),
     /** A fixed sentence, never the model's or a repository's words. */
     failure: z.string().max(300).optional(),
     /** The draft was applied (at which settings revision). */
@@ -617,30 +625,12 @@ export type SetupDraftResponse = z.infer<typeof SetupDraftResponseSchema>;
 export const SetupDraftResponseReaderSchema = forwardReader(SetupDraftResponseSchema);
 
 /**
- * `POST …/setup-draft/apply`: what of the draft the person applies. Nothing is applied that is not named: a field left out or `false` is not applied. The
- * flagged commands are applied only with `flaggedCommands: true`. `devcontainerPullRequest` asks Rovara to open a pull request that adds a dev container the
- * repository lacks.
+ * `POST …/setup-draft/apply`: the proposal items the person ticked, each by id, with the per-item "Use Rovara's" tick (see `SetupApplyBodySchema`). Nothing is applied that is
+ * not named, a value a person typed is never replaced without that tick, and a risky item (a repository, a dev container pull request, a source, an intake trigger, a
+ * secret) gets its own approval card instead of being applied.
  */
-export const SetupDraftApplyBodySchema = z
-  .object({
-    requestId: z.string().uuid(),
-    expectedRevision: z.number().int().positive(),
-    include: z
-      .object({
-        setupCommands: z.boolean().optional(),
-        testCommands: z.boolean().optional(),
-        devcontainer: z.boolean().optional(),
-        allowedDomains: z.boolean().optional(),
-        flaggedCommands: z.boolean().optional(),
-        devcontainerPullRequest: z.boolean().optional(),
-      })
-      .strict(),
-  })
-  .strict();
+export const SetupDraftApplyBodySchema = SetupApplyBodySchema;
 export type SetupDraftApplyBody = z.infer<typeof SetupDraftApplyBodySchema>;
-
-/** What a draft offers beyond the settings it can apply. */
-export const SETUP_DRAFT_PULL_REQUEST_OFFER = "Add it with a pull request";
 
 // ---- milestones
 

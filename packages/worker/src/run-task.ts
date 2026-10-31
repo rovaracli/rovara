@@ -1,8 +1,8 @@
 import { readFile, realpath } from "node:fs/promises";
 import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
-import { readSetupDraftAnswer, setupDraftInstructions, setupDraftRetryPrompt } from "./setup-draft.js";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupProposal, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
+import { readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
@@ -34,6 +34,7 @@ import { consoleWorkerLog, type WorkerLogSink } from "./worker-log.js";
 import { ToolLoopGuard } from "./tool-loop-guard.js";
 import { assistantOutcome, eventType, failedTurn, type AssistantOutcome } from "./session-events.js";
 import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step.js";
+import { loadedKnowledgePayload } from "./knowledge/manifest.js";
 import { runAgentStep, type AgentStepResult, type RunAgentStepInput } from "./agent-run/run-agent-step.js";
 import {
   createWorkspacePiSession,
@@ -45,6 +46,7 @@ import {
 } from "./pi-session.js";
 import { verifyCheckedOutHeads, type PreparationManifest } from "./prepare.js";
 import { WorkerOperationCancelledError, type WorkerCancellationController } from "./cancel.js";
+import { reapprovalStop, steerStreaming } from "./steer-invocation.js";
 import type { FeedbackApprovalAuthorizer, FeedbackBundleReader } from "./callback-client.js";
 import { readCheckHistory, restoreCheckHistory } from "./verification/check-history.js";
 import { candidateUnchangedSinceBase, commitCandidateWorktree, readCandidateRepositories, readCommittedCandidateSourceExport, type CandidateRepositoryInput, type CommittedCandidateSourceExport } from "./verification/candidate.js";
@@ -80,7 +82,7 @@ export interface TaskInvocationResult {
   checks?: CheckReport;
   workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND" | "SETUP_DRAFT";
   /** Rovara Code Task 10: the draft a setup-draft run read, already bounded and redacted (the broker reads it again). */
-  setupDraft?: SetupDraft;
+  setupProposal?: SetupProposal;
   /** Worker-reported Git object identities; the broker recomputes and stores the canonical digest. */
   workflowCandidateRepositories?: Array<{ repositoryId: string; commitSha: string; treeSha: string }>;
   /** Fixed worker export, uploaded on its separate capability before the model-visible terminal result. */
@@ -609,6 +611,15 @@ async function runTask(
    * checks on someone else's words in a workspace a coding session may have written, so they read the base commit as well (A5).
    */
   const reviewerRuleBases = { contextFilesAt: "base-commit" as const, baseCommits: invocation.payload.workflowBase ?? [] };
+  /**
+   * The Plan stage reads the base commit too when the broker sent one (workflowBase on the PLAN operation), so a working tree an earlier build
+   * round wrote cannot steer which rules the plan, and through it the plan check, sees. A broker that sends no base leaves Plan reading the
+   * working tree as before, and says so once.
+   */
+  const planningOnly = invocation.payload.workflowMode === "PLAN";
+  const planReadsBase = planningOnly && (invocation.payload.workflowBase?.length ?? 0) > 0;
+  if (planningOnly && !planReadsBase) onDiagnostic("the plan read the repositories' rule files from the working tree: no base commit was sent for this planning run");
+  const ruleBases = reviewing || planCritique || understanding ? reviewerRuleBases : planReadsBase ? { ...reviewerRuleBases, knowledge: { stage: "plan" as const } } : {};
   let graphFinalItemReady = workflowDependencies === undefined;
   const recorder = new CommandRecorder({
     fingerprint: (signal) => recorderFingerprint(
@@ -679,7 +690,7 @@ async function runTask(
         sessionFile: registered.sessionFile,
         onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
-        ...(reviewing || planCritique || understanding ? reviewerRuleBases : {}),
+        ...ruleBases,
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
@@ -692,7 +703,7 @@ async function runTask(
       {
         rootPath: dependencies.rootPath, model: dependencies.model, workflowMode: piMode, conversationId, onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
-        ...(reviewing || planCritique || understanding ? reviewerRuleBases : {}),
+        ...ruleBases,
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
@@ -709,6 +720,14 @@ async function runTask(
     session.dispose();
     throw error;
   }
+  // K1 C5a: what this stage's session loaded, as references only; sent again at the end with anything loaded during the run.
+  const reportLoadedKnowledge = async (): Promise<void> => {
+    try {
+      const loaded = session.loadedKnowledge?.();
+      if (loaded !== undefined) await emit("progress", loadedKnowledgePayload(loaded));
+    } catch { /* a record that cannot be made is left out; the stage goes on */ }
+  };
+  await reportLoadedKnowledge();
 
   const limits = dependencies.modelCallLimits ?? {};
   const stallLimitMs = limits.stallMs ?? PLANNING_STALL_MS;
@@ -765,7 +784,13 @@ async function runTask(
   }
   // The sessions of the parts that are running now (parallel parts): a cancel stops them with the main session.
   const partSessions = new Set<PiSessionHandle>();
+  // Parallel parts build side by side while the main session waits for them, so a live message goes to the parts that run now, else to the main session.
+  // Only a session that is streaming a prompt takes a live message (steer-invocation.ts): between two waves of parts, during AgentX's checks or the publish, and after the last turn the answer is
+  // "not taken" and the note is the path.
+  const liveTargets = (): PiSessionHandle[] => (partSessions.size > 0 ? [...partSessions] : [session]);
   const unregisterCancellation = dependencies.cancellationController?.register(invocation.operationId, {
+    // Live steer (steer-invocation.ts): a person's message for the running Understand, Plan or Implement session; no other step (reviews, the plan check, setup drafts) takes one.
+    ...(understanding || payloadMode === "PLAN" || payloadMode === "IMPLEMENT" ? { steer: (text: string) => steerStreaming(liveTargets(), text), streaming: () => liveTargets().some((target) => target.isStreaming?.() === true) } : {}),
     abort: async () => {
       monitor.stop();
       verificationStop.abort();
@@ -999,6 +1024,9 @@ async function runTask(
         if (promptError !== undefined) throw promptError.error;
         const modelFailure = failedTurn(lastAssistant, { note: lastModelNote });
         if (modelFailure !== undefined) throw modelFailure;
+        // The owner's live message asked for a change outside the approved plan and the step did not act on it: the step stops here and the owner is asked (the broker blocks the step).
+        const reapproval = reapprovalStop(finalText, dependencies.cancellationController?.liveSteers(invocation.operationId) ?? []);
+        if (reapproval !== undefined) throw reapproval;
       };
       /**
        * Rovara Code v2: the independent parts of the approved plan, each in a working copy of its own, up to `maxParallel` at once. Each part is a Pi session of its own on this
@@ -1093,6 +1121,8 @@ async function runTask(
             if (context.signal.aborted) throw new Error("work breakdown part stopped because the operation was cancelled");
             const modelFailure = failedTurn(lastOutcome, { note: lastNote });
             if (modelFailure !== undefined) throw modelFailure;
+            const reapproval = reapprovalStop(lastText, dependencies.cancellationController?.liveSteers(invocation.operationId) ?? []);
+            if (reapproval !== undefined) throw reapproval;
             const treeSha = await capturePartTree(copy, input.repositoryDirectory);
             const summary = (lastText ?? "").trim();
             return { treeSha, ...(summary === "" ? {} : { summary: redactText(summary).slice(0, 2_000) }) };
@@ -1126,12 +1156,15 @@ async function runTask(
             if (spent !== undefined) throw spent;
             const refused = error.causes.find((cause) => cause instanceof AgentXError && cause.code === "MODEL_NOT_ALLOWED");
             if (refused !== undefined) throw refused;
+            // The owner's live message asked for a change outside the approved plan and a part stopped for it: the run ends with the fixed words (the broker blocks the step for the owner).
+            const reapproval = error.causes.find((cause) => cause.message.includes(WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE));
+            if (reapproval !== undefined) throw reapproval;
           }
           throw error;
         }
       };
       if (workflowDependencies === undefined) {
-        await promptAndSettle(settingUpDraft ? `${invocation.payload.prompt}\n\n${setupDraftInstructions(manifest.repositories)}` : invocation.payload.prompt);
+        await promptAndSettle(settingUpDraft ? `${invocation.payload.prompt}\n\n${setupProposalInstructions(manifest.repositories, { metaRepo: invocation.payload.setupMetaRepo })}` : invocation.payload.prompt);
       } else {
         const graph = workflowDependencies.graph;
         findings.setOrder(taskGraphOrder(graph));
@@ -1216,19 +1249,20 @@ async function runTask(
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "PLAN_CRITIQUE" });
         taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN_CRITIQUE" };
       } else if (settingUpDraft) {
-        const reading = { basedOnRevision: invocation.projectRevision, rootPath: canonicalRoot, repositories: manifest.repositories };
-        let read = await readSetupDraftAnswer(finalText ?? "", reading);
-        // An answer that can't be read gets one more try in the same session, with what is wrong with it; whichever comes last is what is reported.
-        if (!read.ok) {
-          await emit("progress", { message: "The draft could not be read; the agent is asked to answer again." });
-          await promptAndSettle(setupDraftRetryPrompt(read.errors));
-          read = await readSetupDraftAnswer(finalText ?? "", reading);
+        const reading = { basedOnRevision: invocation.projectRevision, rootPath: canonicalRoot, repositories: manifest.repositories, metaRepo: invocation.payload.setupMetaRepo };
+        let read = await readSetupProposalAnswer(finalText ?? "", reading);
+        // An answer that can't be read gets one more try in the same session, with what is wrong with it; whichever comes last is what is reported. (An answer the model did not give is
+        // asked for again even when the scan of the folders found something: that is the floor of a proposal, not the proposal.)
+        if (!read.ok || !read.answered) {
+          await emit("progress", { message: "The proposal could not be read; the agent is asked to answer again." });
+          await promptAndSettle(setupProposalRetryPrompt(read.ok ? ["there is no readable answer block"] : read.errors));
+          read = await readSetupProposalAnswer(finalText ?? "", reading);
         }
         monitor.stop();
-        if (!read.ok) throw agentXError("OPERATION_INTERRUPTED", "the setup draft run produced no readable draft");
+        if (!read.ok) throw agentXError("OPERATION_INTERRUPTED", "the setup draft run produced no readable proposal");
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SETUP_DRAFT" });
-        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupDraft: read.draft };
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupProposal: read.proposal };
       } else if (planning) {
         let plan = finalText?.trim();
         // Spec 061: when the broker asked for a structured plan, an answer AgentX cannot read, or that is too long, gets
@@ -1353,6 +1387,7 @@ async function runTask(
           ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }),
           ...(fileTools === undefined ? {} : { fileTools }),
           onProgress: (message) => { void events.append("progress", { message }).catch(() => undefined); },
+          onLoadedKnowledge: (manifest) => { void emit("progress", loadedKnowledgePayload(manifest)); },
           onUsage: async ({ role, stats, model, outcome }) => {
             const usage = createTaskUsageTelemetry(stats, { ...model, ...(dependencies.model.cacheRetention === undefined ? {} : { cacheRetention: dependencies.model.cacheRetention }) }, outcome);
             const redactedUsage = redactCredentials(usage);
@@ -1552,6 +1587,7 @@ async function runTask(
     } catch (error) {
       telemetryFailure = error;
     }
+    await reportLoadedKnowledge();
     await flushEvents();
     // Ruling Y: a task that ends failed or cancelled still tells the broker about a regression, so it stays standing.
     const withChecks = (error: Error): Error => {
