@@ -77,6 +77,11 @@ export const LAKE_TABLES: readonly LakeTable[] = [
       c(18, "links_json", "string"),
       c(19, "retention", "string", true),
       c(20, "archived_at", "timestamp", true),
+      // sha256 of the actor's source-native id: a person erase must reach people with no developer id (outsiders, unmapped Slack users).
+      c(21, "actor_source_hash", "string"),
+      // sha256 of the source place (channel, repo, tracker project), set on every row: channel_deleted, repo deleted/transferred and
+      // channel_convert_to_private erase by it. Project-wide rows have no ACL scope, so audience_scope cannot do this.
+      c(22, "scope_hash", "string", true),
     ],
   },
   {
@@ -96,6 +101,8 @@ export const LAKE_TABLES: readonly LakeTable[] = [
       c(11, "audience_scope", "string"),
       c(12, "acl_json", "string"),
       c(13, "valid_until", "timestamp"),
+      // The scope hash of the sources the note came from, when they share one place; a note from several places is erased by its id.
+      c(14, "scope_hash", "string"),
     ],
   },
   {

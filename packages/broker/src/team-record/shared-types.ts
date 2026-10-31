@@ -43,6 +43,8 @@ export interface RecordEventLike {
   source: string;
   sourceRef: { system: string; id: string; url?: string; parentId?: string; version?: string };
   kind: string;
+  /** The source place of the event (slack:T1/C9, github:repo/123, rovara:<project>). R1/R2 must set it on every row: the lake erases by it. */
+  scope?: string;
   occurredAt: string;
   actor?: { sourceId: string; developerId?: string; trust: TrustClass };
   trust: TrustClass;

@@ -19,6 +19,16 @@ export function sourceHash(system: string, sourceId: string): string {
   return createHash("sha256").update(`${system}\u0000${sourceId}`).digest("hex");
 }
 
+/** sha256 of the actor's source-native id (kept apart from source hashes by a prefix). */
+export function actorSourceHash(system: string, actorSourceId: string): string {
+  return createHash("sha256").update(`actor\u0000${system}\u0000${actorSourceId}`).digest("hex");
+}
+
+/** sha256 of a source place such as `slack:T1/C9` or `github:repo/123`. */
+export function scopeHash(scope: string): string {
+  return createHash("sha256").update(`scope\u0000${scope}`).digest("hex");
+}
+
 /** A string as a SQL literal. Quotes are doubled (Trino has no backslash escape); control characters are refused. */
 export function sqlString(value: string): string {
   // eslint-disable-next-line no-control-regex

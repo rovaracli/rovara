@@ -5,7 +5,7 @@
 //  - takes its other values as Athena execution parameters, and its row limit as a validated integer.
 // Known gap, by design: a row deleted at the source stays visible to these aggregates until the hourly lake delete has run.
 import { z } from "zod";
-import type { LakeClient, LakeRows } from "./lake.js";
+import { LakeError, type LakeClient, type LakeRows } from "./lake.js";
 import { stringParameter, tableRef, timestampParameter, timestampText } from "./lake-sql.js";
 import { assertSafeId } from "./shared-types.js";
 
@@ -34,6 +34,9 @@ export interface StatsCaller {
 interface Built {
   sql: string;
   parameters: string[];
+  range: { since: string; until: string };
+  /** Set for the grouped templates. */
+  limit?: number;
 }
 
 function window(params: { since?: string | undefined; until?: string | undefined }, nowMs: number): { since: string; until: string } {
@@ -62,6 +65,8 @@ function groupedEvents(bucket: string, kindClause: string, groupExpr: string, ex
       `SELECT ${groupExpr} AS "group", count(*) AS "count" FROM ${tableRef(bucket, "events")} ` +
       `WHERE ${EVENT_FILTER} AND ${kindClause}${extra} GROUP BY 1 ORDER BY 2 DESC, 1 ASC LIMIT ${params.limit}`,
     parameters: scopeParameters(caller, range),
+    range,
+    limit: params.limit,
   };
 }
 
@@ -98,25 +103,80 @@ export const STATS_TEMPLATES: Record<StatsTemplateName, Template> = {
         `coalesce(sum("send_backs"), 0) AS "send_backs" FROM ${tableRef(bucket, "outcomes")} ` +
         `WHERE "workspace_id" = ? AND "project" = ? AND "occurred_at" >= ? AND "occurred_at" < ?`,
       parameters: scopeParameters(caller, range),
+      range,
     };
   }),
 };
 
+/**
+ * The recent side of the statistics. The lake only holds rows that were ARCHIVED (older than 90 days), so the default window (the last 90 days)
+ * would be empty without this (review I-9). Contract: count project-audience rows that are NOT archived yet; archived rows are in the lake,
+ * so nothing is counted twice (apart from the moment between the lake insert and `markArchived`). The record lane (R2/R9) provides it.
+ */
+export interface HotStatsSource {
+  groupedCounts(request: { workspaceId: string; project: string; template: StatsTemplateName; since: string; until: string }): Promise<Array<{ group: string; count: number }>>;
+  mergeTotals(request: { workspaceId: string; project: string; since: string; until: string }): Promise<{ tasks: number; merged: number; reverted: number; send_backs: number }>;
+}
+
 export interface StatsDeps {
   lake: LakeClient;
   tableBucket: string;
+  hot?: HotStatsSource;
+}
+
+export interface StatsResult extends LakeRows {
+  /** `unavailable`: the lake failed and only recent data is shown ("history unavailable right now", design 4.11). */
+  lake: "ok" | "unavailable";
+  hot: boolean;
 }
 
 /** Builds (without running) the statement of a template. Exposed for tests and for the Ask tool's dry run. */
-export function buildStats(bucket: string, caller: StatsCaller, templateName: string, params: unknown, nowMs: number): Built {
+export function buildStats(bucket: string, caller: StatsCaller, templateName: string, params: unknown, nowMs: number, limitOverride?: number): Built {
   assertSafeId(caller.workspaceId, "workspace id");
   assertSafeId(caller.project, "project");
   if (!(STATS_TEMPLATE_NAMES as readonly string[]).includes(templateName)) throw new Error("team-record stats: unknown template");
-  return STATS_TEMPLATES[templateName as StatsTemplateName].build(bucket, caller, params, nowMs);
+  const withLimit = limitOverride !== undefined && templateName !== "rovara_merge_rate" ? { ...(params as object), limit: limitOverride } : params;
+  return STATS_TEMPLATES[templateName as StatsTemplateName].build(bucket, caller, withLimit, nowMs);
 }
 
-export async function runStats(deps: StatsDeps, caller: StatsCaller, templateName: string, params: unknown): Promise<LakeRows> {
-  const built = buildStats(deps.tableBucket, caller, templateName, params, deps.lake.now());
-  return deps.lake.query(built.sql, built.parameters);
-}
+const GROUP_FETCH_LIMIT = 200;
 
+export async function runStats(deps: StatsDeps, caller: StatsCaller, templateName: string, params: unknown): Promise<StatsResult> {
+  const nowMs = deps.lake.now();
+  const first = buildStats(deps.tableBucket, caller, templateName, params, nowMs); // validates everything
+  const base = { workspaceId: caller.workspaceId, project: caller.project, ...first.range };
+  const grouped = templateName !== "rovara_merge_rate";
+
+  if (deps.hot === undefined) {
+    const lake = await deps.lake.query(first.sql, first.parameters);
+    return { ...lake, lake: "ok", hot: false };
+  }
+
+  // Both sides, then merge. A lake failure leaves the recent side (flagged); a failure of the recent side is an error.
+  const lakeBuilt = grouped ? buildStats(deps.tableBucket, caller, templateName, params, nowMs, GROUP_FETCH_LIMIT) : first;
+  const [hotResult, lakeResult] = await Promise.all([
+    grouped ? deps.hot.groupedCounts({ ...base, template: templateName as StatsTemplateName }) : deps.hot.mergeTotals(base),
+    deps.lake.query(lakeBuilt.sql, lakeBuilt.parameters).catch((error: unknown) => {
+      if (error instanceof LakeError) return undefined;
+      throw error;
+    }),
+  ]);
+  const lakeStatus = lakeResult === undefined ? "unavailable" : "ok";
+
+  if (!grouped) {
+    const hot = hotResult as { tasks: number; merged: number; reverted: number; send_backs: number };
+    const row = lakeResult?.rows[0];
+    const num = (value: string | null | undefined): number => (value === null || value === undefined || !Number.isFinite(Number(value)) ? 0 : Number(value));
+    const sum = (key: "tasks" | "merged" | "reverted" | "send_backs"): string => String(hot[key] + num(row?.[key]));
+    return { rows: [{ tasks: sum("tasks"), merged: sum("merged"), reverted: sum("reverted"), send_backs: sum("send_backs") }], truncated: lakeResult?.truncated ?? false, lake: lakeStatus, hot: true };
+  }
+
+  const totals = new Map<string, number>();
+  for (const row of hotResult as Array<{ group: string; count: number }>) totals.set(row.group, (totals.get(row.group) ?? 0) + row.count);
+  for (const row of lakeResult?.rows ?? []) totals.set(row.group ?? "unknown", (totals.get(row.group ?? "unknown") ?? 0) + Number(row.count ?? 0));
+  const rows = [...totals.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(0, first.limit ?? 50)
+    .map(([group, count]) => ({ group, count: String(count) }));
+  return { rows, truncated: lakeResult?.truncated ?? false, lake: lakeStatus, hot: true };
+}

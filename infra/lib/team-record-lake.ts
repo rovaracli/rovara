@@ -10,10 +10,20 @@ import { Construct } from "constructs";
 import { LAKE_NAMESPACE, LAKE_TABLES } from "@agentx/contracts";
 
 const TABLE_BUCKET_NAME = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
-/** The design's maintenance numbers (S3 Tables maintenance pages): snapshots expire after 120 hours; unreferenced files are marked after 3 days and deleted 10 days later. */
-export const SNAPSHOT_MAX_AGE_HOURS = 120;
-export const UNREFERENCED_DAYS = 3;
-export const NONCURRENT_DAYS = 10;
+/**
+ * Maintenance numbers, tuned so a lake delete is physically gone within the DPA promise of about 15 days (review I-5). The chain is:
+ * DELETE writes position deletes (hourly job, up to 1 day) -> compaction rewrites the data file (allowance 7 days, [verify] the real lag and
+ * that S3 Tables rewrites a file already at the target size) -> the old snapshot expires (48 hours) -> the unreferenced file is marked
+ * (2 days) -> and deleted (3 days later). The S3 Tables defaults (120 h, 3 d, 10 d) add up to 18 days before compaction lag.
+ * [verify] The lowest values S3 Tables accepts for these three settings.
+ */
+export const SNAPSHOT_MAX_AGE_HOURS = 48;
+export const UNREFERENCED_DAYS = 2;
+export const NONCURRENT_DAYS = 3;
+export const DELETE_JOB_DAYS = 1;
+export const COMPACTION_ALLOWANCE_DAYS = 7;
+/** Worst-case days from a source delete to the bytes being gone, with the allowance above. The DPA line quotes this. */
+export const PHYSICAL_DELETE_BOUND_DAYS = DELETE_JOB_DAYS + COMPACTION_ALLOWANCE_DAYS + SNAPSHOT_MAX_AGE_HOURS / 24 + UNREFERENCED_DAYS + NONCURRENT_DAYS;
 export const ATHENA_RESULTS_EXPIRY_DAYS = 7;
 /** Athena's lowest bytes-scanned limit is 10 MB. The default here is 2 GB per query: the stats templates scan megabytes. */
 export const ATHENA_BYTES_CUTOFF_MIN = 10 * 1024 * 1024;
@@ -125,7 +135,8 @@ export class TeamRecordLake extends Construct {
 
   /** Read-only SQL for the customer's own admins (Enterprise): query the workgroup and read the tables, change nothing. */
   analystStatements(): iam.PolicyStatement[] {
-    const writes = new Set(["s3tables:UpdateTableMetadataLocation", "s3tables:PutTableData"]);
+    // Analysts cannot write tables, and cannot stop the broker's own queries (the hourly delete runs) either (review M-14).
+    const writes = new Set(["s3tables:UpdateTableMetadataLocation", "s3tables:PutTableData", "athena:StopQueryExecution"]);
     return this.brokerStatements()
       .map((statement) => {
         const json = statement.toStatementJson() as { Sid: string; Action: string | string[] };

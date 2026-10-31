@@ -1,13 +1,13 @@
 import { LAKE_TABLES } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import {
-  allLakeColumns, buildInsertIfAbsent, columnNames, deleteLiteral, parameterFor, sourceHash, sqlString, tableRef, timestampText,
+  actorSourceHash, allLakeColumns, buildInsertIfAbsent, scopeHash, columnNames, deleteLiteral, parameterFor, sourceHash, sqlString, tableRef, timestampText,
 } from "../../../packages/broker/src/team-record/lake-sql.js";
 import { createLakeClient, LakeError, type AthenaPort } from "../../../packages/broker/src/team-record/lake.js";
 
 const eventRow = (over: Record<string, string | number | boolean | null> = {}) => ({
   workspace_id: "ws1", occurred_at: "2026-01-02T03:04:05Z", id: "e1", source: "github", source_system: "github", source_hash: sourceHash("github", "1"),
-  kind: "github.pr", trust: "member", audience_kind: "project", retention: "D", archived_at: "2026-05-01T00:00:00Z", ...over,
+  kind: "github.pr", trust: "member", audience_kind: "project", retention: "D", archived_at: "2026-05-01T00:00:00Z", scope_hash: scopeHash("github:repo/1"), ...over,
 });
 
 describe("sql literals", () => {
@@ -80,6 +80,7 @@ describe("schema agreement", () => {
       ...buildLakeDeletes("rovara-lake", "ws1", [
         { id: "1", target: { kind: "source", sourceHash: sourceHash("a", "b") } }, { id: "2", target: { kind: "actor", developerId: "d1" } },
         { id: "3", target: { kind: "project", project: "p1" } }, { id: "4", target: { kind: "fact", factId: "f1" } },
+        { id: "5", target: { kind: "actor_source", hash: actorSourceHash("slack", "U1") } }, { id: "6", target: { kind: "scope", hash: scopeHash("slack:T/C1") } },
       ]).map((s) => s.sql),
     ];
     const known = allLakeColumns();
@@ -111,15 +112,36 @@ describe("lake client", () => {
     const lake = createLakeClient({ athena, workGroup: "wg", ...clock() });
     expect(await lake.query("SELECT 1", [])).toEqual({ rows: [{ a: "1", b: null }, { a: "2", b: "x" }], truncated: false });
   });
-  it("gives a data-changing statement a stable idempotency token and a SELECT none", async () => {
+  it("I-2: a data-changing statement gets a new token for every attempt, so a retry after FAILED starts a new execution; a SELECT gets none", async () => {
+    // A fake that behaves like Athena: the same token returns the same (earlier) execution.
+    const byToken = new Map<string, string>();
+    const states = new Map<string, "FAILED" | "SUCCEEDED">();
+    let n = 0;
+    const athena: AthenaPort = {
+      startQuery: async (r) => {
+        const known = r.clientRequestToken === undefined ? undefined : byToken.get(r.clientRequestToken);
+        if (known !== undefined) return { queryExecutionId: known };
+        const id = `q${++n}`;
+        states.set(id, n === 1 ? "FAILED" : "SUCCEEDED");
+        if (r.clientRequestToken !== undefined) byToken.set(r.clientRequestToken, id);
+        return { queryExecutionId: id };
+      },
+      getQueryState: async (id) => ({ state: states.get(id)! }),
+      getResults: async () => ({ columns: [], rows: [] }),
+      stopQuery: async () => undefined,
+    };
+    const lake = createLakeClient({ athena, workGroup: "wg", ...clock() });
+    await expect(lake.execute("DELETE FROM t WHERE x", [])).rejects.toMatchObject({ code: "lake_query_failed" });
+    await expect(lake.execute("DELETE FROM t WHERE x", [])).resolves.toBeUndefined();
+    expect(n).toBe(2);
+  });
+  it("sends a 64-hex token on data changes only", async () => {
     const a = fake(["SUCCEEDED"]);
     const lake = createLakeClient({ athena: a.athena, workGroup: "wg", ...clock() });
     await lake.execute("DELETE FROM t", []);
-    await lake.execute("DELETE FROM t", []);
     await lake.query("SELECT 1", []);
     expect(a.started[0]!.clientRequestToken).toMatch(/^[0-9a-f]{64}$/);
-    expect(a.started[1]!.clientRequestToken).toBe(a.started[0]!.clientRequestToken);
-    expect(a.started[2]!.clientRequestToken).toBeUndefined();
+    expect(a.started[1]!.clientRequestToken).toBeUndefined();
   });
   it("turns a failed query, a failed start and a timeout into fixed codes, and stops the timed-out query", async () => {
     await expect(createLakeClient({ athena: fake(["FAILED"]).athena, workGroup: "wg", ...clock() }).query("x", [])).rejects.toMatchObject({ code: "lake_query_failed" });

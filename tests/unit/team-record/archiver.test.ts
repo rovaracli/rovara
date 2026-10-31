@@ -1,21 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { runArchive, toLakeEventRow, type HotArchiveSource } from "../../../packages/broker/src/team-record/archiver.js";
-import { sourceHash } from "../../../packages/broker/src/team-record/lake-sql.js";
+import { actorSourceHash, scopeHash, sourceHash } from "../../../packages/broker/src/team-record/lake-sql.js";
 import { LakeError, type LakeClient } from "../../../packages/broker/src/team-record/lake.js";
 import type { RecordEventLike } from "../../../packages/broker/src/team-record/shared-types.js";
 import type { VectorIndex, VectorItem } from "../../../packages/broker/src/team-record/vectors.js";
 
 const NOW = Date.UTC(2026, 5, 1);
 const event = (id: string, over: Partial<RecordEventLike> = {}): RecordEventLike => ({
-  id, workspaceId: "ws1", project: "p1", source: "github", sourceRef: { system: "github", id: `pr-${id}` }, kind: "github.pr",
+  id, workspaceId: "ws1", project: "p1", scope: "github:repo/1", source: "github", sourceRef: { system: "github", id: `pr-${id}` }, kind: "github.pr",
   occurredAt: "2026-01-01T00:00:00Z", trust: "member", audience: { kind: "project" }, text: `text ${id}`, links: [], retention: "D", embeddingRef: `event:${id}`, ...over,
 });
 const meta = { audience_kind: "project", scope: "s", project: "p1", trust: "member", tier: "hot", kind: "event", ref: "x" } as const;
 
-function harness(rows: RecordEventLike[], opts: { liveOverride?: (ids: string[]) => string[]; lakeFail?: boolean; putFail?: string[]; missingVectors?: string[] } = {}) {
+function harness(rows: RecordEventLike[], opts: { liveOverride?: (ids: string[], call: number) => string[]; filterLiveThrowsOn?: number; lakeFail?: boolean; putFail?: string[]; missingVectors?: string[] } = {}) {
   const marked: string[] = [];
   const sql: Array<{ sql: string; parameters: readonly string[] }> = [];
   const archived = new Set<string>();
+  let liveCalls = 0;
+  const queued: Array<{ kind: string; sourceHash?: string }> = [];
+  const vectorDeletes: string[] = [];
   const source: HotArchiveSource = {
     listArchivable: async ({ limit, cursor }) => {
       const pending = rows.filter((r) => !archived.has(r.id));
@@ -23,7 +26,7 @@ function harness(rows: RecordEventLike[], opts: { liveOverride?: (ids: string[])
       const page = pending.slice(start, start + limit);
       return { rows: page, ...(start + limit < pending.length ? { nextCursor: String(start + limit) } : {}) };
     },
-    filterLive: async (_ws, ids) => new Set(opts.liveOverride ? opts.liveOverride(ids) : ids),
+    filterLive: async (_ws, ids) => { liveCalls += 1; if (liveCalls === opts.filterLiveThrowsOn) throw new Error("hot down"); return new Set(opts.liveOverride ? opts.liveOverride(ids, liveCalls) : ids); },
     markArchived: async (_ws, ids) => { for (const id of ids) { marked.push(id); archived.add(id); } },
   };
   const lake: LakeClient = {
@@ -36,9 +39,10 @@ function harness(rows: RecordEventLike[], opts: { liveOverride?: (ids: string[])
     dimension: 4,
     put: async (items) => { puts.push(...items); const failed = items.filter((i) => opts.putFail?.includes(i.key)).map((i) => i.key); return { done: items.length - failed.length, failed }; },
     get: async (keys) => keys.filter((k) => !opts.missingVectors?.includes(k)).map((key) => ({ key, vector: [1, 0, 0, 0], metadata: { ...meta } })),
-    query: async () => [], delete: async () => ({ done: 0, failed: [] }),
+    query: async () => [], delete: async (keys) => { vectorDeletes.push(...keys); return { done: keys.length, failed: [] }; },
   };
-  return { deps: { source, lake, vectors, tableBucket: "rovara-lake", rowsPerInsert: 2 }, marked, sql, puts };
+  const lakeDeletes = { enqueue: async (_ws: string, targets: Array<{ kind: string; sourceHash?: string }>) => { queued.push(...targets); } };
+  return { deps: { source, lake, vectors, lakeDeletes: lakeDeletes as never, tableBucket: "rovara-lake", rowsPerInsert: 2 }, marked, sql, puts, queued, vectorDeletes };
 }
 const budget = { maxRows: 100, maxMs: 60_000 };
 
@@ -52,6 +56,50 @@ describe("lake event rows", () => {
     expect(restricted.audience_scope).toBe("slack:T/C");
     expect((JSON.parse(restricted.acl_json as string) as { principals: string[] }).principals).toEqual(["U1"]);
     expect(restricted.source_hash).toBe(sourceHash("github", "pr-a"));
+  });
+});
+
+describe("archiver: erasure keys", () => {
+  it("I-3: every lake row carries the actor's source hash and the place's scope hash, also for project-wide rows with no developer id", () => {
+    const row = toLakeEventRow(event("a", { actor: { sourceId: "U123", trust: "outsider" } }), "2026-05-01T00:00:00Z");
+    expect(row.actor_source_hash).toBe(actorSourceHash("github", "U123"));
+    expect(row.actor_developer_id).toBeNull();
+    expect(row.scope_hash).toBe(scopeHash("github:repo/1"));
+    expect(row.audience_scope).toBeNull();
+    expect(toLakeEventRow(event("b"), "2026-05-01T00:00:00Z").actor_source_hash).toBeNull();
+  });
+  it("I-3: a restricted row without an explicit scope uses its ACL scope; a row with neither is refused", () => {
+    const restrictedNoScope = event("a", { scope: undefined, audience: { kind: "restricted", acl: { source: "slack", scope: "slack:T/C9", capturedAt: "2026-01-01T00:00:00Z", liveCheck: "none" } } });
+    expect(toLakeEventRow(restrictedNoScope, "2026-05-01T00:00:00Z").scope_hash).toBe(scopeHash("slack:T/C9"));
+    expect(() => toLakeEventRow(event("a", { scope: undefined }), "2026-05-01T00:00:00Z")).toThrow(/no source scope/);
+  });
+  it("I-3: the archiver skips a row with no scope and counts it", async () => {
+    const h = harness([event("a", { scope: undefined }), event("b")]);
+    expect(await runArchive(h.deps, { workspaceId: "ws1", budget })).toMatchObject({ archived: 1, skippedNoScope: 1 });
+    expect(h.marked).toEqual(["b"]);
+  });
+  it("M-9: Public Slack text never reaches the lake, whatever the stored retention", () => {
+    expect(toLakeEventRow(event("a", { source: "slack" }), "2026-05-01T00:00:00Z", "public").text).toBeNull();
+    expect(toLakeEventRow(event("a", { source: "slack" }), "2026-05-01T00:00:00Z", "enterprise").text).toBe("text a");
+  });
+});
+
+describe("archiver: delete during the run (I-4)", () => {
+  it("queues the lake delete and deletes the vector of a row that died after the first check, and does not mark it archived", async () => {
+    const h = harness([event("a"), event("b")], { liveOverride: (ids, call) => (call === 2 ? ids.filter((id) => id !== "b") : ids) });
+    const summary = await runArchive(h.deps, { workspaceId: "ws1", budget });
+    expect(summary).toMatchObject({ archived: 1, lateTombstoned: 1 });
+    expect(h.marked).toEqual(["a"]);
+    expect(h.queued).toEqual([{ kind: "source", sourceHash: sourceHash("github", "pr-b") }]);
+    expect(h.vectorDeletes).toEqual(["event:b"]);
+  });
+  it("when the second check cannot be made it queues the batch's lake deletes, marks nothing and stops", async () => {
+    const h = harness([event("a"), event("b")], { filterLiveThrowsOn: 2 });
+    const summary = await runArchive(h.deps, { workspaceId: "ws1", budget });
+    expect(summary.halted).toBe("hot_unavailable");
+    expect(h.marked).toEqual([]);
+    expect(h.queued).toHaveLength(2);
+    expect(h.vectorDeletes).toEqual([]);
   });
 });
 
@@ -72,7 +120,7 @@ describe("archiver", () => {
     expect(h.marked).toEqual(["a"]);
   });
   it("never archives a tombstoned row, nor one that was deleted during the run", async () => {
-    const h = harness([event("a", { tombstone: { at: "2026-02-01T00:00:00Z", cause: "source_deleted" } }), event("b"), event("c")], { liveOverride: (ids) => ids.filter((id) => id !== "c") });
+    const h = harness([event("a", { tombstone: { at: "2026-02-01T00:00:00Z", cause: "source_deleted" } }), event("b"), event("c")], { liveOverride: (ids, call) => (call === 1 ? ids.filter((id) => id !== "c") : ids) });
     const summary = await runArchive(h.deps, { workspaceId: "ws1", budget });
     expect(summary.skippedTombstoned).toBe(2);
     expect(h.marked).toEqual(["b"]);

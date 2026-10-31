@@ -6,10 +6,12 @@
 // Bounded per run by rows and milliseconds. Raw text goes to the lake only for retention D; C keeps structured metadata only (design 4.3).
 import type { LakeClient } from "./lake.js";
 import { LakeError } from "./lake.js";
-import { buildInsertIfAbsent, sourceHash, type LakeValue } from "./lake-sql.js";
+import type { LakeDeleteQueue } from "./lake-delete.js";
+import { actorSourceHash, buildInsertIfAbsent, scopeHash, sourceHash, type LakeValue } from "./lake-sql.js";
 import type { RecordEventLike } from "./shared-types.js";
 import { assertSafeId } from "./shared-types.js";
 import type { VectorIndex } from "./vectors.js";
+import type { TeamRecordEdition } from "./edition.js";
 
 export const HOT_DAYS = 90;
 const DAY_MS = 86_400_000;
@@ -29,6 +31,10 @@ export interface ArchiverDeps {
   tableBucket: string;
   /** The workspace's index. Public: one per workspace. */
   vectors: VectorIndex;
+  /** Where a delete that landed during the run is queued (the lake delete job picks it up). */
+  lakeDeletes: Pick<LakeDeleteQueue, "enqueue">;
+  /** Public Slack text is never archived (Slack terms), whatever the stored retention says. */
+  edition?: TeamRecordEdition;
   rowsPerInsert?: number;
 }
 
@@ -40,17 +46,28 @@ export interface ArchiveBudget {
 export interface ArchiveSummary {
   archived: number;
   skippedTombstoned: number;
+  /** Rows with no source scope: the lake could not erase them by place, so they are not archived. R1/R2 must set `scope` on every row. */
+  skippedNoScope: number;
+  /** Rows whose delete landed during the run: their lake copy and vector were queued for delete and they are not marked archived. */
+  lateTombstoned: number;
   vectorsRetagged: number;
   vectorsMissing: number;
   /** Rows written to the lake but left unmarked (the re-tag failed); the next run retries them. */
   retryLater: number;
-  halted?: "lake_unavailable" | "lake_query_failed" | "lake_timeout" | "budget";
+  halted?: "lake_unavailable" | "lake_query_failed" | "lake_timeout" | "budget" | "hot_unavailable";
   cursor?: string;
 }
 
 /** The lake row of a hot event. Text only under D. */
-export function toLakeEventRow(event: RecordEventLike, archivedAt: string): Record<string, LakeValue> {
+export function eventScope(event: RecordEventLike): string | undefined {
+  return event.scope ?? (event.audience.kind === "restricted" ? event.audience.acl.scope : undefined);
+}
+
+export function toLakeEventRow(event: RecordEventLike, archivedAt: string, edition?: TeamRecordEdition): Record<string, LakeValue> {
   assertSafeId(event.workspaceId, "workspace id");
+  const scope = eventScope(event);
+  if (scope === undefined) throw new Error("team-record: the event has no source scope");
+  const textAllowed = event.retention === "D" && event.text !== undefined && !(edition === "public" && event.source === "slack");
   return {
     workspace_id: event.workspaceId,
     occurred_at: event.occurredAt,
@@ -63,11 +80,13 @@ export function toLakeEventRow(event: RecordEventLike, archivedAt: string): Reco
     source_version: event.sourceRef.version ?? null,
     kind: event.kind,
     actor_developer_id: event.actor?.developerId ?? null,
+    actor_source_hash: event.actor === undefined ? null : actorSourceHash(event.sourceRef.system, event.actor.sourceId),
+    scope_hash: scopeHash(scope),
     trust: event.trust,
     audience_kind: event.audience.kind,
     audience_scope: event.audience.kind === "restricted" ? event.audience.acl.scope : null,
     acl_json: event.audience.kind === "restricted" ? JSON.stringify(event.audience.acl) : null,
-    text: event.retention === "D" && event.text !== undefined ? event.text : null,
+    text: textAllowed ? (event.text ?? null) : null,
     structured_json: event.structured === undefined ? null : JSON.stringify(event.structured),
     links_json: JSON.stringify(event.links),
     retention: event.retention,
@@ -86,7 +105,7 @@ export async function runArchive(deps: ArchiverDeps, request: { workspaceId: str
   const archivedAt = isoSeconds(started);
   const olderThan = isoSeconds(started - HOT_DAYS * DAY_MS);
   const perInsert = deps.rowsPerInsert ?? DEFAULT_ROWS_PER_INSERT;
-  const summary: ArchiveSummary = { archived: 0, skippedTombstoned: 0, vectorsRetagged: 0, vectorsMissing: 0, retryLater: 0 };
+  const summary: ArchiveSummary = { archived: 0, skippedTombstoned: 0, skippedNoScope: 0, lateTombstoned: 0, vectorsRetagged: 0, vectorsMissing: 0, retryLater: 0 };
   let cursor = request.cursor;
   let seen = 0;
 
@@ -114,15 +133,21 @@ export async function runArchive(deps: ArchiverDeps, request: { workspaceId: str
     });
     const live = await deps.source.filterLive(request.workspaceId, candidates.map((row) => row.id));
     const rows = candidates.filter((row) => {
-      if (live.has(row.id)) return true;
-      summary.skippedTombstoned += 1;
-      return false;
+      if (!live.has(row.id)) {
+        summary.skippedTombstoned += 1;
+        return false;
+      }
+      if (eventScope(row) === undefined) {
+        summary.skippedNoScope += 1;
+        return false;
+      }
+      return true;
     });
 
     for (let i = 0; i < rows.length; i += perInsert) {
       const batch = rows.slice(i, i + perInsert);
       try {
-        const insert = buildInsertIfAbsent(deps.tableBucket, "events", batch.map((row) => toLakeEventRow(row, archivedAt)));
+        const insert = buildInsertIfAbsent(deps.tableBucket, "events", batch.map((row) => toLakeEventRow(row, archivedAt, deps.edition)));
         await deps.lake.execute(insert.sql, insert.parameters);
       } catch (error) {
         summary.halted = error instanceof LakeError ? error.code : "lake_unavailable";
@@ -133,9 +158,31 @@ export async function runArchive(deps: ArchiverDeps, request: { workspaceId: str
       summary.vectorsRetagged += retagged;
       summary.vectorsMissing += missing;
       summary.retryLater += batch.length - ready.length;
-      if (ready.length > 0) {
-        await deps.source.markArchived(request.workspaceId, ready.map((row) => row.id), archivedAt);
-        summary.archived += ready.length;
+
+      // Race: a source delete can land after the first check and before the insert and re-tag finished. The hourly lake delete may already
+      // have run (and found nothing), and the hot delete worker may have removed the vector that the re-tag just wrote again. So ask again,
+      // and for any row that died meanwhile queue its lake delete and delete its vector now.
+      let stillLive: Set<string>;
+      try {
+        stillLive = await deps.source.filterLive(request.workspaceId, ready.map((row) => row.id));
+      } catch {
+        // Cannot tell: queue the lake delete of the whole batch (idempotent; the rows are archived again next run), keep them unmarked, stop.
+        await deps.lakeDeletes.enqueue(request.workspaceId, ready.map((row) => ({ kind: "source", sourceHash: sourceHash(row.sourceRef.system, row.sourceRef.id) })));
+        summary.halted = "hot_unavailable";
+        if (cursor !== undefined) summary.cursor = cursor;
+        return summary;
+      }
+      const dead = ready.filter((row) => !stillLive.has(row.id));
+      if (dead.length > 0) {
+        await deps.lakeDeletes.enqueue(request.workspaceId, dead.map((row) => ({ kind: "source", sourceHash: sourceHash(row.sourceRef.system, row.sourceRef.id) })));
+        const keys = dead.flatMap((row) => (row.embeddingRef === undefined ? [] : [row.embeddingRef]));
+        if (keys.length > 0) await deps.vectors.delete(keys).catch(() => ({ done: 0, failed: keys }));
+        summary.lateTombstoned += dead.length;
+      }
+      const markable = ready.filter((row) => stillLive.has(row.id));
+      if (markable.length > 0) {
+        await deps.source.markArchived(request.workspaceId, markable.map((row) => row.id), archivedAt);
+        summary.archived += markable.length;
       }
     }
     if (cursor === undefined) return summary;

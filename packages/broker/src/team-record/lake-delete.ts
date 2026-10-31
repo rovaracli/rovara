@@ -12,6 +12,10 @@ export const DELETE_BATCH = 100;
 export type LakeDeleteTarget =
   | { kind: "source"; sourceHash: string }
   | { kind: "actor"; developerId: string }
+  /** A person with no developer id (outsider, unmapped Slack user): `actorSourceHash(system, sourceId)`. */
+  | { kind: "actor_source"; hash: string }
+  /** A whole place (channel deleted, repo deleted or transferred, channel made private): `scopeHash(scope)`. */
+  | { kind: "scope"; hash: string }
   | { kind: "project"; project: string }
   | { kind: "fact"; factId: string };
 
@@ -24,6 +28,8 @@ export interface PendingLakeDelete {
 export interface LakeDeleteQueue {
   listPending(workspaceId: string, limit: number): Promise<PendingLakeDelete[]>;
   ack(workspaceId: string, ids: string[]): Promise<void>;
+  /** Adds targets (used by the archiver when a delete landed while it was archiving). Must be idempotent per target. */
+  enqueue(workspaceId: string, targets: LakeDeleteTarget[]): Promise<void>;
 }
 
 export interface LakeDeleteBudget {
@@ -35,8 +41,13 @@ export interface LakeDeleteSummary {
   statements: number;
   acked: number;
   failed: number;
+  /** Statements that failed; their entries stay queued and the run went on to the others. */
+  failedStatements?: number;
   halted?: "budget" | "lake_unavailable" | "lake_query_failed" | "lake_timeout";
 }
+
+/** After this many failures in a row the run stops (the lake is down; the rest would fail too). */
+export const CONSECUTIVE_FAILURES_MAX = 3;
 
 /** The DELETE statements for a list of targets, batched. Throws before returning anything if a value is not allowed. */
 export function buildLakeDeletes(bucket: string, workspaceId: string, items: PendingLakeDelete[]): Array<{ sql: string; entryIds: string[] }> {
@@ -59,7 +70,13 @@ export function buildLakeDeletes(bucket: string, workspaceId: string, items: Pen
     out.push({ sql: `DELETE FROM ${facts} WHERE ${ws} AND "id" IN (${list})`, entryIds: batch.map((item) => item.id) });
   }
   for (const item of items) {
-    if (item.target.kind === "actor") {
+    if (item.target.kind === "actor_source") {
+      out.push({ sql: `DELETE FROM ${events} WHERE ${ws} AND "actor_source_hash" = ${deleteLiteral(item.target.hash, "hash")}`, entryIds: [item.id] });
+    } else if (item.target.kind === "scope") {
+      const hash = deleteLiteral(item.target.hash, "hash");
+      out.push({ sql: `DELETE FROM ${events} WHERE ${ws} AND "scope_hash" = ${hash}`, entryIds: [item.id] });
+      out.push({ sql: `DELETE FROM ${facts} WHERE ${ws} AND "scope_hash" = ${hash}`, entryIds: [item.id] });
+    } else if (item.target.kind === "actor") {
       // A person erase: their events and the outcomes they own.
       const who = deleteLiteral(item.target.developerId, "id");
       out.push({ sql: `DELETE FROM ${events} WHERE ${ws} AND "actor_developer_id" = ${who}`, entryIds: [item.id] });
@@ -98,22 +115,32 @@ export async function runLakeDeletes(
   for (const statement of statements) for (const id of new Set(statement.entryIds)) remaining.set(id, (remaining.get(id) ?? 0) + 1);
 
   const done: string[] = [];
+  const blocked = new Set<string>();
+  let consecutive = 0;
   for (const statement of statements) {
-    if (summary.statements >= request.budget.maxStatements || deps.lake.now() - started >= request.budget.maxMs) {
+    if (summary.statements + (summary.failedStatements ?? 0) >= request.budget.maxStatements || deps.lake.now() - started >= request.budget.maxMs) {
       summary.halted = "budget";
       break;
     }
     try {
       await deps.lake.execute(statement.sql, []);
     } catch (error) {
-      summary.halted = error instanceof LakeError ? error.code : "lake_unavailable";
-      break;
+      // One statement that keeps failing must not hold back the others: its entries stay queued, the run goes on.
+      summary.failedStatements = (summary.failedStatements ?? 0) + 1;
+      for (const id of statement.entryIds) blocked.add(id);
+      consecutive += 1;
+      if (consecutive >= CONSECUTIVE_FAILURES_MAX) {
+        summary.halted = error instanceof LakeError ? error.code : "lake_unavailable";
+        break;
+      }
+      continue;
     }
+    consecutive = 0;
     summary.statements += 1;
     for (const id of new Set(statement.entryIds)) {
       const left = (remaining.get(id) ?? 1) - 1;
       remaining.set(id, left);
-      if (left === 0) done.push(id);
+      if (left === 0 && !blocked.has(id)) done.push(id);
     }
   }
   if (done.length > 0) {

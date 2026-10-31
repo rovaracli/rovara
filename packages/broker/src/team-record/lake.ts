@@ -1,7 +1,7 @@
 // R4: running statements on the lake through Athena. The SDK adapter for AthenaPort is not here (@aws-sdk/client-athena is not a
 // dependency yet; see report.md). Errors are fixed codes: no text from Athena or from rows ever reaches a log or an error message
 // (checklist section 1).
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export type AthenaState = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
 
@@ -11,7 +11,7 @@ export interface AthenaPort {
     /** SQL literals, in order of the ? marks. */
     executionParameters: string[];
     workGroup: string;
-    /** Only for statements that change data: the same token returns the same execution (AWS ClientRequestToken, 32 to 128 characters). */
+    /** Only for statements that change data: unique per attempt (AWS ClientRequestToken, 32 to 128 characters). */
     clientRequestToken?: string;
   }): Promise<{ queryExecutionId: string }>;
   getQueryState(queryExecutionId: string): Promise<{ state: AthenaState }>;
@@ -33,6 +33,8 @@ export interface LakeClientOptions {
   athena: AthenaPort;
   workGroup: string;
   now?: () => number;
+  /** A fresh value for every attempt of a data-changing statement. Default: a random UUID. */
+  newNonce?: () => string;
   sleep?: (ms: number) => Promise<void>;
   /** The whole statement, start to results. Default 60 s. */
   timeoutMs?: number;
@@ -60,12 +62,15 @@ export function createLakeClient(options: LakeClientOptions): LakeClient {
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const timeoutMs = options.timeoutMs ?? 60_000;
   const maxRows = options.maxRows ?? 1000;
+  const newNonce = options.newNonce ?? randomUUID;
 
   async function run(sql: string, parameters: readonly string[], mutating: boolean): Promise<string> {
     const deadline = now() + timeoutMs;
     let id: string;
     try {
-      const token = mutating ? createHash("sha256").update(`${options.workGroup}\u0000${sql}\u0000${parameters.join("\u0001")}`).digest("hex") : undefined;
+      // One token per ATTEMPT. A token that repeated across attempts would make Athena return the earlier (possibly FAILED) execution
+      // for a retry, and an erasure could never be retried. DELETE and INSERT ... WHERE NOT EXISTS are idempotent, so no dedupe is needed.
+      const token = mutating ? createHash("sha256").update(`${options.workGroup}\u0000${sql}\u0000${parameters.join("\u0001")}\u0000${newNonce()}`).digest("hex") : undefined;
       ({ queryExecutionId: id } = await options.athena.startQuery({
         sql,
         executionParameters: [...parameters],

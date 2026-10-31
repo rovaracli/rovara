@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { LakeError, type LakeClient } from "../../../packages/broker/src/team-record/lake.js";
 import { DELETE_BATCH, buildLakeDeletes, runLakeDeletes, type LakeDeleteQueue, type PendingLakeDelete } from "../../../packages/broker/src/team-record/lake-delete.js";
-import { sourceHash } from "../../../packages/broker/src/team-record/lake-sql.js";
+import { actorSourceHash, scopeHash, sourceHash } from "../../../packages/broker/src/team-record/lake-sql.js";
 
 const src = (n: number): PendingLakeDelete => ({ id: `q${n}`, target: { kind: "source", sourceHash: sourceHash("slack", `m${n}`) } });
 
@@ -14,7 +14,7 @@ function harness(pending: PendingLakeDelete[], failOn?: (sql: string) => boolean
     query: async () => ({ rows: [], truncated: false }),
     execute: async (sql, parameters) => { expect(parameters).toEqual([]); if (failOn?.(sql)) throw new LakeError("lake_query_failed"); executed.push(sql); },
   };
-  const queue: LakeDeleteQueue = { listPending: async () => pending, ack: async (_w, ids) => { acked.push(...ids); } };
+  const queue: LakeDeleteQueue = { listPending: async () => pending, ack: async (_w, ids) => { acked.push(...ids); }, enqueue: async () => undefined };
   return { deps: { queue, lake, tableBucket: "rovara-lake" }, executed, acked };
 }
 
@@ -35,6 +35,14 @@ describe("lake delete statements", () => {
     expect(statements.every((s) => s.sql.includes(`"workspace_id" = 'ws1'`))).toBe(true);
     expect(statements.filter((s) => s.sql.includes("lessons_history")).length).toBe(1);
   });
+  it("I-3: erases a person with no developer id by actor source hash, and a whole place by scope hash (events and facts)", () => {
+    const statements = buildLakeDeletes("rovara-lake", "ws1", [
+      { id: "a", target: { kind: "actor_source", hash: actorSourceHash("slack", "U9") } },
+      { id: "s", target: { kind: "scope", hash: scopeHash("slack:T/C9") } },
+    ]);
+    expect(statements.map((s) => s.sql.match(/FROM "s3tablescatalog\/rovara-lake"\."record"\."(\w+)" WHERE "workspace_id" = 'ws1' AND "(\w+)" = '[0-9a-f]{64}'$/)?.slice(1).join("."))).toEqual(["events.actor_source_hash", "events.scope_hash", "facts.scope_hash"]);
+    expect(() => buildLakeDeletes("rovara-lake", "ws1", [{ id: "x", target: { kind: "scope", hash: "slack:T/C9" } }])).toThrow(/hash/);
+  });
   it("refuses values that are not safe ids or hashes (a person's text can never reach a DELETE)", () => {
     expect(() => buildLakeDeletes("rovara-lake", "ws1", [{ id: "x", target: { kind: "actor", developerId: "d' OR '1'='1" } }])).toThrow(/safe id/);
     expect(() => buildLakeDeletes("rovara-lake", "ws1", [{ id: "x", target: { kind: "source", sourceHash: "T1/C1/1.2" } }])).toThrow(/hash/);
@@ -49,11 +57,20 @@ describe("lake delete run", () => {
     expect(summary).toMatchObject({ statements: 1, acked: 2, failed: 0 });
     expect(h.acked).toEqual(["q1", "q2"]);
   });
-  it("acks nothing and halts with a fixed code when the statement fails, so the entry is retried", async () => {
-    const h = harness([src(1)], () => true);
+  it("acks nothing and halts with a fixed code after repeated failures, so the entries are retried", async () => {
+    const h = harness(Array.from({ length: 450 }, (_, i) => src(i)), () => true);
     const summary = await runLakeDeletes(h.deps, { workspaceId: "ws1", budget: { maxStatements: 10, maxMs: 60_000 } });
-    expect(summary).toMatchObject({ acked: 0, halted: "lake_query_failed" });
+    expect(summary).toMatchObject({ acked: 0, failedStatements: 3, halted: "lake_query_failed" });
     expect(h.acked).toEqual([]);
+  });
+  it("M-2: a statement that keeps failing does not hold back the others; its entries stay queued", async () => {
+    const poison = { id: "p", target: { kind: "actor_source", hash: actorSourceHash("slack", "U1") } } as const;
+    const good = { id: "g", target: { kind: "scope", hash: scopeHash("slack:T/C1") } } as const;
+    const h = harness([poison, good], (sql) => sql.includes('"actor_source_hash"'));
+    const summary = await runLakeDeletes(h.deps, { workspaceId: "ws1", budget: { maxStatements: 10, maxMs: 60_000 } });
+    expect(h.acked).toEqual(["g"]);
+    expect(summary).toMatchObject({ failedStatements: 1, statements: 2 });
+    expect(summary.halted).toBeUndefined();
   });
   it("leaves a refused entry queued and still runs the others", async () => {
     const h = harness([{ id: "bad", target: { kind: "actor", developerId: "x y" } }, src(1)]);

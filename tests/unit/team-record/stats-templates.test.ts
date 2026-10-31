@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createLakeClient, type AthenaPort } from "../../../packages/broker/src/team-record/lake.js";
-import { STATS_TEMPLATE_NAMES, buildStats, runStats } from "../../../packages/broker/src/team-record/stats-templates.js";
+import { STATS_TEMPLATE_NAMES, buildStats, runStats, type HotStatsSource } from "../../../packages/broker/src/team-record/stats-templates.js";
 
 const caller = { workspaceId: "ws1", project: "p1" };
 const NOW = Date.UTC(2026, 5, 1, 12, 0, 0);
@@ -55,8 +55,59 @@ describe("stats templates", () => {
       stopQuery: async () => undefined,
     };
     const lake = createLakeClient({ athena, workGroup: "wg", now: () => NOW });
-    expect(await runStats({ lake, tableBucket: "rovara-lake" }, caller, "send_backs_by_stage", {})).toEqual({ rows: [{ group: "plan", count: "4" }], truncated: false });
+    expect(await runStats({ lake, tableBucket: "rovara-lake" }, caller, "send_backs_by_stage", {})).toEqual({ rows: [{ group: "plan", count: "4" }], truncated: false, lake: "ok", hot: false });
     expect(seen[0]!.workGroup).toBe("wg");
     expect(seen[0]!.executionParameters[0]).toBe("'ws1'");
+  });
+});
+
+describe("recent and archived data together (I-9)", () => {
+  const lakeReturning = (rows: Array<Array<string | null>>, columns: string[], fail = false) =>
+    createLakeClient({
+      now: () => NOW,
+      athena: {
+        startQuery: async () => { if (fail) throw new Error("down"); return { queryExecutionId: "q" }; },
+        getQueryState: async () => ({ state: "SUCCEEDED" }),
+        getResults: async () => ({ columns, rows }),
+        stopQuery: async () => undefined,
+      },
+      workGroup: "wg",
+    });
+  const hot = (over: Partial<HotStatsSource> = {}): HotStatsSource => ({
+    groupedCounts: async () => [{ group: "plan", count: 3 }, { group: "build", count: 1 }],
+    mergeTotals: async () => ({ tasks: 4, merged: 3, reverted: 1, send_backs: 2 }),
+    ...over,
+  });
+
+  it("without the recent side an empty lake gives an empty answer (the gap the review found)", async () => {
+    const out = await runStats({ lake: lakeReturning([], ["group", "count"]), tableBucket: "rovara-lake" }, caller, "send_backs_by_stage", {});
+    expect(out.rows).toEqual([]);
+    expect(out.hot).toBe(false);
+  });
+  it("adds the recent counts to the archived ones, per group, and orders and limits the result", async () => {
+    const out = await runStats({ lake: lakeReturning([["plan", "10"], ["review", "2"]], ["group", "count"]), tableBucket: "rovara-lake", hot: hot() }, caller, "send_backs_by_stage", { limit: 2 });
+    expect(out).toMatchObject({ lake: "ok", hot: true, rows: [{ group: "plan", count: "13" }, { group: "review", count: "2" }] });
+  });
+  it("asks the lake for up to 200 groups so the merge is exact, and the recent side for the same window and project", async () => {
+    const seen: string[] = [];
+    const hotSeen: unknown[] = [];
+    const lake = createLakeClient({ now: () => NOW, workGroup: "wg", athena: {
+      startQuery: async (r) => { seen.push(r.sql); return { queryExecutionId: "q" }; },
+      getQueryState: async () => ({ state: "SUCCEEDED" }), getResults: async () => ({ columns: ["group", "count"], rows: [] }), stopQuery: async () => undefined } });
+    await runStats({ lake, tableBucket: "rovara-lake", hot: hot({ groupedCounts: async (r) => { hotSeen.push(r); return []; } }) }, caller, "send_backs_by_stage", { limit: 5 });
+    expect(seen[0]!.endsWith("LIMIT 200")).toBe(true);
+    expect(hotSeen[0]).toMatchObject({ workspaceId: "ws1", project: "p1", template: "send_backs_by_stage", since: "2026-03-03T12:00:00Z", until: "2026-06-01T12:00:00Z" });
+  });
+  it("sums merge-rate totals from both sides", async () => {
+    const out = await runStats({ lake: lakeReturning([["5", "4", "0", "7"]], ["tasks", "merged", "reverted", "send_backs"]), tableBucket: "rovara-lake", hot: hot() }, caller, "rovara_merge_rate", {});
+    expect(out.rows).toEqual([{ tasks: "9", merged: "7", reverted: "1", send_backs: "9" }]);
+  });
+  it("shows the recent data with a flag when the lake is down, and fails when the recent side fails", async () => {
+    const out = await runStats({ lake: lakeReturning([], [], true), tableBucket: "rovara-lake", hot: hot() }, caller, "send_backs_by_stage", {});
+    expect(out).toMatchObject({ lake: "unavailable", hot: true, rows: [{ group: "plan", count: "3" }, { group: "build", count: "1" }] });
+    await expect(runStats({ lake: lakeReturning([], ["group", "count"]), tableBucket: "rovara-lake", hot: hot({ groupedCounts: async () => { throw new Error("x"); } }) }, caller, "send_backs_by_stage", {})).rejects.toThrow();
+  });
+  it("still refuses bad params before any call", async () => {
+    await expect(runStats({ lake: lakeReturning([], []), tableBucket: "rovara-lake", hot: hot() }, caller, "send_backs_by_stage", { project: "other" })).rejects.toThrow(/not valid/);
   });
 });

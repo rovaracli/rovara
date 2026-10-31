@@ -3,7 +3,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { LAKE_TABLES } from "@agentx/contracts";
 import { actionsOf, statementJson, tablesOf } from "../support/team-record-cdk.js";
-import { ATHENA_BYTES_CUTOFF_MIN, TeamRecordLake } from "../../infra/lib/team-record-lake.js";
+import { ATHENA_BYTES_CUTOFF_MIN, PHYSICAL_DELETE_BOUND_DAYS, TeamRecordLake } from "../../infra/lib/team-record-lake.js";
 
 const KMS = "arn:aws:kms:us-west-2:111122223333:key/11111111-2222-3333-4444-555555555555";
 
@@ -21,7 +21,7 @@ describe("team record lake", () => {
     const template = lake();
     template.hasResourceProperties("AWS::S3Tables::TableBucket", {
       TableBucketName: "rovara-record-lake",
-      UnreferencedFileRemoval: { Status: "enabled", UnreferencedDays: 3, NoncurrentDays: 10 },
+      UnreferencedFileRemoval: { Status: "enabled", UnreferencedDays: 2, NoncurrentDays: 3 },
     });
     template.hasResourceProperties("AWS::S3Tables::Namespace", { Namespace: "record" });
     template.resourceCountIs("AWS::S3Tables::Table", 4);
@@ -51,11 +51,20 @@ describe("team record lake", () => {
   it("keeps snapshot expiry and compaction on, and sets no override that would block physical deletes", () => {
     const template = lake();
     for (const resource of tablesOf(template)) {
-      expect(resource.Properties.SnapshotManagement).toEqual({ Status: "enabled", MaxSnapshotAgeHours: 120, MinSnapshotsToKeep: 1 });
+      expect(resource.Properties.SnapshotManagement).toEqual({ Status: "enabled", MaxSnapshotAgeHours: 48, MinSnapshotsToKeep: 1 });
       expect(resource.Properties.Compaction.Status).toBe("enabled");
       // Only these top-level properties: no Iceberg table properties or tags that could pin old snapshots.
       expect(Object.keys(resource.Properties).sort()).toEqual(["Compaction", "IcebergMetadata", "Namespace", "OpenTableFormat", "SnapshotManagement", "TableBucketARN", "TableName"]);
     }
+  });
+
+  it("I-5: the settings add up to a physical delete within the 15 days the DPA promises, compaction lag included", () => {
+    expect(PHYSICAL_DELETE_BOUND_DAYS).toBeLessThanOrEqual(15);
+    const template = lake();
+    const bucket = Object.values(template.findResources("AWS::S3Tables::TableBucket"))[0] as unknown as { Properties: { UnreferencedFileRemoval: { UnreferencedDays: number; NoncurrentDays: number } } };
+    const table = tablesOf(template)[0]!.Properties.SnapshotManagement as { MaxSnapshotAgeHours: number };
+    const days = 1 + 7 + table.MaxSnapshotAgeHours / 24 + bucket.Properties.UnreferencedFileRemoval.UnreferencedDays + bucket.Properties.UnreferencedFileRemoval.NoncurrentDays;
+    expect(days).toBeLessThanOrEqual(15);
   });
 
   it("gives the Athena workgroup a bytes-scanned limit, enforced settings and an encrypted results bucket that expires in 7 days", () => {
