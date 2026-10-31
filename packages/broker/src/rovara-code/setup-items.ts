@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import {
   canonicalJson, codeRepositoriesOf, formatCommandLine, setupItemHandling, settingOriginOf,
-  type ProjectOriginField, type ProjectSettingsBody, type SetupItem, type SetupItemKind, type SetupProposal, type SetupReviewEntry, type StoredProjectDefinition,
+  type IntakeChannelRef, type ProjectOriginField, type ProjectSettingsBody, type SetupItem, type SetupItemKind, type SetupProposal, type SetupReviewEntry, type StoredProjectDefinition,
 } from "@agentx/contracts";
 
 /** What a person is told when an item cannot be applied from here (fixed words, never a model's or a repository's). */
@@ -142,6 +142,8 @@ export interface SetupItemApplyContext {
     /** One pull request per draft: claimed before it is started, given back when it could not be. */
     claimPullRequest(requestId: string): Promise<void>;
     releasePullRequestClaim(requestId: string): Promise<void>;
+    /** Adds one intake source to the project, as the maintainer applying (wire lane D, MF-2). Idempotent: a source already there is `already_set`. */
+    addIntakeSource(ref: IntakeChannelRef): Promise<"added" | "already_set" | "differs">;
   };
 }
 

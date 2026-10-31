@@ -3,7 +3,7 @@
 // is next due, how many reads in a row failed, when it last told the maintainers). The record names a connection by name only: never an address, never a secret.
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { IntakeChannelRefSchema, intakeSourceKey, intakeSystemOf, type IntakeChannelRef, type OrgId } from "@agentx/contracts";
+import { agentXError, IntakeChannelRefSchema, intakeSourceKey, intakeSystemOf, type IntakeChannelRef, type OrgId } from "@agentx/contracts";
 import type { IntakeTable } from "./store.js";
 
 export interface IntakeSourceRecord {
@@ -119,4 +119,28 @@ export async function replaceIntakeSources(table: IntakeTable, input: { orgId: O
     await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: intakeSourceKey(input.orgId, input.project, sourceId) }));
   }
   return result;
+}
+
+/**
+ * Adds ONE source to a project's sources without touching the others (a setup card, once approved, adds the one source it names). Idempotent: a source that is already there is left as it is
+ * (`already_set`), and one with other settings is `differs`, never overwritten. At most `INTAKE_MAX_SOURCES_PER_PROJECT` (a ninth is refused in fixed words). A new source is due at once, like one set from the sources editor.
+ */
+export async function addIntakeSource(table: IntakeTable, input: { orgId: OrgId; project: string; ref: IntakeChannelRef; setBy: string }): Promise<"added" | "already_set" | "differs"> {
+  const ref = IntakeChannelRefSchema.parse(input.ref);
+  const sourceId = intakeSourceIdOf(ref);
+  const have = await listIntakeSources(table, input.orgId, input.project);
+  // A source is a channel, a system and a connection; the same place with other settings (another label) is the maintainer's to change, never overwritten by a card.
+  const same = have.find((record) => record.sourceId === sourceId);
+  if (same !== undefined) return JSON.stringify(same.ref) === JSON.stringify(ref) ? "already_set" : "differs";
+  if (have.length >= INTAKE_MAX_SOURCES_PER_PROJECT) throw agentXError("CONFIG_INVALID", "This project already has the most intake sources it can have. Remove one before adding another.");
+  const now = table.now();
+  const at = new Date(now).toISOString();
+  const record: IntakeSourceRecord = { orgId: input.orgId, project: input.project, sourceId, ref, setBy: input.setBy, createdAt: at, updatedAt: at, nextPollAt: now, failures: 0 };
+  try {
+    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...intakeSourceKey(input.orgId, input.project, sourceId), entityType: "INTAKE_SOURCE", ...record }, ConditionExpression: "attribute_not_exists(pk)" }));
+  } catch (error) {
+    if (isConditional(error)) return "already_set";
+    throw error;
+  }
+  return "added";
 }

@@ -62,6 +62,8 @@ import {
   SETUP_ITEM_WORDS, citationWords, currentOf, getSetupItemApplier, githubFullNameOf, isCardKind, itemDigest, registerSetupItemApplier, unavailableReason, type SetupItemApplier,
 } from "./setup-items.js";
 import { verifyProposalDetailed, type CitationFileReader } from "./setup-proposal-verify.js";
+import { addIntakeSource } from "../intake/sources.js";
+import { registerIntakeSetupApplier } from "../intake/setup-applier.js";
 import { SETUP_CONSENT_USED, consentHasExpired, consentIsUsed, giveBackConsent, useConsent } from "./setup-consent.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
@@ -477,6 +479,7 @@ function devcontainerRequestText(proposal: SetupProposal): string | undefined {
 
 /** Registers what an approved card lets a maintainer do for the two kinds of item this module applies itself. Safe to call more than once. */
 export function registerBuiltinSetupAppliers(): void {
+  registerIntakeSetupApplier();
   registerSetupItemApplier("repository", {
     cardWords: (item) => [`Add the repository ${githubFullNameOf(String((item.proposed.value as { url: string }).url)) ?? "named below"} to the project.`],
     apply: async (context) => {
@@ -714,6 +717,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
             startPullRequest: (request) => deps.startPullRequest(caller, { requestId: request.requestId, project: name, text: request.text }),
             claimPullRequest: (requestId) => claimPullRequest(deps, caller.orgId, name, pointer.taskId, requestId),
             releasePullRequestClaim: (requestId) => releasePullRequestClaim(deps, caller.orgId, name, pointer.taskId, requestId),
+            addIntakeSource: (ref) => addIntakeSource({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { orgId: caller.orgId, project: name, ref, setBy: caller.developerId }),
           },
         });
       } catch (error) {

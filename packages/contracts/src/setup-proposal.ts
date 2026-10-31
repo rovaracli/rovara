@@ -12,6 +12,7 @@ import { z } from "zod";
 import { AppProjectDetailSchema, isAllowedDomain } from "./app-projects.js";
 import { GitBranchNameSchema } from "./git-branch.js";
 import { AgentXNameSchema } from "./names.js";
+import { IntakeSystemSchema } from "./intake.js";
 import { RelativeWorkspacePathSchema } from "./project.js";
 import { ProvenanceSchema, proposedSchema, type Proposed, type ProposalRisk } from "./provenance.js";
 
@@ -77,11 +78,21 @@ export const SetupSourceValueSchema = z.object({
 }).strict();
 
 export const SETUP_INTAKE_CHANNELS = ["slack", "linear", "jira", "github_issue", "tracker", "other"] as const;
-export const SetupIntakeValueSchema = z.object({ channel: z.enum(SETUP_INTAKE_CHANNELS), hint: z.string().trim().min(1).max(200) }).strict();
+/**
+ * One place work is asked for, as the setup agent proposes it. `system` names a team's own tracker (a `tracker` channel); `connection` names an org connection (a name, never an address or a secret);
+ * `label` is the label that asks for work (a routing hint only: whether work starts depends on who put it on, never on the label). The approval card is what turns this into an intake source.
+ */
+export const SetupIntakeValueSchema = z.object({
+  channel: z.enum(SETUP_INTAKE_CHANNELS), hint: z.string().trim().min(1).max(200),
+  system: IntakeSystemSchema.optional(),
+  connection: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/, "a connection is a name or id, never an address").optional(),
+  label: z.string().trim().min(1).max(100).regex(/^[^\p{Cc}\p{Cf}]+$/u, "one plain line").optional(),
+}).strict();
 
 export const SetupAllowedDomainValueSchema = z.string().max(253).refine((value) => value === value.toLowerCase() && isAllowedDomain(value), "not a domain the project settings accept");
 export const SetupSecretValueSchema = z.object({ name: z.string().regex(SECRET_NAME_PATTERN), why: z.string().max(300) }).strict();
 
+export type SetupIntakeValue = z.infer<typeof SetupIntakeValueSchema>;
 export type SetupRepositoryValue = z.infer<typeof SetupRepositoryValueSchema>;
 export type SetupCommandsValue = z.infer<typeof SetupCommandsValueSchema>;
 export type SetupDevcontainerValue = z.infer<typeof SetupDevcontainerValueSchema>;
