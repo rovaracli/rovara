@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ASK_RETENTION_DAYS, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askMentionKey, sessionAskKey, type OrgId, type SessionId } from "../../packages/contracts/src/index.js";
 import {
-  ASK_MENTION_TAGS_MAX, ASK_SWEEP_LOOKBACK_DAYS, ASK_TTL_SECONDS, FORMER_MEMBER_MENTION, askPersonTag, askQuestionHash, eraseAskPerson, moveAsksOnMerge, readAskAsAsker, sweepExpiredAsks, writeAsk, type AskWriteInput,
+  ASK_MENTION_TAGS_MAX, ASK_SWEEP_LOOKBACK_DAYS, ASK_TTL_SECONDS, FORMER_MEMBER_MENTION, askPersonTag, askQuestionHash, eraseAskPerson, moveAsksOnMerge, readAskAsAsker, scrubAskText, sweepExpiredAsks, writeAsk, type AskWriteInput,
 } from "../../packages/broker/src/agent-sessions/ask-store.js";
 import { erasePerson } from "../../packages/broker/src/team-record/erase.js";
 import { ORG_A as RECORD_ORG, world as recordWorld } from "../support/team-record-core.js";
@@ -30,9 +30,10 @@ const HASH_KEY = ["ask", "hash", "key", "for", "tests", "only"].join("-");
 function world() {
   const db = new FakeDynamoDb();
   const erased = new Set<string>();
+  const erasedAliases: Array<{ developerId: string; names: string[]; handles?: string[] }> = [];
   const checks = { count: 0, eraseOnCheck: undefined as undefined | { at: number; who: string } };
   const deps = {
-    documentClient: db, tableName: "state", questionHashKey: HASH_KEY,
+    documentClient: db, tableName: "state", questionHashKey: HASH_KEY, erasedPeople: async () => erasedAliases,
     isErased: async (developerId: string) => {
       checks.count += 1;
       if (checks.eraseOnCheck !== undefined && checks.count === checks.eraseOnCheck.at) erased.add(checks.eraseOnCheck.who);
@@ -44,7 +45,7 @@ function world() {
   });
   const everything = () => db.find(() => true);
   const text = () => JSON.stringify(everything());
-  return { db, deps, ask, everything, text, erased, checks };
+  return { db, deps, ask, everything, text, erased, checks, erasedAliases };
 }
 
 describe("what is stored, and for how long", () => {
@@ -214,8 +215,8 @@ describe("the keys", () => {
 
 describe("what the stored words never hold (I6, m8)", () => {
   const PEOPLE = [
-    { developerId: SAM, names: ["Sam Okafor", "sokafor", "sam.okafor@example.test", "U0SAMOKAF1"] },
-    { developerId: ERIN, names: ["Erin Vale", "evale-dev"] },
+    { developerId: SAM, names: ["Sam Okafor"], handles: ["sokafor", "sam.okafor@example.test", "U0SAMOKAF1"] },
+    { developerId: ERIN, names: ["Erin Vale"], handles: ["evale-dev"] },
   ];
 
   it("replaces a member's real name, handle, email and Slack id by their label, in the question and the answer, case-insensitively and as whole words only", async () => {
@@ -318,7 +319,7 @@ describe("an erased person is not brought back (I7)", () => {
   it("the team record's person erasure includes the Asks step: the Asks are gone and the step is reported done", async () => {
     const rw = recordWorld();
     const d = deleteDeps(rw);
-    const deps = { documentClient: rw.db, tableName: "TeamRecord", questionHashKey: HASH_KEY, isErased: async () => false };
+    const deps = { documentClient: rw.db, tableName: "TeamRecord", questionHashKey: HASH_KEY, erasedPeople: async () => [], isErased: async () => false };
     await writeAsk(deps, { edition: "enterprise", orgId: RECORD_ORG, sessionId: SESSION_1, askId: askId("1"), audience: "web", askedBy: ERIN, question: QUESTION, answer: ANSWER, contextBytes: 1, model: "m", nowMs: NOW });
     await writeAsk(deps, { edition: "enterprise", orgId: RECORD_ORG, sessionId: SESSION_1, askId: askId("2"), audience: "web", askedBy: SAM, question: "q2", answer: `${personLabel(ERIN)} did it`, contextBytes: 1, model: "m", nowMs: NOW });
     const result = await erasePerson(d.deps, RECORD_ORG, { developerId: ERIN, projects: ["web"] }, "ask-erase-1");
@@ -393,5 +394,82 @@ describe("the 30 days hold in every environment (m3)", () => {
     await w.ask({ orgId: ORG_B, askId: askId("2") });
     await sweepExpiredAsks(w.deps, ORG_A, NOW + 40 * DAY);
     expect(w.db.get(sessionAskKey(ORG_B, SESSION_1, askId("2")))).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Fix round 2
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+describe("names are matched after normalising, and common words are left alone (I6, round 2)", () => {
+  const SAMP = { developerId: SAM, names: ["Sam Okafor"], handles: ["sokafor"] };
+  const MARK = { developerId: ERIN, names: ["Mark Vale"], handles: ["mvale-dev"] };
+  const label = personLabel(SAM);
+  const scrub = (text: string, people = [SAMP], erased: string[] = []) => scrubAskText(text, people, new Set(erased));
+
+  it.each([
+    ["two spaces", "Sam  Okafor"], ["a line wrap", "Sam\nOkafor"], ["a tab and wrap", "Sam \t\n Okafor"], ["reversed with a comma", "Okafor, Sam"], ["reversed without a comma", "Okafor Sam"],
+    ["upper case", "SAM OKAFOR"], ["a hyphen", "sam-okafor"], ["an underscore", "sam_okafor"], ["no separator", "SamOkafor"], ["a dot", "sam.okafor"],
+    ["a zero-width space", "Sam​ Okafor"], ["a zero-width joiner inside", "Sa‍m Okafor"], ["a soft hyphen", "Sam Oka­for"], ["decomposed accents", "Sám Okafor"], ["precomposed accents", "Sám Okáfor"],
+    ["Cyrillic look-alikes", "Sаm Okаfor"], ["Greek look-alikes", "Sam Οkafor"], ["full-width letters", "Ｓａｍ Ｏｋａｆｏｒ"], ["a percent-encoded space", "see /people/Sam%20Okafor/profile"], ["a plus for a space", "Sam+Okafor"],
+    ["an @mention of the first name", "ping @sam about it"], ["the handle", "owner sokafor"], ["the handle as a mention", "cc @sokafor"],
+  ])("replaces %s", (_label, written) => {
+    const out = scrub(`before ${written} after`);
+    expect(out, written).toContain(label);
+    expect(out.toLowerCase(), written).not.toContain("okafor");
+    expect(out.toLowerCase(), written).not.toMatch(/\bsam\b(?!\s*p_)/u);
+    expect(out.startsWith("before ")).toBe(true);
+    expect(out.endsWith(" after") || out.includes(" after")).toBe(true);
+  });
+
+  it("does not mangle: a first name or a common word alone is left as it is, with or without the surname elsewhere in the text", () => {
+    const plain = "mark the file, then Mark it done; the sample and the okay path stay";
+    expect(scrub(plain, [MARK])).toBe(plain);
+    expect(scrub("Mark Vale marked it", [MARK])).toBe(`${personLabel(ERIN)} marked it`);
+    expect(scrub("Vale, Mark approved", [MARK])).toBe(`${personLabel(ERIN)} approved`);
+    expect(scrub("ping @mark please, then mark the file", [MARK])).toBe(`ping ${personLabel(ERIN)} please, then mark the file`);
+    // A one-word display name that is a dictionary word is replaced only as a mention.
+    const solo = { developerId: SAM, names: ["Mark"] };
+    expect(scrub("mark the file; Mark said hi", [solo])).toBe("mark the file; Mark said hi");
+    expect(scrub("thanks @Mark", [solo])).toBe(`thanks ${label}`);
+    // Words that merely contain a name are not touched (whole words only).
+    expect(scrub("the sokaforish module and Samoan food", [SAMP])).toBe("the sokaforish module and Samoan food");
+    // Ordinary text keeps its line breaks and punctuation.
+    expect(scrub("line one\n\n- item two, (done)", [SAMP])).toBe("line one\n\n- item two, (done)");
+  });
+
+  it("scrubs the same person written several ways in one text, and two people at once, without touching the words around them", () => {
+    const out = scrub("Okafor, Sam met Mark  Vale; sam-okafor and @sokafor agreed", [SAMP, MARK]);
+    expect(out).toBe(`${label} met ${personLabel(ERIN)}; ${label} and ${label} agreed`);
+  });
+
+  it("a name written as a percent-encoded run inside a URL is replaced, and a URL with no name is left byte for byte", () => {
+    expect(scrub("https://example.test/p?q=Sam%20Okafor&x=1")).toContain(label);
+    const url = "https://example.test/a%2Fb?x=caf%C3%A9&y=1";
+    expect(scrub(url)).toBe(url);
+  });
+
+  it("an erased person is named @former-member in every spelling, including the label a turn gave them", () => {
+    expect(scrub("Okafor, Sam and sam-okafor and @sokafor and " + label, [SAMP], [SAM])).toBe(`${FORMER_MEMBER_MENTION} and ${FORMER_MEMBER_MENTION} and ${FORMER_MEMBER_MENTION} and ${FORMER_MEMBER_MENTION}`);
+  });
+});
+
+describe("every erased person is scrubbed, looked up on the server, not only those the caller passes in (I6, round 2)", () => {
+  it("names an erased person as @former-member although the caller passed no people at all", async () => {
+    const w = world();
+    w.erasedAliases.push({ developerId: "c".repeat(64), names: ["Cleo Brandt"], handles: ["cbrandt", "cleo.brandt@example.test"] });
+    await w.ask({ askedBy: SAM, people: [], question: "did Cleo Brandt (cbrandt) sign off?", answer: "Brandt, Cleo said yes; mail cleo.brandt@example.test" });
+    const record = w.db.get(sessionAskKey(ORG_A, SESSION_1, askId("1")))!;
+    expect(record.question).toBe(`did ${FORMER_MEMBER_MENTION} (${FORMER_MEMBER_MENTION}) sign off?`);
+    expect(record.answer).toBe(`${FORMER_MEMBER_MENTION} said yes; mail ${FORMER_MEMBER_MENTION}`);
+    expect(w.text().toLowerCase()).not.toContain("brandt");
+    expect(w.text()).not.toContain(askPersonTag("c".repeat(64)));
+  });
+
+  it("refuses the write when the erased list cannot be read", async () => {
+    const w = world();
+    const deps = { ...w.deps, erasedPeople: async () => { throw new Error("alias store down"); } };
+    await expect(writeAsk(deps, { edition: "enterprise", orgId: ORG_A, sessionId: SESSION_1, askId: askId("1"), audience: "web", askedBy: SAM, question: "q", answer: "a", contextBytes: 1, model: "m", nowMs: NOW })).rejects.toThrow(/alias store down/u);
+    expect(w.everything()).toEqual([]);
   });
 });

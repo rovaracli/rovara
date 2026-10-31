@@ -323,3 +323,29 @@ describe("audit builders", () => {
     expect(auditOccurrence("web", "2026-10-31")).toBe(JSON.stringify(["web", "2026-10-31"]));
   });
 });
+
+describe("a prefill value that looks like a secret is refused on every target (fix round 2)", () => {
+  // Built at run time, so no secret-shaped literal is in the source.
+  const SECRETS = [
+    `ghp_${"A1b2C3d4E5".repeat(4)}`, `AKIA${"ABCDEFGHIJKLMNOP"}`, `sk-ant-${"api03-A1b2C3d4E5f6G7h8".repeat(2)}`, `xoxb-${"1234567890"}-${"abcdefghijkl"}`, `github_pat_${"A1b2C3d4E5".repeat(6)}`,
+    `-----BEGIN ${"PRIVATE"} KEY-----`, `https://user:${"hunter2hunter2"}@example.com/x`, `password=${"hunter2hunter2"}`, `Bearer ${"abcdefghijklmnopqrstuvwxyz012345"}`, `.env/${"AKIA"}${"ABCDEFGHIJKLMNOP"}`,
+  ];
+  const settings = { kind: "settings_change", target: "setup_item", path: "devcontainer.configPath", from: null, to: "x/y.json", citations: ["docs/x.md"] };
+
+  it("drops a settings change whose `to` or `from` is a secret-shaped string, even on an allowed path that takes a file path", () => {
+    expect(parseDiagnosisProposals([settings]).proposals).toHaveLength(1);
+    for (const secret of SECRETS) {
+      expect(parseDiagnosisProposals([{ ...settings, to: secret }]), `to ${secret.slice(0, 12)}`).toEqual({ proposals: [], dropped: 1 });
+      expect(parseDiagnosisProposals([{ ...settings, from: secret }]), `from ${secret.slice(0, 12)}`).toEqual({ proposals: [], dropped: 1 });
+      expect(diagnosisPrefillAllowed("setup_item", "devcontainer.configPath", null, secret), secret.slice(0, 12)).toBe(false);
+    }
+  });
+
+  it("applies to every target and path, including the enum and boolean ones", () => {
+    for (const secret of SECRETS) {
+      for (const [target, path] of [["code_settings", "mergeMethod"], ["playbook", "e2e.traces"], ["setup_item", "devcontainer.configPath"], ["connector", "url"], ["model_access", "modelId"]] as const) {
+        expect(diagnosisPrefillAllowed(target, path, secret, secret), `${target} ${secret.slice(0, 8)}`).toBe(false);
+      }
+    }
+  });
+});

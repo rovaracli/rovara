@@ -19,6 +19,7 @@ import {
   type AskAudience, type AskRecord, type OrgId, type SessionId,
 } from "@agentx/contracts";
 import { neutralizeSlackMentions } from "./slack-mentions.js";
+import { scrubNames, type NamedPerson } from "./ask-names.js";
 import { FORMER_MEMBER_MENTION, askPersonTag, askRecordFromItem, eraseAskPerson, expiryDayOf, type AskItem, type AskStoreTable } from "./ask-erase.js";
 export { FORMER_MEMBER_MENTION, eraseAskPerson, moveAsksOnMerge, sweepExpiredAsks, askPersonTag, ASK_SWEEP_LOOKBACK_DAYS } from "./ask-erase.js";
 
@@ -42,6 +43,12 @@ export interface AskStoreDependencies extends AskStoreTable {
   questionHashKey: string | Uint8Array;
   /** Whether a person has been erased (the team record's erased marker). Read before and after a write; an answer that cannot be read refuses the write. */
   isErased(developerId: string): Promise<boolean>;
+  /**
+   * Every erased person of this org that still has to be kept out of new words, with the names and handles they were known by, looked up on the server (never taken from the caller). Each is named
+   * "@former-member" wherever they appear, whether or not the caller passed them in `people`. An answer that cannot be read refuses the write. The wiring decides how long and in what form the
+   * aliases are kept after an erasure (privacy review): the list may be short-lived, but it must cover the window in which an answer can still be in flight.
+   */
+  erasedPeople(): Promise<readonly AskPerson[]>;
 }
 
 /** A keyed hash of the question: it only recognises the same Ask again, and cannot be looked up in a table of questions without the key. */
@@ -50,8 +57,8 @@ export function askQuestionHash(key: string | Uint8Array, askId: string, questio
   return createHmac("sha256", key).update(`ask-question\0${askId}\0${question}`, "utf8").digest("hex");
 }
 
-/** A member whose name may appear in the Ask's words. `names` is everything the person is called: display name, GitHub login, email, Slack and Linear ids. */
-export interface AskPerson { developerId: string; names: readonly string[] }
+/** A member whose name may appear in the Ask's words: display `names` and specific `handles` (logins, emails, Slack and Linear ids). See `ask-names.ts` for what each is matched as. */
+export type AskPerson = NamedPerson;
 
 export interface AskWriteInput {
   edition: Edition;
@@ -70,19 +77,12 @@ export interface AskWriteInput {
   people?: readonly AskPerson[] | undefined;
 }
 
-const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-
 /**
  * The words as they are stored: secrets redacted, Slack mentions and email addresses made neutral, and every known member's names replaced by their label (or by "@former-member" for an erased
- * member). Longest names first, matched as whole words and without regard to case.
+ * member), matched after normalising (see `ask-names.ts`).
  */
 export function scrubAskText(text: string, people: readonly AskPerson[], erased: ReadonlySet<string>): string {
-  let out = neutralizeSlackMentions(redactText(text));
-  const names = people.flatMap((person) => person.names.map((name) => ({ name: name.trim(), person }))).filter((entry) => entry.name.length >= 2).sort((a, b) => b.name.length - a.name.length);
-  for (const { name, person } of names) {
-    const replacement = erased.has(person.developerId) ? FORMER_MEMBER_MENTION : `person ${askPersonTag(person.developerId)}`;
-    out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRegex(name)}(?![\\p{L}\\p{N}_])`, "giu"), replacement);
-  }
+  let out = scrubNames(neutralizeSlackMentions(redactText(text)), people, (developerId) => (erased.has(developerId) ? FORMER_MEMBER_MENTION : `person ${askPersonTag(developerId)}`));
   // A member who is erased may also appear as the label an earlier turn gave them.
   for (const developerId of erased) out = out.replace(new RegExp(`(?:person )?${askPersonTag(developerId)}\\b`, "gu"), FORMER_MEMBER_MENTION);
   return out.replace(EMAIL, "@member");
@@ -127,8 +127,9 @@ const conditionFailed = (error: unknown): boolean => {
  */
 export async function writeAsk(deps: AskStoreDependencies, input: AskWriteInput): Promise<"written" | "exists" | "erased"> {
   if (input.askedBy !== undefined && await deps.isErased(input.askedBy)) return "erased";
-  const people = input.people ?? [];
-  const erased = new Set<string>();
+  const known = await deps.erasedPeople();
+  const people = [...(input.people ?? []), ...known.filter((alias) => !(input.people ?? []).some((person) => person.developerId === alias.developerId))];
+  const erased = new Set<string>(known.map((alias) => alias.developerId));
   for (const person of people) if (await deps.isErased(person.developerId)) erased.add(person.developerId);
   const scrubbed = { question: scrubAskText(input.question, people, erased), answer: scrubAskText(input.answer, people, erased) };
   const record = askRecordOf(input, deps.questionHashKey, scrubbed);

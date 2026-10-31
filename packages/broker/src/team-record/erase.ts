@@ -216,7 +216,7 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
   async asks(context) {
     if (context.who.developerId === undefined) return true;
     for (let pass = 0; pass < ASK_ERASE_PASSES_PER_RUN; pass += 1) {
-      const result = await eraseAskPerson(context.deps.table, context.orgId, context.who.developerId, { maxItems: Math.min(context.budget.maxItems, 200) });
+      const result = await eraseAskPerson(context.deps.table, context.orgId, context.who.developerId, { maxItems: Math.min(context.budget.maxItems, 200) }, context.ids);
       if (result.complete) return true;
     }
     return false;

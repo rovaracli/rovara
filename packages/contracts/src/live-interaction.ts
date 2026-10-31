@@ -5,6 +5,7 @@
 // shapes holds fixed codes, ids and counts only.
 import { z } from "zod";
 import { SessionIdSchema } from "./browser-ids.js";
+import { redactText } from "./redaction.js";
 import { sha256Hex } from "./web-hash.js";
 
 // This file is part of the browser entry (the task view, the session view and the health rows carry an ErrorRef), so it imports no Node module: `sha256Hex` is the web-safe hash, the same digest.
@@ -23,6 +24,14 @@ export const LIVE_INTERACTION_FLAGS = {
   fix: { code: "fd", variable: "LIVE_FIX_ENABLED" },
 } as const;
 export type LiveInteractionFlagKey = keyof typeof LIVE_INTERACTION_FLAGS;
+
+/**
+ * HARD DEPLOY GATES: what must be wired before a switch may exist in the deploy (stack parameter, CLI key, broker setting). `tests/contract/live-interaction-deploy-gate.test.ts` fails the build as
+ * soon as the ask switch is added to a deploy file while either item is missing:
+ *  - `asks_erase_step`: the team-record person erasure runs the `asks` step (a person's Asks and their label in other answers go), and
+ *  - `daily_ask_sweep`: a scheduled job calls `sweepExpiredAsks` for every org at least daily, so the 30 days hold in environments whose table has no TTL.
+ */
+export const LIVE_INTERACTION_DEPLOY_GATES = { ask: ["asks_erase_step", "daily_ask_sweep"] } as const;
 
 /** A switch is on only when its value is exactly "1". Anything else (missing, empty, "true", " 1") is off. */
 export function liveInteractionFlagOn(value: string | undefined): boolean {
@@ -342,6 +351,8 @@ export const DIAGNOSIS_PREFILL_ALLOW: Readonly<Record<(typeof DIAGNOSIS_SETTINGS
 const RELATIVE_PATH = /^(?!.*\.\.)[A-Za-z0-9_.][A-Za-z0-9_./-]{0,199}$/u;
 
 function prefillValueOk(rule: PrefillValue, value: unknown): boolean {
+  // A value that redaction would change looks like a secret (a token, a key, a credential in a URL): never prefilled, on any target or path.
+  if (typeof value === "string" && redactText(value) !== value) return false;
   if (rule.kind === "boolean") return typeof value === "boolean";
   if (rule.kind === "enum") return typeof value === "string" && rule.values.includes(value);
   return typeof value === "string" && RELATIVE_PATH.test(value) && !value.startsWith("/");

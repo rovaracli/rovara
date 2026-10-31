@@ -263,7 +263,7 @@ describe("two members are merged", () => {
 
   it("moves the duplicate's Asks to the survivor, so erasing the survivor finds them (live interaction I7)", async () => {
     const { w, zedsOwn } = setup();
-    const ask = (askId: string, askedBy: string, answer: string) => writeAsk({ documentClient: w.db, tableName: "state", questionHashKey: "k".repeat(32), isErased: async () => false },
+    const ask = (askId: string, askedBy: string, answer: string) => writeAsk({ documentClient: w.db, tableName: "state", questionHashKey: "k".repeat(32), erasedPeople: async () => [], isErased: async () => false },
       { edition: "enterprise", orgId: ORG_A, sessionId: zedsOwn.sessionId, askId, audience: "web", askedBy, question: "q", answer, contextBytes: 1, model: "m", nowMs: T0 });
     await ask(`ask_${"1".repeat(20)}`, ZED, "ANSWER-OF-ZED");
     await ask(`ask_${"2".repeat(20)}`, MIA, `${personLabel(ZED)} approved`);
