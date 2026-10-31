@@ -19,7 +19,7 @@ function setup(autoEnabled = true) {
   const audit = new Audit();
   const group = { complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner", "ann", "bob"], lastEligibleLossAtMs: null };
   const deps: Tier0Deps = { settings: store, changes: store, audit, authority: { eligibility: async () => group }, now: clock.now, autoApplyEnabled: () => autoEnabled };
-  return { w, store, deps, clock, audit, reader: dynamoLearningSettings(w.table, store, () => autoEnabled) };
+  return { w, store, deps, clock, audit, reader: dynamoLearningSettings(w.table, store) };
 }
 
 describe("the stored setting and its proposals", () => {
@@ -86,7 +86,7 @@ describe("the whole path, through the settings reader", () => {
     expect((await resolveLearning(reader, ORG_A, "web")).mode).toBe("Collect");
     w.db.set({ ...learningModeKey(ORG_A, "web"), entityType: "TEAM_RECORD_MODE", mode: "banana" });
     expect((await resolveLearning(reader, ORG_A, "web")).mode).toBe("Off");
-    const broken = dynamoLearningSettings({ documentClient: { send: async () => { throw new Error("down"); } }, tableName: "x" }, new DynamoTier0Settings(w.table), () => true);
+    const broken = dynamoLearningSettings({ documentClient: { send: async () => { throw new Error("down"); } }, tableName: "x" }, new DynamoTier0Settings(w.table));
     expect((await resolveLearning(broken, ORG_A, "web")).mode).toBe("Off");
   });
 });

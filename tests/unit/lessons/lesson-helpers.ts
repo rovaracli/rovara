@@ -12,6 +12,10 @@ import type { CodeFacts } from "../../../packages/broker/src/lessons/ports.js";
 import { pathsToVerify, type VerifiedMaterial } from "../../../packages/broker/src/lessons/render.js";
 import { classifyTier as realClassifyTier, type TierContext, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 
+import { setAutoApplyGate } from "../../../packages/broker/src/lessons/policy.js";
+// The learning tests exercise the automatic path too, so the gate is open here; the gate's own tests close it (clamp-auto.test.ts).
+setAutoApplyGate(() => true);
+
 export const WS = "org_aaaaaaaaaaaaaaaaaaaa";
 export const PROJECT = "proj-1";
 export const KEY = { workspaceId: WS, project: PROJECT };
