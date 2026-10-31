@@ -44,7 +44,7 @@ import { egressStatusWarnings, putEgressDomains, readEgressDomains, type EgressD
 export interface ProjectSettingsCaller { developerId: string; orgId: OrgId; orgRole: OrgRole }
 
 /** The repository GitHub's App sees, as `getRepositoryIdentity` describes it. */
-export interface RepositoryIdentity { fullName: string; defaultBranch?: string | undefined }
+export interface RepositoryIdentity { fullName: string; defaultBranch?: string | undefined; repositoryId?: number | undefined }
 
 export interface ProjectSettingsDependencies<Caller extends ProjectSettingsCaller = ProjectSettingsCaller> {
   documentClient: { send(command: unknown): Promise<unknown> };

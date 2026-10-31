@@ -16,7 +16,7 @@ import {
 import { META_CHECKOUT_MAX_FILES, listMaterialized, metaPathWanted, parseTreeListing } from "../../packages/worker/src/meta-checkout.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { prepareWorkspace, preparedBaseResult, type RepositoryMaterializer } from "../../packages/worker/src/prepare.js";
-import { META_PREPARE_FEATURE, metaPrepareFields, metaPrepareProblem, parseKnowledgeCommit } from "../../packages/broker/src/meta-repo/prepare-meta.js";
+import { META_PREPARE_FEATURE, knowledgeCommitToStore, metaPrepareFor, metaPrepareProblem, parseKnowledgeCommit, taskPreparedUpdate } from "../../packages/broker/src/meta-repo/prepare-meta.js";
 
 const execFileAsync = promisify(execFile);
 const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
@@ -66,7 +66,7 @@ async function fixture(options: { files?: Record<string, string>; links?: Record
     await execFileAsync("git", ["clone", "--quiet", "--no-checkout", pathToFileURL(source).href, target], { env: gitEnv });
   };
   const workspace = () => mkdtemp(join(root, "ws-"));
-  const metaRequest = { repository: { name: "service-meta", url: "https://github.com/acme/service-meta.git", path: "repo/service-meta", defaultBranch: "main", credentialRef: "github-app" }, paths: [".kiro/steering", ".agents/skills", "AGENTS.md"] };
+  const metaRequest = { repository: { name: "service-meta", url: "https://github.com/acme/service-meta.git", path: "repo/service-meta", defaultBranch: "main", credentialRef: "github-app" }, paths: [".kiro/steering", ".agents/skills", "AGENTS.md"], commit: meta.head };
   // What a worker is sent: the project without the pure meta repository.
   const workerProject = StoredProjectDefinitionSchema.parse({ ...project, repositories: [{ name: "api", url: project.repositories[0]!.url, path: "repo/api", defaultBranch: "main", credentialRef: "github-app" }] });
   return { root, meta, code, project, workerProject, cloned, materializer, workspace, metaRequest };
@@ -94,15 +94,45 @@ describe("the meta repository in the workspace", () => {
     expect(result.knowledgeCommit).toBe(f.meta.head);
   });
 
-  it("pins the commit it first resolved: a push to the meta repo later does not move a prepared workspace", async () => {
+  it("reads exactly the commit the broker named, even when the branch has moved on since", async () => {
     const f = await fixture();
     const rootPath = await f.workspace();
-    const first = await prepareWorkspace({ rootPath, project: f.workerProject, readOnly: true, materializer: f.materializer, meta: f.metaRequest });
-    await writeFile(join(f.meta.dir, "AGENTS.md"), "# changed\n", "utf8");
+    // The meta repo's branch moves before the worker clones: the broker pinned the earlier commit.
+    await writeFile(join(f.meta.dir, "AGENTS.md"), "# changed later\n", "utf8");
     await git(f.meta.dir, "commit", "--quiet", "-am", "later");
-    const again = await prepareWorkspace({ rootPath, project: f.workerProject, readOnly: true, materializer: f.materializer, meta: f.metaRequest });
-    expect(again.meta?.resolvedCommit).toBe(first.meta?.resolvedCommit);
+    const later = await git(f.meta.dir, "rev-parse", "HEAD");
+    expect(later).not.toBe(f.meta.head);
+    const manifest = await prepareWorkspace({ rootPath, project: f.workerProject, readOnly: true, materializer: f.materializer, meta: f.metaRequest });
+    expect(manifest.meta?.resolvedCommit).toBe(f.meta.head);
+    expect(preparedBaseResult(manifest).knowledgeCommit).toBe(f.meta.head);
     expect(await readFile(join(rootPath, "repo/service-meta/AGENTS.md"), "utf8")).toBe("# team rules\n");
+  });
+
+  it("refuses a commit the clone does not hold, one that is not on the default branch, and one that is not a full hash", async () => {
+    const f = await fixture();
+    const absent = { ...f.metaRequest, commit: "e".repeat(40) };
+    await expect(prepareWorkspace({ rootPath: await f.workspace(), project: f.workerProject, readOnly: true, materializer: f.materializer, meta: absent }))
+      .rejects.toThrow("does not hold the commit asked for on its default branch");
+    // A commit that exists in the repository but only on another branch.
+    await git(f.meta.dir, "checkout", "--quiet", "-b", "side");
+    await writeFile(join(f.meta.dir, "AGENTS.md"), "# side branch\n", "utf8");
+    await git(f.meta.dir, "commit", "--quiet", "-am", "side");
+    const side = await git(f.meta.dir, "rev-parse", "HEAD");
+    await git(f.meta.dir, "checkout", "--quiet", "main");
+    await expect(prepareWorkspace({ rootPath: await f.workspace(), project: f.workerProject, readOnly: true, materializer: f.materializer, meta: { ...f.metaRequest, commit: side } }))
+      .rejects.toThrow("does not hold the commit asked for on its default branch");
+    for (const bad of ["main", "abc123", "A".repeat(40)]) expect(PrepareMetaSchema.safeParse({ ...f.metaRequest, commit: bad }).success).toBe(false);
+  });
+
+  it("does not reuse a workspace prepared at another commit, nor take a knowledge commit from a manifest written before", async () => {
+    const f = await fixture();
+    const rootPath = await f.workspace();
+    await prepareWorkspace({ rootPath, project: f.workerProject, readOnly: true, materializer: f.materializer, meta: f.metaRequest });
+    await writeFile(join(f.meta.dir, "AGENTS.md"), "# changed later\n", "utf8");
+    await git(f.meta.dir, "commit", "--quiet", "-am", "later");
+    const later = await git(f.meta.dir, "rev-parse", "HEAD");
+    await expect(prepareWorkspace({ rootPath, project: f.workerProject, readOnly: true, materializer: f.materializer, meta: { ...f.metaRequest, commit: later } }))
+      .rejects.toThrow("another commit than the one asked for");
   });
 
   it("makes the files read-only", async () => {
@@ -200,33 +230,27 @@ describe("the meta repository in the workspace", () => {
   });
 });
 
-describe("the contract and the delivery guard", () => {
-  const request = { repository: { name: "service-meta", url: "https://github.com/acme/service-meta.git", path: "repo/service-meta", defaultBranch: "main", credentialRef: "github-app" }, paths: [".kiro/steering"] };
+describe("the contract and the broker's side", () => {
+  const COMMIT = "a".repeat(40);
+  const request = { repository: { name: "service-meta", url: "https://github.com/acme/service-meta.git", path: "repo/service-meta", defaultBranch: "main", credentialRef: "github-app" }, paths: [".kiro/steering"], commit: COMMIT };
 
-  it("accepts a well-formed request and refuses a path out of the repo, a duplicate, an empty list, a URL with a password and an unknown key", () => {
+  it("accepts a well-formed request and refuses a path out of the repo, a duplicate, an empty list, a URL with a password, no commit and an unknown key", () => {
     expect(PrepareMetaSchema.safeParse(request).success).toBe(true);
     expect(PrepareMetaSchema.safeParse({ ...request, paths: ["../x"] }).success).toBe(false);
     expect(PrepareMetaSchema.safeParse({ ...request, paths: [".git/config"] }).success).toBe(false);
     expect(PrepareMetaSchema.safeParse({ ...request, paths: ["a", "a"] }).success).toBe(false);
     expect(PrepareMetaSchema.safeParse({ ...request, paths: [] }).success).toBe(false);
     expect(PrepareMetaSchema.safeParse({ ...request, repository: { ...request.repository, url: "https://u:p@github.com/a/b.git" } }).success).toBe(false);
+    expect(PrepareMetaSchema.safeParse({ ...request, commit: undefined }).success).toBe(false);
     expect(PrepareMetaSchema.safeParse({ ...request, token: "x" }).success).toBe(false);
   });
 
-  it("is part of the prepare invocation, which a worker without the field would refuse (strict), so only a worker that lists the feature is sent it", () => {
+  it("is part of the prepare invocation, which a worker without the field would refuse (strict)", () => {
     const base = { protocolVersion: 1, operationId: "0b9f4c1e-6a56-4a52-8a8e-2f3a8d9a8c11", workspaceId: "1b9f4c1e-6a56-4a52-8a8e-2f3a8d9a8c11", fence: 1, projectRevision: 1, callbackCapability: "c".repeat(40), kind: "prepare" };
     const project = { name: "payments", revision: 1, repositories: [{ name: "api", url: "https://github.com/acme/api.git", path: "repo/api", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [], orchestratorInstructions: "x" };
     expect(WorkerInvocationSchema.safeParse({ ...base, payload: { project, repositoryGrant: "g", meta: request } }).success).toBe(true);
     expect(WorkerInvocationSchema.safeParse({ ...base, payload: { project, repositoryGrant: "g" } }).success).toBe(true);
     expect(WorkerInvocationSchema.safeParse({ ...base, payload: { project, repositoryGrant: "g", meta: { ...request, paths: [] } } }).success).toBe(false);
-  });
-
-  it("takes a knowledge commit only when it is a full hash", () => {
-    expect(parseKnowledgeCommit({ knowledgeCommit: "a".repeat(40) })).toBe("a".repeat(40));
-    expect(parseKnowledgeCommit({ knowledgeCommit: "a".repeat(64) })).toBe("a".repeat(64));
-    for (const bad of ["abc123", "A".repeat(40), "main", 5, null, undefined]) expect(parseKnowledgeCommit({ knowledgeCommit: bad })).toBeUndefined();
-    expect(parseKnowledgeCommit(null)).toBeUndefined();
-    expect(parseKnowledgeCommit("a".repeat(40))).toBeUndefined();
   });
 
   it("is advertised by the worker that implements it", () => {
@@ -240,35 +264,74 @@ describe("the contract and the delivery guard", () => {
       { name: "service-meta", url: "https://github.com/acme/service-meta.git", path: "repo/service-meta", defaultBranch: "main", credentialRef: "github-app", role: "meta" },
     ],
   });
+  const reader = (head: string | Error) => ({ calls: [] as Array<{ repositoryUrl: string; branch: string }>, async getHead(input: { repositoryUrl: string; branch: string }) { this.calls.push(input); if (head instanceof Error) throw head; return head; } });
+  const fail = async (promise: Promise<unknown>): Promise<string> => { try { await promise; return "ok"; } catch (error) { return `${(error as { code?: string }).code ?? "other"}: ${(error as Error).message}`; } };
 
-  it("builds the prepare fields for a project with a separate meta repo, only for a worker that lists the feature", () => {
-    const fields = metaPrepareFields(separate, [META_PREPARE_FEATURE]);
-    expect(fields).toMatchObject({ meta: { repository: { name: "service-meta", defaultBranch: "main" } } });
+  it("reads the meta repo's head itself and sends it, with the repository entry and the knowledge paths", async () => {
+    const heads = reader(COMMIT);
+    const fields = await metaPrepareFor(separate, heads, undefined);
+    expect(heads.calls).toEqual([{ orgId: undefined, repositoryUrl: "https://github.com/acme/service-meta.git", branch: "main" }]);
+    expect(fields.knowledgeCommit).toBe(COMMIT);
+    expect(fields.meta).toMatchObject({ commit: COMMIT, repository: { name: "service-meta", defaultBranch: "main" } });
     expect(fields.meta?.paths).toEqual(expect.arrayContaining([".kiro/steering", ".agents/skills", ".kiro/specs", "AGENTS.md", ".rovara"]));
     expect(PrepareMetaSchema.safeParse(fields.meta).success).toBe(true);
-    // An older worker is sent nothing (its strict schema would refuse the field), and the caller refuses the task start with a clear message instead of running without the team's rules.
-    expect(metaPrepareFields(separate, [])).toEqual({});
+  });
+
+  it("refuses to prepare when the head cannot be read, or is not a full hash, instead of running without the team's rules", async () => {
+    expect(await fail(metaPrepareFor(separate, reader(new Error("503 from github.com/secret-path")), undefined))).toMatch(/RUNTIME_UNAVAILABLE: Rovara can't read the project's meta repo just now/);
+    expect(await fail(metaPrepareFor(separate, reader("main"), undefined))).toMatch(/^RUNTIME_UNAVAILABLE/);
+    expect(await fail(metaPrepareFor(separate, undefined, undefined))).toMatch(/^RUNTIME_UNAVAILABLE/);
+    // The error carries none of the lower layer's words.
+    expect(await fail(metaPrepareFor(separate, reader(new Error("503 from github.com/secret-path")), undefined))).not.toContain("secret-path");
+  });
+
+  it("sends the credential no more than the repository entry needs, and never the pins", async () => {
+    const withPins = StoredProjectDefinitionSchema.parse({ ...separate, repositories: separate.repositories.map((entry) => ({ ...entry, installationId: 5, githubRepositoryId: 9 })) });
+    expect(JSON.stringify(await metaPrepareFor(withPins, reader(COMMIT), undefined))).not.toMatch(/installationId|githubRepositoryId|alsoCode|role/);
+  });
+
+  it("asks for nothing, and reads nothing, when the project has no meta repo or the meta repo is its own code", async () => {
+    const heads = reader(COMMIT);
+    const plain = StoredProjectDefinitionSchema.parse({ ...separate, repositories: [separate.repositories[0]] });
+    expect(await metaPrepareFor(plain, heads, undefined)).toEqual({});
+    const self = StoredProjectDefinitionSchema.parse({ ...separate, repositories: [{ ...separate.repositories[1], role: "meta", alsoCode: true }] });
+    expect(await metaPrepareFor(self, heads, undefined)).toEqual({});
+    expect(heads.calls).toEqual([]);
+    expect(metaPrepareProblem(plain, [])).toBeUndefined();
+    expect(metaPrepareProblem(self, [])).toBeUndefined();
     expect(metaPrepareProblem(separate, [])).toBe("This project's meta repo needs a newer worker. Ask an admin to upgrade Rovara.");
     expect(metaPrepareProblem(separate, [META_PREPARE_FEATURE])).toBeUndefined();
   });
 
-  it("sends the credential no more than the repository entry needs, and never the pins", () => {
-    const withPins = StoredProjectDefinitionSchema.parse({ ...separate, repositories: separate.repositories.map((entry) => ({ ...entry, installationId: 5, githubRepositoryId: 9 })) });
-    expect(JSON.stringify(metaPrepareFields(withPins, [META_PREPARE_FEATURE]))).not.toMatch(/installationId|githubRepositoryId|alsoCode|role/);
-  });
-
-  it("asks for nothing when the project has no meta repo, or the meta repo is its own code (it is cloned as code already)", () => {
-    const plain = StoredProjectDefinitionSchema.parse({ ...separate, repositories: [separate.repositories[0]] });
-    expect(metaPrepareFields(plain, [META_PREPARE_FEATURE])).toEqual({});
-    expect(metaPrepareProblem(plain, [])).toBeUndefined();
-    const self = StoredProjectDefinitionSchema.parse({ ...separate, repositories: [{ ...separate.repositories[1], role: "meta", alsoCode: true }] });
-    expect(metaPrepareFields(self, [META_PREPARE_FEATURE])).toEqual({});
-    expect(metaPrepareProblem(self, [])).toBeUndefined();
-  });
-
-  it("uses the knowledge paths a config names instead of the defaults", () => {
-    const fields = metaPrepareFields(separate, [META_PREPARE_FEATURE], { steering: ["docs/rules"], skills: [], specs: ["specs"], runbooks: [], keyDocs: ["ARCHITECTURE.md"] });
+  it("uses the knowledge paths a config names instead of the defaults", async () => {
+    const fields = await metaPrepareFor(separate, reader(COMMIT), undefined, { steering: ["docs/rules"], skills: [], specs: ["specs"], runbooks: [], keyDocs: ["ARCHITECTURE.md"] });
     expect(fields.meta?.paths).toEqual(expect.arrayContaining(["docs/rules", "specs", "ARCHITECTURE.md", "AGENTS.md"]));
     expect(fields.meta?.paths).not.toContain(".kiro/steering");
+  });
+
+  it("takes a knowledge commit only when it is a full hash", () => {
+    expect(parseKnowledgeCommit({ knowledgeCommit: COMMIT })).toBe(COMMIT);
+    for (const bad of ["abc123", "A".repeat(40), "main", 5, null, undefined]) expect(parseKnowledgeCommit({ knowledgeCommit: bad })).toBeUndefined();
+    expect(parseKnowledgeCommit(null)).toBeUndefined();
+  });
+
+  it("stores the commit the BROKER chose, and only when the worker reported exactly it", () => {
+    const other = "b".repeat(40);
+    expect(knowledgeCommitToStore(COMMIT, { knowledgeCommit: COMMIT })).toBe(COMMIT);
+    // The worker (or a manifest written before the task) names another commit: nothing is stored.
+    expect(knowledgeCommitToStore(COMMIT, { knowledgeCommit: other })).toBeUndefined();
+    expect(knowledgeCommitToStore(COMMIT, {})).toBeUndefined();
+    expect(knowledgeCommitToStore(COMMIT, null)).toBeUndefined();
+    // No choice by the broker (a prepare with no meta request): a report alone decides nothing.
+    expect(knowledgeCommitToStore(undefined, { knowledgeCommit: other })).toBeUndefined();
+    expect(knowledgeCommitToStore("main", { knowledgeCommit: "main" })).toBeUndefined();
+  });
+
+  it("writes one task update for the base commits and the knowledge commit: each set when present, removed when not", () => {
+    const base = [{ repositoryId: "api", baseCommitSha: COMMIT }];
+    expect(taskPreparedUpdate(base, COMMIT)).toEqual({ UpdateExpression: "SET preparedBase = :base, knowledgeCommit = :knowledgeCommit", ExpressionAttributeValues: { ":base": base, ":knowledgeCommit": COMMIT } });
+    expect(taskPreparedUpdate(base, undefined)).toEqual({ UpdateExpression: "SET preparedBase = :base REMOVE knowledgeCommit", ExpressionAttributeValues: { ":base": base } });
+    expect(taskPreparedUpdate(undefined, COMMIT)).toEqual({ UpdateExpression: "SET knowledgeCommit = :knowledgeCommit REMOVE preparedBase", ExpressionAttributeValues: { ":knowledgeCommit": COMMIT } });
+    expect(taskPreparedUpdate(undefined, undefined)).toEqual({ UpdateExpression: "REMOVE preparedBase, knowledgeCommit" });
   });
 });

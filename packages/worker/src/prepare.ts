@@ -247,6 +247,11 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     options.creationIdentity ?? "agentx-worker",
   );
 
+  // A finished workspace is reused as it is, so the meta repository it holds must be the one asked for now (a task never reads a commit the broker did not pin for it).
+  if (options.meta !== undefined && manifest.complete) {
+    if (manifest.meta === undefined) throw new Error("the workspace was prepared without the meta repository");
+    if (manifest.meta.resolvedCommit !== options.meta.commit) throw new Error("the workspace holds the meta repository at another commit than the one asked for");
+  }
   if (manifest.complete) {
     await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
     return manifest;
@@ -294,6 +299,10 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
       manifest = await writeManifest(canonicalRoot, withoutFailure(manifest));
     }
 
+    // The broker names the commit (`meta.commit`); a workspace prepared earlier at another one is not reused, so a task never reads a commit the broker did not pin for it.
+    if (options.meta !== undefined && manifest.meta !== undefined && manifest.meta.resolvedCommit !== options.meta.commit) {
+      throw new Error("the workspace holds the meta repository at another commit than the one asked for");
+    }
     if (options.meta !== undefined && manifest.meta === undefined) {
       manifest = await writeManifest(canonicalRoot, withoutFailure({ ...manifest, meta: await prepareMetaRepository(canonicalRoot, options.meta, options, materializer, runtimeBackingPath) }));
     }
@@ -392,7 +401,12 @@ async function prepareMetaRepository(
   await mkdir(resolve(destination, ".."), { recursive: true });
   const session = credentialSession(options, repository, await askCredential(), askCredential);
   await session.retrying(() => materializer(repository, destination, session.credential));
-  const commit = await resolveDefaultBranch(destination, entry.defaultBranch);
+  // The commit is the broker's. It must be in the clone and on the default branch (the head the broker read, or an ancestor of the head the clone sees), or nothing is read.
+  const head = await resolveDefaultBranch(destination, entry.defaultBranch);
+  const commit = meta.commit;
+  const present = await runIsolatedGit(destination, ["cat-file", "-e", `${commit}^{commit}`], { timeout: 30_000, maxBuffer: 4_096 }).then(() => true, () => false);
+  const onBranch = present && (commit === head || await runIsolatedGit(destination, ["merge-base", "--is-ancestor", commit, head], { timeout: 30_000, maxBuffer: 4_096 }).then(() => true, () => false));
+  if (!onBranch) throw new Error("the meta repository does not hold the commit asked for on its default branch");
   const done = await materializeMetaKnowledge(destination, commit, meta);
   await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
   return { name: entry.name, path: entry.path, defaultBranch: entry.defaultBranch, resolvedCommit: commit, files: done.files, bytes: done.bytes, skipped: done.skipped, completedAt: new Date().toISOString() };

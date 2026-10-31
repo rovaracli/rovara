@@ -2,7 +2,7 @@
 
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { CandidateManifestSchema, WEB_API_RUNTIME_PROFILE_ID, canonicalJson, SlackChannelIdSchema, SlackTeamIdSchema, agentXError, unhandledDeploymentMode, workspaceProjectIndexAttributes, type WorkspaceInstance, modelKey, orgProjectCatalogKey, projectMemberKey, type OrgId, cloudwatchRoleAccount } from "@agentx/contracts";
+import { CandidateManifestSchema, WEB_API_RUNTIME_PROFILE_ID, canonicalJson, SlackChannelIdSchema, SlackTeamIdSchema, agentXError, unhandledDeploymentMode, workspaceProjectIndexAttributes, type WorkspaceInstance, modelKey, orgProjectCatalogKey, projectMemberKey, type OrgId, cloudwatchRoleAccount, codeRepositoriesOf } from "@agentx/contracts";
 import { listWorkflowE2EReplayRecords, type ReplayRecord } from "../workflow-e2e-replay.js";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { z } from "zod";
@@ -330,7 +330,9 @@ export function issueRepositoryGrant(
     projectName: project.definition.name,
     workspaceId,
     operationId,
-    repositories: project.definition.repositories
+    // Meta repo lane A: a task never writes to the project's meta repository from a builder session, so no push grant names a meta repository that is not also code
+    // (a clone grant does: the worker brings it in read-only).
+    repositories: (access === "push" ? codeRepositoriesOf(project.definition) : project.definition.repositories)
       .filter((repository) => repositoryName === undefined || repository.name === repositoryName)
       .map((repository) => ({
       credentialRef: repository.credentialRef,

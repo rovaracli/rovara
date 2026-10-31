@@ -73,7 +73,7 @@ export function metaPathWanted(path: string, chosen: readonly string[]): boolean
 
 /**
  * Materializes the knowledge paths of an already cloned (`--no-checkout`) meta repository at `commit`, and makes the files read-only. `destination` is the repository's
- * folder. Git's index records exactly the files chosen, so `git status` shows the rest as absent rather than deleted work.
+ * folder. The clone is a normal `--no-checkout` one (full history), so the rest of the tree shows as staged deletions in `git status`, and every meta file is readable with `git show`: this is not a security boundary, and lane C reads the knowledge by object id at the pinned commit.
  */
 export async function materializeMetaKnowledge(destination: string, commit: string, meta: Pick<PrepareMeta, "paths">): Promise<MetaCheckoutResult> {
   if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(commit)) throw new MetaCheckoutRefusal("unreadable");

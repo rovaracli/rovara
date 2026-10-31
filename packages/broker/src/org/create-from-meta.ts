@@ -181,9 +181,9 @@ export async function createProjectFromMeta(deps: CreateFromMetaDependencies, ca
  * The route's own checks, then `createProjectFromMeta`: another install's projects are created by an administrator, and only an owner or admin creates one. The developer
  * routes call this where they call `createProject` today, when `isCreateFromMetaBody(body)` (wiring pending: `developer-routes.ts` is a hot file).
  */
-export async function createProjectFromMetaRoute(
-  deps: { cloud: boolean; createFromMeta?: (caller: CreateFromMetaCaller, input: CreateProjectFromMetaBody) => Promise<MetaProjectCreated> },
-  caller: CreateFromMetaCaller,
+export async function createProjectFromMetaRoute<Caller extends CreateFromMetaCaller>(
+  deps: { cloud: boolean; createFromMeta?: (caller: Caller, input: CreateProjectFromMetaBody) => Promise<MetaProjectCreated> },
+  caller: Caller,
   body: unknown,
 ): Promise<{ status: number; body: MetaProjectCreated }> {
   if (!deps.cloud) throw agentXError("FORBIDDEN", "projects on this install are created by an administrator; ask an administrator to run agentx project add");

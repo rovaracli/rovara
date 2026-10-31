@@ -189,7 +189,7 @@ import {
   putProjectMember,
   putProjectSlackChannel,
 } from "./developer-routes/project-members.js";
-import { listGithubRepositories, putProjectSettings } from "./developer-routes/project-settings.js";
+import { listGithubRepositories, projectMetaConfigRoute, putProjectSettings } from "./developer-routes/project-settings.js";
 import { listWorkspaces } from "./developer-routes/project-access.js";
 import {
   chainRouteDependenciesFor,
@@ -363,6 +363,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && appProject !== null) return getAppProject(deps, caller, appProject[1]!);
   const projectSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/settings$/.exec(url.pathname);
   if (request.method === "PUT" && projectSettingsRoute !== null) return putProjectSettings(deps, caller, projectSettingsRoute[1]!, jsonBody(request));
+  const metaConfigRoute = /^\/v1\/app\/projects\/([^/]+)\/meta-config(?:\/(apply|dismiss|check))?$/.exec(url.pathname);
+  if (metaConfigRoute !== null && (request.method === "GET" || request.method === "POST")) return projectMetaConfigRoute(deps, caller, metaConfigRoute[1]!, metaConfigRoute[2], request.method, request.method === "POST" ? jsonBody(request) : undefined);
   const projectMembersRoute = /^\/v1\/app\/projects\/([^/]+)\/members(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
   if (projectMembersRoute !== null) {
     if (request.method === "GET" && projectMembersRoute[2] === undefined) return getProjectMembers(deps, caller, projectMembersRoute[1]!);

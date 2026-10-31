@@ -36,7 +36,7 @@ export interface GithubTriggerDependencies extends EventMemoryDeps {
 }
 
 /** A push to the default branch of a project's meta repository. */
-export interface MetaPush { orgId: OrgId; project: string; commit: string; pushedAtMs: number }
+export interface MetaPush { orgId: OrgId; project: string; commit: string }
 
 /** Who to ask GitHub about: the pull request's or issue's own author (never the sender), in the repository's account. */
 export interface AuthorQuery {
@@ -102,12 +102,12 @@ const WorkflowRunBody = Common.extend({
   }).passthrough(),
 });
 
-const PushBody = Common.extend({
+const PushBody = z.object({
   ref: z.string().max(500),
   after: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
   deleted: z.boolean().optional(),
-  head_commit: z.object({ timestamp: z.string().max(64).optional() }).passthrough().nullable().optional(),
-});
+  repository: z.object({ id: z.number().int().positive(), default_branch: z.string().max(255).optional() }).passthrough(),
+}).passthrough();
 
 const log = (deps: Pick<EventMemoryDeps, "log">) => deps.log ?? ((event: string, fields: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", event, ...fields })));
 
@@ -417,18 +417,22 @@ export async function deliverGithubTriggerEvents(deps: GithubTriggerDependencies
 export async function githubMetaPushes(deps: Pick<GithubTriggerDependencies, "documentClient" | "tableName" | "log">, input: GithubTriggerInput): Promise<MetaPush[]> {
   const body = PushBody.safeParse(input.payload);
   if (!body.success || body.data.deleted === true || /^0+$/.test(body.data.after)) return [];
+  // Before any database work: only a push to the repository's own default branch can be a meta repo's config changing, and Rovara's own `agentx/*` branches are never one. Every push
+  // to every installed repository arrives here, so this is the cheap exit for nearly all of them. A payload that does not name its default branch is ignored (it always does).
+  const defaultBranch = body.data.repository.default_branch;
+  if (defaultBranch === undefined || defaultBranch.startsWith("agentx/") || body.data.ref !== `refs/heads/${defaultBranch}`) return [];
   const orgId = await orgOfInstallation(deps, input.installationId);
   if (orgId === undefined) {
     log(deps)("github.trigger_unbound", { installationId: input.installationId });
     return [];
   }
-  const stamp = body.data.head_commit?.timestamp === undefined ? Number.NaN : Date.parse(body.data.head_commit.timestamp);
   const pushes: MetaPush[] = [];
   for (const { project, definition } of await heldProjects(deps, orgId, input.installationId, body.data.repository.id)) {
     const meta = metaRepositoryOf(definition);
     if (meta === undefined || meta.githubRepositoryId !== body.data.repository.id) continue;
-    if (body.data.ref !== `refs/heads/${meta.defaultBranch}`) continue;
-    pushes.push({ orgId, project, commit: body.data.after, pushedAtMs: Number.isFinite(stamp) ? stamp : 0 });
+    // The project's own record of the default branch must agree with the payload's, so a branch rename is not taken for a config change.
+    if (meta.defaultBranch !== defaultBranch) continue;
+    pushes.push({ orgId, project, commit: body.data.after });
   }
   return pushes;
 }

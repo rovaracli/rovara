@@ -63,11 +63,16 @@ const ConfigRepositoryUrlSchema = z.string().max(2_048).superRefine((value, cont
 export const MetaConfigRepositorySchema = z.object({
   name: AgentXNameSchema,
   url: ConfigRepositoryUrlSchema,
+  /** The folder a repository gets is always `repo/<name>` (a tenant's file does not choose workspace folders); a file may repeat it, nothing else. */
   path: RelativeWorkspacePathSchema.optional(),
   defaultBranch: GitBranchNameSchema.optional(),
   /** Only `code` repositories are listed here: the meta repo is the one the file was read from. */
   role: z.literal("code").optional(),
-}).strict();
+}).strict().superRefine((repository, context) => {
+  if (repository.path !== undefined && repository.path !== `repo/${repository.name}`) {
+    context.addIssue({ code: "custom", path: ["path"], message: `a repository's folder is repo/${repository.name}` });
+  }
+});
 export type MetaConfigRepository = z.infer<typeof MetaConfigRepositorySchema>;
 
 /**
@@ -208,8 +213,16 @@ export function metaConfigProblems(error: z.ZodError): MetaConfigProblem[] {
 
 export type MetaConfigParse = { ok: true; config: MetaProjectConfig } | { ok: false; problems: MetaConfigProblem[] };
 
+/** A `__proto__` key anywhere in the raw value (checked before parsing, because a record parse may drop it and so hide it). Depth-bounded. */
+function hasProtoKey(value: unknown, depth = 0): boolean {
+  if (depth > 12 || typeof value !== "object" || value === null) return false;
+  if (Array.isArray(value)) return value.some((item) => hasProtoKey(item, depth + 1));
+  return Object.keys(value).some((key) => key === "__proto__" || hasProtoKey((value as Record<string, unknown>)[key], depth + 1));
+}
+
 /** An already-parsed JSON or YAML value as a config. Never throws. */
 export function parseMetaProjectConfig(value: unknown): MetaConfigParse {
+  if (hasProtoKey(value)) return { ok: false, problems: [{ path: "(file)", message: "has a reserved key" }] };
   const parsed = MetaProjectConfigSchema.safeParse(value);
   return parsed.success ? { ok: true, config: parsed.data } : { ok: false, problems: metaConfigProblems(parsed.error) };
 }
@@ -270,5 +283,10 @@ export const PrepareMetaSchema = z.object({
     credentialRef: AgentXNameSchema,
   }).strict(),
   paths: z.array(KnowledgePathSchema).min(1).max(64).refine((paths) => new Set(paths).size === paths.length, "paths must be unique"),
+  /**
+   * The commit to read: the meta repository's default-branch head, as the BROKER read it from GitHub when it built this invocation. The worker materializes exactly this commit
+   * (and refuses if its clone does not hold it or it is not on the default branch), so a task's `knowledgeCommit` is never the worker's own choice.
+   */
+  commit: z.string().regex(/^[a-f0-9]{40}$/),
 }).strict();
 export type PrepareMeta = z.infer<typeof PrepareMetaSchema>;

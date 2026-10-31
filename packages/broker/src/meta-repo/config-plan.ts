@@ -78,9 +78,13 @@ export interface PlanItem {
   kind: "add_repository" | "remove_repository" | "set_commands";
   repository?: string;
   url?: string;
+  /** For an added repository: the folder it gets in the workspace (always `repo/<name>`), shown so the maintainer sees what they apply. */
+  path?: string;
   /** For a command list: the project's commands now and the file's, one line each, as `repository: command`. At most 64. */
   before?: string[];
   after?: string[];
+  /** For a command list: how many of the project's commands the file removes (more before than after), so the app can say "removes N commands". */
+  removes?: number;
   /** The project's value was set by a person and differs from the file's: apply replaces it only when the maintainer names the field in `useFile`. */
   conflict?: "person_value";
   /** Applied only when the maintainer confirms it by name (a removal). */
@@ -120,7 +124,8 @@ const DISPLAY_LINES_MAX = 64;
 
 /** A repository's path in the project once the change is made: the file's own, or the default. */
 export function configRepositoryPath(entry: { name: string; path?: string | undefined }): string {
-  return entry.path ?? `repo/${entry.name}`;
+  // The config schema allows no other folder; this is the same rule where a plan is made from a stored config.
+  return `repo/${entry.name}`;
 }
 
 export interface DesiredCommands { commands: ProjectCommand[]; lines: string[]; problems: MetaConfigProblem[] }
@@ -139,7 +144,9 @@ export function desiredCommands(
   const problems: MetaConfigProblem[] = [];
   const timeout = section === "setup" ? SETUP_TIMEOUT : TEST_TIMEOUT;
   for (const repository of repositoriesAfter) {
-    const entry = section === "setup" ? config.setup?.[repository.name] : config.tests?.[repository.name]?.commands;
+    // Own properties only: a repository may be called `constructor`, which a plain lookup would find on the prototype.
+    const named = section === "setup" ? config.setup : config.tests;
+    const entry = named === undefined || !Object.hasOwn(named, repository.name) ? undefined : section === "setup" ? config.setup![repository.name] : config.tests![repository.name]!.commands;
     for (const [index, line] of (entry ?? []).entries()) {
       try {
         commands.push(parseCommandLine(line, repository.path, timeout));
@@ -191,7 +198,7 @@ export function planMetaConfigChange(input: { config: MetaProjectConfig; definit
       if (githubFullName(entry.url) === undefined) blocked = "unsupported_host";
       else if (shape === "self") blocked = "self_meta_project";
       else if (code.some((repository) => repository.name === entry.name) || meta.name === entry.name) blocked = "invalid";
-      items.push({ id: `repositories:add:${entry.name}`, field: "repositories", kind: "add_repository", repository: entry.name, url: entry.url, ...(blocked === undefined ? {} : { blocked }) });
+      items.push({ id: `repositories:add:${entry.name}`, field: "repositories", kind: "add_repository", repository: entry.name, url: entry.url, path: configRepositoryPath(entry), ...(blocked === undefined ? {} : { blocked }) });
       if (blocked === undefined) added.push({ name: entry.name, path: configRepositoryPath(entry) });
     }
     if (shape === "separate") {
@@ -222,6 +229,7 @@ export function planMetaConfigChange(input: { config: MetaProjectConfig; definit
       id: field, field, kind: "set_commands",
       before: currentLines(current, definition.repositories).slice(0, DISPLAY_LINES_MAX),
       after: desired.lines.slice(0, DISPLAY_LINES_MAX),
+      ...(current.length > desired.commands.length ? { removes: current.length - desired.commands.length } : {}),
       ...(personTyped ? { conflict: "person_value" as const } : {}),
     });
   }

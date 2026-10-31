@@ -13,6 +13,7 @@ import { z } from "zod";
 import {
   AgentXError,
   AgentXNameSchema,
+  META_CONFIG_MAX_BYTES,
   MetaProjectConfigSchema,
   ProjectDefinitionSchema,
   agentXError,
@@ -65,7 +66,6 @@ interface PendingRecord {
   entityType: "META_CONFIG_PENDING";
   status: PendingStatus;
   commit: string;
-  pushedAtMs: number;
   path?: string;
   digest?: string;
   configJson?: string;
@@ -87,73 +87,91 @@ const sha256 = (text: string): string => createHash("sha256").update(text, "utf8
 export interface QueueDependencies extends MetaConfigReadDependencies {
   /**
    * The text of `path` in the meta repository at `commit`, or undefined when the file is not there. It throws when it cannot tell (the code host is down): the push is then
-   * retried, and nothing is recorded, so an outage is never read as "the file was removed".
+   * retried, and nothing is recorded, so an outage is never read as "the file was removed". A file over `META_CONFIG_MAX_BYTES` is a CONFIG_INVALID refusal (the reader is given
+   * that cap, so the read stops there), which is recorded once as an invalid change instead of being retried for ever.
    */
   readMetaFile(input: { orgId: OrgId; project: string; repository: { name: string; url: string }; commit: string; path: string }): Promise<string | undefined>;
+  /** The commit the meta repository's default branch points at NOW, as GitHub says. The order of changes is the branch's own: a push event only says "look". */
+  getHead(input: { orgId: OrgId; project: string; repository: { name: string; url: string; defaultBranch: string } }): Promise<string>;
 }
 
 export type QueueOutcome = "queued" | "invalid" | "released" | "no_change" | "ignored" | "stale";
 
+const FILE_TOO_LARGE: MetaConfigProblem = { path: "(file)", message: `the file is larger than ${String(META_CONFIG_MAX_BYTES)} bytes` };
+
 /**
- * A push to the meta repo's default branch: read the config file at that commit and record what it would change. A project with no meta repository, or a file
- * that matches the project already, records nothing (and clears an older pending change the new file makes pointless). A push older than the pending change
- * that is already recorded is "stale" and changes nothing, so a redelivered event cannot put an old file in place of a new one.
+ * A push to the meta repo's default branch, or a maintainer's "check now": read the branch head from GitHub, read the config file at THAT commit, and record what it would
+ * change. The commit in the event is only a hint (and the author-set commit time is not read at all), so a late or repeated delivery of an old push reads the same current head
+ * and changes nothing; an old config cannot come back. If the head moves while the file is read, this run steps aside ("stale") because the newer head has its own run.
+ * A project with no meta repository, or a file that matches the project already, records nothing (and clears an older pending change the new file makes pointless).
  */
-export async function queueMetaConfigImport(deps: QueueDependencies, input: { orgId: OrgId; project: string; commit: string; pushedAtMs: number }): Promise<QueueOutcome> {
+export async function queueMetaConfigImport(deps: QueueDependencies, input: { orgId: OrgId; project: string; commit?: string }): Promise<QueueOutcome> {
   const latest = await latestRevision(deps, input.orgId, input.project);
   if (latest === undefined) return "ignored";
   const meta = metaRepositoryOf(latest.definition);
   if (meta === undefined) return "ignored";
   const key = metaConfigPendingKey(input.orgId, input.project);
-  const base = { entityType: "META_CONFIG_PENDING" as const, commit: input.commit, pushedAtMs: input.pushedAtMs, baseRevision: latest.definition.revision, plannedAt: new Date(deps.now()).toISOString() };
+  const repository = { name: meta.name, url: meta.url };
+  const head = await deps.getHead({ orgId: input.orgId, project: input.project, repository: { ...repository, defaultBranch: meta.defaultBranch } });
+  if (!/^[a-f0-9]{40}$/.test(head)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid commit");
+  const base = { entityType: "META_CONFIG_PENDING" as const, commit: head, baseRevision: latest.definition.revision, plannedAt: new Date(deps.now()).toISOString() };
 
   let found: { path: string; text: string } | undefined;
+  let tooLarge: string | undefined;
   for (const path of META_CONFIG_FILE_PATHS) {
-    const text = await deps.readMetaFile({ orgId: input.orgId, project: input.project, repository: { name: meta.name, url: meta.url }, commit: input.commit, path });
-    if (text !== undefined) { found = { path, text }; break; }
-  }
-
-  const write = async (record: PendingRecord | undefined): Promise<QueueOutcome | undefined> => {
     try {
-      if (record === undefined) {
-        await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key, ConditionExpression: "attribute_not_exists(pk) OR pushedAtMs <= :at", ExpressionAttributeValues: { ":at": input.pushedAtMs } }));
-      } else {
-        await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...key, ...record }, ConditionExpression: "attribute_not_exists(pk) OR pushedAtMs <= :at", ExpressionAttributeValues: { ":at": input.pushedAtMs } }));
-      }
-      return undefined;
+      const text = await deps.readMetaFile({ orgId: input.orgId, project: input.project, repository, commit: head, path });
+      if (text !== undefined) { found = { path, text }; break; }
     } catch (error) {
-      if (error instanceof Error && error.name === "ConditionalCheckFailedException") return "stale";
-      throw error;
+      if ((error as { code?: unknown }).code !== "CONFIG_INVALID") throw error;
+      tooLarge = path;
+      break;
     }
+  }
+  // The head moved while the file was read: a newer run owns the answer.
+  if (await deps.getHead({ orgId: input.orgId, project: input.project, repository: { ...repository, defaultBranch: meta.defaultBranch } }) !== head) return "stale";
+
+  const write = async (record: PendingRecord | undefined): Promise<void> => {
+    if (record === undefined) await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
+    else await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...key, ...record } }));
   };
 
+  if (tooLarge !== undefined) {
+    log(deps)("meta_config.invalid", { orgId: input.orgId, project: input.project, problems: 1 });
+    await write({ ...base, status: "invalid", path: tooLarge, problems: [FILE_TOO_LARGE] });
+    return "invalid";
+  }
   if (found === undefined) {
     // No file. Settings it managed are released only by a person's say; a project with none of those needs nothing.
-    if (fileManagedFields(latest.definition).length === 0) return (await write(undefined)) ?? "no_change";
-    return (await write({ ...base, status: "released" })) ?? "released";
+    if (fileManagedFields(latest.definition).length === 0) { await write(undefined); return "no_change"; }
+    await write({ ...base, status: "released" });
+    return "released";
   }
   const parsed = parseMetaConfigFile(found.path, found.text);
   if (!parsed.ok) {
     log(deps)("meta_config.invalid", { orgId: input.orgId, project: input.project, problems: parsed.problems.length });
-    return (await write({ ...base, status: "invalid", path: found.path, problems: parsed.problems })) ?? "invalid";
+    await write({ ...base, status: "invalid", path: found.path, problems: parsed.problems });
+    return "invalid";
   }
   const configJson = canonicalJson(parsed.config);
   if (configJson.length > STORED_CONFIG_MAX_CHARS) {
-    return (await write({ ...base, status: "invalid", path: found.path, problems: [{ path: "(file)", message: "the config is too large to store" }] })) ?? "invalid";
+    await write({ ...base, status: "invalid", path: found.path, problems: [{ path: "(file)", message: "the config is too large to store" }] });
+    return "invalid";
   }
   const plan = planMetaConfigChange({ config: parsed.config, definition: latest.definition });
-  if (plan.items.length === 0 && plan.problems.length === 0) return (await write(undefined)) ?? "no_change";
+  if (plan.items.length === 0 && plan.problems.length === 0) { await write(undefined); return "no_change"; }
   const record: PendingRecord = plan.problems.length > 0
     ? { ...base, status: "invalid", path: found.path, digest: sha256(configJson), problems: plan.problems }
     : { ...base, status: "pending", path: found.path, digest: sha256(configJson), configJson };
-  return (await write(record)) ?? (record.status === "invalid" ? "invalid" : "queued");
+  await write(record);
+  return record.status === "invalid" ? "invalid" : "queued";
 }
 
 // ---- reading
 
 export interface MetaConfigCaller { developerId: string; orgId: OrgId; orgRole: OrgRole }
 
-export interface MetaConfigDependencies<Caller extends MetaConfigCaller = MetaConfigCaller> extends MetaConfigReadDependencies {
+export interface MetaConfigDependencies<Caller extends MetaConfigCaller = MetaConfigCaller> extends QueueDependencies {
   cloud: boolean;
   effectiveRole(caller: Caller, project: string): Promise<ProjectRole | undefined>;
   registerRevision: ProjectSettingsDependencies<Caller>["registerRevision"];
@@ -183,7 +201,7 @@ async function readPending(deps: MetaConfigReadDependencies, orgId: OrgId, proje
   if (item === undefined || item.entityType !== "META_CONFIG_PENDING") return undefined;
   const status = item.status;
   if (status !== "pending" && status !== "invalid" && status !== "released") return undefined;
-  if (typeof item.commit !== "string" || typeof item.pushedAtMs !== "number" || typeof item.baseRevision !== "number" || typeof item.plannedAt !== "string") return undefined;
+  if (typeof item.commit !== "string" || typeof item.baseRevision !== "number" || typeof item.plannedAt !== "string") return undefined;
   return item as unknown as PendingRecord;
 }
 
@@ -292,6 +310,11 @@ export async function applyMetaConfigChange<Caller extends MetaConfigCaller>(dep
 
   const record = await readPending(deps, caller.orgId, project);
   if (record === undefined || record.commit !== body.commit) throw agentXError("PROJECT_REVISION_MISMATCH", CONFIG_STALE_MESSAGE);
+  // The pending change is applied only while it is still the branch's head: GitHub is asked now, so a config the branch has since moved past (or been rolled back from) is not applied.
+  const metaRepository = metaRepositoryOf((await latestRevision(deps, caller.orgId, project))?.definition ?? { repositories: [] });
+  if (metaRepository === undefined || await deps.getHead({ orgId: caller.orgId, project, repository: { name: metaRepository.name, url: metaRepository.url, defaultBranch: metaRepository.defaultBranch } }) !== record.commit) {
+    throw agentXError("PROJECT_REVISION_MISMATCH", CONFIG_STALE_MESSAGE);
+  }
   if (record.status === "invalid") throw invalid("the meta repo's config has problems; fix it in the meta repo");
   const latest = await latestRevision(deps, caller.orgId, project);
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
@@ -334,7 +357,9 @@ export async function applyMetaConfigChange<Caller extends MetaConfigCaller>(dep
 
     const removed = new Set(chosen.filter((item) => item.kind === "remove_repository").map((item) => item.repository!));
     const addedEntries = await resolveAddedRepositories(deps, caller, config, chosen.filter((item) => item.kind === "add_repository"));
-    const repositories = [...current.repositories.filter((repository) => !removed.has(repository.name)), ...addedEntries];
+    // The meta repository stays last, so "commands run in the first repository" still means a code repository.
+    const kept = current.repositories.filter((repository) => !removed.has(repository.name));
+    const repositories = [...kept.filter((repository) => repository.role !== "meta"), ...addedEntries, ...kept.filter((repository) => repository.role === "meta")];
     next = { ...current, revision: current.revision + 1, repositories };
     const codeAfter = codeRepositoriesOf({ repositories }).map((repository) => ({ name: repository.name, path: repository.path }));
 
@@ -398,6 +423,9 @@ async function resolveAddedRepositories<Caller extends MetaConfigCaller>(
     const answer = await connected(caller.orgId, owner, name);
     const identity = await deps.repositoryIdentity(`https://github.com/${full}.git`, caller.orgId);
     if (identity === undefined) throw invalid(`repositories.${wanted.name}: the GitHub App cannot see ${full}; check the address`);
+    // The file is repository-supplied text: GitHub's description must be of the repository the connection was checked for, under the owner the file named.
+    if (answer.githubRepositoryId !== undefined && identity.repositoryId !== answer.githubRepositoryId) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub described ${full} differently a moment ago; try again`);
+    if (identity.fullName.split("/")[0]?.toLowerCase() !== owner.toLowerCase()) throw agentXError("FORBIDDEN", `GitHub describes ${full} under another owner; use its current owner/name`);
     if (identity.defaultBranch === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not describe that repository; try again");
     const entry = cloudRepositoryEntry({
       repositoryName: name, repository: { fullName: identity.fullName, defaultBranch: identity.defaultBranch }, githubCredentialRef: credential,
@@ -424,10 +452,21 @@ export async function dismissMetaConfigChange<Caller extends MetaConfigCaller>(d
 }
 
 /**
- * The three routes, for the developer routes to dispatch to with one line each (wiring pending: `developer-routes.ts` is a hot file):
+ * "Check the meta repo now": a maintainer asks Rovara to read the branch head again, instead of waiting for a push. It recovers a push that was missed (GitHub does not
+ * redeliver on its own) and a config that was fixed after being invalid. Same work as a push, so it records, replaces or clears the pending change the same way.
+ */
+export async function checkMetaConfigNow<Caller extends MetaConfigCaller>(deps: MetaConfigDependencies<Caller>, caller: Caller, project: string): Promise<{ outcome: QueueOutcome; state: MetaConfigView }> {
+  await requireRole(deps, caller, project, "edit");
+  const outcome = await queueMetaConfigImport(deps, { orgId: caller.orgId, project });
+  return { outcome, state: await readMetaConfigState(deps, caller, project) };
+}
+
+/**
+ * The routes, for the developer routes to dispatch to with one line each (wiring pending: `developer-routes.ts` is a hot file):
  *   GET  /v1/app/projects/{name}/meta-config           -> readMetaConfigState
  *   POST /v1/app/projects/{name}/meta-config/apply     -> applyMetaConfigChange
  *   POST /v1/app/projects/{name}/meta-config/dismiss   -> dismissMetaConfigChange
+ *   POST /v1/app/projects/{name}/meta-config/check     -> checkMetaConfigNow (body: {})
  */
 export async function routeMetaConfig<Caller extends MetaConfigCaller>(
   deps: MetaConfigDependencies<Caller>, caller: Caller, project: string, request: { method: string; action: string | undefined; body: unknown },
@@ -435,5 +474,6 @@ export async function routeMetaConfig<Caller extends MetaConfigCaller>(
   if (request.action === undefined && request.method === "GET") return { status: 200, body: await readMetaConfigState(deps, caller, project) };
   if (request.method === "POST" && request.action === "apply") return { status: 200, body: await applyMetaConfigChange(deps, caller, project, request.body) };
   if (request.method === "POST" && request.action === "dismiss") return { status: 200, body: await dismissMetaConfigChange(deps, caller, project, request.body) };
+  if (request.method === "POST" && request.action === "check") return { status: 200, body: await checkMetaConfigNow(deps, caller, project) };
   throw agentXError("NOT_FOUND", "route not found");
 }

@@ -131,6 +131,8 @@ export interface DeveloperTaskRecord {
   reviewSameModel?: { candidateDigest: string };
   /** The commit each repository's preparation checked out, from the prepare result; the task's base until one is pinned. */
   preparedBase?: WorkflowReviewBase;
+  /** Meta repo lane A: the meta repository's default-branch head the broker pinned for this task's preparation (the worker reported the same one). Every stage reads the team's knowledge at this commit. */
+  knowledgeCommit?: string;
   /** Spec 061: why the planner's last answer could not be read, kept for Retry planning; `workflowRevision` is the blocked step's revision. */
   planUnreadable?: { workflowRevision: number; errors: string[]; /** The fixed category of the problem (never the validator's words), for the owner's message. */ category?: PlanUnreadableCategory; /** Whether AgentX already asked the planner once more by itself. */ autoRetried?: true };
   /** AUTOFIX: why Rovara asked the owner instead of fixing a blocked step by itself, for the blocked revision `workflowRevision` (see autofix-messages.ts). */

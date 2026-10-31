@@ -21,6 +21,7 @@ import {
 import { parseMetaConfigFile, planMetaConfigChange, githubFullName } from "../../packages/broker/src/meta-repo/config-plan.js";
 import {
   applyMetaConfigChange,
+  checkMetaConfigNow,
   dismissMetaConfigChange,
   metaConfigPendingKey,
   queueMetaConfigImport,
@@ -137,10 +138,11 @@ describe("planning what a config file changes", () => {
     expect(self.items.some((item) => item.kind === "remove_repository")).toBe(false);
   });
 
-  it("runs an added repository's commands in the folder the file gives it", () => {
-    const plan = planMetaConfigChange({ config: yaml("version: 1\nrepositories:\n  - {name: lib, url: 'https://github.com/acme/lib.git', path: tools/lib}\nsetup:\n  lib: [make]\n"), definition: stored(separate()) });
+  it("runs an added repository's commands in its folder repo/<name>, and shows that folder in the plan", () => {
+    const plan = planMetaConfigChange({ config: yaml("version: 1\nrepositories:\n  - {name: lib, url: 'https://github.com/acme/lib.git'}\nsetup:\n  lib: [make]\n"), definition: stored(separate()) });
     expect(plan.problems).toEqual([]);
     expect(plan.items.find((item) => item.id === "setup")).toMatchObject({ after: ["lib: make"] });
+    expect(plan.items.find((item) => item.id === "repositories:add:lib")).toMatchObject({ path: "repo/lib" });
   });
 
   it("reports a command that cannot be read, a repository the project does not have, and commands for the meta repository that holds no code", () => {
@@ -160,6 +162,33 @@ describe("planning what a config file changes", () => {
   it("lets a file with no repositories section name the project's own repositories", () => {
     const plan = planMetaConfigChange({ config: yaml("version: 1\nsetup:\n  web: [npm ci]\n"), definition: stored(separate()) });
     expect(plan.problems).toEqual([]);
+  });
+
+  it("plans for a repository called constructor (a name every record has on its prototype), reading only the file's own entries", () => {
+    const def = stored(definition([repo("constructor", { role: "code" }), repo("service-meta", { role: "meta" })]));
+    const none = planMetaConfigChange({ config: yaml("version: 1\nsetup:\n  other: [x]\n"), definition: def });
+    expect(none.problems.map((problem) => problem.path)).toEqual(["setup.other"]);
+    expect(planMetaConfigChange({ config: yaml("version: 1\nsetup:\n  constructor: [make]\n"), definition: def }).items[0]).toMatchObject({ id: "setup", after: ["constructor: make"] });
+    expect(() => planMetaConfigChange({ config: yaml("version: 1\ntests:\n  api:\n    commands: [t]\n"), definition: def })).not.toThrow();
+    expect(() => planMetaConfigChange({ config: yaml("version: 1\n"), definition: def })).not.toThrow();
+  });
+
+  it("refuses a __proto__ key anywhere, instead of reading it as an empty section that would wipe the project's commands", () => {
+    expect(parseMetaConfigFile(".rovara/project.json", '{"version":1,"setup":{"__proto__":["x"]}}')).toEqual({ ok: false, problems: [{ path: "(file)", message: "has a reserved key" }] });
+    expect(parseMetaConfigFile(".rovara/project.yaml", "version: 1\ntests:\n  api:\n    __proto__: {commands: [x]}\n")).toMatchObject({ ok: false });
+    expect(parseMetaConfigFile(".rovara/project.yaml", "version: 1\nsetup:\n  constructor: [x]\n")).toMatchObject({ ok: true });
+  });
+
+  it("refuses a repository folder the file chooses: only repo/<name>, never a reserved or dot folder", () => {
+    for (const path of [".agentx/web", ".devcontainer/x", "tools/lib", "repo/other", "repo/lib/sub", "/abs", "../x"]) {
+      expect(parseMetaConfigFile(".rovara/project.yaml", `version: 1\nrepositories:\n  - {name: lib, url: 'https://github.com/acme/lib.git', path: '${path}'}\n`), path).toMatchObject({ ok: false });
+    }
+    expect(parseMetaConfigFile(".rovara/project.yaml", "version: 1\nrepositories:\n  - {name: lib, url: 'https://github.com/acme/lib.git', path: repo/lib}\n")).toMatchObject({ ok: true });
+  });
+
+  it("says how many of a person's commands the file removes", () => {
+    const plan = planMetaConfigChange({ config: yaml("version: 1\nsetup:\n  api: [one]\n"), definition: stored(separate({ setup: [command("a", "repo/api"), command("b", "repo/api"), command("c", "repo/web")], origins: { setup: "file" } })) });
+    expect(plan.items[0]).toMatchObject({ id: "setup", removes: 2 });
   });
 
   it("lists the sections it carries but does not apply, and refuses a project with no meta repository", () => {
@@ -189,6 +218,8 @@ interface World {
   roles: Map<string, ProjectRole>;
   registered: number[];
   readMetaFile: ReturnType<typeof vi.fn>;
+  /** The meta repo's default-branch head as GitHub says; `push` moves it. */
+  head: { value: string; reads: number; moveAfterReads?: { reads: number; to: string } };
   connectedCalls: string[];
 }
 
@@ -209,12 +240,15 @@ function world(def: Record<string, unknown> = separate(), options: { cloud?: boo
   const registered: number[] = [];
   const connectedCalls: string[] = [];
   const readMetaFile = vi.fn(async (input: { commit: string; path: string }) => files.get(`${input.commit}:${input.path}`));
+  const head: World["head"] = { value: COMMIT_A, reads: 0 };
   const deps: MetaConfigDependencies = {
     documentClient: db, tableName: "state", now: () => now.value, log: () => undefined, cloud: options.cloud ?? true,
     effectiveRole: async (caller) => roles.get(caller.developerId),
+    readMetaFile: readMetaFile,
+    getHead: async () => { head.reads += 1; if (head.moveAfterReads !== undefined && head.reads > head.moveAfterReads.reads) head.value = head.moveAfterReads.to; return head.value; },
     githubCredentialRef: "github-app",
     requireRepositoryConnected: async (_org, owner, name) => { connectedCalls.push(`${owner}/${name}`); return { installationId: 55, githubRepositoryId: 900 }; },
-    repositoryIdentity: async (url) => { const [owner, name] = new URL(url).pathname.replace(/\.git$/, "").split("/").filter(Boolean) as [string, string]; return { fullName: `${owner}/${name}`, defaultBranch: "trunk" }; },
+    repositoryIdentity: async (url) => { const [owner, name] = new URL(url).pathname.replace(/\.git$/, "").split("/").filter(Boolean) as [string, string]; return { fullName: `${owner}/${name}`, defaultBranch: "trunk", repositoryId: 900 }; },
     // What the broker's registration does for a settings save: the next revision, in one transaction with the caller's own items.
     registerRevision: async (actor, input, extraItems) => {
       const parsed = ProjectDefinitionSchema.parse(input.definition);
@@ -225,12 +259,13 @@ function world(def: Record<string, unknown> = separate(), options: { cloud?: boo
       registered.push(parsed.revision);
     },
   };
-  return { db, files, deps, now, roles, registered, readMetaFile, connectedCalls };
+  return { db, files, deps, now, roles, registered, readMetaFile, head, connectedCalls };
 }
-const queueDeps = (w: World) => ({ ...w.deps, readMetaFile: w.readMetaFile as never });
-const push = (w: World, commit: string, text: string | undefined, pushedAtMs = w.now.value, path = ".rovara/project.yaml") => {
+/** A push to the default branch: the branch now points at `commit` (whose file is `text`), and Rovara is told. */
+const push = (w: World, commit: string, text: string | undefined, _unused?: number, path = ".rovara/project.yaml") => {
   if (text !== undefined) w.files.set(`${commit}:${path}`, text);
-  return queueMetaConfigImport(queueDeps(w), { orgId: ORG, project: PROJECT, commit, pushedAtMs });
+  w.head.value = commit;
+  return queueMetaConfigImport(w.deps, { orgId: ORG, project: PROJECT, commit });
 };
 const pending = (w: World) => w.db.get(metaConfigPendingKey(ORG, PROJECT)) as Record<string, unknown> | undefined;
 const latestDefinition = (w: World, revision: number) => (w.db.get(projectRevisionKey(ORG, PROJECT, revision)) as { definition: Record<string, unknown> } | undefined)?.definition;
@@ -256,7 +291,7 @@ describe("a push to the meta repo's default branch", () => {
 
   it("tries the file's places in order and takes the first that exists", async () => {
     const w = world();
-    await push(w, COMMIT_A, "version: 1\nsetup:\n  api: [from-json]\n", w.now.value, ".rovara/project.json");
+    await push(w, COMMIT_A, "version: 1\nsetup:\n  api: [from-json]\n", undefined, ".rovara/project.json");
     // The JSON file is the only one: the YAML places were asked first and answered nothing.
     expect(w.readMetaFile.mock.calls.map((call) => (call[0] as { path: string }).path)).toEqual([".rovara/project.yaml", ".rovara/project.yml", ".rovara/project.json"]);
   });
@@ -282,20 +317,80 @@ describe("a push to the meta repo's default branch", () => {
     expect(w.registered).toEqual([]);
   });
 
-  it("lets the newest push win, and a late delivery of an older push change nothing", async () => {
+  it("orders by the branch's head, never by a commit's own date: a late delivery of an old push reads the current head and changes nothing", async () => {
     const w = world();
-    await push(w, COMMIT_B, "version: 1\nsetup:\n  api: [new]\n", 2_000);
-    await expect(push(w, COMMIT_A, "version: 1\nsetup:\n  api: [old]\n", 1_000)).resolves.toBe("stale");
+    await push(w, COMMIT_B, "version: 1\nsetup:\n  api: [new]\n");
+    w.files.set(`${COMMIT_A}:.rovara/project.yaml`, "version: 1\nsetup:\n  api: [old]\n");
+    // GitHub redelivers the OLDER push now (the branch is at COMMIT_B).
+    await expect(queueMetaConfigImport(w.deps, { orgId: ORG, project: PROJECT, commit: COMMIT_A })).resolves.toBe("queued");
     expect(pending(w)).toMatchObject({ commit: COMMIT_B });
-    await expect(push(w, "c".repeat(40), "version: 1\nsetup:\n  api: [newer]\n", 3_000)).resolves.toBe("queued");
-    expect(pending(w)).toMatchObject({ commit: "c".repeat(40) });
+    expect(JSON.parse(pending(w)!.configJson as string)).toMatchObject({ setup: { api: ["new"] } });
+    expect(w.readMetaFile.mock.calls.every((call) => (call[0] as { commit: string }).commit === COMMIT_B)).toBe(true);
+    // No date of any commit is read anywhere in the record.
+    expect(JSON.stringify(pending(w))).not.toContain("pushedAtMs");
+  });
+
+  it("cannot bring an old config back after it was applied: the late delivery finds the head's file already in the project", async () => {
+    const w = world();
+    await push(w, COMMIT_B, SETUP_YAML);
+    await apply(w, COMMIT_B);
+    expect(pending(w)).toBeUndefined();
+    w.files.set(`${COMMIT_A}:.rovara/project.yaml`, "version: 1\nsetup:\n  api: [old]\n");
+    await expect(queueMetaConfigImport(w.deps, { orgId: ORG, project: PROJECT, commit: COMMIT_A })).resolves.toBe("no_change");
+    expect(pending(w)).toBeUndefined();
+  });
+
+  it("steps aside when the head moves while the file is read", async () => {
+    const w = world();
+    w.files.set(`${COMMIT_A}:.rovara/project.yaml`, SETUP_YAML);
+    w.head.value = COMMIT_A;
+    w.head.moveAfterReads = { reads: 1, to: COMMIT_B };
+    await expect(queueMetaConfigImport(w.deps, { orgId: ORG, project: PROJECT, commit: COMMIT_A })).resolves.toBe("stale");
+    expect(pending(w)).toBeUndefined();
+  });
+
+  it("applies only while the change is still the branch's head, asking GitHub at apply time", async () => {
+    const w = world();
+    await push(w, COMMIT_A, SETUP_YAML);
+    // The branch moved on (or was rolled back) and no push reached Rovara yet.
+    w.head.value = COMMIT_B;
+    await expect(failure(apply(w, COMMIT_A))).resolves.toEqual({ code: "PROJECT_REVISION_MISMATCH", problem: false });
+    expect(w.registered).toEqual([]);
+    w.head.value = COMMIT_A;
+    expect((await apply(w, COMMIT_A)).revision).toBe(2);
+  });
+
+  it("records an oversized config file as invalid, once, instead of failing again and again", async () => {
+    const w = world();
+    w.head.value = COMMIT_A;
+    w.readMetaFile.mockRejectedValue(Object.assign(new Error("file too large"), { code: "CONFIG_INVALID" }));
+    await expect(queueMetaConfigImport(w.deps, { orgId: ORG, project: PROJECT, commit: COMMIT_A })).resolves.toBe("invalid");
+    expect(pending(w)).toMatchObject({ status: "invalid", commit: COMMIT_A, problems: [{ path: "(file)", message: "the file is larger than 262144 bytes" }] });
+    await expect(queueMetaConfigImport(w.deps, { orgId: ORG, project: PROJECT, commit: COMMIT_A })).resolves.toBe("invalid");
+    // A real outage is still retried, not recorded.
+    w.readMetaFile.mockRejectedValue(Object.assign(new Error("503"), { code: "RUNTIME_UNAVAILABLE" }));
+    await expect(queueMetaConfigImport(w.deps, { orgId: ORG, project: PROJECT, commit: COMMIT_B })).rejects.toThrow("503");
+  });
+
+  it("lets a maintainer check the meta repo now, which recovers a push that never arrived", async () => {
+    const w = world();
+    // The file was pushed but the event was lost: nothing is pending.
+    w.files.set(`${COMMIT_B}:.rovara/project.yaml`, SETUP_YAML);
+    w.head.value = COMMIT_B;
+    expect(pending(w)).toBeUndefined();
+    const checked = await checkMetaConfigNow(w.deps, MAINTAINER, PROJECT);
+    expect(checked.outcome).toBe("queued");
+    expect(checked.state.pending).toMatchObject({ status: "pending", commit: COMMIT_B });
+    expect(await code(checkMetaConfigNow(w.deps, CONTRIBUTOR, PROJECT))).toBe("FORBIDDEN");
+    expect(await code(checkMetaConfigNow(w.deps, STRANGER, PROJECT))).toBe("PROJECT_NOT_FOUND");
+    expect((await routeMetaConfig(w.deps, MAINTAINER, PROJECT, { method: "POST", action: "check", body: {} })).status).toBe(200);
   });
 
   it("clears the pending change when the newest file makes it pointless", async () => {
     const w = world();
-    await push(w, COMMIT_A, SETUP_YAML, 1_000);
+    await push(w, COMMIT_A, SETUP_YAML);
     expect(pending(w)).toBeDefined();
-    await expect(push(w, COMMIT_B, "version: 1\n", 2_000)).resolves.toBe("no_change");
+    await expect(push(w, COMMIT_B, "version: 1\n")).resolves.toBe("no_change");
     expect(pending(w)).toBeUndefined();
   });
 
@@ -366,14 +461,14 @@ describe("applying the pending change", () => {
 
   it("adds the repositories the file lists through the org's GitHub connection, pinned and named as the file says", async () => {
     const w = world();
-    await push(w, COMMIT_A, "version: 1\nrepositories:\n  - {name: lib, url: 'https://github.com/acme/lib.git', path: tools/lib}\nsetup:\n  lib: [make]\n");
+    await push(w, COMMIT_A, "version: 1\nrepositories:\n  - {name: lib, url: 'https://github.com/acme/lib.git'}\nsetup:\n  lib: [make]\n");
     const result = await apply(w, COMMIT_A);
     expect(result.applied).toEqual(["repositories:add:lib", "setup"]);
     expect(w.connectedCalls).toEqual(["acme/lib"]);
     const next = latestDefinition(w, 2)!;
     const lib = (next.repositories as Array<Record<string, unknown>>).find((entry) => entry.name === "lib")!;
-    expect(lib).toMatchObject({ url: "https://github.com/acme/lib.git", path: "tools/lib", defaultBranch: "trunk", role: "code", installationId: 55, githubRepositoryId: 900, credentialRef: "github-app" });
-    expect(next.setup).toEqual([command("make", "tools/lib")]);
+    expect(lib).toMatchObject({ url: "https://github.com/acme/lib.git", path: "repo/lib", defaultBranch: "trunk", role: "code", installationId: 55, githubRepositoryId: 900, credentialRef: "github-app" });
+    expect(next.setup).toEqual([command("make", "repo/lib")]);
     expect(next.origins).toEqual({ repositories: "file", setup: "file" });
   });
 
@@ -386,6 +481,19 @@ describe("applying the pending change", () => {
     expect(pending(w)).toBeDefined();
   });
 
+  it("checks what GitHub says of an added repository against the connection and the owner the file named", async () => {
+    const yamlText = "version: 1\nrepositories:\n  - {name: lib, url: 'https://github.com/acme/lib.git'}\n";
+    const other = world();
+    other.deps.repositoryIdentity = async (url) => ({ fullName: new URL(url).pathname.slice(1).replace(/\.git$/, ""), defaultBranch: "trunk", repositoryId: 4242 });
+    await push(other, COMMIT_A, yamlText);
+    expect(await code(apply(other, COMMIT_A))).toBe("RUNTIME_UNAVAILABLE");
+    const moved = world();
+    moved.deps.repositoryIdentity = async () => ({ fullName: "someone-else/lib", defaultBranch: "trunk", repositoryId: 900 });
+    await push(moved, COMMIT_A, yamlText);
+    expect(await code(apply(moved, COMMIT_A))).toBe("FORBIDDEN");
+    expect(other.registered.concat(moved.registered)).toEqual([]);
+  });
+
   it("removes a repository only when the person confirms it by name", async () => {
     const w = world();
     await push(w, COMMIT_A, "version: 1\nrepositories:\n  - {name: api, url: 'https://github.com/acme/api.git'}\n");
@@ -396,6 +504,11 @@ describe("applying the pending change", () => {
     const done = await apply(w, COMMIT_A, { confirmRemovals: ["web"] });
     expect(done.applied).toEqual(["repositories:remove:web"]);
     expect((latestDefinition(w, 2)!.repositories as Array<{ name: string }>).map((entry) => entry.name)).toEqual(["api", "service-meta"]);
+    // The meta repository stays last whatever is added or removed.
+    const grown = world();
+    await push(grown, COMMIT_A, "version: 1\nrepositories:\n  - {name: api, url: 'https://github.com/acme/api.git'}\n  - {name: web, url: 'https://github.com/acme/web.git'}\n  - {name: lib, url: 'https://github.com/acme/lib.git'}\n");
+    await apply(grown, COMMIT_A);
+    expect((latestDefinition(grown, 2)!.repositories as Array<{ name: string }>).map((entry) => entry.name)).toEqual(["api", "web", "lib", "service-meta"]);
   });
 
   it("will not remove a repository the project's commands or devcontainer still use", async () => {
@@ -431,8 +544,8 @@ describe("applying the pending change", () => {
 
   it("refuses the file a person did not look at: a newer commit, or a project that moved on", async () => {
     const w = world();
-    await push(w, COMMIT_A, SETUP_YAML, 1_000);
-    await push(w, COMMIT_B, "version: 1\nsetup:\n  api: [other]\n", 2_000);
+    await push(w, COMMIT_A, SETUP_YAML);
+    await push(w, COMMIT_B, "version: 1\nsetup:\n  api: [other]\n");
     expect(await code(apply(w, COMMIT_A))).toBe("PROJECT_REVISION_MISMATCH");
     expect(await code(apply(w, COMMIT_B, {}, MAINTAINER, 7))).toBe("PROJECT_REVISION_MISMATCH");
     expect(w.registered).toEqual([]);
@@ -659,20 +772,20 @@ describe("a GitHub push as a meta repo's config changing", () => {
     for (const entry of (def.repositories as Array<{ githubRepositoryId: number }>)) {
       w.db.set({ ...githubRepoProjectKey(entry.githubRepositoryId, ORG, PROJECT), entityType: "GITHUB_REPO_PROJECT", orgId: ORG, project: PROJECT, installationId: INSTALLATION, githubRepositoryId: entry.githubRepositoryId });
     }
-    const queued: Array<{ orgId: string; project: string; commit: string; pushedAtMs: number }> = [];
+    const queued: Array<{ orgId: string; project: string; commit: string }> = [];
     const triggerDeps = (extra: Record<string, unknown> = {}) => ({ documentClient: w.db, tableName: "state", now: () => w.now.value, dispatch: async () => undefined, log: () => undefined, queueMetaConfigImport: async (pushed: (typeof queued)[number]) => { queued.push(pushed); }, ...extra }) as never;
     return { w, queued, triggerDeps };
   }
   const pushed = (over: Record<string, unknown> = {}, repositoryId = META_ID) => ({
     eventName: "push", installationId: INSTALLATION,
-    payload: { ref: "refs/heads/main", after: COMMIT_A, deleted: false, head_commit: { timestamp: "2026-10-30T09:59:00Z" }, repository: { id: repositoryId, full_name: "acme/service-meta" }, ...over },
+    payload: { ref: "refs/heads/main", after: COMMIT_A, deleted: false, repository: { id: repositoryId, full_name: "acme/service-meta", default_branch: "main" }, ...over },
   });
 
   it("queues an import for a push to the meta repository's default branch", async () => {
     const { queued, triggerDeps } = pushWorld();
     const result = await deliverGithubTriggerEvents(triggerDeps(), pushed());
     expect(result).toEqual({ events: 1, duplicates: 0 });
-    expect(queued).toEqual([{ orgId: ORG, project: PROJECT, commit: COMMIT_A, pushedAtMs: Date.parse("2026-10-30T09:59:00Z") }]);
+    expect(queued).toEqual([{ orgId: ORG, project: PROJECT, commit: COMMIT_A }]);
   });
 
   it("ignores a push to another branch, a deleted branch, a push of nothing, and a malformed body", async () => {
@@ -696,8 +809,21 @@ describe("a GitHub push as a meta repo's config changing", () => {
     const { queued, triggerDeps } = pushWorld(definition([repo("api"), repo("service-meta", { role: "meta", defaultBranch: "trunk" })]));
     await deliverGithubTriggerEvents(triggerDeps(), pushed());
     expect(queued).toEqual([]);
-    await deliverGithubTriggerEvents(triggerDeps(), pushed({ ref: "refs/heads/trunk" }));
+    await deliverGithubTriggerEvents(triggerDeps(), pushed({ ref: "refs/heads/trunk", repository: { id: META_ID, default_branch: "trunk" } }));
     expect(queued).toHaveLength(1);
+  });
+
+  it("looks at no record at all for a push that is not to the default branch, or is to one of Rovara's own agentx/ branches", async () => {
+    const { w, queued, triggerDeps } = pushWorld();
+    const before = w.db.commandNames().length;
+    for (const over of [{ ref: "refs/heads/agentx/0b9f4c1e-6a56-4a52-8a8e-2f3a8d9a8c11" }, { ref: "refs/heads/feature" }, { repository: { id: META_ID } }, { ref: "refs/heads/agentx/x", repository: { id: META_ID, default_branch: "agentx/x" } }]) {
+      expect(await deliverGithubTriggerEvents(triggerDeps(), pushed(over))).toEqual({ events: 0, duplicates: 0 });
+    }
+    // Not one read of the table: the early exit comes before the installation, the repository index and the project are looked up.
+    expect(w.db.commandNames().length).toBe(before);
+    expect(queued).toEqual([]);
+    await deliverGithubTriggerEvents(triggerDeps(), pushed());
+    expect(w.db.commandNames().length).toBeGreaterThan(before);
   });
 
   it("does nothing when no import is wired, and asks GitHub to deliver again when the queue fails", async () => {
