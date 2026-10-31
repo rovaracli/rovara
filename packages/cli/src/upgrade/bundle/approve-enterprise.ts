@@ -6,6 +6,8 @@ import { agentXError, environmentStackName, synthSettingsSha256, type ApprovalRe
 import { readRecordedEdition } from "../../deploy/edition.js";
 import type { ParameterStore } from "../../environments/parameter-store.js";
 import type { EnvironmentSettings } from "../../environments/settings.js";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { approveBundle, type ApprovalStore } from "./approve.js";
 import { buildAtApproval, requiredParts, type BuiltBundle } from "./build-at-approval.js";
 import { summariseBuild } from "./build-summary.js";
@@ -29,6 +31,12 @@ export interface ApproveEnterpriseInput {
   interactive: boolean;
   ask(question: string): Promise<string>;
   write(line: string): void;
+  /** Where to write the whole build (templates, packages, manifest and this summary) before anything is asked, so it can be read and diffed. Must be absent or empty. */
+  writeBuildTo?: string;
+  /** The flag that confirms the build without asking, named in the refusal when there is no terminal (default `--yes`). */
+  confirmFlag?: string;
+  /** The release this install runs now, to tell an upgrade's changes from drift. */
+  installedVersion?: string;
   /** Runs after the approver confirmed and before anything is placed: loads the bundle's images into the install's registry. A refused build never reaches it. */
   beforeApproval?(): Promise<void>;
 }
@@ -46,15 +54,19 @@ export async function approveEnterpriseBundle(input: ApproveEnterpriseInput): Pr
 
   const deployed = new Map<BuiltPart, string | undefined>();
   for (const part of requiredParts(settings.identityMode)) deployed.set(part, await input.readDeployedTemplate(environmentStackName(install.env, part)));
-  const summary = summariseBuild({ built: build, settings, deployed, confined: input.runner.confined, sandbox: input.runner.sandbox });
+  const summary = summariseBuild({ built: build, settings, deployed, confined: input.runner.confined, sandbox: input.runner.sandbox, installedVersion: input.installedVersion ?? install.version });
   for (const line of summary.lines) input.write(line);
+  if (input.writeBuildTo !== undefined) {
+    await writeBuildFolder(input.writeBuildTo, build, summary.lines);
+    input.write(`  The whole build was written to ${input.writeBuildTo}.`);
+  }
   // The deployer only updates stacks, and never the access stack: an approval it must refuse is not written.
   const missing = summary.diffs.find((diff) => diff.status === "new" || diff.status === "unreadable");
   if (missing !== undefined) throw agentXError("CONFIG_INVALID", `the ${missing.part} stack is ${missing.status === "new" ? "not deployed" : "unreadable"}; the deployer only updates stacks that exist. Nothing was approved`);
   if (!summary.accessAgrees) throw agentXError("CONFIG_INVALID", "the build's access stack is not the deployed one; the deployer never changes the access stack, so it would refuse this approval. Your administrators deploy the access stack first. Nothing was approved");
 
   if (!input.yes) {
-    if (!input.interactive) throw agentXError("CONFIG_INVALID", "agentx bundle approve needs --yes when stdin is not a terminal, since it asks you to confirm what was built. Nothing was approved");
+    if (!input.interactive) throw agentXError("CONFIG_INVALID", `this needs ${input.confirmFlag ?? "--yes"} when stdin is not a terminal, since it asks you to confirm what was built. Nothing was approved`);
     if (!/^y(es)?$/i.test((await input.ask(`Approve bundle ${bundle.bundleId} as built above, for ${install.env}? [y/N] `)).trim())) throw agentXError("CONFIG_INVALID", "not approved; nothing was written");
   }
   await input.beforeApproval?.();
@@ -64,4 +76,18 @@ export async function approveEnterpriseBundle(input: ApproveEnterpriseInput): Pr
 
   const record = await approveBundle({ bundle, approvedBy: input.approvedBy, parameters: input.parameters, rollback: input.rollback, store: input.approvalStore, now: input.now, built: { build, settings } });
   return { record, build };
+}
+
+/** Writes the whole build to a new or empty folder (mode 0700, files 0600): every template and package as built, the manifest, and the summary as shown. Never over anything. */
+export async function writeBuildFolder(dir: string, build: BuiltBundle, summary: readonly string[]): Promise<void> {
+  const root = resolve(dir);
+  const existing = await readdir(root).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
+  if (existing !== undefined && existing.length > 0) throw agentXError("CONFIG_INVALID", `${root} is not empty; choose a new folder for --write-build, so nothing you kept is written over. Nothing was approved`);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  for (const { file, body } of build.files) {
+    const target = join(root, ...file.replace(/^built\//, "").split("/"));
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    await writeFile(target, body, { mode: 0o600 });
+  }
+  await writeFile(join(root, "summary.txt"), `${summary.join("\n")}\n`, { mode: 0o600 });
 }
