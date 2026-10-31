@@ -1,16 +1,25 @@
 // Meta repo lane B (K1, task B3): the broker re-reads every place a setup proposal says a value came from. The worker's copy of a proposal is never trusted, and neither is the
 // model behind it: a model can write a quote that is not in the file, or a file that does not exist. For each file citation (`file`, `ci`, `readme`, `manifest`) the broker reads
-// `repo@commit:path` from GitHub and checks that the file is there and, when the citation names a quote, that the quote is in the file within a few lines of the cited line.
+// `repo@commit:path` from GitHub and checks that the quote is in the file within a few lines of the cited line.
+//
+// "Verified" has to mean that the quoted text SUPPORTS the proposed value, because a verified item for an empty setting is the only thing the page ticks for a person:
+//   - a citation with no quote, or a quote shorter than `VERIFY_QUOTE_MIN_CHARS` (whitespace collapsed), proves nothing about a value: the item is `unchecked`;
+//   - the value itself must be in the quotes: every proposed command (whitespace collapsed), the repository's URL or `owner/name`, a website's domain, or, for an existing dev
+//     container, a citation of that very file. A quote that is in the file but does not contain the value makes the item `unverified`;
+//   - an item of a kind with no value that a quote can show (a hint, a name, an inferred conclusion) is `unchecked` whatever it cites.
 //
 // An item is
-//   `verified`    every file citation it has was read and holds, and it has at least one;
-//   `unverified`  a citation was read and does NOT hold (the file is missing, or the quote is not near that line);
-//   `unchecked`   nothing could be read: the item cites no file (an inferred one), GitHub could not be asked, or the budget for reads ran out.
-// Only a verified, safe item is pre-ticked on the page. An unverified or unchecked item is still shown, so a person can decide, but never ticked for them.
+//   `verified`    every file citation it has was read and holds with a usable quote, and the quotes support the value;
+//   `unverified`  a citation was read and does NOT hold (the file is missing, or the quote is not near that line), or the quotes do not contain the value;
+//   `unchecked`   nothing could be shown: no usable quote, an inferred item, GitHub could not be asked, or the budget for reads ran out.
+// Only a verified, safe item for an empty setting is pre-ticked on the page. An unverified or unchecked item is still shown, so a person can decide, but never ticked for them.
 //
 // Bounded and fail closed: at most `READS_MAX` distinct files per proposal, a few at a time, within one deadline; whatever is left is `unchecked`. A file is read only up to the
-// cited line (plus a margin), so a huge file costs little. Nothing here ever writes, and no text of a file is kept or returned: only the verdict.
-import { FILE_PROVENANCE_KINDS, setupItemsOf, type Provenance, type SetupProposal, type SetupVerification } from "@agentx/contracts";
+// cited line (plus a margin), so a huge file costs little. Nothing here ever writes, and no text of a file is kept or returned: only the verdict. Whether a verdict is FINAL
+// (so it can be kept on the draft and not read again on every page load) is decided here too: a read that failed or ran out of time is not final; a citation that cannot be read
+// by design (no usable quote, a commit the reader cannot fetch, beyond the budget) is a final `unchecked`.
+import { FILE_PROVENANCE_KINDS, setupItemsOf, type Provenance, type SetupItem, type SetupProposal, type SetupVerification } from "@agentx/contracts";
+import { githubFullNameOf } from "./setup-items.js";
 
 /** Reads a file at a commit in one of the project's repositories: undefined when the file is not there; throws when GitHub cannot answer. */
 export type CitationFileReader = (repository: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => Promise<string | undefined>;
@@ -22,42 +31,105 @@ export const VERIFY_READ_TIMEOUT_MS = 8_000;
 /** How many lines either side of the cited line the quote may be on. Models are off by a line or two; a wider window would let a quote match anywhere. */
 export const VERIFY_LINE_SLACK = 3;
 
-type Verdict = "holds" | "fails" | "unread";
+/** The shortest quote (whitespace collapsed) that can support a value. A one-word quote is in nearly every file. */
+export const VERIFY_QUOTE_MIN_CHARS = 8;
+
+/** The only commit form the GitHub reader fetches (`getFileAtCommit`). A citation with another form can never be read, so it is a final `unchecked`. */
+const READABLE_COMMIT = /^[a-f0-9]{40}$/u;
 
 const collapse = (text: string): string => text.replace(/\s+/gu, " ").trim();
 
-/** Whether a file's text supports a citation: the line exists, and the quote (whitespace collapsed) is within `VERIFY_LINE_SLACK` lines of it, or anywhere when no line is named. */
+/** The collapsed quote of a citation when it is long enough to show anything; undefined otherwise. */
+const usableQuoteOf = (citation: Pick<Provenance, "quote">): string | undefined => {
+  if (citation.quote === undefined) return undefined;
+  const wanted = collapse(citation.quote);
+  return [...wanted].length >= VERIFY_QUOTE_MIN_CHARS ? wanted : undefined;
+};
+
+/**
+ * Whether a file's text supports a citation: the citation has a usable quote (a citation with none holds nothing), the line exists, and the quote (whitespace collapsed) is within
+ * `VERIFY_LINE_SLACK` lines of it, or anywhere in the file when no line is named.
+ */
 export function citationHolds(text: string, citation: Pick<Provenance, "line" | "quote">): boolean {
+  const wanted = usableQuoteOf(citation);
+  if (wanted === undefined) return false;
   const lines = text.split(/\r\n|\r|\n/u);
   if (citation.line !== undefined && citation.line > lines.length) return false;
-  if (citation.quote === undefined) return true;
-  const wanted = collapse(citation.quote);
-  if (wanted === "") return true;
   if (citation.line === undefined) return collapse(text).includes(wanted);
   const from = Math.max(0, citation.line - 1 - VERIFY_LINE_SLACK);
   const window = lines.slice(from, citation.line + VERIFY_LINE_SLACK).join("\n");
   return collapse(window).includes(wanted);
 }
 
-/** The verdict for every item of a proposal. Never throws: a failed read leaves the items that needed it `unchecked`. */
-export async function verifyProposal(
+const isFileCitation = (citation: Provenance): boolean => FILE_PROVENANCE_KINDS.includes(citation.kind);
+
+/** Whether a quote can show an item's value at all. The kinds left out (a hint, a name, a drafted file) have no value a quote could contain: they are never `verified`. */
+function isCheckable(item: SetupItem): boolean {
+  switch (item.kind) {
+    case "setup":
+    case "tests":
+    case "check":
+    case "repository":
+    case "knowledge":
+    case "spec_target":
+    case "allowed_domain": return true;
+    case "devcontainer": return (item.proposed.value as { exists?: unknown }).exists === true;
+    default: return false;
+  }
+}
+
+/** Whether the quotes (already shown to be in the files) contain what the item proposes. Call only for a checkable item whose every file citation holds. */
+function quotesSupport(item: SetupItem, citations: readonly Provenance[]): boolean {
+  const quotes = citations.map(usableQuoteOf).filter((quote): quote is string => quote !== undefined);
+  const has = (needle: string): boolean => { const wanted = collapse(needle); return wanted !== "" && quotes.some((quote) => quote.includes(wanted)); };
+  const hasFolded = (needle: string): boolean => { const wanted = collapse(needle).toLowerCase(); return wanted !== "" && quotes.some((quote) => quote.toLowerCase().includes(wanted)); };
+  const value = item.proposed.value as Record<string, unknown> | string;
+  switch (item.kind) {
+    case "setup":
+    case "tests": return (value as { commands: string[] }).commands.every(has);
+    case "check": return has((value as { command: string }).command);
+    case "repository": {
+      const url = String((value as { url: string }).url).replace(/\/+$/u, "").replace(/\.git$/u, "");
+      const fullName = githubFullNameOf(url);
+      return hasFolded(url) || hasFolded(url.replace(/^https:\/\//u, "")) || (fullName !== undefined && hasFolded(fullName));
+    }
+    case "devcontainer": return citations.some((citation) => citation.repo === (value as { repository: string }).repository && citation.path === (value as { configPath: string }).configPath);
+    case "knowledge":
+    case "spec_target": {
+      const path = (value as { path: string }).path.replace(/\/+$/u, "");
+      return citations.some((citation) => citation.path !== undefined && (citation.path === path || citation.path.startsWith(`${path}/`)));
+    }
+    case "allowed_domain": return hasFolded(value as string);
+    default: return false;
+  }
+}
+
+type Verdict = "holds" | "fails" | "unread" | "skipped";
+
+/** What re-reading a proposal found: a verdict per item, and whether every verdict is final (nothing was left unread by a failed read, a timeout or a deadline). */
+export interface ProposalVerification { items: Record<string, SetupVerification>; final: boolean }
+
+/** The verdict for every item of a proposal. Never throws: a failed read leaves the items that needed it `unchecked` and the result not final. */
+export async function verifyProposalDetailed(
   read: CitationFileReader | undefined,
   proposal: SetupProposal,
   options: { now?: () => number; deadlineMs?: number } = {},
-): Promise<Record<string, SetupVerification>> {
+): Promise<ProposalVerification> {
   const now = options.now ?? Date.now;
   const deadline = now() + (options.deadlineMs ?? VERIFY_DEADLINE_MS);
   const items = setupItemsOf(proposal);
+  /** Whether a citation is worth reading: a file citation of a checkable item that has a usable quote and a commit the reader can fetch. */
+  const readable = (item: SetupItem, citation: Provenance): boolean => isCheckable(item) && isFileCitation(citation) && usableQuoteOf(citation) !== undefined && READABLE_COMMIT.test(citation.commit ?? "");
 
   // One read per (repository, commit, path), as far as the deepest line any citation needs.
   const needs = new Map<string, { repository: string; path: string; commit: string; untilLine: number | undefined; whole: boolean }>();
   const keyOf = (citation: Provenance) => `${citation.repo!}\0${citation.commit!}\0${citation.path!}`;
   for (const item of items) {
     for (const citation of item.proposed.from) {
-      if (!FILE_PROVENANCE_KINDS.includes(citation.kind)) continue;
+      if (!readable(item, citation)) continue;
       const key = keyOf(citation);
       const entry = needs.get(key) ?? { repository: citation.repo!, path: citation.path!, commit: citation.commit!, untilLine: 0, whole: false };
-      // A quote with no line, or no line at all, needs the whole file; a line needs the text through it and the margin after.
+      // A quote with no line needs the whole file; a line needs the text through it and the margin after.
       if (citation.line === undefined) entry.whole = true;
       else entry.untilLine = Math.max(entry.untilLine ?? 0, citation.line + VERIFY_LINE_SLACK + 1);
       needs.set(key, entry);
@@ -90,24 +162,37 @@ export async function verifyProposal(
     await Promise.all(Array.from({ length: Math.min(VERIFY_CONCURRENCY, queue.length) }, worker));
   }
 
-  const verdictOf = (citation: Provenance): Verdict => {
-    const found = texts.get(keyOf(citation));
-    if (found === undefined || found.kind === "unread") return "unread";
+  const verdictOf = (item: SetupItem, citation: Provenance): Verdict => {
+    // Not worth a read, by design: it can never be better than unchecked, and reading it again would change nothing.
+    if (!readable(item, citation)) return "skipped";
+    const key = keyOf(citation);
+    const found = texts.get(key);
+    // Past the budget (never queued) is final too; a read that failed or ran out of time (queued) is not.
+    if (found === undefined) return queue.some(([queued]) => queued === key) ? "unread" : "skipped";
+    if (found.kind === "unread") return "unread";
     if (found.kind === "missing") return "fails";
     return citationHolds(found.text, citation) ? "holds" : "fails";
   };
 
   const result: Record<string, SetupVerification> = {};
+  let final = true;
   for (const item of items) {
-    const fileCitations = item.proposed.from.filter((citation) => FILE_PROVENANCE_KINDS.includes(citation.kind));
-    if (fileCitations.length === 0) { result[item.id] = "unchecked"; continue; }
-    const verdicts = fileCitations.map(verdictOf);
-    result[item.id] = verdicts.includes("fails") ? "unverified" : verdicts.every((verdict) => verdict === "holds") ? "verified" : "unchecked";
+    const fileCitations = item.proposed.from.filter(isFileCitation);
+    if (fileCitations.length === 0 || !isCheckable(item)) { result[item.id] = "unchecked"; continue; }
+    const verdicts = fileCitations.map((citation) => verdictOf(item, citation));
+    if (verdicts.includes("fails")) result[item.id] = "unverified";
+    else if (verdicts.includes("unread")) { result[item.id] = "unchecked"; final = false; }
+    else if (verdicts.includes("skipped")) result[item.id] = "unchecked";
+    else result[item.id] = quotesSupport(item, fileCitations) ? "verified" : "unverified";
   }
-  return result;
+  return { items: result, final };
 }
 
-/** Whether every verdict is final (nothing was left unread by an error or the budget), so it can be kept; an `unchecked` item with no file to read is final. */
-export function verificationIsFinal(proposal: SetupProposal, verdicts: Record<string, SetupVerification>): boolean {
-  return setupItemsOf(proposal).every((item) => verdicts[item.id] !== "unchecked" || !item.proposed.from.some((citation) => FILE_PROVENANCE_KINDS.includes(citation.kind)));
+/** The verdict for every item of a proposal (see `verifyProposalDetailed`). */
+export async function verifyProposal(
+  read: CitationFileReader | undefined,
+  proposal: SetupProposal,
+  options: { now?: () => number; deadlineMs?: number } = {},
+): Promise<Record<string, SetupVerification>> {
+  return (await verifyProposalDetailed(read, proposal, options)).items;
 }

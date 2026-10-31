@@ -46,7 +46,7 @@ const cite = (path: string, line?: number, quote?: string, extra: Record<string,
 
 /** A proposal as the worker reports it: items with the places they came from. The broker reads it again. */
 const NODE_ANSWER = {
-  setup: [{ repo: "web", commands: ["npm ci"], confidence: "high", from: [cite("package.json", 2, "\"name\": \"web\"")] }],
+  setup: [{ repo: "web", commands: ["npm ci"], confidence: "high", from: [cite(".github/workflows/ci.yml", 4, "- run: npm ci")] }],
   tests: [{ repo: "web", commands: ["npm test"], confidence: "high", from: [cite(".github/workflows/ci.yml", 5, "run: npm test")] }],
   allowedDomains: [{ domain: "registry.npmjs.org", from: [cite(".npmrc", 1, "registry=")] }],
   secretsNeeded: [{ name: "DATABASE_URL", why: "the app connects to Postgres", from: [cite(".env.example", 1)] }],
@@ -456,18 +456,40 @@ describe("a proposal is only a proposal", () => {
 });
 
 describe("re-reading where each item came from (GET)", () => {
-  it("marks an item verified when its quote is in the file near its line, and unverified when the quote is invented, the file is missing, or the line is past the end", async () => {
+  it("marks an item verified only when its quote is in the file near its line AND contains what it proposes, and unverified when the quote is invented, does not contain the value, the file is missing, or the line is past the end; no quote is unchecked", async () => {
     const t = await setup();
     await t.drafted({
       ...NODE_ANSWER,
       setup: [{ repo: "web", commands: ["npm ci"], from: [cite("package.json", 2, "\"name\": \"web\"")] }],
       tests: [{ repo: "web", commands: ["npm test"], from: [cite("package.json", 2, "\"test\": \"jest --coverage\"")] }],
-      checks: [{ name: "lint", repo: "web", command: "npm run lint", from: [cite("missing/file.yml", 1)] }],
-      testEnvironment: [{ hint: "needs postgres", from: [cite("package.json", 900, "x")] }],
+      checks: [
+        { name: "lint", repo: "web", command: "npm run lint", from: [cite("missing/file.yml", 1, "run: npm run lint")] },
+        { name: "build", repo: "web", command: "npm run build", from: [cite("package.json", 900, "run: npm run build")] },
+        { name: "ci", repo: "web", command: "npm ci", from: [cite(".github/workflows/ci.yml", 4, "- run: npm ci")] },
+        { name: "bare", repo: "web", command: "npm run bare", from: [cite(".github/workflows/ci.yml", 4)] },
+      ],
+      testEnvironment: [{ hint: "needs postgres", from: [cite("package.json", 2, "\"name\": \"web\"")] }],
       knowledge: [{ path: "docs/A.md", kind: "keyDoc", from: [{ kind: "inferred", repo: "web", note: "the README mentions it" }] }],
     });
     const review = Object.fromEntries((view(await t.read()).review ?? []).map((entry) => [entry.id, entry.verification]));
-    expect(review).toMatchObject({ "setup-web": "verified", "tests-web": "unverified", "check-web-lint": "unverified", "env-needs-postgres": "unverified", "knowledge-docs-a.md": "unchecked" });
+    expect(review).toMatchObject({
+      // The quote is in the file but does not contain the command: not verified, so not pre-ticked.
+      "setup-web": "unverified", "tests-web": "unverified",
+      "check-web-lint": "unverified", "check-web-build": "unverified", "check-web-ci": "verified", "check-web-bare": "unchecked",
+      "env-needs-postgres": "unchecked", "knowledge-docs-a.md": "unchecked",
+    });
+  });
+
+  it("does not verify a command the model made up, even when it cites a real file with a real quote (the page then ticks nothing for it)", async () => {
+    const t = await setup();
+    await t.drafted({
+      ...NODE_ANSWER,
+      setup: [{ repo: "web", commands: ["npm ci", "npm run exfiltrate-everything"], from: [cite(".github/workflows/ci.yml", 4, "- run: npm ci")] }],
+      tests: [{ repo: "web", commands: ["npm run injected"], from: [cite("README.md", 3, "Install with npm ci.")] }],
+    });
+    const review = Object.fromEntries((view(await t.read()).review ?? []).map((entry) => [entry.id, entry.verification]));
+    expect(review["setup-web"]).toBe("unverified");
+    expect(review["tests-web"]).toBe("unverified");
   });
 
   it("allows a quote a line or two off the cited line, but not far from it", async () => {
@@ -481,7 +503,7 @@ describe("re-reading where each item came from (GET)", () => {
     expect(review["setup-web"]).toBe("verified");
     expect(review["tests-web"]).toBe("verified");
     const far = await setup({ files: { ...FILES, "long.txt": `${"filler\n".repeat(30)}the quote\n` } });
-    await far.drafted({ ...NODE_ANSWER, setup: [{ repo: "web", commands: ["npm ci"], from: [cite("long.txt", 2, "the quote")] }] });
+    await far.drafted({ ...NODE_ANSWER, setup: [{ repo: "web", commands: ["the quote"], from: [cite("long.txt", 2, "the quote")] }] });
     expect((view(await far.read()).review ?? []).find((entry) => entry.id === "setup-web")!.verification).toBe("unverified");
   });
 

@@ -59,7 +59,7 @@ import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/
 import {
   SETUP_ITEM_WORDS, citationWords, currentOf, getSetupItemApplier, githubFullNameOf, isCardKind, itemDigest, registerSetupItemApplier, unavailableReason,
 } from "./setup-items.js";
-import { verificationIsFinal, verifyProposal, type CitationFileReader } from "./setup-proposal-verify.js";
+import { verifyProposalDetailed, type CitationFileReader } from "./setup-proposal-verify.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 type Item = Record<string, unknown>;
@@ -116,7 +116,7 @@ export interface SetupDraftPointer {
   pullRequestClaim?: string;
   appliedAt?: string;
   appliedBy?: string;
-  /** What re-reading the proposal's citations found, kept once every verdict is final (see `verificationIsFinal`). */
+  /** What re-reading the proposal's citations found, kept once every verdict is final (see `verifyProposalDetailed`). */
   verification?: { at: string; items: Record<string, SetupVerification> };
 }
 
@@ -350,8 +350,8 @@ async function verificationOf(
     if (url === undefined) throw new Error("unknown repository");
     return deps.readFile!(caller.orgId, url, path, commit, options);
   };
-  const items = await verifyProposal(reader, proposal, { now: deps.now });
-  if (verificationIsFinal(proposal, items)) {
+  const { items, final } = await verifyProposalDetailed(reader, proposal, { now: deps.now });
+  if (final) {
     try {
       await deps.documentClient.send(new UpdateCommand({
         TableName: deps.tableName, Key: setupDraftKey(caller.orgId, pointer.project), UpdateExpression: "SET verification = :verification",

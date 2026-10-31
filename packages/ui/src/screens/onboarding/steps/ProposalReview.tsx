@@ -77,9 +77,11 @@ export function ProposalReview({ project, response, busy, results, onApply }: {
   const { proposal } = response;
   const review = new Map((response.review ?? []).map((entry) => [entry.id, entry] as const));
   const items = setupItemsOf(proposal);
-  // Only an item Rovara could check against the file, that sets something the project has no value for, starts ticked.
-  const startsTicked = (entry: SetupReviewEntry | undefined) => entry !== undefined && entry.handling === "settings" && entry.unavailable === undefined && entry.verification === "verified" && (entry.current === undefined || entry.current.state === "empty");
-  const [ticked, setTicked] = useState<Record<string, boolean>>(() => Object.fromEntries(items.map((item) => [item.id, startsTicked(review.get(item.id))])));
+  // Only an item Rovara checked against the file (the quote it cites is in the file and holds the value), that sets something the project has no value for, starts ticked. A
+  // citation with no quote shows nothing about a value, so an item that cites a file without one is never ticked for the person, whatever it is marked.
+  const quotedFromFile = (item: SetupItem) => item.proposed.from.filter((place) => place.path !== undefined).every((place) => place.quote !== undefined && place.quote !== "") && item.proposed.from.some((place) => place.path !== undefined);
+  const startsTicked = (item: SetupItem, entry: SetupReviewEntry | undefined) => entry !== undefined && entry.handling === "settings" && entry.unavailable === undefined && entry.verification === "verified" && quotedFromFile(item) && (entry.current === undefined || entry.current.state === "empty");
+  const [ticked, setTicked] = useState<Record<string, boolean>>(() => Object.fromEntries(items.map((item) => [item.id, startsTicked(item, review.get(item.id))])));
   const [replace, setReplace] = useState<Record<string, boolean>>({});
   const chosen = items.filter((item) => ticked[item.id] === true && review.get(item.id)?.handling === "settings" && review.get(item.id)?.unavailable === undefined);
   const resultOf = (id: string) => results?.find((result) => result.id === id);

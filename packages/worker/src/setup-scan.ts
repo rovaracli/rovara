@@ -10,7 +10,7 @@
 //   - nothing in a repository's hooks or MCP config is run or connected: both are reported as "found, not used".
 import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { META_KNOWLEDGE_DEFAULTS } from "@agentx/contracts";
+import { META_KNOWLEDGE_DEFAULTS, PROVENANCE_QUOTE_MAX as QUOTE_MAX } from "@agentx/contracts";
 
 export interface ScanRepository { name: string; path: string }
 
@@ -186,8 +186,9 @@ async function scanConfigs(root: string, repo: string, scan: SetupScan): Promise
   const claudeSettings = parseJson(await readText(root, ".claude/settings.json"));
   if (isObject(claudeSettings) && isObject(claudeSettings["hooks"]) && Object.keys(claudeSettings["hooks"]).length > 0) scan.foundNotUsed.push({ kind: "hook", repo, path: ".claude/settings.json" });
   for (const importer of PROJECT_FILE_IMPORTERS) {
-    const value = parseJson(await readText(root, importer.path));
-    if (value !== undefined) importProjectFile(value, repo, importer.path, scan);
+    const text = await readText(root, importer.path);
+    const value = parseJson(text);
+    if (value !== undefined) importProjectFile(value, repo, importer.path, scan, text);
   }
 }
 
@@ -205,10 +206,24 @@ const stringList = (value: unknown): string[] => (Array.isArray(value) ? value.f
  *   setup | setupCommands | install:  { <repo>: [commands] }  or  [{ repo, commands }]
  *   tests | test | testCommands:      { <repo>: [commands] | { commands } }  or  [{ repo, commands }]
  *   checks: [{ name, repo, command }]
+ * Because the field names are a guess, every item is `low` confidence. An item cites the line(s) of the file that hold its value, with that line as the quote, so the broker can
+ * check the quote supports the value; when a value cannot be found on a line of the text, the item cites the file with no quote and is never shown as checked.
  */
-export function importProjectFile(value: unknown, repo: string, path: string, scan: Pick<SetupScan, "repositories" | "setup" | "tests" | "checks">): void {
+export function importProjectFile(value: unknown, repo: string, path: string, scan: Pick<SetupScan, "repositories" | "setup" | "tests" | "checks">, text?: string): void {
   if (!isObject(value)) return;
-  const from = [cite(repo, path)];
+  const lines = text === undefined ? [] : text.split(/\r\n|\r|\n/u);
+  /** The citation(s) of the lines that hold every one of these values; one plain citation (no quote) when a value is on no line, or its line is too long to quote whole. */
+  const fromOf = (values: readonly string[]): Array<Record<string, unknown>> => {
+    const found = new Map<number, string>();
+    for (const wanted of values) {
+      const needle = JSON.stringify(wanted);
+      const index = lines.findIndex((line) => line.includes(needle));
+      const quote = index < 0 ? "" : (lines[index] ?? "").trim().replace(/\s+/gu, " ");
+      if (index < 0 || quote.length > QUOTE_MAX) return [cite(repo, path)];
+      found.set(index + 1, quote);
+    }
+    return found.size === 0 || found.size > 8 ? [cite(repo, path)] : [...found].map(([line, quote]) => cite(repo, path, { line, quote }));
+  };
   const repositories = first(value, ["repositories", "repos"]);
   for (const entry of Array.isArray(repositories) ? repositories.slice(0, 31) : []) {
     const source = typeof entry === "string" ? { url: entry } : isObject(entry) ? entry : undefined;
@@ -217,17 +232,17 @@ export function importProjectFile(value: unknown, repo: string, path: string, sc
     if (typeof url !== "string" || !REPO_URL.test(url)) continue;
     const name = typeof source["name"] === "string" ? source["name"] : url.replace(/\.git$/u, "").split("/").pop() ?? "";
     const branch = first(source, ["defaultBranch", "branch"]);
-    scan.repositories.push({ name, url, ...(typeof branch === "string" ? { defaultBranch: branch } : {}), confidence: "medium", from });
+    scan.repositories.push({ name, url, ...(typeof branch === "string" ? { defaultBranch: branch } : {}), confidence: "low", from: fromOf([url]) });
   }
   const commandItems = (raw: unknown, target: unknown[]): void => {
     if (Array.isArray(raw)) {
       for (const entry of raw.slice(0, 32)) {
-        if (isObject(entry) && typeof entry["repo"] === "string") target.push({ repo: entry["repo"], commands: stringList(entry["commands"]), confidence: "medium", from });
+        if (isObject(entry) && typeof entry["repo"] === "string") { const list = stringList(entry["commands"]); target.push({ repo: entry["repo"], commands: list, confidence: "low", from: fromOf(list) }); }
       }
     } else if (isObject(raw)) {
       for (const [name, commands] of Object.entries(raw).slice(0, 32)) {
         const list = isObject(commands) ? stringList(commands["commands"]) : stringList(commands);
-        target.push({ repo: name, commands: list, confidence: "medium", from });
+        target.push({ repo: name, commands: list, confidence: "low", from: fromOf(list) });
       }
     }
   };
@@ -236,7 +251,7 @@ export function importProjectFile(value: unknown, repo: string, path: string, sc
   const checks = value["checks"];
   for (const entry of Array.isArray(checks) ? checks.slice(0, 20) : []) {
     if (isObject(entry) && typeof entry["name"] === "string" && typeof entry["repo"] === "string" && typeof entry["command"] === "string") {
-      scan.checks.push({ name: entry["name"], repo: entry["repo"], command: entry["command"], confidence: "medium", from });
+      scan.checks.push({ name: entry["name"], repo: entry["repo"], command: entry["command"], confidence: "low", from: fromOf([entry["command"]]) });
     }
   }
 }

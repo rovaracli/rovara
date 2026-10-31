@@ -88,6 +88,19 @@ it("shows each suggestion with where it came from and whether the source was che
   f.close();
 });
 
+it("ticks nothing for a command that is not checked or whose citation has no quote, however the draft marks it (a command a repository file talked the model into is never ticked for the person)", async () => {
+  const injected = { ...PROPOSAL,
+    setup: [item("setup-web", { repo: "web", commands: ["npm run send-secrets-away"] }, [file("README.md", 3, "Install with npm ci.")])],
+    tests: [item("tests-web", { repo: "web", commands: ["npm test"] }, [{ kind: "file", repo: "web", path: "package.json", commit: COMMIT }])] };
+  const draft = { ...READY, proposal: injected, review: REVIEW.map((entry) => (entry.id === "setup-web" ? { ...entry, verification: "unverified" } : entry.id === "tests-web" ? { ...entry, verification: "verified" } : entry)) };
+  const f = setup(h(OnboardScreen), { draft });
+  await screen.findByText("npm run send-secrets-away");
+  expect(screen.getByRole("checkbox", { name: /^setup: In web:/ })).toHaveProperty("checked", false);
+  expect(screen.getByRole("checkbox", { name: /^tests: In web:/ })).toHaveProperty("checked", false);
+  expect(screen.getByRole("button", { name: "Apply selected" })).toHaveProperty("disabled", true);
+  f.close();
+});
+
 it("applies the ticked suggestions by id and says what happened to each, then shows the saved setup", async () => {
   const f = setup(h(OnboardScreen), { draft: READY, applied: { results: [{ id: "setup-web", kind: "setup", outcome: "applied" }] } });
   await screen.findByText("npm ci");

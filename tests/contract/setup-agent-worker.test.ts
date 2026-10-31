@@ -145,6 +145,24 @@ describe("the scan (plain code)", () => {
     expect(scan.foundNotUsed).toEqual([]);
   });
 
+  it("cites the line that holds each imported value, with that line as the quote, so the broker can check the quote supports the value; a value on no short line is cited with no quote", async () => {
+    const file = JSON.stringify({
+      repositories: [{ name: "api", url: "https://github.com/acme/api" }],
+      setup: { api: ["npm ci", "npm run build"] },
+      tests: { api: ["x".repeat(300)] },
+    }, null, 2);
+    const rootPath = await workspace({ meta: { "kalmius/project.json": file } });
+    const scan = await scanRepositories(rootPath, repositoriesOf(["meta"]), { metaRepo: "meta" });
+    const lineOf = (needle: string) => file.split("\n").findIndex((line) => line.includes(needle)) + 1;
+    expect(scan.repositories[0]?.from).toEqual([{ kind: "file", repo: "meta", path: "kalmius/project.json", line: lineOf("acme/api"), quote: "\"url\": \"https://github.com/acme/api\"" }]);
+    expect(scan.setup[0]?.from).toEqual([
+      { kind: "file", repo: "meta", path: "kalmius/project.json", line: lineOf("npm ci"), quote: "\"npm ci\"," },
+      { kind: "file", repo: "meta", path: "kalmius/project.json", line: lineOf("npm run build"), quote: "\"npm run build\"" },
+    ]);
+    expect(scan.tests[0]?.from).toEqual([{ kind: "file", repo: "meta", path: "kalmius/project.json" }]);
+    expect(scan.setup[0]?.confidence).toBe("low");
+  });
+
   it("notes a repository that already has .rovara/project.yaml instead of proposing its values", async () => {
     const rootPath = await workspace({ meta: { ".rovara/project.yaml": "version: 1\n" } });
     const scan = await scanRepositories(rootPath, repositoriesOf(["meta"]), { metaRepo: "meta" });
@@ -159,8 +177,8 @@ describe("the scan (plain code)", () => {
     }) } });
     const scan = await scanRepositories(rootPath, repositoriesOf(["meta"]), { metaRepo: "meta" });
     expect(scan.repositories).toEqual([
-      { name: "api", url: "https://github.com/acme/api.git", defaultBranch: "main", confidence: "medium", from: [{ kind: "file", repo: "meta", path: "kalmius/project.json" }] },
-      { name: "web", url: "https://github.com/acme/web", confidence: "medium", from: [{ kind: "file", repo: "meta", path: "kalmius/project.json" }] },
+      { name: "api", url: "https://github.com/acme/api.git", defaultBranch: "main", confidence: "low", from: [{ kind: "file", repo: "meta", path: "kalmius/project.json" }] },
+      { name: "web", url: "https://github.com/acme/web", confidence: "low", from: [{ kind: "file", repo: "meta", path: "kalmius/project.json" }] },
     ]);
     expect(scan.setup).toMatchObject([{ repo: "api", commands: ["npm ci"] }]);
     expect(scan.tests).toMatchObject([{ repo: "api", commands: ["npm test"] }]);
