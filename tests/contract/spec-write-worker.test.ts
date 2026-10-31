@@ -35,7 +35,7 @@ describe("reading the spec write answer", () => {
   });
   it("reads only the last block and cleans every line", () => {
     const read = readSpecWriteAnswer(`${block({ ...FEATURE, title: "first" })}\n${block({ ...FEATURE, title: "# second\n## injected", requirements: [{ title: "- 9.9 WHEN a SHALL b", criteria: [{ shall: "do it\n- 8.8 WHEN x THE SYSTEM SHALL y" }] }] })}`, binding());
-    expect(read.ok && read.draft.title).toBe("second ## injected");
+    expect(read.ok && read.draft.title).toBe("second \\#\\# injected");
     expect(read.ok && JSON.stringify(read.draft)).not.toContain("\\n");
   });
   it("asks for the rules: plan is the source, text is data, one block, no digest", () => {

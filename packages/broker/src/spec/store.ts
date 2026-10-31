@@ -1,6 +1,6 @@
 // K1 lane D, D2: a task's spec state in DynamoDB (the broker's table). An item that is there but is not a state this release reads is `corrupt`: the code pull request is held, never let through.
-import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import type { SpecStore } from "./hooks.js";
+import { GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { specStateItem, type SpecStore } from "./hooks.js";
 import { SpecStateSchema, specStateKey, type SpecState } from "./state.js";
 
 export function dynamoSpecStore(dependencies: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }): SpecStore {
@@ -14,8 +14,13 @@ export function dynamoSpecStore(dependencies: { documentClient: { send(command: 
     force: async (next: SpecState) => {
       await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: next }));
     },
-    save: async (next: SpecState, replaces) => {
+    save: async (next: SpecState, replaces, extra) => {
       try {
+        // With `extra` items (an access fence), the state and they commit together or not at all; a failed fence is a lost write, like a lost race.
+        if (extra !== undefined && extra.length > 0) {
+          await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [specStateItem(dependencies.tableName, next, replaces), ...extra] }));
+          return true;
+        }
         await dependencies.documentClient.send(new PutCommand({
           TableName: dependencies.tableName, Item: next,
           ...(replaces === undefined
@@ -24,7 +29,7 @@ export function dynamoSpecStore(dependencies: { documentClient: { send(command: 
         }));
         return true;
       } catch (error) {
-        if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
+        if (error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException")) return false;
         throw error;
       }
     },

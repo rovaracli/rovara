@@ -64,6 +64,9 @@ export const SpecStateSchema = z.object({
   approvedBy: z.string().max(200).optional(),
   failure: z.object({ code: z.enum(Object.keys(SPEC_FAILURES) as [SpecFailureCode, ...SpecFailureCode[]]), at: z.string() }).strict().optional(),
   continuedWithoutSpec: z.object({ by: z.string().max(200), at: z.string() }).strict().optional(),
+  /** How many times in a row a step could not be tried because GitHub (or the broker's own store) failed in a way that may pass; the step waits until `retryAfter`, and fails after SPEC_TRANSIENT_MAX. */
+  transient: z.number().int().min(0).max(20).optional(),
+  retryAfter: z.string().optional(),
   /** A person changed the spec pull request: the owner is asked "re-plan or keep?" (D4). */
   editPrompt: z.object({ headSha: Commit, at: z.string(), status: z.enum(["open", "kept", "replan"]), by: z.string().max(200).optional() }).strict().optional(),
   createdAt: z.string(),
@@ -78,6 +81,13 @@ export function specStateKey(taskId: string): { pk: string; sk: string } {
 /** The index row that lets a GitHub event on the spec pull request find its task: `owner/name` of the meta repository (lower case) and the number. */
 export function specPullRequestKey(repositoryFullName: string, number: number): { pk: string; sk: string } {
   return { pk: `SPECPR#${repositoryFullName.toLowerCase()}#${String(number)}`, sk: "META" };
+}
+
+/** Failures that may pass (GitHub 5xx or 429, a network error, the store) before a step gives up and the owner chooses. */
+export const SPEC_TRANSIENT_MAX = 6;
+/** The wait after the n-th such failure: 30 seconds, doubling, at most 15 minutes. */
+export function transientWaitMs(count: number): number {
+  return Math.min(15 * 60_000, 30_000 * 2 ** Math.max(0, count - 1));
 }
 
 /** The most write attempts (plus publish retries) one task's spec gets, so a person pressing Retry cannot loop a paid run. */
@@ -112,12 +122,16 @@ export type SpecGate =
  * What the code pull request does given the spec state. Fail closed: a state that cannot be read is a hold, never a proceed; only "no spec due", "continued without the spec by a person" and "published (and approved,
  * when the target waits for it)" proceed.
  */
-export function specGate(state: SpecState | undefined, corrupt = false): SpecGate {
+export function specGate(state: SpecState | undefined, corrupt = false, now: string | undefined = undefined): SpecGate {
   if (corrupt) return { action: "hold", reason: "failed", message: "The spec's record could not be read.", ownerActions: ["continue_without_spec"] };
   if (state === undefined || state.status === "skipped" || state.continuedWithoutSpec !== undefined) return { action: "proceed" };
+  // A step that GitHub (or the store) could not do yet waits out its back-off; the owner can still go on without the spec.
+  const waiting = now !== undefined && state.retryAfter !== undefined && Date.parse(state.retryAfter) > Date.parse(now);
+  if (waiting && state.status === "written") return { action: "hold", reason: "publishing", message: "Rovara is opening the spec pull request; GitHub could not be reached just now, so it will try again shortly.", ownerActions: ["continue_without_spec"] };
+  if (waiting && state.status === "due") return { action: "hold", reason: "writing", message: "Rovara will start writing the spec shortly; the last try did not work.", ownerActions: ["continue_without_spec"] };
   if (state.status === "due") return { action: "start_write" };
   if (state.status === "written") return { action: "start_publish" };
-  if (state.status === "writing") return { action: "hold", reason: "writing", message: "Rovara is writing the spec from the approved plan.", ownerActions: [] };
+  if (state.status === "writing") return { action: "hold", reason: "writing", message: "Rovara is writing the spec from the approved plan.", ownerActions: ["continue_without_spec"] };
   if (state.status === "failed") {
     const reason = state.failure === undefined ? "The spec could not be made." : SPEC_FAILURES[state.failure.code];
     return { action: "hold", reason: "failed", message: `Spec pull request failed: ${reason}`, ownerActions: state.attempt < SPEC_ATTEMPTS_MAX && (state.failure === undefined || RETRYABLE.has(state.failure.code)) ? ["retry", "continue_without_spec"] : ["continue_without_spec"] };
@@ -136,8 +150,8 @@ export function specGate(state: SpecState | undefined, corrupt = false): SpecGat
  * The same decision for the code REVIEW, which needs the spec published (it reads the requirements at the recorded commit) but does not wait for a person to approve it or to answer an edit: those
  * hold the code pull request, not the review of the code.
  */
-export function specGateForReview(state: SpecState | undefined, corrupt = false): SpecGate {
-  if (state === undefined) return specGate(state, corrupt);
+export function specGateForReview(state: SpecState | undefined, corrupt = false, now: string | undefined = undefined): SpecGate {
+  if (state === undefined) return specGate(state, corrupt, now);
   const { editPrompt: _edit, ...rest } = state;
   void _edit;
   return specGate({ ...rest, target: { ...state.target, linkStyle: "together" } }, corrupt);
@@ -149,13 +163,13 @@ export function specGateForReview(state: SpecState | undefined, corrupt = false)
 
 export function startWriting(state: SpecState, operationId: string, now: string): SpecState | undefined {
   if (state.status !== "due" || state.attempt >= SPEC_ATTEMPTS_MAX) return undefined;
-  return touch(state, now, { status: "writing", writeOperationId: operationId, attempt: state.attempt + 1 });
+  return touch(state, now, { status: "writing", writeOperationId: operationId, attempt: state.attempt + 1, transient: undefined, retryAfter: undefined });
 }
 
 export function writeSucceeded(state: SpecState, input: { operationId: string; title: string; files: readonly SpecFile[]; requirementCount: number }, now: string): SpecState | undefined {
   if (state.status !== "writing" || state.writeOperationId !== input.operationId) return undefined;
   const files = [...input.files];
-  return touch(state, now, { status: "written", title: input.title.slice(0, 200), files, filesDigest: filesDigestOf(files), requirementCount: input.requirementCount, failure: undefined });
+  return touch(state, now, { status: "written", title: input.title.slice(0, 200), files, filesDigest: filesDigestOf(files), requirementCount: input.requirementCount, failure: undefined, transient: undefined, retryAfter: undefined });
 }
 
 /** A SPEC_WRITE run that ended without its result being applied (failed, cancelled, never delivered), or ended and left the state behind: the state fails, with the code the caller names. */
@@ -167,12 +181,23 @@ export function stepFailed(state: SpecState, input: { operationId: string; code:
 /** The spec pull request could not be made (the broker's own publication): the files are kept for a retry. */
 export function publishFailed(state: SpecState, now: string): SpecState | undefined {
   if (state.status !== "written") return undefined;
-  return touch(state, now, { status: "failed", failure: { code: "publish_failed", at: now } });
+  return touch(state, now, { status: "failed", failure: { code: "publish_failed", at: now }, transient: undefined, retryAfter: undefined });
 }
 
 export function publishSucceeded(state: SpecState, input: { pullRequest: SpecPullRequest }, now: string): SpecState | undefined {
   if (state.status !== "written") return undefined;
-  return touch(state, now, { status: "published", specPullRequest: input.pullRequest, failure: undefined });
+  return touch(state, now, { status: "published", specPullRequest: input.pullRequest, failure: undefined, transient: undefined, retryAfter: undefined });
+}
+
+/** One more failure that may pass: the step waits (back-off) and counts. At the cap the caller fails the step instead. */
+export function noteTransient(state: SpecState, now: string): SpecState {
+  const count = (state.transient ?? 0) + 1;
+  return touch(state, now, { transient: count, retryAfter: new Date(Date.parse(now) + transientWaitMs(count)).toISOString() });
+}
+
+/** The write could not be started for good (or kept failing): the state fails, and the attempt is counted so Retry runs out. */
+export function writeNotStarted(state: SpecState, now: string): SpecState {
+  return touch(state, now, { status: "failed", failure: { code: "write_failed", at: now }, attempt: state.attempt + 1, transient: undefined, retryAfter: undefined });
 }
 
 /** The spec pull request's branch for this attempt: `agentx/<uuid>`, the same every time for the same task and attempt, so a publication that was cut short is found again and not repeated. */
@@ -185,7 +210,7 @@ export function specBranchName(taskId: string, attempt: number): string {
 export function retry(state: SpecState, now: string): SpecState | undefined {
   if (state.status !== "failed" || state.attempt >= SPEC_ATTEMPTS_MAX || (state.failure !== undefined && !RETRYABLE.has(state.failure.code))) return undefined;
   const publishFailed = state.failure?.code === "publish_failed" && state.files !== undefined;
-  return touch(state, now, { status: publishFailed ? "written" : "due", failure: undefined, ...(publishFailed ? { attempt: state.attempt + 1 } : {}) });
+  return touch(state, now, { status: publishFailed ? "written" : "due", failure: undefined, transient: undefined, retryAfter: undefined, ...(publishFailed ? { attempt: state.attempt + 1 } : {}) });
 }
 
 /** The owner presses "Continue without spec". Any state before a published, approved spec; the choice is recorded with who made it. */

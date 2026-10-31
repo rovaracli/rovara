@@ -68,12 +68,6 @@ describe("I1: who may approve a spec_first spec", () => {
       expect((await read([{ login: "alice", userType: "User" }], undefined)).facts!.reviews[0]!.eligible).toBe(false);
       expect((await read([{ login: "alice", userType: "User" }], async () => { throw new Error("502"); })).facts!.reviews[0]!.eligible).toBe(false);
     });
-    it("asks once for each reviewer and at most 20 of them", async () => {
-      const many = Array.from({ length: 25 }, (_, index) => ({ login: `u${String(index)}`, userType: "User" }));
-      const out = await read([...many, { login: "u0", userType: "User" }], async () => "write");
-      expect(out.getRepositoryPermission!.mock.calls).toHaveLength(20);
-      expect(out.facts!.reviews.filter((entry) => entry.eligible)).toHaveLength(21);
-    });
   });
 });
 

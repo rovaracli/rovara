@@ -2,7 +2,8 @@
 // (on the base commit's own tree), the commit (one parent: the pinned base) and the branch through GitHub's Git Data API, then asks GitHub what the commit changed and refuses anything but exactly the spec's files,
 // each added, each with the blob hash the broker computed from its own content. Only then is the pull request opened, and its head is checked to be that commit.
 import { createHash } from "node:crypto";
-import { SPEC_FILES_MAX, SPEC_FILE_MAX_BYTES, specFileNameProblem, specFolderProblem, specPathProblem, type SpecFile } from "@agentx/contracts";
+import { GitHubSpecError } from "./github-git-client.js";
+import { AgentXError, SPEC_FILES_MAX, SPEC_FILE_MAX_BYTES, specFileNameProblem, specFolderProblem, specPathProblem, type SpecFile } from "@agentx/contracts";
 
 export const SPEC_TOTAL_MAX_BYTES = 256 * 1024;
 
@@ -10,6 +11,8 @@ export const SPEC_TOTAL_MAX_BYTES = 256 * 1024;
 export interface SpecGitClient {
   /** The tree of a commit. */
   getCommit(sha: string): Promise<{ tree: string; parents: string[] }>;
+  /** Whether `commit` is on `branch` (the branch is at it or ahead of it). False when the branch was moved on without it. */
+  branchContains(commit: string, branch: string): Promise<boolean>;
   /** The commit a branch points at, or undefined when there is no such branch. */
   getBranch(branch: string): Promise<string | undefined>;
   createBlob(content: string): Promise<string>;
@@ -22,18 +25,29 @@ export interface SpecGitClient {
 }
 
 export interface SpecPullRequestOpener {
-  open(input: { headBranch: string; baseBranch: string; title: string; body: string }): Promise<{ number: number; url: string }>;
-  headOf(number: number): Promise<string>;
+  /** `reconciled`: an open pull request for the branch was found, not made now. */
+  open(input: { headBranch: string; baseBranch: string; title: string; body: string }): Promise<{ number: number; url: string; reconciled: boolean }>;
+  read(number: number): Promise<{ head: string; title: string; body: string }>;
   close(number: number): Promise<void>;
 }
 
-export type SpecPublishFailure = "paths" | "github" | "verification";
+export type SpecPublishFailure = "paths" | "github" | "verification" | "base" | "setup";
 
 export class SpecPublishError extends Error {
   constructor(readonly reason: SpecPublishFailure, readonly transient: boolean) {
     super(`spec publication refused: ${reason}`);
     this.name = "SpecPublishError";
   }
+}
+
+/** Whether a failure may pass by itself: GitHub 5xx, 429 and 408, a network error or a timeout, a server-side RUNTIME_UNAVAILABLE. A 4xx, a missing credential or repository, or a refusal is permanent. */
+export function classifyPublishError(error: unknown): boolean {
+  if (error instanceof SpecPublishError) return error.transient;
+  if (error instanceof GitHubSpecError) return error.status >= 500 || error.status === 429 || error.status === 408;
+  if (error instanceof AgentXError) return error.code === "RUNTIME_UNAVAILABLE";
+  if (error instanceof TypeError || (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))) return true;
+  // Anything else (a credential that is not an installation token, a repository that is not on GitHub) is the project's to fix.
+  return false;
 }
 
 /** The Git blob hash of a text, as `git hash-object` gives it. */
@@ -90,6 +104,8 @@ export async function publishSpec(
   if (!/^[a-f0-9]{40}$/u.test(input.baseCommit) || !/^agentx\/[0-9a-f-]{36}$/u.test(input.branch)) throw new SpecPublishError("paths", false);
   let head: string | undefined;
   try {
+    // The commit the spec is built on must still be on the default branch: if the branch was rewritten, the pull request would carry the old history back.
+    if (!(await deps.git.branchContains(input.baseCommit, input.baseBranch))) throw new SpecPublishError("base", false);
     head = await deps.git.getBranch(input.branch);
     if (head === undefined) {
       const base = await deps.git.getCommit(input.baseCommit);
@@ -109,19 +125,22 @@ export async function publishSpec(
       if (error.reason === "verification" && head !== undefined) await deps.git.deleteBranch(input.branch).catch(() => undefined);
       throw error;
     }
-    throw new SpecPublishError("github", true);
+    throw new SpecPublishError("github", classifyPublishError(error));
   }
-  let opened: { number: number; url: string };
   try {
-    opened = await deps.pullRequests.open({ headBranch: input.branch, baseBranch: input.baseBranch, title: input.title, body: input.body });
-    if (await deps.pullRequests.headOf(opened.number) !== head) {
+    const opened = await deps.pullRequests.open({ headBranch: input.branch, baseBranch: input.baseBranch, title: input.title, body: input.body });
+    const seen = await deps.pullRequests.read(opened.number);
+    const normal = (text: string): string => text.replace(/\r\n?/gu, "\n").trimEnd();
+    // A pull request found again (not made now) is adopted only when it is Rovara's own: title and body exactly what Rovara sends. Someone else's is never adopted and never closed.
+    if (opened.reconciled && (seen.title !== input.title || normal(seen.body) !== normal(input.body))) throw new SpecPublishError("verification", false);
+    if (seen.head !== head) {
       await deps.pullRequests.close(opened.number).catch(() => undefined);
       throw new SpecPublishError("verification", false);
     }
+    return { commit: head, number: opened.number, url: opened.url };
   } catch (error) {
     if (error instanceof SpecPublishError) throw error;
-    throw new SpecPublishError("github", true);
+    throw new SpecPublishError("github", classifyPublishError(error));
   }
-  return { commit: head, number: opened.number, url: opened.url };
 }
 

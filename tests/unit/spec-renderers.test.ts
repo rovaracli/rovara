@@ -80,7 +80,7 @@ describe("spec contracts", () => {
   });
   it("cleans every model field when the draft is parsed", () => {
     const draft = SpecDraftSchema.parse({ ...feature(), title: "# Evil\n## title", requirements: [{ title: "1.1 WHEN a SHALL b", criteria: [{ when: "x\n- 9.9 WHEN y", shall: "z" }] }] });
-    expect(draft.title).toBe("Evil ## title");
+    expect(draft.title).toBe("Evil \\#\\# title");
     expect(draft.requirements[0]!.criteria[0]!.when).not.toContain("\n");
   });
 });

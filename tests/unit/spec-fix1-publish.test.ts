@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { SpecFile } from "@agentx/contracts";
-import { githubSpecClient } from "../../packages/broker/src/spec/github-git-client.js";
+import { GitHubSpecError, githubSpecClient } from "../../packages/broker/src/spec/github-git-client.js";
 import { SpecPublishError, assertSpecPaths, gitBlobSha, publishSpec, type SpecGitClient, type SpecPullRequestOpener } from "../../packages/broker/src/spec/publish.js";
 
 const BASE = "b".repeat(40);
@@ -25,6 +25,7 @@ function fakeGit(options: { baseFiles?: Record<string, string>; hooks?: Partial<
   trees.set("t".repeat(40), baseTree);
   commits.set(BASE, { tree: "t".repeat(40), parents: [] });
   const git: SpecGitClient = {
+    branchContains: async () => true,
     getCommit: async (sha) => { calls.push("getCommit"); const found = commits.get(sha); if (found === undefined) throw new Error("404"); return (options.hooks?.getCommit?.(sha as never) as typeof found | undefined) ?? found; },
     getBranch: async (branch) => branches.get(branch),
     createBlob: async (content) => { calls.push("createBlob"); const sha = gitBlobSha(content); blobs.set(sha, content); return (options.hooks?.createBlob?.(content as never) as string | undefined) ?? sha; },
@@ -57,8 +58,8 @@ function fakeGit(options: { baseFiles?: Record<string, string>; hooks?: Partial<
 }
 function opener(head: () => string) {
   const closed: number[] = [];
-  const open = vi.fn(async () => ({ number: 7, url: "https://github.com/acme/meta/pull/7" }));
-  const pullRequests: SpecPullRequestOpener = { open, headOf: async () => head(), close: async (number) => { closed.push(number); } };
+  const open = vi.fn(async () => ({ number: 7, url: "https://github.com/acme/meta/pull/7", reconciled: false }));
+  const pullRequests: SpecPullRequestOpener = { open, read: async () => ({ head: head(), title: "Rovara spec: Reset", body: "b" }), close: async (number) => { closed.push(number); } };
   return { pullRequests, closed, open };
 }
 const input = (overrides: Record<string, unknown> = {}) => ({ files: FILES, folder: FOLDER, baseCommit: BASE, baseBranch: "main", branch: BRANCH, title: "Rovara spec: Reset", body: "b", forbiddenFolders: [] as string[], ...overrides });
@@ -138,7 +139,7 @@ describe("the broker makes the commit", () => {
     expect(o.open).not.toHaveBeenCalled();
   });
   it("says a GitHub failure is transient (try again later) and a refusal is not", async () => {
-    const g = fakeGit(); g.git.createBlob = async () => { throw new Error("502 secret-detail"); };
+    const g = fakeGit(); g.git.createBlob = async () => { throw new GitHubSpecError(502); };
     const error = await publishSpec({ git: g.git, pullRequests: opener(() => "x").pullRequests }, input()).catch((failure: unknown) => failure);
     expect(error).toBeInstanceOf(SpecPublishError);
     expect(error).toMatchObject({ reason: "github", transient: true });

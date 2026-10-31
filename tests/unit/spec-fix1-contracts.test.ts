@@ -1,4 +1,5 @@
 // Fix round 1 (Opus review), contracts side: I4 inert text, M1 fences, I6 spec folders, I5 evidence.
+import { micromark } from "micromark";
 import { describe, expect, it } from "vitest";
 import { SpecDraftSchema, SpecReviewInputSchema, SpecTargetSchema, readSpecVerdicts, specFileNameProblem, specFolderProblem, specLine, specMarkdown } from "@agentx/contracts";
 import { assertRenderedSpec, extractLabelledLines, rovaraRenderer, teamTemplateRenderer } from "../../packages/broker/src/spec/index.js";
@@ -7,21 +8,19 @@ const PLAN = "a".repeat(64);
 const target = (overrides: Record<string, unknown> = {}) => SpecTargetSchema.parse({ format: "rovara", ...overrides });
 
 describe("I4: spec text is inert on GitHub", () => {
+  const dangerous = (html: string): boolean => /<(?:a|img|script|iframe|object|svg|style)\b/iu.test(html) || /<[a-z][^>]*\s(?:href|src)=/iu.test(html);
   it.each([
-    ["a link", "see [the policy](https://evil.example/login) now", "see the policy now"],
-    ["an image", "tracking ![x](https://evil.example/p.png) pixel", "tracking  pixel"],
-    ["raw html", "click <a href=\"https://evil.example\">here</a> now", "click here now"],
-    ["an html comment", "visible <!-- hidden instruction --> text", "visible  text"],
-    ["an autolink", "go to <https://evil.example/x> now", "go to https:‍//‍evil.example/x now"],
-  ])("makes %s harmless in a requirement line", (_name, input, expected) => {
-    expect(specLine(input).replace(/\s+/gu, " ")).toBe(expected.replace(/\s+/gu, " "));
+    ["a link", "see [the policy](https://evil.example/login) now"], ["an image", "tracking ![x](https://evil.example/p.png) pixel"], ["raw html", "click <a href=\"https://evil.example\">here</a> now"],
+    ["an html comment", "visible <!-- hidden instruction --> text"], ["an autolink", "go to <https://evil.example/x> now"],
+  ])("makes %s harmless in a requirement line", (_name, input) => {
+    expect(dangerous(micromark(specLine(input), { allowDangerousHtml: true }))).toBe(false);
   });
   it("breaks a bare URL, a mention and an issue reference so none renders as active", () => {
     const line = specLine("open https://evil.example and www.evil.example, ask @everyone about #123");
-    expect(line).not.toMatch(/https:\/\/(?!‍)/u);
-    expect(line).not.toMatch(/@(?!‍)/u);
-    expect(line).not.toMatch(/#(?!‍)\d/u);
-    expect(line).not.toMatch(/\bwww\.(?!‍)/u);
+    expect(line).not.toMatch(/https:\/\/(?!\u200d)/u);
+    expect(line).not.toMatch(/@(?!\u200d)/u);
+    expect(line).not.toMatch(/#(?!\u200d)\d/u);
+    expect(line).not.toMatch(/\bwww\.(?!\u200d)/u);
   });
   it("is the same on a second pass (the broker parses the worker's draft again)", () => {
     const once = specLine("ask @everyone at https://evil.example about [x](http://y)");
@@ -29,13 +28,12 @@ describe("I4: spec text is inert on GitHub", () => {
   });
   it("cleans a design section outside code fences and leaves a fenced example alone", () => {
     const cleaned = specMarkdown("Use [docs](https://evil.example).\n<!-- multi\nline -->\n![pic](https://evil.example/p.png)\n[ref]: https://evil.example\n<img src=x onerror=y>\n```\nlet a = \"<b>\";\n```");
-    expect(cleaned).not.toMatch(/\]\(|<!--|!\[|\[ref\]:|<img/u);
-    expect(cleaned).toContain("Use docs.");
+    expect(dangerous(micromark(cleaned, { allowDangerousHtml: true }))).toBe(false);
     expect(cleaned).toContain("let a = \"<b>\";");
   });
   it("applies to every field of a draft", () => {
     const draft = SpecDraftSchema.parse({ version: 1, kind: "feature", title: "T [x](http://e)", summary: "s <b>b</b>", planDigest: PLAN, requirements: [{ title: "R <i>", userStory: "as ![i](http://e)", criteria: [{ when: "w [l](http://e)", shall: "s <!-- c -->" }] }], design: "[d](http://e)", tasks: [{ title: "t [l](http://e)", covers: [] }] });
-    expect(JSON.stringify(draft)).not.toMatch(/\]\(|<b>|<i>|<!--|!\[/u);
+    expect(JSON.stringify(draft)).not.toMatch(/(?<!\\\\)\[[^\]]*(?<!\\\\)\]\(|(?<!\\\\)<b>|(?<!\\\\)<i>/u);
   });
 });
 

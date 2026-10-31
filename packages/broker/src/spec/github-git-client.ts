@@ -50,6 +50,11 @@ export function githubSpecClient(input: { repository: GitHubRepositoryRef; token
     createCommit: async ({ message, tree, parent }) => sha(record((await call("POST", "/git/commits", { message, tree: sha(tree), parents: [sha(parent)] })).json)["sha"]),
     createBranch: async (branch, commit) => { await call("POST", "/git/refs", { ref: `refs/heads/${branch}`, sha: sha(commit) }); },
     deleteBranch: async (branch) => { await call("DELETE", `/git/refs/heads/${encodePath(branch)}`, undefined, [404, 422]); },
+    branchContains: async (commit, branch) => {
+      // The comparison of the commit with the branch: "ahead" or "identical" means the branch holds the commit; "diverged" or "behind" means it was moved on without it.
+      const json = record((await call("GET", `/compare/${sha(commit)}...${encodePath(branch)}?per_page=1`)).json);
+      return json["status"] === "ahead" || json["status"] === "identical";
+    },
     compare: async (baseCommit, headCommit) => {
       const json = record((await call("GET", `/compare/${sha(baseCommit)}...${sha(headCommit)}?per_page=100`)).json);
       const files = Array.isArray(json["files"]) ? json["files"].map((entry) => {

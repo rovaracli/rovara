@@ -8,9 +8,9 @@ import { approvedPlanDigestOf } from "../../spec/plan.js";
 import { refreshSpecState, type SpecPullRequestFacts } from "../../spec/refresh.js";
 import { specPullRequestKey, type SpecState } from "../../spec/state.js";
 import { githubSpecClient } from "../../spec/github-git-client.js";
-import { SpecPublishError, publishSpec } from "../../spec/publish.js";
+import { SpecPublishError, classifyPublishError, publishSpec } from "../../spec/publish.js";
 import { specPullRequestBody } from "../../spec/link.js";
-import { specPullRequestTitle } from "../../spec/publish-request.js";
+import { projectForbiddenFolders, specPullRequestTitle } from "../../spec/publish-request.js";
 import type { SpecPublishOutcome } from "../../spec/hooks.js";
 import { dynamoSpecStore } from "../../spec/store.js";
 import type { SpecEndEnvironment } from "../../spec/end-items.js";
@@ -23,10 +23,10 @@ import type { AwsBrokerDependencies } from "./definitions.js";
 
 /** A GitHub client for the task's project's meta repository, with a token the broker minted for itself (the same grant a worker would exchange, issued and exchanged here, never sent anywhere). */
 async function metaClient(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, access: "clone" | "push") {
-  if (task.startingRevision === undefined) throw new Error("no project revision");
+  if (task.startingRevision === undefined) throw new SpecPublishError("setup", false);
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   const meta = metaRepositoryOf(project.definition);
-  if (meta === undefined) throw new Error("no meta repository");
+  if (meta === undefined) throw new SpecPublishError("setup", false);
   const operationId = randomUUID();
   const scope = await githubScopeOf(dependencies, task);
   const grant = dependencies.repositoryGrants.issue({
@@ -35,9 +35,9 @@ async function metaClient(dependencies: AwsBrokerDependencies, task: DeveloperTa
   });
   const credential = await dependencies.repositoryGrants.exchange(grant, { workspaceId: task.workspaceId, operationId, credentialRef: meta.credentialRef, repositoryUrl: meta.url, access }, scope);
   const token = credential.token ?? credential.password;
-  if (token === undefined || token === "") throw new Error("no token");
+  if (token === undefined || token === "") throw new SpecPublishError("setup", false);
   const parsed = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/u.exec(meta.url);
-  if (parsed === null) throw new Error("not a GitHub repository");
+  if (parsed === null) throw new SpecPublishError("setup", false);
   return { meta, scope, client: githubSpecClient({ repository: { owner: parsed[1]!, name: parsed[2]! }, token }) };
 }
 
@@ -77,7 +77,7 @@ export function specEndEnvironmentOf(dependencies: AwsBrokerDependencies, now: (
       } catch { return undefined; }
     },
     // The project's own knowledge folders beyond the defaults live in its config file; the defaults are already refused everywhere, and the config's own apply refuses a spec folder inside the ones it names.
-    forbiddenFolders: async () => [],
+    forbiddenFolders: async () => projectForbiddenFolders(),
     republishItem: async (taskId) => {
       const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
       const workflow = task?.workflow;
@@ -109,22 +109,25 @@ export function publishSpecFilesOf(dependencies: AwsBrokerDependencies): (task: 
         pullRequests: {
           open: async (input) => {
             const opened = await github.reconcilePullRequest({ repositoryUrl: meta.url, headBranch: input.headBranch, baseBranch: input.baseBranch, title: input.title, body: input.body, draft: false }, scope);
-            return { number: opened.number, url: opened.url };
+            return { number: opened.number, url: opened.url, reconciled: opened.reconciled };
           },
-          headOf: async (number) => (await github.getPullRequest(meta.url, number, scope)).headCommit,
+          read: async (number) => {
+            const details = await github.getPullRequest(meta.url, number, scope);
+            return { head: details.headCommit, title: details.title, body: details.body };
+          },
           close: async (number) => { await github.updatePullRequest(meta.url, number, { state: "closed" }, scope); },
         },
       }, {
         files: state.files, folder, baseCommit: state.knowledgeCommit, baseBranch: meta.defaultBranch, branch, title: specPullRequestTitle(task.title),
-        body: specPullRequestBody({ taskTitle: task.title, requirementCount: state.requirementCount ?? 0, ...(issuer === undefined ? {} : { taskPageUrl: taskPageUrl(issuer, task.taskId) }) }), forbiddenFolders: [],
+        body: specPullRequestBody({ taskTitle: task.title, requirementCount: state.requirementCount ?? 0, ...(issuer === undefined ? {} : { taskPageUrl: taskPageUrl(issuer, task.taskId) }) }), forbiddenFolders: projectForbiddenFolders(),
       });
       const full = githubRepositoryFullName(meta.url);
       await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: { ...specPullRequestKey(full, published.number), entityType: "SPEC_PULL_REQUEST", taskId: task.taskId, number: published.number, url: published.url, repositoryUrl: meta.url } }));
       return { ok: true, pullRequest: { number: published.number, url: published.url, repositoryUrl: meta.url, headBranch: branch, commit: published.commit } };
     } catch (error) {
-      if (error instanceof SpecPublishError) return { ok: false, transient: error.transient };
-      console.log(JSON.stringify({ component: "broker", event: "spec.publish_failed", error: error instanceof Error ? error.name : "unknown" }));
-      return { ok: false, transient: true };
+      // A refusal that will not pass (GitHub 403/404/422, no credential, no meta repository) is permanent; a GitHub 5xx or 429 or a network error may pass.
+      console.log(JSON.stringify({ component: "broker", event: "spec.publish_failed", error: error instanceof Error ? error.name : "unknown", transient: classifyPublishError(error) }));
+      return { ok: false, transient: classifyPublishError(error) };
     }
   };
 }
@@ -159,13 +162,14 @@ export function readMetaFileOf(dependencies: AwsBrokerDependencies): (task: Deve
   };
 }
 
-/** The most distinct reviewers whose access is looked up for one read of a spec pull request. */
-const REVIEWERS_CHECKED_MAX = 20;
+/** The most reviewers whose access is looked up for one read of a spec pull request. More than this and the list is reported as incomplete: no approval is read from it. */
+const REVIEWERS_CHECKED_MAX = 50;
 
 /**
- * GitHub's view of a spec pull request: its head, state and reviews, through the task's own connection. A review is `eligible` (may count as an approval or an objection) only when its author is a person (not a
- * bot, not the app) with write or admin access to the meta repository, which GitHub is asked for each distinct reviewer. Anything GitHub cannot say makes the review ineligible. Undefined when the pull request
- * itself cannot be read.
+ * GitHub's view of a spec pull request: its head, state and reviews, through the task's own connection. Only each reviewer's LATEST decisive review (approved, changes requested) of the recorded head is looked
+ * up (a comment, a dismissal or an old review costs nothing and never uses up a limit); it is `eligible` only when its author is a person (not a bot, not the app) with write or admin access to the meta
+ * repository. A look-up that fails makes that review ineligible. If more reviewers than the bound need a look-up, the list is reported incomplete, so no approval is read from it and nothing fails open.
+ * Undefined when the pull request itself cannot be read.
  */
 export function readSpecPullRequestOf(dependencies: AwsBrokerDependencies): (task: DeveloperTaskRecord, repositoryUrl: string, number: number) => Promise<SpecPullRequestFacts | undefined> {
   return async (task, repositoryUrl, number) => {
@@ -175,17 +179,24 @@ export function readSpecPullRequestOf(dependencies: AwsBrokerDependencies): (tas
       const scope = await githubScopeOf(dependencies, task);
       const status = await read.call(dependencies.githubPullRequests, repositoryUrl, number, scope);
       const permission = dependencies.githubPullRequests.getRepositoryPermission;
-      const checked = new Map<string, Promise<boolean>>();
-      const eligibleLogin = (login: string, userType: string): Promise<boolean> => {
-        if (userType === "Bot" || /\[bot\]$/iu.test(login) || permission === undefined) return Promise.resolve(false);
-        if (!checked.has(login) && checked.size >= REVIEWERS_CHECKED_MAX) return Promise.resolve(false);
-        if (!checked.has(login)) checked.set(login, permission.call(dependencies.githubPullRequests, repositoryUrl, login, scope).then((level) => level === "write" || level === "admin", () => false));
-        return checked.get(login)!;
-      };
-      const reviews = await Promise.all(status.reviews.map(async (review) => ({
-        state: review.state, commitId: review.commitId, login: review.login, userId: review.githubUserId, eligible: await eligibleLogin(review.login, review.userType),
-      })));
-      return { state: status.state, headSha: status.headSha, reviews, ...(status.reviewsIncomplete === true ? { reviewsIncomplete: true } : {}) };
+      const latest = new Map<string, number>();
+      status.reviews.forEach((review, index) => {
+        if (review.commitId !== status.headSha) return;
+        if (review.state === "APPROVED" || review.state === "CHANGES_REQUESTED" || review.state === "DISMISSED") latest.set(review.githubUserId, index);
+      });
+      const toCheck = [...latest.values()].filter((index) => ["APPROVED", "CHANGES_REQUESTED"].includes(status.reviews[index]!.state));
+      const tooMany = toCheck.length > REVIEWERS_CHECKED_MAX;
+      const eligible = new Map<number, boolean>();
+      if (!tooMany) {
+        await Promise.all(toCheck.map(async (index) => {
+          const review = status.reviews[index]!;
+          const person = review.userType !== "Bot" && !/\[bot\]$/iu.test(review.login) && permission !== undefined;
+          const level = person ? await permission.call(dependencies.githubPullRequests, repositoryUrl, review.login, scope).catch(() => "none") : "none";
+          eligible.set(index, person && (level === "write" || level === "admin"));
+        }));
+      }
+      const reviews = status.reviews.map((review, index) => ({ state: review.state, commitId: review.commitId, login: review.login, userId: review.githubUserId, eligible: eligible.get(index) === true }));
+      return { state: status.state, headSha: status.headSha, reviews, ...(status.reviewsIncomplete === true || tooMany ? { reviewsIncomplete: true } : {}) };
     } catch {
       return undefined;
     }

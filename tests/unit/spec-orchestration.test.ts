@@ -276,6 +276,7 @@ describe("the gate, with the effects", () => {
     outcome.value = { ok: false, transient: true };
     expect(await hooks.gate(gateInput())).toMatchObject({ proceed: false, hold: { reason: "publishing" } });
     expect(rows.get(TASK)!.status).toBe("written");
+    rows.set(TASK, { ...rows.get(TASK)!, retryAfter: undefined });
     outcome.value = { ok: false, transient: false };
     expect(await hooks.gate(gateInput())).toMatchObject({ proceed: false, hold: { reason: "failed", ownerActions: ["retry", "continue_without_spec"] } });
     expect(rows.get(TASK)).toMatchObject({ status: "failed", failure: { code: "publish_failed" } });

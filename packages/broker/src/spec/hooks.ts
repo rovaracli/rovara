@@ -7,7 +7,7 @@ import { buildSpecWriteRequest, type SpecWriteRequest } from "./write-request.js
 import { specLinkLine } from "./link.js";
 import { refreshSpecState, type SpecPullRequestFacts } from "./refresh.js";
 import {
-  SPEC_STATE_SK, SpecStateSchema, continueWithoutSpec, keepEdited, newSpecState, publishFailed, publishSucceeded, replanEdited, retry, specBranchName, specGate, specGateForReview, specStateKey, startWriting, stepFailed,
+  SPEC_STATE_SK, SpecStateSchema, continueWithoutSpec, keepEdited, newSpecState, publishFailed, publishSucceeded, replanEdited, noteTransient, retry, SPEC_TRANSIENT_MAX, specBranchName, specGate, specGateForReview, specStateKey, startWriting, stepFailed, writeNotStarted,
   type SpecGate, type SpecPullRequest, type SpecState,
 } from "./state.js";
 
@@ -27,7 +27,7 @@ export interface SpecStore {
   /** `corrupt`: an item is there but is not a state this release reads. */
   load(taskId: string): Promise<{ state: SpecState | undefined; corrupt: boolean }>;
   /** Writes `next` over the revision `replaces`; false when another writer moved it first. */
-  save(next: SpecState, replaces: number | undefined): Promise<boolean>;
+  save(next: SpecState, replaces: number | undefined, extra?: readonly TransactItem[]): Promise<boolean>;
   /** Writes `next` over whatever is there (a record this release cannot read): only the owner's "continue without spec" uses it. */
   force(next: SpecState): Promise<void>;
 }
@@ -132,7 +132,7 @@ export function createSpecHooks(world: SpecWorld) {
           return { proceed: false, hold: unavailable() };
         }
       }
-      const decide = (given: SpecState | undefined) => (input.purpose === "review" ? specGateForReview(given, corrupt) : specGate(given, corrupt));
+      const decide = (given: SpecState | undefined) => (input.purpose === "review" ? specGateForReview(given, corrupt, world.now()) : specGate(given, corrupt, world.now()));
       let decision = decide(state);
       // A write whose run is over, and that left no result behind, is settled.
       if (state !== undefined && state.status === "writing" && world.operationEnded !== undefined && await world.operationEnded(state).catch(() => false)) {
@@ -151,29 +151,40 @@ export function createSpecHooks(world: SpecWorld) {
           request = buildSpecWriteRequest({ format: current.target.format, kind: current.kind, planDigest: current.planDigest, planMarkdown: markdown, taskTitle: input.task.title });
         } catch { request = undefined; }
         if (request === undefined) return failWrite(current);
-        const started = await world.startWrite({
-          task: input.task, request, attemptKey: String(current.revision),
-          items: (operationId) => {
-            const next = startWriting(current, operationId, world.now());
-            if (next === undefined) throw agentXError("CONFIG_INVALID", "the spec has no write left to start");
-            return [specStateItem(world.tableName, next, current.revision)];
-          },
-        }).catch((error: unknown) => {
+        let started: "STARTED" | "BUSY" | "REFUSED" | "ERROR";
+        try {
+          started = await world.startWrite({
+            task: input.task, request, attemptKey: String(current.revision),
+            items: (operationId) => {
+              const next = startWriting(current, operationId, world.now());
+              if (next === undefined) throw agentXError("CONFIG_INVALID", "the spec has no write left to start");
+              return [specStateItem(world.tableName, next, current.revision)];
+            },
+          });
+        } catch (error) {
           world.log("spec.write_not_started", { taskId, error: error instanceof Error ? error.name : "unknown" });
-          return "BUSY" as const;
-        });
+          started = "ERROR";
+        }
         if (started === "REFUSED") return failWrite(current);
-        return { proceed: false, hold: hold("writing", "Rovara is writing the spec from the approved plan.", []) };
+        // A start that errors counts: it waits, and after the cap the write fails and the owner chooses. A busy workspace is not an error: it is the normal wait.
+        if (started === "ERROR") {
+          if ((current.transient ?? 0) + 1 >= SPEC_TRANSIENT_MAX) return failWrite(current);
+          await world.store.save(noteTransient(current, world.now()), current.revision);
+        }
+        return { proceed: false, hold: hold("writing", "Rovara is writing the spec from the approved plan.", ["continue_without_spec"]) };
       }
       // start_publish: the broker builds and opens it now.
-      const outcome = await world.publish({ task: input.task, state: current, branch: specBranchName(taskId, current.attempt) }).catch((): SpecPublishOutcome => ({ ok: false, transient: false }));
-      if (!outcome.ok && outcome.transient) return { proceed: false, hold: hold("publishing", "Rovara is opening the spec pull request.", []) };
-      const next = outcome.ok ? publishSucceeded(current, { pullRequest: outcome.pullRequest }, world.now()) : publishFailed(current, world.now());
-      if (next === undefined || !(await world.store.save(next, current.revision))) return { proceed: false, hold: hold("publishing", "Rovara is opening the spec pull request.", []) };
+      const outcome = await world.publish({ task: input.task, state: current, branch: specBranchName(taskId, current.attempt) }).catch((): SpecPublishOutcome => ({ ok: false, transient: true }));
+      const waitHold = hold("publishing", "Rovara is opening the spec pull request.", ["continue_without_spec"]);
+      // A refusal that will not pass (GitHub 403, 404, 422, no credential) fails the step now; a failure that may pass waits, with a back-off, and fails after the cap.
+      const giveUp = !outcome.ok && (!outcome.transient || (current.transient ?? 0) + 1 >= SPEC_TRANSIENT_MAX);
+      const next = outcome.ok ? publishSucceeded(current, { pullRequest: outcome.pullRequest }, world.now()) : giveUp ? publishFailed(current, world.now()) : noteTransient(current, world.now());
+      if (next === undefined || !(await world.store.save(next, current.revision))) return { proceed: false, hold: waitHold };
+      if (!outcome.ok && !giveUp) return { proceed: false, hold: waitHold };
       current = next;
       decision = decide(current);
       if (decision.action === "proceed") return proceedWith(decision.link, input.metaRepositoryUrl);
-      return { proceed: false, hold: decision.action === "hold" ? decision : hold("publishing", "Rovara is opening the spec pull request.", []) };
+      return { proceed: false, hold: decision.action === "hold" ? decision : waitHold };
     },
 
     /**
@@ -198,9 +209,9 @@ export function createSpecHooks(world: SpecWorld) {
   };
 
   async function failWrite(current: SpecState): Promise<{ proceed: false; hold: Hold }> {
-    const failed = SpecStateSchema.parse({ ...current, status: "failed", failure: { code: "write_failed", at: world.now() }, revision: current.revision + 1, updatedAt: world.now() });
+    const failed = writeNotStarted(current, world.now());
     await world.store.save(failed, current.revision);
-    return { proceed: false, hold: hold("failed", "Spec pull request failed: Rovara could not write the spec from the approved plan.", current.attempt < 3 ? ["retry", "continue_without_spec"] : ["continue_without_spec"]) };
+    return { proceed: false, hold: specGate(failed) as Hold };
   }
 
   function proceedWith(link: SpecPullRequest | undefined, metaRepositoryUrl: string | undefined): { proceed: true; linkLine?: string } | { proceed: false; hold: Hold } {

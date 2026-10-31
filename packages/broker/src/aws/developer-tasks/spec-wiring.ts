@@ -13,7 +13,8 @@ import { approvedPlanDigestOf } from "../../spec/plan.js";
 import { specTargetOf } from "../../spec/due.js";
 import { specRendererFor } from "../../spec/index.js";
 import { dynamoSpecStore } from "../../spec/store.js";
-import type { SpecGate } from "../../spec/state.js";
+import type { SpecGate, SpecState } from "../../spec/state.js";
+import type { TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { get, iso, taskBaseOption } from "./common.js";
@@ -33,8 +34,10 @@ export function specKindOf(task: Pick<DeveloperTaskRecord, "title" | "requestTex
   return /\b(?:bug|bugfix|defect|regression|hotfix|crash(?:es|ing)?|broken|fails?|failing)\b/iu.test(`${task.title} ${task.requestText ?? ""}`.slice(0, 2_000)) ? "bugfix" : "feature";
 }
 
-function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): SpecWorld {
-  const store = dynamoSpecStore(deps);
+function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, fence?: TransactItems[number]): SpecWorld {
+  const plain = dynamoSpecStore(deps);
+  // An owner's choice is written with the access fence (the task's people revision read when the choice was authorized), so a co-owner removed meanwhile lands nothing.
+  const store = fence === undefined ? plain : { ...plain, save: (next: SpecState, replaces: number | undefined) => plain.save(next, replaces, [fence]) };
   const log = (event: string, fields: Record<string, string | number | boolean>) => deps.log?.({ event, ...fields });
   return {
     tableName: deps.tableName, now: () => iso(deps), store, log,
@@ -218,7 +221,7 @@ async function queueRepublish(deps: DeveloperTaskRouteDependencies, task: Develo
 export async function specOwnerChoice(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, action: "retry" | "continue_without_spec" | "keep" | "replan"): Promise<{ status: string }> {
   const access = await authorizeTaskAction(deps, caller, taskId, "publish");
   const task = access.task;
-  const hooks = createSpecHooks(worldFor(deps, task));
+  const hooks = createSpecHooks(worldFor(deps, task, accessFence(deps, access)));
   // "Retry" on a task with no record (the check itself failed) has nothing to change: it makes the waiting step due again, which looks again.
   if (action === "retry" && (await dynamoSpecStore(deps).load(taskId)).state === undefined) { await queueRepublish(deps, task); return { status: "retrying" }; }
   const next = await hooks.ownerChoice({ taskId, action, by: caller.developerId });

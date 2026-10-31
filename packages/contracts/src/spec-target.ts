@@ -32,41 +32,46 @@ export const SPEC_PATH_TOKENS = ["slug", "taskKey", "ticket", "n"] as const;
 
 const HIDDEN = /[\p{Cf}\p{Cc}\p{Co}\p{Cn}\p{Cs}\p{Default_Ignorable_Code_Point}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/gu;
 
+/** Every character that can start Markdown syntax in running text: a backslash, brackets, parentheses, angle brackets, `!`, `*`, `_`, `#`, `|`, `~` and the backtick. */
+const MARKDOWN_ACTIVE = /[\\[\]()<>!*_#|~`]/gu;
+/** CommonMark: a backslash before an ASCII punctuation character is that character, as text. */
+const MARKDOWN_ESCAPED = /\\([!-/:-@[-`{-~])/gu;
+
+/** The text a Markdown escape stands for: `\[` is `[`. */
+export function unescapeMarkdown(text: string): string {
+  return text.replace(MARKDOWN_ESCAPED, "$1");
+}
+
 /**
- * Text made inert for GitHub (the same rules as Rovara's pull request lines): images dropped, links reduced to their text, raw HTML and HTML comments dropped, `<url>` autolinks and bare URLs broken
- * with a zero-width joiner so nothing renders as a link, and `@`, `www.` and `#<digit>` broken so nothing mentions anyone or cross-references an issue. Applying it twice gives the same text.
+ * Model text made inert on GitHub by escaping, not by looking for patterns: every character that can start Markdown syntax is written as a backslash escape, so the text can never form a link, an image,
+ * a raw HTML tag or comment, a reference definition or a heading, however it is split over lines or nested; what the model wrote is what a reader sees. Bare URLs and `www.` are broken with a zero-width joiner so
+ * GitHub does not link them, and `@` and `#<digit>` so nothing mentions anyone or cross-references an issue. Text that is already escaped is unescaped first, so applying it twice gives the same text.
  */
 export function inertSpecText(text: string): string {
-  return text
-    .replace(/<!--[\s\S]*?(?:-->|$)/gu, "")
-    .replace(/!\[[^\]]*\]\([^)]*\)/gu, "")
-    .replace(/!\[[^\]]*\]\[[^\]]*\]/gu, "")
-    .replace(/\[([^\]]*)\]\([^)]*\)/gu, "$1")
-    .replace(/\[([^\]]*)\]\[[^\]]*\]/gu, "$1")
-    .replace(/<((?:https?|mailto):[^>]*)>/giu, "$1")
-    .replace(/<\/?[A-Za-z][^>]*>/gu, "")
+  return unescapeMarkdown(text)
     .replaceAll("@", "@\u200D")
     .replaceAll("://", ":\u200D//\u200D")
     .replace(/\bwww\./giu, (match) => `${match.slice(0, 3)}\u200D.`)
-    .replace(/#(?=\d)/gu, "#\u200D");
+    .replace(/#(?=\d)/gu, "#\u200D")
+    .replace(MARKDOWN_ACTIVE, (character) => `\\${character}`);
 }
 
 /**
  * Untrusted text as one visible line: secrets redacted, hidden and control characters (line breaks included) gone, white space collapsed, a leading list or heading marker
- * dropped, made inert for GitHub, and cut to `max` characters. A line made this way cannot start a heading, a list item or a code fence in a file that holds it, nor render a link, image or tag.
+ * dropped, cut to `max` characters, and escaped (see inertSpecText). A line made this way cannot start a heading, a list item or a code fence in a file that holds it, nor render a link, image or tag.
  */
 export function specLine(text: string, max: number = SPEC_LINE_MAX): string {
   const plain = redactText(text).replace(/[\r\n\t\u2028\u2029]+/gu, " ").replace(HIDDEN, "").replace(/\s+/gu, " ").trim();
   // Leading markers go one after another until none is left: `- 1.1 text` is `text`.
-  let bare = inertSpecText(plain);
+  let bare = unescapeMarkdown(plain);
   for (let guard = 0; guard < 8; guard += 1) {
     const next = bare.replace(/^(?:[#>*+\-=`|~]+|\d+(?:\.\d+)+\.?|\d+[.)])\s*/u, "").trim();
     if (next === bare) break;
     bare = next;
   }
-  bare = bare.replace(/`{3,}/gu, "``").trim();
   const points = Array.from(bare);
-  return points.length <= max ? bare : `${points.slice(0, max - 1).join("")}…`;
+  const cut = points.length <= max ? bare : `${points.slice(0, max - 1).join("")}…`;
+  return inertSpecText(cut).trim();
 }
 
 /** A code fence line: its character and length, or undefined. A backtick fence's info string has no backtick (CommonMark). */
@@ -90,7 +95,7 @@ export function nextFenceState(open: { char: "`" | "~"; length: number } | undef
 /** Untrusted multi-line markdown (a design section) made safe to sit inside one section of a spec: hidden characters gone, every heading turned into a bold line, links, images and HTML made inert outside code fences, fences kept balanced, bounded. */
 export function specMarkdown(text: string, max: number = SPEC_DESIGN_MAX): string {
   // Comments can span lines; they go first (a fenced example that mentions one loses it, which is harmless).
-  const lines = redactText(text).replace(/\r\n?/gu, "\n").replace(HIDDEN_BUT_NEWLINE, "").replace(/<!--[\s\S]*?(?:-->|$)/gu, "").split("\n");
+  const lines = redactText(text).replace(/\r\n?/gu, "\n").replace(HIDDEN_BUT_NEWLINE, "").split("\n");
   const out: string[] = [];
   let fence: { char: "`" | "~"; length: number } | undefined;
   for (const raw of lines) {
@@ -98,9 +103,9 @@ export function specMarkdown(text: string, max: number = SPEC_DESIGN_MAX): strin
     const wasOpen = fence !== undefined;
     fence = nextFenceState(fence, line);
     if (wasOpen || fence !== undefined || markdownFenceOf(line) !== undefined) { out.push(line); continue; }
-    if (/^ {0,3}\[[^\]]+\]:\s*\S+/u.test(line)) continue;
     const heading = /^\s{0,3}#{1,6}\s+(.*)$/u.exec(line);
-    out.push(inertSpecText(heading === null ? line : `**${(heading[1] ?? "").replace(/\s*#+\s*$/u, "").trim()}**`));
+    // A heading becomes a bold line; every other line is escaped as it is (list markers, numbers and indentation are kept; nothing that can form a link, image, tag or definition is).
+    out.push(heading === null ? inertSpecText(line) : `**${inertSpecText((heading[1] ?? "").replace(/\s*#+\s*$/u, "").trim())}**`);
   }
   if (fence !== undefined) out.push(fence.char.repeat(fence.length));
   const joined = out.join("\n").replace(/\n{3,}/gu, "\n\n").trim();
@@ -215,8 +220,8 @@ export function defaultSpecTarget(): SpecTarget {
 // The draft the SPEC_WRITE operation returns, and the files a renderer makes from it.
 // ---------------------------------------------------------------------------------------------------------------------
 
-const Line = z.string().transform((value) => specLine(value)).pipe(z.string().min(1).max(SPEC_LINE_MAX));
-const OptionalLine = z.string().transform((value) => specLine(value)).pipe(z.string().max(SPEC_LINE_MAX)).transform((value) => (value === "" ? undefined : value));
+const Line = z.string().transform((value) => specLine(value)).pipe(z.string().min(1).max(SPEC_LINE_MAX * 3));
+const OptionalLine = z.string().transform((value) => specLine(value)).pipe(z.string().max(SPEC_LINE_MAX * 3)).transform((value) => (value === "" ? undefined : value));
 
 /** One EARS statement: `WHEN <when> THE SYSTEM SHALL <shall>`; without `when`, `THE SYSTEM SHALL <shall>`. The words WHEN and SHALL are added by the renderer. */
 export const SpecCriterionSchema = z.object({
@@ -253,7 +258,7 @@ export const SpecDraftSchema = z.object({
   version: z.literal(1),
   kind: z.enum(SPEC_KINDS),
   title: Line,
-  summary: z.string().transform((value) => specLine(value, 1_500)).pipe(z.string().max(1_500)),
+  summary: z.string().transform((value) => specLine(value, 1_500)).pipe(z.string().max(4_500)),
   requirements: z.array(SpecRequirementSchema).max(SPEC_REQUIREMENTS_MAX).default([]),
   bugfix: SpecBugfixSchema.optional(),
   design: z.string().transform((value) => specMarkdown(value)).pipe(z.string().max(SPEC_DESIGN_MAX)).default(""),

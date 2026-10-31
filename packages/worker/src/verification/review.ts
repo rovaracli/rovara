@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
-import { isAbsolute, resolve as resolvePath, sep } from "node:path";
+import { isAbsolute } from "node:path";
 import {
   WorkflowFeedbackBundleRefSchema,
   WorkflowFeedbackBundleSchema,
@@ -25,6 +24,7 @@ import {
   type SpecReviewInput,
   type SpecReviewResult,
   readSpecVerdicts,
+  unescapeMarkdown,
   specReviewFindings,
   type WorkflowReviewFeedback,
   type WorkflowReviewFinding,
@@ -622,38 +622,25 @@ function reviewPlanSection(plan: WorkflowReviewPlan, role: "CRITIC" | "SECURITY"
   ].join("\n");
 }
 
-const EVIDENCE_FILE_READ_MAX_BYTES = 2 * 1024 * 1024;
-
 /**
- * Whether a piece of evidence for a "met" names something that is there: `path`, `path:line` or `path:from-to`, where the path is a file in the change or a file of the checked code (at the head), and a
- * line is inside that file. A sentence, a path that is not in the repositories or a line past the end of the file is not evidence. Reads are bounded and never leave the repository's folder.
+ * Whether a piece of evidence for a "met" names something in the change: `path`, `path:line` or `path:from-to`, where the path is a file the change touched (at its own path, or with its repository's ID in front,
+ * as `changes` lists both) and a line is inside what the change wrote there: a changed hunk of a modified file, any line of an added one. A file the change deleted or could not place is evidence by its path alone.
+ * A sentence, a file the change did not touch (an unchanged README.md:1), a line outside the changed hunks, or a path that leaves the repository is not evidence.
  */
 export function specEvidenceChecker(repositories: readonly { repositoryId: string; directory: string }[], changes: readonly CandidateChange[]): (entry: string) => boolean {
-  const changed = new Set(changes.map((change) => change.path));
+  const byPath = new Map(changes.map((change) => [change.path, change]));
   return (entry) => {
-    const match = /^(?:\.\/)?([^\s:]+?)(?::(\d{1,7})(?:-(\d{1,7}))?)?$/u.exec(entry.replaceAll("\u200D", "").trim());
+    const match = /^(?:\.\/)?([^\s:]+?)(?::(\d{1,7})(?:-(\d{1,7}))?)?$/u.exec(unescapeMarkdown(entry).replaceAll("\u200D", "").trim());
     if (match === null) return false;
     const path = match[1]!;
-    const line = match[3] !== undefined ? Number(match[3]) : match[2] !== undefined ? Number(match[2]) : undefined;
     if (path.split("/").includes("..") || isAbsolute(path)) return false;
-    const candidates = repositories.flatMap((repository) => {
-      const own = path.startsWith(`${repository.repositoryId}/`) ? path.slice(repository.repositoryId.length + 1) : path;
-      return [{ directory: repository.directory, relative: own }];
-    });
-    for (const { directory, relative } of candidates) {
-      const target = resolvePath(directory, relative);
-      if (target !== directory && !target.startsWith(`${directory}${sep}`)) continue;
-      try {
-        const stats = statSync(target);
-        if (!stats.isFile()) continue;
-        if (line === undefined) return true;
-        if (stats.size > EVIDENCE_FILE_READ_MAX_BYTES) return line > 0;
-        const lines = readFileSync(target, "utf8").split("\n").length;
-        if (line >= 1 && line <= lines) return true;
-      } catch { /* not at the head: it may still be a path the change deleted */ }
-    }
-    // A file the change removed is evidence only by its path (there is no line of it at the head).
-    return line === undefined && changed.has(path);
+    const from = match[2] === undefined ? undefined : Number(match[2]);
+    const to = match[3] === undefined ? from : Number(match[3]);
+    const change = byPath.get(path) ?? repositories.map((repository) => byPath.get(`${repository.repositoryId}/${path}`)).find((found) => found !== undefined);
+    if (change === undefined) return false;
+    if (from === undefined || to === undefined) return true;
+    if (change.status === "DELETED" || change.status === "UNPLACEABLE" || from < 1 || to < from) return false;
+    return change.hunks.some(([start, end]) => from >= start && to <= end);
   };
 }
 
