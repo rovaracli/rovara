@@ -1,14 +1,14 @@
 // The record sink: the object the source taps call (the ingest lane's `RecordSinkPort`, `SourceConfigPort` and `CaptureModePort`, implemented structurally so no
 // lane imports another's files). `put` is the pipeline in ingest.ts. `tombstone` hides at once, then leaves a queue item the delete worker finishes (D1).
 // `changePrincipals` and `replaceScopeAudience` keep a private scope's permission snapshot current. A workspace id that is not an org id is refused.
-import { OrgIdSchema, recordScopeHash, type OrgId, type RecordSystem, type Audience } from "@agentx/contracts";
+import { OrgIdSchema, recordDeleteQueueKey, recordScopeHash, type OrgId, type RecordSystem, type Audience } from "@agentx/contracts";
 import { tableLakeDeleteQueue, type LakeDeleteQueue } from "./lake-queue.js";
 import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
 import { DEFAULT_WORK_BUDGET, changeScopePrincipals, queueScopeWork, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
 import { closeScope, getItemHead } from "./item-head.js";
-import { childScopes, getSourceConfigByScope, putScopeWork, type PlaceCursor } from "./store.js";
-import type { IngestOutcome, RecordDraft, TombstoneCause } from "./types.js";
+import { childScopes, deleteItem, getSourceConfigByScope, putScopeWork, type PlaceCursor, type ScopeCursor, type ScopeWork } from "./store.js";
+import type { IngestOutcome, RecordDraft, TeamRecordTable, TombstoneCause } from "./types.js";
 
 export interface RecordSink {
   put(draft: RecordDraft): Promise<IngestOutcome>;
@@ -37,10 +37,6 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 
     async tombstone(input) {
       const orgId = orgOf(input.workspaceId);
-      // A deleted or excluded place stays closed (and so does every place under it): a late message or a backfill is refused. Written first, so a crash cannot reopen it.
-      if (input.scope !== undefined && (input.cause === "source_deleted" || input.cause === "excluded")) await closeScope(deps.table, orgId, input.scope, input.cause, new Date((deps.now ?? Date.now)()).toISOString());
-      // The lake first: the place is queued for the lake before any hot row is touched, so a crash cannot lose it.
-      if (input.scope !== undefined) await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(input.scope) }]);
       // Chunks of at most 500 source items, each named in the queue BEFORE it is hidden: reads hide what a queue item names, so a crash or a spent budget in the
       // middle of the hide never leaves an item visible.
       const chunks: Array<readonly string[] | undefined> = input.sourceIds === undefined ? [undefined] : Array.from({ length: Math.max(1, Math.ceil(input.sourceIds.length / 500)) }, (_, i) => input.sourceIds!.slice(i * 500, (i + 1) * 500));
@@ -52,7 +48,12 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
           // From the very first write: the children of this place are not queued for the lake yet. A crash anywhere below leaves this standing, so no worker purges a row first.
           ...(scope === undefined ? {} : { childPending: true }),
         });
-        // The queue item above already hides the place and everything under it from every read. The places below get their own lake targets, a few pages here (the rest are
+        // The queue item above is the FIRST write: it already hides the place and everything under it from every read, so a crash at any later call leaves nothing searchable and
+        // the delete worker finishes the rest (it closes the place and queues the lake targets too). A deleted or excluded place stays closed, and so does every place under it.
+        if (scope !== undefined && (input.cause === "source_deleted" || input.cause === "excluded")) await closeScope(deps.table, orgId, scope, input.cause, new Date((deps.now ?? Date.now)()).toISOString());
+        // The lake first: the place is queued for the lake before any hot row is touched, so a crash cannot lose it.
+        if (scope !== undefined) await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(scope) }]);
+        // The places below get their own lake targets, a few pages here (the rest are
         // queued by the delete worker from the cursor kept on the item): a place with thousands of places under it never makes the delete fail.
         let childCursor: PlaceCursor | undefined;
         if (scope !== undefined) {
@@ -77,20 +78,38 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 
     async changePrincipals(input) {
       const orgId = orgOf(input.workspaceId);
+      const item = { type: "principals" as const, system: "scope", scope: input.scope, ...(input.add === undefined ? {} : { add: [...input.add] }), ...(input.remove === undefined ? {} : { remove: [...input.remove] }), hidePending: true };
+      // Someone LOSING access: the place is hidden from everyone from the first write, for as long as the rows are being rewritten. A crash or a timeout in the pass leaves the item,
+      // and the worker finishes it. Someone only joining needs no hiding (stale rows are narrower than intended, never wider).
+      const queued = (input.remove?.length ?? 0) > 0 ? await queueScopeWork(work, orgId, item) : undefined;
       const result = await changeScopePrincipals(work, orgId, { scope: input.scope, ...(input.add === undefined ? {} : { add: input.add }), ...(input.remove === undefined ? {} : { remove: input.remove }), at: input.at }, budget);
-      if (!result.complete) {
-        await queueScopeWork(work, orgId, { type: "principals", system: "scope", scope: input.scope, ...(input.add === undefined ? {} : { add: [...input.add] }), ...(input.remove === undefined ? {} : { remove: [...input.remove] }), hidePending: true, ...(result.cursor === undefined ? {} : { walkCursor: result.cursor }) });
-      }
+      await settle(deps.table, orgId, queued, result, item);
     },
 
     async replaceScopeAudience(input) {
       const orgId = orgOf(input.workspaceId);
+      const item = { type: "audience" as const, system: "scope", scope: input.scope, audience: input.audience, hidePending: true };
+      // The place is hidden from everyone from the first write (a new audience may be narrower), and for as long as the rows are being rewritten.
+      const queued = await queueScopeWork(work, orgId, item);
       // A place that turned private: its lake rows still carry the old, wider audience (the lake cannot update it), so they are forgotten.
       if (input.audience.kind === "restricted") await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(input.scope) }]);
       const result = await replaceScopeAudience(work, orgId, { scope: input.scope, audience: input.audience, at: input.at }, budget);
-      if (!result.complete) await queueScopeWork(work, orgId, { type: "audience", system: "scope", scope: input.scope, audience: input.audience, hidePending: true, ...(result.cursor === undefined ? {} : { walkCursor: result.cursor }) });
+      await settle(deps.table, orgId, queued, result, item);
     },
   };
+}
+
+/**
+ * After a pass over a place's rows: a finished pass takes its queue item away (the place is visible again, with the new audience); an unfinished one keeps it with the cursor
+ * (the worker goes on); with no item written first (an add-only change) an unfinished pass writes one now.
+ */
+async function settle(table: TeamRecordTable, orgId: OrgId, queued: ScopeWork | undefined, result: { complete: boolean; cursor?: ScopeCursor | undefined }, item: Omit<ScopeWork, "requestId" | "at" | "queuedAtSeconds" | "hidden">): Promise<void> {
+  if (queued !== undefined) {
+    if (result.complete) await deleteItem(table, recordDeleteQueueKey(orgId, queued.at, queued.requestId));
+    else await putScopeWork(table, orgId, { ...queued, ...(result.cursor === undefined ? {} : { walkCursor: result.cursor }) });
+    return;
+  }
+  if (!result.complete) await queueScopeWork({ table }, orgId, { ...item, ...(result.cursor === undefined ? {} : { walkCursor: result.cursor }) });
 }
 
 /** The adapter for the ingest lane's `SourceConfigPort`: the source row of a scope, in the shape the taps read. */

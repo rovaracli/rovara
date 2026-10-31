@@ -5,6 +5,7 @@
 // backlog: the summary says so and the log line is the alarm; hidden rows stay hidden meanwhile.
 import { recordDeleteQueueKey, recordScopeHash, teamRecordSourceHash, type OrgId } from "@agentx/contracts";
 import { auditRecordTombstoned, type RecordAuditSink } from "./audit.js";
+import { closeScope } from "./item-head.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
 import { changeScopePrincipals, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
@@ -96,6 +97,18 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
       continue;
     }
 
+    // A place whose sink call stopped early (childPending is still set): the sink writes the queue item first, so it may not have closed the place or queued its own lake target
+    // yet. Both are repeatable, so the worker does them before anything is purged.
+    if (entry.scope !== undefined && entry.childPending === true) {
+      try {
+        if (entry.cause === "source_deleted" || entry.cause === "excluded") await closeScope(deps.table, orgId, entry.scope, entry.cause, new Date(now()).toISOString());
+        await (deps.lakeQueue ?? tableLakeDeleteQueue(deps.table, deps.now)).enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(entry.scope) }]);
+      } catch {
+        deps.log?.("record.delete_children_unavailable", {});
+        summary.stillHidden += 1;
+        continue;
+      }
+    }
     // A tombstone request: finish hiding (a busy place is walked from its cursor, never from the start), queue the lake targets of the places below it, then delete.
     if (entry.hideDone !== true) {
       const hidden = await tombstoneRows(work0, orgId, { system: entry.system, ...(entry.scope === undefined ? {} : { scope: entry.scope }), ...(entry.sourceIds === undefined ? {} : { sourceIds: entry.sourceIds }), cause: entry.cause ?? "source_deleted" }, remaining, entry.hideCursor);
