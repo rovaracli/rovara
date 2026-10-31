@@ -391,6 +391,14 @@ export const ProjectDefinitionSchema = projectDefinitionObject(ConnectorsSchema)
       context.addIssue({ code: "custom", path: ["e2e", "targets"], message: "project-e2e is a reserved check identity, not a target ID" });
     }
   })
+  // P7 / Opus review I5: this release READS a repository's `host` (a record written by a later release, or by the lazy rewrite in a later release) but does not WRITE one. Two reasons:
+  // the release before this one parses a repository strictly and would refuse the whole project, so a rollback would take it dark; and nothing routes by `host` yet, so a save that
+  // said a repository lives elsewhere would still be cloned and pushed through GitHub. A later release turns writes on, for the kinds an install has registered.
+  .superRefine((project, context) => {
+    project.repositories.forEach((repository, index) => {
+      if (repository.host !== undefined) context.addIssue({ code: "custom", path: ["repositories", index, "host"], message: "a repository's code host is not set by this release; leave host out" });
+    });
+  })
   // Registration and settings saves: the Public Suffix List is consulted when a domain is written, never when a stored revision is read.
   .superRefine((project, context) => {
     const index = firstRefusedDomainIndex(project.network?.allowedDomains ?? []);
@@ -510,13 +518,12 @@ export function repositoryHostOf(repository: Pick<RepositoryDefinition, "host" |
 }
 
 /**
- * The lazy rewrite: the record with `host` set from what it already says. The old pins stay for one release so a broker of the earlier release still reads
- * the record. Idempotent; a record with no pins gets no host (nothing to say), so a rewrite never invents a pin.
+ * The lazy rewrite of a record on its way to storage. A GitHub repository is NOT given a `host` in this release: its old pins say the same thing, the release before this one reads only
+ * those, and a rewrite that added `host` would make the project unreadable after a rollback (the exact step if a later release has written it: save the project again with this
+ * release, which drops `host`). So this returns the record unchanged; it exists so the day writes are turned on there is one place that decides, and a test that fails if it starts writing early.
  */
 export function withRepositoryHost<Repository extends Pick<RepositoryDefinition, "host" | "installationId" | "githubRepositoryId">>(repository: Repository): Repository {
-  if (repository.host !== undefined) return repository;
-  if (repository.installationId === undefined && repository.githubRepositoryId === undefined) return repository;
-  return { ...repository, host: repositoryHostOf(repository) };
+  return repository;
 }
 
 export interface ResolvedGitHubConnector {

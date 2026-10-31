@@ -32,8 +32,8 @@ describe("the repository host field", () => {
     expect(repositoryHostOf(parsed.repositories[1]!)).toEqual({ kind: "github", installationId: 7, repositoryId: 99 });
   });
 
-  it("reads the new shape, and an explicit host wins over a missing pin", () => {
-    const parsed = ProjectDefinitionSchema.parse(project([repo("api", { host: { kind: "github", installationId: 7, repositoryId: 99 } })]));
+  it("reads the new shape from a stored record, and an explicit host wins over a missing pin", () => {
+    const parsed = StoredProjectDefinitionSchema.parse(project([repo("api", { host: { kind: "github", installationId: 7, repositoryId: 99 } })]));
     expect(repositoryHostOf(parsed.repositories[0]!)).toEqual({ kind: "github", installationId: 7, repositoryId: 99 });
   });
 
@@ -44,13 +44,12 @@ describe("the repository host field", () => {
       repo("api", { host: { kind: "gitfarm" }, installationId: 8 }),
       repo("api", { host: { kind: "gitfarm" }, githubRepositoryId: 8 }),
     ]) {
-      expect(ProjectDefinitionSchema.safeParse(project([bad])).success).toBe(false);
       expect(StoredProjectDefinitionSchema.safeParse(project([bad])).success).toBe(false);
     }
   });
 
-  it("accepts a host and pins that agree", () => {
-    expect(ProjectDefinitionSchema.safeParse(project([repo("api", { host: { kind: "github", installationId: 7, repositoryId: 99 }, installationId: 7, githubRepositoryId: 99 })])).success).toBe(true);
+  it("accepts a stored host and pins that agree", () => {
+    expect(StoredProjectDefinitionSchema.safeParse(project([repo("api", { host: { kind: "github", installationId: 7, repositoryId: 99 }, installationId: 7, githubRepositoryId: 99 })])).success).toBe(true);
   });
 
   it("refuses malformed hosts: bad kind, unknown keys, non-positive ids, github fields on another kind", () => {
@@ -63,19 +62,26 @@ describe("the repository host field", () => {
     expect(RepositoryHostSchema.safeParse({ kind: "gitfarm", ref: "pkg/abc" }).success).toBe(true);
   });
 
-  it("withRepositoryHost is the lazy rewrite: sets host from the pins, keeps the pins for one release, and is idempotent", () => {
-    const old = ProjectDefinitionSchema.parse(project([repo("web", { installationId: 7, githubRepositoryId: 99 })])).repositories[0]!;
-    const rewritten = withRepositoryHost(old);
-    expect(rewritten.host).toEqual({ kind: "github", installationId: 7, repositoryId: 99 });
-    expect(rewritten.installationId).toBe(7);
-    expect(rewritten.githubRepositoryId).toBe(99);
-    expect(withRepositoryHost(rewritten)).toEqual(rewritten);
-    // A rewritten record is a valid record.
-    expect(ProjectDefinitionSchema.safeParse(project([rewritten])).success).toBe(true);
+  it("does not WRITE a host in this release: a save with one is refused, whatever its kind, so the release before this one can still read what was saved (rollback)", () => {
+    for (const host of [{ kind: "github" }, { kind: "github", installationId: 7, repositoryId: 99 }, { kind: "gitfarm" }, { kind: "gitfarm", ref: "pkg/abc" }, { kind: "made-up" }]) {
+      const result = ProjectDefinitionSchema.safeParse(project([repo("api", { host })]));
+      expect(result.success, JSON.stringify(host)).toBe(false);
+      expect(JSON.stringify(result.error?.issues)).toContain("host");
+      // The same record is read back fine when a later release has written it.
+      expect(StoredProjectDefinitionSchema.safeParse(project([repo("api", { host })])).success, JSON.stringify(host)).toBe(true);
+    }
+  });
+
+  it("the lazy rewrite adds no host to a GitHub record, so what is saved has exactly the fields the previous release knows", () => {
+    const old = StoredProjectDefinitionSchema.parse(project([repo("web", { installationId: 7, githubRepositoryId: 99 })])).repositories[0]!;
+    expect(withRepositoryHost(old)).toEqual(old);
+    expect(withRepositoryHost(old)).not.toHaveProperty("host");
+    const saved = ProjectDefinitionSchema.parse(project([withRepositoryHost(old)]));
+    expect(Object.keys(saved.repositories[0]!).sort()).toEqual(["credentialRef", "defaultBranch", "githubRepositoryId", "installationId", "name", "path", "url"]);
   });
 
   it("is control-plane only: a worker is never sent the host", () => {
-    const definition = ProjectDefinitionSchema.parse(project([repo("api", { host: { kind: "github", installationId: 7, repositoryId: 99 } })]));
+    const definition = StoredProjectDefinitionSchema.parse(project([repo("api", { host: { kind: "github", installationId: 7, repositoryId: 99 } })]));
     const sent = workerProjectDefinition(definition) as { repositories: Array<Record<string, unknown>> };
     expect(Object.keys(sent.repositories[0]!).sort()).toEqual(["credentialRef", "defaultBranch", "name", "path", "url"]);
   });
@@ -115,7 +121,7 @@ describe("the code host router", () => {
   });
 
   it("refuses at start: every repository of a project must have a known kind", () => {
-    const ok = ProjectDefinitionSchema.parse(project([repo("api"), repo("lib", { host: { kind: "gitfarm" } })]));
+    const ok = StoredProjectDefinitionSchema.parse(project([repo("api"), repo("lib", { host: { kind: "gitfarm" } })]));
     expect(() => assertRepositoryHostsKnown(ok.repositories, [github, other])).not.toThrow();
     expect(() => assertRepositoryHostsKnown(ok.repositories, [github])).toThrow("CONFIG_INVALID");
     expect(() => assertRepositoryHostsKnown(ok.repositories, [])).toThrow("CONFIG_INVALID");
