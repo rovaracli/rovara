@@ -88,6 +88,8 @@ export interface KnowledgeItem {
   bytes: number;
   /** SHA-256 (hex) of `text`: what the agent saw. */
   digest: string;
+  /** SHA-256 of the file's bytes exactly as stored at the commit (nothing removed): lets the task page check the file it fetches later. */
+  fileDigest?: string;
   readAt: KnowledgeReadAt;
   /** A company rule an admin locked: never dropped, never skipped. */
   locked?: boolean;

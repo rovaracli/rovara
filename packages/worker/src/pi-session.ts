@@ -41,6 +41,8 @@ import {
   type RepositoryContextFile,
 } from "./repository-context.js";
 import { quotedContextText } from "./context-text.js";
+import type { LoadedKnowledgeManifest } from "@agentx/contracts";
+import { buildLoadedKnowledgeManifest } from "./knowledge/manifest.js";
 import { mergeSkills } from "./knowledge/skills.js";
 import { knowledgeExtension } from "./knowledge/extension.js";
 import { loadKnowledgeContext, type KnowledgeSessionInput } from "./knowledge/load.js";
@@ -72,6 +74,8 @@ export interface PiSessionHandle {
   /** Pi's own resolved level, even one outside AgentX's six (Pi's "max"); for artifacts only, never telemetry. */
   piThinkingLevel?(): string | undefined;
   getSessionStats(): SessionStats;
+  /** What this session loaded and left out so far, as references only (K1 C5a). Absent for sessions that load no knowledge. */
+  loadedKnowledge?(): LoadedKnowledgeManifest;
   subscribe(listener: (event: unknown) => void): () => void;
   dispose(): void;
 }
@@ -245,6 +249,13 @@ export async function createWorkspacePiSession(
     ...(input.agentRun === undefined ? {} : { agentRun: input.agentRun }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
+  return withLoadedKnowledge(handle, knowledgeLoad?.manifest);
+}
+
+/** The handle with its loaded-knowledge record attached (the adapter's own handle is not changed in place when it already reports one). */
+function withLoadedKnowledge(handle: PiSessionHandle, manifest: (() => LoadedKnowledgeManifest) | undefined): PiSessionHandle {
+  if (manifest === undefined || handle.loadedKnowledge !== undefined) return handle;
+  handle.loadedKnowledge = manifest;
   return handle;
 }
 
@@ -306,7 +317,7 @@ export async function openRegisteredWorkspacePiSession(
     ...(mergeSkills(input.skills, knowledgeLoad.skills) === undefined ? {} : { skills: mergeSkills(input.skills, knowledgeLoad.skills)! }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
-  return handle;
+  return withLoadedKnowledge(handle, knowledgeLoad.manifest);
 }
 
 /** Resolves the session's model runtime; tests supply an offline one, the worker uses the default. */
@@ -728,7 +739,7 @@ async function loadWorkspaceContextFiles(
   at: "working-tree" | "base-commit" = "working-tree",
   baseCommits: readonly { repositoryId: string; baseCommitSha?: string | undefined }[] = [],
   knowledge: { workflowMode: PiWorkflowMode | undefined; knowledge: SessionKnowledgeOptions | undefined; onLoaded: ((resolved: ResolvedKnowledge) => void) | undefined } = { workflowMode: undefined, knowledge: undefined, onLoaded: undefined },
-): Promise<{ files: RepositoryContextFile[]; session: MidRunKnowledge | undefined; skills: AgentSkillFile[] }> {
+): Promise<{ files: RepositoryContextFile[]; session: MidRunKnowledge | undefined; skills: AgentSkillFile[]; manifest: () => LoadedKnowledgeManifest }> {
   const prepared = await readPreparedRepositories(rootPath);
   const repositories = at === "base-commit"
     ? prepared.map((repository) => {
@@ -753,7 +764,12 @@ async function loadWorkspaceContextFiles(
   const editNote = ruleFileEditNote(notices);
   const catalog = session.offersTool ? [knowledgeCatalogFile(session.names(), resolved)] : [];
   const loaded = [...(note === undefined ? [] : [note]), ...files, ...catalog, ...(editNote === undefined ? [] : [editNote])];
-  return { files: devcontainerPaths === undefined ? loaded : [...loaded, devcontainerContextFile(devcontainerPaths)], session, skills };
+  const manifest = (): LoadedKnowledgeManifest => buildLoadedKnowledgeManifest({
+    stage, resolved, records: session.allRecords(),
+    repositories: repositories.filter((repository) => repository.name !== options.meta?.name).map((repository) => ({ name: repository.name, ...(at === "base-commit" && repository.baseCommit !== undefined ? { commit: repository.baseCommit } : {}), readAt: at === "base-commit" ? "base" as const : "working" as const })),
+    ...(options.meta === undefined ? {} : { meta: { name: options.meta.name, knowledgeCommit: options.meta.knowledgeCommit } }),
+  });
+  return { files: devcontainerPaths === undefined ? loaded : [...loaded, devcontainerContextFile(devcontainerPaths)], session, skills, manifest };
 }
 
 /** The list of rules the model can load by name: AgentX's own note, with only names and descriptions (no rule text) until `read_knowledge` is called. */

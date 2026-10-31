@@ -104,6 +104,7 @@ export interface KnowledgeRecord {
   name?: string;
   bytes: number;
   digest?: string;
+  fileDigest?: string;
   readAt?: KnowledgeReadAt;
   locked?: boolean;
   status: "loaded" | "skipped" | "available";
@@ -298,6 +299,7 @@ interface ReadCandidate {
   parsed: ParsedKnowledgeFile;
   /** The file's own text (after front matter), hidden characters removed. */
   text: string;
+  fileDigest: string;
 }
 
 interface ReadOutcome {
@@ -325,9 +327,10 @@ async function readCandidates(source: KnowledgeFileSource, candidates: readonly 
     const { text, removed } = inertContextText(result.content);
     removedHidden += removed;
     signatures.set(candidate.path, `file:${sha256(text)}`);
+    const fileDigest = sha256(result.content);
     const parsed = candidate.reader.parse(candidate.path, text, { scopeDir: candidate.scopeDir, nested: candidate.nested });
     if (!parsed.ok) { skipped.push({ path: candidate.path, reader: candidate.reader, scopeDir: candidate.scopeDir, reason: parsed.reason }); continue; }
-    read.push({ candidate, parsed: parsed.value, text: parsed.value.body });
+    read.push({ candidate, parsed: parsed.value, text: parsed.value.body, fileDigest });
   }
   return { read, skipped, signatures, removedHidden };
 }
@@ -385,6 +388,7 @@ function recordOf(item: KnowledgeItem, status: KnowledgeRecord["status"], extra:
     ...(item.name === undefined ? {} : { name: item.name }),
     bytes: item.bytes,
     digest: item.digest,
+    ...(item.fileDigest === undefined ? {} : { fileDigest: item.fileDigest }),
     readAt: item.readAt,
     ...(item.locked === true ? { locked: true } : {}),
     status,
@@ -464,7 +468,7 @@ export async function resolveKnowledge(input: ResolveKnowledgeInput): Promise<Re
         activation: parsed.activation, ...(parsed.patterns === undefined ? {} : { patterns: parsed.patterns }),
         ...(parsed.name === undefined ? {} : { name: parsed.name }), ...(parsed.description === undefined ? {} : { description: parsed.description }),
         ...(parsed.excludeStages === undefined ? {} : { excludeStages: parsed.excludeStages }),
-        bytes: bytesOf(text), digest: sha256(text), readAt: entry.source.readAt, text,
+        bytes: bytesOf(text), digest: sha256(text), fileDigest: read.fileDigest, readAt: entry.source.readAt, text,
       };
       if (decision.action === "load") { toLoad.push({ item, why: decision.why }); continue; }
       if (decision.action === "auto") {

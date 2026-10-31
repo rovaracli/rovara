@@ -302,3 +302,40 @@ describe("meta repo skills in sessions", () => {
     expect(seen[0]!.skills).toEqual([expect.objectContaining({ source: "meta", repo: "service-meta", path: ".agents/skills/brazil-build", commit: meta.commit })]);
   });
 });
+
+describe("the loaded-knowledge record of a session", () => {
+  it("lists references, digests and reasons and carries no rule text", async () => {
+    const root = await workspace();
+    const meta = await repository(root, "repo/service-meta", { "AGENTS.md": "SECRET META RULE TEXT", ".kiro/steering/oncall.md": "---\ninclusion: manual\n---\nSECRET ONCALL TEXT" });
+    const code = await repository(root, "repo/engine", { "AGENTS.md": "SECRET ENGINE RULE", ".cursor/rules/ui.mdc": "---\nglobs: src/ui/**\n---\nSECRET UI" });
+    const now = new Date().toISOString();
+    await mkdir(join(root, ".agentx"), { recursive: true });
+    await writeFile(join(root, ".agentx/preparation-manifest.json"), JSON.stringify({
+      schemaVersion: 2, projectName: "p", projectRevision: 1,
+      repositories: [{ name: "engine", path: "repo/engine", defaultBranch: "main", resolvedCommit: code.commit, resolvedAt: now, completedAt: now }],
+      completedSetupSteps: [], readinessResults: [], creationIdentity: "fixture", complete: true, updatedAt: now,
+    }));
+    const adapter: PiSessionAdapter = {
+      async create(input) {
+        const sessionFile = join(input.sessionDirectory, "s.jsonl");
+        await writeFile(sessionFile, "");
+        return { conversationId: "c", sessionFile, async prompt() {}, async abort() {}, getModel: () => ({ provider: "f", modelId: "f" }), getSessionStats: () => ({}) as never, subscribe: () => () => undefined, dispose() {} };
+      },
+    };
+    const handle = await createWorkspacePiSession({
+      rootPath: root, model: { provider: "f", modelId: "f" }, workflowMode: "REVIEW", contextFilesAt: "base-commit",
+      baseCommits: [{ repositoryId: "engine", baseCommitSha: code.commit }],
+      knowledge: { meta: { name: "service-meta", path: "repo/service-meta", knowledgeCommit: meta.commit } },
+    }, adapter);
+    const manifest = handle.loadedKnowledge!();
+    expect(manifest).toMatchObject({ stage: "review", metaRepo: { name: "service-meta", knowledgeCommit: meta.commit }, repos: [{ name: "engine", commit: code.commit, readAt: "base" }] });
+    expect(manifest.items.find((item) => item.path === "AGENTS.md" && item.repo === "service-meta")).toMatchObject({ status: "loaded", layer: "meta", readAt: "knowledgeCommit", why: { kind: "always" } });
+    expect(manifest.items.find((item) => item.path === ".kiro/steering/oncall.md")).toMatchObject({ status: "skipped", reason: "not_requested" });
+    expect(manifest.items.find((item) => item.path === ".cursor/rules/ui.mdc")).toMatchObject({ status: "skipped", reason: "not_matched" });
+    for (const item of manifest.items.filter((entry) => entry.status === "loaded")) {
+      expect(item.digest).toMatch(/^[0-9a-f]{64}$/u);
+      expect(item.fileDigest).toMatch(/^[0-9a-f]{64}$/u);
+    }
+    expect(JSON.stringify(manifest)).not.toContain("SECRET");
+  });
+});

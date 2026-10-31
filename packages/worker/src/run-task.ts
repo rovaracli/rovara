@@ -34,6 +34,7 @@ import { consoleWorkerLog, type WorkerLogSink } from "./worker-log.js";
 import { ToolLoopGuard } from "./tool-loop-guard.js";
 import { assistantOutcome, eventType, failedTurn, type AssistantOutcome } from "./session-events.js";
 import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step.js";
+import { loadedKnowledgePayload } from "./knowledge/manifest.js";
 import { runAgentStep, type AgentStepResult, type RunAgentStepInput } from "./agent-run/run-agent-step.js";
 import {
   createWorkspacePiSession,
@@ -709,6 +710,14 @@ async function runTask(
     session.dispose();
     throw error;
   }
+  // K1 C5a: what this stage's session loaded, as references only; sent again at the end with anything loaded during the run.
+  const reportLoadedKnowledge = async (): Promise<void> => {
+    try {
+      const loaded = session.loadedKnowledge?.();
+      if (loaded !== undefined) await emit("progress", loadedKnowledgePayload(loaded));
+    } catch { /* a record that cannot be made is left out; the stage goes on */ }
+  };
+  await reportLoadedKnowledge();
 
   const limits = dependencies.modelCallLimits ?? {};
   const stallLimitMs = limits.stallMs ?? PLANNING_STALL_MS;
@@ -1353,6 +1362,7 @@ async function runTask(
           ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }),
           ...(fileTools === undefined ? {} : { fileTools }),
           onProgress: (message) => { void events.append("progress", { message }).catch(() => undefined); },
+          onLoadedKnowledge: (manifest) => { void emit("progress", loadedKnowledgePayload(manifest)); },
           onUsage: async ({ role, stats, model, outcome }) => {
             const usage = createTaskUsageTelemetry(stats, { ...model, ...(dependencies.model.cacheRetention === undefined ? {} : { cacheRetention: dependencies.model.cacheRetention }) }, outcome);
             const redactedUsage = redactCredentials(usage);
@@ -1552,6 +1562,7 @@ async function runTask(
     } catch (error) {
       telemetryFailure = error;
     }
+    await reportLoadedKnowledge();
     await flushEvents();
     // Ruling Y: a task that ends failed or cancelled still tells the broker about a regression, so it stays standing.
     const withChecks = (error: Error): Error => {
