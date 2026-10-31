@@ -87,7 +87,15 @@ export function hasEncodedBlob(...texts: readonly string[]): boolean {
  * Anything else, including every sentence that starts with a verb, is not tier 0. Checked after folding look-alikes and combining marks. Names and paths
  * may not look like hosts: a dotted token must end in a known code extension, and no directory in a path may contain a dot.
  */
-const THING = "[A-Za-z0-9][A-Za-z0-9 _/'-]{0,80}?";
+const THING = "(?<thing>[A-Za-z0-9][A-Za-z0-9 _/'-]{0,80}?)";
+/** Words that make a "thing" an instruction or an ordering rather than a name: modals, sequence words, imperatives. */
+const THING_FORBIDDEN = /\b(must|should|shall|need|needs|before|after|first|then|always|never|every|each|call|calls|run|runs|use|uses|using|ensure|make|do|dont|avoid|check|install|remember|please|only|once)\b/iu;
+const IMPERATIVE_START = /^(?:use|run|call|add|set|make|keep|avoid|never|always|do|don'?t|ensure|check|install|fix|update|remove|delete|create|write|read|open|start|stop|enable|disable|import|export|before|after|first|when|if|please)\b/iu;
+/** A title is a noun phrase: no instruction, no modal, no path. */
+export function isPlainTitle(title: string): boolean {
+  const t = normaliseForScan(title).replace(/[`"]/gu, "").trim();
+  return t.length > 0 && t.length <= 80 && !IMPERATIVE_START.test(t) && !THING_FORBIDDEN.test(t.replace(/\buses?\b/giu, "")) && !/[/~\\]/u.test(t) && !hasEncodedBlob(t);
+}
 const NAME = "[A-Za-z_@][\\w@-]*(?:\\.[\\w-]+)*";
 const PATH = "[\\w@.~-]+(?:/[\\w@.~*-]+)*/?";
 const TEMPLATES: readonly RegExp[] = [
@@ -108,6 +116,7 @@ function plainToken(token: string, kind: "name" | "path"): boolean {
   }
   return kind === "name" || segments.length > 0;
 }
+const isNameTemplate = (template: RegExp): boolean => template === TEMPLATES[1];
 export function isPlainDeclarative(text: string): boolean {
   const folded = normaliseForScan(text).replace(/[`"\u201C\u201D]/gu, "").trim();
   if (folded === "" || folded.length > 400 || /[\n\r]/u.test(folded) || hasEncodedBlob(folded)) return false;
@@ -117,9 +126,13 @@ export function isPlainDeclarative(text: string): boolean {
     for (const template of TEMPLATES) {
       const match = template.exec(sentence);
       if (match === null) continue;
-      const tokens = match.slice(1).filter((t): t is string => t !== undefined);
-      const isNameTemplate = template === TEMPLATES[1];
-      if (tokens.every((t, i) => plainToken(t, isNameTemplate || (template === TEMPLATES[2] && i === 0) ? "name" : "path"))) return true;
+      const thing = match.groups?.thing ?? "";
+      // The slot before the verb is a name for something: short, with no modal, sequencing or imperative word in it.
+      if (thing.trim().split(/\s+/u).length > 9 || THING_FORBIDDEN.test(thing.replace(/\b(?:retries|uses?)\b/giu, "")) || IMPERATIVE_START.test(thing.trim())) continue;
+      const tokens = match.slice(1).filter((t): t is string => t !== undefined && t !== thing);
+      // A path in the body is judged like a scope path: nothing that touches tests, CI, auth or secrets, and nothing outside the repository (~ or absolute).
+      if (!isNameTemplate(template) && tokens.some((t) => /^[~/]/u.test(t) || touchesRiskyPath([t]))) continue;
+      if (tokens.every((t, i) => plainToken(t, isNameTemplate(template) || (template === TEMPLATES[2] && i === 0) ? "name" : "path"))) return true;
     }
     return false;
   });
@@ -156,7 +169,7 @@ export const RISKY_SAMPLES: readonly string[] = [
   "tests/x.ts", "test/x.ts", "__tests__/x.ts", "spec/x.rb", "e2e/x.ts", "src/x.test.ts", ".github/workflows/x.yml", ".github/CODEOWNERS", ".gitlab-ci.yml", ".circleci/config.yml", "Jenkinsfile",
   "ci/x.sh", "jest.config.js", "vitest.config.ts", ".eslintrc.json", ".husky/pre-commit", "CODEOWNERS", "scripts/x.sh", "bin/x", "tools/x", "src/auth/x.ts", "src/oauth/x.ts", "src/login/x.ts",
   "src/session/x.ts", "src/jwt.ts", "src/security/x.ts", "src/rbac/x.ts", "src/policy/x.ts", "src/middleware/x.ts", "src/password/x.ts", "src/token/x.ts", "package.json", "yarn.lock", "Dockerfile",
-  "docker-compose.yml", "Makefile", "GNUmakefile", "justfile", ".env", "infra/x.ts", "deploy/x", "terraform/x.tf", "k8s/x.yaml", "helm/x", ".devcontainer/x.json", "pyproject.toml", "Procfile",
+  "docker-compose.yml", ".npmrc", ".envrc", "tsconfig.json", ".prettierrc", "Makefile", "GNUmakefile", "justfile", ".env", "infra/x.ts", "deploy/x", "terraform/x.tf", "k8s/x.yaml", "helm/x", ".devcontainer/x.json", "pyproject.toml", "Procfile",
 ];
 
 /**
@@ -167,8 +180,12 @@ export const RISKY_SAMPLES: readonly string[] = [
 export function touchesRiskyPath(paths: readonly string[]): boolean {
   return paths.map(foldForMatching).some((path) => {
     if (RISKY_PATHS.some((pattern) => pattern.test(path))) return true;
-    const partial = path.split("/").some((seg) => /[*?]/u.test(seg) && !/^\*{1,2}$/u.test(seg) && !/^\*+\.[A-Za-z0-9]+$/u.test(seg));
-    if (!partial) return false;
+    const segments = path.split("/");
+    // Reach is tried when a wildcard sits INSIDE a segment (t?sts, te*), and when the glob has no literal leading directory at all (**, */workflows/**,
+    // **/*.yml, *.yml): such a glob can reach anything. `src/**` and `src/**/*.ts` keep their literal prefix and stay ordinary breadth.
+    const partial = segments.some((seg) => /[*?]/u.test(seg) && !/^\*{1,2}$/u.test(seg) && !/^\*+\.[A-Za-z0-9]+$/u.test(seg));
+    const noLiteralPrefix = /[*?]/u.test(segments[0] ?? "");
+    if (!partial && !noLiteralPrefix) return false;
     let expression: RegExp;
     try { expression = globToRegExp(path); } catch { return true; }
     return RISKY_SAMPLES.some((sample) => expression.test(sample));

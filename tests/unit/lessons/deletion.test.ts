@@ -73,7 +73,8 @@ describe("lesson deletion port (learning side)", () => {
     await add(lessonRecord({ id: "les_code0001", lastValidatedAt: 5, citations: [codeCite(), { kind: "record", eventId: "A" }], citationChecks: [{ index: 0, result: "valid", at: 1 }], provenance: { ...lessonRecord().provenance, sourceEvents: ["A"] } }));
     await port.forgetSources(WS, PROJECT, "les_code0001", gone("A"));
     const lesson = (await store.get(KEY, "les_code0001"))!;
-    expect(lesson.status).toBe("active");
+    // Only ever auto-applied, so it goes back to a person; it is kept, on code alone.
+    expect(lesson).toMatchObject({ status: "pending", reviewRequired: true, approvals: [] });
     expect(lesson.provenance.sourceEvents).toEqual([]);
     expect(lesson.citations.map((c) => c.kind)).toEqual(["code"]);
     expect(lesson.citationChecks).toEqual([{ index: 0, result: "valid", at: 1 }]);

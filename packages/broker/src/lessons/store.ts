@@ -46,6 +46,17 @@ export interface LessonStore {
   removePending(key: ScopeKey, pendingKey: string): Promise<void>;
   flags(key: ScopeKey): Promise<ProjectFlags>;
   setFlags(key: ScopeKey, flags: ProjectFlags): Promise<void>;
+  /**
+   * Rewrites the head AND every stored version of a lesson in place (no new version), for deletion and erasure: old versions must not keep what was deleted.
+   * `fn` returns the scrubbed lesson; a rollback can then never bring a deleted id back.
+   */
+  scrub(key: ScopeKey, id: string, fn: (lesson: Lesson) => Lesson): Promise<void>;
+  /** Marks a lesson as gone for good: a rollback never restores a withdrawn lesson, and skips a purged one. */
+  markGone(key: ScopeKey, id: string, mode: "withdrawn" | "purged"): Promise<void>;
+  /** Hard delete: the head, every version and every load-manifest reference. The id is remembered as purged so a rollback cannot bring it back. */
+  purge(key: ScopeKey, id: string): Promise<void>;
+  /** Forgets a source's counters and its pause (erasure of a person, deletion of a channel). */
+  forgetSource(key: ScopeKey, source: string): Promise<void>;
   /** One candidate from a source (for the source's own baseline). */
   recordSourceEvent(key: ScopeKey, event: { at: number; source: string }): Promise<void>;
   /** Candidates per day from one source, newest day first (index 0 is the last 24 hours). */
@@ -62,6 +73,7 @@ interface ProjectState {
   heads: Map<string, Lesson>; versions: Map<string, Lesson[]>; members: Map<string, number>; sets: SetSnapshot[];
   manifests: Map<string, LoadManifest>; once: Set<string>; pending: Map<string, PendingOutcome>; flags: ProjectFlags;
   sourceEvents: Array<{ at: number; source: string }>;
+  gone: Map<string, "withdrawn" | "purged">;
 }
 
 export class InMemoryLessonStore implements LessonStore {
@@ -71,7 +83,7 @@ export class InMemoryLessonStore implements LessonStore {
     const id = scopeId(key);
     let value = this.state.get(id);
     if (value === undefined) {
-      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [] };
+      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map() };
       this.state.set(id, value);
     }
     return value;
@@ -135,6 +147,10 @@ export class InMemoryLessonStore implements LessonStore {
     if (target === undefined || targetSetVersion >= expectedSetVersion) return { ok: false, reason: "conflict" };
     const members = new Map<string, number>();
     for (const m of target.members) {
+      // A withdrawn lesson stays withdrawn and a purged one stays gone, whatever the earlier set held.
+      const fate = s.gone.get(m.id);
+      if (fate === "purged") continue;
+      if (fate === "withdrawn") { const head = s.heads.get(m.id); if (head !== undefined) members.set(m.id, head.version); continue; }
       const content = s.versions.get(m.id)?.find((v) => v.version === m.version);
       if (content === undefined) return { ok: false, reason: "conflict" };
       const current = s.heads.get(m.id);
@@ -162,6 +178,34 @@ export class InMemoryLessonStore implements LessonStore {
     return clone(s.heads.get(id)!);
   }
 
+  async scrub(key: ScopeKey, id: string, fn: (lesson: Lesson) => Lesson): Promise<void> {
+    const s = this.of(key);
+    const head = s.heads.get(id);
+    if (head !== undefined) s.heads.set(id, LessonSchema.parse(fn(clone(head))));
+    s.versions.set(id, (s.versions.get(id) ?? []).map((v) => LessonSchema.parse({ ...fn(clone(v)), version: v.version })));
+  }
+  async markGone(key: ScopeKey, id: string, mode: "withdrawn" | "purged"): Promise<void> { this.of(key).gone.set(id, mode); }
+  async purge(key: ScopeKey, id: string): Promise<void> {
+    const s = this.of(key);
+    s.heads.delete(id);
+    s.versions.delete(id);
+    s.members.delete(id);
+    s.gone.set(id, "purged");
+    for (const [name, manifest] of s.manifests) {
+      if (manifest.lessons.some((e) => e.id === id)) s.manifests.set(name, { ...manifest, lessons: manifest.lessons.filter((e) => e.id !== id) });
+    }
+    for (const name of [...s.once]) if (name.includes(`:${id}`) || name.includes(`${id}:`)) s.once.delete(name);
+    for (const [name, entry] of s.pending) if (entry.lessonId === id) s.pending.delete(name);
+  }
+  async forgetSource(key: ScopeKey, source: string): Promise<void> {
+    const s = this.of(key);
+    s.sourceEvents = s.sourceEvents.filter((e) => e.source !== source);
+    if (s.flags.pausedSources?.[source] !== undefined) {
+      const rest = { ...s.flags.pausedSources };
+      delete rest[source];
+      s.flags = { ...s.flags, pausedSources: rest };
+    }
+  }
   async putManifest(manifest: LoadManifest): Promise<boolean> {
     const s = this.of(manifest);
     const id = `${manifest.taskId}#${manifest.stage}#${manifest.round}`;

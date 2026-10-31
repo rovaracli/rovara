@@ -158,7 +158,9 @@ async function toDraft(
   const authorsOf = new Set(authors);
   // Measured outcomes come from structured facts in the input, never from which spans the model cited.
   // A send-back counts only when someone other than the lesson's own authors made it (a person cannot create a "measured outcome" by correcting their own task).
-  const measured = subject.outcome === "reverted" || everything.some((s) => (s.kind === "send_back" && s.trust === "member" && s.authorId !== undefined && !authorsOf.has(s.authorId)) || (s.kind === "ci_failure" && s.trust === "rovara"));
+  // Measured needs a person behind the lesson (a lesson that cites only agent text can never be measured), and a send-back counts only from someone who is
+  // neither among the people the lesson rests on nor the one who started the task.
+  const measured = authors.length > 0 && (subject.outcome === "reverted" || everything.some((s) => (s.kind === "send_back" && s.trust === "member" && s.authorId !== undefined && !authorsOf.has(s.authorId) && subject.initiatorId !== undefined && s.authorId !== subject.initiatorId) || (s.kind === "ci_failure" && s.trust === "rovara")));
   return {
     type: candidate.type, title, description, body, scope: candidate.scope, stages: [...new Set(candidate.stages)], citations,
     provenance: {

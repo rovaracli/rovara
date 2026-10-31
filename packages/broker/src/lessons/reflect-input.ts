@@ -27,6 +27,8 @@ export interface ReflectSubject {
   repositories: readonly string[]; baseCommit?: string; mergedCommit?: string;
   outcome?: "merged" | "closed" | "abandoned" | "reverted";
   /** Trust of whoever started the task, and of everyone who steered it (a comment, a send-back, a Slack ask). Unknown is outsider. */
+  /** The canonical developer id of whoever started the task. Their own send-backs are never a measured outcome. */
+  initiatorId?: string;
   initiatorTrust?: TrustClass; steeringTrust?: readonly TrustClass[]; intentTrust?: TrustClass;
   /** Permalinks the task's lessons may cite (pull request URLs). Anything else a model names is dropped. */
   links?: readonly string[];

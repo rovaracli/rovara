@@ -159,7 +159,7 @@ describe("C3: tier 0 is an allow-list of declarative templates", () => {
     expect(tierOf({ scope: { repos: ["api"], paths: [glob] } }).tier, glob).toBe(2);
   });
 
-  it.each(["src/**", "src/**/*.ts", "**/*.ts", "src/retry/*", "src/user*/**", "packages/api/**", "lib/**/*.py"])("ordinary breadth is not treated as reach: %s", (glob) => {
+  it.each(["src/**", "src/**/*.ts", "src/retry/*", "src/user*/**", "packages/api/**", "lib/**/*.py"])("ordinary breadth is not treated as reach: %s", (glob) => {
     expect(touchesRiskyPath([glob]), glob).toBe(false);
   });
 

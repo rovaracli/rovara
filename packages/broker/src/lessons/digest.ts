@@ -13,6 +13,8 @@ export interface WeeklyDigest {
   since: number;
   /** The most important lessons (active or waiting), by measured outcomes, then recurrence, then severity. */
   top: DigestItem[];
+  /** Lessons that stay live but were sent back to a person (for example kept on code alone after their sources were deleted). */
+  needsReview: DigestItem[];
   autoApplied: DigestItem[]; waiting: DigestItem[]; retired: DigestItem[]; staleOrRetireProposed: DigestItem[];
   /** Candidates collected and not yet in front of people. Nothing is dropped. */
   queuedCount: number;
@@ -34,6 +36,7 @@ export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: 
   return {
     since,
     top: shown.filter((l) => l.status === "active" || l.status === "pending").sort(byValue).slice(0, DIGEST_TOP).map(item),
+    needsReview: shown.filter((l) => l.reviewRequired === true && l.status === "active").sort(byValue).map(item),
     autoApplied: shown.filter((l) => l.status === "active" && l.approvals.some((a) => a.mode === "auto") && l.updatedAt >= since).sort(byValue).map(item),
     waiting: shown.filter((l) => l.status === "pending").sort(byValue).map(item),
     retired: shown.filter((l) => (l.status === "retired" || l.status === "expired") && l.updatedAt >= since).map(item),

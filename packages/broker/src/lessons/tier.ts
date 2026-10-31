@@ -1,7 +1,7 @@
 // Learning v2 L3a: risk tiers (design §4.5.3). Evaluated by code. The classifier flags (escalation words, the judge's escalate flag, reviewer stages)
 // can only raise a tier, never lower it. A lesson that asks for a capability change, or comes from an outsider or an ineligible task, is "never".
 import { isMeaningfulAnchor } from "@agentx/contracts";
-import { hasCommandOrUrl, hasEncodedBlob, hasEscalationWords, isPlainDeclarative, requestsCapabilityChange, touchesRiskyPath } from "./guards.js";
+import { isPlainTitle, hasCommandOrUrl, hasEncodedBlob, hasEscalationWords, isPlainDeclarative, requestsCapabilityChange, touchesRiskyPath } from "./guards.js";
 import { isRestricted, trustAtLeast, type Lesson, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type Tier } from "./types.js";
 
 export interface TierInput {
@@ -51,6 +51,9 @@ function classifyBase(input: TierInput, context: TierContext): TierDecision {
   if (input.type !== "fact") why.push("not_a_fact");
   // An allow-list, not a deny-list: only a plain "<thing> is in <path> / is called <name> / uses <library>" statement can go live without a person.
   if (!isPlainDeclarative(input.body)) why.push("not_plain_declarative");
+  // The title and description reach the agent too: the description is held to the same templates, and the title is a noun phrase.
+  if (input.description.trim() !== "" && !isPlainDeclarative(input.description)) why.push("description_not_plain");
+  if (!isPlainTitle(input.title)) why.push("title_not_plain");
   if (!validCodeCitations(input)) why.push("citations_not_verified");
   if (!trustAtLeast(input.provenance.minTrust, "rovara")) why.push("source_not_trusted");
   const repos = input.scope.repos ?? [];

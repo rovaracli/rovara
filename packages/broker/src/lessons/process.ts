@@ -91,7 +91,7 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     const approvals = decision.tier > current.tier ? [] : current.approvals;
     const next: Lesson = {
       ...verified, version, tier: decision.tier, tierReasons: decision.reasons.slice(0, 12), approvals, updatedAt: now,
-      ...(options.noAutoApply === true ? { reviewRequired: true } : {}),
+      ...(options.noAutoApply === true || held || current.reviewRequired === true ? { reviewRequired: true } : {}),
       status: earned ? "pending" : "candidate", ...(earned ? { pendingExpiresAt: current.pendingExpiresAt ?? pendingExpiry(now) } : {}),
     };
     const result = await deps.store.commit(key, setVersion, [next], now);
