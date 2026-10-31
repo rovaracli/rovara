@@ -122,6 +122,8 @@ const SITES: readonly Site[] = [
   { file: "packages/broker/src/aws/broker/scope-helpers.ts", calls: ["routeEditionDependencies(dependencies)"], why: "the authenticateBearer dependencies" },
   { file: "packages/broker/src/aws/developer-tasks/publication.ts", calls: ["attributionForPublication(", "attribution: resolvedAttribution"], why: "the publish payload's attribution and the pull request body context's attribution come from one attributionForPublication call" },
   { file: "packages/broker/src/aws/broker/pull-request-reconcile.ts", calls: ["expected.relatedIds"], why: "the pull_request.opened audit event carries the people named, as related ids", noImport: true },
+  { file: "packages/broker/src/team-record/erase.ts", calls: ["deps.attribution.erase("], why: "the person erase has an attribution step", noImport: true },
+  { file: "packages/broker/src/aws/broker/attribution-erasure.ts", calls: ["eraseAttributionOfPerson(", "rewriteAttributionBody("], why: "the broker's port erases through the assembly's ordered erasure and rewrites descriptions" },
   { file: "packages/broker/src/aws/developer-tasks/start.ts", calls: ["assertRepositoryHostsKnown("], why: "a task start refuses a repository whose host kind is not registered" },
 ];
 const root = resolve(import.meta.dirname, "..", "..");

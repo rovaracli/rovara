@@ -43,6 +43,12 @@ export interface PurgeDependencies {
   /** The learning lane's lesson vectors, for a whole-project erase. */
   lessonVectors?: { removeAll(orgId: OrgId, project: string, lessonIds: readonly string[]): Promise<void> } | undefined;
   audit?: RecordAuditSink | undefined;
+  /**
+   * Enterprise foundations I3: the erasure of the attribution a change request carries (which person asked for it and approved its plan): reference rows cut, descriptions rewritten to
+   * "a former member", the person's rows deleted last. Throws when a description could not be rewritten (the step then reports unfinished and the next run repeats it). Absent: the install
+   * keeps no attribution (the broker that writes it supplies this; `wiring/enterprise-identity.ts` `attributionErasure`).
+   */
+  attribution?: { erase(orgId: OrgId, developerId: string): Promise<unknown> } | undefined;
   now?: (() => number) | undefined;
   log?: RecordLog | undefined;
 }
