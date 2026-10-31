@@ -7,7 +7,7 @@ import { operationKey } from "../../packages/broker/src/aws/cancellation.js";
 import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
 import { spendRequestView, createSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { AppNoteSchema } from "../../packages/contracts/src/task-workflow-node.js";
-import { SLACK_CHANNEL, SLACK_TEAM, call } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call, orchestratorPrincipal } from "../support/slack-broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { fixtureProject } from "../support/project-ai-source.js";
 import { randomUUID } from "node:crypto";
@@ -2546,7 +2546,9 @@ it("unpriced refusal uses the dependency clock and maps a lost native snapshot f
 // actual prior Plan/Build models for future checking stages. These exercise the
 // real broker/C53 evidence path; the exemption adapter remains under review.
 async function ownSourceFundingFixture(mixed = false) {
- const f = await fixture(0, { agents: { modelSources: { launch: { kinds: ["bedrock"] } } } });
+ const { capturingAuditDeps } = await import("../support/audit-capture.js");const audit = capturingAuditDeps();
+ const f = await fixture(0, { agents: { modelSources: { launch: { kinds: ["bedrock"] } } }, extra: { audit: audit.audit } });
+ audit.attach(f.t.db);audit.audit.documentClient = f.t.db as never;
  const { modelSourcesKey } = await import("@agentx/contracts");
  const { bedrockClaudeModelIds } = await import("@agentx/model-runtime/catalog");
  const sourceId = "src_abcdefghijklmnopqrst", sourceKey = modelSourcesKey(TEST_ORG);
@@ -2584,6 +2586,8 @@ it("funding C: a changed ChatGPT payer connection revision cannot inherit the ad
  connectedAt = "2026-10-31T08:00:00Z";
  const plan = f.t.taskOps(String(task.workspaceId)).at(-1)!;
  const headers = { "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability };
+ const tokenReply = await call(f.t.handler, { method: "POST", path: `/v1/internal/workspaces/${String(task.workspaceId)}/operations/${plan.id}/chatgpt-token`, headers, body: {} });
+ expect(tokenReply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers });
  expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
 });
@@ -2596,4 +2600,104 @@ it("funding C: a later actual Rovara route must re-admit or refuse before spendi
  const headers = { "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability };
  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers });
  expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
+});
+
+async function ownSourceOperation(configuredFallback = false) {
+ const f = await ownSourceFundingFixture();
+ if (configuredFallback) {
+  const { bedrockClaudeModelIds } = await import("@agentx/model-runtime/catalog");const ids = bedrockClaudeModelIds("us");
+  const choice = { model: { provider: "amazon-bedrock", modelId: ids[0]! }, fallbackModel: { provider: "amazon-bedrock", modelId: ids.at(-1)! }, locked: false };
+  f.t.db.set({ ...orgSettingsKey(TEST_ORG, "MODEL_SELECTION_POLICY"), entityType: "MODEL_SELECTION_POLICY", orgId: TEST_ORG, version: 1, revision: 1, rankingVersion: "g3-v1", stepOverrides: { understand: choice, plan: choice, build: choice } });
+ }
+ const started = await f.start();expect(started.status, JSON.stringify(started.body)).toBe(200);
+ const taskId = (started.body.task as { taskId: string }).taskId, task = f.t.meta(taskId), workspaceId = String(task.workspaceId);
+ const prepare = f.t.operations(workspaceId).find(operation => operation.kind === "prepare")!;
+ await f.t.finish(workspaceId, prepare.id, "SUCCEEDED", PREPARED);
+ const plan = f.t.taskOps(workspaceId).at(-1)!, headers = { "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability };
+ return { ...f, taskId, workspaceId, plan, headers, modelAccess: () => call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers }) };
+}
+it("funding C: an actual verified own-source operation can mint and durably audits the exemption", async () => {
+ const f = await ownSourceOperation(), before = f.t.db.transactions().length, reply = await f.modelAccess();expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+ expect(f.t.access.mintKey).toHaveBeenCalled();
+ expect(f.t.db.transactions().slice(before).some(items => items.some(item => JSON.stringify(item).includes("spending.stop_exempted") && JSON.stringify(item).includes(f.sourceId)) && items.some(item => (item.Update as { Key?: { pk?: string } } | undefined)?.Key?.pk === taskKey(f.taskId).pk))).toBe(true);
+});
+for (const field of ["modelRoute", "fundingSourceId", "modelPolicy"] as const) it(`funding C: missing ${field} cannot inherit a task exemption`, async () => {
+ const f = await ownSourceOperation(), key = operationKey(f.workspaceId, f.plan.id), operation = { ...f.t.db.get(key)! };delete operation[field];f.t.db.set(operation);
+ const reply = await f.modelAccess();expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
+ expect(f.t.db.transactions().some(items => transactionAuditEvent(items, "spending.stop_refused") !== undefined)).toBe(true);
+});
+it("funding C: a sources revision adding catalog first cannot retain a prior own-source exemption", async () => {
+ const f = await ownSourceOperation();f.t.db.set({ ...f.t.db.get(f.sourceKey)!, revision: 2, order: ["rovara", f.sourceId] });
+ const reply = await f.modelAccess();expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
+});
+it("funding C: CHECKS never inherits the task's model-source exemption", async () => {
+ const f = await ownSourceOperation(), key = operationKey(f.workspaceId, f.plan.id);f.t.db.set({ ...f.t.db.get(key)!, workflowMode: "CHECKS" });
+ const reply = await f.modelAccess();expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
+});
+
+it("funding C: own-source order does not exempt setup commands lacking a model route", async () => {
+ const f = await ownSourceFundingFixture();f.t.grantRole(MAYA, "maintainer");
+ const reply = await f.t.dev(MAYA, "POST", "/v1/app/projects/payments/setup-check", { requestId: randomUUID() });
+ expect(reply.status).toBe(409);expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });expect(f.t.access.mintKey).not.toHaveBeenCalled();
+});
+it("funding C: the Slack classifier key has no task-funding exemption", async () => {
+ const f = await ownSourceFundingFixture(), row = f.t.db.get(f.sourceKey)!;
+ f.t.db.set({ ...row, assistantModel: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" } });
+ const before = f.t.db.transactions().length;
+ const reply = await call(f.t.handler, { method: "POST", path: "/v1/service/model-access", service: { principal: orchestratorPrincipal, thread: `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`, slackUser: "U0123456789" }, body: { orgId: TEST_ORG, turnId: "EvFundingClassifier" } });
+ expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+ expect(f.t.db.transactions().slice(before).some(items => JSON.stringify(items).includes("spending.stop_exempted"))).toBe(false);
+ const minted = f.t.access.mintKey.mock.calls.at(-1)?.[0];expect(minted?.maxBudgetUsd).toBeGreaterThan(0);expect(minted?.maxBudgetUsd).toBeLessThanOrEqual(10);
+ expect(minted?.models).toHaveLength(1);expect(minted?.models).not.toContain("us.anthropic.claude-haiku-4-5-20251001-v1:0");
+});
+
+it("funding C: a real C53 runtime fallback to Rovara is refused before minting", async () => {
+ const f = await ownSourceOperation(true), current = f.t.db.get(operationKey(f.workspaceId, f.plan.id))!;
+ f.t.db.set({ ...f.t.db.get(f.sourceKey)!, revision: 2, order: ["rovara"] });
+ const fallback = await call(f.t.handler, { method: "POST", path: `/v1/internal/workspaces/${f.workspaceId}/operations/${f.plan.id}/model-fallback`, headers: f.headers,
+  body: { version: 1, binding: current.modelPolicy, reason: "unavailable", failedModel: current.model } });
+ expect(fallback.status, JSON.stringify(fallback.body)).toBe(200);
+ expect(f.t.db.get(operationKey(f.workspaceId, f.plan.id))).toMatchObject({ fundingSourceId: "rovara", modelRoute: { sourceId: "rovara" } });
+ const reply = await f.modelAccess();expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
+ expect(f.t.db.transactions().some(items => transactionAuditEvent(items, "spending.stop_refused") !== undefined)).toBe(true);
+});
+
+it("funding C: an actual ChatGPT backup resolved to Rovara cannot inherit exemption", async () => {
+ const { capturingAuditDeps } = await import("../support/audit-capture.js"), audit = capturingAuditDeps();let connected = true;
+ const f = await fixture(0, { extra: { audit: audit.audit, chatgpt: { settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }), view: async () => ({ connected, status: "connected", connectedAt: "2026-10-31T07:00:00Z", models: ["gpt-6.1-sol"] }) } } });
+ audit.attach(f.t.db);audit.audit.documentClient = f.t.db as never;
+ const { modelSourcesKey } = await import("@agentx/contracts"), sourceKey = modelSourcesKey(TEST_ORG);
+ f.t.db.set({ ...sourceKey, orgId: TEST_ORG, revision: 1, sources: [], order: ["personal-chatgpt"], credentials: [], removing: [] });
+ f.t.db.set({ ...orgSettingsKey(TEST_ORG, "MODEL_SELECTION_POLICY"), entityType: "MODEL_SELECTION_POLICY", orgId: TEST_ORG, version: 1, revision: 1, rankingVersion: "g3-v1", stepOverrides: { build: { model: { provider: "openai", modelId: "gpt-6.1-sol" }, fallbackModel: { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" }, locked: false } } });
+ const started = await f.start();expect(started.status, JSON.stringify(started.body)).toBe(200);
+ const taskId = (started.body.task as { taskId: string }).taskId, workspaceId = String(f.t.meta(taskId).workspaceId), prepare = f.t.operations(workspaceId).find(operation => operation.kind === "prepare")!;
+ await f.t.finish(workspaceId, prepare.id, "SUCCEEDED", PREPARED);
+ const operation = f.t.taskOps(workspaceId).at(-1)!, key = operationKey(workspaceId, operation.id), current = f.t.db.get(key)!;
+ expect(current.chatgptDeveloperId).toBe(MAYA.developerId);
+ const headers = { "x-agentx-callback-capability": (f.t.outboxOf(operation.id)!.invocation as { callbackCapability: string }).callbackCapability };
+ connected = false;f.t.db.set({ ...f.t.db.get(sourceKey)!, revision: 2, order: ["personal-chatgpt", "rovara"] });
+ const fallback = await call(f.t.handler, { method: "POST", path: `/v1/internal/workspaces/${workspaceId}/operations/${operation.id}/model-fallback`, headers, body: { version: 1, binding: current.modelPolicy, reason: "unavailable", failedModel: current.model } });
+ expect(fallback.status, JSON.stringify(fallback.body)).toBe(200);expect(f.t.db.get(key)).toMatchObject({ modelRoute: { sourceId: "rovara" }, fundingSourceId: "rovara" });
+ const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers });expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
+ expect(f.t.db.transactions().some(items => transactionAuditEvent(items, "spending.stop_refused") !== undefined)).toBe(true);
+});
+
+for (const where of ["task", "pin"] as const) it(`funding C: a missing ${where} proof never degrades into legacy money`, async () => {
+ const f = await ownSourceOperation(), key = where === "task" ? taskKey(f.taskId) : taskRecipeKey(f.taskId), row = { ...f.t.db.get(key)! };delete row.fundingProof;f.t.db.set(row);
+ const reply = await f.modelAccess();expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
+ expect(f.t.db.transactions().some(items => transactionAuditEvent(items, "spending.stop_refused") !== undefined)).toBe(true);
+});
+
+it("funding C: Continue keeps a proven own-source task exempt from a zero model stop", async () => {
+ const f = await ownSourceOperation();await f.t.finish(f.workspaceId, f.plan.id, "SUCCEEDED");
+ const reply = await f.t.api(MAYA, "POST", `/v1/dev/tasks/${f.taskId}/continue`, { requestId: randomUUID(), instructions: "Continue on company-funded models." });
+ expect(reply.status, JSON.stringify(reply.body)).toBe(200);expect(f.t.meta(f.taskId).fundingProof).toBeDefined();
+});
+
+it("funding C: a coding test payer transition keeps verified own-source funding at zero stop", async () => {
+ const f = await ownSourceFundingFixture(), agentId = await f.t.agentOf(CODING, { publish: false });
+ const task = await f.t.runOf(agentId, { version: "draft" });expect(f.t.meta(task.taskId).fundingProof).toBeDefined();
+ await f.t.pauseAndEnd(task, { kind: "test", taskId: task.taskId });
+ const reply = await f.t.api(MAYA, "POST", `/v1/app/tasks/${task.taskId}/continue-as-task`, { requestId: randomUUID() });
+ expect(reply.status, JSON.stringify(reply.body)).toBe(200);expect(f.t.meta(task.taskId).fundingProof).toBeDefined();
 });
