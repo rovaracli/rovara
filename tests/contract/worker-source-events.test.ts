@@ -159,3 +159,74 @@ describe("the text guard", () => {
     expect(guard.redact("ONE, two three! four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty tail")).toBe("[text from a source removed] tail");
   });
 });
+
+describe("the text guard and JSON (ME-17: runs split across newlines inside JSON.stringify output)", () => {
+  // 24 words over three lines, as a source returns them: the run crosses line breaks.
+  const LINES = ["alpha bravo charlie delta echo foxtrot golf hotel", "india juliet kilo lima mike november oscar papa", "quebec romeo sierra tango uniform victor whiskey xray"];
+  const SOURCE = LINES.join("\n");
+  const REMOVED = "[text from a source removed]";
+  const guardOf = async (remembered: string) => {
+    const { createSourceTextGuard } = await import("../../packages/worker/src/context-sources/text-guard.js");
+    const guard = createSourceTextGuard();
+    guard.remember(remembered);
+    return guard;
+  };
+
+  it("removes a run copied across newlines into a JSON string (the Understand artifact, a model's JSON message), and leaves valid JSON", async () => {
+    const guard = await guardOf(SOURCE);
+    for (const value of [{ summary: SOURCE }, { a: { b: [`before ${SOURCE} after`] } }, { summary: SOURCE.replace(/\n/gu, "\r\n") }, { summary: SOURCE.replace(/\n/gu, "\t") }]) {
+      const written = JSON.stringify(value);
+      expect(written).toContain("\\"); // the line breaks really are escapes in what is stored
+      const redacted = guard.redact(written);
+      expect(redacted, written).toContain(REMOVED);
+      expect(redacted).not.toMatch(/bravo|november|whiskey/u);
+      expect(() => JSON.parse(redacted) as unknown, redacted).not.toThrow();
+    }
+  });
+  it("catches a run of exactly the guard's length that starts straight after a JSON key, and one that ends at a closing quote", async () => {
+    const twenty = LINES.join(" ").split(" ").slice(0, 20).join("\n");
+    const guard = await guardOf(twenty);
+    const redacted = guard.redact(JSON.stringify({ summary: twenty, other: "x" }));
+    expect(redacted).toBe(`{"summary":"${REMOVED}","other":"x"}`);
+  });
+  it("catches the run when the model wrote the JSON as an escaped string inside another JSON string, and when a line break is a \\u000a escape", async () => {
+    const guard = await guardOf(SOURCE);
+    const twice = JSON.stringify(JSON.stringify({ summary: SOURCE }));
+    expect(guard.redact(twice)).toContain(REMOVED);
+    expect(guard.redact(twice)).not.toMatch(/bravo|november/u);
+    const unicodeBreaks = `{"summary":${JSON.stringify(SOURCE).replace(/\\n/gu, "\\u000a")}}`;
+    expect(unicodeBreaks).toContain("\\u000a");
+    expect(guard.redact(unicodeBreaks)).toContain(REMOVED);
+    expect(guard.redact(unicodeBreaks)).not.toMatch(/bravo|november/u);
+  });
+  it("remembers a source that itself came back as JSON text with escaped line breaks", async () => {
+    const guard = await guardOf(JSON.stringify({ body: SOURCE }));
+    expect(guard.redact(SOURCE)).toContain(REMOVED);
+    expect(guard.redact(JSON.stringify({ summary: SOURCE }))).toContain(REMOVED);
+  });
+  it("scrubs a model message and the stored artifact the same way", async () => {
+    const guard = await guardOf(SOURCE);
+    const message = { role: "assistant", content: [{ type: "text", text: JSON.stringify({ answer: SOURCE }) }] };
+    expect(JSON.stringify(guard.scrub(message))).not.toMatch(/bravo|november/u);
+    const { guardArtifactSink } = await import("../../packages/worker/src/context-sources/text-guard.js");
+    const stored: unknown[] = [];
+    await guardArtifactSink(async (artifact) => { stored.push(artifact); return undefined; }, () => guard)({ name: "intent.json", content: JSON.stringify({ summary: SOURCE }) });
+    const content = (stored[0] as { content: string }).content;
+    expect(content).toContain(REMOVED);
+    expect(() => JSON.parse(content) as unknown).not.toThrow();
+  });
+  it("still leaves unrelated JSON, a short quote and a run of a different source alone (the guard is not removing everything)", async () => {
+    const guard = await guardOf(SOURCE);
+    const unrelated = JSON.stringify({ summary: "one two three four five six seven eight nine ten\neleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty\ntwentyone" });
+    expect(guard.redact(unrelated)).toBe(unrelated);
+    const short = JSON.stringify({ quote: "alpha bravo charlie delta echo foxtrot golf hotel india juliet\nkilo lima" });
+    expect(guard.redact(short)).toBe(short);
+  });
+  it("takes linear time on a long run of backslashes (no pathological backtracking)", async () => {
+    const guard = await guardOf(SOURCE);
+    const hostile = `${"\\".repeat(200_000)}x ${"\\".repeat(200_000)}`;
+    const started = Date.now();
+    expect(guard.redact(hostile)).toBe(hostile);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});

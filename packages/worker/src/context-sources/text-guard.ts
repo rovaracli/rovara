@@ -12,6 +12,15 @@ export const REMOVED = "[text from a source removed]";
 
 const word = (raw: string): string => raw.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 
+// ME-17: text the model writes is often JSON (the Understand artifact, a JSON message), and JSON hides a copied run from a plain word match. A line break inside a string is the two characters
+// `\n`, which glue the last word of one line to the first of the next ("papa\nquebec"); a run that starts right after a key sits against `{"summary":"`. So, before words are cut out, the
+// escapes that stand for white space (`\n`, `\r`, `\t`, a `\u000a`-style break, an escaped `"` or `/`, however many backslashes a nested encoding put in front) and the characters that only
+// structure JSON (`{ } [ ] " : ,`) are read as spaces. The view is as long as the text, so a range found in it is cut out of the original text, and what is cut never ends inside an escape:
+// the JSON that comes back still parses. The same view is used for the source text and the model's text, so a source that itself came back as JSON matches too.
+const JSON_WHITESPACE_CODES = "0009|000[aAbBcCdD]|0020|0085|00[aA]0|1680|200[0-9aA]|202[89]|202[fF]|205[fF]|3000";
+const JSON_NOISE = new RegExp(`(?<!\\\\)\\\\+(?:[nrt"/]|u(?:${JSON_WHITESPACE_CODES}))|[{}\\[\\]":,]`, "gu");
+const jsonView = (text: string): string => text.replace(JSON_NOISE, (match) => " ".repeat(match.length));
+
 export interface SourceTextGuard {
   remember(text: string): void;
   /** Whether a source has been read yet; until then nothing is changed. */
@@ -23,7 +32,7 @@ export interface SourceTextGuard {
 
 export function createSourceTextGuard(runWords = RUN_WORDS): SourceTextGuard {
   const shingles = new Set<string>();
-  const normalised = (text: string): string[] => (stripHiddenCharacters(text).text.match(/\S+/gu) ?? []).map(word).filter((w) => w !== "");
+  const normalised = (text: string): string[] => (jsonView(stripHiddenCharacters(text).text).match(/\S+/gu) ?? []).map(word).filter((w) => w !== "");
   const guard: SourceTextGuard = {
     remember(text) {
       const words = normalised(text);
@@ -32,7 +41,7 @@ export function createSourceTextGuard(runWords = RUN_WORDS): SourceTextGuard {
     active: () => shingles.size > 0,
     redact(text) {
       if (shingles.size === 0 || text.length < runWords * 2) return text;
-      const tokens = [...text.matchAll(/\S+/gu)].map((m) => ({ start: m.index, end: m.index + m[0].length, w: word(m[0]) })).filter((t) => t.w !== "");
+      const tokens = [...jsonView(text).matchAll(/\S+/gu)].map((m) => ({ start: m.index, end: m.index + m[0].length, w: word(m[0]) })).filter((t) => t.w !== "");
       const ranges: Array<[number, number]> = [];
       for (let i = 0; i + runWords <= tokens.length; i += 1) {
         if (shingles.has(tokens.slice(i, i + runWords).map((t) => t.w).join(" "))) ranges.push([tokens[i]!.start, tokens[i + runWords - 1]!.end]);
