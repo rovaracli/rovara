@@ -208,6 +208,30 @@ describe("the deployer installs a build made at approval", () => {
     expect(changes(unreadable.ew)).toEqual([]);
   });
 
+  it("does not take an install for Public because both edition records are gone: the deployed stacks still say Enterprise (review M4)", async () => {
+    const stamp = JSON.stringify({ Resources: { Fn: { Type: "AWS::Lambda::Function", Properties: { Environment: { Variables: { ROVARA_EDITION: "enterprise" } } } } } });
+    const record = JSON.stringify({ Resources: { EditionRecord: { Type: "AWS::SSM::Parameter", Properties: { Description: "d", Name: "/agentx/ent/edition", Type: "String", Value: "enterprise" } } } }, null, 2);
+    for (const [name, part, template] of [["control-plane stamp", "control-plane", stamp], ["foundation record", "foundation", record]] as const) {
+      const ew = await EnterpriseWorld.create(made);
+      ew.world.params.delete(editionRecordParameter("ent"));
+      await ew.world.approve(ew.bundle);
+      ew.world.stacks.set(`agentx-ent-${part}`, { ...ew.world.stacks.get(`agentx-ent-${part}`)!, template });
+      expect(await ew.world.run({ bundleId: ew.bundle.bundleSha256 }), name).toMatchObject({ status: "refused", reason: expect.stringMatching(/Enterprise install takes only/) });
+      expect(changes(ew), name).toEqual([]);
+    }
+    // A stack that cannot be read to tell is a refusal; a stack with no such stamp leaves the Public path as it was.
+    const unreadable = await EnterpriseWorld.create(made);
+    unreadable.world.params.delete(editionRecordParameter("ent"));
+    await unreadable.world.approve(unreadable.bundle);
+    const ports = unreadable.world.ports();
+    expect(await unreadable.world.run({ bundleId: unreadable.bundle.bundleSha256 }, { cfn: { ...ports.cfn, getTemplate: async (name) => { if (name.endsWith("-foundation")) throw new Error("denied"); return ports.cfn.getTemplate(name); } } })).toMatchObject({ status: "refused", reason: expect.stringMatching(/could not be read to tell/) });
+    const plain = await EnterpriseWorld.create(made);
+    plain.world.params.delete(editionRecordParameter("ent"));
+    await plain.world.approve(plain.bundle);
+    for (const part of ["foundation", "control-plane"]) plain.world.stacks.set(`agentx-ent-${part}`, { ...plain.world.stacks.get(`agentx-ent-${part}`)!, template: JSON.stringify({ Resources: {} }) });
+    expect(await plain.world.run({ bundleId: plain.bundle.bundleSha256 })).toMatchObject({ status: "done" });
+  });
+
   it("keeps the Public path as it was: a Public install deploys the bundle's own templates, kit or no kit, and the kit is never placed", async () => {
     const ew = await EnterpriseWorld.create(made, { edition: "public" });
     ew.world.params.delete(editionRecordParameter("ent"));

@@ -72,9 +72,15 @@ export const SYNTH_EXCLUDED_KEYS: Readonly<Record<string, string>> = {
 /** Settings whose value is never written to the approval record, the summary or a log: only its hash is. */
 export const SYNTH_SENSITIVE_KEYS: readonly SynthContextKey[] = ["rovaraOperatorExternalId"];
 
-/** A setting holds no control character (a line break or a NUL could change what a later reader sees). */
-const hasControlCharacter = (value: string): boolean => [...value].some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f);
-const ContextValue = z.string().max(8_192).refine((value) => !hasControlCharacter(value), "a setting holds no control character");
+/**
+ * A setting holds no character a terminal could act on or that could make the text read as something else: C0 and C1 controls (U+009B is a CSI), line and paragraph separators, and the
+ * bidirectional marks and overrides (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069).
+ */
+const hasUnsafeCharacter = (value: string): boolean => [...value].some((char) => {
+  const code = char.charCodeAt(0);
+  return code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029 || code === 0x061c || code === 0x200e || code === 0x200f || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+});
+const ContextValue = z.string().max(8_192).refine((value) => !hasUnsafeCharacter(value), "a setting holds no control or direction-changing character");
 const contextShape = Object.fromEntries(SYNTH_CONTEXT_KEYS.map((key) => [key, ContextValue.optional()])) as Record<SynthContextKey, z.ZodOptional<typeof ContextValue>>;
 
 export const SynthSettingsSchema = z

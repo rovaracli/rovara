@@ -351,11 +351,11 @@ describe("rovara upgrade --bundle", () => {
     it("builds, approves and starts the customer's deployer for exactly this bundle, deploys nothing itself, then runs doctor", async () => {
       const bundle = await build();
       const h = await cdkHarness(bundle);
-      const result = await runUpgrade(options(bundle), h.deps);
+      const result = await runUpgrade(options(bundle, { approveBuild: true }), h.deps);
       expect(h.calls).toEqual([{ bundleId: bundle.bundleSha256, yes: true, engine: "cdk" }]);
-      // Without --yes the build asks the approver itself (yes: false reaches it).
+      // --yes answers the upgrade's own questions and NEVER approves a build (review M2): the build still asks the approver, and with --yes alone it is told to use --approve-build.
       const asking = await cdkHarness(bundle);
-      await runUpgrade(options(bundle, { yes: false }), asking.deps);
+      await runUpgrade(options(bundle), asking.deps);
       expect(asking.calls).toEqual([{ bundleId: bundle.bundleSha256, yes: false, engine: "cdk" }]);
       expect(result).toMatchObject({ env: "staging", from: "1.2.3", to: "1.4.0", parts: ["foundation", "runtime"], doctor: { failed: 0 } });
       // The engine, the prebuilt templates and the restore point of the local path are untouched: the deployer owns them.
@@ -364,6 +364,12 @@ describe("rovara upgrade --bundle", () => {
       expect(h.touched).not.toContain("prepare");
       expect(h.store.values.has(installedBundleParameter("staging"))).toBe(false);
       expect([...h.store.values.keys()].some((name) => name.includes("restore-points"))).toBe(false);
+    });
+
+    it("--approve-build belongs to --bundle only", async () => {
+      const bundle = await build();
+      const h = await harness(bundle);
+      await expect(runUpgrade({ env: "staging", yes: true, allowReplace: [], approveBuild: true }, h.deps)).rejects.toThrow(/--approve-build applies to --bundle only/);
     });
 
     it("needs no --source, and refuses what could change what is built: --no-reserved-concurrency", async () => {

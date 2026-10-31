@@ -166,7 +166,13 @@ describe("the recorded settings are the install's own", () => {
     await refused(recordSynthSettings({ store: s, install: INSTALL, settings: { ...SETTINGS_ENT(), edition: "public" } }), /not valid/);
     await refused(recordSynthSettings({ store: s, install: INSTALL, settings: { ...SETTINGS_ENT(), extra: 1 } }), /not valid/);
     await refused(recordSynthSettings({ store: s, install: INSTALL, settings: SETTINGS_ENT({ rovaraEnterpriseEgressCidrs: "10.0.0.0/8\u0000" }) }), /not valid/);
+    // C1 controls (U+009B is a CSI), line separators and bidirectional marks and overrides would let a value read as something else on a terminal (review M3).
+    for (const code of [0x7f, 0x80, 0x9b, 0x9f, 0x2028, 0x2029, 0x061c, 0x200e, 0x200f, 0x202a, 0x202e, 0x2066, 0x2069]) {
+      await refused(recordSynthSettings({ store: s, install: INSTALL, settings: SETTINGS_ENT({ rovaraOperatorPrincipalArn: `arn:aws:iam::111122223333:role/x${String.fromCodePoint(code)}y` }) }), /not valid/);
+    }
     expect(s.values.size).toBe(0);
+    // An ordinary non-ASCII letter is fine.
+    await recordSynthSettings({ store: s, install: INSTALL, settings: SETTINGS_ENT({ agentxEgressAllowDomains: "b\u00fccher.example.com" }) });
     // The DNS firewall allow-list is an install setting too (review I1): an upgrade must rebuild the foundation with it.
     await recordSynthSettings({ store: s, install: INSTALL, settings: SETTINGS_ENT({ agentxEgressAllowDomains: "pypi.internal.corp,*.artifactory.example.com" }) });
     expect(JSON.parse(s.values.get("/agentx/ent/synth-settings")!).context.agentxEgressAllowDomains).toBe("pypi.internal.corp,*.artifactory.example.com");
@@ -254,6 +260,7 @@ describe("agentx bundle approve, Enterprise", () => {
     const world = await EnterpriseWorld.create(made);
     await world.deployAsBuilt();
     await refused(world.approve({ yes: false, interactive: false }), /needs --yes/);
+    await refused(world.approve({ yes: false, interactive: false, confirmFlag: "--approve-build" }), /needs --approve-build/);
     await refused(world.approve({ yes: false, interactive: true, ask: async () => "n" }), /not approved/);
     expect(world.puts).toEqual([]);
     const asked: string[] = [];
@@ -275,13 +282,13 @@ describe("agentx bundle approve, Enterprise", () => {
     expect(world.puts).toEqual([]);
   });
 
-  it("offers no option that reaches the build: the command takes a bundle, its id, parameters for the deployment, rollback, a key, a region and --yes, nothing else", async () => {
+  it("offers no option that reaches the build: the command takes a bundle, its id, parameters for the deployment, rollback, a key, a region, --yes and --write-build (a folder to write the build to), nothing else", async () => {
     const { Command } = await import("commander");
     const { registerUpgradeCommand } = await import("../../packages/cli/src/upgrade/cli.js");
     const program = new Command().option("--env <env>").option("--json").option("--config-dir <dir>");
     registerUpgradeCommand(program, { parameterStore: () => new MemoryParameterStore(), fetch, home: "/nonexistent", stdout: { write: () => true }, stderr: { write: () => true } });
     const approve = program.commands.find((c) => c.name() === "bundle")!.commands.find((c) => c.name() === "approve")!;
-    expect(approve.options.map((o) => o.long).sort()).toEqual(["--approved-bundle-sha256", "--bundle", "--bundle-public-key", "--parameters", "--region", "--rollback", "--yes"]);
+    expect(approve.options.map((o) => o.long).sort()).toEqual(["--approved-bundle-sha256", "--bundle", "--bundle-public-key", "--parameters", "--region", "--rollback", "--write-build", "--yes"]);
     const recordSettings = program.commands.find((c) => c.name() === "bundle")!.commands.find((c) => c.name() === "record-settings")!;
     expect(recordSettings.options.map((o) => o.long).sort()).toEqual(["--file", "--region"]);
   });

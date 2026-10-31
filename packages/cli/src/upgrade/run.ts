@@ -28,7 +28,7 @@ import { writeUpgradeBundle } from "./export.js";
 import { cdkDiffRisks, cdkReviewedDeployer, guardData, upgradeConfirm } from "./review.js";
 import { notesText, refusePrereleaseTarget, upgradeDirection, type ReleaseNotes } from "./target.js";
 
-export interface UpgradeOptions { env: string; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
+export interface UpgradeOptions { env: string; /** With `--bundle` on a cdk install: the build made at approval is approved without asking. `--yes` never does this. */ approveBuild?: boolean; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
 
 export interface UpgradeDependencies {
   store: ParameterStore;
@@ -46,7 +46,7 @@ export interface UpgradeDependencies {
    * the result and starts the customer-owned deployer for exactly that bundle id: the same approve-then-deploy path the Rovara operator's deployment takes. Nothing here deploys
    * the bundle's own prebuilt templates, and nothing is built from a flag.
    */
-  approveAndDeploy?(input: { bundle: VerifiedBundle; settings: EnvironmentSettings; yes: boolean }): Promise<{ status: string; done: string[] }>;
+  approveAndDeploy?(input: { bundle: VerifiedBundle; settings: EnvironmentSettings; /** The build is approved without asking (`--approve-build`); false asks the approver. */ yes: boolean }): Promise<{ status: string; done: string[] }>;
   /** Issue 152: a source-built CLI's cdk upgrade with no --release or --to builds its release from
    * the --source checkout (release-fetch.ts's sourceRelease): the tag's version, the images from the
    * image flags or the tag's published release.json. */
@@ -191,6 +191,7 @@ async function setUpGithubWebhook(env: string, deps: UpgradeDependencies): Promi
 /** N3: the bundle path, checked before anything else is read: nothing in AWS is touched until the signature and every hash have passed. */
 async function verifiedBundle(options: UpgradeOptions, deps: UpgradeDependencies): Promise<VerifiedBundle | undefined> {
   if (options.bundleDir === undefined) {
+    if (options.approveBuild === true) throw agentXError("CONFIG_INVALID", "--approve-build applies to --bundle only");
     if (options.approvedBundleSha256 !== undefined) throw agentXError("CONFIG_INVALID", "--approved-bundle-sha256 applies to --bundle only");
     return undefined;
   }
@@ -388,7 +389,8 @@ async function runBuiltBundleUpgrade(input: { options: UpgradeOptions; deps: Upg
   upgradeDirection(first.env, first.version, target);
   if (deps.approveAndDeploy === undefined) throw agentXError("CONFIG_INVALID", "this agentx cannot build an install's templates at approval; the bundle was refused and nothing was changed");
   deps.write(`Upgrading ${first.env} from ${first.version} to ${target} with bundle ${bundle.bundleId}: its templates are built from the settings recorded for this install, then installed by your own deployer`);
-  const outcome = await deps.approveAndDeploy({ bundle, settings: first, yes: options.yes });
+  // `--yes` answers the upgrade's own questions; it does not approve a build nobody read. Only `--approve-build` does that.
+  const outcome = await deps.approveAndDeploy({ bundle, settings: first, yes: options.approveBuild === true });
   if (outcome.status !== "done") {
     throw agentXError("CONFIG_INVALID", `the deployer did not finish (${outcome.status}); stacks done so far: ${outcome.done.length === 0 ? "none" : outcome.done.join(", ")}. Run agentx upgrade again; the approval stands`);
   }

@@ -292,6 +292,20 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
     return refused("the install's edition record could not be read");
   }
   if (edition !== undefined && edition !== "enterprise" && edition !== "public") return refused("the install's edition record is not readable");
+  // Both records gone is not "Public": the deployed stacks themselves say what the install is. If the foundation stack still carries the edition record resource, or a control-plane
+  // function the Enterprise stamp, the install is Enterprise whatever happened to the records (review M4). A stack that cannot be read is a refusal.
+  let stampedEnterprise = false;
+  if (edition === undefined) {
+    try {
+      for (const part of ["foundation", "control-plane"] as const) {
+        const deployed = await ports.cfn.getTemplate(environmentStackName(env, part));
+        if (deployed !== undefined && /"ROVARA_EDITION"\s*:\s*"enterprise"|"Name"\s*:\s*"\/agentx\/[^"]*\/edition"[^}]*"Value"\s*:\s*"enterprise"/.test(deployed)) stampedEnterprise = true;
+      }
+    } catch {
+      return refused("the deployed stacks could not be read to tell the install's edition");
+    }
+    if (stampedEnterprise) edition = "enterprise";
+  }
 
   // What is deployed, whichever kind of approval it is: the version, the access stack, each stack's template, each package's bytes and where its parameters go.
   interface PlanPackage { file: string; assetId: string; parts: readonly string[]; bucketParameter: string; keyParameter: string; hashParameter: string }
