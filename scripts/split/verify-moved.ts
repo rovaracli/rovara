@@ -4,13 +4,13 @@
 //   node scripts/split/verify-moved.ts <original broker.ts> [--root <checkout>]
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { KEEP, readPlan } from "./split-broker.ts";
-import config from "./split-broker.config.ts";
+import { KEEP, loadBrokerConfig, readPlan } from "./split-broker.ts";
 
 const original = process.argv[2];
 if (original === undefined) { process.stderr.write("usage: verify-moved.ts <original broker.ts> [--root dir]\n"); process.exit(2); }
 const rootIndex = process.argv.indexOf("--root");
 const root = path.resolve(rootIndex >= 0 ? process.argv[rootIndex + 1] ?? "." : ".");
+const config = await loadBrokerConfig(import.meta.dirname);
 const plan = readPlan(path.resolve(original), config);
 const strip = (text: string): string => text.replace(/^export\s+/, "");
 let missing = 0;

@@ -1,30 +1,72 @@
 // Splits packages/broker/src/aws/broker.ts into feature modules under packages/broker/src/aws/broker/ without changing what it does.
 //
-//   node scripts/split/split-broker.ts [--root <checkout>] [--dry-run] [--check] [--force] [--json] [--config <file>]
+//   node scripts/split/split-broker.ts [--root <checkout>] [--dry-run] [--check] [--force] [--manifest <file.json>] [--reference <manifest.json>] [--config <module.ts>] [--json]
 //
 // What it does: reads the source with the TypeScript compiler API (no ts-morph, nothing new to install; `typescript` is already a dev dependency), assigns every top-level
-// declaration to a module by *anchors* (scripts/split/split-broker.config.ts: "from this declaration up to the next anchor"), moves the text of each declaration unchanged (comments
+// declaration to a module by *anchors* (scripts/split/broker-config.ts: "from this declaration up to the next anchor"), moves the text of each declaration unchanged (comments
 // included), adds `export` only where another module needs the declaration, writes each module's imports (external imports filtered to what the module uses; type-only where it
-// only uses types, so no runtime edge is added), and rewrites broker.ts as imports + re-exports of its own public names + the declarations that must stay.
+// only uses types, so no runtime edge is added), and rewrites broker.ts as: a bare import of every original import in its original order (so the files load exactly in the
+// order they did before: startup registrations keep their sequence), then its own named imports, re-exports of its public names, and the declarations that must stay.
+//
+// Configs, as in split-developer.ts: broker-config.ts holds only names that exist in the public repository AND in Rovara Cloud; names only Rovara Cloud has go in an overlay,
+// broker-config.private.ts (exports OVERLAYS), which is kept out of the public repository and merged in when the file exists. --config <module> uses a module exporting CONFIGS
+// instead (no overlay). Nothing is written to the repository besides the split itself: the placement manifest is written only where --manifest says (and it names every
+// symbol, so it stays in Rovara Cloud); --reference compares a dry run with a manifest made earlier.
 //
 // What it never does: rename a symbol, edit a body, or reorder declarations within a module (source order is kept, so initialisation order of constants is kept).
-// It refuses (exit 2, nothing written) when a move would change behaviour or cannot be placed:
+// It refuses (exit 2, nothing written; --dry-run reports the same refusals and exits 2 too, so a dry run predicts the real run) when a move would change behaviour or cannot be placed:
 //   - a `let` (mutable module state) used from a module other than its own,
-//   - a constant/class whose initialiser reads (at import time) a constant from a module that can be in an import cycle with it,
+//   - a constant, class or enum whose initialiser reads (at import time) a constant from a module that can be in an import cycle with it, or calls a function that does,
 //   - a declaration that stays in broker.ts but is needed by a moved one (broker.ts is the composition root; modules never import it),
-//   - an anchor, override or kept symbol it cannot find (reported; with --dry-run it is only reported).
+//   - a top-level statement that is not a declaration (it would run after all module code) unless it sits in the part that stays,
+//   - an anchor, override or kept symbol it cannot find, or a target folder that already has files.
 //
-// Idempotent: broker.ts carries a marker line after the split; running again prints "already split" and exits 0 without touching anything. `--check` only answers that question
-// (exit 0 split and complete, 1 not split, 2 marker present but a module file is missing). Without the marker, existing files in the target folder stop the run (use --force to
-// overwrite them). `--dry-run` writes nothing and works on any checkout (`--root`): it reports module sizes, symbols the config does not know (placed by range), symbols the config
-// names that the checkout lacks, anchors it cannot find, and every refusal above, so the same split can be planned for a different version of broker.ts.
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+// Idempotent: broker.ts carries a marker (and the list of module files) after the split; running again prints "already split" and exits 0 without touching anything. `--check` only
+// answers that question (exit 0 split and complete, 1 not split, 2 marker present but a listed module file is missing). Without the marker, existing files in the target folder
+// stop the run (--force clears the folder first). Check the load order with scripts/split/check-load-order.ts.
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
-import type { SplitConfig } from "./split-broker.config.ts";
+
+export interface SplitModule { name: string; from?: string; description: string }
+/** `from` is left out for a module that only receives `overrides`. */
+export interface SplitConfig {
+  source: string;
+  outDir: string;
+  marker: string;
+  headerPrefix: string;
+  maxLines: number;
+  keepFrom: string | undefined;
+  modules: SplitModule[];
+  overrides: Record<string, string>;
+  /** Tests that list the broker's source files in an array (a scan over them): the entry for broker.ts becomes the whole set. */
+  testsListingSourceFiles: string[];
+  /** The helper the patched tests import (it is written by the split). */
+  testHelper: string;
+}
+/** What a private checkout adds to the shared config: anchors of modules only it has, more overrides. `moduleOrder` is the order of every module (it sets the order tests read the files in). */
+export interface ConfigOverlay { modules: SplitModule[]; overrides?: Record<string, string>; moduleOrder?: string[] }
+
+/** The shared config with an overlay added. Names are only ever added. */
+export function mergeConfig(shared: SplitConfig, overlay: ConfigOverlay | undefined): SplitConfig {
+  if (overlay === undefined) return shared;
+  const modules = [...shared.modules];
+  for (const entry of overlay.modules) {
+    const known = modules.findIndex((module) => module.name === entry.name);
+    if (known === -1) modules.push(entry);
+    else throw new Error(`the overlay redefines the shared module ${entry.name}`);
+  }
+  const order = overlay.moduleOrder ?? modules.map((module) => module.name);
+  const missing = modules.filter((module) => !order.includes(module.name)).map((module) => module.name);
+  if (missing.length > 0) throw new Error(`moduleOrder lacks: ${missing.join(", ")}`);
+  const ordered = order.flatMap((name) => modules.filter((module) => module.name === name));
+  return { ...shared, modules: ordered, overrides: { ...shared.overrides, ...overlay.overrides } };
+}
+
 
 export const KEEP = "@keep";
+export const MODULES_LINE = "split-modules:";
 
 interface ImportBinding { local: string; imported: string | undefined; kind: "named" | "default" | "namespace"; typeOnly: boolean }
 interface ImportDecl { index: number; specifier: string; declarationTypeOnly: boolean; bindings: ImportBinding[]; sideEffect: boolean; start: number; end: number; node: ts.ImportDeclaration }
@@ -102,25 +144,26 @@ const FUNCTION_LIKE = new Set<ts.SyntaxKind>([
 function usePosition(id: ts.Identifier, statement: ts.Statement): { value: boolean; eager: boolean } {
   let inType = false;
   let deferred = false;
-  let inHeritage = false;
   for (let node: ts.Node = id; node !== statement; node = node.parent) {
     const parent: ts.Node = node.parent;
     if (ts.isExpressionWithTypeArguments(parent)) {
       const heritage = parent.parent;
       if (ts.isHeritageClause(heritage)) {
         if (heritage.token === ts.SyntaxKind.ImplementsKeyword || ts.isInterfaceDeclaration(heritage.parent)) inType = true;
-        else inHeritage = true;
       }
     }
     if (ts.isTypeNode(parent) && !ts.isExpressionWithTypeArguments(parent)) inType = true;
     if (FUNCTION_LIKE.has(parent.kind) && node !== (parent as ts.FunctionLikeDeclaration).name) deferred = true;
     if (ts.isClassDeclaration(parent) || ts.isClassExpression(parent)) {
-      if (ts.isClassElement(node)) deferred = true;
+      // A class's static fields and static blocks run when the class is defined; everything else in it runs later.
+      const runsAtDefinition = ts.isClassStaticBlockDeclaration(node) || ((ts.isPropertyDeclaration(node)) && (ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) ?? false));
+      if (ts.isClassElement(node) && !runsAtDefinition) deferred = true;
     }
     if (ts.isTypeNode(node) && !ts.isExpressionWithTypeArguments(node)) inType = true;
   }
   const value = !inType;
-  const eager = value && !deferred && (ts.isVariableStatement(statement) || (ts.isClassDeclaration(statement) && inHeritage));
+  // Constants, classes (heritage, static fields, static blocks) and enums (member initialisers) read what they name while the module loads.
+  const eager = value && !deferred && (ts.isVariableStatement(statement) || ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement));
   return { value, eager };
 }
 
@@ -189,7 +232,6 @@ export function readPlan(sourcePath: string, config: SplitConfig): Plan {
       uses: new Map(),
       imports: new Map(),
     };
-    if (described === undefined) notes.push(`line ${String(sf.getLineAndCharacterOfPosition(statement.getStart()).line + 1)}: ${ts.SyntaxKind[statement.kind]} stays in the source file (not a declaration the split can move)`);
     decls.push(decl);
     for (const name of decl.names) {
       const earlier = declByName.get(name);
@@ -202,15 +244,15 @@ export function readPlan(sourcePath: string, config: SplitConfig): Plan {
   const anchorsMissing: string[] = [];
   const overridesMissing: string[] = [];
   const ranges: Array<{ index: number; module: string }> = [];
-  let lastIndex = -1;
   for (const entry of config.modules) {
     if (entry.from === undefined) continue;
     const target = declByName.get(entry.from);
     if (target === undefined) { anchorsMissing.push(`${entry.name}: ${entry.from}`); continue; }
-    if (target.index <= lastIndex) { anchorsMissing.push(`${entry.name}: ${entry.from} (out of order: it comes before the previous anchor in this file)`); continue; }
-    lastIndex = target.index;
+    if (ranges.some((range) => range.index === target.index)) { anchorsMissing.push(`${entry.name}: ${entry.from} (another module is anchored at the same declaration)`); continue; }
     ranges.push({ index: target.index, module: entry.name });
   }
+  // The order of the config does not matter: each range starts where its anchor sits in this file.
+  ranges.sort((a, b) => a.index - b.index);
   const keepFrom = config.keepFrom === undefined ? undefined : declByName.get(config.keepFrom);
   if (config.keepFrom !== undefined && keepFrom === undefined) anchorsMissing.push(`${KEEP}: ${config.keepFrom}`);
   for (const decl of decls) {
@@ -219,6 +261,9 @@ export function readPlan(sourcePath: string, config: SplitConfig): Plan {
     if (keepFrom !== undefined && decl.index >= keepFrom.index) module = KEEP;
     if (decl.kind === "other") module = KEEP;
     decl.module = module;
+    if (decl.kind === "other" && (keepFrom === undefined || decl.index < keepFrom.index)) {
+      problems.push(`line ${String(sf.getLineAndCharacterOfPosition(decl.nodeStart).line + 1)}: a top-level ${ts.SyntaxKind[decl.node.kind]} is not a declaration; left in broker.ts it would run after all the module code (and before it, moved): put it in the part that stays or move it by hand`);
+    }
   }
   for (const [symbol, module] of Object.entries(config.overrides)) {
     const target = declByName.get(symbol);
@@ -295,7 +340,7 @@ export function analyse(plan: Plan, config: SplitConfig): void {
       }
       plan.exportsNeeded.add(target.index);
       if (use.value) addEdge(decl.module, target.module);
-      if (use.eager && target.kind !== "function") eagerEdges.push({ from: decl, name, to: target });
+      if (use.eager) eagerEdges.push({ from: decl, name, to: target });
       if (target.isLet) plan.problems.push(`${name} is mutable module state (let) declared in ${target.module} but used from ${decl.module}: keep every user in one module`);
     }
   }
@@ -330,8 +375,18 @@ export function analyse(plan: Plan, config: SplitConfig): void {
   };
   for (const node of names) if (!indexOf.has(node)) strong(node);
   for (const edge of eagerEdges) {
-    if (component.get(edge.from.module) === component.get(edge.to.module)) {
+    if (component.get(edge.from.module) !== component.get(edge.to.module)) continue;
+    if (edge.to.kind !== "function") {
       plan.problems.push(`${edge.from.names.join(",")} (module ${edge.from.module}) reads ${edge.name} (module ${edge.to.module}) when the module loads, and those modules import each other (directly or not): move ${edge.name} next to its reader or to a leaf module`);
+      continue;
+    }
+    // A function is hoisted, but calling it while the module loads runs its body: refuse if that body reads a constant of a module in the same cycle (one level deep).
+    for (const [inner, innerUse] of edge.to.uses) {
+      const reached = byName.get(inner);
+      if (reached === undefined || !innerUse.value || reached.kind === "function" || typeKinds.has(reached.kind) || reached.module === edge.to.module) continue;
+      if (component.get(reached.module) === component.get(edge.from.module)) {
+        plan.problems.push(`${edge.from.names.join(",")} (module ${edge.from.module}) calls ${edge.name} when the module loads, and ${edge.name} reads ${inner} (module ${reached.module}) from the same import cycle`);
+      }
     }
   }
   const sizes = new Map<number, number>();
@@ -387,7 +442,7 @@ function formatImport(decl: ImportDecl, used: Map<string, boolean>, specifier: s
   return `import ${typeStatement ? "type " : ""}${clause.join(", ")} from "${specifier}";`;
 }
 
-export interface Output { files: Map<string, string>; counts: Map<string, number>; exports: Map<string, string[]> }
+export interface Output { files: Map<string, string>; counts: Map<string, number>; exports: Map<string, string[]>; order: string[] }
 
 function declText(plan: Plan, decl: Decl, withExport: boolean): string {
   const before = plan.text.slice(decl.spanStart, decl.nodeStart);
@@ -469,9 +524,20 @@ export function render(plan: Plan, config: SplitConfig): Output {
   }
 
   // The source file: markers, the imports that must stay in place, imports of the modules it composes, re-exports of its public names, then what stays.
-  const sideEffects = plan.imports.filter((imported) => imported.sideEffect);
-  const out: string[] = [`// ${config.marker}`, ""];
-  for (const imported of sideEffects) out.push(plan.text.slice(imported.start, imported.end));
+  const order = config.modules.map((entry) => entry.name).filter((name) => plan.modules.has(name));
+  const out: string[] = [`// ${config.marker}`, `// ${MODULES_LINE} ${order.join(", ")}`, ""];
+  // Load order: one bare import per original import, in the original order (a side-effect import keeps its comment), so every file the old broker.ts loaded loads in the sequence it
+  // did, and what registers itself at load (member movers, home-card sources, approver rules) registers in the same order. Imports of this checkout's modules come after them.
+  const prelude = new Set<string>();
+  out.push("// The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.");
+  for (const imported of plan.imports) {
+    if (imported.declarationTypeOnly || prelude.has(imported.specifier)) continue;
+    prelude.add(imported.specifier);
+    const spelled = relativeSpecifier(imported.specifier, sourceDir, sourceDir);
+    const comment = plan.text.slice(imported.start, imported.node.getStart()).trimEnd();
+    if (comment !== "") out.push(comment);
+    out.push(`import "${spelled}";`);
+  }
   out.push(...importsFor(plan.keep, KEEP));
   const exportLines: string[] = [];
   for (const [module, entry] of [...reexports.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
@@ -484,7 +550,7 @@ export function render(plan: Plan, config: SplitConfig): Output {
   counts.set(KEEP, files.get(config.source)!.split("\n").length);
   const exportsOut = new Map<string, string[]>();
   for (const [module, entry] of reexports) exportsOut.set(module, [...entry.values, ...entry.types]);
-  return { files, counts, exports: exportsOut };
+  return { files, counts, exports: exportsOut, order };
 }
 
 // Companion edits to the tests. Some tests read broker.ts as text (a call that must be present, an order, a function's body) or list it among the files they scan; once the code is in
@@ -555,23 +621,27 @@ export function patchTests(root: string, config: SplitConfig, manifest: Record<s
   return { patches, review };
 }
 
-const HELPER_SOURCE = `// The broker's source as one text, for the tests that pin what the code says (a call that must be present, an order of two calls, a function's body). packages/broker/src/aws/broker.ts
+const helperSource = (order: readonly string[], config: SplitConfig): string => `// The broker's source as one text, for the tests that pin what the code says (a call that must be present, an order of two calls, a function's body). packages/broker/src/aws/broker.ts
 // was split into broker.ts and the modules in packages/broker/src/aws/broker/ (scripts/split/split-broker.ts); the modules come first, in the order the one file had them, then broker.ts
 // (the part that builds the Lambda's clients and the handler, which was at the end).
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import config from "../../scripts/split/split-broker.config.ts";
+
+const OUT_DIR = "${config.outDir}";
+const SOURCE = "${config.source}";
+/** The modules in the order the original file had their parts (written by the split; a module file not listed comes after them, by name). */
+const ORDER = ${JSON.stringify(order)};
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 /** The broker's source files (paths from the repository root) in the order the original single file had their parts. */
 export function brokerSourceFiles(): string[] {
-  const folder = path.join(ROOT, config.outDir);
+  const folder = path.join(ROOT, OUT_DIR);
   const present = new Set(readdirSync(folder).filter((name) => name.endsWith(".ts")));
-  const ordered = config.modules.map((module) => \`\${module.name}.ts\`).filter((name) => present.delete(name));
+  const ordered = ORDER.map((name) => \`\${name}.ts\`).filter((name) => present.delete(name));
   const rest = [...present].sort();
-  return [...[...ordered, ...rest].map((name) => \`\${config.outDir}/\${name}\`), config.source];
+  return [...[...ordered, ...rest].map((name) => \`\${OUT_DIR}/\${name}\`), SOURCE];
 }
 
 /** All of it, as one string. */
@@ -593,19 +663,29 @@ export function manifestOf(plan: Plan): Record<string, string> {
   return manifest;
 }
 
-export async function loadConfig(file: string): Promise<SplitConfig> {
-  const module = (await import(pathToFileURL(file).href)) as { default: SplitConfig };
-  return module.default;
+/** What --manifest writes and --reference reads: for the source file, every declaration name and the file it lands in (the shape split-developer.ts writes, so compare-manifests.ts reads both). */
+export function manifestFile(config: SplitConfig, flat: Record<string, string>): Record<string, Record<string, string>> {
+  return { [config.source]: Object.fromEntries(Object.entries(flat).map(([name, module]) => [name, module === KEEP ? config.source : `${config.outDir}/${module}.ts`])) };
+}
+
+/** The shared config, with the private overlay merged in when this checkout has one; --config <module> uses that module's CONFIGS.broker alone. */
+export async function loadBrokerConfig(here: string, configPath?: string): Promise<SplitConfig> {
+  if (configPath !== undefined) return ((await import(pathToFileURL(path.resolve(configPath)).href)) as { CONFIGS: Record<string, SplitConfig> }).CONFIGS["broker"]!;
+  const { CONFIGS } = (await import(pathToFileURL(path.join(here, "broker-config.ts")).href)) as { CONFIGS: Record<string, SplitConfig> };
+  const overlayFile = path.join(here, "broker-config.private.ts");
+  if (!existsSync(overlayFile)) return CONFIGS["broker"]!;
+  const { OVERLAYS } = (await import(pathToFileURL(overlayFile).href)) as { OVERLAYS: Record<string, ConfigOverlay> };
+  return mergeConfig(CONFIGS["broker"]!, OVERLAYS["broker"]);
 }
 
 export async function run(argv: readonly string[], here: string): Promise<{ code: number; report: Report }> {
-  const flags = new Set(argv.filter((arg) => arg.startsWith("--") && !arg.includes("=")));
+  const flags = new Set(argv.filter((arg) => arg.startsWith("--")));
   const option = (name: string): string | undefined => {
     const index = argv.indexOf(name);
     return index >= 0 ? argv[index + 1] : undefined;
   };
   const root = path.resolve(option("--root") ?? process.cwd());
-  const config = await loadConfig(path.resolve(option("--config") ?? path.join(here, "split-broker.config.ts")));
+  const config = await loadBrokerConfig(here, option("--config"));
   const sourcePath = path.join(root, config.source);
   const outDir = path.join(root, config.outDir);
   const lines: string[] = [];
@@ -619,9 +699,11 @@ export async function run(argv: readonly string[], here: string): Promise<{ code
   const marked = original.startsWith(`// ${config.marker}`);
   if (flags.has("--check")) {
     if (!marked) { log("not split: broker.ts has no split marker"); return { code: 1, report: { status: "not-split", lines, problems: [] } }; }
-    const missing = config.modules.map((entry) => `${entry.name}.ts`).filter((file) => !existsSync(path.join(outDir, file)));
-    if (missing.length > 0) { log(`marker present but module file(s) missing: ${missing.join(", ")}`); return { code: 2, report: { status: "split-incomplete", lines, problems: missing } }; }
-    log("split in place: marker present and every module file exists");
+    // The modules the split wrote are listed in the marker (a checkout whose anchors folded together has fewer than the config names).
+    const listed = original.split("\n").find((line) => line.startsWith(`// ${MODULES_LINE}`))?.slice(`// ${MODULES_LINE}`.length).split(",").map((name) => name.trim()).filter((name) => name !== "") ?? [];
+    const missing = listed.map((name) => `${name}.ts`).filter((file) => !existsSync(path.join(outDir, file)));
+    if (missing.length > 0 || listed.length === 0) { log(`marker present but module file(s) missing: ${listed.length === 0 ? "the marker lists none" : missing.join(", ")}`); return { code: 2, report: { status: "split-incomplete", lines, problems: missing } }; }
+    log("split in place: marker present and every listed module file exists");
     return { code: 0, report: { status: "split-complete", lines, problems: [] } };
   }
   if (marked) {
@@ -629,9 +711,10 @@ export async function run(argv: readonly string[], here: string): Promise<{ code
     return { code: 0, report: { status: "already-split", lines, problems: [] } };
   }
   const dry = flags.has("--dry-run");
-  if (!dry && !flags.has("--force") && existsSync(outDir) && readdirSync(outDir).length > 0) {
-    log(`refusing: ${config.outDir} already has files and ${config.source} has no marker (a half-applied split?); remove them or pass --force`);
-    return { code: 2, report: { status: "refused", lines, problems: ["target folder not empty"] } };
+  const problems: string[] = [];
+  // Everything below that would stop a real run is a problem in a dry run too, so a dry run predicts the real one.
+  if (!flags.has("--force") && existsSync(outDir) && readdirSync(outDir).length > 0) {
+    problems.push(`${config.outDir} already has files and ${config.source} has no marker (a half-applied split?); remove them or pass --force`);
   }
 
   const plan = readPlan(sourcePath, config);
@@ -647,42 +730,47 @@ export async function run(argv: readonly string[], here: string): Promise<{ code
   for (const miss of plan.overridesMissing) log(`OVERRIDE SYMBOL NOT FOUND: ${miss}`);
   for (const note of plan.notes) log(`note: ${note}`);
 
-  const manifestFile = path.join(path.dirname(path.resolve(option("--config") ?? path.join(here, "split-broker.config.ts"))), "split-broker.manifest.json");
-  if (existsSync(manifestFile)) {
-    const known = JSON.parse(readFileSync(manifestFile, "utf8")) as Record<string, string>;
-    const here2 = manifestOf(plan);
+  const manifest = manifestOf(plan);
+  const referenceFile = option("--reference");
+  if (referenceFile !== undefined) {
+    const known = (JSON.parse(readFileSync(referenceFile, "utf8")) as Record<string, Record<string, string>>)[config.source] ?? {};
+    const here2 = manifestFile(config, manifest)[config.source]!;
     const added = Object.keys(here2).filter((name) => !(name in known));
     const gone = Object.keys(known).filter((name) => !(name in here2));
     const moved = Object.keys(here2).filter((name) => name in known && known[name] !== here2[name]);
-    log(`compared with the reference placement (${path.basename(manifestFile)}): ${String(added.length)} symbol(s) new in this checkout (placed by range), ${String(gone.length)} reference symbol(s) absent, ${String(moved.length)} placed differently`);
+    log(`compared with the reference placement (${path.basename(referenceFile)}): ${String(added.length)} symbol(s) new in this checkout (placed by range), ${String(gone.length)} reference symbol(s) absent, ${String(moved.length)} placed differently`);
     if (added.length > 0) log(`  new here: ${added.slice(0, 200).map((name) => `${name}->${here2[name]}`).join(", ")}${added.length > 200 ? ", ..." : ""}`);
     if (gone.length > 0) log(`  absent here: ${gone.slice(0, 200).join(", ")}${gone.length > 200 ? ", ..." : ""}`);
     if (moved.length > 0) log(`  placed differently: ${moved.slice(0, 200).map((name) => `${name}: ${known[name]} -> ${here2[name]}`).join(", ")}`);
   }
-  const problems = [...plan.problems];
-  if (plan.anchorsMissing.length > 0 && !dry) problems.push(`anchors missing: ${plan.anchorsMissing.join("; ")}`);
-  if (plan.overridesMissing.length > 0 && !dry) problems.push(`override symbols missing: ${plan.overridesMissing.join(", ")}`);
+  problems.push(...plan.problems);
+  if (plan.anchorsMissing.length > 0) problems.push(`anchors missing: ${plan.anchorsMissing.join("; ")}`);
+  if (plan.overridesMissing.length > 0) problems.push(`override symbols missing: ${plan.overridesMissing.join(", ")}`);
   for (const problem of problems) log(`PROBLEM: ${problem}`);
-  const manifest = manifestOf(plan);
   const tests = patchTests(root, config, manifest);
   log(`tests that read or list broker.ts: ${String(tests.patches.length)} file(s) ${dry ? "would be" : "are"} patched${tests.patches.length > 0 ? ` (${tests.patches.map((patch) => path.basename(patch.file)).join(", ")})` : ""}`);
   for (const line of tests.review) log(`review: ${line}`);
+  const manifestPath = option("--manifest");
+  if (manifestPath !== undefined) {
+    writeFileSync(manifestPath, `${JSON.stringify(manifestFile(config, manifest), null, 2)}\n`);
+    log(`placement manifest written to ${manifestPath} (it names every symbol: keep it out of the public repository)`);
+  }
   if (dry) {
-    log(problems.length === 0 ? "dry run: the split would apply cleanly" : `dry run: ${String(problems.length)} problem(s) would stop the split`);
+    log(problems.length === 0 ? "dry run: the split would apply cleanly" : `dry run: the split would be refused (${String(problems.length)} problem(s)); nothing written`);
     return { code: problems.length === 0 ? 0 : 2, report: { status: "dry-run", lines, problems, manifest } };
   }
   if (problems.length > 0) {
     log("refusing: nothing written");
     return { code: 2, report: { status: "refused", lines, problems } };
   }
+  // --force starts from an empty folder: a module file an earlier run wrote and this one does not must not stay behind.
+  if (existsSync(outDir)) for (const name of readdirSync(outDir)) rmSync(path.join(outDir, name), { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   for (const [file, content] of output.files) writeFileSync(path.join(root, file), content);
   mkdirSync(path.dirname(path.join(root, config.testHelper)), { recursive: true });
-  writeFileSync(path.join(root, config.testHelper), HELPER_SOURCE);
+  writeFileSync(path.join(root, config.testHelper), helperSource(output.order, config));
   for (const patch of tests.patches) writeFileSync(path.join(root, patch.file), patch.content);
-  // The reference placement: what a later --dry-run on another checkout is compared with.
-  writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 1)}\n`);
-  log(`wrote ${String(output.files.size)} files and ${path.relative(root, manifestFile)}`);
+  log(`wrote ${String(output.files.size)} files`);
   return { code: 0, report: { status: "applied", lines, problems: [], manifest } };
 }
 
