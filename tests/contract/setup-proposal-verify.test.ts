@@ -103,6 +103,49 @@ describe("verifying a proposal", () => {
     expect(await verifyProposal(reader(files), wrongFile)).toEqual({ devcontainer: "unverified" });
   });
 
+  it("matches a command only as a whole token: a longer word, another tool's name or a longer path around it does not support it", async () => {
+    const verdictFor = async (command: string, quote: string) => {
+      const proposal = proposalOf({ setup: [{ repo: "web", commands: [command], from: [cite("notes.md", { line: 1, quote })] }] });
+      return (await verifyProposal(reader({ "web:notes.md": `${quote}\n` }), proposal))["setup-web"];
+    };
+    // Must NOT verify.
+    expect(await verifyProposal(reader({ "web:notes.md": "run pnpm ci to do the thing\n" }), proposalOf({ setup: [{ repo: "web", commands: ["npm ci"], from: [cite("notes.md", { line: 1, quote: "run pnpm ci to do the thing" })] }] }))).toEqual({ "setup-web": "unverified" });
+    expect(await verdictFor("npm ci", "run npm cia to do the thing")).toBe("unverified");
+    expect(await verdictFor("npm test", "run npm test:evil now")).toBe("unverified");
+    expect(await verdictFor("make", "see the makefile docs")).toBe("unverified");
+    expect(await verdictFor("rm -rf /", "cleanup: rm -rf /tmp/cache")).toBe("unverified");
+    // Whole tokens verify: whitespace, line ends, quotes and shell separators around them.
+    expect(await verdictFor("npm ci", "run npm ci to do the thing")).toBe("verified");
+    expect(await verdictFor("npm ci", "- run: npm ci")).toBe("verified");
+    expect(await verdictFor("npm ci", "\"ci\": \"npm ci\"")).toBe("verified");
+    expect(await verdictFor("npm ci", "cd app && npm ci && npm test")).toBe("verified");
+    expect(await verdictFor("npm ci", "(npm ci; npm test)")).toBe("verified");
+  });
+
+  it("matches a repository only as the exact owner/name, and a website only as the exact host (no longer name, no look-alike prefix or suffix, no parent of a subdomain)", async () => {
+    const repoVerdict = async (url: string, quote: string) => {
+      const proposal = proposalOf({ repositories: [{ name: "other", url, from: [cite("README.md", { line: 1, quote })] }] });
+      return Object.values(await verifyProposal(reader({ "web:README.md": `${quote}\n` }), proposal))[0];
+    };
+    const domainVerdict = async (domain: string, quote: string) => {
+      const proposal = proposalOf({ allowedDomains: [{ value: domain, from: [cite("README.md", { line: 1, quote })] }] });
+      return Object.values(await verifyProposal(reader({ "web:README.md": `${quote}\n` }), proposal))[0];
+    };
+    const url = "https://github.com/acme/other";
+    expect(await repoVerdict(url, "clone github.com/acme/other-secrets please")).toBe("unverified");
+    expect(await repoVerdict(url, "clone github.com/evilacme/other please")).toBe("unverified");
+    expect(await repoVerdict(url, "see notacme/other-two for more")).toBe("unverified");
+    expect(await repoVerdict(url, "clone github.com/acme/other please")).toBe("verified");
+    expect(await repoVerdict(url, "clone https://github.com/acme/other.git please")).toBe("verified");
+    expect(await repoVerdict(url, "clone https://github.com/acme/other.")).toBe("verified");
+    expect(await domainVerdict("example.com", "install from example.com.evil.io")).toBe("unverified");
+    expect(await domainVerdict("example.com", "install from notexample.com now")).toBe("unverified");
+    expect(await domainVerdict("example.com", "install from registry.example.com now")).toBe("unverified");
+    expect(await domainVerdict("example.com", "install from example.com now")).toBe("verified");
+    expect(await domainVerdict("example.com", "install from https://example.com/path now")).toBe("verified");
+    expect(await domainVerdict("example.com", "install from example.com. Then")).toBe("verified");
+  });
+
   it("never verifies an item whose value no quote can show: a hint, a drafted dev container, an inferred item", async () => {
     const proposal = proposalOf({
       testEnvironment: [{ hint: "needs a database for the tests", from: [cite("README.md", { line: 1, quote: "needs a database for the tests" })] }],

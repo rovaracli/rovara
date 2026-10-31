@@ -78,11 +78,42 @@ function isCheckable(item: SetupItem): boolean {
   }
 }
 
-/** Whether the quotes (already shown to be in the files) contain what the item proposes. Call only for a checkable item whose every file citation holds. */
+/**
+ * Whether `needle` is in `text` as a whole token: at some hit, the character before passes `beforeOk` (or the hit starts the text) and the text after passes `afterOk` (or the
+ * hit ends it). A plain substring test would accept `npm ci` inside `pnpm ci`, `npm cia` or `rm -rf /` inside `rm -rf /tmp/cache`.
+ */
+function hasToken(text: string, needle: string, beforeOk: (character: string) => boolean, afterOk: (rest: string) => boolean): boolean {
+  if (needle === "") return false;
+  for (let from = text.indexOf(needle); from !== -1; from = text.indexOf(needle, from + 1)) {
+    const before = from === 0 ? undefined : text[from - 1]!;
+    const rest = text.slice(from + needle.length);
+    if ((before === undefined || beforeOk(before)) && (rest === "" || afterOk(rest))) return true;
+  }
+  return false;
+}
+
+/** What may stand either side of a command: whitespace, a quote, or a shell separator or bracket. Anything else (a letter, `-`, `:`, `/`, `.`) makes it part of a longer token. */
+const COMMAND_EDGE = /^[\s"'`;&|()[\]{},=]$/u;
+/** The characters of a name (a repository's owner or name, a host label). */
+const NAME_CHARACTER = /^[A-Za-z0-9_.-]$/u;
+/** After a repository name or a host: the end, anything that is not a name character, or a full stop that ends a sentence (and `.git` after a repository). */
+const endsName = (rest: string, allowGit: boolean): boolean => {
+  const tail = allowGit && rest.startsWith(".git") ? rest.slice(4) : rest;
+  return tail === "" || !/^[A-Za-z0-9_-]/u.test(tail) && (tail[0] !== "." || tail.length === 1 || !/^\.[A-Za-z0-9_-]/u.test(tail));
+};
+
+/** Whether the quotes (already shown to be in the files) contain what the item proposes, as whole tokens. Call only for a checkable item whose every file citation holds. */
 function quotesSupport(item: SetupItem, citations: readonly Provenance[]): boolean {
   const quotes = citations.map(usableQuoteOf).filter((quote): quote is string => quote !== undefined);
-  const has = (needle: string): boolean => { const wanted = collapse(needle); return wanted !== "" && quotes.some((quote) => quote.includes(wanted)); };
-  const hasFolded = (needle: string): boolean => { const wanted = collapse(needle).toLowerCase(); return wanted !== "" && quotes.some((quote) => quote.toLowerCase().includes(wanted)); };
+  const has = (needle: string): boolean => {
+    const wanted = collapse(needle);
+    return quotes.some((quote) => hasToken(quote, wanted, (character) => COMMAND_EDGE.test(character), (rest) => COMMAND_EDGE.test(rest[0]!)));
+  };
+  /** A repository or host name, case-folded: not part of a longer name before it, and ending where a name ends. */
+  const hasName = (needle: string, allowGit: boolean): boolean => {
+    const wanted = collapse(needle).toLowerCase();
+    return quotes.some((quote) => hasToken(quote.toLowerCase(), wanted, (character) => !NAME_CHARACTER.test(character), (rest) => endsName(rest, allowGit)));
+  };
   const value = item.proposed.value as Record<string, unknown> | string;
   switch (item.kind) {
     case "setup":
@@ -91,7 +122,7 @@ function quotesSupport(item: SetupItem, citations: readonly Provenance[]): boole
     case "repository": {
       const url = String((value as { url: string }).url).replace(/\/+$/u, "").replace(/\.git$/u, "");
       const fullName = githubFullNameOf(url);
-      return hasFolded(url) || hasFolded(url.replace(/^https:\/\//u, "")) || (fullName !== undefined && hasFolded(fullName));
+      return hasName(url, true) || hasName(url.replace(/^https:\/\//u, ""), true) || (fullName !== undefined && hasName(fullName, true));
     }
     case "devcontainer": return citations.some((citation) => citation.repo === (value as { repository: string }).repository && citation.path === (value as { configPath: string }).configPath);
     case "knowledge":
@@ -99,7 +130,7 @@ function quotesSupport(item: SetupItem, citations: readonly Provenance[]): boole
       const path = (value as { path: string }).path.replace(/\/+$/u, "");
       return citations.some((citation) => citation.path !== undefined && (citation.path === path || citation.path.startsWith(`${path}/`)));
     }
-    case "allowed_domain": return hasFolded(value as string);
+    case "allowed_domain": return hasName(value as string, false);
     default: return false;
   }
 }
