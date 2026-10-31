@@ -9,7 +9,7 @@ import { z } from "zod";
 // The package the broker imports, not its source: the broker tests an error for that package's class.
 import { agentXError as packageError } from "@agentx/contracts";
 import {
-  projectAiKey, githubInstallationKey, orgGithubInstallationKey, orgMetaKey, orgProjectCatalogKey, orgScoped, projectCreateRequestKey, projectMemberKey, projectMetaKey, projectRevisionKey,
+  orgSettingsKey, projectAiKey, githubInstallationKey, orgGithubInstallationKey, orgMetaKey, orgProjectCatalogKey, orgScoped, projectCreateRequestKey, projectMemberKey, projectMetaKey, projectRevisionKey,
   type GithubInstallationRecord, type OrgId, type OrgRole,
 } from "../../packages/contracts/src/index.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
@@ -553,7 +553,8 @@ describe("cloudProjectDefaultsFromEnvironment", () => {
 });
 
 it("real cloud project creation atomically seeds explicit task-stop inheritance", async () => {
- const h = await cloudInstall();expect((await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).status).toBe(201);
+ const h = await cloudInstall();h.db.set({ ...orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, enrollment: { version: 1, state: "enabled" }, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+ expect((await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).status).toBe(201);
  expect(h.db.get(projectAiKey(TEST_ORG, "web"))).toMatchObject({ entityType: "PROJECT_AI", orgId: TEST_ORG, project: "web", revision: 1, projectPays: false, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
 });
 it("a real registered legacy project with no PROJECT_AI can be upgraded without fixtures", async () => {

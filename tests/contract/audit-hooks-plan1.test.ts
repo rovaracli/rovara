@@ -105,7 +105,7 @@ describe("a publication callback records pull_request.opened", () => {
     reconcile.mockResolvedValue({ number: 7, url: PR_URL, reconciled: false });
     await registerSlackProject(handler);
     // M47 requires an independent, durable system bootstrap event. Publication assertions below scope to their action.
-    if (extra.orgResolver === undefined) expect(capture.recordedBy("spending.policy_seeded")).toHaveLength(2);
+    if (extra.orgResolver === undefined) expect(capture.recordedBy("spending.policy_seeded")).toEqual([expect.objectContaining({ orgId: singleOrgIdForEnv(TEST_ENV), target: { kind: "spend_policy", id: "task_stop" } })]);
     const workspace = await ensureWorkspace(handler, thread, user);
     const workspaceId = workspace.body.workspaceId as string;
     markReady(db, workspaceId);
