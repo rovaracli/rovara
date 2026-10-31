@@ -146,6 +146,6 @@ it("Spending original sources and body schemas refuse spoofing and concurrent nu
  expect((await f.call("PUT", base, body)).body.code).toBe("CHANGE_STALE");
 });
 it("the Spending editor retains the explicit seeded-policy review label without a numeric estimate", async () => {
- const f = fixture();f.db.set({ ...f.db.get(f.key)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, seedProvenance: { source: "bootstrap", reviewRequired: true, seededAt: "2026-10-01T00:00:00.000Z" } });
+ const f = fixture();f.db.set({ ...f.db.get(f.key)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, seedProvenance: { occurrence: "bootstrap-original-occurrence", source: "bootstrap", reviewRequired: true, seededAt: "2026-10-01T00:00:00.000Z" } });
  const view = await f.call("GET", `${base}/editing`);expect(view.status).toBe(200);expect(view.body.seedReview).toEqual({ source: "bootstrap", reviewRequired: true, seededAt: "2026-10-01T00:00:00.000Z" });expect(view.body.policy).toEqual({ kind: "rovara_estimate" });
 });
