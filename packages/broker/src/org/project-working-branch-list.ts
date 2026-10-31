@@ -4,6 +4,7 @@ import { z } from "zod";
 import { AgentXError, OrgIdSchema, AgentXNameSchema, ProjectWorkingBranchPageBodySchema, ProjectWorkingBranchPageSchema, WorkingBranchPageFactsSchema, agentXError, canonicalJson, type StoredProjectDefinition } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { parseGitHubRepository } from "../github-app.js";
+import { githubPinsOf } from "./project-working-branch-host.js";
 import { readProjectLifecycleAuthority as authority, readProjectLifecycleState as projectState, validateProjectLifecycleIdentifiers as identifiers } from "./reviewed-project-archive.js";
 type Repository = Readonly<StoredProjectDefinition["repositories"][number]>;
 export type WorkingBranchListDependencies = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now"> & { checkRepository?: (orgId: string, repository: Repository) => Promise<unknown>; listBranches?: (orgId: string, repository: Repository, page: number) => Promise<unknown> };
@@ -35,10 +36,10 @@ export async function readProjectWorkingBranchPage(deps: WorkingBranchListDepend
     if (state.status !== "active" || state.epoch !== input.expectedRevision || state.projectRevision !== input.expectedProjectRevision) throw stale();
     const selected = state.definition.repositories.find(repo => repo.name === input.repository);
     if (selected === undefined) throw agentXError("NOT_FOUND", "Repository unavailable.");
-    const registered = structuredClone(selected), github = parseGitHubRepository(registered.url);
-    if (github.name === "." || github.name === ".." || registered.installationId === undefined || registered.githubRepositoryId === undefined) throw invalid();
+    const registered = structuredClone(selected), pins = githubPinsOf(registered), github = parseGitHubRepository(registered.url);
+    if (github.name === "." || github.name === ".." || pins.installationId === undefined || pins.githubRepositoryId === undefined) throw invalid();
     const snapshot = canonicalJson(state.definition), definitionHash = createHash("sha256").update(snapshot).digest("hex");
-    const binding = { version: 1 as const, orgId: scope.orgId, developerId: scope.developerId, project: name, repository: input.repository, expectedRevision: state.epoch, expectedProjectRevision: state.projectRevision, installationId: registered.installationId, repositoryId: registered.githubRepositoryId, definitionHash };
+    const binding = { version: 1 as const, orgId: scope.orgId, developerId: scope.developerId, project: name, repository: input.repository, expectedRevision: state.epoch, expectedProjectRevision: state.projectRevision, installationId: pins.installationId, repositoryId: pins.githubRepositoryId, definitionHash };
     let page = 1;
     if (input.cursor !== undefined) {
       let cursor: z.infer<typeof continuation>;
@@ -55,7 +56,7 @@ export async function readProjectWorkingBranchPage(deps: WorkingBranchListDepend
     if (check === undefined || list === undefined) throw unavailable();
     async function connected() {
       const checked = identity.parse(await check!(scope.orgId, structuredClone(registered)));
-      if (checked.installationId !== registered.installationId || checked.repositoryId !== registered.githubRepositoryId) throw unavailable();
+      if (checked.installationId !== pins.installationId || checked.repositoryId !== pins.githubRepositoryId) throw unavailable();
     }
     await connected();
     const facts = WorkingBranchPageFactsSchema.parse(await list(scope.orgId, structuredClone(registered), page));

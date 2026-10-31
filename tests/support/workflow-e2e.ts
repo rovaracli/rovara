@@ -65,6 +65,8 @@ import { failActiveOperation, failOutboxOperation } from "../../packages/broker/
 import type { DurableOutboxRecord, Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import type { CheckTaskPerson } from "../../packages/broker/src/developer/task-people.js";
 import { runPlanEvidenceJob, type PlanEvidenceRunOutcome } from "../../packages/broker/src/aws/plan-evidence-handler.js";
+import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
+import { createPluginRegistry } from "../../packages/broker/src/plugins/registry.js";
 import type { PlanEvidenceEvent } from "../../packages/broker/src/developer/plan-evidence-jobs.js";
 import { createWorkerCallbackSinks } from "../../packages/worker/src/callback-client.js";
 import { createDefaultPiSessionAdapter } from "../../packages/worker/src/pi-session.js";
@@ -1285,7 +1287,7 @@ export async function createWorkflowE2E(options: {
     async runPlanEvidenceJobs(): Promise<PlanEvidenceRunOutcome[]> {
       const outcomes: PlanEvidenceRunOutcome[] = [];
       for (const event of planEvidenceJobs.splice(0)) {
-        outcomes.push(await runPlanEvidenceJob({ orgId: TEST_ORG, documentClient: db as never, s3, tableName: "state", bucketName: "artifacts", github: github.gateway, now: Date.now, log: () => undefined }, event));
+        outcomes.push(await runPlanEvidenceJob({ orgId: TEST_ORG, documentClient: db as never, s3, tableName: "state", bucketName: "artifacts", codeHost: createPluginRegistry({ codeHosts: [githubCodeHost(github.gateway as never, { credentialRef: "github-app" })], checkRunners: [] }).codeHost, now: Date.now, log: () => undefined }, event));
       }
       return outcomes;
     },

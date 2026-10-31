@@ -2,10 +2,12 @@
 import { agentXError, type StoredProjectDefinition } from "@agentx/contracts";
 import type { GitHubAppCredentialProvider } from "../github-app.js";
 import type { WorkingBranchReviewDependencies } from "./project-working-branch.js";
+import { githubPinsOf } from "./project-working-branch-host.js";
 type Repository = Readonly<StoredProjectDefinition["repositories"][number]>;
 type Reader = Pick<GitHubAppCredentialProvider, "readWorkingBranchRepository" | "readWorkingBranch">;
 function registered(repository: Repository) {
-  const installationId = repository.installationId, repositoryId = repository.githubRepositoryId;
+  // The pins come from the repository's host record; a repository on another code host is refused here (task P7).
+  const { installationId, githubRepositoryId: repositoryId } = githubPinsOf(repository);
   // Legacy unpinned repositories need a separately authorized registration, never a guessed pin.
   if (installationId === undefined || repositoryId === undefined) throw agentXError("CONFIG_INVALID", "Register this repository's connection before reviewing its working branch.");
   return { installationId, repositoryId };

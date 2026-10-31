@@ -380,7 +380,7 @@ const GITHUB_FAKE_TOOLS: McpConnection["tools"] = [
   { name: "pull_request_read", description: "Read a pull request", inputSchema: objectSchema({ owner: { type: "string" }, repo: { type: "string" }, pullNumber: { type: "number" }, method: { type: "string" } }, ["owner", "repo", "pullNumber", "method"]) },
 ];
 
-interface WorldOptions { standIn?: boolean; workflowFiles?: Record<string, string>; pinnedInstallation?: number; labelTool?: boolean | "write"; linearAttribution?: boolean; extraRepositories?: unknown[] }
+interface WorldOptions { standIn?: boolean; workflowFiles?: Record<string, string>; pinnedInstallation?: number; pinnedByHost?: number; labelTool?: boolean | "write"; linearAttribution?: boolean; extraRepositories?: unknown[] }
 
 const UUID_AUTOMERGE = "5d8a1f0e-3b7c-4e2a-9f10-6c2b8d4e7a91";
 const UUID_BUG = "7a1c2d3e-4f50-4a61-8b72-9c83d4e5f607";
@@ -457,6 +457,13 @@ async function world(options: WorldOptions = {}) {
     const key = projectRevisionKey(TEST_ORG, "payments", 1);
     const record = h.db.get(key) as { definition: { repositories: Array<Record<string, unknown>> } };
     h.db.set({ ...record, definition: { ...record.definition, repositories: record.definition.repositories.map((repository) => ({ ...repository, installationId: options.pinnedInstallation })) } });
+  }
+
+  if (options.pinnedByHost !== undefined) {
+    // The pin is on the repository's HOST record only (task P7), not in the old top-level field.
+    const key = projectRevisionKey(TEST_ORG, "payments", 1);
+    const record = h.db.get(key) as { definition: { repositories: Array<Record<string, unknown>> } };
+    h.db.set({ ...record, definition: { ...record.definition, repositories: record.definition.repositories.map((repository) => ({ ...repository, host: { kind: "github", installationId: options.pinnedByHost } })) } });
   }
 
   /** Starts MAYA's task on payments, finishes the preparation, and freezes `recipe` as the task's agent snapshot. */
@@ -1242,6 +1249,16 @@ describe("GitHub through the agent routes", () => {
     for (const options of optionsOf) expect(options).toEqual({ installationId: 4242 });
     expect(w.readerPins.length).toBeGreaterThan(0);
     for (const pin of w.readerPins) expect(pin).toBe(4242);
+  });
+
+  it("reads the pinned installation from the repository's host record as well as from the old top-level field (task P7)", async () => {
+    const w = await world({ pinnedByHost: 4243, workflowFiles: {} });
+    const run = await w.startRun({ tools: [grant({ type: "github" }, "read_write")] });
+    const reply = await w.githubCall(run.capability, "add_issue_comment", { issue_number: 3, body: "hello" });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    const optionsOf = w.tokens.mock.calls.map((entry) => entry[3]);
+    expect(optionsOf.length).toBeGreaterThan(0);
+    for (const options of optionsOf) expect(options).toEqual({ installationId: 4243 });
   });
 
   it("makes a comment wait when the repository has workflows that react to comments, and sends nothing", async () => {

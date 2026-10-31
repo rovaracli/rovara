@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AgentXError, AgentXNameSchema, GitBranchNameSchema, OrgIdSchema, agentXError, canonicalJson, type StoredProjectDefinition } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { parseGitHubRepository } from "../github-app.js";
+import { githubPinsOf } from "./project-working-branch-host.js";
 import { readProjectLifecycleAuthority as authority, readProjectLifecycleState as projectState, validateProjectLifecycleIdentifiers as identifiers } from "./reviewed-project-archive.js";
 type Repository = StoredProjectDefinition["repositories"][number];
 export type WorkingBranchReviewDependencies = Pick<DeveloperRouteDependencies,"documentClient"|"tableName"|"now"> & {
@@ -36,12 +37,12 @@ export async function readProjectWorkingBranchPreview(deps:WorkingBranchReviewDe
   await authority(deps,scope,name);const state=await projectState(deps,scope,name);
   if(state.status!=="active"||state.epoch!==input.expectedRevision||state.projectRevision!==input.expectedProjectRevision)throw stale();
   const repository=state.definition.repositories.find(repo=>repo.name===input.repository);if(repository===undefined)throw agentXError("NOT_FOUND","Repository unavailable.");
-  const definitionSnapshot=canonicalJson(state.definition),registered=structuredClone(repository),github=parseGitHubRepository(registered.url),fullName=`${github.owner}/${github.name}`;
+  const definitionSnapshot=canonicalJson(state.definition),registered=structuredClone(repository),pins=githubPinsOf(registered),github=parseGitHubRepository(registered.url),fullName=`${github.owner}/${github.name}`;
   if (/^\.+$/.test(github.name)) throw invalid();
   const checkRepository=deps.checkRepository,resolveBranch=deps.resolveBranch;if(checkRepository===undefined||resolveBranch===undefined)throw unavailable();
   async function connected(){
    try{const identity=identitySchema.parse(await checkRepository!(scope.orgId,structuredClone(registered)));
-    if((registered.installationId!==undefined&&identity.installationId!==registered.installationId)||(registered.githubRepositoryId!==undefined&&identity.repositoryId!==registered.githubRepositoryId))throw unavailable();return identity;
+    if((pins.installationId!==undefined&&identity.installationId!==pins.installationId)||(pins.githubRepositoryId!==undefined&&identity.repositoryId!==pins.githubRepositoryId))throw unavailable();return identity;
    }catch(error){if(error instanceof AgentXError&&error.code==="GITHUB_NOT_CONNECTED")throw error;throw unavailable();}
   }
   const before=await connected();let raw:unknown;

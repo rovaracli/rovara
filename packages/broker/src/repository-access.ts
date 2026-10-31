@@ -1,6 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
-import type { GitHubTokenScope } from "./github-app.js";
+import { agentXError, type HostScope } from "@agentx/contracts";
 
 interface RepositoryGrantClaims {
   version: 3;
@@ -35,7 +34,7 @@ export class RepositoryGrantService {
       reference: string,
       repositoryUrl: string,
       access: RepositoryAccess,
-      scope: GitHubTokenScope,
+      scope: HostScope,
     ) => Promise<RepositoryCredential>,
   ) {
     if (signingKey.byteLength < 32) throw new Error("repository grant signing key must be at least 32 bytes");
@@ -73,7 +72,7 @@ export class RepositoryGrantService {
       access: RepositoryAccess;
     },
     /** Whose work the token is for (Plan 2, Task 15): the workspace's org, so an org that disconnected GitHub mints nothing. */
-    scope: GitHubTokenScope,
+    scope: HostScope,
   ): Promise<RepositoryCredential> {
     const claims = this.verify(grant);
     if (

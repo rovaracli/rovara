@@ -1,7 +1,11 @@
 // Spec 061 (slice 1.1, task 5): the PlanEvidence job reads a stored plan's cited code in the background, with retries.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { agentXError, type WorkflowSnapshot } from "@agentx/contracts";
+import { agentXError, editionPolicy, type HostScope, type WorkflowSnapshot } from "@agentx/contracts";
+import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
+import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
+import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
+import { createPluginRegistry } from "../../packages/broker/src/plugins/registry.js";
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
 import { runPlanEvidenceJob, type PlanEvidenceRunDependencies } from "../../packages/broker/src/aws/plan-evidence-handler.js";
 import { PLAN_EVIDENCE_EVENT_SOURCE, planEvidenceDueKey } from "../../packages/broker/src/developer/plan-evidence-jobs.js";
@@ -18,7 +22,7 @@ const MINUTE = 60_000;
 const jobBroker = () => createSingleAnswerPlanBroker({ brokerExtra: { startPlanEvidenceJob: async () => undefined } });
 type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;
 type Row = { pk: string; sk: string; attempts: number; nextAttemptAt: number; dispatchDueSk: string; taskId: string; artifactId: string; artifactSha256: string };
-type GetFile = PlanEvidenceRunDependencies["github"]["getFileAtCommit"];
+type GetFile = (url: string, path: string, commit: string, scope: HostScope, options: { untilLine?: number; timeoutMs?: number }) => Promise<string | undefined>;
 
 const operations = (harness: Harness, workspaceId: string) => harness.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
 const taskRecord = (harness: Harness, taskId: string) => harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot; ownerKey: string; developerId: string };
@@ -43,8 +47,10 @@ async function plannedTask(harness: Harness, paths = ["repo/demo/src/charge.ts"]
 /** A clock the test moves; the job reads time only through it. */
 const clock = (start = Date.now()) => { const state = { t: start }; return { state, now: () => state.t }; };
 
+/** The cited code is read through the GitHub CodeHost adapter over a GitHub-shaped reader, as the Lambda registers it. */
+const githubRouter = (getFileAtCommit: GetFile) => createPluginRegistry({ codeHosts: [githubCodeHost({ getFileAtCommit } as never, { credentialRef: "github-app" })], checkRunners: [] }).codeHost;
 function jobDeps(harness: Harness, getFileAtCommit: GetFile, now: () => number = Date.now, extra: Partial<PlanEvidenceRunDependencies> = {}): PlanEvidenceRunDependencies {
-  return { documentClient: harness.db as never, s3: harness.s3, tableName: "state", bucketName: "artifacts", orgId: TEST_ORG, github: { getFileAtCommit }, now, log: () => undefined, ...extra };
+  return { documentClient: harness.db as never, s3: harness.s3, tableName: "state", bucketName: "artifacts", orgId: TEST_ORG, codeHost: githubRouter(getFileAtCommit), now, log: () => undefined, ...extra };
 }
 const pointerOf = (harness: Harness, taskId: string, artifactId: string) => harness.db.get(`DEVTASK#${taskId}`, `PLAN_EVIDENCE#${artifactId}`) as { objectKey: string; sha256: string } | undefined;
 const bundleOf = (harness: Harness, taskId: string, artifactId: string) => JSON.parse(String(harness.s3.objects.get(pointerOf(harness, taskId, artifactId)!.objectKey))) as { excerpts: Array<Record<string, unknown>> };
@@ -320,6 +326,42 @@ describe("the PlanEvidence job", () => {
     const lines: Array<Record<string, unknown>> = [];
     await runPlanEvidenceJob(jobDeps(harness, down, Date.now, { log: (entry) => lines.push(entry) }), { taskId, artifactId: artifact.id });
     expect(lines).toEqual([{ event: "plan_evidence.retry", taskId, artifactId: artifact.id, attempt: 1, reason: "unavailable" }]);
+  });
+});
+
+describe("the code host of each cited repository is the one its record names (P5c)", () => {
+  /** The project's one repository, re-recorded on another host (the record is what the job routes by). */
+  function onHost(harness: Harness, repository: Record<string, unknown>) {
+    const key = projectRevisionKey(TEST_ORG, "payments", 1);
+    const revision = harness.db.get(key.pk, key.sk) as { definition: { repositories: Array<Record<string, unknown>> } };
+    harness.db.set({ ...revision, definition: { ...revision.definition, repositories: [{ ...revision.definition.repositories[0], ...repository }] } });
+  }
+
+  it("reads the cited code from a code host that is not GitHub, at the task's base commit, and never asks GitHub", async () => {
+    const harness = await jobBroker();
+    const { taskId, artifact } = await plannedTask(harness);
+    const model = new FakeHostModel({ url: "https://git.example.test/acme/demo", id: "9", fullName: "acme/demo" });
+    const base = model.commit("main", { "src/charge.ts": FILE });
+    onHost(harness, { url: "https://git.example.test/acme/demo", host: { kind: "fake", ref: "r1" } });
+    harness.db.set({ ...taskRecord(harness, taskId), preparedBase: [{ repositoryId: "demo", baseCommitSha: base }] });
+    const github = vi.fn<GetFile>(async () => { throw new Error("GitHub must not be asked for a repository on another host"); });
+    const codeHost = createPluginRegistry({
+      codeHosts: [githubCodeHost({ getFileAtCommit: github } as never, { credentialRef: "github-app" }), new FakeCodeHost(model)], checkRunners: [], policy: editionPolicy("enterprise"),
+    }).codeHost;
+    expect(await runPlanEvidenceJob(jobDeps(harness, github, Date.now, { codeHost }), { taskId, artifactId: artifact.id })).toBe("attached");
+    expect(github).not.toHaveBeenCalled();
+    expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ claimId: "1", status: "ok", commit: base, lines: ["two", "three"] })]);
+  });
+
+  it("refuses a record that names a host this job has not registered: its places stay unavailable, GitHub is never asked and no retry follows", async () => {
+    const harness = await jobBroker();
+    const { taskId, artifact } = await plannedTask(harness);
+    onHost(harness, { url: "https://git.example.test/acme/demo", host: { kind: "gitfarm" } });
+    const github = vi.fn<GetFile>(async () => FILE);
+    expect(await runPlanEvidenceJob(jobDeps(harness, github), { taskId, artifactId: artifact.id })).toBe("attached");
+    expect(github).not.toHaveBeenCalled();
+    expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ status: "unavailable" })]);
+    expect(rows(harness)).toEqual([]);
   });
 });
 
