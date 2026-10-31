@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): Slack workflow, people and note events.
 
+import { liveWriterRole } from "../../org/live-role.js";
 import type { SlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
@@ -451,6 +452,8 @@ export async function slackTaskAccess(
   const caller = legacyOwner !== undefined && legacyOwner.provider === "slack" && legacyOwner.slackUserId === userId
     ? { ...canonical, developerId: legacyOwner.developerId, name: legacyOwner.name }
     : canonical;
+  // I2: the swapped-in owner is a person too; if they have become an Auditor (or hold a role that is not a writer's) the task is not theirs to steer from Slack.
+  if (caller !== canonical) await liveWriterRole({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName: dependencies.developer.signInTableName }, caller.orgId, caller.developerId);
   const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName,
     developer: dependencies.developer, now: Date.now, tasks }, caller);
   try {

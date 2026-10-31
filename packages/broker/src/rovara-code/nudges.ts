@@ -15,7 +15,6 @@ import {
   CODE_REVIEWERS_MAX,
   INDEX_EXPIRY_ATTRIBUTE,
   MergeTrackingItemSchema,
-  OrgRoleSchema,
   REVIEW_NUDGES_MAX,
   REVIEW_NUDGE_FIRST_HOURS,
   REVIEW_NUDGE_REPEAT_HOURS,
@@ -29,6 +28,7 @@ import {
   type MergeTrackingItem,
   type OrgId,
   type WorkflowSnapshot,
+  isWriterOrgRole,
 } from "@agentx/contracts";
 import { errorName, type TransactItem } from "../agents/table-writes.js";
 import { sessionEventItem } from "../agent-sessions/store.js";
@@ -251,7 +251,7 @@ async function recipientsAmong(deps: NudgeDependencies, orgId: OrgId, githubUser
     // The link must still be the member's own, and the member must still be in the org.
     if (await githubUserOfMember(memberDeps, orgId, developerId) !== githubUserId) continue;
     const member = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(orgId, developerId), ConsistentRead: true }))) as { Item?: Item }).Item;
-    if (member === undefined || !OrgRoleSchema.safeParse(member["role"]).success) continue;
+    if (member === undefined || !isWriterOrgRole(member["role"])) continue;
     found.push({ developerId, githubUserId });
   }
   return found;

@@ -11,3 +11,11 @@ export { OrgIdSchema, type OrgId };
 export const OrgRoleSchema = z.enum(["owner", "admin", "member", "auditor"]);
 
 export type OrgRole = z.infer<typeof OrgRoleSchema>;
+
+/**
+ * The roles that may write. The Auditor reads the audit log and nothing else, so a write path asks for a `WriterOrgRole`, not an `OrgRole`: a value of this type cannot be the
+ * Auditor, and `requireWriterOrgRole` is the one place an unchecked role becomes one. A role this release does not know is not a writer either.
+ */
+export const WriterOrgRoleSchema = OrgRoleSchema.exclude(["auditor"]);
+export type WriterOrgRole = z.infer<typeof WriterOrgRoleSchema>;
+export const isWriterOrgRole = (role: unknown): role is WriterOrgRole => WriterOrgRoleSchema.safeParse(role).success;

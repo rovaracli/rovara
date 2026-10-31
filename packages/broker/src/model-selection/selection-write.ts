@@ -3,7 +3,7 @@ import {z} from "zod";
 import {commit,readRequest} from "../agents/table-writes.js";
 // Shared server-only project selection writer. HTTP adapters supply authenticated identities, never permission flags.
 import {GetCommand,TransactWriteCommand} from "@aws-sdk/lib-dynamodb";
-import {agentRequestKey,INDEX_EXPIRY_ATTRIBUTE,ModelIdentifierSchema,orgMemberKey,OrgRoleSchema,projectAllows,projectSelectionKey,projectRevisionKey,canonicalJson,agentXError,type OrgId} from "@agentx/contracts";
+import {agentRequestKey,INDEX_EXPIRY_ATTRIBUTE,ModelIdentifierSchema,orgMemberKey,OrgRoleSchema,projectAllows,projectSelectionKey,projectRevisionKey,canonicalJson,agentXError,type OrgId, isWriterOrgRole } from "@agentx/contracts";
 import type {ApprovalDependencies} from "../agents/approvals.js";
 import {requireSafeProjectModelSelection} from "./read.js";
 import {loadStageModelSnapshot} from "./snapshot.js";
@@ -22,7 +22,7 @@ export async function writeProjectModelSelection(deps:ApprovalDependencies,input
  const result=await requireSafeProjectModelSelection({now:deps.now,projectFor:async()=>{
   const row=(await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key:orgMemberKey(input.orgId,input.developerId),ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;
   const role=OrgRoleSchema.safeParse(row?.role);
-  if(!role.success||row?.orgId!==input.orgId||row.developerId!==input.developerId)throw agentXError("FORBIDDEN","Your company access changed.");
+  if(!role.success||!isWriterOrgRole(role.data)||row?.orgId!==input.orgId||row.developerId!==input.developerId)throw agentXError("FORBIDDEN","Your company access changed.");
   const projectRole=await deps.projectMembers.roleOf(input.orgId,input.project,{developerId:input.developerId,orgRole:role.data});
   return {name:input.project,canEdit:projectRole!==undefined&&projectAllows(projectRole,"edit_settings")};
  },snapshot:()=>loadStageModelSnapshot({documentClient:deps.documentClient,tableName:deps.tableName,store:deps.store,now:deps.now,routing:deps.modelRouting??{},chatgpt:deps.stageChatgpt},caller,input.project)},caller,input.project,input.model);

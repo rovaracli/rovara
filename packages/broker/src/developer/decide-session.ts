@@ -253,6 +253,11 @@ export interface DecideRequestContext {
   kinds: DecideKinds;
   /** Verifies a bearer token (CLI, MCP or any API client) and names its member and org; throws AUTH_REQUIRED for one that is not valid. */
   authenticateBearer?: (authorization: string) => Promise<{ developerId: string; orgId: OrgId }>;
+  /**
+   * I2: refuses (FORBIDDEN) a person whose company role now is not a writer's (the Auditor, or a role this release does not know), however they came to be named as an approver: a grant or
+   * an ownership left from before they became an Auditor decides nothing. The broker's assembly (`decideRequestContext`) always sets it; a context built without it checks nothing.
+   */
+  requireWriter?: (orgId: OrgId, developerId: string) => Promise<void>;
 }
 export interface DecideRequest { method: string; path: string; headers: Record<string, string | undefined>; body?: string }
 export const DECIDE_NAVIGATION_MESSAGE = "Open this approval from its link.";
@@ -398,6 +403,7 @@ export async function requireDecideSession(context: DecideRequestContext, reques
   const nowSeconds = Math.floor(context.now() / 1000);
   if (session === undefined || session.usedAt !== undefined || session.approvalId !== approvalId
     || session.expiresAt <= nowSeconds || nowSeconds - session.signedInAt > DECIDE_SECONDS) throw reauth();
+  await context.requireWriter?.(session.orgId, session.developerId);
   const authority = (): DecideAuthority => ({
     orgId: session.orgId, developerId: session.developerId, approvalId, proof: decideProofOf(cookie, session),
     finish: () => context.store.deleteSession(cookie),

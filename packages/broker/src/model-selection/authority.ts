@@ -1,6 +1,6 @@
 // Server-only commit fences for a process-model change. No new authority store or writes.
 import {GetCommand} from "@aws-sdk/lib-dynamodb";
-import {canonicalJson,agentXError,projectMemberKey,orgMemberKey,OrgRoleSchema,type OrgId,type OrgRole} from "@agentx/contracts";
+import {canonicalJson,agentXError,projectMemberKey,orgMemberKey,OrgRoleSchema,type OrgId,type OrgRole, isWriterOrgRole } from "@agentx/contracts";
 import {budgetActorChecks} from "../agents/budget-authority.js";
 import {projectAiLifecycleChecks} from "../spend/project-ai-authority.js";
 import type {TransactItem} from "../agents/table-writes.js";
@@ -59,6 +59,6 @@ export function mergeProcessModelAuthorityChecks(groups:readonly (readonly Trans
 export async function projectModelSelectionAuthorityChecks(deps:ApprovalDependencies,input:{orgId:OrgId;project:string;registeredAt:string;signedInId:string;developerId:string}):Promise<TransactItem[]> {
  const row=(await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key:orgMemberKey(input.orgId,input.developerId),ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;
  const role=OrgRoleSchema.safeParse(row?.role);
- if(!role.success||row?.orgId!==input.orgId||row.developerId!==input.developerId)throw modelAuthorityRefused();
+ if(!role.success||!isWriterOrgRole(role.data)||row?.orgId!==input.orgId||row.developerId!==input.developerId)throw modelAuthorityRefused();
  return processModelAuthorityChecks(deps,{...input,role:role.data});
 }

@@ -3,7 +3,7 @@
 // The guarantee is not "every role check remembers the new role". Hundreds of checks name `owner`, `admin` or `member`; almost all are positive lists, which
 // refuse an Auditor by construction, but one `role !== "member"` added later would not. So the route dispatcher asks `requireAuditorRoute` first, and the Auditor
 // reaches nothing but the short list below. Everything else is unreachable for it, whatever the code behind the route does with a role.
-import { agentXError, featureEnabled, requireFeature, type EditionPolicy } from "@agentx/contracts";
+import { agentXError, featureEnabled, isWriterOrgRole, requireFeature, type EditionPolicy, type WriterOrgRole } from "@agentx/contracts";
 
 /** What an Auditor is told, and what the page and API say. Fixed text: it never echoes the path. */
 export const AUDITOR_REFUSED = "The Auditor role can read the audit log and nothing else.";
@@ -53,4 +53,14 @@ export function requireAuditorEdition(policy: EditionPolicy | undefined): void {
 /** Whether the edition may hold an Auditor, without throwing. Unknown is no. */
 export function auditorAllowedByEdition(policy: EditionPolicy | undefined): boolean {
   return policy !== undefined && featureEnabled(policy, "auditorRole");
+}
+
+/**
+ * A caller that may write: its company role is one a writer can hold. Write paths that take a caller from outside the dispatcher (Slack, a background step) ask for this type, so a
+ * caller that is an Auditor does not type-check as one; `requireWriterCaller` is where an unchecked caller becomes one, and it refuses the Auditor and any role it does not know.
+ */
+export type WriterCaller<Caller extends { orgRole: string }> = Omit<Caller, "orgRole"> & { orgRole: WriterOrgRole };
+export function requireWriterCaller<Caller extends { orgRole: string }>(caller: Caller): WriterCaller<Caller> {
+  if (!isWriterOrgRole(caller.orgRole)) throw agentXError("FORBIDDEN", AUDITOR_REFUSED);
+  return caller as WriterCaller<Caller>;
 }

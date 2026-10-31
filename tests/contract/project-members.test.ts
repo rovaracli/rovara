@@ -460,6 +460,16 @@ describe("the target of a role change", () => {
     expect(grantOf(h.db, LENA)).toBeUndefined();
   });
 
+  it("the member list shows an Auditor with a leftover grant as no one (I2 fix round 1)", async () => {
+    const h = await team();
+    seedMembership(h.db, KIT.developerId, { orgId: TEST_ORG, role: "auditor" });
+    grantRole(h.db, KIT, "maintainer");
+    const members = projectMembersOf({ documentClient: h.db, tableName: "state", developer: h.brokerInput.developer as never, now: Date.now });
+    expect((await members.list(TEST_ORG, "payments")).map((row) => row.developerId)).not.toContain(KIT.developerId);
+    seedMembership(h.db, KIT.developerId, { orgId: TEST_ORG, role: "member" });
+    expect((await members.list(TEST_ORG, "payments")).map((row) => row.developerId)).toContain(KIT.developerId);
+  });
+
   it("an Auditor who holds an old grant or channel access still has no project and no role on one (I2)", async () => {
     const h = await team();
     seedMembership(h.db, KIT.developerId, { orgId: TEST_ORG, role: "auditor" });

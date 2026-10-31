@@ -144,6 +144,8 @@ export async function listProjectMembers(deps: ProjectMembersDependencies, orgId
   if (!await projectExists(deps, orgId, project)) return [];
   const rows = await mapLimit(await orgMembers(deps, orgId), async (member): Promise<ProjectMemberRow | undefined> => {
     if (member.role === "owner" || member.role === "admin") return { developerId: member.developerId, role: "maintainer", source: "org_role" };
+    // Only a member holds a project role by grant. An Auditor (or a role this release does not know) is not listed whatever grant it was left with (I2).
+    if (member.role !== "member") return undefined;
     const grant = await readGrant(deps, orgId, member.developerId, project);
     const role = grantRoleOf(grant);
     return role === undefined ? undefined : { developerId: member.developerId, role, source: "grant", grantedBy: grantedByOf(grant) };

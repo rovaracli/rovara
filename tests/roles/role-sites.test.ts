@@ -3,7 +3,9 @@
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import { roleSites, roleSitesIn } from "./scan-role-sites.js";
-import { REVIEWED_ROLE_SITES } from "./role-sites-reviewed.js";
+import { REVIEWED_ROLE_SITES as FIRST_ROUND, REVIEWED_ROLE_SITES_ROUND_1 } from "./role-sites-reviewed.js";
+
+const REVIEWED_ROLE_SITES = [...FIRST_ROUND, ...REVIEWED_ROLE_SITES_ROUND_1];
 
 const REPO = resolve(import.meta.dirname, "..", "..");
 const describeSite = (site: { file: string; line: number; text: string }) => `${site.file}:${String(site.line)}  ${site.text.slice(0, 160)}`;
@@ -32,6 +34,16 @@ describe("role checks that the Auditor could slip through", () => {
     expect(shapes('if (member.role === "admin") go();')).toEqual(["admin-only"]);
     expect(shapes('const r = await roleOf(x) ?? "member";')).toEqual(["default"]);
     expect(shapes('if (a.orgRole !== "owner" && a.orgRole !== "admin" && a.orgRole !== "member") throw x;')).toEqual(["member"]);
+    // The shapes a first version of this scan missed (Opus review of the lane): each is a way to treat a role that is not owner or admin as a member.
+    expect(shapes('const ok = ["member"].includes(caller.orgRole) ? checkGrant() : allowAll();')).toEqual(["member"]);
+    expect(shapes('const MEMBER = "member";')).toEqual(["member"]);
+    expect(shapes('if (caller.orgRole !== `member`) allow();')).toEqual(["member"]);
+    expect(shapes('const { orgRole: r } = caller;')).toEqual(["alias"]);
+    expect(shapes('const check = ({ role: r }) => r !== "member";')).toEqual(["alias"]);
+    expect(shapes('const r = caller.orgRole || "member";')).toEqual(["default"]);
+    expect(shapes('const r = OrgRoleSchema.safeParse(item.role).success;')).toEqual(["schema"]);
+    expect(shapes('if (caller.orgRole.startsWith("mem")) go();')).toEqual(["text"]);
+    expect(shapes('if (/^m/.test(caller.orgRole)) go();')).toEqual(["text"]);
     // The safe shapes: owner/admin lists and owner alone.
     expect(shapes('if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw x;')).toEqual([]);
     expect(shapes('const admin = caller.orgRole === "owner" || caller.orgRole === "admin";')).toEqual([]);

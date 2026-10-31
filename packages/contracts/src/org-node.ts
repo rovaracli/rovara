@@ -334,4 +334,4 @@ export function orgRenameRequestKey(orgId: OrgId, requestId: string): OrgKey {
   return { pk: orgPk(orgId), sk: `RENAME_REQUEST#${requestId}` };
 }
 
-export { OrgIdSchema, type OrgId, OrgRoleSchema, type OrgRole } from "./org.js";
+export { OrgIdSchema, type OrgId, OrgRoleSchema, type OrgRole, WriterOrgRoleSchema, type WriterOrgRole, isWriterOrgRole } from "./org.js";

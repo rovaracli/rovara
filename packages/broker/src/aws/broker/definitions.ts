@@ -3,7 +3,7 @@
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { S3Client } from "@aws-sdk/client-s3";
-import { E2EPolicySchema, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource } from "@agentx/contracts";
+import { E2EPolicySchema, type EditionPolicy, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource } from "@agentx/contracts";
 import { e2ePrivateTransferMaxBytes } from "@agentx/verifier";
 import type { AdminReadDependencies } from "../admin-reads.js";
 import type { AuditExportClientDeps } from "../../audit/export.js";
@@ -192,6 +192,8 @@ export interface CodeBuildRecord {
 
 export interface AwsBrokerDependencies {
   documentClient: DynamoDBDocumentClient;
+  /** Enterprise foundations (E2): the install's edition policy, read once at start. Absent until E2 is wired; see `slackCallerFor` for what Enterprise does with it. */
+  editionPolicy?: EditionPolicy;
   /** The Audit Ledger's outbox (named environments only); absent on a legacy install, where every audit function does nothing. */
   audit?: AuditRuntime;
   /** What reading the Audit Ledger and starting its exports needs (Task 11); absent on a legacy install. The broker builds no export: its own function does. */

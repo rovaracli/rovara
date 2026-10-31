@@ -1,7 +1,7 @@
 // Rovara Code (Plan 6 Task 19): whose approval on GitHub counts toward a merge (Finding 1), and who the requesters of a task are. Rovara's rules govern only its own Merge button: merging
 // on GitHub is governed by the repository's own branch protection. Pure except for the lookups of who is a member, which the callers pass in already read.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, orgMemberKey, type OrgId } from "@agentx/contracts";
+import { isWriterOrgRole, orgMemberKey, type OrgId } from "@agentx/contracts";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type TaskOwnerSource } from "../developer/task-records.js";
 import type { PullRequestReview } from "../github-pull-status.js";
 import { githubUserOfMember, memberForGithubUser, type GithubMemberDependencies } from "./github-members.js";
@@ -107,7 +107,8 @@ export async function linkedAmong(deps: GithubMemberDependencies, orgId: OrgId, 
     const developerId = await memberForGithubUser(deps, orgId, id);
     if (developerId === undefined) continue;
     const member = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(orgId, developerId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
-    if (member.Item !== undefined && OrgRoleSchema.safeParse(member.Item["role"]).success) linked.add(id);
+    // Only a writer counts as the human whose review opens the merge: an Auditor reads the audit log and its approval is no one's (I2).
+    if (member.Item !== undefined && isWriterOrgRole(member.Item["role"])) linked.add(id);
   }
   return linked;
 }

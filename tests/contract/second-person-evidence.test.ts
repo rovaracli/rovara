@@ -41,6 +41,11 @@ describe("live shared approval evidence", () => {
   expect(() => decideSecondPersonApproval(alone)).toThrow("FORBIDDEN");
   expect(decideSecondPersonApproval((await g.read("d".repeat(64))).decisionInput).mode).toBe("second_person");
  });
+ it("a roster row with a role that is not a role makes the evidence unavailable, never an eligible person (fix round 1)", async () => {
+  const f = fixture();
+  f.db.set({ ...orgMemberKey(orgId, "e".repeat(64)), orgId, developerId: "e".repeat(64), role: "garbage", joinedAt: "2026-10-01T00:00:00.000Z" });
+  await expect(f.read()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+ });
  it("permits a sole-owner exception only with complete eligibility and history", async () => {
   const f = fixture();const proof = await f.read();
   expect(decideSecondPersonApproval(proof.decisionInput).mode).toBe("sole_owner_exception");

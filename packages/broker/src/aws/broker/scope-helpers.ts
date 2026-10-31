@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): environment, organisation and GitHub scope helpers, egress decisions, connection stores.
 
+import { liveWriterRole } from "../../org/live-role.js";
 import { AgentXError, agentXError, EgressApproveBodySchema, EgressRejectBodySchema, OrgIdSchema, singleOrgIdForEnv, type EgressDecisionResponse, type EgressOwner, type EgressPendingResponse, type OrgId, auditOperatorId, cloudwatchRoleAccount } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import type { z } from "zod";
@@ -260,6 +261,8 @@ export function decideRequestContext(dependencies: AwsBrokerDependencies, agents
     // `apr_`: write, step and change approvals, over the same dependencies as the agent routes; without them nothing is registered, so every approval is not found.
     kinds: { ...(agents === undefined ? {} : { apr: approvalDecideKind(agents), spr: spendDecideKind(agents) }), ...decide.kinds },
     authenticateBearer: (authorization) => authenticateBearer({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, orgs: orgStoreOf(dependencies) }, authorization),
+    // I2: an Auditor decides nothing, whatever approval still names them.
+    requireWriter: async (orgId, developerId) => { await liveWriterRole({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName: developer.signInTableName }, orgId, developerId); },
   };
 }
 
