@@ -209,6 +209,11 @@ export async function startTaskWorkflowPublicationFromSystem(
   if (attempt > 1 && !ownerRetry) return "STALE";
   const requestId = workflowRequestId("agentx-auto-publish", taskId, expected.workflowRevision, expected.candidateDigest, repository.repositoryId, attempt);
   const approvedPlan = await approvedPlanForPullRequest(deps, workflow);
+  // The catalog guard below needs the project's latest-revision pointer. A catalog row written before the pointer existed
+  // is repaired from the revision history first (CONFIG_INVALID naming the project when that is not possible). A required
+  // E2E task carries the same guard in its current-authority checks, which repair it where they are built. This is before the spec gate: a project whose record is damaged is refused here with the plain sentence,
+  // where the gate (which holds on anything it cannot read) would only answer WAITING, and no spec is started for a project that cannot publish.
+  if (workflow.e2e?.required !== true) await deps.actions.ensureProjectCatalogPointer(deps.orgId, task.project);
   // Meta repo lane D: a project that asked for a spec gets it first. The spec is written and published (this is where that is started), and the code pull request waits for it, HELD, never opened without it
   // unless the owner chose to continue without; a published spec's link goes in the description. A task with no spec target is not affected (one read).
   const spec = await specPublicationGate(deps, task, workflow);
@@ -216,10 +221,6 @@ export async function startTaskWorkflowPublicationFromSystem(
     deps.log?.({ event: "developer.task_publication_held_for_spec", taskId, reason: spec.hold.reason });
     return "WAITING";
   }
-  // The catalog guard below needs the project's latest-revision pointer. A catalog row written before the pointer existed
-  // is repaired from the revision history first (CONFIG_INVALID naming the project when that is not possible). A required
-  // E2E task carries the same guard in its current-authority checks, which repair it where they are built.
-  if (workflow.e2e?.required !== true) await deps.actions.ensureProjectCatalogPointer(deps.orgId, task.project);
   const publication = await workflowPublicationAuthority(deps, task, workflow, approvedPlan, workflow.revision + (ownerRetry ? 1 : 0));
   if (publication === undefined) return "STALE";
   // Rovara Code version 2: the description says what changed, how it was tested and how risky it is, and the risk is recorded with the code it was judged on (in the same write that opens the pull request).

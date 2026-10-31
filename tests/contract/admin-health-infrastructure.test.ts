@@ -234,6 +234,20 @@ describe("the health route's grants (A13)", () => {
       // B34: existing request retention reads and bounded Slack pending approval cleanup retention.
       "packages/broker/src/org/project-slack-browser.ts",
       "packages/broker/src/org/project-slack-proposals.ts",
+      // 2026-10-31, the lanes merged into cloud/next. Each writes rows that are meant to expire, none a durable record, and each was read for that:
+      // Meta repo lane E (context sources): the loaded-knowledge manifest of a run, a source's call and byte counters, the kept quotes and citations of a result, and a source change's history item.
+      "packages/broker/src/developer/loaded-knowledge.ts", "packages/broker/src/context-sources/usage.ts", "packages/broker/src/context-sources/quotes.ts",
+      "packages/broker/src/context-sources/store.ts", "packages/broker/src/context-sources/citations.ts",
+      // Meta repo lane F (intake): the poll's hourly read counter, a ticket waiting (30-day) or started (shorter) item, and the person's intake notices.
+      "packages/broker/src/triggers/poll-intake.ts", "packages/broker/src/intake/store.ts", "packages/broker/src/intake/notices.ts",
+      // Test environment (proof and evidence): a requested change's proposal and prove report, the full-suite follow-up run rows, the nightly slot claims, locks and baseline history.
+      "packages/broker/src/org/test-environment.ts", "packages/broker/src/rovara-code/full-suite-followup.ts", "packages/broker/src/test-env/nightly.ts",
+      // Rovara Code: the used marker of a setup consent; decision cards: the evidence-opened marker and a decided card's record (400 days); live steer: the outbox row of a steer message.
+      "packages/broker/src/rovara-code/setup-consent.ts", "packages/broker/src/decisions/store.ts", "packages/broker/src/agent-sessions/live-steer.ts",
+      // Team record (Enterprise): its own table, with its own TTL on the same attribute name (infra/lib/team-record-table.ts); rows leave the hot table a grace period after `hotExpiresAt` so the archiver can copy them first.
+      "packages/broker/src/team-record/item-head.ts", "packages/broker/src/team-record/retention.ts", "packages/broker/src/team-record/scope-work.ts",
+      "packages/broker/src/team-record/query.ts", "packages/broker/src/team-record/ingest.ts", "packages/broker/src/team-record/store.ts",
+      "packages/contracts/src/team-record.ts", "infra/lib/team-record-table.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

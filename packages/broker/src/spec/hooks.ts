@@ -1,7 +1,7 @@
 // K1 lane D, D2: the broker's spec steps, with the effects they need (the store, starting a run, publishing) passed in. The wiring (developer-tasks/spec-wiring.ts) supplies the real ones; the tests supply
 // fakes. Every state change is conditional on the state's revision; the SPEC_WRITE run's start goes in ONE transaction with its state change, so there is never a run without its state or a state without its run.
 import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { agentXError, defaultSpecTarget, type SpecKind, type SpecTarget } from "@agentx/contracts";
+import { AgentXError, agentXError, defaultSpecTarget, type SpecKind, type SpecTarget } from "@agentx/contracts";
 import { specIsDue } from "./due.js";
 import { buildSpecWriteRequest, type SpecWriteRequest } from "./write-request.js";
 import { specLinkLine } from "./link.js";
@@ -162,6 +162,8 @@ export function createSpecHooks(world: SpecWorld) {
             },
           });
         } catch (error) {
+          // The creator guard (ruling R60) refusing the launch is not a transient start error: the owner is told the removal, not that the spec is being written.
+          if (error instanceof AgentXError && error.code === "TASK_ACCESS_DENIED") throw error;
           world.log("spec.write_not_started", { taskId, error: error instanceof Error ? error.name : "unknown" });
           started = "ERROR";
         }

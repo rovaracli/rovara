@@ -875,7 +875,7 @@ export function codeMilestoneKey(taskId: string, kind: string, n: number): { pk:
 
 // ---- Team record (learning v2). One DynamoDB table, `TeamRecord`, one partition per workspace (the org) and project. A workspace's rows never
 // share a partition with another's, and every global index key starts with the workspace. Source ids are hashed into index keys because a source's
-// own id may hold a "#". The table's TTL attribute is `indexExpiresAt` (INDEX_EXPIRY_ATTRIBUTE).
+// own id may hold a "#". The table's TTL attribute is the same expiry attribute as the State table's (infra/lib/team-record-table.ts).
 
 /** The project segment of a partition for a row that belongs to no project. A project name starts with a letter, so this never collides. */
 export const TEAM_RECORD_NO_PROJECT = "_workspace";
