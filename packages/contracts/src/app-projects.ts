@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { SlackChannelIdSchema, SlackTeamIdSchema } from "./browser-ids.js";
 import { isPublicSuffix } from "./public-suffix.js";
+import { ErrorRefSchema } from "./live-interaction.js";
 
 export const ProjectRoleSchema = z.enum(["maintainer", "contributor", "viewer"]);
 export type ProjectRole = z.infer<typeof ProjectRoleSchema>;
@@ -51,6 +52,8 @@ export const AppProjectSummarySchema = z.object({
     checkedRevision: z.number().int().positive().optional(),
     checkedAt: z.string().optional(),
     failedStep: z.string().optional(),
+    /** Live interaction F1: what "Fix with agent" is about when the setup check failed or is outdated. Fixed codes and ids only. */
+    errorRef: ErrorRefSchema.optional(),
   }),
 });
 export type AppProjectSummary = z.infer<typeof AppProjectSummarySchema>;

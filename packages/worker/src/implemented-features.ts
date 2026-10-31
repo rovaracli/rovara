@@ -46,4 +46,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   // Meta repo lane D: the spec write run (spec-write.ts) .
   "task.specWrite.v1",
   "task.workflowReviewSpec.v1",
+  // Live interaction, Stop & redirect: the owner's instruction that stopped a coding step is taken from the owner and framed in the restarted step's prompt (steer-invocation.ts).
+  "task.ownerRedirect.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

@@ -98,6 +98,24 @@ describe("POST /v1/app/projects/{name}/setup-check: the status", () => {
     expect(setup.failedStep).not.toContain("\n");
   });
 
+  it("carries an ErrorRef (Fix with agent) only while the check is failed or outdated, with fixed codes and no failure text (live interaction F1)", async () => {
+    const h = await harness();
+    expect(await setupOf(h)).not.toHaveProperty("errorRef");
+    const { workspaceId, operationId } = await started(h);
+    expect(await setupOf(h)).not.toHaveProperty("errorRef");
+    await h.finish(workspaceId, operationId, "FAILED", { error: `setup step 0 (npm ci in repo/demo) exited 1\nLast lines:\nnpm ERR! ${PLANTED}` });
+    const failed = await setupOf(h);
+    expect(failed.errorRef).toMatchObject({ kind: "setup_check", code: "SETUP_CHECK_FAILED", subject: { project: NAME }, at: failed.checkedAt });
+    expect(JSON.stringify(failed.errorRef)).not.toContain(PLANTED);
+    expect(JSON.stringify(failed.errorRef)).not.toContain("npm");
+    // The list says the same.
+    const listed = (await h.dev(OMAR, "GET", "/v1/app/projects")).body.projects as Array<{ name: string; setup: { errorRef?: { code: string } } }>;
+    expect(listed.find((project) => project.name === NAME)!.setup.errorRef?.code).toBe("SETUP_CHECK_FAILED");
+    // A new check starts: the failure is no longer shown.
+    await check(h, OMAR);
+    expect(await setupOf(h)).not.toHaveProperty("errorRef");
+  });
+
   it("is failed with a step that starts 'setup: ' and names the command when a setup command fails", async () => {
     const h = await harness();
     const { workspaceId, operationId } = await started(h);

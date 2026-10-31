@@ -13,6 +13,7 @@ import {
   projectPk,
   slackBindingPk,
   type AppProjectSummary,
+  setupCheckErrorRef,
   type AppProjectsResponse,
   type ProjectRole,
   type ChannelInfoResponse,
@@ -277,6 +278,9 @@ export async function appProjectSummary(
   meta: ProjectMetaItem | undefined,
 ): Promise<AppProjectSummary> {
   const { definition } = record;
+  const setup = await setupStateOf(setupCheckDepsOf(deps), meta, definition);
+  // Live interaction F1: what "Fix with agent" is about when the setup check failed or is outdated (fixed codes and the project's name only; the failed step's text is not copied).
+  const setupRef = setupCheckErrorRef({ project: name, status: setup.status, at: setup.checkedAt ?? new Date(deps.now()).toISOString() });
   return {
     name,
     ...(meta?.description === undefined ? {} : { description: meta.description }),
@@ -284,7 +288,7 @@ export async function appProjectSummary(
     latestRevision: definition.revision,
     repositories: definition.repositories.map((repository) => ({ name: repository.name, fullName: repositoryFullName(repository), defaultBranch: repository.defaultBranch })),
     myRole: role,
-    setup: await setupStateOf(setupCheckDepsOf(deps), meta, definition),
+    setup: setupRef === undefined ? setup : { ...setup, errorRef: setupRef },
   };
 }
 

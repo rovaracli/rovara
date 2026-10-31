@@ -13,6 +13,9 @@ import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { drainMemberMerges, drainMemberRemovals, onMemberRemoved, onMembersMerged, resolveMember, type LifecycleDeps } from "../../packages/broker/src/agents/lifecycle.js";
 import { clearOrgSessions, closeOrgSessions, closeStopRequestId, onSessionMemberRemoved, onSessionMembersMerged, stopOrgSessions } from "../../packages/broker/src/agent-sessions/lifecycle.js";
 import "../../packages/broker/src/agent-sessions/index.js";
+import { writeAsk } from "../../packages/broker/src/agent-sessions/ask-store.js";
+import { personLabel } from "../../packages/broker/src/aws/developer-tasks/thread-notes.js";
+import { askByPersonKey, sessionAskKey } from "../../packages/contracts/src/index.js";
 import { sessionLevelOf } from "../../packages/broker/src/agent-sessions/access.js";
 import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
 import { liveSessions } from "../../packages/broker/src/agent-sessions/live.js";
@@ -257,6 +260,20 @@ describe("two members are merged", () => {
     return { w, zedsOwn, takenByZed, followed, bothFollow, arjunOwns, otherOrg };
   };
   const merge = (w: World) => onMembersMerged(w.deps, { orgId: ORG_A, survivorId: ARJUN, duplicateId: ZED });
+
+  it("moves the duplicate's Asks to the survivor, so erasing the survivor finds them (live interaction I7)", async () => {
+    const { w, zedsOwn } = setup();
+    const ask = (askId: string, askedBy: string, answer: string) => writeAsk({ documentClient: w.db, tableName: "state", questionHashKey: "k".repeat(32), erasedPeople: async () => [], isErased: async () => false },
+      { edition: "enterprise", orgId: ORG_A, sessionId: zedsOwn.sessionId, askId, audience: "web", askedBy, question: "q", answer, contextBytes: 1, model: "m", nowMs: T0 });
+    await ask(`ask_${"1".repeat(20)}`, ZED, "ANSWER-OF-ZED");
+    await ask(`ask_${"2".repeat(20)}`, MIA, `${personLabel(ZED)} approved`);
+    await merge(w);
+    await onSessionMembersMerged(w.deps, { orgId: ORG_A, survivorId: ARJUN, duplicateId: ZED });
+    expect(w.get(sessionAskKey(ORG_A, zedsOwn.sessionId as never, `ask_${"1".repeat(20)}`))).toMatchObject({ askedBy: ARJUN });
+    expect(w.get(askByPersonKey(ORG_A, ARJUN, zedsOwn.sessionId as never, `ask_${"1".repeat(20)}`))).toBeDefined();
+    expect(w.get(sessionAskKey(ORG_A, zedsOwn.sessionId as never, `ask_${"2".repeat(20)}`))).toMatchObject({ answer: `${personLabel(ARJUN)} approved` });
+    expect(w.db.find((item) => String(item.pk).includes(`ASKBY#${ZED}`))).toEqual([]);
+  });
 
   it("moves the duplicate's follows to the survivor (the count stays, or drops when the survivor followed already or owns it)", async () => {
     const { w, followed, bothFollow, arjunOwns } = setup();

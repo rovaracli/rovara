@@ -33,6 +33,8 @@ const EXPECTED: Record<EditionFeature, { enterprise: boolean; public: boolean }>
   aiNavigationUncharged: { enterprise: true, public: false },
   privateMcpServers: { enterprise: true, public: false },
   stdioMcpServers: { enterprise: true, public: false },
+  diagnosisSupportEscalation: { enterprise: false, public: true },
+  diagnosisSupportBundle: { enterprise: true, public: false },
 };
 
 describe("edition feature table", () => {
