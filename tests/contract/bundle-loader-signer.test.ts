@@ -1,5 +1,7 @@
 // N2/N3: the KMS signer's request shape and the ECR image loader, both with fakes (no AWS call, no skopeo run).
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BatchGetImageCommand, GetAuthorizationTokenCommand } from "@aws-sdk/client-ecr";
 import { BundleSignatureSchema, sha256OfBytes, verifyBundleSignature } from "@agentx/contracts";
@@ -91,10 +93,37 @@ describe("loading bundle images into the install's ECR", () => {
     expect(h.runs).toHaveLength(3);
     for (const run of h.runs) {
       expect(run.command).toBe("skopeo");
+      // The credential is never on the command line (review M2): skopeo reads it from a private file that is gone afterwards.
+      expect(run.args.join(" ")).not.toContain(PASSWORD);
+      expect(run.args).toContain("--dest-authfile");
+      expect(run.args).not.toContain("--dest-creds");
       expect(run.args).toEqual(expect.arrayContaining(["--all", "--preserve-digests"]));
       expect(run.display).not.toContain(PASSWORD);
       expect(run.args.some((arg) => arg.startsWith("docker://123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-bundle/ent/"))).toBe(true);
     }
+  });
+
+  it("writes the credential file readable by the owner only, and removes it", async () => {
+    const h = await setup(() => false);
+    let seen: { mode: number; text: string; dir: number } | undefined;
+    const spying = { async run(command: string, args: string[], options: { display: string }) {
+      const file = args[args.indexOf("--dest-authfile") + 1]!;
+      if (seen === undefined) seen = { mode: statSync(file).mode & 0o777, text: readFileSync(file, "utf8"), dir: statSync(dirname(file)).mode & 0o777 };
+      authFiles.push(file);
+      return h.runner.run(command, args, options);
+    } };
+    const authFiles: string[] = [];
+    await loadBundleImages({ bundle: h.verified, env: "ent", account: "123456789012", region: "us-east-1", ecr: h.ecr, runner: spying });
+    expect(seen!.mode).toBe(0o600);
+    expect(seen!.dir).toBe(0o700);
+    expect(JSON.parse(seen!.text)).toEqual({ auths: { "123456789012.dkr.ecr.us-east-1.amazonaws.com": { auth: Buffer.from(`AWS:${PASSWORD}`).toString("base64") } } });
+    expect(existsSync(authFiles[0]!)).toBe(false);
+  });
+
+  it("refuses a registry name that only starts like an ECR host", async () => {
+    const h = await setup(() => false, "https://123456789012.dkr.ecr.us-east-1.amazonaws.com.example.net");
+    await expect(loadBundleImages({ bundle: h.verified, env: "ent", account: "123456789012", region: "us-east-1", ecr: h.ecr, runner: h.runner })).rejects.toThrow(/other than this install/);
+    expect(h.runs).toEqual([]);
   });
 
   it("skips an image the registry already holds by digest", async () => {

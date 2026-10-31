@@ -24,6 +24,7 @@ import {
 } from "@agentx/contracts";
 import { createHash } from "node:crypto";
 import { LITELLM_SOURCE_IMAGE, imageDigestOf } from "../../infra/lib/bundle-images.js";
+import { ociArchiveDigests } from "./oci-archive.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -117,6 +118,14 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
     throw new Error("the litellm image is not the digest the templates pin; update infra/lib/bundle-images.ts and the templates together");
   }
   const release = ReleaseManifestSchema.parse(JSON.parse(await readFile(join(releaseDir, "release.json"), "utf8")));
+  // Every image the release names is mirrored (review I6): the install pulls nothing from a public registry at run time.
+  for (const name of ["worker", "slack", "executor"] as const) {
+    const named = release.images[name];
+    if (named === undefined) continue;
+    const bundled = input.images.find((image) => image.name === name);
+    if (bundled === undefined) throw new Error(`the release names a ${name} image (${named}); the bundle must mirror it`);
+    if (bundled.sourceRef !== named) throw new Error(`the ${name} image given is not the one release.json names`);
+  }
   await claimOutDir(out);
   claimed.out = out;
 
@@ -140,6 +149,9 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
   for (const image of [...input.images].sort((a, b) => a.name.localeCompare(b.name))) {
     const file = `images/${image.name}.oci.tar`;
     await input.exportImage(image.sourceRef, join(out, file));
+    // The archive must hold the very digest the signed manifest will promise; a converted manifest has another digest (review I7).
+    const held = await ociArchiveDigests(join(out, file)).catch(() => []);
+    if (!held.includes(imageDigestOf(image.sourceRef))) throw new Error(`the exported archive of image ${image.name} does not hold ${imageDigestOf(image.sourceRef)}`);
     files.push({ file, kind: "image", ...(await sha256OfFile(join(out, file))) });
     images.push({ name: image.name, sourceRef: image.sourceRef, file });
   }
@@ -183,7 +195,7 @@ export async function kmsBundleSigner(input: { client: KmsLike; keyId: string; c
 
 /** skopeo copies every platform of the image, so the archive keeps the digest the templates pin. */
 export const skopeoImageExporter: ImageExporter = async (sourceRef, destFile) => {
-  await execFileAsync("skopeo", ["copy", "--all", `docker://${sourceRef}`, `oci-archive:${destFile}`], { maxBuffer: 16 * 1024 * 1024 });
+  await execFileAsync("skopeo", ["copy", "--all", "--preserve-digests", `docker://${sourceRef}`, `oci-archive:${destFile}`], { maxBuffer: 16 * 1024 * 1024 });
 };
 
 function usage(): string {

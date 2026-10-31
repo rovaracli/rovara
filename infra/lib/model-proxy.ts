@@ -16,7 +16,7 @@ import {
   Stack,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { BUNDLE_IMAGE_NAMES, LITELLM_SOURCE_IMAGE, bundleImageRepositoryArn, bundleImageUri, imageDigestOf } from "./bundle-images.js";
+import { LITELLM_SOURCE_IMAGE, MODEL_PROXY_IMAGE_NAMES, bundleImageRepositoryArn, bundleImageUri, imageDigestOf } from "./bundle-images.js";
 import type { AgentXNaming } from "./naming.js";
 import { enterpriseHttpsEgress } from "./vpc-endpoints.js";
 
@@ -280,7 +280,7 @@ export class ModelProxy extends Construct {
       executionRole.addToPolicy(new iam.PolicyStatement({
         sid: "PullBundledImages",
         actions: ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
-        resources: BUNDLE_IMAGE_NAMES.map((name) => bundleImageRepositoryArn(naming.env ?? "", name)),
+        resources: MODEL_PROXY_IMAGE_NAMES.map((name) => bundleImageRepositoryArn(naming.env ?? "", name)),
       }));
     }
     // Company Bedrock sources: the task role assumes the customer's role in the customer's own account (never ours), and only with an

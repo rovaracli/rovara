@@ -5,6 +5,8 @@ import { BatchGetImageCommand, GetAuthorizationTokenCommand } from "@aws-sdk/cli
 import { BUNDLE_IMAGE_REPOSITORY_PREFIX, agentXError } from "@agentx/contracts";
 import type { CommandRunner } from "../../deploy/cdk-engine.js";
 import type { VerifiedBundle } from "./verify.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 export interface LoadBundleImagesInput {
@@ -25,9 +27,14 @@ export async function loadBundleImages(input: LoadBundleImagesInput): Promise<vo
   if (auth?.authorizationToken === undefined || auth.proxyEndpoint === undefined) throw agentXError("CONFIG_INVALID", "ECR gave no registry credential; no image was loaded");
   const password = Buffer.from(auth.authorizationToken, "base64").toString("utf8").replace(/^AWS:/, "");
   const registry = auth.proxyEndpoint.replace(/^https:\/\//, "");
-  if (!/^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com[a-z.]*$/.test(registry) || !registry.startsWith(`${account}.dkr.ecr.${region}.`)) {
+  if (!/^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?$/.test(registry) || !registry.startsWith(`${account}.dkr.ecr.${region}.`)) {
     throw agentXError("CONFIG_INVALID", "ECR named a registry other than this install's own account and region; no image was loaded");
   }
+  // The credential goes to skopeo in a 0600 file in a 0700 directory, never on its command line where any local user could read it (review M2).
+  const authDir = await mkdtemp(join(tmpdir(), "rovara-registry-auth-"));
+  const authFile = join(authDir, "auth.json");
+  await writeFile(authFile, JSON.stringify({ auths: { [registry]: { auth: auth.authorizationToken } } }), { mode: 0o600 });
+  try {
   for (const image of bundle.manifest.images) {
     const repository = `${BUNDLE_IMAGE_REPOSITORY_PREFIX}/${env}/${image.name}`;
     const digest = digestOf(image.sourceRef);
@@ -44,9 +51,12 @@ export async function loadBundleImages(input: LoadBundleImagesInput): Promise<vo
     };
     if (await present()) continue;
     const target = `docker://${registry}/${repository}:${digest.slice("sha256:".length, "sha256:".length + 32)}`;
-    await runner.run("skopeo", ["copy", "--all", "--preserve-digests", "--dest-creds", `AWS:${password}`, `oci-archive:${join(bundle.dir, image.file)}`, target], {
+    await runner.run("skopeo", ["copy", "--all", "--preserve-digests", "--dest-authfile", authFile, `oci-archive:${join(bundle.dir, image.file)}`, target], {
       cwd: bundle.dir, display: `skopeo copy --all --preserve-digests oci-archive:${image.file} ${target}`, redact: (text) => text.split(password).join("****"), quiet: true,
     });
     if (!(await present())) throw agentXError("CONFIG_INVALID", `after loading, ${repository} does not hold ${digest}; the archive does not carry the image the manifest names`);
+  }
+  } finally {
+    await rm(authDir, { recursive: true, force: true });
   }
 }

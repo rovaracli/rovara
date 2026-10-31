@@ -45,14 +45,17 @@ describe("the model proxy image", () => {
     expect(pull).toBeDefined();
     expect(JSON.stringify(pull.Resource)).toContain("repository/rovara-bundle/ent/litellm");
     expect(JSON.stringify(pull.Resource)).not.toContain("*");
+    expect(JSON.stringify(pull.Resource)).not.toMatch(/worker|slack|executor/);
     expect(pull.Action).toEqual(["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"]);
   });
 
-  it("is created by the access stack: immutable tags, scan on push, kept when the stack goes (the app's retain-except-on-create policy)", () => {
+  it("is created by the access stack for every image the bundle mirrors (LiteLLM, worker, Slack, executor): immutable tags, scan on push, kept when the stack goes", () => {
     const repositories = resourcesOf(enterprise.AgentXAccess!, "AWS::ECR::Repository");
-    expect(repositories).toHaveLength(1);
-    expect(repositories[0]![1].Properties).toMatchObject({ RepositoryName: "rovara-bundle/ent/litellm", ImageTagMutability: "IMMUTABLE", ImageScanningConfiguration: { ScanOnPush: true } });
-    expect((enterprise.AgentXAccess!.toJSON().Resources as Record<string, { DeletionPolicy?: string }>)[repositories[0]![0]]!.DeletionPolicy).toBe("RetainExceptOnCreate");
+    expect(repositories.map(([, repository]) => repository.Properties.RepositoryName).sort()).toEqual(["rovara-bundle/ent/executor", "rovara-bundle/ent/litellm", "rovara-bundle/ent/slack", "rovara-bundle/ent/worker"]);
+    for (const [id, repository] of repositories) {
+      expect(repository.Properties, id).toMatchObject({ ImageTagMutability: "IMMUTABLE", ImageScanningConfiguration: { ScanOnPush: true } });
+      expect((enterprise.AgentXAccess!.toJSON().Resources as Record<string, { DeletionPolicy?: string }>)[id]!.DeletionPolicy).toBe("RetainExceptOnCreate");
+    }
   });
 
   it("is unchanged in Public and for an install with no edition: the pinned public image, no repository, no pull statement", () => {

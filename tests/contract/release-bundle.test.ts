@@ -1,12 +1,12 @@
 // Enterprise foundations, N2: the signed release bundle's builder and manifest. Keys are generated here; none is stored.
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { BundleManifestSchema, BundleSignatureSchema, sha256OfBytes, verifyBundleSignature } from "@agentx/contracts";
 import { LITELLM_SOURCE_IMAGE } from "../../infra/lib/bundle-images.js";
 import { buildBundle } from "../../scripts/release/bundle.js";
-import { IMAGES, builtBundle, fakeExporter, newTestKey, writeRelease, type BuiltBundle } from "../support/bundle-fixture.js";
+import { IMAGES, builtBundle, fakeExporter, newTestKey, ociArchive, writeRelease, type BuiltBundle } from "../support/bundle-fixture.js";
 
 const made: BuiltBundle[] = [];
 afterEach(async () => { await Promise.all(made.splice(0).map((bundle) => bundle.cleanup())); });
@@ -59,6 +59,24 @@ describe("the release bundle", () => {
       const mismatched = { publicKeyPem: newTestKey().publicKeyPem, sign: (message: Buffer) => key.signer.sign(message) };
       await expect(buildBundle({ releaseDir: join(root, "release2"), out: join(root, "out2"), images: IMAGES, exportImage: fakeExporter, signer: mismatched })).rejects.toThrow(/does not verify against its own public key/);
       await expect(readdir(join(root, "out2"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("refuses an exported archive that does not hold the digest the manifest would promise, and a release image that is not mirrored (review I6, I7)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "bundle-refuse-"));
+    try {
+      await writeRelease(join(root, "release"));
+      const key = newTestKey();
+      const base = { releaseDir: join(root, "release"), signer: key.signer, images: IMAGES };
+      // A converted manifest: the archive holds another digest than the source reference.
+      const converting = async (sourceRef: string, destFile: string) => { await mkdir(dirname(destFile), { recursive: true }); await writeFile(destFile, ociArchive(`sha256:${"9".repeat(64)}`)); void sourceRef; };
+      await expect(buildBundle({ ...base, out: join(root, "a"), exportImage: converting })).rejects.toThrow(/does not hold sha256:/);
+      const garbage = async (_ref: string, destFile: string) => { await mkdir(dirname(destFile), { recursive: true }); await writeFile(destFile, "not a tar"); };
+      await expect(buildBundle({ ...base, out: join(root, "b"), exportImage: garbage })).rejects.toThrow(/does not hold sha256:/);
+      await expect(readdir(join(root, "a"))).rejects.toMatchObject({ code: "ENOENT" });
+      // The release names worker and slack images: leaving one out, or giving another, is refused.
+      await expect(buildBundle({ ...base, out: join(root, "c"), exportImage: fakeExporter, images: IMAGES.filter((image) => image.name !== "slack") })).rejects.toThrow(/must mirror it/);
+      await expect(buildBundle({ ...base, out: join(root, "d"), exportImage: fakeExporter, images: [IMAGES[0]!, IMAGES[1]!, { name: "slack", sourceRef: `public.ecr.aws/agentx/agentx-slack@sha256:${"d".repeat(64)}` }] })).rejects.toThrow(/not the one release.json names/);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

@@ -16,7 +16,9 @@ export function imageDigestOf(reference: string): string {
 /** The ECR repository a bundle image is loaded into, by environment and bundle image name. */
 export const bundleImageRepository = (env: string, name: string): string => `${BUNDLE_IMAGE_REPOSITORY_PREFIX}/${env}/${name}`;
 /** The repositories the access stack creates for an Enterprise install: one per image the templates reference. */
-export const BUNDLE_IMAGE_NAMES = [BUNDLE_LITELLM_IMAGE_NAME] as const;
+export const BUNDLE_IMAGE_NAMES = [BUNDLE_LITELLM_IMAGE_NAME, "worker", "slack", "executor"] as const;
+/** The model proxy runs LiteLLM only; its execution role pulls from this repository and no other. */
+export const MODEL_PROXY_IMAGE_NAMES = [BUNDLE_LITELLM_IMAGE_NAME] as const;
 
 /**
  * The install's own ECR reference to a bundle image. The digest is the source image's, which loading from the bundle preserves, so the
