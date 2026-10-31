@@ -41,6 +41,7 @@ import {
   type RepositoryContextFile,
 } from "./repository-context.js";
 import { quotedContextText } from "./context-text.js";
+import { mergeSkills } from "./knowledge/skills.js";
 import { knowledgeExtension } from "./knowledge/extension.js";
 import { loadKnowledgeContext, type KnowledgeSessionInput } from "./knowledge/load.js";
 import { MidRunKnowledge } from "./knowledge/session.js";
@@ -240,7 +241,7 @@ export async function createWorkspacePiSession(
     ...(input.extensionFactories === undefined ? {} : { extensionFactories: input.extensionFactories }),
     ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
     ...(input.agentTools === undefined ? {} : { agentTools: input.agentTools }),
-    ...(input.skills === undefined ? {} : { skills: input.skills }),
+    ...(mergeSkills(input.skills, knowledgeLoad?.skills ?? []) === undefined ? {} : { skills: mergeSkills(input.skills, knowledgeLoad?.skills ?? [])! }),
     ...(input.agentRun === undefined ? {} : { agentRun: input.agentRun }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
@@ -302,7 +303,7 @@ export async function openRegisteredWorkspacePiSession(
     ...(input.extensionFactories === undefined ? {} : { extensionFactories: input.extensionFactories }),
     ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
     ...(input.agentTools === undefined ? {} : { agentTools: input.agentTools }),
-    ...(input.skills === undefined ? {} : { skills: input.skills }),
+    ...(mergeSkills(input.skills, knowledgeLoad.skills) === undefined ? {} : { skills: mergeSkills(input.skills, knowledgeLoad.skills)! }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
   return handle;
@@ -727,7 +728,7 @@ async function loadWorkspaceContextFiles(
   at: "working-tree" | "base-commit" = "working-tree",
   baseCommits: readonly { repositoryId: string; baseCommitSha?: string | undefined }[] = [],
   knowledge: { workflowMode: PiWorkflowMode | undefined; knowledge: SessionKnowledgeOptions | undefined; onLoaded: ((resolved: ResolvedKnowledge) => void) | undefined } = { workflowMode: undefined, knowledge: undefined, onLoaded: undefined },
-): Promise<{ files: RepositoryContextFile[]; session: MidRunKnowledge | undefined }> {
+): Promise<{ files: RepositoryContextFile[]; session: MidRunKnowledge | undefined; skills: AgentSkillFile[] }> {
   const prepared = await readPreparedRepositories(rootPath);
   const repositories = at === "base-commit"
     ? prepared.map((repository) => {
@@ -739,7 +740,7 @@ async function loadWorkspaceContextFiles(
   const stage = requestedStage ?? knowledgeStageOf(knowledge.workflowMode, at);
   const canonicalRoot = await realpath(resolve(rootPath)).catch(() => resolve(rootPath));
   const request: KnowledgeSessionInput = { ...options, at, stage };
-  const { files, diagnostics, notices, resolved, rendering } = await loadKnowledgeContext(rootPath, repositories, request, canonicalRoot);
+  const { files, diagnostics, notices, resolved, rendering, skills } = await loadKnowledgeContext(rootPath, repositories, request, canonicalRoot);
   for (const diagnostic of diagnostics) onDiagnostic?.(diagnostic);
   const session = new MidRunKnowledge({
     stage, initial: resolved, filesInPlay: options.filesInPlay ?? [], rendering, rootPath: canonicalRoot,
@@ -752,7 +753,7 @@ async function loadWorkspaceContextFiles(
   const editNote = ruleFileEditNote(notices);
   const catalog = session.offersTool ? [knowledgeCatalogFile(session.names(), resolved)] : [];
   const loaded = [...(note === undefined ? [] : [note]), ...files, ...catalog, ...(editNote === undefined ? [] : [editNote])];
-  return { files: devcontainerPaths === undefined ? loaded : [...loaded, devcontainerContextFile(devcontainerPaths)], session };
+  return { files: devcontainerPaths === undefined ? loaded : [...loaded, devcontainerContextFile(devcontainerPaths)], session, skills };
 }
 
 /** The list of rules the model can load by name: AgentX's own note, with only names and descriptions (no rule text) until `read_knowledge` is called. */

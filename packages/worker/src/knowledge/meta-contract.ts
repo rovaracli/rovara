@@ -5,6 +5,8 @@
 // is merged yet, so the resolver depends only on this small interface. When Lane A lands, one function, `metaRepoCheckoutOf`, changes:
 // it reads the invocation's `knowledgeCommit` and the prepared meta repository instead of returning nothing. Nothing else in this lane moves.
 
+import type { MetaSkillPin } from "@agentx/contracts";
+
 /** The meta repo as the worker has it: a read-only, sparse checkout and the commit every stage reads it at. */
 export interface MetaRepoCheckout {
   /** The repository's name in the project. */
@@ -21,6 +23,8 @@ export interface MetaRepoCheckout {
     runbooks?: readonly string[];
     keyDocs?: readonly string[];
   };
+  /** Skill digests the broker pinned at task start (optional): a skill whose text does not hash to its pin is left out. */
+  skillPins?: readonly MetaSkillPin[];
 }
 
 /** What the worker knows about the task when it asks for the meta repo. Lane A will add the pinned commit here. */

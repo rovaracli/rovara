@@ -16,6 +16,8 @@ import { renderKnowledgeItems, type RenderRepository } from "./render.js";
 import { resolveKnowledge, type FileInPlay, type KnowledgeSourceEntry, type ResolvedKnowledge } from "./resolve.js";
 import { openBaseCommitSource, openWorkingTreeSource, type KnowledgeFileSource } from "./source.js";
 import type { ReadOptions } from "../trusted-base-objects.js";
+import type { AgentSkillFile } from "../agent-step.js";
+import { loadMetaSkills } from "./skills.js";
 
 export interface KnowledgeSessionInput {
   stage: KnowledgeStage;
@@ -39,6 +41,8 @@ export interface LoadedKnowledgeContext {
   notices: string[];
   resolved: ResolvedKnowledge;
   rendering: RenderRepository[];
+  /** The meta repo's skills for the session, read at the pinned commit. They grant no tools. */
+  skills: AgentSkillFile[];
 }
 
 export const META_REPOSITORY_UNAVAILABLE_MESSAGE = "Rovara can't read the meta repo";
@@ -129,7 +133,19 @@ export async function loadKnowledgeContext(
       ...(input.budgets === undefined ? {} : { budgets: input.budgets }),
     });
     const diagnostics = [...opened.diagnostics, ...resolved.diagnostics];
-    return { files: renderKnowledgeItems(resolved.items, opened.rendering, rootPath), diagnostics, notices: resolved.notices, resolved, rendering: opened.rendering };
+    let skills: AgentSkillFile[] = [];
+    const metaEntry = input.meta === undefined ? undefined : opened.sources.find((entry) => entry.layer === "meta");
+    if (input.meta !== undefined && metaEntry !== undefined) {
+      const found = await loadMetaSkills({
+        source: metaEntry.source, repo: input.meta.name, commit: input.meta.knowledgeCommit,
+        ...(input.meta.knowledge?.skills === undefined ? {} : { directories: input.meta.knowledge.skills }),
+        ...(input.meta.skillPins === undefined ? {} : { pins: input.meta.skillPins }),
+      });
+      skills = found.skills;
+      resolved.skills = found.snapshots;
+      resolved.skippedSkills = found.skipped;
+    }
+    return { skills, files: renderKnowledgeItems(resolved.items, opened.rendering, rootPath), diagnostics, notices: resolved.notices, resolved, rendering: opened.rendering };
   } finally {
     await opened.close();
   }

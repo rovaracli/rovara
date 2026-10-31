@@ -12,6 +12,7 @@
 // The outcome is the items to show the model, a text-free record of everything considered, and fixed-wording notices. Nothing here
 // stores rule text, logs a path, or reads outside the sources it is handed.
 import { createHash } from "node:crypto";
+import type { MetaSkillSnapshot } from "@agentx/contracts";
 import { agentXError } from "@agentx/contracts";
 import { inertContextText, inertLabel } from "../context-text.js";
 import { applyBudget } from "./budget.js";
@@ -37,6 +38,7 @@ import {
 import { createReaderRegistry, type ReaderRegistry } from "./registry.js";
 import { folderOf, type KnowledgeFormatReader } from "./reader.js";
 import { rovaraRulesReader } from "./rovara-rules.js";
+import type { MetaSkillSkip } from "./skills.js";
 import type { DirectoryEntry, KnowledgeFileSource } from "./source.js";
 
 export const COMPANY_RULES_EXCEED_BUDGET_MESSAGE = "Company rules exceed the size budget";
@@ -130,6 +132,10 @@ export interface ResolvedKnowledge {
   notices: string[];
   /** Fixed-wording lines for the worker's log. They never carry a path or any text from a file. */
   diagnostics: string[];
+  /** The meta repo's skills the session was given, by reference (no text). Filled by the loader, which reads skills beside the rules. */
+  skills: MetaSkillSnapshot[];
+  /** Skills found in the meta repo and left out, with a fixed reason. */
+  skippedSkills: MetaSkillSkip[];
   budget: { alwaysOnBytes: number; alwaysOnLimitBytes: number; additionsBytes: number; additionsLimitBytes: number; skipped: number };
 }
 
@@ -501,7 +507,7 @@ export async function resolveKnowledge(input: ResolveKnowledgeInput): Promise<Re
     .filter((item) => !dropped.has(item))
     .toSorted((left, right) => order(left) - order(right) || (left.repo ?? "").localeCompare(right.repo ?? "") || (left.path ?? "").localeCompare(right.path ?? ""));
   return {
-    items, autoCatalog, autoItems, manualItems, pendingMatches, records, notices, diagnostics,
+    items, autoCatalog, autoItems, manualItems, pendingMatches, records, notices, diagnostics, skills: [], skippedSkills: [],
     budget: {
       alwaysOnBytes: fitted.alwaysOn.bytes, alwaysOnLimitBytes: budgets.alwaysOnBytes,
       additionsBytes: fitted.additions.bytes, additionsLimitBytes: budgets.additionsBytes,

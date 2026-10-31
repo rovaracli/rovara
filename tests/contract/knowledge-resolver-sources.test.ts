@@ -259,3 +259,46 @@ describe("sessions use the resolver", () => {
     expect(seen[0]!.records.find((record) => record.path === ".github/instructions/a.instructions.md")).toMatchObject({ reason: "excluded_stage" });
   });
 });
+
+describe("meta repo skills in sessions", () => {
+  it("reach the session through the skills path at the pinned commit, with no tool added", async () => {
+    const root = await workspace();
+    const meta = await repository(root, "repo/service-meta", {
+      "AGENTS.md": "meta agents",
+      ".agents/skills/brazil-build/SKILL.md": "---\nname: brazil-build\ndescription: Build with Brazil\nallowed-tools: Bash\n---\nRun !`brazil-build` then test.\n",
+    });
+    await write(meta.directory, { ".agents/skills/brazil-build/SKILL.md": "---\nname: brazil-build\ndescription: NEWER\n---\nnewer\n" });
+    git(meta.directory, "commit", "--quiet", "-am", "later");
+    const code = await repository(root, "repo/engine", { "AGENTS.md": "engine" });
+    const now = new Date().toISOString();
+    await mkdir(join(root, ".agentx"), { recursive: true });
+    await writeFile(join(root, ".agentx/preparation-manifest.json"), JSON.stringify({
+      schemaVersion: 2, projectName: "p", projectRevision: 1,
+      repositories: [{ name: "engine", path: "repo/engine", defaultBranch: "main", resolvedCommit: code.commit, resolvedAt: now, completedAt: now }],
+      completedSetupSteps: [], readinessResults: [], creationIdentity: "fixture", complete: true, updatedAt: now,
+    }));
+    const inputs: PiSessionInput[] = [];
+    const adapter: PiSessionAdapter = {
+      async create(input) {
+        inputs.push(input);
+        const sessionFile = join(input.sessionDirectory, "s.jsonl");
+        await writeFile(sessionFile, "");
+        return { conversationId: "c", sessionFile, async prompt() {}, async abort() {}, getModel: () => ({ provider: "f", modelId: "f" }), getSessionStats: () => ({}) as never, subscribe: () => () => undefined, dispose() {} };
+      },
+    };
+    const seen: ResolvedKnowledge[] = [];
+    await createWorkspacePiSession({
+      rootPath: root, model: { provider: "f", modelId: "f" }, workflowMode: "REVIEW", contextFilesAt: "base-commit",
+      baseCommits: [{ repositoryId: "engine", baseCommitSha: code.commit }],
+      knowledge: { meta: { name: "service-meta", path: "repo/service-meta", knowledgeCommit: meta.commit } },
+      onKnowledgeLoaded: (resolved) => seen.push(resolved),
+    }, adapter);
+    const skills = inputs[0]!.skills!;
+    expect(skills.map((skill) => skill.name)).toEqual(["brazil-build"]);
+    expect(skills[0]!.content).toContain("Run  then test.");
+    expect(skills[0]!.content).not.toContain("NEWER");
+    expect(skills[0]!.content).not.toContain("allowed-tools");
+    expect(inputs[0]!.agentTools).toBeUndefined();
+    expect(seen[0]!.skills).toEqual([expect.objectContaining({ source: "meta", repo: "service-meta", path: ".agents/skills/brazil-build", commit: meta.commit })]);
+  });
+});
