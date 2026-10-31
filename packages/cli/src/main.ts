@@ -105,6 +105,8 @@ import { registerConfigCommands } from "./config/cli.js";
 import type { ConfigServices } from "./config/commands.js";
 import { registerDoctorCommand } from "./doctor/cli.js";
 import type { DoctorServices } from "./doctor/checks.js";
+import { registerSsoCommands } from "./sso/cli.js";
+import type { SsoBootstrapServices } from "./sso/bootstrap.js";
 import { addSignInOptions, definedEntries, registerSigninCommands, secretSource, signInFlags, type SignInCommandOptions } from "./signin/cli.js";
 import { registerDestroyCommand } from "./destroy/cli.js";
 import type { DestroyDependencies } from "./destroy/run.js";
@@ -171,6 +173,8 @@ export interface CliDependencies {
   deploy?: DeployCliDependencies;
   /** `agentx init` overrides, for tests: never touch AWS, GitHub or Slack. */
   init?: InitCliDependencies;
+  /** `rovara sso` overrides, for tests: never touch AWS. */
+  sso?: Partial<SsoBootstrapServices>;
   /** `agentx signin` overrides, for tests: never touch AWS, Slack or an identity provider. */
   signin?: Partial<SigninServices>;
   /** `agentx config` overrides, for tests: never touch AWS. */
@@ -1199,6 +1203,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, installationId: result.installationId, accountLogin: result.accountLogin, message: result.message }, true) : githubDisconnectText(result));
     });
 
+  registerSsoCommands(program, { ...(dependencies.sso === undefined ? {} : { overrides: dependencies.sso }), parameterStore, stdout: services.stdout, stderr: services.stderr });
   registerSigninCommands(program, {
     ...(dependencies.signin === undefined ? {} : { overrides: dependencies.signin }),
     parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,
