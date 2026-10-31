@@ -90,6 +90,8 @@ export async function openPreprodSession(
       RoleArn: roleArn,
       RoleSessionName: `rovara-${input.taskId.replace(/[^A-Za-z0-9]/gu, "").slice(0, 8) || "task"}`,
       ExternalId: preprodExternalId(input.orgId),
+      // Shows in CloudTrail on every call the session makes: which task it was for.
+      SourceIdentity: `rovara-${input.taskId.replace(/[^A-Za-z0-9]/gu, "").slice(0, 16) || "task"}`,
       DurationSeconds: PREPROD_SESSION_SECONDS,
       Policy: preprodSessionPolicy(endpointArn),
     });
@@ -167,6 +169,8 @@ export function evidenceServices(
   decisions: readonly ModeDecision[],
   fixtureSets: ReadonlyMap<string, Pick<ServiceMockFixtureSet, "revision" | "recordedAt">>,
   unrecordedAnswered: ReadonlyMap<string, number>,
+  /** The task's new mock answers per service (count and the digest the broker pinned them by), listed so no task feeds itself answers silently. */
+  newAnswers: ReadonlyMap<string, { count: number; digest: string }> = new Map(),
 ): EvidenceEnvironment["services"] {
   return decisions.map((decision) => {
     const set = decision.mode === "mocked" ? fixtureSets.get(decision.name) : undefined;
@@ -175,6 +179,7 @@ export function evidenceServices(
       name: decision.name, mode: decision.mode,
       ...(set === undefined ? {} : { fixtureRevision: set.revision, recordedAt: set.recordedAt }),
       ...(decision.mode === "mocked" && synthesized > 0 ? { unrecordedAnswered: synthesized } : {}),
+      ...(decision.mode === "mocked" && (newAnswers.get(decision.name)?.count ?? 0) > 0 ? { newAnswers: newAnswers.get(decision.name)!.count, newAnswersDigest: newAnswers.get(decision.name)!.digest } : {}),
     };
   });
 }

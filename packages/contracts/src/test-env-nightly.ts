@@ -61,7 +61,7 @@ export const NightlyBaselineSchema = z
 export type NightlyBaseline = z.infer<typeof NightlyBaselineSchema>;
 
 /** Why a fire did not start a run (fixed words). */
-export const NIGHTLY_SKIP_REASONS = ["environment_missing", "nightly_off", "branch_changed", "no_merges", "head_unreadable", "still_running", "already_handled", "stale_fire"] as const;
+export const NIGHTLY_SKIP_REASONS = ["environment_missing", "nightly_off", "branch_changed", "no_merges", "head_unreadable", "still_running", "already_handled", "stale_fire", "budget", "ran_recently"] as const;
 export type NightlySkipReason = (typeof NIGHTLY_SKIP_REASONS)[number];
 
 // ---- the coverage map

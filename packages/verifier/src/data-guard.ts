@@ -6,6 +6,7 @@
 //   - phone: an international number with a plus sign, or a formatted North American number (separators required, so a plain 10-digit id is not a phone); the fictional 555-01xx range is synthetic;
 //   - government_id: a US social security number (not the never-issued 000, 666 and 9xx areas), a UK national insurance number, a formatted 12-digit Aadhaar-style number;
 //   - card_number: 13 to 19 digits, spaces or dashes allowed, that pass the Luhn check. The well-known test card numbers pass it too and ARE blocked: a fixture has no need of one;
+//   - secret: anything the product's redactor would change (AWS and other provider keys, bearer tokens, JWTs, private keys, passwords in URLs or pairs);
 //   - prod_host, prod_arn, prod_account: a host, an ARN or an account id on the company's deny list (the same matchers the broker uses at approval).
 // Fail closed: input over `DATA_GUARD_MAX_BYTES` is refused (it throws), a report holds at most 100 findings (more is still `ok: false`), and no regular expression here can backtrack badly.
 import type {
@@ -15,6 +16,7 @@ import {
   prodDenyMatchesAccount,
   prodDenyMatchesArn,
   prodDenyMatchesHost,
+  redactText,
   type DataGuardReport,
   type ServiceMockFixtureSet,
   type TestEnvProdDeny,
@@ -76,6 +78,9 @@ function* matches(pattern: RegExp, text: string): Generator<RegExpExecArray> {
 export function scanText(text: string, deny: TestEnvProdDeny): DataGuardFindingKind[] {
   if (Buffer.byteLength(text, "utf8") > DATA_GUARD_MAX_BYTES) throw new DataGuardInputTooLarge();
   const found = new Set<DataGuardFindingKind>();
+  // A credential (a cloud key, a bearer token or JWT, a private key, a connection string with a password, a `password=` pair): the contracts' redactor is the one list of what a secret looks like, and a text it
+  // would change holds one. A response that echoes a token must never be stored as a fixture, so this blocks like any other finding.
+  if (redactText(text) !== text) found.add("secret");
   // A UUID is digits and letters in a fixed shape; its digit runs are not numbers, so the numeric patterns look at the text without them.
   const numeric = text.replace(UUID, " ");
   for (const match of matches(EMAIL, text)) if (!RESERVED_EMAIL_DOMAIN.test((match[1] ?? "").toLowerCase())) found.add("email");

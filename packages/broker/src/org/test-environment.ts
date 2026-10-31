@@ -38,11 +38,31 @@ import {
 import { auditOccurrence, auditProjectTestEnvChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditDeps, type TransactItem } from "../audit/outbox.js";
+import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies } from "./second-person-evidence.js";
+import { decideSecondPersonApproval } from "./second-person-approval.js";
+
+/** What the second-person check answers: the mode the COMPANY'S RECORDS allow, and the conditions that pin both people's live authority so they commit with the approval. */
+export interface SecondPersonCheck { mode: "second_person" | "sole_owner_exception"; membershipVersion: number; conditions: TransactItem[] }
+export type SecondPersonPort = (scope: { orgId: OrgId; project: string; proposerId: string; approverId: string }) => Promise<SecondPersonCheck>;
 
 export interface TestEnvDeps extends AuditDeps {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now(): number;
+  /**
+   * The server-side second-person check. Required for any less-safe approval (absent: refused). Bind it with `secondPersonFromRecords`: it reads the live roles of both people (an owner or admin, or a project
+   * maintainer), whether the company has a sole owner, and refuses otherwise. The caller's claims about either person are never used.
+   */
+  secondPerson?: SecondPersonPort;
+}
+
+/** The real second-person check over the company's records (the same evidence and decision every other less-safe approval uses). */
+export function secondPersonFromRecords(deps: SecondPersonEvidenceDependencies): SecondPersonPort {
+  return async (scope) => {
+    const { decisionInput, conditions } = await readSecondPersonApprovalEvidence(deps, scope);
+    const decision = decideSecondPersonApproval(decisionInput);
+    return { mode: decision.mode, membershipVersion: decision.membershipVersion, conditions };
+  };
 }
 
 type Item = Record<string, unknown>;
@@ -184,10 +204,12 @@ export async function readApprovedTestEnvironment(deps: TestEnvDeps, orgId: OrgI
 }
 
 export interface LessSafeApproval {
-  mode: "second_person" | "sole_owner_exception";
+  /** The second person, as the confirmation page authenticated them. Their role and whether a sole-owner exception applies are read from the company's records, not from here. */
   approverId: string;
-  /** When the approver last signed in (ms). Older than `TEST_ENV_FRESH_SIGN_IN_MS` is refused. */
+  /** When they last signed in (ms). Older than `TEST_ENV_FRESH_SIGN_IN_MS` is refused. */
   signedInAtMs: number;
+  /** The sha256 of their confirmation session's key, recorded in the audit event as the proof. */
+  sessionRef: string;
 }
 
 export interface ApprovedTestEnvironment { revision: number; digest: string; lessSafe: TestEnvChangeFlag[]; replayed: boolean }
@@ -199,7 +221,7 @@ export interface ApprovedTestEnvironment { revision: number; digest: string; les
  */
 export async function approveTestEnvironment(
   deps: TestEnvDeps,
-  input: { orgId: OrgId; project: string; digest: string; expectedRevision: number; requestId: string; approvedBy: string; role: ProjectRole | undefined; approval?: LessSafeApproval },
+  input: { orgId: OrgId; project: string; digest: string; expectedRevision: number; requestId: string; approvedBy: string; role: ProjectRole | undefined; approval?: LessSafeApproval; approvedBySignedInAtMs?: number },
 ): Promise<ApprovedTestEnvironment> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can approve a test environment");
   if (!DIGEST.test(input.digest) || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || input.requestId.length < 8 || input.requestId.length > 100) throw invalid("the approval is not well formed");
@@ -220,27 +242,44 @@ export async function approveTestEnvironment(
 
   const lessSafe = changeFlags(current?.environment, body);
   const now = deps.now();
+  const fresh = (at: number | undefined): boolean => at !== undefined && Number.isFinite(at) && at <= now && now - at <= TEST_ENV_FRESH_SIGN_IN_MS;
+  // A high-risk card (anything less safe, or a tier above the sandbox) needs the person pressing approve to have signed in just now too.
+  if ((lessSafe.length > 0 || testEnvApprovalRisk(body) === "high") && !fresh(input.approvedBySignedInAtMs)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
+  let second: { check: SecondPersonCheck; approverId: string; signedInAtMs: number; sessionRef: string } | undefined;
   if (lessSafe.length > 0) {
     const approval = input.approval;
-    if (approval === undefined) throw agentXError("FORBIDDEN", "this change needs a second person to approve it on the confirmation page");
-    const otherPerson = approval.approverId !== input.approvedBy;
-    if (approval.mode === "second_person" ? !otherPerson : otherPerson) throw agentXError("FORBIDDEN", "this change needs a second person to approve it on the confirmation page");
-    if (!Number.isFinite(approval.signedInAtMs) || approval.signedInAtMs > now || now - approval.signedInAtMs > TEST_ENV_FRESH_SIGN_IN_MS) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
+    const needSecond = () => agentXError("FORBIDDEN", "this change needs a second person to approve it on the confirmation page");
+    if (approval === undefined || deps.secondPerson === undefined || !/^[0-9a-f]{64}$/u.test(approval.sessionRef)) throw needSecond();
+    if (!fresh(approval.signedInAtMs)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
+    // Both people's live authority and the sole-owner exception come from the company's records. The same person is accepted only when the records say the company has exactly one eligible owner.
+    let check: SecondPersonCheck;
+    try {
+      check = await deps.secondPerson({ orgId: input.orgId, project: input.project, proposerId: input.approvedBy, approverId: approval.approverId });
+    } catch {
+      throw needSecond();
+    }
+    const samePerson = approval.approverId === input.approvedBy;
+    if (check.mode === "second_person" ? samePerson : !samePerson) throw needSecond();
+    second = { check, approverId: approval.approverId, signedInAtMs: approval.signedInAtMs, sessionRef: approval.sessionRef };
   }
 
   const revision = (current?.revision ?? 0) + 1;
   const approvedAt = new Date(now).toISOString();
   const event = await tryAuditEvent(deps, () => auditProjectTestEnvChanged({
     orgId: input.orgId, actor: { kind: "member", id: input.approvedBy }, occurredAt: approvedAt, occurrence: input.requestId, projectName: input.project, revision, tier: body.tier, lessSafeCount: lessSafe.length,
+    // Who the second person was and how they proved it: related ids and the fresh sign-in proof (their session, hashed).
+    ...(second === undefined ? {} : { related: [second.approverId], proof: { kind: "fresh_sign_in" as const, method: "email_code" as const, authTime: new Date(second.signedInAtMs).toISOString(), sessionRef: second.sessionRef } }),
   }));
   const items: TransactItem[] = [
-    { ConditionCheck: { TableName: deps.tableName, Key: projectMetaKey(input.orgId, input.project), ConditionExpression: "attribute_exists(pk) AND #status = :active", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":active": "active" } } },
+    // The project is active. (With a second person, the evidence's own snapshot of the project record, status included, does this: two actions on one item cannot share a transaction.)
+    ...(second === undefined ? [{ ConditionCheck: { TableName: deps.tableName, Key: projectMetaKey(input.orgId, input.project), ConditionExpression: "attribute_exists(pk) AND #status = :active", ExpressionAttributeNames: { "#status": "status" }, ExpressionAttributeValues: { ":active": "active" } } }] : []),
     {
       Put: {
         TableName: deps.tableName,
         Item: {
           ...revisionKey(input.orgId, input.project, revision), entityType: "TEST_ENV_REVISION", orgId: input.orgId, project: input.project, revision, approvedAt, approvedBy: input.approvedBy,
           digest: input.digest, requestId: input.requestId, lessSafe, environment: body,
+          ...(second === undefined ? {} : { secondApprover: { id: second.approverId, mode: second.check.mode, signedInAt: new Date(second.signedInAtMs).toISOString(), membershipVersion: second.check.membershipVersion } }),
         },
         ConditionExpression: "attribute_not_exists(pk)",
       },
@@ -248,6 +287,8 @@ export async function approveTestEnvironment(
     current === undefined
       ? { Put: { TableName: deps.tableName, Item: { ...latestKey(input.orgId, input.project), entityType: "TEST_ENV_LATEST", orgId: input.orgId, project: input.project, revision, digest: input.digest }, ConditionExpression: "attribute_not_exists(pk)" } }
       : { Update: { TableName: deps.tableName, Key: latestKey(input.orgId, input.project), UpdateExpression: "SET #revision = :next, #digest = :digest", ConditionExpression: "#revision = :current", ExpressionAttributeNames: { "#revision": "revision", "#digest": "digest" }, ExpressionAttributeValues: { ":next": revision, ":current": current.revision, ":digest": input.digest } } },
+    // Both people's live authority, pinned to the moment of commit.
+    ...(second === undefined ? [] : second.check.conditions),
     ...(event === undefined ? [] : auditPending(deps, event)),
   ];
   try {

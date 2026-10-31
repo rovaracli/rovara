@@ -21,15 +21,39 @@ export function prodDenyIsEmpty(deny: TestEnvProdDeny): boolean {
   return deny.accountIds.length === 0 && deny.hosts.length === 0 && deny.arnPrefixes.length === 0;
 }
 
-/** Whether a host is on the list. An empty or malformed host is treated as a match: when in doubt, it is production. */
+// ONE matcher for the whole product (the schema, the broker's store, pre-prod access, the data guard):
+//   hosts: lower-cased, trailing dots removed, then compared with the entry as an anchored glob where `*` is any run of host characters. `*.prod.example.com` therefore covers every subdomain but not the bare
+//          domain (list both to cover both). A host that is empty or not plain host characters is treated as production (when in doubt, it is).
+//   ARNs:  an entry is a PREFIX, case-insensitive, where `*` is any run of characters (`arn:aws:sagemaker:*:111122223333:endpoint/*`). A wildcard can only widen what is denied, so a mistake errs on the side of refusing.
+//   An ARN is also production when its account field is a listed account.
+const escapeRegExp = (text: string): string => text.replace(/[.+?^${}()|[\]\\]/gu, "\\$&");
+
+/** A host as it is compared: lower case, no trailing dots. Undefined when it is not plain host characters. */
+export function normalizeDenyHost(host: string): string | undefined {
+  const name = host.trim().toLowerCase().replace(/\.+$/u, "");
+  return name !== "" && /^[a-z0-9.-]+$/u.test(name) ? name : undefined;
+}
+
+/** The host part of a URL (userinfo, port, path and trailing dot dropped), or undefined when the text is not a URL with a host. */
+export function hostOfUrl(url: string): string | undefined {
+  try {
+    return normalizeDenyHost(new URL(url).hostname);
+  } catch {
+    return undefined;
+  }
+}
+
+function hostPattern(entry: string): RegExp | undefined {
+  const pattern = entry.trim().toLowerCase().replace(/\.+$/u, "");
+  if (pattern === "" || !/^[a-z0-9.*-]+$/u.test(pattern)) return undefined;
+  return new RegExp(`^${pattern.split("*").map(escapeRegExp).join("[a-z0-9.-]*")}$`, "u");
+}
+
+/** Whether a host is on the list. An empty or malformed host counts as a match. */
 export function prodDenyMatchesHost(deny: TestEnvProdDeny, host: string): boolean {
-  const name = host.trim().toLowerCase().replace(/\.$/u, "");
-  if (name === "" || !/^[a-z0-9.-]+$/u.test(name)) return true;
-  return deny.hosts.some((entry) => {
-    const pattern = entry.trim().toLowerCase().replace(/\.$/u, "");
-    if (pattern.startsWith("*.")) return name.endsWith(pattern.slice(1)) && name.length > pattern.length - 1;
-    return name === pattern;
-  });
+  const name = normalizeDenyHost(host);
+  if (name === undefined) return true;
+  return deny.hosts.some((entry) => hostPattern(entry)?.test(name) === true);
 }
 
 export function prodDenyMatchesAccount(deny: TestEnvProdDeny, accountId: string): boolean {
@@ -43,28 +67,41 @@ export function arnAccountId(arn: string): string | undefined {
   return parts[0] === "arn" && parts.length >= 6 && account !== undefined && /^\d{12}$/u.test(account) ? account : undefined;
 }
 
+function arnPrefixPattern(prefix: string): RegExp {
+  return new RegExp(`^${prefix.split("*").map(escapeRegExp).join(".*")}`, "iu");
+}
+
 export function prodDenyMatchesArn(deny: TestEnvProdDeny, arn: string): "prod_arn" | "prod_account" | undefined {
-  if (deny.arnPrefixes.some((prefix) => arn.startsWith(prefix))) return "prod_arn";
+  if (deny.arnPrefixes.some((prefix) => arnPrefixPattern(prefix).test(arn))) return "prod_arn";
   const account = arnAccountId(arn);
   return account !== undefined && prodDenyMatchesAccount(deny, account) ? "prod_account" : undefined;
 }
 
-function hostOfUrl(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return "";
+/**
+ * A Cognito user pool carries no account in its id, so it is checked as the ARN it would have under each account the deny list knows (the listed accounts, and the account of each ARN entry) and under none: the
+ * region-wide and account-wide entries (`arn:aws:cognito-idp:us-east-1:111122223333:`, `arn:aws:cognito-idp:*:*:userpool/`) all apply.
+ */
+export function prodDenyMatchesPool(deny: TestEnvProdDeny, region: string, poolId: string): boolean {
+  const accounts = new Set<string>(["", ...deny.accountIds]);
+  for (const prefix of deny.arnPrefixes) {
+    const account = prefix.split(":")[4];
+    if (account !== undefined && /^\d{12}$/u.test(account)) accounts.add(account);
   }
+  for (const account of accounts) {
+    const arn = `arn:aws:cognito-idp:${region}:${account}:userpool/${poolId}`;
+    if (deny.arnPrefixes.some((prefix) => arnPrefixPattern(prefix).test(arn))) return true;
+  }
+  return false;
 }
 
 /** Every address, ARN and account the environment would reach for real, with the field it is in. The sandbox's own mocks and local seeds are not here. */
-function reachedRemotes(env: TestEnvironmentBody): Array<{ field: string; host?: string; arn?: string; pool?: string }> {
-  const remotes: Array<{ field: string; host?: string; arn?: string; pool?: string }> = [];
+function reachedRemotes(env: TestEnvironmentBody): Array<{ field: string; host?: string; arn?: string; pool?: string; region?: string }> {
+  const remotes: Array<{ field: string; host?: string; arn?: string; pool?: string; region?: string }> = [];
   env.services.forEach((service, index) => {
     const preprod = service.preprod;
     if (preprod === undefined) return;
     const base = `services[${String(index)}].preprod`;
-    if (preprod.url !== undefined) remotes.push({ field: `${base}.url`, host: hostOfUrl(preprod.url) });
+    if (preprod.url !== undefined) remotes.push({ field: `${base}.url`, host: hostOfUrl(preprod.url) ?? "" });
     if (preprod.endpointArn !== undefined) remotes.push({ field: `${base}.endpointArn`, arn: preprod.endpointArn });
     if (preprod.roleArn !== undefined) remotes.push({ field: `${base}.roleArn`, arn: preprod.roleArn });
   });
@@ -72,15 +109,15 @@ function reachedRemotes(env: TestEnvironmentBody): Array<{ field: string; host?:
     const base = `accounts[${String(index)}]`;
     if (account.provisioner === "cognito_test_pool") remotes.push({ field: `${base}.roleArn`, arn: account.roleArn });
     if (account.provisioner === "http_hook") {
-      remotes.push({ field: `${base}.createUrl`, host: hostOfUrl(account.createUrl) }, { field: `${base}.deleteUrl`, host: hostOfUrl(account.deleteUrl) });
+      remotes.push({ field: `${base}.createUrl`, host: hostOfUrl(account.createUrl) ?? "" }, { field: `${base}.deleteUrl`, host: hostOfUrl(account.deleteUrl) ?? "" });
     }
   });
   env.accounts.forEach((account, index) => {
     // A pool id carries no account, so a pool is production when the deny list names its resource (`...:userpool/<id>`) in an ARN prefix.
-    if (account.provisioner === "cognito_test_pool") remotes.push({ field: `accounts[${String(index)}].userPoolId`, arn: `arn:aws:cognito-idp:${account.region}::userpool/${account.userPoolId}`, pool: account.userPoolId });
+    if (account.provisioner === "cognito_test_pool") remotes.push({ field: `accounts[${String(index)}].userPoolId`, pool: account.userPoolId, region: account.region });
   });
   if (env.preview !== undefined) remotes.push({ field: "preview.deployRoleArn", arn: env.preview.deployRoleArn });
-  if (env.shared !== undefined) remotes.push({ field: "shared.baseUrl", host: hostOfUrl(env.shared.baseUrl) });
+  if (env.shared !== undefined) remotes.push({ field: "shared.baseUrl", host: hostOfUrl(env.shared.baseUrl) ?? "" });
   return remotes;
 }
 
@@ -99,7 +136,7 @@ export function testEnvProdDenyViolations(env: TestEnvironmentBody, alsoDeny?: T
     if (remote.host !== undefined && lists.some((deny) => prodDenyMatchesHost(deny, remote.host as string))) found.push({ kind: "prod_host", field: remote.field });
     if (remote.pool !== undefined) {
       const pool = remote.pool;
-      if (lists.some((deny) => deny.arnPrefixes.some((prefix) => prefix.includes(`userpool/${pool}`) || prefix.endsWith(`:userpool/`) || prefix.endsWith(`:userpool/*`)))) found.push({ kind: "prod_arn", field: remote.field });
+      if (lists.some((deny) => prodDenyMatchesPool(deny, remote.region ?? "", pool))) found.push({ kind: "prod_arn", field: remote.field });
       continue;
     }
     if (remote.arn !== undefined) {

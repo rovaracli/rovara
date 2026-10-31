@@ -40,7 +40,6 @@ export function buildEnvironmentDraft(detection: Detection, input: { repositoryI
   setup.forEach((item, index) => valueSources.push({ field: `repos[0].setupCommands[${String(index)}]`, source: sourceOf(item.source) }));
   checks.forEach((item, index) => valueSources.push({ field: `repos[0].checks[${String(index)}]`, source: sourceOf(item.source) }));
   detection.fullSuiteOn.forEach((item, index) => { if (index < fullSuiteOn.length) valueSources.push({ field: `selection.fullSuiteOn[${String(index)}]`, source: sourceOf(item.source) }); });
-  const tested = checks.some((item) => item.value.kind === "test");
   const environment = TestEnvironmentBodySchema.safeParse({
     tier: "sandbox",
     repos: [{
@@ -50,7 +49,8 @@ export function buildEnvironmentDraft(detection: Detection, input: { repositoryI
     }],
     roundBudgetMin: 30,
     selection: { method: checks.some((item) => item.value.coveragePath !== undefined) ? "coverage_map" : "full", alwaysRun: checks.filter((item) => item.value.kind === "smoke").map((item) => item.value.id), fullSuiteOn },
-    nightly: { enabled: tested, cronUtc: "0 6 * * *", branch: input.nightlyBranch ?? "main" },
+    // OFF by default: a nightly run is a full run of the suite, paid for by the project, so a person turns it on (a less-safe change, second person).
+    nightly: { enabled: false, cronUtc: "0 6 * * *", branch: input.nightlyBranch ?? "main" },
     services: [],
     data: { seeds: [], generator: "faker_seeded", seed: 1 },
     accounts: [],

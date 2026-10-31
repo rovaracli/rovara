@@ -10,13 +10,14 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
-  ServiceMockAdditionSetSchema,
   SERVICE_MOCK_NO_RECORDING_MESSAGE,
   SERVICE_MOCK_UNMATCHED_STATUS,
   type ServiceMockEntry,
   type ServiceMockFault,
   type ServiceMockUsage,
+  type TestEnvProdDeny,
 } from "@agentx/contracts";
+import { verifyAdditionSet } from "./additions.js";
 import { createSyntheticGenerator } from "../data-guard.js";
 import { FixtureSetRefused, MOCK_BODY_MAX_BYTES, hashOfRequest, indexEntries, loadFixtureSet, sagemakerEndpointOfPath } from "./fixture-set.js";
 import { schemaAccepts, synthesizeFromSchema } from "./schema.js";
@@ -31,6 +32,9 @@ export interface ServiceMockOptions {
   port?: number;
   /** The task's new answers (owner decision Q9), served only when the pinned set has no recording. They must extend exactly this set (`baseFixtureDigest`). */
   additions?: unknown;
+  /** The digest of the additions the BROKER pinned, and the production deny list the additions are scanned against. Both are required with `additions`: an unpinned set is never served. */
+  expectedAdditionsDigest?: string;
+  deny?: TestEnvProdDeny;
   /** Wait for the recorded latency before answering (off by default: a mock should be quick). */
   replayLatency?: boolean;
   controlToken?: string;
@@ -73,9 +77,9 @@ export async function startServiceMock(options: ServiceMockOptions): Promise<Run
   const entries = indexEntries(set);
   const additions = new Map<string, ServiceMockEntry>();
   if (options.additions !== undefined) {
-    const added = ServiceMockAdditionSetSchema.safeParse(options.additions);
-    if (!added.success || added.data.baseFixtureDigest !== options.expectedDigest) throw new FixtureSetRefused("unreadable");
-    for (const addition of added.data.additions) if (!entries.has(addition.entry.requestHash)) additions.set(addition.entry.requestHash, addition.entry);
+    if (options.expectedAdditionsDigest === undefined || options.deny === undefined) throw new FixtureSetRefused("additions_unpinned");
+    const verified = verifyAdditionSet(set, options.additions, options.expectedAdditionsDigest, options.deny);
+    for (const addition of verified.additions) if (!entries.has(addition.entry.requestHash)) additions.set(addition.entry.requestHash, addition.entry);
   }
   const controlToken = options.controlToken ?? randomBytes(24).toString("hex");
   const armed = new Map<string, number>();
@@ -175,10 +179,11 @@ export async function startServiceMock(options: ServiceMockOptions): Promise<Run
       const contentType = String(request.headers["content-type"] ?? "");
       const pathAndQuery = `${url.pathname}${url.search}`;
       const endpoint = set.service.kind === "sagemaker_runtime" ? sagemakerEndpointOfPath(url.pathname) : undefined;
-      const fault = takeFault();
-      if (fault !== undefined) return sendFault(fault, request, response);
       // A SageMaker Runtime request for another endpoint, or any other path, is a request this mock has no recording for.
       const addressed = set.service.kind !== "sagemaker_runtime" || endpoint === set.service.target;
+      // An armed fault is for the service's own calls: a stray request does not use it up.
+      const fault = addressed ? takeFault() : undefined;
+      if (fault !== undefined) return sendFault(fault, request, response);
       const hash = addressed ? hashOfRequest(set, { method: request.method ?? "GET", pathAndQuery, contentType, body }) : "";
       const base = addressed ? entries.get(hash) : undefined;
       const added = addressed && base === undefined ? additions.get(hash) : undefined;

@@ -20,7 +20,6 @@ import {
   type ProjectCommand,
   type TestEnvironmentBody,
 } from "@agentx/contracts";
-import { isTestPath } from "./test-paths.js";
 
 type EvidenceSelection = z.infer<typeof EvidenceSelectionSchema>;
 
@@ -84,6 +83,15 @@ export function globRegExp(glob: string): RegExp {
   return new RegExp(`^${out}$`, "u");
 }
 
+/**
+ * What always runs the whole suite, whatever the approved environment lists (a floor an empty `fullSuiteOn` cannot remove): a test configuration or helper at the root of any test tree, dependency lockfiles and
+ * manifests, project and build configuration, and CI.
+ */
+export const BUILTIN_FULL_SUITE_ON: readonly string[] = [
+  "conftest.py", "**/conftest.py", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini", "pytest.ini", "poetry.lock", "uv.lock", "Pipfile.lock", "requirements*.txt", "**/requirements*.txt",
+  "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", ".github/**", ".gitlab-ci.yml", "Makefile",
+];
+
 const matchesAny = (path: string, globs: readonly string[]): boolean => globs.some((glob) => globRegExp(glob).test(path));
 /** `conftest.py` in the glob list means any directory's, as a maintainer writes it; a glob with a slash is a path from the root. */
 const globMatches = (path: string, glob: string): boolean => globRegExp(glob).test(path) || (!glob.includes("/") && globRegExp(glob).test(posix.basename(path)));
@@ -126,10 +134,15 @@ export function selectTests(input: SelectionInput): SelectionResult {
   if (config.method === "full") return full({ method: "full", selected: input.inventory.length, total: input.inventory.length });
   if (check.selectArgs === undefined || check.selectArgs.length === 0) return fellBack(input, "no_template");
   const paths = pathsOf(input.changes);
-  if (paths.some((path) => config.fullSuiteOn.some((glob) => globMatches(path, glob)))) return fellBack(input, "full_suite_on_path");
+  if (paths.some((path) => [...BUILTIN_FULL_SUITE_ON, ...config.fullSuiteOn].some((glob) => globMatches(path, glob)))) return fellBack(input, "full_suite_on_path");
 
   const inventory = new Set(input.inventory);
-  const changedSources = paths.filter((path) => !isTestPath(path));
+  // A test FILE is one that defines tests of this check. Any other changed file, even under tests/ (a helper, a factory, a JSON fixture), can change what many tests do: it is a SOURCE, and a source the method
+  // does not know widens the selection to the full suite. A test-named file in a test directory that is not this check's (another check's tests, or one that collects nothing) has nothing here to run and is ignored.
+  const inventoryFiles = new Set(input.inventory.map(testFileOf));
+  const testDirs = ["test", "tests", "__tests__", "spec", "e2e"];
+  const looksLikeTest = (path: string): boolean => path.split("/").slice(0, -1).some((part) => testDirs.includes(part)) && /(?:^|\/)test_[^/]+\.py$|_test\.[^./]+$|\.(?:test|spec)\.[^./]+$|_spec\.[^./]+$/u.test(path);
+  const changedSources = paths.filter((path) => !inventoryFiles.has(path) && !looksLikeTest(path));
   const selected = new Set<string>();
   let mapAgeHours: number | undefined;
 
@@ -159,12 +172,18 @@ export function selectTests(input: SelectionInput): SelectionResult {
     }
   }
 
+  const fromMethod = new Set(selected);
   // Always added: tests in new or changed test files, and the ones that failed in the last nightly.
-  const changedTestFiles = new Set(input.changes.filter((change) => change.status !== "deleted").map((change) => change.path).filter(isTestPath));
+  const changedTestFiles = new Set(input.changes.filter((change) => change.status !== "deleted").map((change) => change.path).filter((path) => inventoryFiles.has(path)));
   for (const id of input.inventory) if (changedTestFiles.has(testFileOf(id))) selected.add(id);
   for (const id of input.lastNightlyFailures ?? []) selected.add(id);
 
-  const tests = [...selected].filter((id) => inventory.has(id)).sort();
+  const known = [...selected].filter((id) => inventory.has(id));
+  // Map or declared ids that are not in the inventory (a renamed test, a map from another layout) are not trusted: most of them missing means the map does not describe this code.
+  if (fromMethod.size > 0 && [...fromMethod].filter((id) => inventory.has(id)).length * 2 < fromMethod.size) return fellBack(input, "map_stale", mapAgeHours);
+  const tests = known.sort();
+  // Sources changed and nothing selected: no test is known to cover the change, which is not the same as nothing being affected.
+  if (changedSources.length > 0 && tests.length === 0) return fellBack(input, "unknown_file", mapAgeHours);
   if (!tests.every(safeTestId) || tests.length > SELECTION_ARGS_MAX_TESTS || tests.reduce((sum, id) => sum + Buffer.byteLength(id) + 1, 0) > SELECTION_ARGS_MAX_BYTES || tests.length > SELECTION_OVER_FRACTION * input.inventory.length) {
     return fellBack(input, "over_selected", mapAgeHours);
   }

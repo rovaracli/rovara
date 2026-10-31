@@ -16,7 +16,17 @@ import { inertLine } from "./inert-text.js";
 type Send = { send(command: unknown): Promise<unknown> };
 type EvidenceSelection = z.infer<typeof EvidenceSelectionSchema>;
 
-export interface FollowupDeps { documentClient: Send; tableName: string; now(): number }
+export interface FollowupDeps {
+  documentClient: Send;
+  tableName: string;
+  now(): number;
+  /**
+   * Charges the follow-up to the project's budget (owner Q10; the broker binds it to `admitWork` with the project as payer, shown as "full-suite follow-up"). Throws the scope's own error when a budget has no room.
+   * Nothing is queued without it.
+   */
+  admit(input: { orgId: OrgId; project: string; taskId: string; purpose: "full_suite_followup" }): Promise<void>;
+}
+const BUDGET_CODES: ReadonlySet<string> = new Set(["ORG_BUDGET_EXCEEDED", "BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "CHAIN_BUDGET_EXCEEDED", "CHAIN_BUDGET_REQUIRED", "TEST_ALLOWANCE_USED", "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED"]);
 
 export const FOLLOWUP_DAILY_CAP = 20;
 /** A follow-up that has not reported in this long is over: the full suite does not take longer than this. */
@@ -55,7 +65,7 @@ export function needsFullSuiteFollowup(input: { selection: Pick<EvidenceSelectio
   return input.testChecks.some((check) => check.after === "not_run" || check.after === "timed_out" || check.after === "unknown");
 }
 
-export type QueueOutcome = { queued: true; replayed: boolean } | { queued: false; reason: "daily_cap" };
+export type QueueOutcome = { queued: true; replayed: boolean } | { queued: false; reason: "daily_cap" | "budget" };
 
 /** Queues the follow-up for a commit, idempotently. A newer commit takes the task's pointer, so an older follow-up's result is refused. Bounded by the project's daily cap. */
 export async function queueFullSuiteFollowup(deps: FollowupDeps, input: { orgId: OrgId; project: string; taskId: string; candidateDigest: string; headSha: string }): Promise<QueueOutcome> {
@@ -67,6 +77,13 @@ export async function queueFullSuiteFollowup(deps: FollowupDeps, input: { orgId:
     // Same task and commit: the same follow-up (also after it finished: it is not run twice).
     await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...latestKey(input.orgId, input.project, input.taskId), entityType: "FULLRUN_LATEST", digest: input.candidateDigest, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + TTL_MS) / 1000) } }));
     return { queued: true, replayed: true };
+  }
+  try {
+    await deps.admit({ orgId: input.orgId, project: input.project, taskId: input.taskId, purpose: "full_suite_followup" });
+  } catch (error) {
+    const code = (error as { code?: unknown } | undefined)?.code;
+    if (typeof code === "string" && BUDGET_CODES.has(code)) return { queued: false, reason: "budget" };
+    throw error;
   }
   try {
     await deps.documentClient.send(new TransactWriteCommand({
@@ -129,7 +146,7 @@ export const markFollowupRunning = (deps: FollowupDeps, input: { orgId: OrgId; p
 export async function recordFollowupResult(deps: FollowupDeps, input: { orgId: OrgId; project: string; taskId: string; candidateDigest: string; result: FollowupResult }): Promise<boolean> {
   const { passed, failed, total, flaky } = input.result;
   const counts = [passed, failed, total, flaky];
-  if (counts.some((count) => !Number.isSafeInteger(count) || count < 0) || total !== passed + failed || flaky > total || !Number.isFinite(Date.parse(input.result.finishedAt))) throw agentXError("CONFIG_INVALID", "the full run's counts do not add up");
+  if (counts.some((count) => !Number.isSafeInteger(count) || count < 0) || total !== passed + failed || total === 0 || flaky > total || !Number.isFinite(Date.parse(input.result.finishedAt))) throw agentXError("CONFIG_INVALID", "the full run's counts do not add up");
   return transition(deps, input, ["queued", "running"], { state: failed === 0 ? "passed" : "failed", result: input.result, finishedAtMs: deps.now() });
 }
 
@@ -152,7 +169,10 @@ export async function readFollowup(deps: FollowupDeps, input: { orgId: OrgId; pr
 
 /** The pull request's line for the follow-up, counts and fixed words only. Undefined when there is nothing to say (no follow-up was needed). */
 export function followupLine(followup: Followup | undefined, queued: QueueOutcome | undefined): string | undefined {
-  if (followup === undefined) return queued?.queued === false ? "Full suite: not run on this commit (the project's daily limit of full runs was reached)." : undefined;
+  if (followup === undefined) {
+    if (queued?.queued !== false) return undefined;
+    return queued.reason === "budget" ? "Full suite: not run on this commit (the project's AI and compute budget has no room for it)." : "Full suite: not run on this commit (the project's daily limit of full runs was reached).";
+  }
   const number = (count: number) => count.toLocaleString("en-US");
   switch (followup.state) {
     case "queued": return "Full suite: pending. A full run on this commit is queued, and this section updates when it finishes.";

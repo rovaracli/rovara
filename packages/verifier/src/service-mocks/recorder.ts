@@ -66,7 +66,8 @@ export async function recordFixtureSet(input: {
     } finally {
       clearTimeout(timer);
     }
-    if (response.status >= 500) return { ok: false, reason: "preprod_error" };
+    // A server error, or a refusal (bad credentials, throttling, timeout), is the role or the service failing, not the service's answer: it is never recorded.
+    if (response.status >= 500 || [401, 403, 407, 408, 429].includes(response.status)) return { ok: false, reason: "preprod_error" };
     if (bytes(response.body) > SERVICE_MOCK_BODY_MAX_BYTES) return { ok: false, reason: "response_too_large" };
     entries.set(requestHash, {
       requestHash,

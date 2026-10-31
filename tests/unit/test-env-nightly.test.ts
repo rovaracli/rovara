@@ -1,6 +1,6 @@
 // Proof and test environment E6: the nightly full baseline (schedule, fire decisions, recording a result, what the baseline feeds).
 import { describe, expect, it } from "vitest";
-import { CoverageMapSchema, NightlyBaselineSchema, TestEnvironmentBodySchema, projectMetaKey, type CoverageMapData, type TestEnvironmentBody } from "@agentx/contracts";
+import { agentXError, CoverageMapSchema, NightlyBaselineSchema, TestEnvironmentBodySchema, projectMetaKey, type CoverageMapData, type TestEnvironmentBody } from "@agentx/contracts";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport } from "../../packages/broker/src/org/test-environment.js";
 import {
   NIGHTLY_FIRE_MAX_AGE_MS, alreadyFailingTests, coverageMapDigest, deleteNightlySchedule, handleNightlyFire, lastNightlyFailures, mapAgeDays, nightlyExpression, nightlyScheduleName, nightlySlotId,
@@ -34,20 +34,24 @@ async function harness(nightly: Partial<TestEnvironmentBody["nightly"]> = {}) {
   const heads: { value: string | undefined; throws: boolean } = { value: HEAD1, throws: false };
   const started: Array<Record<string, unknown>> = [];
   const startFails = { value: false };
+  const admitted: Array<Record<string, unknown>> = [];
+  const admitError: { value: Error | undefined } = { value: undefined };
   const deps: NightlyDeps = {
     documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => clock.now, audit: audit.audit,
+    secondPerson: () => Promise.resolve({ mode: "second_person" as const, membershipVersion: 1, conditions: [] }),
     runs: {
+      admit: (input) => { admitted.push(input); return admitError.value === undefined ? Promise.resolve() : Promise.reject(admitError.value); },
       headOf: () => (heads.throws ? Promise.reject(new Error("github down")) : Promise.resolve(heads.value)),
       startRun: (input) => { if (startFails.value) return Promise.reject(new Error("no capacity")); started.push(input); return Promise.resolve(); },
     },
   };
   const proposal = await proposeTestEnvironment(deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: body(nightly) });
   await recordTestEnvProveReport(deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: proposal.digest, steps: [{ step: "smoke", status: "passed", durationMs: 1 }], services: [], finishedAt: "2026-11-05T00:00:00.000Z" } });
-  await approveTestEnvironment(deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-nightly-1", approvedBy: "dev_a", role: "maintainer" });
+  await approveTestEnvironment(deps, { orgId: ORG, project: PROJECT, digest: proposal.digest, expectedRevision: 0, requestId: "request-nightly-1", approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: T0, approval: { approverId: "dev_b", signedInAtMs: T0, sessionRef: "5".repeat(64) } });
   const maps = new Map<string, unknown>();
   const store: MapStore = { put: (_o, _p, map) => { const digest = coverageMapDigest(map); maps.set(digest, map); return Promise.resolve(digest); }, get: (_o, _p, digest) => Promise.resolve(maps.get(digest)) };
   const fire = (scheduledAt = SCHEDULED) => ({ source: "agentx.test-env-nightly", orgId: ORG, project: PROJECT, scheduledAt });
-  return { db, deps, clock, heads, started, startFails, maps, store, fire };
+  return { db, deps, clock, heads, started, startFails, admitted, admitError, maps, store, fire };
 }
 
 const map = (builtAt = new Date(T0).toISOString()): CoverageMapData => ({ builtAt, files: { "src/match.py": ["tests/test_a.py::t1"], "src/rank.py": ["tests/test_b.py::t2"] } });
@@ -106,7 +110,7 @@ describe("a fire", () => {
     const h = await harness();
     const first = await handleNightlyFire(h.deps, h.fire());
     expect(first).toEqual({ outcome: "started", slotId: nightlySlotId(ORG, PROJECT, SCHEDULED) });
-    expect(h.started).toEqual([{ orgId: ORG, project: PROJECT, branch: "main", headSha: HEAD1, envRevision: 1, slotId: nightlySlotId(ORG, PROJECT, SCHEDULED) }]);
+    expect(h.started).toEqual([{ orgId: ORG, project: PROJECT, branch: "main", headSha: HEAD1, envRevision: 1, slotId: nightlySlotId(ORG, PROJECT, SCHEDULED), payer: { kind: "project", project: PROJECT }, source: "nightly_baseline" }]);
     expect(await handleNightlyFire(h.deps, h.fire())).toEqual({ outcome: "skipped", reason: "already_handled" });
     expect(h.started).toHaveLength(1);
   });
@@ -144,8 +148,50 @@ describe("a fire", () => {
     await handleNightlyFire(h.deps, h.fire());
     h.clock.now += 3_600_000;
     expect(await handleNightlyFire(h.deps, h.fire(new Date(h.clock.now - 1_000).toISOString()))).toEqual({ outcome: "skipped", reason: "still_running" });
-    h.clock.now += 6 * 3_600_000;
+    h.clock.now += 29 * 3_600_000;
     expect((await handleNightlyFire(h.deps, h.fire(new Date(h.clock.now - 1_000).toISOString()))).outcome).toBe("started");
+  });
+  it("charges the night to the project before anything is claimed, as 'nightly baseline'", async () => {
+    const h = await harness();
+    await handleNightlyFire(h.deps, h.fire());
+    expect(h.admitted).toEqual([{ orgId: ORG, project: PROJECT, purpose: "nightly_baseline" }]);
+  });
+  it("is skipped, not retried and not started, when the project's budget has no room; it starts when there is room again", async () => {
+    const h = await harness();
+    h.admitError.value = agentXError("PROJECT_BUDGET_EXCEEDED", "The partner-service project's monthly AI budget is used up.");
+    expect(await handleNightlyFire(h.deps, h.fire())).toEqual({ outcome: "skipped", reason: "budget" });
+    expect(h.started).toHaveLength(0);
+    expect(h.db.find((item) => String(item.sk).startsWith("TESTENV#NIGHTLY#"))).toHaveLength(0);
+    h.admitError.value = undefined;
+    expect((await handleNightlyFire(h.deps, h.fire())).outcome).toBe("started");
+  });
+  it("a fault that is not a budget refusal is thrown for the scheduler to retry, with nothing claimed", async () => {
+    const h = await harness();
+    h.admitError.value = new Error("ledger unavailable");
+    await expect(handleNightlyFire(h.deps, h.fire())).rejects.toThrow("ledger unavailable");
+    expect(h.db.find((item) => String(item.sk).startsWith("TESTENV#NIGHTLY#"))).toHaveLength(0);
+  });
+  it("starts at most one run per project per day, however often the cron fires and however often the head moves", async () => {
+    const h = await harness({ cronUtc: "* * * * *" });
+    const first = await handleNightlyFire(h.deps, h.fire());
+    if (first.outcome !== "started") throw new Error("not started");
+    const data = result(first.slotId);
+    await recordNightlyResult(h.deps, h.store, { orgId: ORG, project: PROJECT, result: data.result, coverageMap: data.coverageMap });
+    h.heads.value = HEAD2;
+    for (let minute = 1; minute <= 5; minute += 1) {
+      h.clock.now = T0 + minute * 60_000;
+      expect(await handleNightlyFire(h.deps, h.fire(new Date(h.clock.now - 1_000).toISOString()))).toEqual({ outcome: "skipped", reason: "ran_recently" });
+    }
+    expect(h.started).toHaveLength(1);
+    h.clock.now = T0 + 21 * 3_600_000;
+    expect((await handleNightlyFire(h.deps, h.fire(new Date(h.clock.now - 1_000).toISOString()))).outcome).toBe("started");
+  });
+  it("the day's claim is made in the database, so two fires that raced past the other checks start one run", async () => {
+    const h = await harness();
+    h.db.set({ pk: `ORG#${ORG}#PROJECT#${PROJECT}`, sk: `TESTENV#NIGHTLY#DAY#${new Date(T0).toISOString().slice(0, 10)}`, slotId: "f".repeat(64) });
+    expect(await handleNightlyFire(h.deps, h.fire())).toEqual({ outcome: "skipped", reason: "ran_recently" });
+    expect(h.started).toHaveLength(0);
+    expect(h.db.get({ pk: `ORG#${ORG}#PROJECT#${PROJECT}`, sk: "TESTENV#NIGHTLY#ACTIVE" })).toBeUndefined();
   });
   it("throws, and lets the scheduler retry the slot, when the run cannot be started", async () => {
     const h = await harness();

@@ -1,7 +1,7 @@
 // Proof and test environment E5: affected-test selection (coverage map, import graph, declared, full), every fallback to the full suite, the safe command line, and the per-project round budget.
 import { describe, expect, it } from "vitest";
 import { TestEnvironmentBodySchema, type TestEnvironmentBody } from "@agentx/contracts";
-import { SELECTION_MAP_MAX_AGE_HOURS, buildImportGraph, checkRoundBudgetMs, checkTimeLimitMs, commandWithSelection, globRegExp, planSelections, selectTests, type CoverageMap, type SelectionInput } from "../../packages/worker/src/verification/selection.js";
+import { BUILTIN_FULL_SUITE_ON, SELECTION_MAP_MAX_AGE_HOURS, buildImportGraph, checkRoundBudgetMs, checkTimeLimitMs, commandWithSelection, globRegExp, planSelections, selectTests, type CoverageMap, type SelectionInput } from "../../packages/worker/src/verification/selection.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
 const hoursAgo = (hours: number) => new Date(NOW.getTime() - hours * 3_600_000).toISOString();
@@ -33,6 +33,51 @@ describe("coverage map selection", () => {
     if (result.mode === "full") expect(result.selection.fallbackReason).toBe("unknown_file");
     expect(selectTests(input({ changes: [{ path: "src/rank.py", oldPath: "src/old_rank.py", status: "renamed" }], coverageMap: map({ files: { "src/rank.py": ["tests/test_m3.py::test_a"], "src/old_rank.py": ["tests/test_m4.py::test_a"] } }) })))
       .toMatchObject({ mode: "selected", tests: ["tests/test_m3.py::test_a", "tests/test_m4.py::test_a"] });
+  });
+});
+
+describe("test-support files and thin maps (review I9, M11)", () => {
+  const reason = (over: Partial<SelectionInput>) => {
+    const result = selectTests(input(over));
+    return result.mode === "full" ? result.selection.fallbackReason : result.mode;
+  };
+  it("a changed helper, factory or JSON fixture under tests/ is a source, not a test file: the map does not know it, so the full suite runs", () => {
+    for (const path of ["tests/helpers.py", "tests/factories/partner.py", "tests/fixtures/partners.json", "tests/support/db.ts"]) {
+      expect(reason({ changes: [{ path, status: "modified" }] }), path).toBe("unknown_file");
+    }
+  });
+  it("a helper the map or the import graph knows selects the tests that reach it", () => {
+    expect(selectTests(input({ changes: [{ path: "tests/helpers.py", status: "modified" }], coverageMap: map({ files: { "tests/helpers.py": ["tests/test_m4.py::test_a"] } }) }))).toMatchObject({ mode: "selected", tests: ["tests/test_m4.py::test_a"] });
+    const graph = buildImportGraph([{ path: "tests/helpers.py", text: "" }, { path: "tests/test_m5.py", text: "from tests.helpers import x\n" }]);
+    expect(selectTests(input({ config: { method: "import_graph", alwaysRun: [], fullSuiteOn: [] }, coverageMap: undefined, importGraph: graph, changes: [{ path: "tests/helpers.py", status: "modified" }], inventory: ["tests/test_m5.py::t", ...INVENTORY.slice(10)] }))).toMatchObject({ mode: "selected", tests: ["tests/test_m5.py::t"] });
+  });
+  it("a changed test file that defines tests of this check is a test file: it adds its tests and is not an unknown source", () => {
+    expect(selectTests(input({ changes: [{ path: "tests/test_m9.py", status: "modified" }] }))).toMatchObject({ mode: "selected", tests: ["tests/test_m9.py::test_a"] });
+  });
+  it("a test-named file that is not this check's (another check's tests) or a deleted or renamed-away test is ignored, not a reason to run everything", () => {
+    expect(selectTests(input({ changes: [{ path: "src/match.py", status: "modified" }, { path: "tests/integration/test_other.py", status: "modified" }] })).mode).toBe("selected");
+    expect(selectTests(input({ changes: [{ path: "src/match.py", status: "modified" }, { path: "tests/test_gone.py", status: "deleted" }, { path: "tests/test_new_name.py", oldPath: "tests/test_old_name.py", status: "renamed" }] })).mode).toBe("selected");
+  });
+  it("a source named like a test outside a test directory is still a source", () => {
+    expect(reason({ changes: [{ path: "src/test_utils.py", status: "modified" }] })).toBe("unknown_file");
+  });
+  it("sources changed and nothing selected: the full suite, never 'selected' with no tests", () => {
+    expect(reason({ coverageMap: map({ files: { "src/match.py": [] } }) })).toBe("unknown_file");
+  });
+  it("a map whose ids are mostly not in the inventory does not describe this code", () => {
+    const stale = map({ files: { "src/match.py": ["old/test_a.py::t1", "old/test_b.py::t2", "tests/test_m1.py::test_a"] } });
+    expect(reason({ coverageMap: stale })).toBe("map_stale");
+    const mostlyThere = map({ files: { "src/match.py": ["old/test_a.py::t1", "tests/test_m1.py::test_a", "tests/test_m2.py::test_a"] } });
+    expect(selectTests(input({ coverageMap: mostlyThere }))).toMatchObject({ mode: "selected", tests: ["tests/test_m1.py::test_a", "tests/test_m2.py::test_a"] });
+  });
+  it("a nightly failure that is gone from the inventory does not make the map look stale", () => {
+    expect(selectTests(input({ lastNightlyFailures: ["tests/removed.py::x"] }))).toMatchObject({ mode: "selected", tests: ["tests/test_m1.py::test_a", "tests/test_m2.py::test_a"] });
+  });
+  it("an approved empty fullSuiteOn cannot turn the floor off: lockfiles, project files, conftest and CI always run everything", () => {
+    for (const path of ["poetry.lock", "pyproject.toml", "package.json", "requirements-dev.txt", "tests/unit/conftest.py", "conftest.py", ".github/workflows/ci.yml", "Makefile"]) {
+      expect(reason({ config: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] }, changes: [{ path, status: "modified" }] }), path).toBe("full_suite_on_path");
+    }
+    expect(BUILTIN_FULL_SUITE_ON).toContain("pyproject.toml");
   });
 });
 

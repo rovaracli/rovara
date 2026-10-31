@@ -30,7 +30,7 @@ describe("the session", () => {
     const { port, calls } = aws();
     const { credentials, expiresAtMs } = await open(port);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ RoleArn: ROLE, DurationSeconds: 3_600, RoleSessionName: "rovara-task1234", ExternalId: preprodExternalId(ORG) });
+    expect(calls[0]).toMatchObject({ SourceIdentity: "rovara-task1234abcd9", RoleArn: ROLE, DurationSeconds: 3_600, RoleSessionName: "rovara-task1234", ExternalId: preprodExternalId(ORG) });
     expect(JSON.parse(calls[0]!["Policy"] as string)).toEqual({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: ["sagemaker:InvokeEndpoint"], Resource: ARN }] });
     expect(PREPROD_SESSION_SECONDS).toBe(3_600);
     expect(credentials.accessKeyId).toBe("ASIAEXAMPLE");
@@ -117,5 +117,13 @@ describe("modes", () => {
     const entries = evidenceServices(decisions, new Map([["a-preprod", { revision: 9, recordedAt: "2026-10-01T00:00:00.000Z" }], ["b-auto", { revision: 2, recordedAt: "2026-11-02T00:00:00.000Z" }]]), new Map([["b-auto", 3], ["a-preprod", 4]]));
     expect(entries).toEqual([{ name: "a-preprod", mode: "preprod" }, { name: "b-auto", mode: "mocked", fixtureRevision: 2, recordedAt: "2026-11-02T00:00:00.000Z", unrecordedAnswered: 3 }]);
     expect(EvidenceEnvironmentSchema.safeParse({ tier: "sandbox", envRevision: 1, services: entries, data: "synthetic", accounts: [] }).success).toBe(true);
+  });
+  it("lists the task's new mock answers with the digest the broker pinned them by (owner Q9), for a mocked service only", () => {
+    const decisions = [{ name: "a-preprod", mode: "preprod" as const, reason: "configured_preprod" as const }, { name: "b-auto", mode: "mocked" as const, reason: "probe_failed_fell_back" as const }];
+    const additions = new Map([["a-preprod", { count: 2, digest: sha("d") }], ["b-auto", { count: 3, digest: sha("e") }]]);
+    const entries = evidenceServices(decisions, new Map(), new Map(), additions);
+    expect(entries).toEqual([{ name: "a-preprod", mode: "preprod" }, { name: "b-auto", mode: "mocked", newAnswers: 3, newAnswersDigest: sha("e") }]);
+    expect(EvidenceEnvironmentSchema.safeParse({ tier: "sandbox", envRevision: 1, services: entries, data: "synthetic", accounts: [] }).success).toBe(true);
+    expect(evidenceServices(decisions, new Map(), new Map())[1]).toEqual({ name: "b-auto", mode: "mocked" });
   });
 });

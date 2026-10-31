@@ -15,6 +15,7 @@ import {
   type ProjectCommand,
   type TestEnvProveReport,
   type TestEnvironmentBody,
+  testEnvDigest,
 } from "@agentx/contracts";
 
 type Step = (typeof TEST_ENV_PROVE_STEPS)[number];
@@ -60,6 +61,8 @@ interface StepResult { status: "passed" | "failed" | "skipped"; failure?: Failur
 
 export async function proveEnvironment(ports: ProvePorts, input: ProveInput): Promise<TestEnvProveReport> {
   const env = input.environment;
+  // The report is bound to the digest of the environment that was actually proved, recomputed here: a caller cannot label one environment's run with another's digest.
+  if (testEnvDigest(env) !== input.proposalDigest) throw new RangeError("the proposal digest is not the environment's digest");
   const results = new Map<Step, StepResult>();
   const modes = new Map<string, "preprod" | "mocked">();
   let fullSuite: TestEnvProveReport["fullSuite"];

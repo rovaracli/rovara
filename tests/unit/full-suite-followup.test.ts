@@ -1,5 +1,6 @@
 // Proof and test environment E7: the "full suite pending" follow-up (state, bounds, the pull request's line, the merge card's rule).
 import { describe, expect, it } from "vitest";
+import { agentXError } from "@agentx/contracts";
 import {
   FOLLOWUP_DAILY_CAP, FOLLOWUP_MAX_RUN_MS, followupLine, fullSuiteMergeGate, markFollowupRunning, needsFullSuiteFollowup, queueFullSuiteFollowup, readFollowup, recordFollowupResult, type FollowupDeps,
 } from "../../packages/broker/src/rovara-code/full-suite-followup.js";
@@ -15,11 +16,13 @@ const T0 = Date.UTC(2026, 10, 5, 10, 0, 0);
 function setup() {
   const db = new FakeDynamoDb();
   const clock = { now: T0 };
-  const deps: FollowupDeps = { documentClient: db, tableName: "state", now: () => clock.now };
+  const admitted: Array<Record<string, unknown>> = [];
+  const admitError: { value: Error | undefined } = { value: undefined };
+  const deps: FollowupDeps = { documentClient: db, tableName: "state", now: () => clock.now, admit: (input) => { admitted.push(input); return admitError.value === undefined ? Promise.resolve() : Promise.reject(admitError.value); } };
   const id = (digest = D1) => ({ orgId: ORG, project: PROJECT, taskId: "task-1", candidateDigest: digest });
   const queue = (digest = D1, head = H1, taskId = "task-1") => queueFullSuiteFollowup(deps, { orgId: ORG, project: PROJECT, taskId, candidateDigest: digest, headSha: head });
   const result = { passed: 1_238, failed: 2, total: 1_240, flaky: 2, finishedAt: "2026-11-05T11:00:00.000Z" };
-  return { db, clock, deps, id, queue, result };
+  return { db, clock, deps, id, queue, result, admitted, admitError };
 }
 
 describe("when a follow-up is needed", () => {
@@ -47,6 +50,25 @@ describe("queueing", () => {
     expect(await h.queue()).toEqual({ queued: true, replayed: true });
     expect((await readFollowup(h.deps, h.id()))?.state).toBe("failed");
     expect(h.db.find((item) => String(item.sk).startsWith("FULLRUN#"))).toHaveLength(1);
+  });
+  it("charges the follow-up to the project's budget; a full budget queues nothing and the line says so; a fault is thrown", async () => {
+    const h = setup();
+    await h.queue();
+    expect(h.admitted).toEqual([{ orgId: ORG, project: PROJECT, taskId: "task-1", purpose: "full_suite_followup" }]);
+    h.admitError.value = agentXError("PROJECT_BUDGET_EXCEEDED", "used up");
+    const refused = await h.queue(D2, H2, "task-2");
+    expect(refused).toEqual({ queued: false, reason: "budget" });
+    expect(await readFollowup(h.deps, { ...h.id(D2), taskId: "task-2" })).toBeUndefined();
+    expect(followupLine(undefined, refused)).toContain("budget has no room");
+    h.admitError.value = new Error("ledger down");
+    await expect(h.queue(D2, H2, "task-3")).rejects.toThrow("ledger down");
+    expect(h.db.find((item) => String(item.sk).includes("task-3"))).toHaveLength(0);
+  });
+  it("a replay of a follow-up already queued is not charged again", async () => {
+    const h = setup();
+    await h.queue();
+    await h.queue();
+    expect(h.admitted).toHaveLength(1);
   });
   it("refuses what is not a task, a commit and a digest", async () => {
     const h = setup();
@@ -96,7 +118,7 @@ describe("results", () => {
     const h = setup();
     expect(await recordFollowupResult(h.deps, { ...h.id(), result: h.result })).toBe(false);
     await h.queue();
-    for (const bad of [{ ...h.result, total: 5 }, { ...h.result, passed: -1, total: 1 }, { ...h.result, flaky: 99_999 }, { ...h.result, finishedAt: "later" }, { ...h.result, passed: 1.5, total: 3.5 }]) {
+    for (const bad of [{ passed: 0, failed: 0, total: 0, flaky: 0, finishedAt: "2026-11-05T11:00:00.000Z" }, { ...h.result, total: 5 }, { ...h.result, passed: -1, total: 1 }, { ...h.result, flaky: 99_999 }, { ...h.result, finishedAt: "later" }, { ...h.result, passed: 1.5, total: 3.5 }]) {
       await expect(recordFollowupResult(h.deps, { ...h.id(), result: bad })).rejects.toThrow(/do not add up/);
     }
     expect((await readFollowup(h.deps, h.id()))?.state).toBe("queued");

@@ -2,4 +2,4 @@ export { FixtureSetRefused, hashOfRequest, indexEntries, loadFixtureSet, mockReq
 export { recordFixtureSet, type RecordFailure, type RecordInput, type RecordOutcome, type RecordedResponse } from "./recorder.js";
 export { inferJsonSchema, schemaAccepts, synthesizeFromSchema } from "./schema.js";
 export { startServiceMock, type RunningServiceMock, type ServiceMockOptions, type ServiceMockReport } from "./server.js";
-export { additionsFromPreprod, additionsFromSchema, type AdditionFailure, type AdditionOutcome } from "./additions.js";
+export { additionsFromPreprod, additionsFromSchema, pinAdditionSet, verifyAdditionSet, type AdditionFailure, type AdditionOutcome } from "./additions.js";

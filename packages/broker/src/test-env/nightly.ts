@@ -123,11 +123,21 @@ export async function syncNightlySchedule(deps: NightlyScheduleDependencies, inp
 
 // ---- one fire
 
+/** The spend refusals a nightly can meet (the ledger's own codes for a full budget): the night is skipped, not retried. */
+const BUDGET_CODES: ReadonlySet<string> = new Set(["ORG_BUDGET_EXCEEDED", "BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "CHAIN_BUDGET_EXCEEDED", "CHAIN_BUDGET_REQUIRED", "TEST_ALLOWANCE_USED", "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED"]);
+/** At most one nightly run per project in this long, whatever the cron says: a cron of `* * * * *` or a busy repo cannot make more. */
+export const NIGHTLY_MIN_GAP_MS = 20 * HOUR_MS;
+
 export interface NightlyRunPort {
+  /**
+   * Charges the night to the PROJECT's budget (owner Q10), shown as "nightly baseline": the broker binds this to `admitWork` with the project as payer. Throws the scope's own error when a budget has no room.
+   * The run's key must then be minted with payer project and source `nightly_baseline` (see `startRun`).
+   */
+  admit(input: { orgId: OrgId; project: string; purpose: "nightly_baseline" }): Promise<void>;
   /** The branch's head commit now, or undefined when it cannot be read. */
   headOf(input: { orgId: OrgId; project: string; branch: string }): Promise<string | undefined>;
   /** Starts the full run (CHECKS mode on the default branch). Throws when it cannot be started. */
-  startRun(input: { orgId: OrgId; project: string; branch: string; headSha: string; envRevision: number; slotId: string }): Promise<void>;
+  startRun(input: { orgId: OrgId; project: string; branch: string; headSha: string; envRevision: number; slotId: string; payer: { kind: "project"; project: string }; source: "nightly_baseline" }): Promise<void>;
 }
 
 export interface NightlyDeps extends TestEnvDeps { runs: NightlyRunPort }
@@ -165,7 +175,20 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
   const last = await readNightlyBaseline(deps, orgId, project);
   if (last !== undefined && last.headSha === head && last.branch === branch && last.envRevision === env.revision) return skip("no_merges");
 
+  // At most one run a day: the last recorded run, or a run claimed and not yet reported, that is under the gap old means this fire is skipped, whatever the cron is.
+  if (last !== undefined && now - Date.parse(last.finishedAt) < NIGHTLY_MIN_GAP_MS) return skip("ran_recently");
+
+  // Charged to the project before anything is claimed: a project with no room is skipped (and the Home failure card says why), a fault that may pass is thrown for the scheduler to retry.
+  try {
+    await deps.runs.admit({ orgId: orgId, project, purpose: "nightly_baseline" });
+  } catch (error) {
+    const code = (error as { code?: unknown } | undefined)?.code;
+    if (typeof code === "string" && BUDGET_CODES.has(code)) return skip("budget");
+    throw error;
+  }
+
   const slotId = nightlySlotId(orgId, project, scheduledAt);
+  const dayClaim = keyOf(orgId, project, `TESTENV#NIGHTLY#DAY#${new Date(now).toISOString().slice(0, 10)}`);
   const lock = keyOf(orgId, project, "TESTENV#NIGHTLY#ACTIVE");
   const claim = keyOf(orgId, project, `TESTENV#NIGHTLY#SLOT#${slotId}`);
   try {
@@ -186,11 +209,29 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
       ExpressionAttributeValues: { ":stale": now - NIGHTLY_RUN_MAX_MS },
     }));
   } catch (error) {
-    if (dbError(error, "ConditionalCheckFailedException")) return skip("still_running");
+    if (dbError(error, "ConditionalCheckFailedException")) {
+      await releaseNightly(deps, orgId, project, slotId, true);
+      return skip("still_running");
+    }
+    throw error;
+  }
+  // One run per project per UTC day, claimed in the database, so two fires that raced past the checks above still start one.
+  try {
+    await deps.documentClient.send(new PutCommand({
+      TableName: deps.tableName,
+      Item: { ...dayClaim, entityType: "TEST_ENV_NIGHTLY_DAY", orgId, project, slotId, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + 3 * 24 * HOUR_MS) / 1000) },
+      ConditionExpression: "attribute_not_exists(pk) OR slotId = :slot",
+      ExpressionAttributeValues: { ":slot": slotId },
+    }));
+  } catch (error) {
+    if (dbError(error, "ConditionalCheckFailedException")) {
+      await releaseNightly(deps, orgId, project, slotId, true);
+      return skip("ran_recently");
+    }
     throw error;
   }
   try {
-    await deps.runs.startRun({ orgId: orgId, project, branch, headSha: head, envRevision: env.revision, slotId });
+    await deps.runs.startRun({ orgId, project, branch, headSha: head, envRevision: env.revision, slotId, payer: { kind: "project", project }, source: "nightly_baseline" });
   } catch (error) {
     // The run did not start: let the scheduler's retry try again (the slot claim stays, so a retry would be "already handled"; release both).
     await releaseNightly(deps, orgId, project, slotId, true);
@@ -202,7 +243,10 @@ export async function handleNightlyFire(deps: NightlyDeps, input: unknown): Prom
 async function releaseNightly(deps: TestEnvDeps, orgId: OrgId, project: string, slotId: string, alsoSlot: boolean): Promise<void> {
   const send = (command: unknown) => deps.documentClient.send(command).catch(() => undefined);
   await send(new DeleteCommand({ TableName: deps.tableName, Key: keyOf(orgId, project, "TESTENV#NIGHTLY#ACTIVE"), ConditionExpression: "slotId = :slot", ExpressionAttributeValues: { ":slot": slotId } }));
-  if (alsoSlot) await send(new DeleteCommand({ TableName: deps.tableName, Key: keyOf(orgId, project, `TESTENV#NIGHTLY#SLOT#${slotId}`) }));
+  if (alsoSlot) {
+    await send(new DeleteCommand({ TableName: deps.tableName, Key: keyOf(orgId, project, `TESTENV#NIGHTLY#SLOT#${slotId}`) }));
+    await send(new DeleteCommand({ TableName: deps.tableName, Key: keyOf(orgId, project, `TESTENV#NIGHTLY#DAY#${new Date(deps.now()).toISOString().slice(0, 10)}`), ConditionExpression: "slotId = :slot", ExpressionAttributeValues: { ":slot": slotId } }));
+  }
 }
 
 // ---- recording a result

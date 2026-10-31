@@ -1,13 +1,13 @@
 // Proof and test environment E13: AI navigation on Cloud is charged through a capped proxy key. Worst case reserved first, never an uncharged call, key given back when the round ends.
 import { describe, expect, it } from "vitest";
 import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS, E2E_PROXY_KEY_FEATURE, E2eProxyGrantSchema, agentXError, e2eProxyGate, e2eRoundWorstCaseUsd } from "@agentx/contracts";
-import { closeE2eRoundSpend, startE2eRoundSpend, type MintedRoundKey, type RoundSpendPorts } from "../../packages/broker/src/e2e/model-spend.js";
+import { mintRoundKeyPort, closeE2eRoundSpend, startE2eRoundSpend, type MintedRoundKey, type RoundSpendPorts } from "../../packages/broker/src/e2e/model-spend.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as const;
 const PRICE = { inputUsdPerMTok: 3, outputUsdPerMTok: 15 };
 // 3 groups x ((400,000 input tokens x $3 + 40 x 1,024 output tokens x $15) / 1M) = 3 x (1.2 + 0.6144) = 5.4432 -> 5.444 (rounded up to a tenth of a cent)
 const WORST = 5.444;
-const minted = (over: Partial<MintedRoundKey> = {}): MintedRoundKey => ({ key: "sk-test-key-0123456789abcdef", keyId: "key-1", expiresAt: 1_800_000_000_000 + 4_000_000, maxBudgetUsd: 20, ...over });
+const minted = (over: Partial<MintedRoundKey> = {}): MintedRoundKey => ({ key: "sk-test-key-0123456789abcdef", keyId: "key-1", expiresAt: 1_800_000_000_000 + 4_000_000, maxBudgetUsd: WORST, reserved: true, ...over });
 
 function ports(over: Partial<RoundSpendPorts> = {}) {
   const log: string[] = [];
@@ -49,9 +49,9 @@ describe("starting a round", () => {
     expect(result).toMatchObject({ ok: true, worstCaseUsd: WORST });
     if (!result.ok) throw new Error("not ok");
     expect(log).toEqual(["admit", "mint"]);
-    expect(asked).toEqual([{ routeAlias: "e2e-nav", ttlSeconds: 2_100 }]);
+    expect(asked).toEqual([{ routeAlias: "e2e-nav", ttlSeconds: 2_100, capUsd: WORST }]);
     expect(E2eProxyGrantSchema.safeParse(result.grant).success).toBe(true);
-    expect(result.grant).toMatchObject({ proxyBaseUrl: "https://proxy.rovara.example/v1", keyId: "key-1", operationId: "op-1", routeAlias: "e2e-nav", capUsd: 20 });
+    expect(result.grant).toMatchObject({ proxyBaseUrl: "https://proxy.rovara.example/v1", keyId: "key-1", operationId: "op-1", routeAlias: "e2e-nav", capUsd: WORST });
   });
   it("mints nothing when the admission is refused, and the card asks for spend with the ledger's own words", async () => {
     const { value, log } = ports({ admit: () => Promise.reject(agentXError("PROJECT_BUDGET_EXCEEDED", "The payments project's monthly AI budget is used up ($50 of $50). Ask for more from the project's page.")) });
@@ -65,11 +65,24 @@ describe("starting a round", () => {
     const small = ports({ admit: () => Promise.resolve({ maxBudgetUsd: 5 }) });
     expect(await start(small.value)).toEqual({ ok: false, reason: "insufficient_room", neededUsd: WORST, availableUsd: 5, askCard: "approve_spend" });
     expect(small.log).toEqual([]);
-    const raced = ports({ mint: () => { return Promise.resolve(minted({ maxBudgetUsd: 3 })); } });
+    const raced = ports({ mint: () => Promise.resolve(minted({ maxBudgetUsd: 3 })) });
     expect(await start(raced.value)).toEqual({ ok: false, reason: "insufficient_room", neededUsd: WORST, availableUsd: 3, askCard: "approve_spend" });
     expect(raced.log).toEqual(["admit", "close:key-1"]);
     const nan = ports({ admit: () => Promise.resolve({ maxBudgetUsd: Number.NaN }) });
     expect(await start(nan.value)).toMatchObject({ ok: false, reason: "insufficient_room", availableUsd: 0 });
+  });
+  it("asks for a key capped at the worst case, not at the room: a binding that returns the room as the cap is refused and the key is given back", async () => {
+    const wide = ports({ mint: () => Promise.resolve(minted({ maxBudgetUsd: 20 })) });
+    expect(await start(wide.value)).toEqual({ ok: false, reason: "cap_not_applied", neededUsd: WORST });
+    expect(wide.log).toEqual(["admit", "close:key-1"]);
+  });
+  it("refuses a key that was not reserved on the ledger (a binding without scopes or tags), and gives it back", async () => {
+    const loose = ports({ mint: () => Promise.resolve(minted({ reserved: false })) });
+    expect(await start(loose.value)).toEqual({ ok: false, reason: "not_reserved" });
+    expect(loose.log).toEqual(["admit", "close:key-1"]);
+  });
+  it("needs a positive, finite round length", async () => {
+    for (const roundSeconds of [Number.NaN, 0, -5, Number.POSITIVE_INFINITY]) await expect(start(ports().value, { roundSeconds })).rejects.toThrow(RangeError);
   });
   it("starts a round at exactly the worst case", async () => {
     expect((await start(ports({ admit: () => Promise.resolve({ maxBudgetUsd: WORST }), mint: () => Promise.resolve(minted({ maxBudgetUsd: WORST })) }).value)).ok).toBe(true);
@@ -130,5 +143,25 @@ describe("the grant", () => {
     const grant = { schemaVersion: 1, proxyBaseUrl: "https://proxy.example.com/v1", key: "sk-0123456789abcdef", keyId: "k", operationId: "o", routeAlias: "a", capUsd: 1, expiresAt: 5 };
     expect(E2eProxyGrantSchema.safeParse(grant).success).toBe(true);
     for (const bad of [{ ...grant, extra: 1 }, { ...grant, proxyBaseUrl: "http://proxy.example.com" }, { ...grant, proxyBaseUrl: "https://user:pw@proxy.example.com" }, { ...grant, key: "short" }, { ...grant, capUsd: 0 }, { ...grant, proxyBaseUrl: "https://p.example.com/v1?k=1" }]) expect(E2eProxyGrantSchema.safeParse(bad).success).toBe(false);
+  });
+});
+
+describe("the mint port over the real mintOperationKey's input", () => {
+  const baseInput = { orgId: ORG, developerId: "dev_a", refId: "op-1", taskKeyIds: ["k0"], operationKeyIds: [] as string[], scopes: [{ kind: "org" }, { kind: "project", project: "svc" }] as never, tags: { agentId: "rovara-code", payerKind: "project", payerId: "svc", source: "x", origin: "e2e" } as never, keepEarlierKeys: true };
+  it("sets every limit to the round's cap, passes scopes, tags and the e2e alias, and says 'reserved' only with the ledger", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const mintOperationKey = (_deps: unknown, input: Record<string, unknown>) => { seen.push(input); return Promise.resolve({ outcome: "minted" as const, key: "sk-0123456789abcdef", keyId: "k1", expiresAt: 5, maxBudgetUsd: 5.444 }); };
+    const port = mintRoundKeyPort({ mintOperationKey: mintOperationKey as never, deps: { ledger: {} } as never, base: baseInput });
+    expect(await port({ routeAlias: "e2e-nav", ttlSeconds: 600, capUsd: 5.444 })).toEqual({ key: "sk-0123456789abcdef", keyId: "k1", expiresAt: 5, maxBudgetUsd: 5.444, reserved: true });
+    expect(seen[0]).toMatchObject({ runLimitUsd: 5.444, stopAtUsd: 5.444, stepBudgetUsd: 5.444, ttlSeconds: 600, route: { alias: "e2e-nav" }, keepEarlierKeys: true, scopes: baseInput.scopes, tags: baseInput.tags });
+  });
+  it("cannot be built without the ledger or without scopes", () => {
+    const mintOperationKey = (() => Promise.resolve({ outcome: "raced" as const })) as never;
+    expect(() => mintRoundKeyPort({ mintOperationKey, deps: {} as never, base: baseInput })).toThrow(RangeError);
+    expect(() => mintRoundKeyPort({ mintOperationKey, deps: { ledger: {} } as never, base: { ...baseInput, scopes: [] } })).toThrow(RangeError);
+  });
+  it("a lost race is no key", async () => {
+    const port = mintRoundKeyPort({ mintOperationKey: (() => Promise.resolve({ outcome: "raced" as const })), deps: { ledger: {} } as never, base: baseInput });
+    expect(await port({ routeAlias: "e2e-nav", ttlSeconds: 600, capUsd: 1 })).toBeUndefined();
   });
 });

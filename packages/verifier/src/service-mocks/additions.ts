@@ -6,6 +6,7 @@
 import {
   SERVICE_MOCK_ADDITIONS_MAX,
   ServiceMockAdditionSetSchema,
+  serviceMockAdditionSetDigest,
   serviceMockFixtureSetDigest,
   type DataGuardReport,
   type ServiceMockAdditionSet,
@@ -13,7 +14,7 @@ import {
   type TestEnvProdDeny,
 } from "@agentx/contracts";
 import { createSyntheticGenerator, guardInputs } from "../data-guard.js";
-import { hashOfRequest } from "./fixture-set.js";
+import { FixtureSetRefused, hashOfRequest } from "./fixture-set.js";
 import { recordFixtureSet, type RecordInput, type RecordedResponse } from "./recorder.js";
 import { schemaAccepts, synthesizeFromSchema } from "./schema.js";
 
@@ -63,3 +64,38 @@ export async function additionsFromPreprod(
   const set = ServiceMockAdditionSetSchema.safeParse({ ...empty(base, context.now()), additions: outcome.set.entries.map((entry) => ({ origin: "preprod" as const, entry })) });
   return set.success ? { ok: true, set: set.data } : { ok: false, reason: "recording_failed" };
 }
+
+/**
+ * The check a mock server makes before it serves a task's additions (owner decision Q9: new cases are created in the task and LISTED, so a task must not be able to feed itself answers). Throws `FixtureSetRefused`:
+ *   - the set must hash to the digest the BROKER pinned (`expectedDigest`), which the broker took when it ran the synthesis or the pre-prod recording itself, so a set a task wrote is not served;
+ *   - it must extend exactly this base set;
+ *   - every `schema` entry must be byte-for-byte what the schema synthesis makes for that request, so "from the schema" cannot carry a hand-written answer;
+ *   - the data guard must pass over all of it (personal data, credentials, production names).
+ * A `preprod` entry cannot be re-derived here; for it the pin is the proof that the broker recorded it.
+ */
+export function verifyAdditionSet(base: ServiceMockFixtureSet, raw: unknown, expectedDigest: string, deny: TestEnvProdDeny): ServiceMockAdditionSet {
+  const parsed = ServiceMockAdditionSetSchema.safeParse(raw);
+  if (!parsed.success) throw new FixtureSetRefused("unreadable");
+  const set = parsed.data;
+  if (serviceMockAdditionSetDigest(set) !== expectedDigest) throw new FixtureSetRefused("additions_unpinned");
+  if (set.baseFixtureDigest !== serviceMockFixtureSetDigest(base)) throw new FixtureSetRefused("additions_forged");
+  for (const addition of set.additions) {
+    if (addition.origin !== "schema") continue;
+    const { entry } = addition;
+    if (base.responseSchema === null || entry.response.status !== 200 || entry.response.contentType !== "application/json" || entry.response.latencyMs !== 0) throw new FixtureSetRefused("additions_forged");
+    let request: unknown;
+    try { request = JSON.parse(entry.request.body) as unknown; } catch { throw new FixtureSetRefused("additions_forged"); }
+    if (base.requestSchema !== null && !schemaAccepts(base.requestSchema, request)) throw new FixtureSetRefused("additions_forged");
+    const expected = JSON.stringify(synthesizeFromSchema(base.responseSchema, createSyntheticGenerator(parseInt(entry.requestHash.slice(0, 7), 16))));
+    if (entry.response.body !== expected) throw new FixtureSetRefused("additions_forged");
+  }
+  const report = guardInputs(set.additions.flatMap((addition, index) => [
+    { source: "fixture" as const, path: `additions[${String(index)}].request`, text: addition.entry.request.body },
+    { source: "fixture" as const, path: `additions[${String(index)}].response`, text: addition.entry.response.body },
+  ]), deny);
+  if (!report.ok) throw new FixtureSetRefused("additions_unsafe");
+  return set;
+}
+
+/** What the broker keeps after it made the additions itself: the digest the server must be given. */
+export const pinAdditionSet = (set: ServiceMockAdditionSet): string => serviceMockAdditionSetDigest(set);

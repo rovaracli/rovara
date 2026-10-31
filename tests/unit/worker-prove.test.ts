@@ -168,6 +168,10 @@ describe("bounds", () => {
     expect(Object.values(statuses(report)).every((status) => status === "skipped")).toBe(true);
     expect(testEnvIsProved(report, report.proposalDigest)).toBe(false);
   });
+  it("refuses to label a run with a digest that is not the environment's", async () => {
+    const environment = env();
+    await expect(proveEnvironment(fakes().ports, { proposalDigest: sha("0"), environment, signal: new AbortController().signal, deadlineMs: 1000 })).rejects.toThrow(RangeError);
+  });
   it("binds the report to the digest it was given", async () => {
     const report = await prove(fakes().ports);
     expect(testEnvIsProved(report, sha("0"))).toBe(false);

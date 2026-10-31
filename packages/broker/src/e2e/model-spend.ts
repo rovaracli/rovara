@@ -16,18 +16,30 @@ import {
   type E2eProxyGrant,
   type OrgId,
 } from "@agentx/contracts";
+import type { MintOperationDependencies, MintOperationKeyInput, MintedOperationKey } from "../spend/admission.js";
 
 /** The spend refusals a round can meet. The words are the ledger's own (which scope is full); the card asks the people who can raise it. */
 const BUDGET_CODES: ReadonlySet<string> = new Set(["ORG_BUDGET_EXCEEDED", "BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "CHAIN_BUDGET_EXCEEDED", "CHAIN_BUDGET_REQUIRED", "TEST_ALLOWANCE_USED", "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED"]);
 const UNAVAILABLE_CODES: ReadonlySet<string> = new Set(["MODEL_PROXY_UNAVAILABLE", "RUNTIME_UNAVAILABLE"]);
 
-export interface MintedRoundKey { key: string; keyId: string; expiresAt: number; maxBudgetUsd: number }
+export interface MintedRoundKey {
+  key: string;
+  keyId: string;
+  expiresAt: number;
+  /** The cap the key was actually given. It must be the worst case asked for (never the whole room): a larger cap is refused. */
+  maxBudgetUsd: number;
+  /**
+   * True only when the key's cap was RESERVED on the spend ledger before it was handed out (scopes and tags were given, so `mintOperationKey` wrote the reservation). A binding that cannot say so returns false and
+   * the round is refused: an unreserved key is an uncharged call.
+   */
+  reserved: boolean;
+}
 
 export interface RoundSpendPorts {
   /** `admitWork` for the round's payer and path; throws the scope's own error when a budget is full. */
   admit(): Promise<{ maxBudgetUsd: number }>;
   /** `mintOperationKey` for the e2e route; the minted key's cap is the smallest room anywhere. A lost race (`raced`) is `undefined`. */
-  mint(input: { routeAlias: string; ttlSeconds: number }): Promise<MintedRoundKey | undefined>;
+  mint(input: { routeAlias: string; ttlSeconds: number; capUsd: number }): Promise<MintedRoundKey | undefined>;
   /** Blocks the key at the proxy and finalizes its reservation (what it did not spend goes back). Resolves true when both happened. */
   close(orgId: OrgId, keyId: string): Promise<boolean>;
   /** The proxy's address for e2e model calls on this install; undefined when the install has no proxy route. */
@@ -50,6 +62,8 @@ export type RoundSpendRefusal =
   | { reason: "budget"; code: string; message: string; neededUsd: number; askCard: "approve_spend" }
   | { reason: "insufficient_room"; neededUsd: number; availableUsd: number; askCard: "approve_spend" }
   | { reason: "unavailable"; retryable: true }
+  | { reason: "not_reserved" }
+  | { reason: "cap_not_applied"; neededUsd: number }
   | { reason: "no_proxy_route" }
   | { reason: "raced"; retryable: true };
 
@@ -74,21 +88,31 @@ export async function startE2eRoundSpend(ports: RoundSpendPorts, input: StartRou
   }
   if (!(admitted.maxBudgetUsd >= neededUsd)) return { ok: false, reason: "insufficient_room", neededUsd, availableUsd: Number.isFinite(admitted.maxBudgetUsd) ? Math.max(0, admitted.maxBudgetUsd) : 0, askCard: "approve_spend" };
 
+  if (!Number.isFinite(input.roundSeconds) || input.roundSeconds <= 0) throw new RangeError("a round has a positive length in seconds");
   const ttlSeconds = Math.min(E2E_PROXY_GRANT_MAX_TTL_SECONDS, Math.max(60, Math.ceil(input.roundSeconds) + 300));
   let minted: MintedRoundKey | undefined;
   try {
-    minted = await ports.mint({ routeAlias: input.routeAlias, ttlSeconds });
+    minted = await ports.mint({ routeAlias: input.routeAlias, ttlSeconds, capUsd: neededUsd });
   } catch (error) {
     return refusalOf(error, neededUsd);
   }
   if (minted === undefined) return { ok: false, reason: "raced", retryable: true };
+  if (minted.reserved !== true) {
+    await ports.close(input.orgId, minted.keyId).catch(() => false);
+    return { ok: false, reason: "not_reserved" };
+  }
   if (!(minted.maxBudgetUsd >= neededUsd)) {
     await ports.close(input.orgId, minted.keyId).catch(() => false);
     return { ok: false, reason: "insufficient_room", neededUsd, availableUsd: Math.max(0, minted.maxBudgetUsd), askCard: "approve_spend" };
   }
+  // The key is capped at the round's worst case and no higher: a larger cap means the binding left the room as the cap (starving other work, and a leaked key could spend all of it).
+  if (!(minted.maxBudgetUsd <= neededUsd + 1e-9)) {
+    await ports.close(input.orgId, minted.keyId).catch(() => false);
+    return { ok: false, reason: "cap_not_applied", neededUsd };
+  }
   const grant = E2eProxyGrantSchema.safeParse({
     schemaVersion: E2E_PROXY_GRANT_SCHEMA_VERSION, proxyBaseUrl: ports.proxyBaseUrl, key: minted.key, keyId: minted.keyId, operationId: input.operationId, routeAlias: input.routeAlias,
-    capUsd: Math.min(minted.maxBudgetUsd, 10_000), expiresAt: Math.floor(minted.expiresAt),
+    capUsd: minted.maxBudgetUsd, expiresAt: Math.floor(minted.expiresAt),
   });
   if (!grant.success || grant.data.expiresAt <= ports.now()) {
     await ports.close(input.orgId, minted.keyId).catch(() => false);
@@ -116,4 +140,29 @@ export async function closeE2eRoundSpend(ports: Pick<RoundSpendPorts, "close">, 
   } catch {
     return false;
   }
+}
+
+// ---- binding the mint port to the real `mintOperationKey`
+
+
+/**
+ * The mint port over `mintOperationKey`. What it fixes, so a wiring task cannot get it wrong:
+ *   - the key's cap IS the round's worst case (`stepBudgetUsd` and the run limits are all set to it), never the whole room;
+ *   - the ledger reservation is written: scopes (task stop, project, org, member) and tags are required, the install must have the ledger, and `reserved` is true only then;
+ *   - the earlier-keys decision (`keepEarlierKeys`) is the caller's and explicit, because blocking the task's earlier keys is visible to a round that runs beside another;
+ *   - the key is for the e2e route alias only.
+ */
+export function mintRoundKeyPort(input: {
+  mintOperationKey: (deps: MintOperationDependencies, input: MintOperationKeyInput) => Promise<MintedOperationKey>;
+  deps: MintOperationDependencies;
+  base: Pick<MintOperationKeyInput, "orgId" | "developerId" | "refId" | "agentName" | "taskKeyIds" | "operationKeyIds" | "pause" | "recordOn"> & { scopes: NonNullable<MintOperationKeyInput["scopes"]>; tags: NonNullable<MintOperationKeyInput["tags"]>; keepEarlierKeys: boolean };
+}): RoundSpendPorts["mint"] {
+  if (input.base.scopes.length === 0 || input.deps.ledger === undefined) throw new RangeError("a round key needs budget scopes and the spend ledger");
+  return async ({ routeAlias, ttlSeconds, capUsd }) => {
+    const minted = await input.mintOperationKey(input.deps, {
+      ...input.base, ttlSeconds, route: { alias: routeAlias }, runLimitUsd: capUsd, stopAtUsd: capUsd, stepBudgetUsd: capUsd, keepEarlierKeys: input.base.keepEarlierKeys,
+    });
+    if (minted.outcome !== "minted") return undefined;
+    return { key: minted.key, keyId: minted.keyId, expiresAt: minted.expiresAt, maxBudgetUsd: minted.maxBudgetUsd, reserved: true };
+  };
 }

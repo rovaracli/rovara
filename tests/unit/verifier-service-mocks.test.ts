@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ServiceMockFixtureSetSchema, ServiceMockJsonSchemaSchema, awsEndpointUrlVariable, serviceMockFixtureSetDigest, serviceMockRequestHash, type ServiceMockFixtureSet, type TestEnvProdDeny } from "@agentx/contracts";
 import { ServiceMockAdditionSetSchema, serviceMockAdditionsListing } from "@agentx/contracts";
 import { createSyntheticGenerator } from "../../packages/verifier/src/data-guard.js";
-import { FixtureSetRefused, additionsFromPreprod, additionsFromSchema, inferJsonSchema, recordFixtureSet, schemaAccepts, startServiceMock, synthesizeFromSchema, type RecordInput, type RunningServiceMock } from "../../packages/verifier/src/service-mocks/index.js";
+import { FixtureSetRefused, additionsFromPreprod, additionsFromSchema, pinAdditionSet, inferJsonSchema, recordFixtureSet, schemaAccepts, startServiceMock, synthesizeFromSchema, type RecordInput, type RunningServiceMock } from "../../packages/verifier/src/service-mocks/index.js";
 
 const DENY: TestEnvProdDeny = { accountIds: ["111122223333"], hosts: ["*.prod.example.com"], arnPrefixes: [] };
 const SERVICE = { name: "partner-scorer", kind: "sagemaker_runtime" as const, target: "partner-scorer" };
@@ -62,6 +62,18 @@ describe("the recorder", () => {
     expect(await recordFixtureSet({ ...base, inputs: [request({ a: 1 })], send: () => Promise.resolve({ ...answer(1), body: "x".repeat(70_000) }) })).toEqual({ ok: false, reason: "response_too_large" });
     expect(await recordFixtureSet({ ...base, inputs: [], send: () => Promise.resolve(answer(1)) })).toEqual({ ok: false, reason: "no_inputs" });
     expect(await recordFixtureSet({ ...base, inputs: [request("x".repeat(70_000))], send: () => Promise.resolve(answer(1)) })).toEqual({ ok: false, reason: "input_too_large" });
+  });
+  it("does not record a refusal (bad credentials, throttling, timeout) as the service's answer", async () => {
+    for (const status of [401, 403, 407, 408, 429]) {
+      expect(await recordFixtureSet({ service: SERVICE, revision: 1, inputs: [request({ a: 1 })], deny: DENY, now: NOW, send: () => Promise.resolve({ ...answer(1), status }) })).toEqual({ ok: false, reason: "preprod_error" });
+    }
+    expect((await recordFixtureSet({ service: SERVICE, revision: 1, inputs: [request({ a: 1 })], deny: DENY, now: NOW, send: () => Promise.resolve({ ...answer(1), status: 404 }) })).ok).toBe(true);
+  });
+  it("blocks the set when a pre-prod answer echoes a credential (review I7), and the set is not returned", async () => {
+    const key = `AKIA${"ABCDEFGHIJKLMNOP"}`;
+    const outcome = await recordFixtureSet({ service: SERVICE, revision: 1, inputs: [request({ a: 1 })], deny: DENY, now: NOW, send: () => Promise.resolve({ status: 200, contentType: json, body: JSON.stringify({ debug: `key ${key}` }), latencyMs: 1 }) });
+    expect(outcome).toMatchObject({ ok: false, reason: "data_guard", phase: "responses", report: { findings: [{ kind: "secret", source: "fixture", path: "entries[0].response" }] } });
+    expect(JSON.stringify(outcome)).not.toContain(key);
   });
   it("stops a call that never answers", async () => {
     const outcome = await recordFixtureSet({ service: SERVICE, revision: 1, inputs: [request({ a: 1 })], deny: DENY, now: NOW, perCallTimeoutMs: 20, send: (_item, signal) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")))) });
@@ -139,15 +151,19 @@ describe("unmatched requests: schema_synth", () => {
   });
 });
 
-describe("new cases: additions made in the task (owner decision Q9)", () => {
+describe("new cases: additions made in the task (owner decision Q9, review I8)", () => {
   const fresh = request({ partner: "p-new", region: "latam" });
-  it("covers the old cases from the pinned set and the new case from the task's addition, and lists it", async () => {
+  const serveWith = async (set: ServiceMockFixtureSet, digest: string, additions: unknown, pinned: string | undefined, deny: TestEnvProdDeny | null = DENY) => {
+    const mock = await startServiceMock({ fixtureSet: set, expectedDigest: digest, unmatched: "fail", additions, ...(pinned === undefined ? {} : { expectedAdditionsDigest: pinned }), ...(deny === null ? {} : { deny }) });
+    running.push(mock);
+    return mock;
+  };
+  it("covers the old cases from the pinned set and the new case from the broker-pinned addition, and lists it", async () => {
     const { set, digest } = await recorded();
     const made = additionsFromSchema(set, [fresh], DENY, NOW());
     if (!made.ok) throw new Error(made.reason);
     expect(made.set.additions[0]?.origin).toBe("schema");
-    const mock = await startServiceMock({ fixtureSet: set, expectedDigest: digest, unmatched: "fail", additions: made.set });
-    running.push(mock);
+    const mock = await serveWith(set, digest, made.set, pinAdditionSet(made.set));
     expect((await invoke(mock, { partner: "p1", region: "emea" })).status).toBe(200);
     const added = await invoke(mock, { partner: "p-new", region: "latam" });
     expect(added.status).toBe(200);
@@ -156,7 +172,7 @@ describe("new cases: additions made in the task (owner decision Q9)", () => {
     expect((await invoke(mock, { partner: "p-other", region: "latam" })).status).toBe(500);
     expect(mock.usage()).toMatchObject({ matched: 1, additionsServed: 1, unmatchedFailed: 1, synthesized: 0 });
     const listing = serviceMockAdditionsListing(made.set);
-    expect(listing).toMatchObject({ service: "partner-scorer", baseFixtureDigest: digest, bySchema: 1, byPreprod: 0 });
+    expect(listing).toMatchObject({ service: "partner-scorer", baseFixtureDigest: digest, additionsDigest: pinAdditionSet(made.set), bySchema: 1, byPreprod: 0 });
     expect(JSON.stringify(listing)).not.toContain("p-new");
   });
   it("records a new case from pre-prod through the same guard, and refuses one the pinned set already answers", async () => {
@@ -177,16 +193,50 @@ describe("new cases: additions made in the task (owner decision Q9)", () => {
     expect(additionsFromSchema(set, [request({ partner: "p1", region: "emea" })], DENY, NOW())).toEqual({ ok: false, reason: "already_recorded", at: 0 });
     expect(additionsFromSchema(set, [], DENY, NOW())).toEqual({ ok: false, reason: "no_inputs" });
   });
-  it("serves additions only on the base set they extend, and never over a pinned recording", async () => {
+  it("never serves a set the broker did not pin: no digest, no deny list, a different digest, or edited after pinning", async () => {
     const { set, digest } = await recorded();
     const made = additionsFromSchema(set, [fresh], DENY, NOW());
     if (!made.ok) throw new Error(made.reason);
-    await expect(startServiceMock({ fixtureSet: set, expectedDigest: digest, unmatched: "fail", additions: { ...made.set, baseFixtureDigest: "f".repeat(64) } })).rejects.toThrow(FixtureSetRefused);
-    await expect(startServiceMock({ fixtureSet: set, expectedDigest: digest, unmatched: "fail", additions: { nonsense: 1 } })).rejects.toThrow(FixtureSetRefused);
-    const pinned = set.entries[0]!;
-    const sneaky = ServiceMockAdditionSetSchema.parse({ ...made.set, additions: [{ origin: "schema", entry: { ...pinned, response: { ...pinned.response, body: '{"score":0}' } } }] });
-    const mock = await startServiceMock({ fixtureSet: set, expectedDigest: digest, unmatched: "fail", additions: sneaky });
-    running.push(mock);
+    const pinned = pinAdditionSet(made.set);
+    await expect(serveWith(set, digest, made.set, undefined)).rejects.toMatchObject({ reason: "additions_unpinned" });
+    await expect(serveWith(set, digest, made.set, pinned, null)).rejects.toMatchObject({ reason: "additions_unpinned" });
+    await expect(serveWith(set, digest, made.set, "e".repeat(64))).rejects.toMatchObject({ reason: "additions_unpinned" });
+    const edited = { ...made.set, additions: [{ ...made.set.additions[0]!, entry: { ...made.set.additions[0]!.entry, response: { ...made.set.additions[0]!.entry.response, body: '{"score":1,"model":"v3","scoredAt":"2026-01-01T00:00:00.000Z"}' } } }] };
+    await expect(serveWith(set, digest, edited, pinned)).rejects.toMatchObject({ reason: "additions_unpinned" });
+    await expect(serveWith(set, digest, { nonsense: 1 }, pinned)).rejects.toThrow(FixtureSetRefused);
+  });
+  it("a task that wrote its own 'schema' answer and pinned it itself is refused: the answer is not what the schema makes", async () => {
+    const { set, digest } = await recorded();
+    const made = additionsFromSchema(set, [fresh], DENY, NOW());
+    if (!made.ok) throw new Error(made.reason);
+    const entry = made.set.additions[0]!.entry;
+    const forged = ServiceMockAdditionSetSchema.parse({ ...made.set, additions: [{ origin: "schema", entry: { ...entry, response: { ...entry.response, body: '{"score":1,"model":"v3","scoredAt":"2026-01-01T00:00:00.000Z"}' } } }] });
+    await expect(serveWith(set, digest, forged, pinAdditionSet(forged))).rejects.toMatchObject({ reason: "additions_forged" });
+    const wrongStatus = ServiceMockAdditionSetSchema.parse({ ...made.set, additions: [{ origin: "schema", entry: { ...entry, response: { ...entry.response, status: 500 } } }] });
+    await expect(serveWith(set, digest, wrongStatus, pinAdditionSet(wrongStatus))).rejects.toMatchObject({ reason: "additions_forged" });
+    const outsideSchema = ServiceMockAdditionSetSchema.parse({ ...made.set, additions: [{ origin: "schema", entry: { ...entry, request: { contentType: "application/json", body: '{"partner":7}' } } }] });
+    await expect(serveWith(set, digest, outsideSchema, pinAdditionSet(outsideSchema))).rejects.toMatchObject({ reason: "additions_forged" });
+  });
+  it("refuses additions for another base set, and additions that hold personal data or a credential", async () => {
+    const { set, digest } = await recorded();
+    const made = additionsFromSchema(set, [fresh], DENY, NOW());
+    if (!made.ok) throw new Error(made.reason);
+    const otherBase = ServiceMockAdditionSetSchema.parse({ ...made.set, baseFixtureDigest: "d".repeat(64) });
+    await expect(serveWith(set, digest, otherBase, pinAdditionSet(otherBase))).rejects.toMatchObject({ reason: "additions_forged" });
+    const pre = await additionsFromPreprod(set, [fresh], { deny: DENY, now: NOW, send: () => Promise.resolve(answer(0.7)) });
+    if (!pre.ok) throw new Error(pre.reason);
+    const dirty = ServiceMockAdditionSetSchema.parse({ ...pre.set, additions: [{ origin: "preprod", entry: { ...pre.set.additions[0]!.entry, response: { ...pre.set.additions[0]!.entry.response, body: '{"contact":"jane.roe@acme-corp.com"}' } } }] });
+    await expect(serveWith(set, digest, dirty, pinAdditionSet(dirty))).rejects.toMatchObject({ reason: "additions_unsafe" });
+    // A pre-prod addition the broker recorded and pinned is served.
+    expect((await invoke(await serveWith(set, digest, pre.set, pinAdditionSet(pre.set)), { partner: "p-new", region: "latam" })).status).toBe(200);
+  });
+  it("serves additions only after the pinned set, never over a pinned recording", async () => {
+    const { set, digest } = await recorded();
+    const made = additionsFromSchema(set, [fresh], DENY, NOW());
+    if (!made.ok) throw new Error(made.reason);
+    const pinnedEntry = set.entries[0]!;
+    const sneaky = ServiceMockAdditionSetSchema.parse({ ...made.set, additions: [{ origin: "preprod", entry: { ...pinnedEntry, response: { ...pinnedEntry.response, body: '{"score":0}' } } }] });
+    const mock = await serveWith(set, digest, sneaky, pinAdditionSet(sneaky));
     expect(await (await invoke(mock, { partner: "p1", region: "emea" })).json()).toMatchObject({ score: 0.9 });
     expect(mock.usage()).toMatchObject({ matched: 1, additionsServed: 0 });
   });
@@ -218,6 +268,14 @@ describe("fault injection", () => {
     const usage = await (await control(mock, "usage")).json() as { faultsInjected: unknown; matched: number };
     expect(usage.faultsInjected).toEqual([{ name: "slow-down", count: 2 }, { name: "boom", count: 1 }]);
     expect(usage.matched).toBe(1);
+  });
+  it("a stray request to another endpoint does not use up an armed fault", async () => {
+    const mock = await withFaults();
+    await control(mock, "fault", { method: "POST", body: JSON.stringify({ name: "boom" }) });
+    expect((await invoke(mock, { partner: "p1", region: "emea" }, "other-endpoint")).status).toBe(500);
+    expect((await fetch(`${mock.url}/elsewhere`, { method: "POST", body: "{}" })).status).toBe(500);
+    expect((await invoke(mock, { partner: "p1", region: "emea" })).status).toBe(503);
+    expect((await invoke(mock, { partner: "p1", region: "emea" })).status).toBe(200);
   });
   it("drops the connection for a timeout fault, and refuses a fault the set does not have", async () => {
     const mock = await withFaults();

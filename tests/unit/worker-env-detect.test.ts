@@ -119,13 +119,21 @@ describe("the proposal", () => {
     const { detection } = await detect(PYTHON);
     const draft = buildEnvironmentDraft(detection, { repositoryId: "partner-service" });
     if ("ok" in draft) throw new Error("not built");
-    expect(draft.environment).toMatchObject({ tier: "sandbox", services: [], accounts: [], capture: { video: false, traces: false }, selection: { method: "coverage_map" }, roundBudgetMin: 30, nightly: { enabled: true, branch: "main" } });
+    expect(draft.environment).toMatchObject({ tier: "sandbox", services: [], accounts: [], capture: { video: false, traces: false }, selection: { method: "coverage_map" }, roundBudgetMin: 30, nightly: { enabled: false, branch: "main" } });
     expect(draft.environment.repos[0]?.checks.map((check) => check.id)).toEqual(["unit", "lint", "typecheck"]);
     expect(draft.environment.selection.fullSuiteOn).toEqual(expect.arrayContaining(["poetry.lock", "**/conftest.py", ".github/**"]));
     expect(draft.valueSources).toContainEqual({ field: "repos[0].checks[0]", source: { path: "pyproject.toml", line: 4 } });
     expect(draft.pendingServices.map((service) => service.target)).toEqual(["partner-scorer", "rules.partners-internal.net"]);
   });
-  it("falls back to the full suite and no nightly when no test check was found", async () => {
+  it("proposes the nightly run OFF whatever it found: turning it on is a person's spending decision", async () => {
+    for (const files of [PYTHON, { "package.json": '{"scripts":{"test":"vitest run"}}' }]) {
+      const draft = buildEnvironmentDraft((await detect(files)).detection, { repositoryId: "svc" });
+      if ("ok" in draft) throw new Error("not built");
+      expect(draft.environment.repos[0]!.checks.some((check) => check.kind === "test")).toBe(true);
+      expect(draft.environment.nightly.enabled).toBe(false);
+    }
+  });
+  it("falls back to the full suite when no test check was found", async () => {
     const { detection } = await detect({ "package.json": '{"scripts":{"lint":"eslint ."}}' });
     const draft = buildEnvironmentDraft(detection, { repositoryId: "web" });
     if ("ok" in draft) throw new Error("not built");

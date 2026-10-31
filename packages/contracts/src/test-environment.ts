@@ -15,6 +15,7 @@ import { CheckKindSchema, EVIDENCE_SELECTION_METHODS } from "./evidence.js";
 import { GitBranchNameSchema } from "./git-branch.js";
 import { ProjectCommandSchema, RelativeWorkspacePathSchema } from "./project.js";
 import { SetupDraftSchema } from "./rovara-code.js";
+import { hostOfUrl, prodDenyMatchesArn, prodDenyMatchesHost, prodDenyMatchesPool } from "./test-environment-prod-deny.js";
 import { sha256Hex } from "./web-hash.js";
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
@@ -192,11 +193,12 @@ export function testEnvDigest(body: TestEnvironmentBody): string {
 
 // ---- targets and the production deny list
 
-type TargetKind = "host" | "arn";
+type TargetKind = "host" | "arn" | "pool";
 interface EnvTarget {
   path: (string | number)[];
   kind: TargetKind;
   value: string;
+  region?: string;
 }
 
 /** Every address and ARN the environment would call, with where it is in the body. */
@@ -204,8 +206,8 @@ function testEnvTargets(env: TestEnvironmentBody): EnvTarget[] {
   const targets: EnvTarget[] = [];
   const host = (path: (string | number)[], url: string | undefined) => {
     if (url === undefined) return;
-    const match = /^https:\/\/([^/:?#]+)/u.exec(url);
-    if (match !== null) targets.push({ path, kind: "host", value: match[1]!.toLowerCase() });
+    // The one host reading the whole product uses (userinfo, port and trailing dot do not hide a host). A URL with no readable host is checked as an empty host, which counts as production.
+    targets.push({ path, kind: "host", value: hostOfUrl(url) ?? "" });
   };
   const arn = (path: (string | number)[], value: string | undefined) => {
     if (value !== undefined) targets.push({ path, kind: "arn", value });
@@ -218,7 +220,10 @@ function testEnvTargets(env: TestEnvironmentBody): EnvTarget[] {
   host(["shared", "baseUrl"], env.shared?.baseUrl);
   arn(["preview", "deployRoleArn"], env.preview?.deployRoleArn);
   env.accounts.forEach((account, index) => {
-    if (account.provisioner === "cognito_test_pool") arn(["accounts", index, "roleArn"], account.roleArn);
+    if (account.provisioner === "cognito_test_pool") {
+      arn(["accounts", index, "roleArn"], account.roleArn);
+      targets.push({ path: ["accounts", index, "userPoolId"], kind: "pool", value: account.userPoolId, region: account.region });
+    }
     if (account.provisioner === "http_hook") {
       host(["accounts", index, "createUrl"], account.createUrl);
       host(["accounts", index, "deleteUrl"], account.deleteUrl);
@@ -227,16 +232,10 @@ function testEnvTargets(env: TestEnvironmentBody): EnvTarget[] {
   return targets;
 }
 
-/** `*` in a deny-list host matches any run of host characters; everything else is literal and the whole host must match. */
-function hostMatches(pattern: string, host: string): boolean {
-  const regex = new RegExp(`^${pattern.toLowerCase().split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/gu, "\\$&")).join("[a-z0-9.-]*")}$`, "u");
-  return regex.test(host);
-}
-
 function targetIsProd(deny: TestEnvironmentBody["prodDeny"], target: EnvTarget): boolean {
-  if (target.kind === "host") return deny.hosts.some((pattern) => hostMatches(pattern, target.value));
-  const account = target.value.split(":")[4];
-  return deny.arnPrefixes.some((prefix) => target.value.startsWith(prefix)) || (account !== undefined && deny.accountIds.includes(account));
+  if (target.kind === "host") return prodDenyMatchesHost(deny, target.value);
+  if (target.kind === "pool") return prodDenyMatchesPool(deny, target.region ?? "", target.value);
+  return prodDenyMatchesArn(deny, target.value) !== undefined;
 }
 
 /** The signature of what a pre-prod service points at; a different one is a different target even under the same name. */
@@ -252,7 +251,7 @@ export function testEnvTouchesProd(env: TestEnvironmentBody): boolean {
 // ---- less-safe fields and the approval card's risk
 
 /** The fields whose change is a less-safe change (a second person and a fresh sign-in, like a less-safe process change). */
-export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced"] as const;
+export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced", "nightly_enabled", "nightly_more_often", "preview_cost_raised"] as const;
 export type TestEnvLessSafeField = (typeof TEST_ENV_LESS_SAFE_FIELDS)[number];
 
 function lessSafeSet(env: TestEnvironmentBody): Set<TestEnvLessSafeField> {
@@ -263,7 +262,35 @@ function lessSafeSet(env: TestEnvironmentBody): Set<TestEnvLessSafeField> {
   if (env.capture.video) set.add("video");
   if (env.capture.traces) set.add("traces");
   if (env.services.some((service) => service.mock?.unmatched === "schema_synth")) set.add("schema_synth");
+  // A nightly run is a full run of the suite on a worker, paid for by the project: turning it on is a spending change.
+  if (env.nightly.enabled) set.add("nightly_enabled");
   return set;
+}
+
+/** How many times a five-field cron fires in a week, roughly (a month is 30 days, a restricted month counts its share). Anything it cannot read counts as unbounded, so an odd cron is never "less often". */
+export function cronRunsPerWeek(cron: string): number {
+  const fields = cron.trim().split(/\s+/u);
+  if (fields.length !== 5) return Number.POSITIVE_INFINITY;
+  const count = (field: string, min: number, max: number): number => {
+    const seen = new Set<number>();
+    for (const part of field.split(",")) {
+      const step = /^(\*|\d+(?:-\d+)?)\/(\d+)$/u.exec(part);
+      const range = /^(\d+)-(\d+)$/u.exec(part);
+      let from: number, to: number, by = 1;
+      if (step !== null) {
+        by = Number(step[2]);
+        if (step[1] === "*") { from = min; to = max; } else { const [a, b] = step[1]!.split("-"); from = Number(a); to = b === undefined ? max : Number(b); }
+      } else if (range !== null) { from = Number(range[1]); to = Number(range[2]); } else if (part === "*") { from = min; to = max; } else if (/^\d+$/u.test(part)) { from = Number(part); to = from; } else return Number.POSITIVE_INFINITY;
+      if (!Number.isInteger(by) || by < 1 || from < min || to > max || from > to) return Number.POSITIVE_INFINITY;
+      for (let value = from; value <= to; value += by) seen.add(value);
+    }
+    return seen.size;
+  };
+  const [minute, hour, dom, month, dow] = fields as [string, string, string, string, string];
+  const perDay = count(minute, 0, 59) * count(hour, 0, 23);
+  const days = dow !== "*" ? count(dow, 0, 7) : dom !== "*" ? (count(dom, 1, 31) * 7) / 30 : 7;
+  const months = month === "*" ? 1 : count(month, 1, 12) / 12;
+  return perDay * days * months;
 }
 
 /**
@@ -283,6 +310,8 @@ export function testEnvLessSafeChanges(previous: TestEnvironmentBody | undefined
     const accountsBefore = new Map(previous.accounts.map((account) => [account.profileId, accountSignature(account)] as const));
     if (next.accounts.some((account) => accountSignature(account) !== undefined && accountsBefore.get(account.profileId) !== accountSignature(account))) changed.push("account_target_changed");
     const missing = (was: readonly string[], now: readonly string[]) => was.some((entry) => !now.includes(entry));
+    if (cronRunsPerWeek(next.nightly.cronUtc) > cronRunsPerWeek(previous.nightly.cronUtc) && next.nightly.enabled) changed.push("nightly_more_often");
+    if (previous.preview !== undefined && next.preview !== undefined && (next.preview.costCapUsdPerDay > previous.preview.costCapUsdPerDay || next.preview.ttlHours > previous.preview.ttlHours)) changed.push("preview_cost_raised");
     if (missing(previous.prodDeny.accountIds, next.prodDeny.accountIds) || missing(previous.prodDeny.hosts, next.prodDeny.hosts) || missing(previous.prodDeny.arnPrefixes, next.prodDeny.arnPrefixes)) changed.push("prod_deny_reduced");
   }
   return changed.sort((a, b) => TEST_ENV_LESS_SAFE_FIELDS.indexOf(a) - TEST_ENV_LESS_SAFE_FIELDS.indexOf(b));
@@ -356,7 +385,7 @@ export function testEnvIsProved(report: TestEnvProveReport | undefined, proposal
 // ---- the synthetic-data guard
 
 /** What the guard can find (a fixture, a seed or an API sample): personal data patterns, or something that names production. */
-export const DATA_GUARD_FINDING_KINDS = ["email", "phone", "government_id", "card_number", "prod_host", "prod_arn", "prod_account"] as const;
+export const DATA_GUARD_FINDING_KINDS = ["email", "phone", "government_id", "card_number", "secret", "prod_host", "prod_arn", "prod_account"] as const;
 export const DATA_GUARD_SOURCES = ["fixture", "seed", "api_sample"] as const;
 export const DataGuardReportSchema = z
   .object({

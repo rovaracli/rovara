@@ -36,7 +36,38 @@ describe("personal data patterns", () => {
   });
 });
 
+describe("credentials (review I7)", () => {
+  // Built at runtime: the public repository refuses key-shaped strings in source.
+  const awsKey = `AKIA${"ABCDEFGHIJKLMNOP"}`;
+  const jwt = `${Buffer.from('{"alg":"HS256","typ":"JWT"}').toString("base64url")}.${Buffer.from('{"sub":"1234567890","name":"x"}').toString("base64url")}.${"s".repeat(43)}`;
+  const github = `ghp_${"Ab1Cd2Ef3Gh4".repeat(3)}`;
+  it("finds cloud keys, provider tokens, bearer tokens and JWTs, private keys, and passwords in URLs or pairs", () => {
+    expect(kinds(`{"access":"${awsKey}"}`)).toEqual(["secret"]);
+    expect(kinds(`token ${github}`)).toEqual(["secret"]);
+    expect(kinds(`Authorization: Bearer ${jwt}`)).toEqual(["secret"]);
+    expect(kinds(`{"id_token":"${jwt}"}`)).toEqual(["secret"]);
+    expect(kinds(`-----BEGIN ${"RSA"} PRIVATE KEY-----\nMIIEabc\n-----END ${"RSA"} PRIVATE KEY-----`)).toEqual(["secret"]);
+    expect(kinds("postgres://app:hunter2secret@db.internal.test:5432/app")).toEqual(["secret"]);
+    expect(kinds('{"password": "correct-horse-battery"}')).toEqual(["secret"]);
+  });
+  it("leaves ordinary synthetic text alone", () => {
+    expect(kinds('{"score":0.91,"model":"v3","partner":"p1","region":"emea"}')).toEqual([]);
+    expect(kinds("id-0a1b2c3d and a uuid 3f2a9c1e-1111-4222-8333-444455556666")).toEqual([]);
+  });
+  it("blocks a fixture whose recorded response echoes a token, naming only the entry", () => {
+    const report = guardFixtureSet(fixtureSet(`{"echo":"Bearer ${jwt}"}`), DENY);
+    expect(report).toEqual({ ok: false, findings: [{ kind: "secret", source: "fixture", path: "entries[0].response" }] });
+    expect(JSON.stringify(report)).not.toContain(jwt.slice(0, 12));
+  });
+});
+
 describe("production names", () => {
+  it("uses the one matcher: wildcard ARNs, trailing dots, userinfo and case all match", () => {
+    const wild: TestEnvProdDeny = { accountIds: [], hosts: ["*.prod.example.com", "billing.corp.net."], arnPrefixes: ["arn:aws:iam::*:role/prod-", "arn:aws:sagemaker:*:222233334444:endpoint/*"] };
+    expect(scanText("arn:aws:iam::999988887777:role/prod-deploy", wild)).toEqual(["prod_arn"]);
+    expect(scanText("arn:aws:sagemaker:eu-west-1:222233334444:endpoint/x", wild)).toEqual(["prod_arn"]);
+    expect(scanText("https://user@API.PROD.example.com./x and billing.corp.net.", wild)).toEqual(["prod_host"]);
+  });
   it("finds a deny-listed host, wildcard or exact, case-insensitively", () => {
     expect(kinds("GET https://API.Prod.Example.com/v1")).toEqual(["prod_host"]);
     expect(kinds("host billing.corp.net")).toEqual(["prod_host"]);
