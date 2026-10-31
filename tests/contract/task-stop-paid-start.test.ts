@@ -2626,9 +2626,17 @@ for (const field of ["modelRoute", "fundingSourceId", "modelPolicy"] as const) i
  const reply = await f.modelAccess();expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
  expect(f.t.db.transactions().some(items => transactionAuditEvent(items, "spending.stop_refused") !== undefined)).toBe(true);
 });
-it("funding C: a sources revision adding catalog first cannot retain a prior own-source exemption", async () => {
+it("funding C: a sources revision adding catalog first stops the next actually Rovara operation", async () => {
  const f = await ownSourceOperation();f.t.db.set({ ...f.t.db.get(f.sourceKey)!, revision: 2, order: ["rovara", f.sourceId] });
- const reply = await f.modelAccess();expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
+ await f.t.finish(f.workspaceId, f.plan.id, "SUCCEEDED");
+ const continued = await f.t.api(MAYA, "POST", `/v1/dev/tasks/${f.taskId}/continue`, { requestId: randomUUID(), instructions: "Continue after the source revision." });expect(continued.status, JSON.stringify(continued.body)).toBe(200);
+ const next = f.t.taskOps(f.workspaceId).at(-1)!;expect(f.t.db.get(operationKey(f.workspaceId, next.id))).toMatchObject({ modelRoute: { sourceId: "rovara" } });
+ const headers = { "x-agentx-callback-capability": (f.t.outboxOf(next.id)!.invocation as { callbackCapability: string }).callbackCapability };
+ const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers });expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
+});
+it("funding C: a still-available actual company source remains exempt after a source priority revision", async () => {
+ const f = await ownSourceOperation();f.t.db.set({ ...f.t.db.get(f.sourceKey)!, revision: 2, order: ["rovara", f.sourceId] });
+ const reply = await f.modelAccess();expect(reply.status, JSON.stringify(reply.body)).toBe(200);
 });
 it("funding C: CHECKS never inherits the task's model-source exemption", async () => {
  const f = await ownSourceOperation(), key = operationKey(f.workspaceId, f.plan.id);f.t.db.set({ ...f.t.db.get(key)!, workflowMode: "CHECKS" });
