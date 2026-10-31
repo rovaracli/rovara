@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import {
   ArtifactLinkSchema, ArtifactRefSchema, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, EVIDENCE_CHECKS_MAX, EVIDENCE_NOT_TESTED_MAX, EVIDENCE_RAW_MAX_BYTES, EvidencePackSchema, EvidenceRawSchema, EvidenceViewSchema,
   redactText,
-  type ArtifactLink, type ArtifactRef, type CheckEntry, type CheckKind, type EvidenceArtifactKind, type EvidenceEnvironment, type EvidenceNotTested, type EvidencePack, type EvidenceRaw, type EvidenceView,
+  type ArtifactLink, type ArtifactRef, type CheckEntry, type CheckKind, type EvidenceArtifactKind, type EvidenceEnvironment, type EvidenceNotTested, type EvidencePack, type EvidenceWithheldReason, type EvidenceRaw, type EvidenceView,
 } from "@agentx/contracts";
 
 /** Why part of the raw evidence was dropped or ignored. Fixed codes only: never the worker's text. */
@@ -50,10 +50,11 @@ export interface EvidenceBuildInput {
   storedArtifacts: ReadonlyMap<string, StoredArtifact>;
   /**
    * The video/trace gate (design 3.4), every part defaulting to "no": `companyAllows` is the approved setting per kind; `revocationConfirmed` is the broker's own proof that the run's accounts were revoked
-   * and a login then failed; `tierAllowed` is the approved environment's tier rule (tier 1 or 2, or tier 3 only with a provisioner that deletes). On top of these the pack itself must show no long-lived
-   * (`registered`) account, and a shared-tier run must name at least one run-scoped account. Data is synthetic by the pack's schema. Absent: nothing is kept.
+   * and their sessions ended; `tierAllowed` is the approved environment's tier rule (sandbox or per-task preview only). `gate` is the FULL publication gate result (`evaluatePublicationGate`: accounts, tier,
+   * the data check, the company setting, the revocation proof): a file is kept only when `gate.allowed` says so for its kind, so the data check cannot be skipped here (Opus review I2). On top of these the
+   * pack itself must show no long-lived (`registered`) account. Absent: nothing is kept.
    */
-  media?: { companyAllows: { video: boolean; trace: boolean }; revocationConfirmed: boolean; tierAllowed: boolean } | undefined;
+  media?: { companyAllows: { video: boolean; trace: boolean }; revocationConfirmed: boolean; tierAllowed: boolean; gate: { allowed: { video: boolean; trace: boolean }; reasons: { video?: EvidenceWithheldReason; trace?: EvidenceWithheldReason } } } | undefined;
 }
 
 export interface NewArtifact {
@@ -174,7 +175,8 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
     const kept = (artifact: "video" | "trace", ref: ArtifactRef | undefined): ArtifactRef | undefined => {
       if (ref === undefined) return undefined;
       // The first failing condition names the reason, in the design's order; each withheld file is also listed for deletion.
-      const reason = !accountsOk ? "account_not_run_scoped" : media?.tierAllowed !== true ? "tier_not_allowed" : media.companyAllows[artifact] !== true ? "company_setting_off" : !media.revocationConfirmed ? "revocation_not_confirmed" : undefined;
+      const reason = !accountsOk ? "account_not_run_scoped" : media?.tierAllowed !== true ? "tier_not_allowed" : media.companyAllows[artifact] !== true ? "company_setting_off" : media.revocationConfirmed !== true ? "revocation_not_confirmed"
+        : media.gate?.allowed?.[artifact] !== true ? (media.gate?.reasons?.[artifact] ?? "data_not_synthetic") : undefined;
       if (reason !== undefined) {
         withheld.push({ artifact, reason });
         withheldArtifacts.push(ref);
@@ -187,7 +189,7 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
     const video = kept("video", scenario.video);
     const trace = kept("trace", scenario.trace);
     return {
-      scenarioId: plain(scenario.scenarioId, 120), consoleErrors: scenario.consoleErrors,
+      scenarioId: plain(scenario.scenarioId, 120), ...(scenario.consoleErrors === undefined ? {} : { consoleErrors: scenario.consoleErrors }),
       strip: { before: scenario.strip.before.filter(held), after: scenario.strip.after.filter(held) },
       ...(video === undefined ? {} : { video }), ...(trace === undefined ? {} : { trace }),
       ...((scenario.withheld?.length ?? 0) + withheld.length === 0 ? {} : { withheld: dedupeWithheld([...(scenario.withheld ?? []).filter((item) => (item.artifact === "video" ? video : trace) === undefined), ...withheld]) }),

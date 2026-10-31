@@ -38,7 +38,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { E2E_ARTIFACT_RETENTION_DAYS, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
 import { RealtimeEvents } from "./realtime.js";
@@ -184,7 +184,16 @@ export class ControlPlaneStack extends Stack {
       // M1.3 Task 3.7b, owner decision D4: a browser or API round's screenshots expire 30 days after they are written. A lifecycle filter matches the start of a key, and a screenshot's
       // key starts like every other private object's, so the rule matches the tag the broker puts on a screenshot and on nothing else. The bucket is not versioned: expiry deletes.
       // Named environments only: the legacy production template stays as it is.
-      ...(naming.env === undefined ? {} : { lifecycleRules: [{ id: "ExpireE2EScreenshots", expiration: Duration.days(E2E_ARTIFACT_RETENTION_DAYS), tagFilters: { [E2E_ARTIFACT_RETENTION_TAG_KEY]: E2E_ARTIFACT_RETENTION_TAG_VALUE } }] }),
+      ...(naming.env === undefined ? {} : { lifecycleRules: [
+        { id: "ExpireE2EScreenshots", expiration: Duration.days(E2E_ARTIFACT_RETENTION_DAYS), tagFilters: { [E2E_ARTIFACT_RETENTION_TAG_KEY]: E2E_ARTIFACT_RETENTION_TAG_VALUE } },
+        // Proof and evidence P6: stored evidence expires by class, on the same tag key. evidence-short is video and trace (14 days by default); evidence-std is screenshots, API samples and output tails (30 days).
+        // An Enterprise install sets the days with the `evidenceRetentionDays` context value ({"evidence-short": n, "evidence-std": n}); a value outside the allowed range is clamped, never refused, so a bad
+        // setting cannot keep evidence longer than the maximum or expire it sooner than the minimum. evidence-record (the pack) lives with the task record and has no rule.
+        ...(["evidence-short", "evidence-std"] as const).map((retentionClass) => ({ id: retentionClass === "evidence-short" ? "ExpireEvidenceShort" : "ExpireEvidenceStd",
+          expiration: Duration.days(evidenceRetentionDays(retentionClass, (this.node.tryGetContext("evidenceRetentionDays") as Record<string, unknown> | undefined)?.[retentionClass] as number | undefined) ?? EVIDENCE_RETENTION_DAYS[retentionClass].default),
+          // Prefix AND tag (S3 reads that as an `And` filter): another writer's object that happens to carry the tag, outside the private evidence keys, never matches (Opus review M1).
+          prefix: "private/", tagFilters: { [E2E_ARTIFACT_RETENTION_TAG_KEY]: retentionClass } })),
+      ] }),
       // Retained: the broker's operation artifacts must outlive a stack deletion.
       removalPolicy: RemovalPolicy.RETAIN,
     });

@@ -84,7 +84,7 @@ function BrowserSection({ evidence }: { evidence: Evidence }) {
   <Strip label={entry.scenarioId + ", before"} links={entry.strip.before} /><Strip label={entry.scenarioId + ", after"} links={entry.strip.after} />
   {video && <video controls preload="none" src={video} aria-label={"Recording of " + entry.scenarioId} width={320} />}
   {trace && <p><a href={trace} download>Download the trace</a> (open it with Playwright's trace viewer; Rovara doesn't open it)</p>}
-  {entry.consoleErrors > 0 && <p>{entry.consoleErrors + " console " + (entry.consoleErrors === 1 ? "error" : "errors")}</p>}
+  {entry.consoleErrors !== undefined && entry.consoleErrors > 0 && <p>{entry.consoleErrors + " console " + (entry.consoleErrors === 1 ? "error" : "errors")}</p>}
   {(entry.withheld ?? []).map((item, index) => <p key={index}>{(item.artifact === "video" ? "Video" : "Trace") + " not kept: " + (withheldWords[item.reason] ?? "not allowed") + "."}</p>)}</section>; })}</>;
 }
 function EnvironmentSection({ environment }: { environment: Evidence["environment"] }) {
