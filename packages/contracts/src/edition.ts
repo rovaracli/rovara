@@ -12,6 +12,8 @@ export const EDITIONS: readonly Edition[] = EditionSchema.options;
 
 /** The deploy parameter, the CDK context key and the process environment variable that carry the edition. */
 export const EDITION_CONTEXT_KEY = "rovaraEdition";
+/** The CDK context key `rovara init` sets on a new install, so that an install with no explicit edition is refused. */
+export const NEW_INSTALL_CONTEXT_KEY = "rovaraNewInstall";
 export const EDITION_ENV_VAR = "ROVARA_EDITION";
 
 /**
@@ -206,15 +208,22 @@ export function installInfo(policy: EditionPolicy): InstallInfo {
  * lacks the `cloud` dependency must not guess (guessing Enterprise inside Public turns on custom model endpoints and company sign-in; guessing Public inside an
  * Enterprise install turns on staff routes). Every function and task then carries the result as `ROVARA_EDITION`.
  *  - an explicit `enterprise` together with the hosted cloud, or an explicit `public` without it, is refused;
- *  - unset: the hosted cloud is `public`, everything else is `enterprise` (so existing private installs keep working).
+ *  - the hosted cloud is `public`;
+ *  - a NEW install (`newInstall`, set by `rovara init`) with no explicit edition is refused: nobody gets an edition by default;
+ *  - an existing install that has no explicit edition (the legacy deployment, a named install that predates editions) gets none: it keeps today's behaviour,
+ *    is not stamped, and is not treated as Enterprise. It chooses an edition on its next planned change.
  */
-export function editionAtSynth(input: { explicit: Edition | undefined; cloud: boolean }): Edition {
+export function editionAtSynth(input: { explicit: Edition | undefined; cloud: boolean; newInstall?: boolean }): Edition | undefined {
   if (input.explicit === "enterprise" && input.cloud) throw agentXError("CONFIG_INVALID", "The Enterprise edition cannot be combined with the hosted cloud (agentxCloud).");
   if (input.explicit === "public" && !input.cloud) throw agentXError("CONFIG_INVALID", "The Public edition is the hosted cloud: set agentxCloud, or choose the Enterprise edition.");
-  return input.explicit ?? (input.cloud ? "public" : "enterprise");
+  const decided = input.explicit ?? (input.cloud ? "public" : undefined);
+  if (decided === undefined && input.newInstall === true) {
+    throw agentXError("CONFIG_INVALID", `A new install must choose its edition: set ${EDITION_CONTEXT_KEY} to "enterprise" (or use the hosted cloud for "public").`);
+  }
+  return decided;
 }
 
-/** An install's edition is set once. A redeploy that asks for another edition than the recorded one is refused. */
+/** An install's edition is set once. `rovara deploy` (not yet wired) reads the recorded edition and calls this; a redeploy that asks for another edition than the recorded one is refused. */
 export function assertEditionUnchanged(recorded: Edition | undefined, requested: Edition): void {
   if (recorded !== undefined && recorded !== requested) {
     throw agentXError("CONFIG_INVALID", `This install was deployed as ${recorded}. The edition cannot change on a redeploy; build a new install instead.`);

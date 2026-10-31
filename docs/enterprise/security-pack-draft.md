@@ -29,8 +29,8 @@ people (your SSO) --> private web/API endpoint (your network)                   
                       control plane (broker, audit, Team record) --> DynamoDB / S3 (your KMS keys)
                            | signed push invocations
                       workers (EC2, one per workspace; security group: no route to the whole internet)
-                           |--> VPC interface endpoints: bedrock-runtime, sts, kms, logs, ecr.api, ecr.dkr,
-                           |      secretsmanager, ssm, sqs, states, ec2, s3 (and a gateway endpoint for DynamoDB and S3)
+                           |--> VPC interface endpoints (13 services plus S3): bedrock-runtime, bedrock, sts, kms, logs, monitoring,
+                           |      ecr.api, ecr.dkr, secretsmanager, ssm, sqs, states, ec2, s3 (and gateway endpoints for DynamoDB and S3)
                            |--> model proxy --> your Bedrock (same account) or your own model endpoint
                            '--> hosts your network team approves (code host, build system, registries, tool servers)
 ```
@@ -39,7 +39,7 @@ Network paths (source, destination, port, why).
 
 | From | To | Port | Why | Status |
 | --- | --- | --- | --- | --- |
-| Workers, dispatcher, session manager, model proxy, model access function | VPC interface endpoints (13 services plus S3) and gateway endpoints for S3 and DynamoDB | 443 | Reach AWS APIs without leaving the VPC. Every endpoint has a policy that admits only principals of your account (and, for S3 and DynamoDB, only your account's resources, with the two documented AWS-owned read exceptions). Only the private subnets may reach the endpoints. | [Built, not deployed] (`infra/lib/vpc-endpoints.ts`) |
+| Workers, dispatcher, session manager, model proxy, model access function | VPC interface endpoints (13 services plus S3) and gateway endpoints for S3 and DynamoDB | 443 | Reach AWS APIs without leaving the VPC. Every endpoint has a policy that admits only principals of your account (and, for S3 and DynamoDB, only your account's resources, with the two documented AWS-owned read exceptions). Only the private subnets may reach the endpoints. | Residual: the other endpoints check the calling principal but not the resource's account, so a worker can reach another account's queue or log group if that resource allows it; the worker role's own permissions are the only limit there (STS is left open because cross-account roles are legitimate). [Built, not deployed] (`infra/lib/vpc-endpoints.ts`) |
 | Workers, model proxy, model access function, Slack orchestrator | the VPC range and the private ranges your network team lists | 443 | Everything else they need, including the control plane's address | [Built, not deployed] (`rovaraEnterpriseEgressCidrs`: private ranges only, at most 20, none wider than a /8; a public range needs `rovaraEnterpriseAllowPublicRanges=true`) |
 | Control plane | Workers | 8080 | Signed invocations | [Built] |
 | Workers and the other groups above | the whole internet | none | Not allowed in the Enterprise profile | [Built, not deployed] (test: none of the security groups of the foundation, the control plane's model proxy and model access function, or the Slack orchestrator has a `0.0.0.0/0` or IPv6 egress rule) |
@@ -54,7 +54,7 @@ Full list of outbound hosts the code can name, with what an Enterprise install d
 
 Known gaps in the sealed network, stated plainly:
 
-- **The broker's own Lambda functions are not in your VPC.** They reach the internet directly, so no security group, DNS firewall or flow log applies to them. The broker is where features that call out (custom model endpoints, tool servers, connectors, webhooks) live, so this is the largest gap in the sealed network. Moving them into the VPC, behind the endpoints and the DNS firewall, is [Designed] (fix-round report) and not built. Until then this pack does not claim that nothing can leave.
+- **The broker's own Lambda functions are not in your VPC.** They reach the internet directly, so no security group, DNS firewall or flow log applies to them. The broker is where features that call out (custom model endpoints, tool servers, connectors, webhooks) live, so this is the largest gap in the sealed network. Moving them into the VPC, behind the endpoints and the DNS firewall, is [Designed] (the design change is written up for the next build wave) and not built. Until then this pack does not claim that nothing can leave.
 - A worker reaches the control plane's callback address over HTTPS. That address is public today, and API Gateway's addresses are not a stable range you can approve. The install therefore needs a private path to the control plane (an `execute-api` interface endpoint with a private API restricted to your endpoint, or an internal load balancer in front of the broker). [Designed], not built. This blocks the install proof.
 - The Lambda functions of the control plane outside the model path, and the endpoints they would need once inside the VPC (`execute-api`, `sns`, `events`, `codebuild`, `lambda`), are listed in `infra/lib/vpc-endpoints.ts` for the day they move.
 
@@ -116,7 +116,7 @@ Deleting at the source (for example a message) deletes everywhere, and every rec
 
 - Text from outside (comments, build logs, tracker items, tool results) is data, never an instruction. It reaches a model inside labelled blocks, and authority comes only from Rovara roles. [Built] for CI output; [Designed] as a rule for every plug-in (port rules in `contracts/src/plugins`).
 - Writes to outside systems go through a write gate with an audit event. Tracker status changes are limited to a set an admin chooses. [Built] (gate); [Designed] (tracker limits).
-- No self-merge. A person approves and presses Merge. [Built]
+- Rovara merges only when a person with the right role presses Merge. The merge call is made by Rovara's service identity and is audited. [Built]
 - Learned lessons: cited facts from trusted sources apply automatically, broad behaviour needs one person, anything touching reviewers, checks or security needs two. Outsiders' text is never used. [Designed] (learning v2).
 - Adapters are in-tree only, reviewed, and covered by the signed bundle. No code is loaded at run time. [Built] as a rule (the port design); signing is [Designed] (tasks N2, N3).
 

@@ -250,7 +250,7 @@ export class ProductionFoundationStack extends Stack {
       });
     }
 
-    // The edition is recorded: an install's edition is set once, and `rovara deploy` refuses a redeploy that asks for another (assertEditionUnchanged reads this).
+    // The edition is recorded: an install's edition is set once, and `rovara deploy` refuses a redeploy that asks for another (`rovara deploy` will read this and call assertEditionUnchanged once wired).
     if (enterprise) {
       new ssm.CfnParameter(this, "EditionRecord", { name: `/agentx/${naming.env!}/edition`, type: "String", value: "enterprise", description: "The edition this install was deployed as. It never changes." });
     }

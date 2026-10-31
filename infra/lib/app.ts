@@ -10,7 +10,7 @@ import { namingFromContext } from "./naming.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
 import { AGENTX_PRODUCTION_VPC_CIDR, ProductionFoundationStack } from "./production-foundation.js";
 import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
-import { EDITION_CONTEXT_KEY, editionAtSynth } from "@agentx/contracts";
+import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@agentx/contracts";
 import { EditionEnvironment } from "./edition-env.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
@@ -117,8 +117,10 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   const explicitEdition = parseEditionContext(app.node.tryGetContext(EDITION_CONTEXT_KEY));
   // Decided once, here (review I-3): Enterprise with the hosted cloud, and Public without it, are refused. Every function and task then carries the result.
   const edition = explicitEdition;
-  const decidedEdition = editionAtSynth({ explicit: explicitEdition, cloud: agentxCloud });
-  Aspects.of(app).add(new EditionEnvironment(decidedEdition));
+  // `rovaraNewInstall=true` is set by `rovara init`: a new install must choose its edition. An existing install with no explicit edition is not stamped (and never Enterprise).
+  const newInstallContext = app.node.tryGetContext(NEW_INSTALL_CONTEXT_KEY) as unknown;
+  const decidedEdition = editionAtSynth({ explicit: explicitEdition, cloud: agentxCloud, newInstall: newInstallContext === true || newInstallContext === "true" });
+  if (decidedEdition !== undefined) Aspects.of(app).add(new EditionEnvironment(decidedEdition));
   if (decidedEdition === "enterprise" && explicitEdition === "enterprise") {
     // An Enterprise install never leaves the audit anchor on the two public timestamp authorities: the customer names its own or switches it off.
     requireEnterpriseAuditTsa(app.node.tryGetContext("agentxAuditTsa"));
@@ -163,7 +165,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     naming,
     ...(agentxCloud ? { cloud: true } : {}),
     ...(edition === undefined ? {} : { edition }),
-    ...(enterpriseInternetEgressContext === undefined ? {} : { internetEgress: parseInternetEgress(enterpriseInternetEgressContext) }),
+    ...(parseInternetEgress(enterpriseInternetEgressContext) === undefined ? {} : { internetEgress: parseInternetEgress(enterpriseInternetEgressContext)! }),
     ...(enterpriseEgressCidrsContext === undefined ? {} : { enterpriseEgressCidrs: enterpriseCidrs }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("foundation") }),
   });

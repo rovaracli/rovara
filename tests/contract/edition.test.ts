@@ -171,11 +171,16 @@ describe("the session cap", () => {
 });
 
 describe("the edition at synth", () => {
-  it("derives once: the hosted cloud is Public and everything else is Enterprise", () => {
+  it("derives once: the hosted cloud is Public; an existing install with no explicit edition gets none, and is never made Enterprise", () => {
     expect(editionAtSynth({ explicit: undefined, cloud: true })).toBe("public");
-    expect(editionAtSynth({ explicit: undefined, cloud: false })).toBe("enterprise");
+    expect(editionAtSynth({ explicit: undefined, cloud: false })).toBeUndefined();
     expect(editionAtSynth({ explicit: "enterprise", cloud: false })).toBe("enterprise");
     expect(editionAtSynth({ explicit: "public", cloud: true })).toBe("public");
+  });
+  it("refuses a new install that has not chosen an edition, and accepts one that has", () => {
+    expect(thrown(() => editionAtSynth({ explicit: undefined, cloud: false, newInstall: true }))?.message).toContain("must choose its edition");
+    expect(editionAtSynth({ explicit: "enterprise", cloud: false, newInstall: true })).toBe("enterprise");
+    expect(editionAtSynth({ explicit: undefined, cloud: true, newInstall: true })).toBe("public");
   });
   it("refuses Enterprise with the hosted cloud, and Public without it", () => {
     expect(thrown(() => editionAtSynth({ explicit: "enterprise", cloud: true }))?.code).toBe("CONFIG_INVALID");

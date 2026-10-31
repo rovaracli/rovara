@@ -1,12 +1,13 @@
 // Enterprise foundations, task N1: the Enterprise edition's network, and proof that every other edition's network is the one it always was.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { App, Aspects } from "aws-cdk-lib";
+import { App, Aspects, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { requireEnterpriseAuditTsa } from "../../infra/lib/audit-settings.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { EditionEnvironment } from "../../infra/lib/edition-env.js";
+import { buildAgentXApp } from "../../infra/lib/app.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { SlackOrchestratorStack } from "../../infra/lib/slack-orchestrator.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -276,6 +277,77 @@ describe("every stack of an Enterprise install", () => {
   });
 });
 
+/** The app as `rovara deploy` builds it: every stack, from the CDK context. */
+function appStacks(context: Record<string, unknown>): Record<string, Template> {
+  const app = buildAgentXApp(context);
+  const out: Record<string, Template> = {};
+  for (const stack of app.node.children.filter((child): child is Stack => Stack.isStack(child))) out[stack.node.id] = Template.fromStack(stack);
+  return out;
+}
+const ENTERPRISE_CONTEXT = {
+  agentxEnv: "ent", rovaraEdition: "enterprise", rovaraEnterpriseEgressCidrs: APPROVED, agentxAuditTsa: "off",
+} as const;
+const functionsOf = (template: Template) => Object.entries(template.findResources("AWS::Lambda::Function")) as Array<[string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }]>;
+
+describe("the app, built as `rovara deploy` builds it (infra/lib/app.ts wiring)", () => {
+  const enterprise = appStacks(ENTERPRISE_CONTEXT);
+
+  it("stamps ROVARA_EDITION=enterprise on every function and container of every stack, through the app's own aspect", () => {
+    let seen = 0;
+    for (const [id, template] of Object.entries(enterprise)) {
+      for (const [fnId, fn] of functionsOf(template)) { seen += 1; expect(fn.Properties.Environment?.Variables?.ROVARA_EDITION, `${id} ${fnId}`).toBe("enterprise"); }
+      for (const [taskId, task] of Object.entries(template.findResources("AWS::ECS::TaskDefinition")) as Array<[string, { Properties: { ContainerDefinitions: Array<{ Environment?: Array<{ Name: string; Value: string }> }> } }]>) {
+        for (const container of task.Properties.ContainerDefinitions) expect(container.Environment?.find((entry) => entry.Name === "ROVARA_EDITION")?.Value, `${id} ${taskId}`).toBe("enterprise");
+      }
+    }
+    expect(seen).toBeGreaterThan(10);
+  });
+
+  it("passes the private ranges to the control plane and the Slack orchestrator: no security group of any stack reaches the whole internet", () => {
+    for (const id of ["AgentXControlPlane", "AgentXSlackOrchestrator", "AgentXProductionFoundation"]) {
+      expect(enterprise[id], id).toBeDefined();
+      expect(JSON.stringify(enterprise[id]!.toJSON()), id).not.toContain('"CidrIp":"0.0.0.0/0"');
+      for (const [, rules] of egressByGroup(enterprise[id]!)) expect(rules.filter(wholeInternet), id).toEqual([]);
+    }
+    // The positive control: the same app as a hosted install keeps the open egress.
+    const hosted = appStacks({ agentxEnv: "staging", agentxCloud: true });
+    expect(JSON.stringify(hosted.AgentXControlPlane!.toJSON())).toContain('"CidrIp":"0.0.0.0/0"');
+  });
+
+  it("refuses Enterprise with the hosted cloud, and Public without it, and an unknown edition", () => {
+    expect(() => appStacks({ ...ENTERPRISE_CONTEXT, agentxCloud: true })).toThrow(/cannot be combined with the hosted cloud/);
+    expect(() => appStacks({ agentxEnv: "staging", rovaraEdition: "public" })).toThrow(/hosted cloud/);
+    expect(() => appStacks({ ...ENTERPRISE_CONTEXT, rovaraEdition: "Enterprise" })).toThrow(/rovaraEdition/);
+  });
+
+  it("refuses the public timestamp authorities (unset or explicit) for an Enterprise install", () => {
+    const { agentxAuditTsa: _tsa, ...withoutTsa } = ENTERPRISE_CONTEXT;
+    void _tsa;
+    expect(() => appStacks(withoutTsa)).toThrow(/public timestamp authorities/);
+    expect(() => appStacks({ ...ENTERPRISE_CONTEXT, agentxAuditTsa: "public" })).toThrow(/public timestamp authorities/);
+  });
+
+  it("refuses a public approved range unless the install says in so many words that one is meant", () => {
+    expect(() => appStacks({ ...ENTERPRISE_CONTEXT, rovaraEnterpriseEgressCidrs: "52.0.0.0/8" })).toThrow(/not a private range/);
+    expect(() => appStacks({ ...ENTERPRISE_CONTEXT, rovaraEnterpriseEgressCidrs: "52.0.0.0/8", rovaraEnterpriseAllowPublicRanges: true })).not.toThrow();
+  });
+
+  it("treats an empty internet-egress setting like an unset one (no internet route), and NAT only when asked", () => {
+    expect(Object.values(appStacks({ ...ENTERPRISE_CONTEXT, rovaraEnterpriseInternetEgress: "" }).AgentXProductionFoundation!.findResources("AWS::EC2::NatGateway"))).toHaveLength(0);
+    expect(Object.values(appStacks({ ...ENTERPRISE_CONTEXT, rovaraEnterpriseInternetEgress: "nat" }).AgentXProductionFoundation!.findResources("AWS::EC2::NatGateway"))).toHaveLength(2);
+  });
+
+  it("never stamps Enterprise on an install that did not choose it: the hosted cloud is public, an existing install with no edition gets no stamp, a new one is refused", () => {
+    const stamps = (context: Record<string, unknown>) => new Set(Object.values(appStacks(context)).flatMap((template) => functionsOf(template).map(([, fn]) => fn.Properties.Environment?.Variables?.ROVARA_EDITION)));
+    expect(stamps({ agentxEnv: "staging", agentxCloud: true })).toEqual(new Set(["public"]));
+    expect(stamps({ agentxEnv: "staging" })).toEqual(new Set([undefined]));
+    expect(stamps({})).toEqual(new Set([undefined]));
+    expect(() => appStacks({ agentxEnv: "staging", rovaraNewInstall: true })).toThrow(/must choose its edition/);
+    expect(() => appStacks({ rovaraNewInstall: "true" })).toThrow(/must choose its edition/);
+    expect(stamps({ agentxEnv: "staging", agentxCloud: true, rovaraNewInstall: true })).toEqual(new Set(["public"]));
+  });
+});
+
 describe("the audit anchor of an Enterprise install", () => {
   it("is refused on the public timestamp authorities, unset or explicit; custom and off are accepted", () => {
     expect(() => requireEnterpriseAuditTsa(undefined)).toThrow(/public timestamp authorities/);
@@ -322,8 +394,8 @@ describe("the Enterprise network settings", () => {
   });
 
   it("reads the internet egress mode as nat unless it says none", () => {
-    expect(parseInternetEgress(undefined)).toBe("nat");
-    expect(parseInternetEgress("")).toBe("nat");
+    expect(parseInternetEgress(undefined)).toBeUndefined();
+    expect(parseInternetEgress("")).toBeUndefined();
     expect(parseInternetEgress("none")).toBe("none");
     expect(() => parseInternetEgress("NONE")).toThrow(/rovaraEnterpriseInternetEgress/);
     expect(() => parseInternetEgress(false)).toThrow(/rovaraEnterpriseInternetEgress/);

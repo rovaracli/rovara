@@ -4,8 +4,8 @@
 //  - Enterprise only: the `sso` feature is read from the edition policy before anything else.
 //  - A missing, unreadable or invalid mapping refuses the sign-in; so does a claim that is missing, malformed or too large.
 //  - A person in no mapped group has no access.
-//  - A mapping never grants `owner`. A person who already is an owner keeps their access whatever the identity provider says (the named break-glass person: a
-//    broken mapping cannot lock every owner out), and a mapping never changes an owner's role.
+//  - A mapping never grants `owner`, and never changes an owner's role. Owners go through the mapping like everyone else; only when the mapping itself is
+//    broken may one of at most two named owners sign in as break-glass (audited, alerted, one hour, fresh sign-in): see `decideSignIn`.
 //  - The mapped role replaces the person's role at every sign-in, so leaving a group takes the access away.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import {

@@ -48,8 +48,9 @@ const PRIVATE_RANGES: ReadonlyArray<readonly [readonly number[], number]> = [[[1
 /** Whether the install has a NAT gateway (and so an internet route) at all. `none` runs the install with no internet route. */
 export type InternetEgress = "nat" | "none";
 
-export function parseInternetEgress(value: unknown, fallback: InternetEgress = "nat"): InternetEgress {
-  if (value === undefined || value === "") return fallback;
+/** Unset and empty both mean "not chosen" (undefined): the Enterprise default, no internet route, applies. */
+export function parseInternetEgress(value: unknown): InternetEgress | undefined {
+  if (value === undefined || value === "") return undefined;
   if (value === "nat" || value === "none") return value;
   throw new Error(`${ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY} must be "nat" or "none"`);
 }
