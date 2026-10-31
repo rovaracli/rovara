@@ -17,7 +17,11 @@ export class FakeLessons implements LessonDeletionPort {
     return this.list.filter((lesson) => !this.withdrawn.includes(lesson.id) && (lesson.provenance.sourceEvents.some((id) => deleted.has(id)) || lesson.citations.some((c) => c.kind === "record" && deleted.has(c.eventId))));
   }
   async withdraw(_org: string, _project: string, id: string) { this.withdrawn.push(id); }
-  async removeRecordCitations(_org: string, _project: string, id: string) { this.trimmed.push(id); }
+  async forgetSources(_org: string, _project: string, id: string, deleted: ReadonlySet<string>) {
+    this.trimmed.push(id);
+    const lesson = this.list.find((entry) => entry.id === id);
+    if (lesson !== undefined) lesson.provenance = { sourceEvents: lesson.provenance.sourceEvents.filter((source) => !deleted.has(source)) };
+  }
 }
 
 export interface DeleteWorld {

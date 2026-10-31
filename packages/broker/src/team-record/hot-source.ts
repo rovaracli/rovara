@@ -5,7 +5,7 @@
 // The structural shapes below match the storage lane's interfaces (no lane imports another's files). A row with a tombstone is never listed, never counted and is
 // never marked archived: the mark is conditional on "no tombstone", so a delete that lands during an archive run wins.
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { RECORD_EVENT_SK_PREFIX, recordEventKey, teamRecordPk, workspaceVectorBucketKey, type OrgId, type RecordEvent } from "@agentx/contracts";
+import { RECORD_EVENT_SK_PREFIX, recordEventKey, teamRecordPk, teamRecordSourceHash, workspaceVectorBucketKey, type OrgId, type RecordEvent } from "@agentx/contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import { eventFromItem } from "./store.js";
 import type { TeamRecordTable } from "./types.js";
@@ -15,8 +15,12 @@ import type { TeamRecordTable } from "./types.js";
 export interface HotArchiveSource {
   listArchivable(request: { workspaceId: string; olderThan: string; limit: number; cursor?: string }): Promise<{ rows: RecordEvent[]; nextCursor?: string }>;
   filterLive(workspaceId: string, ids: string[]): Promise<Set<string>>;
-  markArchived(workspaceId: string, ids: string[], archivedAt: string): Promise<void>;
+  /** Returns the ids it could NOT mark because the row was deleted meanwhile; the caller's lake copy of those must be deleted again. */
+  markArchived(workspaceId: string, ids: string[], archivedAt: string): Promise<string[]>;
 }
+
+/** The lake delete targets of rows that died while the archiver was copying them (see `markArchived`). */
+export interface ArchiveRaceQueue { enqueue(workspaceId: string, targets: Array<{ kind: "source"; sourceHash: string }>): Promise<void> }
 
 /** The org's project names (the catalog the org already keeps). The workspace's project-less partition is always read too. */
 export interface ProjectListPort { projects(orgId: OrgId): Promise<string[]> }
@@ -38,8 +42,9 @@ function decode(value: string | undefined): ArchiveCursor {
  * The archive source of one broker invocation. It remembers where each row it listed lives (id to key) so `filterLive` and `markArchived` can reach them by id;
  * an id it never listed is treated as not live and is never marked (fail closed). Create one per archive run.
  */
-export function tableHotArchiveSource(table: TeamRecordTable, projectsPort: ProjectListPort): HotArchiveSource {
+export function tableHotArchiveSource(table: TeamRecordTable, projectsPort: ProjectListPort, lakeQueue: ArchiveRaceQueue, now: () => number = Date.now): HotArchiveSource {
   const keys = new Map<string, { pk: string; sk: string }>();
+  const sourceHashes = new Map<string, string>();
   const keyOf = (orgId: OrgId, id: string) => keys.get(`${orgId}|${id}`);
   return {
     async listArchivable(request) {
@@ -60,9 +65,11 @@ export function tableHotArchiveSource(table: TeamRecordTable, projectsPort: Proj
         })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
         for (const item of page.Items ?? []) {
           if (item.tombstone !== undefined || item.archivedAt !== undefined) continue;
-          const event = eventFromItem(item);
+          const event = eventFromItem(item, Math.floor(now() / 1000));
           if (event === undefined || event.workspaceId !== orgId) continue;
-          rows.push(event);
+          // Raw text reaches the lake only under D. A C row whose text is still there (the expiry job has not run) goes without it.
+          if (event.retention !== "D" && event.text !== undefined) { const { text: _text, textExpiresAt: _expires, ...bare } = event; rows.push(bare); } else rows.push(event); // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+          sourceHashes.set(`${orgId}|${event.id}`, teamRecordSourceHash(event.sourceRef.system, event.sourceRef.id));
           keys.set(`${orgId}|${event.id}`, recordEventKey(orgId, event.project, event.occurredAt, event.id));
         }
         last = page.LastEvaluatedKey;
@@ -83,6 +90,7 @@ export function tableHotArchiveSource(table: TeamRecordTable, projectsPort: Proj
     },
 
     async markArchived(workspaceId, ids, archivedAt) {
+      const lost: string[] = [];
       for (const id of ids) {
         const key = keyOf(workspaceId, id);
         if (key === undefined) continue;
@@ -99,8 +107,13 @@ export function tableHotArchiveSource(table: TeamRecordTable, projectsPort: Proj
           }));
         } catch (error) {
           if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+          // The row was deleted after the last check, so the lake copy the archiver just wrote must go too: the hourly lake delete for it may already have run.
+          lost.push(id);
         }
       }
+      const targets = lost.flatMap((id) => { const hash = sourceHashes.get(`${workspaceId}|${id}`); return hash === undefined ? [] : [{ kind: "source" as const, sourceHash: hash }]; });
+      if (targets.length > 0) await lakeQueue.enqueue(workspaceId, targets);
+      return lost;
     },
   };
 }

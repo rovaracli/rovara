@@ -58,9 +58,9 @@ describe("permission filter: the matrix", () => {
 
   it("hides a scope with unfinished work from everyone, restricted or not", async () => {
     const hidden = new Set(["github:repo/9"]);
-    expect((await filterVisible([row(acl())], person(), { hiddenScopes: hidden })).visible).toHaveLength(0);
-    expect((await filterVisible([row({ kind: "project" }, { scope: "github:repo/9" })], person(), { hiddenScopes: hidden })).visible).toHaveLength(0);
-    expect((await filterVisible([row({ kind: "project" }, { scope: "github:repo/10" })], person(), { hiddenScopes: hidden })).visible).toHaveLength(1);
+    expect((await filterVisible([row(acl())], person(), { pending: { scopes: hidden, sourceHashes: new Set() } })).visible).toHaveLength(0);
+    expect((await filterVisible([row({ kind: "project" }, { scope: "github:repo/9" })], person(), { pending: { scopes: hidden, sourceHashes: new Set() } })).visible).toHaveLength(0);
+    expect((await filterVisible([row({ kind: "project" }, { scope: "github:repo/10" })], person(), { pending: { scopes: hidden, sourceHashes: new Set() } })).visible).toHaveLength(1);
   });
 });
 

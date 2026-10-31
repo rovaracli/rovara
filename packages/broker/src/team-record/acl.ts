@@ -3,7 +3,8 @@
 // snapshot, a missing or failing live check and a row that does not parse all read as "not visible". The check runs in the broker on every hit; a vector or
 // query filter upstream is only a coarse cut.
 import { MAINTAINERS_GROUP, type AclSnapshot, type Audience, type RecordTombstone } from "@agentx/contracts";
-import type { LiveAclCheck, ReadAudience, RecordCaller } from "./types.js";
+import { teamRecordSourceHash } from "@agentx/contracts";
+import type { LiveAclCheck, PendingHides, ReadAudience, RecordCaller } from "./types.js";
 
 /** How long a live re-check answer is reused, per caller and scope (design 4.4.2). */
 export const LIVE_CHECK_CACHE_MS = 15 * 60_000;
@@ -13,6 +14,12 @@ const LIVE_CHECK_CACHE_MAX = 2_000;
 export interface Visible {
   audience: Audience;
   tombstone?: RecordTombstone | undefined;
+  /** The place a row came from, or (for a fact) the places it was distilled from. */
+  scope?: string | undefined;
+  scopes?: readonly string[] | undefined;
+  /** The source item a row is (events), or the ones a fact was distilled from (`system:sourceId`). */
+  sourceRef?: { system: string; id: string } | undefined;
+  derivedFrom?: readonly string[] | undefined;
 }
 
 /** Whether a caller's identities satisfy a snapshot. No principals and no groups is an empty snapshot: nobody. */
@@ -72,8 +79,8 @@ export interface FilterDependencies {
   liveCheck?: LiveAclCheck;
   cache?: LiveCheckCache;
   now?: () => number;
-  /** Scopes whose rows are hidden at once while their delete is still running (`system|scope` is not needed: a scope is already prefixed with its source). */
-  hiddenScopes?: ReadonlySet<string>;
+  /** What queued work (a delete, a permission change) has not finished: those places and source items read as hidden from everyone. */
+  pending?: PendingHides;
 }
 
 export interface FilterResult<T> {
@@ -82,24 +89,31 @@ export interface FilterResult<T> {
   withheld: number;
 }
 
-/** The scope a row's audience names, for the hidden-scope check. */
-function scopeOf(row: Visible & { scope?: string | undefined }): string | undefined {
-  return row.scope ?? (row.audience.kind === "restricted" ? row.audience.acl.scope : undefined);
+/** Whether queued, unfinished work hides the row: its place, one of its places, its source item, or a source item its fact was distilled from. */
+export function hiddenByPending(row: Visible, pending: PendingHides | undefined): boolean {
+  if (pending === undefined) return false;
+  const places = [row.scope, ...(row.scopes ?? []), ...(row.audience.kind === "restricted" ? [row.audience.acl.scope] : [])];
+  if (places.some((place) => place !== undefined && pending.scopes.has(place))) return true;
+  if (row.sourceRef !== undefined && pending.sourceHashes.has(teamRecordSourceHash(row.sourceRef.system, row.sourceRef.id))) return true;
+  for (const ref of row.derivedFrom ?? []) {
+    const at = ref.indexOf(":");
+    if (at > 0 && pending.sourceHashes.has(teamRecordSourceHash(ref.slice(0, at), ref.slice(at + 1)))) return true;
+  }
+  return false;
 }
 
 /**
  * Splits rows into what this audience may see and a count of what it may not. A restricted row whose snapshot says `on_read` also needs a live check that passes
  * (cached 15 minutes per caller and scope), whether the audience is a person or a private task's owner. A shared task never sees a restricted row at all.
  */
-export async function filterVisible<T extends Visible & { scope?: string | undefined }>(rows: readonly T[], audience: ReadAudience, dependencies: FilterDependencies = {}): Promise<FilterResult<T>> {
+export async function filterVisible<T extends Visible>(rows: readonly T[], audience: ReadAudience, dependencies: FilterDependencies = {}): Promise<FilterResult<T>> {
   const now = dependencies.now ?? Date.now;
   const visible: T[] = [];
   let withheld = 0;
   const checked = new Map<string, boolean>();
   for (const row of rows) {
     if (row.tombstone !== undefined) continue;
-    const scope = scopeOf(row);
-    if (scope !== undefined && dependencies.hiddenScopes?.has(scope) === true) continue;
+    if (hiddenByPending(row, dependencies.pending)) continue;
     if (!visibleWithoutLiveCheck(audience, row)) {
       withheld += 1;
       continue;

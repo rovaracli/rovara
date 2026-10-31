@@ -208,6 +208,8 @@ export const SourceConfigSchema = z.object({
   exclude: z.array(z.string().min(1).max(300)).max(200),
   /** Who may see rows from this source when the source gives no ACL. The fallback is maintainers only (fail closed). */
   audienceDefault: z.enum(["maintainers", "project"]),
+  /** Public Slack only: the workspace chose to keep "notes with links" (retention B). Without it a Public Slack source reads live only (A). */
+  notesOptIn: z.literal(true).optional(),
   lastCursor: z.string().max(500).optional(),
   health: z.enum(SOURCE_HEALTH),
   addedBy: DeveloperIdSchema,
@@ -249,8 +251,11 @@ export const RecordSearchHitSchema = z.object({
 }).strict();
 export type RecordSearchHit = z.infer<typeof RecordSearchHitSchema>;
 
-/** `withheld` counts the hits the caller may not see; the rows themselves are never named. */
-export const RecordSearchResponseSchema = z.object({ hits: z.array(RecordSearchHitSchema).max(RECORD_SEARCH_LIMIT_MAX), withheld: z.number().int().nonnegative() }).strict();
+/**
+ * `someHidden` says only that some results are hidden because the caller cannot see their source. It is never a count (a count lets a viewer probe how many private rows
+ * match a word), it looks at the best matches only, and it is always false for a shared task.
+ */
+export const RecordSearchResponseSchema = z.object({ hits: z.array(RecordSearchHitSchema).max(RECORD_SEARCH_LIMIT_MAX), someHidden: z.boolean() }).strict();
 export type RecordSearchResponse = z.infer<typeof RecordSearchResponseSchema>;
 
 export const PastWorkQuerySchema = z.object({ query: z.string().min(1).max(500), limit: z.number().int().min(1).max(PAST_WORK_LIMIT_MAX).default(5) }).strict();
@@ -268,7 +273,7 @@ export const PastWorkItemSchema = z.object({
   lessonsLearned: z.array(z.string().max(160)).max(10),
 }).strict();
 export type PastWorkItem = z.infer<typeof PastWorkItemSchema>;
-export const PastWorkResponseSchema = z.object({ items: z.array(PastWorkItemSchema).max(PAST_WORK_LIMIT_MAX), withheld: z.number().int().nonnegative() }).strict();
+export const PastWorkResponseSchema = z.object({ items: z.array(PastWorkItemSchema).max(PAST_WORK_LIMIT_MAX), someHidden: z.boolean() }).strict();
 export type PastWorkResponse = z.infer<typeof PastWorkResponseSchema>;
 
 export const RecordFactsQuerySchema = z.object({
@@ -277,7 +282,7 @@ export const RecordFactsQuerySchema = z.object({
   limit: z.number().int().min(1).max(RECORD_FACTS_LIMIT_MAX).default(20),
 }).strict();
 export type RecordFactsQuery = z.infer<typeof RecordFactsQuerySchema>;
-export const RecordFactsResponseSchema = z.object({ facts: z.array(RecordFactSchema).max(RECORD_FACTS_LIMIT_MAX), withheld: z.number().int().nonnegative() }).strict();
+export const RecordFactsResponseSchema = z.object({ facts: z.array(RecordFactSchema).max(RECORD_FACTS_LIMIT_MAX), someHidden: z.boolean() }).strict();
 export type RecordFactsResponse = z.infer<typeof RecordFactsResponseSchema>;
 
 /** The fixed statistics templates. Athena runs a template, never caller SQL; each binds the workspace and project in code. */

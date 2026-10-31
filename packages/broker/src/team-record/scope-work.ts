@@ -82,16 +82,20 @@ export async function tombstoneRows(dependencies: WorkDependencies, orgId: OrgId
     }
   };
 
-  for (const sourceId of (request.sourceIds ?? []).slice(0, SOURCE_IDS_MAX)) {
+  // The deleted-at-source markers first: they are cheap and bounded, and they stop a late retry of a create. Whatever the budget does next, the items are named in
+  // the queue (the caller writes it), and reads hide every item it names until the work is done.
+  const named = (request.sourceIds ?? []).slice(0, SOURCE_IDS_MAX);
+  for (const sourceId of named) {
+    await dependencies.table.documentClient.send(new PutCommand({
+      TableName: dependencies.table.tableName,
+      Item: { ...recordDeletedMarkerKey(orgId, request.system, sourceId), entityType: "TEAM_RECORD_DELETED", at: when, indexExpiresAt: Math.floor(now() / 1000) + DELETED_MARKER_DAYS * 86_400 },
+    }));
+  }
+  for (const sourceId of named) {
     if (expired()) { complete = false; break; }
     const found = await bySource(dependencies.table, orgId, request.system, sourceId, ITEMS_PER_SOURCE_MAX);
     await hideItems(found.items);
     if (found.truncated) complete = false;
-    const marker = recordDeletedMarkerKey(orgId, request.system, sourceId);
-    await dependencies.table.documentClient.send(new PutCommand({
-      TableName: dependencies.table.tableName,
-      Item: { ...marker, entityType: "TEAM_RECORD_DELETED", at: when, indexExpiresAt: Math.floor(now() / 1000) + DELETED_MARKER_DAYS * 86_400 },
-    }));
   }
   if ((request.sourceIds?.length ?? 0) > SOURCE_IDS_MAX) complete = false;
 

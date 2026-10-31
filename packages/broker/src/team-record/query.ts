@@ -36,7 +36,7 @@ import { Aliases, errorName } from "../agents/table-writes.js";
 import { filterVisible, type FilterDependencies, type FilterResult, type LiveCheckCache } from "./acl.js";
 import { parseEventVectorRef } from "./ingest.js";
 import type { LearningModeReader } from "./mode.js";
-import { getRecordEvent, getRecordFact, hiddenScopesOf, queryRecordEvents, queryRecordFacts, type StoredEvent } from "./store.js";
+import { getRecordEvent, getRecordFact, pendingHidesOf, queryRecordEvents, queryRecordFacts, type StoredEvent, type StoredFact } from "./store.js";
 import type { LiveAclCheck, ReadAudience, RecordEmbedder, RecordLog, TeamRecordTable } from "./types.js";
 
 export const RECORD_QUERIES_PER_PERSON_PER_HOUR = 120;
@@ -86,7 +86,8 @@ export interface RecordQueryDependencies {
   liveCache?: LiveCheckCache;
   limiter?: RateLimiter;
   tasks?: PastWorkTasksPort;
-  lessonsOfTask?(orgId: OrgId, project: string, taskId: string): Promise<string[]>;
+  /** The titles of the lessons learned from a task, each with the audience of the lesson (a lesson from a private channel is restricted). */
+  lessonsOfTask?(orgId: OrgId, project: string, taskId: string): Promise<Array<{ title: string; audience: Audience }>>;
   stats?: StatsPort;
   now?: () => number;
   log?: RecordLog;
@@ -113,13 +114,13 @@ async function guard(deps: RecordQueryDependencies, audience: ReadAudience, proj
   return "ok";
 }
 
+const nowSecondsOf = (deps: RecordQueryDependencies): number => Math.floor((deps.now ?? Date.now)() / 1000);
+
 async function filterDependencies(deps: RecordQueryDependencies, orgId: OrgId): Promise<FilterDependencies> {
-  const hiddenScopes = await hiddenScopesOf(deps.table, orgId).catch(() => undefined);
-  if (hiddenScopes === undefined) {
-    // Work on a scope that cannot be listed leaves nothing safe to show from a restricted source: only project-wide rows are shown by the caller's retry.
-    throw agentXError("RUNTIME_UNAVAILABLE", "The team record can't be read right now.");
-  }
-  return { ...(deps.liveCheck === undefined ? {} : { liveCheck: deps.liveCheck }), ...(deps.liveCache === undefined ? {} : { cache: deps.liveCache }), ...(deps.now === undefined ? {} : { now: deps.now }), hiddenScopes };
+  // Work that has not finished hides its places and source items from everyone. If the queue cannot be read in full, nothing is shown (no guessing).
+  const pending = await pendingHidesOf(deps.table, orgId).catch(() => undefined);
+  if (pending === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "The team record can't be read right now.");
+  return { ...(deps.liveCheck === undefined ? {} : { liveCheck: deps.liveCheck }), ...(deps.liveCache === undefined ? {} : { cache: deps.liveCache }), ...(deps.now === undefined ? {} : { now: deps.now }), pending };
 }
 
 const KIND_TITLES: Record<string, string> = {
@@ -132,7 +133,8 @@ const KIND_TITLES: Record<string, string> = {
 const snippet = (text: string | undefined): string => redactText([...(text ?? "")].slice(0, RECORD_SNIPPET_MAX).join(""));
 
 function hitOfEvent(event: StoredEvent): RecordSearchHit {
-  const structuredTitle = typeof event.structured?.title === "string" ? event.structured.title : undefined;
+  // A title written by a person is shown only on a row whose trust is not "rovara" (the highest class would lend it credit it has not earned), and always redacted.
+  const structuredTitle = event.trust !== "rovara" && typeof event.structured?.title === "string" ? redactText(event.structured.title) : undefined;
   return {
     id: event.id, kind: event.kind, source: event.source, occurredAt: event.occurredAt,
     title: (structuredTitle ?? KIND_TITLES[event.kind] ?? event.kind).slice(0, 200), snippet: snippet(event.text), ...(event.links[0] === undefined ? {} : { link: event.links[0] }),
@@ -158,14 +160,15 @@ function matches(query: string, haystack: string): number {
 /** Search rows and facts. By meaning when the index and the embedder are there; if they fail, or are not there, by keyword over the newest rows. */
 export async function recordSearch(deps: RecordQueryDependencies, audience: ReadAudience, project: string, request: Omit<RecordSearchQuery, "limit"> & { limit?: number }, options: QueryOptions = {}): Promise<RecordSearchResponse> {
   const limit = Math.min(request.limit ?? 10, RECORD_SEARCH_LIMIT_MAX);
-  if ((await guard(deps, audience, project, options, "search")) === "off") return { hits: [], withheld: 0 };
+  if ((await guard(deps, audience, project, options, "search")) === "off") return { hits: [], someHidden: false };
   const orgId = orgOfAudience(audience);
   const filters = await filterDependencies(deps, orgId);
   const since = request.since === undefined ? undefined : Date.parse(request.since);
   const until = request.until === undefined ? undefined : Date.parse(request.until);
   const inWindow = (at: string): boolean => (since === undefined || Date.parse(at) >= since) && (until === undefined || Date.parse(at) <= until);
 
-  type Candidate = { score: number; event?: StoredEvent; fact?: RecordFact };
+  type Candidate = { score: number; event?: StoredEvent; fact?: StoredFact };
+  const nowSeconds = nowSecondsOf(deps);
   let candidates: Candidate[] | undefined;
   if (deps.embedder !== undefined && deps.vectorSearch !== undefined) {
     try {
@@ -181,7 +184,7 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
         if (hit.key.startsWith("event:")) {
           const ref = parseEventVectorRef(hit.metadata.ref);
           if (ref === undefined) continue;
-          const event = await getRecordEvent(deps.table, orgId, project, ref.occurredAt, ref.id);
+          const event = await getRecordEvent(deps.table, orgId, project, ref.occurredAt, ref.id, nowSeconds);
           if (event !== undefined) candidates.push({ score, event });
         } else if (hit.key.startsWith("fact:")) {
           const fact = await getRecordFact(deps.table, orgId, project, hit.key.slice("fact:".length));
@@ -196,7 +199,7 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
   if (candidates === undefined) {
     // Keyword over the newest hot rows and the facts (design 4.11: the embedding or the index is unavailable).
     candidates = [];
-    for (const event of await queryRecordEvents(deps.table, orgId, project, { limit: KEYWORD_SCAN_ROWS })) {
+    for (const event of await queryRecordEvents(deps.table, orgId, project, { limit: KEYWORD_SCAN_ROWS, nowSeconds })) {
       const score = matches(request.query, `${event.text ?? ""} ${JSON.stringify(event.structured ?? {})}`);
       if (score > 0) candidates.push({ score, event });
     }
@@ -220,26 +223,31 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
   const checkedFacts = await filterVisible(wanted.flatMap((candidate) => (candidate.fact === undefined ? [] : [candidate.fact])), audience, filters);
   const okEvents = new Set(checkedEvents.visible);
   const okFacts = new Set(checkedFacts.visible);
+  // "Some results are hidden" is a flag, never a count, looks at the best matches only, and is false for a shared task: an exact count of matching private rows lets a
+  // viewer probe whether a private discussion exists.
+  const someHidden = audience.kind === "caller" && wanted.slice(0, limit * VECTOR_OVERFETCH).some((candidate) => !(candidate.event !== undefined ? okEvents.has(candidate.event) : candidate.fact !== undefined && okFacts.has(candidate.fact)));
   const hits: RecordSearchHit[] = [];
   for (const candidate of wanted) {
     if (hits.length >= limit) break;
     if (candidate.event !== undefined && okEvents.has(candidate.event)) hits.push(hitOfEvent(candidate.event));
     else if (candidate.fact !== undefined && okFacts.has(candidate.fact)) hits.push(hitOfFact(candidate.fact));
   }
-  return RecordSearchResponseSchema.parse({ hits, withheld: checkedEvents.withheld + checkedFacts.withheld });
+  return RecordSearchResponseSchema.parse({ hits, someHidden });
 }
 
 /** The distilled notes of a project the audience may see, newest first. */
 export async function recordFacts(deps: RecordQueryDependencies, audience: ReadAudience, project: string, request: { kinds?: Array<RecordFact["kind"]> | undefined; since?: string | undefined; limit?: number | undefined }, options: QueryOptions = {}): Promise<RecordFactsResponse> {
   const limit = Math.min(request.limit ?? 20, RECORD_FACTS_LIMIT_MAX);
-  if ((await guard(deps, audience, project, options, "facts")) === "off") return { facts: [], withheld: 0 };
+  if ((await guard(deps, audience, project, options, "facts")) === "off") return { facts: [], someHidden: false };
   const orgId = orgOfAudience(audience);
   const since = request.since === undefined ? undefined : Date.parse(request.since);
   const all = (await queryRecordFacts(deps.table, orgId, project, FACT_SCAN))
     .filter((fact) => fact.workspaceId === orgId && (request.kinds === undefined || request.kinds.includes(fact.kind)) && (since === undefined || Date.parse(fact.createdAt) >= since))
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-  const checked: FilterResult<RecordFact> = await filterVisible(all, audience, await filterDependencies(deps, orgId));
-  return RecordFactsResponseSchema.parse({ facts: checked.visible.slice(0, limit), withheld: checked.withheld });
+  const checked: FilterResult<StoredFact> = await filterVisible(all, audience, await filterDependencies(deps, orgId));
+  // The places a fact came from are for the filter, not for the reader.
+  const facts = checked.visible.slice(0, limit).map(({ scopes: _scopes, ...fact }) => fact); // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+  return RecordFactsResponseSchema.parse({ facts, someHidden: audience.kind === "caller" && checked.withheld > 0 });
 }
 
 const OUTCOME_KINDS = new Set(["rovara.task", "rovara.send_back", "rovara.closed", "rovara.merged", "github.revert"]);
@@ -253,14 +261,17 @@ export async function pastWork(deps: RecordQueryDependencies, audience: ReadAudi
   // `shared` is the agent's default: whatever the caller is, only what the whole project may view. `private` needs a person.
   if (audienceMode === "private" && audience.kind !== "caller") throw agentXError("FORBIDDEN", "A private search needs a person.");
   const effective: ReadAudience = audienceMode === "shared" ? { kind: "shared", orgId: orgOfAudience(audience) } : audience;
-  if ((await guard(deps, audience, project, options, "past_work")) === "off") return { items: [], withheld: 0 };
-  if (deps.tasks === undefined) return { items: [], withheld: 0 };
+  if ((await guard(deps, audience, project, options, "past_work")) === "off") return { items: [], someHidden: false };
+  if (deps.tasks === undefined) return { items: [], someHidden: false };
   const orgId = orgOfAudience(audience);
   const found = await deps.tasks.search({ orgId, project, query: request.query, limit: limit * 3 });
-  const checked = await filterVisible(found.map((task) => ({ ...task, audience: task.audience })), effective, await filterDependencies(deps, orgId));
+  const filters = await filterDependencies(deps, orgId);
+  const checked = await filterVisible(found.map((task) => ({ ...task, audience: task.audience })), effective, filters);
 
+  // The outcome rows pass the same filter: a revert seen only in a private repository does not show in a shared answer.
+  const outcomeRows = (await filterVisible(await queryRecordEvents(deps.table, orgId, project, { limit: PAST_WORK_EVENT_SCAN, nowSeconds: nowSecondsOf(deps) }), effective, filters)).visible;
   const outcomes = new Map<string, { merged: boolean; sendBacks: number; reverted: boolean }>();
-  for (const event of await queryRecordEvents(deps.table, orgId, project, { limit: PAST_WORK_EVENT_SCAN })) {
+  for (const event of outcomeRows) {
     if (event.tombstone !== undefined || !OUTCOME_KINDS.has(event.kind)) continue;
     const taskId = event.structured?.taskId;
     if (typeof taskId !== "string") continue;
@@ -273,15 +284,20 @@ export async function pastWork(deps: RecordQueryDependencies, audience: ReadAudi
     outcomes.set(taskId, entry);
   }
   const items: PastWorkItem[] = [];
+  let lessonHidden = false;
   for (const task of checked.visible.slice(0, limit)) {
-    const lessons = await (deps.lessonsOfTask?.(orgId, project, task.taskId) ?? Promise.resolve<string[]>([])).then((titles) => titles.slice(0, 10).map((title) => title.slice(0, 160)), () => [] as string[]);
+    // A lesson from a private place shows its title only to an audience that could see that place.
+    const learned = await (deps.lessonsOfTask?.(orgId, project, task.taskId) ?? Promise.resolve<Array<{ title: string; audience: Audience }>>([])).then((list) => list, () => []);
+    const visibleLessons = await filterVisible(learned.slice(0, 20), effective, filters);
+    if (visibleLessons.withheld > 0) lessonHidden = true;
+    const lessons = visibleLessons.visible.slice(0, 10).map((lesson) => redactText(lesson.title).slice(0, 160));
     items.push({
       taskId: task.taskId, title: redactText(task.title).slice(0, 200), status: task.status.slice(0, 40), ...(task.link === undefined ? {} : { link: task.link }), pullRequests: task.pullRequests.slice(0, 10),
       planSummary: redactText(task.planSummary).slice(0, PAST_WORK_PLAN_SUMMARY_MAX),
       outcome: outcomes.get(task.taskId) ?? { merged: false, sendBacks: 0, reverted: false }, lessonsLearned: lessons,
     });
   }
-  return PastWorkResponseSchema.parse({ items, withheld: checked.withheld });
+  return PastWorkResponseSchema.parse({ items, someHidden: effective.kind === "caller" && (checked.withheld > 0 || lessonHidden) });
 }
 
 export type StatsAnswer = { status: "ok"; rows: Array<Record<string, string | number | null>> } | { status: "unavailable"; text: string };

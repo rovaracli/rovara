@@ -33,6 +33,15 @@ export interface RecordDraft {
   links: string[];
   retention: RetentionMode;
   scope?: string;
+  /**
+   * Where the words came from when they are not the row's own source: a Rovara row made from a Slack message (`ask:`, a remembered thread comment) says `slack`, so
+   * the Slack rules (Public: no text kept) follow the text into the Rovara row.
+   */
+  origin?: "slack";
+  /** The trust of every piece the text is made of (the author, a quoted author, a forwarded message). The row takes the lowest. */
+  pieceTrusts?: TrustClass[];
+  /** The message carries attachments or shared messages from other authors. Without `pieceTrusts` they count as an outsider's. */
+  hasAttachments?: boolean;
 }
 
 export type IngestOutcome = { status: "stored" | "duplicate" } | { status: "refused"; reason: string };
@@ -92,3 +101,9 @@ export type ReadAudience = { kind: "shared"; orgId: OrgId; projectRole?: undefin
 export type LiveAclCheck = (input: { caller: RecordCaller; acl: AclSnapshot }) => Promise<boolean>;
 
 export type { AclSnapshot };
+
+/** What reads must hide while queued work is unfinished: whole places, and individual source items (`teamRecordSourceHash(system, sourceId)`). */
+export interface PendingHides {
+  scopes: ReadonlySet<string>;
+  sourceHashes: ReadonlySet<string>;
+}

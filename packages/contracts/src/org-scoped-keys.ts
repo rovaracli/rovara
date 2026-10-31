@@ -881,6 +881,11 @@ export const TEAM_RECORD_NO_PROJECT = "_workspace";
 /** The two indexes of the TeamRecord table: GSI1 finds rows by their source (delete at the source), GSI2 by the person (erase). */
 export const TEAM_RECORD_GSI1 = { index: "gsi1", partition: "gsi1pk" } as const;
 export const TEAM_RECORD_GSI2 = { index: "gsi2", partition: "gsi2pk" } as const;
+/** GSI5 is sparse: only rows that still hold raw text with an expiry carry it (`gsi5pk` one value per workspace, `textDueAt` the expiry as an ISO time), so the text-expiry job finds exactly the due rows. */
+export const TEAM_RECORD_GSI5 = { index: "gsi5", partition: "gsi5pk", sort: "textDueAt" } as const;
+export function recordTextDueIndexValue(orgId: OrgId): string {
+  return `WS#${OrgIdSchema.parse(orgId)}#TEXTDUE`;
+}
 /** GSI4 finds rows by the source identity of their actor (a person with no developer id). */
 export const TEAM_RECORD_GSI4 = { index: "gsi4", partition: "gsi4pk" } as const;
 /** GSI3 finds rows by their scope (a Slack channel, a repository): a deleted channel, a membership change, a channel that turned private. */
@@ -948,6 +953,13 @@ export function recordScopeHash(scope: string): string {
 /** The GSI4 partition value of every row made by one source identity (erase a person who has no developer id). */
 export function recordActorSourceIndexValue(orgId: OrgId, system: string, actorSourceId: string): string {
   return `WS#${OrgIdSchema.parse(orgId)}#ACTORSRC#${recordActorSourceHash(keyPart(system, "a source system"), actorSourceId)}`;
+}
+/**
+ * An erased person, kept for good (no expiry) so a backfill, a poller or an edit cannot bring them back. By developer id, or by the hash of a source identity
+ * (`recordActorSourceHash`) for someone who never had a developer id.
+ */
+export function erasedPersonKey(orgId: OrgId, who: { developerId: string } | { actorSourceHash: string }): OrgKey {
+  return { pk: teamRecordPk(orgId), sk: "developerId" in who ? `ERASED#dev#${keyPart(who.developerId, "a developer id")}` : `ERASED#src#${keyPart(who.actorSourceHash, "a hash")}` };
 }
 /** Which vector bucket holds a workspace's index, written once when the workspace gets its index and read back from then on (a second bucket must never remap a workspace). */
 export function workspaceVectorBucketKey(orgId: OrgId): OrgKey {

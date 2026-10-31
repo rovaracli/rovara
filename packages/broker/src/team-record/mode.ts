@@ -10,6 +10,10 @@ export interface LearningModeReader {
   effectiveMode(orgId: OrgId, project: string | undefined): Promise<LearningMode>;
 }
 
+const STRICTNESS: Record<LearningMode, number> = { off: 0, collect: 1, suggest: 2, on: 3 };
+/** The stricter of two modes: Off is the strictest, On the loosest. */
+export const stricter = (left: LearningMode, right: LearningMode): LearningMode => (STRICTNESS[left] <= STRICTNESS[right] ? left : right);
+
 export const captureIsOn = (mode: LearningMode): boolean => mode !== "off";
 export const lessonsLoad = (mode: LearningMode): boolean => mode === "suggest" || mode === "on";
 
@@ -25,11 +29,11 @@ export function tableModeReader(table: TeamRecordTable): LearningModeReader {
     async effectiveMode(orgId, project) {
       try {
         const lock = await read(learningModeLockKey(orgId));
-        if (lock.present) return lock.mode ?? "off";
-        if (project === undefined) return LEARNING_MODE_DEFAULT;
-        const own = await read(learningModeKey(orgId, project));
-        if (!own.present) return LEARNING_MODE_DEFAULT;
-        return own.mode ?? "off";
+        // A company lock only ever makes the mode stricter (owner decision M8): the project's own value is kept unless the lock is stricter still.
+        const own = project === undefined ? { present: false } as const : await read(learningModeKey(orgId, project));
+        const ownMode: LearningMode = own.present ? (own.mode ?? "off") : LEARNING_MODE_DEFAULT;
+        if (!lock.present) return ownMode;
+        return stricter(lock.mode ?? "off", ownMode);
       } catch {
         return "off";
       }

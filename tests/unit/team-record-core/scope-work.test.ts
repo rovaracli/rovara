@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { recordFactKey, type RecordFact } from "@agentx/contracts";
 import { filterVisible } from "../../../packages/broker/src/team-record/acl.js";
-import { eventFromItem, getRecordFact, hiddenScopesOf, listScopeWork, putDerivationLinks, putRecordFact, queryRecordEvents, getSourceConfigByScope, putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
+import { eventFromItem, getRecordFact, pendingHidesOf, listScopeWork, putDerivationLinks, putRecordFact, queryRecordEvents, getSourceConfigByScope, putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
 import { createRecordSink } from "../../../packages/broker/src/team-record/sink.js";
 import { wasDeletedAtSource } from "../../../packages/broker/src/team-record/scope-work.js";
 import { GITHUB_SCOPE, ORG_A, ORG_B, addSource, caller, get, githubDraft, rows, setMode, world, type World } from "../../support/team-record-core.js";
@@ -92,10 +92,10 @@ describe("tombstone: hidden at once", () => {
     expect(result.hidden).toBe(2);
     const queue = await listScopeWork(w.table, ORG_A, 10);
     expect(queue[0]).toMatchObject({ hidePending: true });
-    const hiddenScopes = await hiddenScopesOf(w.table, ORG_A);
-    expect([...hiddenScopes]).toEqual([GITHUB_SCOPE]);
+    const pending = await pendingHidesOf(w.table, ORG_A);
+    expect([...pending.scopes]).toEqual([GITHUB_SCOPE]);
     const events = await queryRecordEvents(w.table, ORG_A, "web", { limit: 10 });
-    expect((await filterVisible(events, { kind: "caller", caller: caller() }, { hiddenScopes })).visible).toHaveLength(0);
+    expect((await filterVisible(events, { kind: "caller", caller: caller() }, { pending })).visible).toHaveLength(0);
     // the other scope stays visible
     expect((await filterVisible(events, { kind: "caller", caller: caller() })).visible.length).toBe(2);
   });
@@ -176,7 +176,7 @@ describe("permission snapshot changes", () => {
     await tiny.changePrincipals({ workspaceId: ORG_A, scope: slackScope, remove: ["123"], at: "2026-10-30T13:00:00.000Z" });
     const queue = await listScopeWork(w.table, ORG_A, 10);
     expect(queue[0]).toMatchObject({ type: "principals", scope: slackScope, remove: ["123"], hidePending: true });
-    expect([...(await hiddenScopesOf(w.table, ORG_A))]).toEqual([slackScope]);
+    expect([...(await pendingHidesOf(w.table, ORG_A)).scopes]).toEqual([slackScope]);
   });
 
   it("an event whose workspace is not an org is refused by the sink (throws), not guessed", async () => {

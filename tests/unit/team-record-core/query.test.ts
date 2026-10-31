@@ -48,7 +48,8 @@ describe("recordSearch", () => {
     await seed(w);
     const result = await recordSearch(deps(w), shared, "web", { query: "billing retry" });
     expect(result.hits.map((hit) => hit.kind)).toEqual(["ticket.created"]);
-    expect(result.withheld).toBe(2);
+    expect(result).not.toHaveProperty("withheld");
+    expect(result.someHidden).toBe(false); // a shared task is told nothing about what is hidden
     expect(JSON.stringify(result)).not.toContain("withRetry");
   });
 
@@ -59,7 +60,8 @@ describe("recordSearch", () => {
     expect(mapped.hits.map((hit) => hit.kind)).toContain("github.review_comment");
     const unmapped = await recordSearch(deps(w), person({ identities: { ids: {}, groups: {} } }), "web", { query: "withRetry jitter" });
     expect(unmapped.hits.map((hit) => hit.kind)).not.toContain("github.review_comment");
-    expect(unmapped.withheld).toBeGreaterThanOrEqual(1);
+    expect(unmapped.someHidden).toBe(true);
+    expect(unmapped).not.toHaveProperty("withheld");
   });
 
   it("returns an outsider's text only as data with its outsider tag, to people who may see the source", async () => {
@@ -77,7 +79,7 @@ describe("recordSearch", () => {
     await seed(w);
     await expect(recordSearch(deps(w), person({ projectRole: undefined }), "web", { query: "billing" })).rejects.toThrow(/PROJECT_ACCESS_DENIED/);
     setMode(w, ORG_A, "web", "off");
-    expect(await recordSearch(deps(w), person(), "web", { query: "billing" })).toEqual({ hits: [], withheld: 0 });
+    expect(await recordSearch(deps(w), person(), "web", { query: "billing" })).toEqual({ hits: [], someHidden: false });
   });
 
   it("never reads another workspace: the same project name in org B stays out, in the keyword path and the vector path", async () => {
@@ -110,7 +112,7 @@ describe("recordSearch", () => {
     expect(asPerson.hits.map((hit) => hit.kind)).toEqual(["github.review_comment", "ticket.created"]);
     const asTask = await recordSearch(both, shared, "web", { query: "anything" });
     expect(asTask.hits.map((hit) => hit.kind)).toEqual(["ticket.created"]);
-    expect(asTask.withheld).toBe(1);
+    expect(asTask.someHidden).toBe(false);
     expect(asked).toEqual([{ project: "web" }, { project: "web", audienceKinds: ["project"] }]);
     await w.sink.tombstone({ workspaceId: ORG_A, system: "linear.app", sourceIds: ["ENG-7"], cause: "source_deleted" });
     expect((await recordSearch(both, person(), "web", { query: "anything" })).hits.map((hit) => hit.kind)).toEqual(["github.review_comment"]);
@@ -142,7 +144,7 @@ describe("recordSearch", () => {
     await w.sink.put(githubDraft({ audience: { kind: "restricted", acl: { source: "github", scope: GITHUB_SCOPE, principals: ["123"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "on_read" } } }));
     expect((await recordSearch(deps(w, { liveCheck: async () => true }), person(), "web", { query: "withRetry" })).hits).toHaveLength(1);
     const no = await recordSearch(deps(w, { liveCheck: async () => false }), person(), "web", { query: "withRetry" });
-    expect(no).toEqual({ hits: [], withheld: 1 });
+    expect(no).toEqual({ hits: [], someHidden: true });
   });
 
   it("hides a scope whose delete or permission change is unfinished, and counts nothing for it", async () => {
@@ -179,21 +181,21 @@ describe("recordFacts", () => {
     await putRecordFact(w.table, { ...base, id: FACT, text: "We use withRetry.", audience: PROJECT_AUDIENCE });
     await putRecordFact(w.table, { ...base, id: "5b8e9f4c-2b1a-4c1e-9a53-3f2d3d1a0003", text: "Private channel decision.", createdAt: "2026-10-30T11:00:00.000Z", kind: "note", audience: { kind: "restricted", acl: { source: "slack", scope: "slack:T1/C1", principals: ["U1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } } });
   }
-  it("returns visible facts newest first with a withheld count, filtered by kind", async () => {
+  it("returns visible facts newest first with a hidden flag (not a count), filtered by kind", async () => {
     const w = world();
     await facts(w);
     const mine = await recordFacts(deps(w), person(), "web", {});
     expect(mine.facts.map((fact) => fact.text)).toEqual(["We use withRetry."]);
-    expect(mine.withheld).toBe(1);
+    expect(mine.someHidden).toBe(true);
     const slackPerson = await recordFacts(deps(w), person({ identities: { ids: { slack: ["U1"] }, groups: {} } }), "web", {});
     expect(slackPerson.facts.map((fact) => fact.kind)).toEqual(["note", "decision"]);
     expect((await recordFacts(deps(w), person(), "web", { kinds: ["note"] })).facts).toEqual([]);
-    expect((await recordFacts(deps(w), shared, "web", {})).withheld).toBe(1);
+    expect((await recordFacts(deps(w), shared, "web", {})).someHidden).toBe(false);
   });
   it("keeps one workspace's facts out of another's read", async () => {
     const w = world();
     await facts(w);
-    expect(await recordFacts(deps(w), { kind: "caller", caller: caller({ orgId: ORG_B }) }, "web", {})).toEqual({ facts: [], withheld: 0 });
+    expect(await recordFacts(deps(w), { kind: "caller", caller: caller({ orgId: ORG_B }) }, "web", {})).toEqual({ facts: [], someHidden: false });
   });
 });
 
@@ -211,10 +213,10 @@ describe("pastWork (the Plan 9 contract)", () => {
     const w = world();
     await outcomes(w);
     const list = [task("t1", PROJECT_AUDIENCE), task("t2", privateAudience)];
-    const d = deps(w, { tasks: tasks(list), lessonsOfTask: async (_o, _p, id) => (id === "t1" ? ["Use withRetry"] : []) });
+    const d = deps(w, { tasks: tasks(list), lessonsOfTask: async (_o, _p, id) => (id === "t1" ? [{ title: "Use withRetry", audience: PROJECT_AUDIENCE }] : []) });
     const sharedResult = await pastWork(d, person(), "shared", "web", { query: "billing" });
     expect(sharedResult.items.map((item) => item.taskId)).toEqual(["t1"]);
-    expect(sharedResult.withheld).toBe(1);
+    expect(sharedResult.someHidden).toBe(false);
     expect(sharedResult.items[0]).toMatchObject({ outcome: { merged: true, sendBacks: 2, reverted: false }, lessonsLearned: ["Use withRetry"] });
     expect(sharedResult.items[0]!.planSummary).toHaveLength(500);
     const mine = await pastWork(d, person({ identities: { ids: { rovara: ["dev-1"] }, groups: {} } }), "private", "web", { query: "billing" });
@@ -228,7 +230,7 @@ describe("pastWork (the Plan 9 contract)", () => {
     await outcomes(w);
     const d = deps(w, { tasks: tasks([task("t3", PROJECT_AUDIENCE)]) });
     expect((await pastWork(d, shared, "shared", "web", { query: "x" })).items[0]!.outcome).toEqual({ merged: false, sendBacks: 0, reverted: true });
-    expect(await pastWork(deps(w), person(), "shared", "web", { query: "x" })).toEqual({ items: [], withheld: 0 });
+    expect(await pastWork(deps(w), person(), "shared", "web", { query: "x" })).toEqual({ items: [], someHidden: false });
     await expect(pastWork(d, shared, "private", "web", { query: "x" })).rejects.toThrow(/FORBIDDEN/);
   });
 

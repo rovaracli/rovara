@@ -7,7 +7,9 @@ import type { Item } from "../agents/table-writes.js";
 import { auditRecordErased } from "./audit.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { addPurge, emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
-import { bySource, byActor, byActorSource, deleteItem, queryPrefix, tombstoneItem } from "./store.js";
+import { markPersonErased } from "./erased.js";
+import { changeScopePrincipals } from "./scope-work.js";
+import { bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
 
 export interface EraseBudget {
   /** The most items one call reads and removes. */
@@ -30,6 +32,10 @@ const finish = async (deps: PurgeDependencies, orgId: OrgId, cause: "person_eras
 export interface ErasedPerson {
   developerId?: string;
   identities?: ReadonlyArray<{ system: string; sourceId: string }>;
+  /** Places the person was a member of (private channels, repositories) beyond those of their own rows: their ids leave those snapshots too. */
+  scopes?: readonly string[];
+  /** Projects whose source rows may name them in an exclusion list. */
+  projects?: readonly string[];
 }
 
 /**
@@ -42,7 +48,8 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   const queue = deps.lakeQueue ?? tableLakeDeleteQueue(deps.table, now);
   const identities = (who.identities ?? []).slice(0, 50);
   if (who.developerId === undefined && identities.length === 0) throw new Error("erase: name a developer or a source identity");
-  // The lake first: their events and outcomes there are queued before anything hot is touched.
+  // The marker first: from now on no backfill, poller or edit can bring them back. Then the lake: their events and outcomes there are queued before anything hot is touched.
+  await markPersonErased(deps.table, orgId, { developerId: who.developerId, identities }, new Date(now()).toISOString());
   await queue.enqueue(orgId, [
     ...(who.developerId === undefined ? [] : [{ kind: "actor" as const, developerId: who.developerId }]),
     ...identities.map((identity) => ({ kind: "actor_source" as const, hash: recordActorSourceHash(identity.system, identity.sourceId) })),
@@ -54,24 +61,38 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
     found.truncated ||= more.truncated;
   }
   const at = new Date(now()).toISOString();
-  const rows = [...new Map(found.items.filter((item) => item.entityType === "TEAM_RECORD_EVENT").map((item) => [`${item.pk as string}|${item.sk as string}`, item])).values()];
+  const distinct = (items: Item[]): Item[] => [...new Map(items.map((item) => [`${item.pk as string}|${item.sk as string}`, item])).values()];
+  const rows = distinct(found.items.filter((item) => item.entityType === "TEAM_RECORD_EVENT"));
+  // The person's links: those the index names directly (the actor is on each link, so this works with no row left: retention B keeps none, and a row's TTL removes it),
+  // and those reached through their rows' source items.
+  const links: Item[] = found.items.filter((item) => item.entityType === "TEAM_RECORD_DERIVATION");
   for (const row of rows) {
     if (typeof row.pk === "string" && typeof row.sk === "string") await tombstoneItem(deps.table, { pk: row.pk, sk: row.sk }, { at, cause: "person_erased" });
-  }
-  // The links of facts built from these rows (a row's own source item).
-  const links: Item[] = [];
-  for (const row of rows) {
     const source = row.sourceRef as { system?: unknown; id?: unknown } | undefined;
     if (typeof source?.system !== "string" || typeof source.id !== "string") continue;
     const sourceItems = await bySource(deps.table, orgId, source.system, source.id, 500);
-    for (const item of sourceItems.items) {
-      if (item.entityType !== "TEAM_RECORD_DERIVATION") continue;
-      if (typeof item.pk === "string" && typeof item.sk === "string") await tombstoneItem(deps.table, { pk: item.pk, sk: item.sk }, { at, cause: "person_erased" });
-      links.push(item);
+    links.push(...sourceItems.items.filter((item) => item.entityType === "TEAM_RECORD_DERIVATION"));
+  }
+  const allLinks = distinct(links);
+  for (const item of allLinks) {
+    if (typeof item.pk === "string" && typeof item.sk === "string") await tombstoneItem(deps.table, { pk: item.pk, sk: item.sk }, { at, cause: "person_erased" });
+  }
+  // Their ids leave the permission snapshots of the places they were in, and the exclusion lists that named them.
+  const scopes = new Set<string>([...(who.scopes ?? []), ...rows.flatMap((row) => (typeof row.scope === "string" ? [row.scope] : [])), ...allLinks.flatMap((link) => (typeof link.scope === "string" ? [link.scope] : []))]);
+  const ids = identities.map((identity) => identity.sourceId);
+  let scrubbed = true;
+  if (ids.length > 0) {
+    for (const scope of [...scopes].slice(0, 200)) {
+      const done = await changeScopePrincipals({ table: deps.table, now }, orgId, { scope, remove: ids, at }, { maxItems: budget.maxItems, maxMs: 8_000 });
+      scrubbed &&= done.complete;
+    }
+    scrubbed &&= scopes.size <= 200;
+    for (const project of who.projects ?? []) {
+      for (const config of await listSourceConfigs(deps.table, orgId, project)) await removeFromExclude(deps.table, config, new Set(ids));
     }
   }
-  const purged = await purgeItems(deps, orgId, [...rows, ...links]);
-  const result: EraseResult = { ...purged, other: 0, complete: !found.truncated && purged.blocked === 0 };
+  const purged = await purgeItems(deps, orgId, [...rows, ...allLinks]);
+  const result: EraseResult = { ...purged, other: 0, complete: !found.truncated && purged.blocked === 0 && scrubbed };
   await finish(deps, orgId, "person_erased", occurrence, result);
   return result;
 }
@@ -131,17 +152,27 @@ export async function eraseProject(deps: PurgeDependencies, orgId: OrgId, projec
     }
   }
 
-  // 4. What the learning lane keeps there.
-  const lessonIds = new Set<string>();
-  for (const prefix of LEARNING_PREFIXES) {
+  // 4. What the learning lane keeps there. Lesson vectors go BEFORE the lesson rows (the same order as everywhere else): a vector that cannot be deleted keeps its
+  // lesson rows, so the next call finds them again, and a missing vector port counts as blocked while lessons exist.
+  const lessons = await take(LESSON_SK_PREFIX);
+  const lessonIds = new Set(lessons.items.flatMap((item) => (typeof item.sk === "string" ? [/^LESSON#([^#]+)/.exec(item.sk)?.[1]] : [])).filter((id): id is string => id !== undefined));
+  let lessonVectorsGone = lessonIds.size === 0;
+  if (lessonIds.size > 0 && project !== undefined && deps.lessonVectors !== undefined) {
+    lessonVectorsGone = await deps.lessonVectors.removeAll(orgId, project, [...lessonIds]).then(() => true, () => false);
+  }
+  if (!lessonVectorsGone) result.blocked += lessonIds.size;
+  else {
+    left -= lessons.items.length;
+    await removePlain(lessons.items);
+    result.other += lessons.items.length;
+  }
+  for (const prefix of LEARNING_PREFIXES.filter((candidate) => candidate !== LESSON_SK_PREFIX)) {
     if (left <= 0) break;
     const found = await take(prefix);
     left -= found.items.length;
-    for (const item of found.items) if (prefix === LESSON_SK_PREFIX && typeof item.id === "string") lessonIds.add(item.id);
     await removePlain(found.items);
     result.other += found.items.length;
   }
-  if (lessonIds.size > 0 && project !== undefined) await deps.lessonVectors?.removeAll(orgId, project, [...lessonIds]).catch(() => { result.blocked += 1; });
 
   // Complete when a fresh look finds nothing left and nothing was blocked.
   let remaining = 0;
@@ -157,6 +188,8 @@ export async function eraseProject(deps: PurgeDependencies, orgId: OrgId, projec
  */
 export async function eraseWorkspace(deps: PurgeDependencies, orgId: OrgId, projects: readonly string[], occurrence: string, budget: EraseBudget = DEFAULT_ERASE_BUDGET): Promise<EraseResult & { remainingProjects: string[] }> {
   const total: EraseResult = { ...emptyPurge(), other: 0, complete: true };
+  // The whole workspace in the lake first, including rows that belong to no project (the per-project target cannot reach those).
+  await (deps.lakeQueue ?? tableLakeDeleteQueue(deps.table, deps.now)).enqueue(orgId, [{ kind: "workspace" }]);
   let left = budget.maxItems;
   const remainingProjects: string[] = [];
   for (const project of [...projects, undefined]) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { recordEventKey, recordSourceIndexValue, recordScopeIndexValue, teamRecordPk } from "@agentx/contracts";
+import { recordEventKey, recordSourceConfigIndexValue, recordSourceIndexValue, recordScopeIndexValue, teamRecordPk } from "@agentx/contracts";
+import { createSourceConfigPort } from "../../../packages/broker/src/team-record/sink.js";
 import { eventFromItem, deterministicEventId } from "../../../packages/broker/src/team-record/store.js";
 import { GITHUB_SCOPE, ORG_A, ORG_B, T0, addSource, githubDraft, rows, setLock, setMode, world } from "../../support/team-record-core.js";
 
@@ -122,9 +123,19 @@ describe("ingest: retention routing", () => {
     await addSource(w, { source: "github", scope: GITHUB_SCOPE, retention: "C" });
     expect(await w.sink.put(githubDraft({ retention: "D" }))).toEqual({ status: "refused", reason: "retention_exceeds_source" });
     const pub = world({ edition: "public" });
-    await addSource(pub, { source: "slack", scope: SLACK_SCOPE, retention: "D" });
-    expect(await pub.sink.put(slackDraft({ retention: "D" }))).toEqual({ status: "refused", reason: "slack_public_fixed_a_b" });
-    expect(await pub.sink.put(slackDraft({ retention: "C" }))).toEqual({ status: "refused", reason: "slack_public_fixed_a_b" });
+    // The setting itself is refused (I-11), so the Sources tab never shows a retention ingest would refuse.
+    expect(await addSource(pub, { source: "slack", scope: SLACK_SCOPE, retention: "D" })).toEqual({ status: "refused", reason: "slack_public_fixed_a_b" });
+    expect(await addSource(pub, { source: "slack", scope: SLACK_SCOPE, retention: "C" })).toEqual({ status: "refused", reason: "slack_public_fixed_a_b" });
+    // B needs the workspace's explicit opt-in (Q4); without it the row is refused, with it B stores no row (the text goes to the distiller in memory).
+    expect(await addSource(pub, { source: "slack", scope: SLACK_SCOPE, retention: "B" })).toEqual({ status: "refused", reason: "slack_notes_need_opt_in" });
+    expect(await addSource(pub, { source: "slack", scope: SLACK_SCOPE, retention: "B", notesOptIn: true })).toEqual({ status: "saved" });
+    expect(await pub.sink.put(slackDraft({ retention: "B" }))).toEqual({ status: "refused", reason: "retention_not_stored" });
+    expect(await pub.sink.put(slackDraft({ retention: "D" }))).toEqual({ status: "refused", reason: "retention_exceeds_source" });
+    // A stored row from before the rule (retention D, or B with no opt-in) is read as live-only by the taps' config port and refused by ingest.
+    const stale = world({ edition: "public" });
+    stale.db.set({ pk: `WS#${ORG_A}#P#web`, sk: "SOURCE#slack#x", entityType: "TEAM_RECORD_SOURCE", workspaceId: ORG_A, project: "web", source: "slack", scope: SLACK_SCOPE, enabled: true, retention: "D", exclude: [], audienceDefault: "maintainers", health: "unknown", addedBy: "d", updatedAt: "2026-10-30T10:00:00.000Z", gsi1pk: recordSourceConfigIndexValue(ORG_A, "slack", SLACK_SCOPE) });
+    expect(await stale.sink.put(slackDraft({ retention: "D" }))).toEqual({ status: "refused", reason: "slack_public_fixed_a_b" });
+    expect(await createSourceConfigPort(stale.deps).get(ORG_A, "slack", SLACK_SCOPE)).toMatchObject({ retention: "A" });
     const ent = world({ edition: "enterprise" });
     await addSource(ent, { source: "slack", scope: SLACK_SCOPE, retention: "C" });
     expect(await ent.sink.put(slackDraft({ retention: "C" }))).toEqual({ status: "stored" });
@@ -176,13 +187,13 @@ describe("ingest: source rows, mode and exclusions", () => {
     expect(rows(broken, "TEAM_RECORD_EVENT")).toHaveLength(0);
   });
 
-  it("captures by default (Suggest) and when a lock says On over a project that says Off", async () => {
+  it("captures by default (Suggest), and a company lock can only make the mode stricter: On over a project that says Off stays Off (M8)", async () => {
     const w = world();
     await addSource(w, { source: "github", scope: GITHUB_SCOPE });
     expect(await w.sink.put(githubDraft())).toEqual({ status: "stored" });
     setMode(w, ORG_A, "web", "off");
     setLock(w, ORG_A, "on");
-    expect(await w.sink.put(githubDraft({ sourceRef: { system: "github.com", id: "c-3", version: "1" } }))).toEqual({ status: "stored" });
+    expect(await w.sink.put(githubDraft({ sourceRef: { system: "github.com", id: "c-3", version: "1" } }))).toEqual({ status: "refused", reason: "capture_off" });
   });
 
   it("refuses a private scope with more than 500 principals (it cannot be represented)", async () => {

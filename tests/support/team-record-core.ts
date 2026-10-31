@@ -59,11 +59,12 @@ export function setLock(w: World, orgId: OrgId, mode: string): void {
   w.db.set({ ...learningModeLockKey(orgId), entityType: "TEAM_RECORD_MODE_LOCK", mode });
 }
 
-export async function addSource(w: World, input: { orgId?: OrgId; project?: string; source: RecordSourceKind; scope: string; retention?: RetentionMode; enabled?: boolean; exclude?: string[]; audienceDefault?: "maintainers" | "project" }) {
+export async function addSource(w: World, input: { orgId?: OrgId; project?: string; source: RecordSourceKind; scope: string; retention?: RetentionMode; enabled?: boolean; exclude?: string[]; audienceDefault?: "maintainers" | "project"; notesOptIn?: boolean }) {
   return putSourceConfig(w.table, {
     workspaceId: input.orgId ?? ORG_A, project: input.project ?? "web", source: input.source, scope: input.scope, enabled: input.enabled ?? true, retention: input.retention ?? "D",
     exclude: input.exclude ?? [], audienceDefault: input.audienceDefault ?? "maintainers", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",
-  });
+    ...(input.notesOptIn === true ? { notesOptIn: true as const } : {}),
+  }, { edition: w.deps.edition });
 }
 
 export const GITHUB_SCOPE = "github:repo/9";

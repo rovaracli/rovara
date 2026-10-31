@@ -5,7 +5,7 @@
 // The vector bucket and the lake are the storage lane's constructs (`team-record-storage.ts`); the stack that wires them also instantiates this one.
 import { RemovalPolicy, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { INDEX_EXPIRY_ATTRIBUTE, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4 } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5 } from "@agentx/contracts";
 
 const TABLE_NAME = /^[A-Za-z0-9_.-]{3,255}$/;
 
@@ -39,6 +39,11 @@ export class TeamRecordTable extends Construct {
     for (const index of [TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4]) {
       this.table.addGlobalSecondaryIndex({ indexName: index.index, partitionKey: { name: index.partition, type: dynamodb.AttributeType.STRING }, projectionType: dynamodb.ProjectionType.ALL });
     }
+    // Sparse: only rows that still hold raw text with an expiry; sorted by that expiry, so the text-expiry job reads exactly the due rows.
+    this.table.addGlobalSecondaryIndex({
+      indexName: TEAM_RECORD_GSI5.index, partitionKey: { name: TEAM_RECORD_GSI5.partition, type: dynamodb.AttributeType.STRING },
+      sortKey: { name: TEAM_RECORD_GSI5.sort, type: dynamodb.AttributeType.STRING }, projectionType: dynamodb.ProjectionType.ALL,
+    });
   }
 
   /** What the broker's role needs: every item action the record code uses, on the table and its indexes. No scan, no table-level delete. */

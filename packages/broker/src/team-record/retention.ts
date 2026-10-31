@@ -42,11 +42,14 @@ export function exceedsRetention(mode: RetentionMode, ceiling: RetentionMode): b
 }
 
 /**
- * Why a retention mode is not allowed for a source in an edition, or undefined when it is. The Public edition keeps Slack at A or B only; every other
- * combination is allowed.
+ * Why a retention mode is not allowed for a source in an edition, or undefined when it is. The Public edition keeps Slack at A, or at B only with the workspace's opt-in;
+ * every other combination is allowed.
  */
-export function retentionRefusal(edition: Edition, source: RecordSourceKind, retention: RetentionMode): "slack_public_fixed_a_b" | undefined {
-  if (edition === "public" && source === "slack" && (retention === "C" || retention === "D")) return "slack_public_fixed_a_b";
+export function retentionRefusal(edition: Edition, source: RecordSourceKind, retention: RetentionMode, notesOptIn = false): "slack_public_fixed_a_b" | "slack_notes_need_opt_in" | undefined {
+  if (edition !== "public" || source !== "slack") return undefined;
+  if (retention === "C" || retention === "D") return "slack_public_fixed_a_b";
+  // Owner decision Q4: Public Slack is read live (A); "notes with links" (B) only when the workspace chose it.
+  if (retention === "B" && !notesOptIn) return "slack_notes_need_opt_in";
   return undefined;
 }
 

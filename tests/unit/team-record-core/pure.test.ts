@@ -35,7 +35,9 @@ describe("retention plan", () => {
     expect(lessRetention("D", "B")).toBe("B");
     expect(retentionRefusal("public", "slack", "C")).toBe("slack_public_fixed_a_b");
     expect(retentionRefusal("public", "slack", "D")).toBe("slack_public_fixed_a_b");
-    expect(retentionRefusal("public", "slack", "B")).toBeUndefined();
+    expect(retentionRefusal("public", "slack", "B")).toBe("slack_notes_need_opt_in");
+    expect(retentionRefusal("public", "slack", "B", true)).toBeUndefined();
+    expect(retentionRefusal("public", "slack", "A")).toBeUndefined();
     expect(retentionRefusal("public", "github", "D")).toBeUndefined();
     expect(retentionRefusal("enterprise", "slack", "D")).toBeUndefined();
   });

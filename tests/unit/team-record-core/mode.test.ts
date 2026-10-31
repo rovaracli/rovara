@@ -13,6 +13,22 @@ describe("learning mode", () => {
     expect(await reader.effectiveMode(ORG_A, "web")).toBe("off");
     expect(await reader.effectiveMode(ORG_B, "web")).toBe("suggest");
   });
+  it("a company lock only makes the mode stricter, never looser (M8)", async () => {
+    const w = world();
+    const reader = tableModeReader(w.table);
+    setMode(w, ORG_A, "web", "off");
+    setLock(w, ORG_A, "on");
+    expect(await reader.effectiveMode(ORG_A, "web")).toBe("off");
+    setMode(w, ORG_A, "web", "collect");
+    setLock(w, ORG_A, "suggest");
+    expect(await reader.effectiveMode(ORG_A, "web")).toBe("collect");
+    setMode(w, ORG_A, "web", "on");
+    setLock(w, ORG_A, "collect");
+    expect(await reader.effectiveMode(ORG_A, "web")).toBe("collect");
+    // no project value: the default (suggest) under a lock of on stays suggest
+    setLock(w, ORG_A, "on");
+    expect(await reader.effectiveMode(ORG_A, "other")).toBe("suggest");
+  });
   it("reads a value that does not parse, or a failed read, as Off", async () => {
     const w = world();
     setMode(w, ORG_A, "web", "turbo");

@@ -31,11 +31,21 @@ export function lessonFate(lesson: LessonForDeletion, deleted: ReadonlySet<strin
   return supportedByCode(lesson) ? "keep_without_record_citations" : "withdraw";
 }
 
-/** The learning lane's lesson store, from the record core's side. */
+/**
+ * The learning lane's lesson store, from the record core's side. `forgetSources` removes the deleted ids from BOTH a lesson's `provenance.sourceEvents` and its record
+ * citations, so a lesson's remaining sources shrink across runs: a lesson resting on A and B is kept when A goes and withdrawn when B goes later.
+ */
 export interface LessonDeletionPort {
   /** The project's lessons that are not already withdrawn, retired or rejected and that name any of `deleted` as a source or a record citation. */
   affected(orgId: string, project: string, deleted: ReadonlySet<string>): Promise<LessonForDeletion[]>;
   withdraw(orgId: string, project: string, lessonId: string, cause: string): Promise<void>;
-  /** Removes the record citations of the deleted rows from a lesson that stays (a new version). */
-  removeRecordCitations(orgId: string, project: string, lessonId: string, deleted: ReadonlySet<string>): Promise<void>;
+  /** Removes the deleted ids from the lesson's sources and record citations (a new version). */
+  forgetSources(orgId: string, project: string, lessonId: string, deleted: ReadonlySet<string>): Promise<void>;
 }
+
+/** For an install with no learning lane: nothing rests on the record. Deletion refuses to run with NO port at all (a missing port is not "no lessons"), so this is explicit. */
+export const NO_LESSONS: LessonDeletionPort = {
+  async affected() { return []; },
+  async withdraw() { /* nothing to withdraw */ },
+  async forgetSources() { /* nothing to forget */ },
+};

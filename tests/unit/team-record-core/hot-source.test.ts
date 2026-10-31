@@ -37,7 +37,7 @@ describe("archive source (for the storage lane's archiver)", () => {
     await addSource(w, { project: "api", source: "github", scope: "github:repo/77" });
     for (const [id, age] of [["old-1", 120], ["old-2", 100], ["new-1", 10]] as const) await putAt(w, id, age);
     await w.sink.put(githubDraft({ project: "api", sourceRef: { system: "github.com", id: "api-old", version: "1" }, occurredAt: days(w, 95), links: [], audience: { kind: "restricted", acl: { source: "github", scope: "github:repo/77", principals: ["1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } } }));
-    const source = tableHotArchiveSource(w.table, projects);
+    const source = tableHotArchiveSource(w.table, projects, tableLakeDeleteQueue(w.table), () => w.clock.ms);
     const ids: string[] = [];
     let cursor: string | undefined;
     let pages = 0;
@@ -50,18 +50,18 @@ describe("archive source (for the storage lane's archiver)", () => {
     expect(ids.sort()).toEqual(["api-old", "old-1", "old-2"]);
     expect((await source.listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows.every((row) => row.scope.length > 0)).toBe(true);
     await w.sink.tombstone({ workspaceId: ORG_A, system: "github.com", sourceIds: ["old-1"], cause: "source_deleted" });
-    const fresh = tableHotArchiveSource(w.table, projects);
+    const fresh = tableHotArchiveSource(w.table, projects, tableLakeDeleteQueue(w.table), () => w.clock.ms);
     const again = (await fresh.listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows.map((row) => row.sourceRef.id).sort();
     expect(again).toEqual(["api-old", "old-2"]);
     await fresh.markArchived(ORG_A, (await fresh.listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows.map((row) => row.id), "2026-10-30T00:00:00Z");
-    expect((await tableHotArchiveSource(w.table, projects).listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows).toEqual([]);
+    expect((await tableHotArchiveSource(w.table, projects, tableLakeDeleteQueue(w.table), () => w.clock.ms).listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows).toEqual([]);
   });
 
   it("never lists another workspace's rows", async () => {
     const w = world();
     await addSource(w, { orgId: ORG_B, source: "github", scope: GITHUB_SCOPE });
     await w.sink.put(githubDraft({ workspaceId: ORG_B, sourceRef: { system: "github.com", id: "b", version: "1" }, occurredAt: days(w, 120), links: [] }));
-    expect((await tableHotArchiveSource(w.table, projects).listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows).toEqual([]);
+    expect((await tableHotArchiveSource(w.table, projects, tableLakeDeleteQueue(w.table), () => w.clock.ms).listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows).toEqual([]);
   });
 
   it("filterLive drops a row deleted since the listing, and markArchived does not mark a row that died after the last check", async () => {
@@ -69,14 +69,16 @@ describe("archive source (for the storage lane's archiver)", () => {
     await addSource(w, { source: "github", scope: GITHUB_SCOPE });
     await putAt(w, "x", 120);
     await putAt(w, "y", 121);
-    const source = tableHotArchiveSource(w.table, projects);
+    const source = tableHotArchiveSource(w.table, projects, tableLakeDeleteQueue(w.table), () => w.clock.ms);
     const listed = (await source.listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows;
     const [x, y] = ["x", "y"].map((name) => listed.find((row) => row.sourceRef.id === name)!.id);
     expect([...(await source.filterLive(ORG_A, [x!, y!, "never-listed"]))].sort()).toEqual([x, y].sort());
     await w.sink.tombstone({ workspaceId: ORG_A, system: "github.com", sourceIds: ["x"], cause: "source_deleted" });
     expect([...(await source.filterLive(ORG_A, [x!, y!]))]).toEqual([y]);
     // x died after the check: the mark does not land
-    await source.markArchived(ORG_A, [x!, y!, "never-listed"], "2026-10-30T00:00:00Z");
+    // The lake copy of a row that died during the run is queued for deletion AFTER the archive write, and the caller is told which ids were lost.
+    expect(await source.markArchived(ORG_A, [x!, y!, "never-listed"], "2026-10-30T00:00:00Z")).toEqual([x]);
+    expect((await tableLakeDeleteQueue(w.table).listPending(ORG_A, 20)).map((entry) => entry.target)).toContainEqual({ kind: "source", sourceHash: teamRecordSourceHash("github.com", "x") });
     const stored = rows(w, "TEAM_RECORD_EVENT");
     expect(stored.find((item) => (item.sourceRef as { id: string }).id === "x")!.archivedAt).toBeUndefined();
     expect(stored.find((item) => (item.sourceRef as { id: string }).id === "y")!.archivedAt).toBe("2026-10-30T00:00:00Z");
@@ -121,7 +123,7 @@ describe("hot statistics (the recent side)", () => {
     await w.sink.tombstone({ workspaceId: ORG_A, system: "rovara", sourceIds: ["sb1"], cause: "source_deleted" });
     const hot = tableHotStatsSource(w.table);
     expect((await hot.groupedCounts({ ...window(w), template: "send_backs_by_stage" }))[0]).toEqual({ group: "PLAN", count: 1 });
-    const archive = tableHotArchiveSource(w.table, projects);
+    const archive = tableHotArchiveSource(w.table, projects, tableLakeDeleteQueue(w.table), () => w.clock.ms);
     const old = (await archive.listArchivable({ workspaceId: ORG_A, olderThan: days(w, 1), limit: 50 })).rows.find((row) => row.sourceRef.id === "sb2")!;
     await archive.markArchived(ORG_A, [old.id], "2026-10-30T00:00:00Z");
     expect(await hot.groupedCounts({ ...window(w), template: "send_backs_by_stage" })).toEqual([{ group: "PLAN", count: 1 }]);
@@ -155,10 +157,10 @@ describe("retention C text expiry", () => {
     await putAt(w, "due", 40, { retention: "C" });
     await putAt(w, "fresh", 5, { retention: "C" });
     expect(w.vectorItems).toHaveLength(2);
-    const result = await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A, "web");
+    const result = await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A);
     expect(result).toMatchObject({ expired: 0 }); // "due" arrived late, so its text lives a day
     w.clock.ms += 2 * DAY;
-    const next = await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A, "web");
+    const next = await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A);
     expect(next).toMatchObject({ expired: 1, blocked: 0 });
     const stored = rows(w, "TEAM_RECORD_EVENT");
     const due = stored.find((item) => (item.sourceRef as { id: string }).id === "due")!;
@@ -175,14 +177,17 @@ describe("retention C text expiry", () => {
     for (const id of ["a", "b", "c"]) await putAt(w, id, 40, { retention: "C" });
     w.clock.ms += 2 * DAY;
     w.vectors.delete = async (keys: string[]) => ({ done: 0, failed: keys });
-    expect(await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A, "web")).toMatchObject({ expired: 0, blocked: 3 });
+    expect(await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A)).toMatchObject({ expired: 0, blocked: 3, alarm: true });
     expect(rows(w, "TEAM_RECORD_EVENT").every((item) => typeof item.text === "string")).toBe(true);
-    expect(await expireRawText({ table: w.table, now: () => w.clock.ms }, ORG_A, "web")).toMatchObject({ expired: 0, blocked: 3 });
+    expect(await expireRawText({ table: w.table, now: () => w.clock.ms }, ORG_A)).toMatchObject({ expired: 0, blocked: 3, alarm: true });
     w.vectors.delete = async (keys: string[]) => ({ done: keys.length, failed: [] });
-    const first = await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A, "web", { maxItems: 2, maxMs: 20_000 });
-    expect(first.cursor).toBeDefined();
-    const rest = await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A, "web", { maxItems: 10, maxMs: 20_000 }, first.cursor);
+    const first = await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A, { maxItems: 1, maxMs: 20_000 });
+    expect(first).toMatchObject({ expired: 1, more: true });
+    const rest = await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A, { maxItems: 10, maxMs: 20_000 });
     expect(first.expired + rest.expired).toBe(3);
+    expect(rest.more).toBe(false);
+    // finished rows left the index: a next night has nothing to read
+    expect(await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A)).toMatchObject({ expired: 0, blocked: 0, alarm: false });
   });
 });
 

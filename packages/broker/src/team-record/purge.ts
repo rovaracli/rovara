@@ -90,7 +90,7 @@ interface FactPlan {
   pk: string;
   sk: string;
   refs: Array<{ system: string; sourceId: string }>;
-  remaining: Array<{ system: string; sourceId: string }>;
+  remaining: Array<{ system: string; sourceId: string; scope?: string; actor?: { developerId?: string; sourceId?: string } }>;
   kind: string;
   trust: TrustClass;
   audience: Audience;
@@ -109,13 +109,18 @@ async function planFact(deps: PurgeDependencies, orgId: OrgId, link: Item): Prom
   for (const ref of refs) {
     const linkItem = await deps.table.documentClient.send(new GetCommand({ TableName: deps.table.tableName, Key: recordDerivationKey(orgId, project, ref.system, ref.sourceId, link.factId), ConsistentRead: true })) as { Item?: Item };
     const gone = linkItem.Item?.tombstone !== undefined || await wasDeletedAtSource(deps.table, orgId, ref.system, ref.sourceId);
-    if (!gone) remaining.push(ref);
+    if (!gone) {
+      const item = linkItem.Item;
+      const actorDeveloperId = typeof item?.actorDeveloperId === "string" ? item.actorDeveloperId : undefined;
+      const actorSourceId = typeof item?.actorSourceId === "string" ? item.actorSourceId : undefined;
+      remaining.push({ ...ref, ...(typeof item?.scope === "string" ? { scope: item.scope } : {}), ...(actorDeveloperId === undefined && actorSourceId === undefined ? {} : { actor: { ...(actorDeveloperId === undefined ? {} : { developerId: actorDeveloperId }), ...(actorSourceId === undefined ? {} : { sourceId: actorSourceId }) } }) });
+    }
   }
   const audience = AudienceSchema.safeParse(fact.audience);
   const trust = (["outsider", "system", "member", "rovara"] as const).find((candidate) => candidate === fact.trust) ?? "outsider";
   const plan: FactPlan = { factId: link.factId, project, pk: key.pk, sk: key.sk, refs, remaining, kind: typeof fact.kind === "string" ? fact.kind : "fact", trust, audience: audience.success ? audience.data : { kind: "restricted", acl: { source: "rovara", scope: "rovara:deleted", capturedAt: new Date(0).toISOString(), liveCheck: "none" } } };
   if (remaining.length > 0 && deps.redistil !== undefined && audience.success) {
-    const made = await deps.redistil.redistil({ orgId, project, remaining, kind: plan.kind, trust, audience: audience.data }).catch(() => undefined);
+    const made = await deps.redistil.redistil({ orgId, project, remaining: remaining.map(({ system, sourceId }) => ({ system, sourceId })), kind: plan.kind, trust, audience: audience.data }).catch(() => undefined);
     const text = made === undefined ? undefined : cleanRecordText(made.text);
     if (made !== undefined && text !== undefined) {
       const factId = createHash("sha256").update(`${link.factId}\n${remaining.map((ref) => `${ref.system}:${ref.sourceId}`).join("\n")}`).digest("hex");
@@ -153,18 +158,46 @@ export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: r
   const distinct = [...new Map(targets.map((target) => [JSON.stringify(target), target])).values()];
   if (distinct.length > 0) await queue.enqueue(orgId, distinct);
 
-  // 3. Vectors, then the rows and facts whose vectors are gone.
+  // 3. The lessons that rest on what is about to go. This runs BEFORE any hot row is removed: the sources are deleted at their origin whatever the vectors do, so the
+  // lessons are settled now, from the ids alone. No lessons port is not "no lessons": the delete is refused (blocked) until a port, even an explicit empty one, is given.
+  const planned = new Map<string | undefined, Set<string>>();
+  const addPlanned = (project: string | undefined, id: string) => { const set = planned.get(project) ?? new Set<string>(); set.add(id); planned.set(project, set); };
+  for (const row of rows) addPlanned(projectOfPk(row.pk as string), row.id as string);
+  for (const fact of plans.values()) addPlanned(fact.project, fact.factId);
+  const anything = [...planned.values()].some((ids) => ids.size > 0);
+  if (anything) {
+    try {
+      if (deps.lessons === undefined) throw new Error("no lessons port");
+      for (const [project, ids] of planned) {
+        if (project === undefined || ids.size === 0) continue;
+        for (const lesson of await deps.lessons.affected(orgId, project, ids)) {
+          const fate = lessonFate(lesson, ids);
+          if (fate === "withdraw") {
+            await deps.lessons.withdraw(orgId, project, lesson.id, "sources_deleted");
+            result.lessonsWithdrawn += 1;
+            await deps.audit?.(auditLessonWithdrawn({ orgId, lessonId: lesson.id, version: lesson.version, at: new Date((deps.now ?? Date.now)()).toISOString(), cause: "sources_deleted" })).catch(() => undefined);
+          } else if (fate === "keep_without_record_citations") {
+            await deps.lessons.forgetSources(orgId, project, lesson.id, ids);
+            result.lessonsKept += 1;
+          }
+        }
+      }
+    } catch {
+      deps.log?.("record.purge_lessons_unavailable", {});
+      result.blocked += rows.length + plans.size;
+      return result;
+    }
+  }
+
+  // 4. Vectors, then the rows and facts whose vectors are gone.
   const vectorKeys = [...rows.map((row) => eventKey(row.id as string)), ...[...plans.values()].map((plan) => factVectorKey(plan.factId))];
   const vectors = await deleteVectors(deps, vectorKeys);
   result.vectors += vectors.deleted;
-  const deletedIds = new Map<string | undefined, Set<string>>();
-  const note = (project: string | undefined, id: string) => { const set = deletedIds.get(project) ?? new Set<string>(); set.add(id); deletedIds.set(project, set); };
-
+  
   for (const row of rows) {
     if (!vectors.gone.has(eventKey(row.id as string))) { result.blocked += 1; continue; }
     await deleteItem(deps.table, { pk: row.pk as string, sk: row.sk as string });
     result.rows += 1;
-    note(projectOfPk(row.pk as string), row.id as string);
   }
   const settledLinks = new Set<string>();
   for (const plan of plans.values()) {
@@ -173,7 +206,8 @@ export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: r
       await putRecordFact(deps.table, {
         id: plan.replacement.factId, workspaceId: orgId, ...(plan.project === undefined ? {} : { project: plan.project }), kind: plan.kind as never, text: plan.replacement.text,
         links: plan.replacement.links.slice(0, 10), derivedFrom: plan.remaining.map((ref) => `${ref.system}:${ref.sourceId}`), trust: plan.trust, audience: plan.audience, createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
-      });
+      }, plan.remaining.flatMap((ref) => (ref.scope === undefined ? [] : [ref.scope])));
+      // The new links keep who wrote each source and its place, so a later person erase or a deleted place still reaches the new fact.
       await putDerivationLinks(deps.table, { orgId, project: plan.project, factId: plan.replacement.factId, sources: plan.remaining, at: new Date((deps.now ?? Date.now)()).toISOString() });
       result.redistilled += 1;
     }
@@ -181,7 +215,6 @@ export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: r
     for (const ref of plan.refs) await deleteItem(deps.table, recordDerivationKey(orgId, plan.project, ref.system, ref.sourceId, plan.factId));
     settledLinks.add(plan.factId);
     result.facts += 1;
-    note(plan.project, plan.factId);
   }
   // A link of a fact that no longer exists goes with the batch; one whose fact is blocked stays, so the next run finds the fact again.
   for (const link of links) {
@@ -189,24 +222,6 @@ export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: r
     if (!exists || settledLinks.has(link.factId as string)) await deleteItem(deps.table, { pk: link.pk as string, sk: link.sk as string });
   }
 
-  // 4. Lessons that rested on what was deleted.
-  if (deps.lessons !== undefined) {
-    for (const [project, ids] of deletedIds) {
-      if (project === undefined || ids.size === 0) continue;
-      const affected = await deps.lessons.affected(orgId, project, ids);
-      for (const lesson of affected) {
-        const fate = lessonFate(lesson, ids);
-        if (fate === "withdraw") {
-          await deps.lessons.withdraw(orgId, project, lesson.id, "sources_deleted");
-          result.lessonsWithdrawn += 1;
-          await deps.audit?.(auditLessonWithdrawn({ orgId, lessonId: lesson.id, version: lesson.version, at: new Date((deps.now ?? Date.now)()).toISOString(), cause: "sources_deleted" })).catch(() => undefined);
-        } else if (fate === "keep_without_record_citations") {
-          await deps.lessons.removeRecordCitations(orgId, project, lesson.id, ids);
-          result.lessonsKept += 1;
-        }
-      }
-    }
-  }
   if (result.blocked > 0) deps.log?.("record.purge_blocked", { blocked: result.blocked });
   return result;
 }

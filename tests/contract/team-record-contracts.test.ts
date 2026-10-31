@@ -98,10 +98,10 @@ describe("fact, source and consumer contracts", () => {
     expect(SourceConfigSchema.safeParse(source).success).toBe(true);
     expect(SourceConfigSchema.safeParse({ ...source, audienceDefault: "everyone" }).success).toBe(false);
   });
-  it("counts withheld hits and bounds a search response", () => {
-    expect(RecordSearchResponseSchema.safeParse({ hits: [], withheld: 3 }).success).toBe(true);
-    expect(RecordSearchResponseSchema.safeParse({ hits: [], withheld: -1 }).success).toBe(false);
-    expect(RecordSearchResponseSchema.safeParse({ hits: [], withheld: 0, extra: 1 }).success).toBe(false);
+  it("flags hidden hits (never counts them) and bounds a search response", () => {
+    expect(RecordSearchResponseSchema.safeParse({ hits: [], someHidden: true }).success).toBe(true);
+    expect(RecordSearchResponseSchema.safeParse({ hits: [], withheld: 3 }).success).toBe(false); // a count is not allowed: it would let a viewer probe
+    expect(RecordSearchResponseSchema.safeParse({ hits: [], someHidden: false, extra: 1 }).success).toBe(false);
   });
   it("needs two evidence items for a proposal", () => {
     const proposal = { id: ID, workspaceId: ORG_A, project: "web", kind: "bug_cluster", title: "t", why: "w", evidence: ["a", "b"], dedupeKey: "k", existingTickets: [], estimateUsd: 4, proposer: { agent: "rovara-scanner", version: "1" }, audience: "project", expiresAt: "2026-11-30T00:00:00.000Z" };

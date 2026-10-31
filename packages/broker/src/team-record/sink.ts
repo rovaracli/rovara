@@ -6,7 +6,7 @@ import { tableLakeDeleteQueue, type LakeDeleteQueue } from "./lake-queue.js";
 import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
 import { DEFAULT_WORK_BUDGET, changeScopePrincipals, queueScopeWork, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
-import { getSourceConfigByScope } from "./store.js";
+import { getSourceConfigByScope, putScopeWork } from "./store.js";
 import type { IngestOutcome, RecordDraft, TombstoneCause } from "./types.js";
 
 export interface RecordSink {
@@ -34,12 +34,21 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
       const orgId = orgOf(input.workspaceId);
       // The lake first: a deleted place is queued for the lake before any hot row is touched, so a crash cannot lose it.
       if (input.scope !== undefined) await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(input.scope) }]);
-      const result = await tombstoneRows(work, orgId, { system: input.system, ...(input.scope === undefined ? {} : { scope: input.scope }), ...(input.sourceIds === undefined ? {} : { sourceIds: input.sourceIds }), cause: input.cause }, budget);
-      // The queue item always exists: the delete worker removes the rows, vectors, lake rows and facts. While the hide is unfinished the scope reads as hidden.
-      await queueScopeWork(work, orgId, {
-        type: "tombstone", system: input.system, ...(input.scope === undefined ? {} : { scope: input.scope }), ...(input.sourceIds === undefined ? {} : { sourceIds: [...input.sourceIds].slice(0, 500) }),
-        cause: input.cause, hidePending: !result.complete, hidden: result.changed,
-      });
+      // Chunks of at most 500 source items, each named in the queue BEFORE it is hidden: reads hide what a queue item names, so a crash or a spent budget in the
+      // middle of the hide never leaves an item visible.
+      const chunks: Array<readonly string[] | undefined> = input.sourceIds === undefined ? [undefined] : Array.from({ length: Math.max(1, Math.ceil(input.sourceIds.length / 500)) }, (_, i) => input.sourceIds!.slice(i * 500, (i + 1) * 500));
+      let hidden = 0;
+      for (const [index, chunk] of chunks.entries()) {
+        const scope = index === 0 ? input.scope : undefined;
+        const queued = await queueScopeWork(work, orgId, {
+          type: "tombstone", system: input.system, ...(scope === undefined ? {} : { scope }), ...(chunk === undefined ? {} : { sourceIds: [...chunk] }), cause: input.cause, hidePending: true,
+        });
+        const result = await tombstoneRows(work, orgId, { system: input.system, ...(scope === undefined ? {} : { scope }), ...(chunk === undefined ? {} : { sourceIds: chunk }), cause: input.cause }, budget);
+        hidden += result.changed;
+        if (result.complete) await putScopeWork(deps.table, orgId, { ...queued, hidePending: false, hidden: result.changed });
+        else await putScopeWork(deps.table, orgId, { ...queued, hidden: result.changed });
+      }
+      const result = { changed: hidden };
       return { hidden: result.changed };
     },
 
@@ -62,14 +71,16 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 }
 
 /** The adapter for the ingest lane's `SourceConfigPort`: the source row of a scope, in the shape the taps read. */
-export function createSourceConfigPort(deps: Pick<IngestDependencies, "table">) {
+export function createSourceConfigPort(deps: Pick<IngestDependencies, "table" | "edition">) {
   return {
     async get(workspaceId: string, source: RecordSourceKind, scope: string) {
       const parsed = OrgIdSchema.safeParse(workspaceId);
       if (!parsed.success) return undefined;
       const config = await getSourceConfigByScope(deps.table, parsed.data, source, scope);
       if (config === undefined) return undefined;
-      return { enabled: config.enabled, retention: config.retention, exclude: config.exclude, audienceDefault: config.audienceDefault, project: config.project };
+      // Public Slack reads live (A) unless the workspace chose "notes with links"; C and D never apply there (Slack's API terms, owner decision Q4).
+      const retention = deps.edition === "public" && source === "slack" && !(config.retention === "B" && config.notesOptIn === true) ? "A" : config.retention;
+      return { enabled: config.enabled, retention, exclude: config.exclude, audienceDefault: config.audienceDefault, project: config.project };
     },
   };
 }

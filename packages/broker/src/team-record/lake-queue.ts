@@ -15,6 +15,8 @@ export type LakeDeleteTarget =
   /** A whole place (a deleted channel or repository, a channel that turned private): `recordScopeHash(scope)`. */
   | { kind: "scope"; hash: string }
   | { kind: "project"; project: string }
+  /** A whole workspace (org close), including rows that belong to no project. The lake job must delete every table by `workspace_id`. */
+  | { kind: "workspace" }
   | { kind: "fact"; factId: string };
 
 export interface PendingLakeDelete { id: string; target: LakeDeleteTarget }
@@ -39,6 +41,7 @@ export function validTarget(target: LakeDeleteTarget): boolean {
     case "actor_source": return HASH.test(target.hash);
     case "scope": return HASH.test(target.hash);
     case "project": return ID.test(target.project);
+    case "workspace": return true;
     case "fact": return ID.test(target.factId);
   }
 }

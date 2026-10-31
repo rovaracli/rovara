@@ -11,12 +11,14 @@ import {
   TEAM_RECORD_GSI2,
   TEAM_RECORD_GSI3,
   TEAM_RECORD_GSI4,
+  TEAM_RECORD_GSI5,
   RECORD_DELETE_QUEUE_SK_PREFIX,
   RECORD_EVENT_SK_PREFIX,
   RECORD_FACT_SK_PREFIX,
   RECORD_SOURCE_SK_PREFIX,
   recordActorIndexValue,
   recordActorSourceIndexValue,
+  recordTextDueIndexValue,
   recordDeleteQueueKey,
   recordDerivationKey,
   recordEventKey,
@@ -34,9 +36,10 @@ import {
   type SourceConfig,
 } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item } from "../agents/table-writes.js";
-import type { TeamRecordTable } from "./types.js";
+import { retentionRefusal } from "./retention.js";
+import type { Edition, PendingHides, TeamRecordTable } from "./types.js";
 
-const KEY_ATTRIBUTES = ["pk", "sk", "entityType", TEAM_RECORD_GSI1.partition, TEAM_RECORD_GSI2.partition, TEAM_RECORD_GSI3.partition, TEAM_RECORD_GSI4.partition, "rowScope", "sourceHash", "archivedAt"] as const;
+const KEY_ATTRIBUTES = ["pk", "sk", "entityType", TEAM_RECORD_GSI1.partition, TEAM_RECORD_GSI2.partition, TEAM_RECORD_GSI3.partition, TEAM_RECORD_GSI4.partition, TEAM_RECORD_GSI5.partition, TEAM_RECORD_GSI5.sort, "rowScope", "rowScopes", "sourceHash", "archivedAt"] as const;
 const dropKeys = (item: Item): Item => Object.fromEntries(Object.entries(item).filter(([name]) => !(KEY_ATTRIBUTES as readonly string[]).includes(name)));
 
 /** A record row as stored. */
@@ -64,15 +67,25 @@ export function eventItem(event: RecordEvent): Item {
     [TEAM_RECORD_GSI3.partition]: recordScopeIndexValue(event.workspaceId, event.scope),
     // A person with no developer id is found by their source identity.
     [TEAM_RECORD_GSI4.partition]: event.actor === undefined || event.actor.developerId !== undefined ? undefined : recordActorSourceIndexValue(event.workspaceId, event.sourceRef.system, event.actor.sourceId),
+    // Sparse: only a row that still holds raw text with an expiry is in the text-due index.
+    [TEAM_RECORD_GSI5.partition]: event.text !== undefined && event.textExpiresAt !== undefined ? recordTextDueIndexValue(event.workspaceId) : undefined,
+    [TEAM_RECORD_GSI5.sort]: event.text !== undefined && event.textExpiresAt !== undefined ? new Date(event.textExpiresAt * 1000).toISOString() : undefined,
     [INDEX_EXPIRY_ATTRIBUTE]: event.indexExpiresAt,
   });
 }
 
-/** A stored event, or undefined when it is not one or does not parse (it is then never shown). */
-export function eventFromItem(item: Item | undefined): StoredEvent | undefined {
+/**
+ * A stored event, or undefined when it is not one or does not parse (it is then never shown). Text whose expiry has passed is dropped here, so a night the
+ * text-expiry job missed (or a vector it could not delete) never shows raw text past its time. `nowSeconds` is the caller's clock.
+ */
+export function eventFromItem(item: Item | undefined, nowSeconds: number = Math.floor(Date.now() / 1000)): StoredEvent | undefined {
   if (item?.entityType !== "TEAM_RECORD_EVENT") return undefined;
   const parsed = RecordEventSchema.safeParse(dropKeys(item));
-  return parsed.success ? parsed.data : undefined;
+  if (!parsed.success) return undefined;
+  const { text, textExpiresAt, ...rest } = parsed.data;
+  if (text === undefined || textExpiresAt === undefined || textExpiresAt > nowSeconds) return parsed.data;
+  void text; void textExpiresAt;
+  return rest;
 }
 
 export type PutResult = "stored" | "duplicate";
@@ -89,9 +102,9 @@ export async function putRecordEvent(table: TeamRecordTable, event: RecordEvent)
   }
 }
 
-export async function getRecordEvent(table: TeamRecordTable, orgId: OrgId, project: string | undefined, occurredAt: string, id: string): Promise<StoredEvent | undefined> {
+export async function getRecordEvent(table: TeamRecordTable, orgId: OrgId, project: string | undefined, occurredAt: string, id: string, nowSeconds?: number): Promise<StoredEvent | undefined> {
   const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: recordEventKey(orgId, project, occurredAt, id), ConsistentRead: true })) as { Item?: Item };
-  return eventFromItem(response.Item);
+  return eventFromItem(response.Item, nowSeconds);
 }
 
 export interface PageBudget {
@@ -113,7 +126,7 @@ async function queryAll(table: TeamRecordTable, input: Record<string, unknown>, 
 }
 
 /** A project's rows between two instants, newest first, up to `limit`. Rows that do not parse are left out. */
-export async function queryRecordEvents(table: TeamRecordTable, orgId: OrgId, project: string | undefined, options: { since?: string; until?: string; limit: number }): Promise<StoredEvent[]> {
+export async function queryRecordEvents(table: TeamRecordTable, orgId: OrgId, project: string | undefined, options: { since?: string; until?: string; limit: number; nowSeconds?: number }): Promise<StoredEvent[]> {
   const lower = `${RECORD_EVENT_SK_PREFIX}${options.since === undefined ? "" : new Date(options.since).toISOString()}`;
   const upper = `${RECORD_EVENT_SK_PREFIX}${options.until === undefined ? "" : new Date(options.until).toISOString()}\uffff`;
   const response = await table.documentClient.send(new QueryCommand({
@@ -123,7 +136,7 @@ export async function queryRecordEvents(table: TeamRecordTable, orgId: OrgId, pr
     ScanIndexForward: false,
     Limit: Math.min(options.limit, 500),
   })) as { Items?: Item[] };
-  return (response.Items ?? []).map(eventFromItem).filter((event): event is StoredEvent => event !== undefined);
+  return (response.Items ?? []).map((item) => eventFromItem(item, options.nowSeconds)).filter((event): event is StoredEvent => event !== undefined);
 }
 
 /** Every item (rows, derivation links) on one index value, including tombstoned ones: the delete worker needs them. Bounded by `maxItems`. */
@@ -156,7 +169,7 @@ export async function tombstoneItem(table: TeamRecordTable, key: { pk: string; s
     await table.documentClient.send(new UpdateCommand({
       TableName: table.tableName,
       Key: key,
-      UpdateExpression: `SET ${aliases.name("tombstone")} = ${aliases.value(tombstone)} REMOVE ${aliases.name("text")}`,
+      UpdateExpression: `SET ${aliases.name("tombstone")} = ${aliases.value(tombstone)} REMOVE ${["text", "textExpiresAt", TEAM_RECORD_GSI5.partition, TEAM_RECORD_GSI5.sort].map((name) => aliases.name(name)).join(", ")}`,
       ConditionExpression: `attribute_exists(${aliases.name("pk")}) AND attribute_not_exists(${aliases.name("tombstone")})`,
       ExpressionAttributeNames: aliases.names,
       ExpressionAttributeValues: aliases.values,
@@ -170,35 +183,41 @@ export async function tombstoneItem(table: TeamRecordTable, key: { pk: string; s
 
 // ---- facts
 
-export async function putRecordFact(table: TeamRecordTable, fact: RecordFact, scope?: string): Promise<void> {
+/** A fact with the places it was distilled from, so a hidden place hides it too. */
+export type StoredFact = RecordFact & { scopes?: string[] };
+
+/** `scopes`: the places of the sources the fact was distilled from (the distiller passes them). A fact with none cannot be hidden by place, only by its own tombstone. */
+export async function putRecordFact(table: TeamRecordTable, fact: RecordFact, scopes?: readonly string[]): Promise<void> {
   const parsed = RecordFactSchema.parse(fact);
   await table.documentClient.send(new PutCommand({
     TableName: table.tableName,
-    Item: withoutUndefined({ ...recordFactKey(parsed.workspaceId, parsed.project, parsed.id), entityType: "TEAM_RECORD_FACT", ...parsed, rowScope: scope }),
+    Item: withoutUndefined({ ...recordFactKey(parsed.workspaceId, parsed.project, parsed.id), entityType: "TEAM_RECORD_FACT", ...parsed, rowScopes: scopes === undefined ? undefined : [...new Set(scopes)].slice(0, 50) }),
   }));
 }
 
-export function factFromItem(item: Item | undefined): RecordFact | undefined {
+export function factFromItem(item: Item | undefined): StoredFact | undefined {
   if (item?.entityType !== "TEAM_RECORD_FACT") return undefined;
   const parsed = RecordFactSchema.safeParse(dropKeys(item));
-  return parsed.success ? parsed.data : undefined;
+  if (!parsed.success) return undefined;
+  const scopes = Array.isArray(item.rowScopes) ? item.rowScopes.filter((scope): scope is string => typeof scope === "string") : undefined;
+  return scopes === undefined || scopes.length === 0 ? parsed.data : { ...parsed.data, scopes };
 }
 
-export async function getRecordFact(table: TeamRecordTable, orgId: OrgId, project: string | undefined, factId: string): Promise<RecordFact | undefined> {
+export async function getRecordFact(table: TeamRecordTable, orgId: OrgId, project: string | undefined, factId: string): Promise<StoredFact | undefined> {
   const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: recordFactKey(orgId, project, factId), ConsistentRead: true })) as { Item?: Item };
   return factFromItem(response.Item);
 }
 
-export async function queryRecordFacts(table: TeamRecordTable, orgId: OrgId, project: string | undefined, maxItems: number): Promise<RecordFact[]> {
+export async function queryRecordFacts(table: TeamRecordTable, orgId: OrgId, project: string | undefined, maxItems: number): Promise<StoredFact[]> {
   const { items } = await queryPrefix(table, orgId, project, RECORD_FACT_SK_PREFIX, maxItems);
-  return items.map(factFromItem).filter((fact): fact is RecordFact => fact !== undefined);
+  return items.map(factFromItem).filter((fact): fact is StoredFact => fact !== undefined);
 }
 
 /**
  * Links a fact to every source item it was distilled from, so a delete at a source that stored no row (retention B) still finds the fact. The distiller calls
  * this when it writes a fact. `scope` is the source's scope, when it has one, so a deleted channel or repository reaches the fact too.
  */
-export async function putDerivationLinks(table: TeamRecordTable, input: { orgId: OrgId; project: string | undefined; factId: string; sources: ReadonlyArray<{ system: string; sourceId: string; scope?: string }>; at: string }): Promise<void> {
+export async function putDerivationLinks(table: TeamRecordTable, input: { orgId: OrgId; project: string | undefined; factId: string; sources: ReadonlyArray<{ system: string; sourceId: string; scope?: string; actor?: { developerId?: string; sourceId?: string } }>; at: string }): Promise<void> {
   for (const source of input.sources) {
     await table.documentClient.send(new PutCommand({
       TableName: table.tableName,
@@ -208,9 +227,14 @@ export async function putDerivationLinks(table: TeamRecordTable, input: { orgId:
         factId: input.factId,
         system: source.system,
         scope: source.scope,
+        // Who wrote the source item: a person's erase reaches the fact through this, whether or not the item's own row is still in the table (retention B keeps none).
+        actorDeveloperId: source.actor?.developerId,
+        actorSourceId: source.actor?.sourceId,
         createdAt: input.at,
         [TEAM_RECORD_GSI1.partition]: recordSourceIndexValue(input.orgId, source.system, source.sourceId),
+        [TEAM_RECORD_GSI2.partition]: source.actor?.developerId === undefined ? undefined : recordActorIndexValue(input.orgId, source.actor.developerId),
         [TEAM_RECORD_GSI3.partition]: source.scope === undefined ? undefined : recordScopeIndexValue(input.orgId, source.scope),
+        [TEAM_RECORD_GSI4.partition]: source.actor === undefined || source.actor.developerId !== undefined || source.actor.sourceId === undefined ? undefined : recordActorSourceIndexValue(input.orgId, source.system, source.actor.sourceId),
       }),
     }));
   }
@@ -231,11 +255,14 @@ export async function getSourceConfigByScope(table: TeamRecordTable, orgId: OrgI
   return configs.length === 1 ? configs[0] : undefined;
 }
 
-export type PutSourceResult = { status: "saved" } | { status: "refused"; reason: "scope_in_other_project" | "invalid" };
+export type PutSourceResult = { status: "saved" } | { status: "refused"; reason: "scope_in_other_project" | "invalid" | "slack_public_fixed_a_b" | "slack_notes_need_opt_in" };
 
-export async function putSourceConfig(table: TeamRecordTable, config: SourceConfig): Promise<PutSourceResult> {
+export async function putSourceConfig(table: TeamRecordTable, config: SourceConfig, options: { edition: Edition }): Promise<PutSourceResult> {
   const parsed = SourceConfigSchema.safeParse(config);
   if (!parsed.success) return { status: "refused", reason: "invalid" };
+  // The edition's rules are enforced where the setting is saved, so the Sources tab never shows a retention the ingest would refuse.
+  const edition = retentionRefusal(options.edition, parsed.data.source, parsed.data.retention, parsed.data.notesOptIn === true);
+  if (edition !== undefined) return { status: "refused", reason: edition };
   const existing = await queryIndex(table, TEAM_RECORD_GSI1, recordSourceConfigIndexValue(parsed.data.workspaceId, parsed.data.source, parsed.data.scope), 3);
   const elsewhere = existing.items.some((item) => sourceConfigFromItem(item)?.project !== parsed.data.project);
   if (elsewhere) return { status: "refused", reason: "scope_in_other_project" };
@@ -293,8 +320,42 @@ export async function listScopeWork(table: TeamRecordTable, orgId: OrgId, maxIte
   return items.map(scopeWorkFromItem).filter((work): work is ScopeWork & { pk: string; sk: string } => work !== undefined);
 }
 
-/** The scopes whose rows are hidden at once while work on them is unfinished. */
-export async function hiddenScopesOf(table: TeamRecordTable, orgId: OrgId, maxItems = 200): Promise<ReadonlySet<string>> {
-  const work = await listScopeWork(table, orgId, maxItems);
-  return new Set(work.filter((entry) => entry.hidePending && entry.scope !== undefined).map((entry) => entry.scope as string));
+/** The hard cap on queue items one read pages through; past it the read fails closed (the caller refuses rather than show what might be hidden). */
+export const PENDING_HIDES_MAX_ITEMS = 50_000;
+
+export class PendingHidesUnreadable extends Error {
+  constructor() {
+    super("team-record: the hiding queue is too long to read");
+    this.name = "PendingHidesUnreadable";
+  }
+}
+
+/** Pages through the whole queue. If it is longer than the cap it throws, so nothing is shown on a guess. */
+export async function pendingHidesOf(table: TeamRecordTable, orgId: OrgId): Promise<PendingHides> {
+  const { items, truncated } = await queryPrefix(table, orgId, undefined, RECORD_DELETE_QUEUE_SK_PREFIX, PENDING_HIDES_MAX_ITEMS);
+  if (truncated) throw new PendingHidesUnreadable();
+  const scopes = new Set<string>();
+  const sourceHashes = new Set<string>();
+  for (const work of items.map(scopeWorkFromItem)) {
+    if (work === undefined || !work.hidePending) continue;
+    if (work.scope !== undefined) scopes.add(work.scope);
+    for (const id of work.sourceIds ?? []) sourceHashes.add(teamRecordSourceHash(work.system, id));
+  }
+  return { scopes, sourceHashes };
+}
+
+/** Removes source ids from a source row's exclusion list (a person who was erased: their id is personal data too). Returns whether the row changed. */
+export async function removeFromExclude(table: TeamRecordTable, config: SourceConfig, sourceIds: ReadonlySet<string>): Promise<boolean> {
+  if (!config.exclude.some((id) => sourceIds.has(id))) return false;
+  const aliases = new Aliases();
+  const key = recordSourceKey(config.workspaceId, config.project, config.source, config.scope);
+  await table.documentClient.send(new UpdateCommand({
+    TableName: table.tableName,
+    Key: key,
+    UpdateExpression: `SET ${aliases.name("exclude")} = ${aliases.value(config.exclude.filter((id) => !sourceIds.has(id)))}`,
+    ConditionExpression: `attribute_exists(${aliases.name("pk")})`,
+    ExpressionAttributeNames: aliases.names,
+    ExpressionAttributeValues: aliases.values,
+  }));
+  return true;
 }

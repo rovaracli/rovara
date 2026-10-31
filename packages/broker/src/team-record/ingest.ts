@@ -13,12 +13,15 @@ import {
   type OrgId,
   type RecordEvent,
   type RetentionMode,
+  type TrustClass,
 } from "@agentx/contracts";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { Aliases } from "../agents/table-writes.js";
 import { captureIsOn, type LearningModeReader } from "./mode.js";
 import { exceedsRetention, retentionPlan, retentionRefusal } from "./retention.js";
 import { wasDeletedAtSource } from "./scope-work.js";
+import { hasQuotedOrForwarded } from "./quoted.js";
+import { isErasedActor } from "./erased.js";
 import { deterministicEventId, getSourceConfigByScope, putRecordEvent } from "./store.js";
 import { cleanRecordText } from "./text.js";
 import type { Edition, IngestOutcome, RecordDraft, RecordEmbedder, RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
@@ -43,7 +46,7 @@ const ACL_PRINCIPALS_MAX = 500;
 /** The fixed reasons a draft can be refused for. */
 export type IngestRefusal =
   | "workspace" | "project" | "capture_off" | "no_scope" | "no_source_row" | "source_disabled" | "project_mismatch" | "retention_exceeds_source"
-  | "slack_public_fixed_a_b" | "excluded" | "retention_not_stored" | "time" | "acl_too_large" | "deleted_at_source" | "invalid";
+  | "slack_public_fixed_a_b" | "slack_notes_need_opt_in" | "actor_erased" | "excluded" | "retention_not_stored" | "time" | "acl_too_large" | "deleted_at_source" | "invalid";
 
 const refused = (reason: IngestRefusal): IngestOutcome => ({ status: "refused", reason });
 
@@ -57,13 +60,27 @@ function validLink(value: string): boolean {
   }
 }
 
-function cleanStructured(values: RecordDraft["structured"]): RecordEvent["structured"] {
+/** A value a Rovara-trust row may carry: an id, a code or a count, never a sentence a person wrote. */
+const ID_SHAPED = /^[\w.:/#-]{1,100}$/;
+const STRUCTURED_KEY = /^[A-Za-z][A-Za-z0-9_]{0,59}$/;
+
+/**
+ * The structured part goes through the same hygiene as text (secrets, personal details, code, hidden characters). On a row of the highest trust a string must be
+ * id-shaped: a pull request title written by an outsider cannot ride on `rovara` trust as a structured field.
+ */
+function cleanStructured(values: RecordDraft["structured"], trust: TrustClass): RecordEvent["structured"] {
   if (values === undefined) return undefined;
   const out: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(values).slice(0, STRUCTURED_MAX)) {
-    if (key.length === 0 || key.length > 60) continue;
-    if (typeof value === "string") out[key] = [...value.replace(/[\p{Cc}\p{Cf}]/gu, " ")].slice(0, STRING_VALUE_MAX).join("");
-    else if (typeof value === "number") {
+    if (!STRUCTURED_KEY.test(key)) continue;
+    if (typeof value === "string") {
+      if (trust === "rovara") {
+        if (ID_SHAPED.test(value)) out[key] = value;
+        continue;
+      }
+      const clean = cleanRecordText(value);
+      if (clean !== undefined) out[key] = [...clean].slice(0, STRING_VALUE_MAX).join("");
+    } else if (typeof value === "number") {
       if (Number.isFinite(value)) out[key] = value;
     } else out[key] = value;
   }
@@ -91,6 +108,7 @@ export async function ingestRecord(deps: IngestDependencies, draft: RecordDraft)
   // 2. The scope's source row: enabled, the project it belongs to, and the retention ceiling.
   let ceiling: RetentionMode;
   let excluded: readonly string[] = [];
+  let notesOptIn = false;
   if (scope === undefined) {
     if (draft.source !== "rovara") return refused("no_scope");
     ceiling = deps.rovaraDefaultRetention;
@@ -105,10 +123,14 @@ export async function ingestRecord(deps: IngestDependencies, draft: RecordDraft)
       project = config.project;
       ceiling = config.retention;
       excluded = config.exclude;
+      notesOptIn = config.notesOptIn === true;
     }
   }
   if (exceedsRetention(draft.retention, ceiling)) return refused("retention_exceeds_source");
-  if (retentionRefusal(deps.edition, draft.source, draft.retention) !== undefined) return refused("slack_public_fixed_a_b");
+  const slackRefusal = retentionRefusal(deps.edition, draft.source, draft.retention, notesOptIn);
+  if (slackRefusal !== undefined) return refused(slackRefusal);
+  // A person who was erased stays erased: a backfill, a poller or an edit cannot bring them back.
+  if (draft.actor !== undefined && await isErasedActor(deps.table, orgId, draft.sourceRef.system, draft.actor)) return refused("actor_erased");
   if (draft.actor !== undefined && excluded.includes(draft.actor.sourceId)) return refused("excluded");
 
   const occurred = new Date(draft.occurredAt);
@@ -117,14 +139,24 @@ export async function ingestRecord(deps: IngestDependencies, draft: RecordDraft)
   if (draft.audience.kind === "restricted" && (draft.audience.acl.principals?.length ?? 0) > ACL_PRINCIPALS_MAX) return refused("acl_too_large");
 
   // 3. Retention routing. An outside source under A or B stores no row.
-  const trust = minTrust(draft.trust, ...(draft.actor === undefined ? [] : [draft.actor.trust]));
-  const plan = retentionPlan({ retention: draft.retention, source: draft.source, hasText: draft.text !== undefined, occurredAtSeconds: Math.floor(occurred.getTime() / 1000), nowSeconds: Math.floor(now() / 1000) });
+  // Trust is the lowest of every piece: the row, its actor, every quoted or forwarded piece, and (no actor on an outside source's text) at most "system".
+  const quoted = hasQuotedOrForwarded(draft.text) || draft.hasAttachments === true;
+  const trust = minTrust(
+    draft.trust,
+    ...(draft.actor === undefined ? [] : [draft.actor.trust]),
+    ...(draft.pieceTrusts ?? []),
+    ...(quoted && draft.pieceTrusts === undefined ? ["outsider" as const] : []),
+    ...(draft.actor === undefined && draft.source !== "rovara" && draft.text !== undefined ? ["system" as const] : []),
+  );
+  // The Slack rule follows Slack's words into a Rovara row: in Public they are never kept as text.
+  const keptText = deps.edition === "public" && draft.origin === "slack" ? undefined : draft.text;
+  const plan = retentionPlan({ retention: draft.retention, source: draft.source, hasText: keptText !== undefined, occurredAtSeconds: Math.floor(occurred.getTime() / 1000), nowSeconds: Math.floor(now() / 1000) });
   if (!plan.store) return refused("retention_not_stored");
 
   // 4. Text hygiene, then the row. A row of rovara trust carries no free text from people.
-  const text = plan.keepText && trust !== "rovara" ? cleanRecordText(draft.text, { keepCode: draft.kind === "rovara.human_edit" }) : undefined;
+  const text = plan.keepText && trust !== "rovara" ? cleanRecordText(keptText, { keepCode: draft.kind === "rovara.human_edit" }) : undefined;
   const embed = plan.embed && text !== undefined;
-  const structured = cleanStructured(draft.structured);
+  const structured = cleanStructured(draft.structured, trust);
   // Every row carries the place it came from. Rovara's own rows without one belong to the project's own place.
   const eventScope = scope ?? (draft.source === "rovara" && project !== undefined ? `rovara:project/${project}` : undefined);
   if (eventScope === undefined) return refused("no_scope");
