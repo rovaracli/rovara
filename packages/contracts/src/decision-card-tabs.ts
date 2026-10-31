@@ -2,7 +2,7 @@
 // contract and the audit do not change. The card itself is the ordinary `DecisionCard` (kind `approve_requirements`); the tabs travel beside it, keyed by the card's id, so the card
 // contract is untouched. Browser-safe: nothing here imports a Node module.
 import { z } from "zod";
-import { DecisionCardIdSchema, DecisionCardSchema, DECISION_CARDS_MAX, EvidenceChipSchema } from "./decision-cards.js";
+import { DecisionCardIdSchema, DecisionCardReaderSchema, DecisionCardSchema, DECISION_CARDS_MAX, EvidenceChipSchema } from "./decision-cards.js";
 
 export const DECISION_TAB_IDS = ["requirements", "design"] as const;
 export const DecisionTabIdSchema = z.enum(DECISION_TAB_IDS);
@@ -32,6 +32,12 @@ export const DecisionCardsViewSchema = z
   .strict()
   .refine((view) => Object.keys(view.tabs).every((id) => view.cards.some((card) => card.id === id)), { message: "tabs belong to listed cards", path: ["tabs"] });
 export type DecisionCardsView = z.infer<typeof DecisionCardsViewSchema>;
+
+/**
+ * What a client reads: a card a newer server changed still reads (the card reader keeps unknown fields and reads an unknown kind as "unknown"), and each card's tabs are checked one by one by
+ * the client (`DecisionTabsSchema`), so one bad entry hides one card's tabs and not the list.
+ */
+export const DecisionCardsViewReaderSchema = z.looseObject({ cards: z.array(DecisionCardReaderSchema).max(DECISION_CARDS_MAX), total: z.number().int().min(0), tabs: z.record(z.string(), z.unknown()).optional() });
 
 /** `POST /v1/app/decisions/{id}/approve`. `tab` is required on a card with tabs (one approval per tab) and refused on one without. Not bulk: one card, one tab, one request. */
 export const DecisionApproveBodySchema = z.object({ requestId: z.string().uuid(), tab: DecisionTabIdSchema.optional() }).strict();

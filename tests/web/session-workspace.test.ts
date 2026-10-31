@@ -18,7 +18,7 @@ function setup(value: unknown = fixture(), hash = "", onComment = vi.fn()) {
  return { ...ui, ...f, router, onComment, close() { ui.unmount();router.dispose(); } };
 }
 it("shows the five supported task tabs and excludes Terminal and Preview", () => {
- const f = setup();expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Pipeline", "Plan", "Tests", "Changes", "Pull request"]);
+ const f = setup();expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["Pipeline", "Plan", "Evidence", "Changes", "Pull request"]);
  expect(screen.queryByRole("tab", { name: "Terminal" })).toBeNull();expect(screen.queryByRole("tab", { name: "Preview" })).toBeNull();f.close();
 });
 it("uses the URL hash and restores the chosen evidence tab on a fresh visit", async () => {
