@@ -43,8 +43,11 @@ export type BreakGlassOwner = z.infer<typeof BreakGlassOwnerSchema>;
 /** A break-glass session is short and needs a recent authentication at the provider. */
 export const BREAK_GLASS_SESSION_MAX_SECONDS = 60 * 60;
 export const BREAK_GLASS_FRESH_AUTH_SECONDS = 5 * 60;
-/** The refusals a broken mapping gives, which are the only ones break-glass may answer. */
-export const BROKEN_MAPPING_REFUSALS = ["not_configured", "config_invalid", "claim_missing", "claim_invalid"] as const;
+/**
+ * The refusals a broken mapping gives, which are the only ones break-glass may answer: the mapping itself is missing or cannot be read (a system failure). Never a
+ * refusal about one person's token: an identity provider that leaves the groups claim out for a person in no group (Entra ID, Okta) would otherwise let a removed owner back in.
+ */
+export const BROKEN_MAPPING_REFUSALS = ["not_configured", "config_invalid"] as const;
 
 export const GroupMappingRuleSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/),

@@ -100,7 +100,7 @@ describe("a person in a mapped group", () => {
 describe("refusals (fail closed, and before anything is written about the person)", () => {
   it.each([
     ["a person in no mapped group", "nobody", "no_group"],
-    ["a token with no group claim", "noclaim", "claim_missing"],
+    ["a token with no group claim (a person in no group)", "noclaim", "no_group"],
   ] as const)("%s", async (_name, sub, reason) => {
     const { h, capture } = await world();
     const lookup = vi.spyOn(h.deps.directory, "lookupByEmail");
@@ -206,6 +206,14 @@ describe("owners", () => {
     expect(refused.redirect.searchParams.get("error_description")).toBe(GROUP_MAPPING_MESSAGES.no_group);
   });
 
+  it("a listed owner whose token carries no groups claim at all is refused too (the provider leaves an empty claim out): not break-glass, because the mapping is fine", async () => {
+    const { h, capture } = await world({ breakGlass: true, users: [{ ...owner, groups: undefined } as FakeOidcUser] });
+    const refused = await signInAs(h, "owner-1");
+    expect(refused.tokens).toBeUndefined();
+    expect(refused.redirect.searchParams.get("error_description")).toBe(GROUP_MAPPING_MESSAGES.no_group);
+    expect(capture!.recordedBy("sso.break_glass_used")).toEqual([]);
+  });
+
   it("an owner in a mapped group stays an owner (a mapping never changes an owner's role)", async () => {
     const { h } = await world();
     expect(roleOf((await signInAs(h, "owner-1", { groups: [USER_GROUP] })).tokens)).toBe("owner");
@@ -239,6 +247,26 @@ describe("owners", () => {
     const withoutTime: FakeOidcUser = { sub: owner.sub, name: owner.name!, email: owner.email!, email_verified: true, groups: [] };
     const none = await world({ mapping: false, breakGlass: true, users: [withoutTime] });
     expect((await signInAs(none.h, "owner-1")).tokens).toBeUndefined();
+  });
+
+  it("break-glass does not take a sign-in the provider dates in the future", async () => {
+    const { h } = await world({ mapping: false, breakGlass: true });
+    expect((await signInAs(h, "owner-1", { auth_time: NOW_SECONDS + 3600 })).tokens).toBeUndefined();
+  });
+
+  it("a code whose session cap has already passed starts no session", async () => {
+    const short = { ...enterprise, sessionMaxSeconds: 5 };
+    const capture = capturingAuditDeps();
+    const h = identityHarness({ oidc: {}, oidcUsers: [una], editionPolicy: short, sso: true, audit: capture });
+    await h.orgs.ensureOrg(TEST_ORG, "staging");
+    await h.deps.sso!.mappings.put(TEST_ORG, { claim: "groups", rules: RULES, updatedAt: "2026-10-31T00:00:00Z", updatedBy: BY }, 0);
+    const started = await h.http(httpEvent("GET", authorizeQuery()));
+    const back = await h.http(httpEvent("GET", h.oidc.approve(started.headers.location!, "una")));
+    const code = new URL(back.headers.location!).searchParams.get("code")!;
+    h.tick(10_000);
+    const exchanged = await h.exchange(code);
+    expect(exchanged.status).toBe(400);
+    expect(h.db.find((item) => String(item.pk).startsWith("SESSION#"))).toHaveLength(0);
   });
 
   it("break-glass is refused when it cannot be recorded (no ledger, or the record cannot be put)", async () => {

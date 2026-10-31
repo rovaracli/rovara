@@ -14,6 +14,7 @@ import { TEST_ORG } from "../support/orgs.js";
 const MAPPING = "/v1/app/org/sso/group-mapping";
 const BREAK_GLASS = "/v1/app/org/sso/break-glass";
 const ORIGIN = new URL(DEV_ISSUER).origin;
+const MEMBER = { ...OMAR, developerId: "e".repeat(64) };
 const RULES = [{ id: "admins", group: "rovara-admins", orgRole: "admin", projectRoles: [] }, { id: "users", group: "rovara-users", orgRole: "member", projectRoles: [{ project: "payments", role: "contributor" }] }];
 
 async function world(options: { policy?: ReturnType<typeof editionPolicy> | undefined; role?: "owner" | "admin" | "member" } = {}) {
@@ -135,8 +136,11 @@ describe("the emergency sign-in list routes", () => {
 
   it("refuses a person who is not an owner, an entry with no expiry or one too far away, more than two, and a token", async () => {
     const { web, h } = await world({ role: "owner" });
+    seedMembership(h.db, MEMBER.developerId, { orgId: TEST_ORG, role: "member" });
     const cases = [
       { owners: [{ personId: "c".repeat(64), expiresAt: future(10) }] },
+      // A member of the org who is not an owner.
+      { owners: [{ personId: MEMBER.developerId, expiresAt: future(10) }] },
       { owners: [{ personId: MAYA.developerId }] },
       { owners: [{ personId: MAYA.developerId, expiresAt: future(BREAK_GLASS_MAX_DAYS + 5) }] },
       { owners: [{ personId: MAYA.developerId, expiresAt: Date.now() - 1000 }] },

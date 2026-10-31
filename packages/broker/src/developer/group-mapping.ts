@@ -98,7 +98,8 @@ export function decideSignIn(input: {
       sessionMaxSeconds: Math.min(BREAK_GLASS_SESSION_MAX_SECONDS, input.policy.sessionMaxSeconds ?? BREAK_GLASS_SESSION_MAX_SECONDS), freshAuthWithinSeconds: BREAK_GLASS_FRESH_AUTH_SECONDS,
     };
   }
-  return refuse(evaluation.reason);
+  // A token without the groups claim is a person in no groups (providers leave an empty claim out): refused as such, never as a broken mapping.
+  return refuse(evaluation.reason === "claim_missing" ? "no_group" : evaluation.reason);
 }
 
 // ---- the store
