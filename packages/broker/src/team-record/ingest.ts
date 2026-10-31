@@ -68,13 +68,13 @@ const STRUCTURED_KEY = /^[A-Za-z][A-Za-z0-9_]{0,59}$/;
  * The structured part goes through the same hygiene as text (secrets, personal details, code, hidden characters). On a row of the highest trust a string must be
  * id-shaped: a pull request title written by an outsider cannot ride on `rovara` trust as a structured field.
  */
-function cleanStructured(values: RecordDraft["structured"], trust: TrustClass): RecordEvent["structured"] {
+function cleanStructured(values: RecordDraft["structured"], trust: TrustClass, idOnly: boolean): RecordEvent["structured"] {
   if (values === undefined) return undefined;
   const out: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(values).slice(0, STRUCTURED_MAX)) {
     if (!STRUCTURED_KEY.test(key)) continue;
     if (typeof value === "string") {
-      if (trust === "rovara") {
+      if (trust === "rovara" || idOnly) {
         if (ID_SHAPED.test(value)) out[key] = value;
         continue;
       }
@@ -156,7 +156,8 @@ export async function ingestRecord(deps: IngestDependencies, draft: RecordDraft)
   // 4. Text hygiene, then the row. A row of rovara trust carries no free text from people.
   const text = plan.keepText && trust !== "rovara" ? cleanRecordText(keptText, { keepCode: draft.kind === "rovara.human_edit" }) : undefined;
   const embed = plan.embed && text !== undefined;
-  const structured = cleanStructured(draft.structured, trust);
+  // Slack words that reached a Rovara row in Public keep no free text anywhere in the row, structured fields included.
+  const structured = cleanStructured(draft.structured, trust, deps.edition === "public" && draft.origin === "slack");
   // Every row carries the place it came from. Rovara's own rows without one belong to the project's own place.
   const eventScope = scope ?? (draft.source === "rovara" && project !== undefined ? `rovara:project/${project}` : undefined);
   if (eventScope === undefined) return refused("no_scope");

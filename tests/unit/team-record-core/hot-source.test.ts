@@ -227,7 +227,7 @@ describe("lake targets the storage lane asked for", () => {
     await putAt(w, "anon-2", 1, { actor: { sourceId: "U77", trust: "outsider" }, trust: "outsider" });
     await putAt(w, "mapped", 1, { actor: { sourceId: "U77", developerId: "dev-7", trust: "member" } });
     await putAt(w, "other", 1, { actor: { sourceId: "U88", trust: "outsider" }, trust: "outsider" });
-    expect(rows(w, "TEAM_RECORD_EVENT").filter((item) => item.gsi4pk !== undefined)).toHaveLength(3);
+    expect(rows(w, "TEAM_RECORD_EVENT").filter((item) => item.gsi4pk !== undefined)).toHaveLength(4);
     const d = deleteDeps(w);
     const result = await erasePerson(d.deps, ORG_A, { developerId: "dev-7", identities: [{ system: "github.com", sourceId: "U77" }] }, "e-7");
     expect(result).toMatchObject({ rows: 3, complete: true });

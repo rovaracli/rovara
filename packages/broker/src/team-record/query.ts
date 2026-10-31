@@ -10,6 +10,7 @@ import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   PAST_WORK_LIMIT_MAX,
   PAST_WORK_PLAN_SUMMARY_MAX,
+  AudienceSchema,
   PastWorkResponseSchema,
   RECORD_FACTS_LIMIT_MAX,
   RECORD_SEARCH_LIMIT_MAX,
@@ -67,6 +68,8 @@ export interface PastWorkTask {
   planSummary: string;
   /** Who may see the task itself: its Plan 5 visibility as an audience. */
   audience: Audience;
+  /** The lowest trust of whoever wrote the title and the plan summary (a task started from an outsider's message is `outsider`). Missing counts as `outsider` (fail closed). */
+  trust?: TrustClass;
 }
 export interface PastWorkTasksPort {
   search(input: { orgId: OrgId; project: string; query: string; limit: number }): Promise<PastWorkTask[]>;
@@ -221,11 +224,15 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
 
   const checkedEvents = await filterVisible(wanted.flatMap((candidate) => (candidate.event === undefined ? [] : [candidate.event])), audience, filters);
   const checkedFacts = await filterVisible(wanted.flatMap((candidate) => (candidate.fact === undefined ? [] : [candidate.fact])), audience, filters);
+  // Only rows the AUDIENCE hid count towards the flag. A deleted row, or one in a place being changed, is hidden from everyone and says nothing about the reader.
+  const top = wanted.slice(0, limit * VECTOR_OVERFETCH);
+  const topEvents = await filterVisible(top.flatMap((candidate) => (candidate.event === undefined ? [] : [candidate.event])), audience, filters);
+  const topFacts = await filterVisible(top.flatMap((candidate) => (candidate.fact === undefined ? [] : [candidate.fact])), audience, filters);
   const okEvents = new Set(checkedEvents.visible);
   const okFacts = new Set(checkedFacts.visible);
   // "Some results are hidden" is a flag, never a count, looks at the best matches only, and is false for a shared task: an exact count of matching private rows lets a
   // viewer probe whether a private discussion exists.
-  const someHidden = audience.kind === "caller" && wanted.slice(0, limit * VECTOR_OVERFETCH).some((candidate) => !(candidate.event !== undefined ? okEvents.has(candidate.event) : candidate.fact !== undefined && okFacts.has(candidate.fact)));
+  const someHidden = audience.kind === "caller" && topEvents.withheld + topFacts.withheld > 0;
   const hits: RecordSearchHit[] = [];
   for (const candidate of wanted) {
     if (hits.length >= limit) break;
@@ -288,11 +295,13 @@ export async function pastWork(deps: RecordQueryDependencies, audience: ReadAudi
   for (const task of checked.visible.slice(0, limit)) {
     // A lesson from a private place shows its title only to an audience that could see that place.
     const learned = await (deps.lessonsOfTask?.(orgId, project, task.taskId) ?? Promise.resolve<Array<{ title: string; audience: Audience }>>([])).then((list) => list, () => []);
-    const visibleLessons = await filterVisible(learned.slice(0, 20), effective, filters);
+    // One malformed lesson audience drops that entry, not the call.
+    const wellFormed = learned.slice(0, 20).filter((lesson) => AudienceSchema.safeParse(lesson.audience).success);
+    const visibleLessons = await filterVisible(wellFormed, effective, filters);
     if (visibleLessons.withheld > 0) lessonHidden = true;
     const lessons = visibleLessons.visible.slice(0, 10).map((lesson) => redactText(lesson.title).slice(0, 160));
     items.push({
-      taskId: task.taskId, title: redactText(task.title).slice(0, 200), status: task.status.slice(0, 40), ...(task.link === undefined ? {} : { link: task.link }), pullRequests: task.pullRequests.slice(0, 10),
+      taskId: task.taskId, trust: task.trust ?? "outsider", title: redactText(task.title).slice(0, 200), status: task.status.slice(0, 40), ...(task.link === undefined ? {} : { link: task.link }), pullRequests: task.pullRequests.slice(0, 10),
       planSummary: redactText(task.planSummary).slice(0, PAST_WORK_PLAN_SUMMARY_MAX),
       outcome: outcomes.get(task.taskId) ?? { merged: false, sendBacks: 0, reverted: false }, lessonsLearned: lessons,
     });

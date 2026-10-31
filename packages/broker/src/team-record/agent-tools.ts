@@ -76,7 +76,10 @@ export async function callRecordTool(deps: RecordQueryDependencies, context: Rec
       const parsed = PastWorkQuerySchema.safeParse(call.arguments);
       if (!parsed.success) return failed("The search is not valid.");
       const result = await pastWork(deps, audience, context.visibility, context.project, parsed.data, options);
-      return { status: "SUCCEEDED", text: `${DATA_NOTICE}\n${JSON.stringify(result)}` };
+      // A task title and plan summary can carry an outsider's words (a task started from their message): the same stage rule as a search hit, and the trust tag always travels.
+      const allowed = context.stage !== undefined && OUTSIDER_TEXT_STAGES.includes(context.stage);
+      const items = allowed ? result.items : result.items.map((item) => (item.trust === "outsider" ? { ...item, title: "Outside person", planSummary: OUTSIDER_WITHHELD, lessonsLearned: [] } : item));
+      return { status: "SUCCEEDED", text: `${DATA_NOTICE}\n${JSON.stringify({ ...result, items })}` };
     }
     return failed("That tool does not exist.");
   } catch {

@@ -65,8 +65,8 @@ export function eventItem(event: RecordEvent): Item {
     [TEAM_RECORD_GSI1.partition]: recordSourceIndexValue(event.workspaceId, event.sourceRef.system, event.sourceRef.id),
     [TEAM_RECORD_GSI2.partition]: event.actor?.developerId === undefined ? undefined : recordActorIndexValue(event.workspaceId, event.actor.developerId),
     [TEAM_RECORD_GSI3.partition]: recordScopeIndexValue(event.workspaceId, event.scope),
-    // A person with no developer id is found by their source identity.
-    [TEAM_RECORD_GSI4.partition]: event.actor === undefined || event.actor.developerId !== undefined ? undefined : recordActorSourceIndexValue(event.workspaceId, event.sourceRef.system, event.actor.sourceId),
+    // The source identity is ALWAYS indexed, beside the developer id: an erase that names only "Slack user U7" must reach what that person wrote while mapped to a developer.
+    [TEAM_RECORD_GSI4.partition]: event.actor === undefined ? undefined : recordActorSourceIndexValue(event.workspaceId, event.sourceRef.system, event.actor.sourceId),
     // Sparse: only a row that still holds raw text with an expiry is in the text-due index.
     [TEAM_RECORD_GSI5.partition]: event.text !== undefined && event.textExpiresAt !== undefined ? recordTextDueIndexValue(event.workspaceId) : undefined,
     [TEAM_RECORD_GSI5.sort]: event.text !== undefined && event.textExpiresAt !== undefined ? new Date(event.textExpiresAt * 1000).toISOString() : undefined,
@@ -234,7 +234,7 @@ export async function putDerivationLinks(table: TeamRecordTable, input: { orgId:
         [TEAM_RECORD_GSI1.partition]: recordSourceIndexValue(input.orgId, source.system, source.sourceId),
         [TEAM_RECORD_GSI2.partition]: source.actor?.developerId === undefined ? undefined : recordActorIndexValue(input.orgId, source.actor.developerId),
         [TEAM_RECORD_GSI3.partition]: source.scope === undefined ? undefined : recordScopeIndexValue(input.orgId, source.scope),
-        [TEAM_RECORD_GSI4.partition]: source.actor === undefined || source.actor.developerId !== undefined || source.actor.sourceId === undefined ? undefined : recordActorSourceIndexValue(input.orgId, source.system, source.actor.sourceId),
+        [TEAM_RECORD_GSI4.partition]: source.actor?.sourceId === undefined ? undefined : recordActorSourceIndexValue(input.orgId, source.system, source.actor.sourceId),
       }),
     }));
   }

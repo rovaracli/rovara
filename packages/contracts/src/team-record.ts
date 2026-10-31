@@ -269,6 +269,8 @@ export const PastWorkItemSchema = z.object({
   link: z.string().url().max(2_048).optional(),
   pullRequests: z.array(z.string().url().max(2_048)).max(10),
   planSummary: z.string().max(PAST_WORK_PLAN_SUMMARY_MAX),
+  /** The lowest trust of whoever wrote the title and summary. A model in Build is not shown an `outsider` item's words. */
+  trust: TrustClassSchema,
   outcome: z.object({ merged: z.boolean(), sendBacks: z.number().int().nonnegative(), reverted: z.boolean() }).strict(),
   lessonsLearned: z.array(z.string().max(160)).max(10),
 }).strict();

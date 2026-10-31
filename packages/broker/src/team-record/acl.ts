@@ -95,9 +95,11 @@ export function hiddenByPending(row: Visible, pending: PendingHides | undefined)
   const places = [row.scope, ...(row.scopes ?? []), ...(row.audience.kind === "restricted" ? [row.audience.acl.scope] : [])];
   if (places.some((place) => place !== undefined && pending.scopes.has(place))) return true;
   if (row.sourceRef !== undefined && pending.sourceHashes.has(teamRecordSourceHash(row.sourceRef.system, row.sourceRef.id))) return true;
+  // A fact names its sources as `system:sourceId`, and a system may hold a colon (a host with a port, `mcp:x`), so every split point is tried: hiding too much is safe.
   for (const ref of row.derivedFrom ?? []) {
-    const at = ref.indexOf(":");
-    if (at > 0 && pending.sourceHashes.has(teamRecordSourceHash(ref.slice(0, at), ref.slice(at + 1)))) return true;
+    for (let at = ref.indexOf(":"); at > 0; at = ref.indexOf(":", at + 1)) {
+      if (at < ref.length - 1 && pending.sourceHashes.has(teamRecordSourceHash(ref.slice(0, at), ref.slice(at + 1)))) return true;
+    }
   }
   return false;
 }
