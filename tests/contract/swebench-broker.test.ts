@@ -716,3 +716,9 @@ for (const status of ["archived", "active"] as const) it(`M47 project ${status} 
   expect(h.startExecution).not.toHaveBeenCalled();
   expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")).toHaveLength(0);
 });
+
+it("M47 eval admission requires an audit in the run and slot transaction", async () => {
+ const h = await enrolledEvalBroker();expect((await start(h.handler)).status).toBe(200);
+ const transaction = h.db.transactions().find(items => items.some(item => (item.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "SWEBENCH_RUN"));
+ expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Put: expect.objectContaining({ Item: expect.objectContaining({ event: expect.objectContaining({ action: "spending.stop_admitted", facts: expect.objectContaining({ workKind: "eval", effectiveStopMicrousd: 1234567 }) }) }) }) })]));
+});
