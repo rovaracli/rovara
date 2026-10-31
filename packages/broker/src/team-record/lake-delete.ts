@@ -17,6 +17,8 @@ export type LakeDeleteTarget =
   /** A whole place (channel deleted, repo deleted or transferred, channel made private): `scopeHash(scope)`. */
   | { kind: "scope"; hash: string }
   | { kind: "project"; project: string }
+  /** A whole workspace (org close), including rows that belong to no project: every table, by `workspace_id`. */
+  | { kind: "workspace" }
   | { kind: "fact"; factId: string };
 
 export interface PendingLakeDelete {
@@ -81,6 +83,10 @@ export function buildLakeDeletes(bucket: string, workspaceId: string, items: Pen
       const who = deleteLiteral(item.target.developerId, "id");
       out.push({ sql: `DELETE FROM ${events} WHERE ${ws} AND "actor_developer_id" = ${who}`, entryIds: [item.id] });
       out.push({ sql: `DELETE FROM ${tableRef(bucket, "outcomes")} WHERE ${ws} AND "actor_developer_id" = ${who}`, entryIds: [item.id] });
+    } else if (item.target.kind === "workspace") {
+      for (const table of ["events", "facts", "outcomes", "lessons_history"] as const) {
+        out.push({ sql: `DELETE FROM ${tableRef(bucket, table)} WHERE ${ws}`, entryIds: [item.id] });
+      }
     } else if (item.target.kind === "project") {
       const project = deleteLiteral(item.target.project, "id");
       for (const table of ["events", "facts", "outcomes", "lessons_history"] as const) {

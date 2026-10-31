@@ -60,7 +60,7 @@ export const TRANSIENT_MAX_RECEIVES = 3;
  * A `RecordSinkPort` that queues. Ordinary writes always go to the queue. Control operations (a delete, an ACL change) try `immediate` first when one is given, so
  * a delete hides at once, and fall back to the queue if that fails: a delete is never dropped because the table was down for a moment.
  */
-export function createQueuedSink(queue: RecordOpQueue, immediate?: Pick<RecordSinkPort, "tombstone" | "changePrincipals" | "replaceScopeAudience">): RecordSinkPort {
+export function createQueuedSink(queue: RecordOpQueue, immediate?: Pick<RecordSinkPort, "tombstone" | "changePrincipals" | "replaceScopeAudience" | "ensureAccessSeed">): RecordSinkPort {
   return {
     async put(draft) {
       await queue.send({ v: 1, op: "put", draft });
@@ -87,6 +87,10 @@ export function createQueuedSink(queue: RecordOpQueue, immediate?: Pick<RecordSi
         }
       }
       await queue.send({ v: 1, op: "principals", workspaceId: input.workspaceId, scope: input.scope, ...(input.add === undefined ? {} : { add: [...input.add] }), ...(input.remove === undefined ? {} : { remove: [...input.remove] }), at: input.at });
+    },
+    async ensureAccessSeed(input) {
+      // Immediate only, and safe to skip: the seed is read from the source just now and a row's own snapshot seeds the unit anyway, so a failure or a missing `immediate` queues nothing.
+      try { await immediate?.ensureAccessSeed?.(input); } catch { /* skipped: the first row seeds it */ }
     },
     async replaceScopeAudience(input) {
       if (immediate !== undefined) {

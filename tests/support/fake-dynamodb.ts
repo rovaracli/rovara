@@ -50,6 +50,11 @@ export interface FakeDynamoDbOptions {
    * as an eventually consistent read may. Default "strong".
    */
   consistency?: "strong" | "eventual";
+  /**
+   * The key attributes of each index by name (`{ gsi3: { partition: "gsi3pk", sort: "gsi3sk" } }`). With them, a key condition that uses `begins_with` on anything but the
+   * index's sort key is refused with a ValidationException, as DynamoDB does (the partition key takes only `=`, and a non-key attribute is no key at all).
+   */
+  indexKeys?: Record<string, { partition: string; sort?: string }>;
   /** Seeds the map order; two tables with different seeds order the same key set differently. Default: from the test's name. */
   seed?: number;
 }
@@ -88,6 +93,7 @@ export class FakeDynamoDb {
   private readonly validateExpressions: boolean;
   private readonly eventual: boolean;
   private readonly seed: number;
+  private readonly indexKeys: Record<string, { partition: string; sort?: string }>;
   /** For eventual consistency: each written item's previous version (undefined: it did not exist), read once. */
   private readonly staleOnce = new Map<string, Item | undefined>();
 
@@ -96,6 +102,7 @@ export class FakeDynamoDb {
     this.validateExpressions = options.realism?.validateExpressions ?? true;
     this.eventual = options.consistency === "eventual";
     this.seed = options.seed ?? testSeed();
+    this.indexKeys = options.indexKeys ?? {};
   }
 
   /** `value` with every map's attributes in this table's order (unchanged when map reordering is off). */
@@ -320,6 +327,8 @@ export class FakeDynamoDb {
   private indexAttributes(input: Record<string, unknown>): string[] {
     const names = (input.ExpressionAttributeNames ?? {}) as Names;
     const name = (token: string) => (token.startsWith("#") ? names[token]! : token);
+    const begins = INDEX_BEGINS.exec(String(input.KeyConditionExpression));
+    if (begins) return [name(begins[1]!), name(begins[3]!)];
     const ranged = INDEX_RANGE.exec(String(input.KeyConditionExpression));
     if (ranged) return [name(ranged[1]!), name(ranged[3]!)];
     const indexed = INDEX_EQUALS.exec(String(input.KeyConditionExpression));
@@ -336,6 +345,24 @@ export class FakeDynamoDb {
       // An index with a sort key range, as the turn and workspace reads send it (spec 025 phase 25d), and the webhook
       // recovery sweep's due rows: `<attribute> = :v AND <sort> (>=|>|<=|<) :a` or `<attribute> = :v AND <sort> BETWEEN :a AND :b`.
       const name = (token: string) => (token.startsWith("#") ? names[token]! : token);
+      const begins = INDEX_BEGINS.exec(String(input.KeyConditionExpression));
+      if (begins) {
+        const [partition, sort] = [name(begins[1]!), name(begins[3]!)];
+        const declared = this.indexKeys[input.IndexName as string];
+        // DynamoDB: begins_with is for the SORT key only. The partition key takes `=`, and a non-key attribute is no key at all.
+        if (sort === partition || (declared !== undefined && (sort !== declared.sort || partition !== declared.partition))) {
+          throw Object.assign(new Error("Query key condition not supported: begins_with is allowed on the sort key of the index only"), { name: "ValidationException", $metadata: {} });
+        }
+        const prefix = values[begins[4]!] as string;
+        const found = this.find((item) => item[partition] === values[begins[2]!] && typeof item[sort] === "string" && item[sort].startsWith(prefix))
+          .sort((left, right) => compareTuples(indexOrder(left, sort), indexOrder(right, sort)));
+        if (input.ScanIndexForward === false) found.reverse();
+        const start = input.ExclusiveStartKey as Record<string, unknown> | undefined;
+        const after = start === undefined
+          ? found
+          : found.filter((item) => compareTuples(indexOrder(item, sort), indexOrder(start, sort)) * (input.ScanIndexForward === false ? -1 : 1) > 0);
+        return after.map((item) => this.readClone(item));
+      }
       const ranged = INDEX_RANGE.exec(String(input.KeyConditionExpression));
       if (ranged) {
         const [partition, sort] = [name(ranged[1]!), name(ranged[3]!)];
@@ -474,6 +501,8 @@ export class FakeDynamoDb {
 }
 
 const INDEX_EQUALS = /^(#?[A-Za-z0-9_]+) = (:[A-Za-z0-9_]+)$/;
+/** `<attribute> = :v AND begins_with(<sort>, :prefix)`: an index whose sort key starts with a prefix (the Team record's places below a place). */
+const INDEX_BEGINS = /^(#?[A-Za-z0-9_]+) = (:[A-Za-z0-9_]+) AND begins_with\((#?[A-Za-z0-9_]+), (:[A-Za-z0-9_]+)\)$/;
 const INDEX_RANGE = /^(#?[A-Za-z0-9_]+) = (:[A-Za-z0-9_]+) AND (#?[A-Za-z0-9_]+) (>=|<=|>|<|BETWEEN) (:[A-Za-z0-9_]+)(?: AND (:[A-Za-z0-9_]+))?$/;
 
 /** An index item's position: its sort value, then its table keys. */
@@ -718,14 +747,14 @@ class Parser {
       this.expect(",");
       const type = this.operand(item ?? {});
       this.expect(")");
-      return dynamoType(item?.[path]) === type;
+      return dynamoType(item?.[path] ?? (/[.[]/u.test(path) ? this.pathValue(item, path) : undefined)) === type;
     }
     if (token === "attribute_not_exists" || token === "attribute_exists") {
       this.next();
       this.expect("(");
       const path = this.path();
       this.expect(")");
-      const exists = item?.[path] !== undefined;
+      const exists = (item?.[path] ?? (/[.[]/u.test(path) ? this.pathValue(item, path) : undefined)) !== undefined;
       return token === "attribute_exists" ? exists : !exists;
     }
     if (token === "begins_with") {
@@ -803,7 +832,14 @@ function applyUpdate(item: Item, expression: string, names: Names, values: Value
       const path = parser.path();
       if (keyword === "SET") {
         parser.expect("=");
-        item[path] = parser.valueExpression(item);
+        const value = parser.valueExpression(item);
+        // A path into a map (`members.U1`): the value goes inside the map, as DynamoDB does (the parent must exist, or the update fails).
+        const dot = path.indexOf(".");
+        if (dot > 0 && !path.includes("[") && item[path] === undefined) {
+          const parent = item[path.slice(0, dot)];
+          if (!plainMap(parent)) throw Object.assign(new Error("The document path provided in the update expression is invalid for update"), { name: "ValidationException", $metadata: {} });
+          (parent)[path.slice(dot + 1)] = value;
+        } else item[path] = value;
       } else if (keyword === "ADD") {
         const value = parser.operand(item);
         const current = item[path];

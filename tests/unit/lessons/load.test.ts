@@ -5,7 +5,7 @@ import { applyLoadReport } from "../../../packages/broker/src/lessons/counters.j
 import { LOAD_MAX_BYTES, LOAD_MAX_LESSONS, learnedContextForDispatch, loadLessonsForStage, scopeMatch, wilsonLower, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Audit, Clock, KEY, MemoryVectors, PROJECT, WS, embedder, lessonRecord, seed, settings } from "./lesson-helpers.js";
+import { Audit, Clock, KEY, MemoryVectors, PROJECT, WS, embedder, lessonRecord, seed, settings, allowAllAccess } from "./lesson-helpers.js";
 
 const restrictedAudience = { kind: "restricted" as const, acl: { source: "slack" as const, scope: "slack:T/C9", principals: ["U-member"], capturedAt: "x", liveCheck: "none" as const } };
 
@@ -13,7 +13,7 @@ function setup(s = settings()) {
   const store = new InMemoryLessonStore();
   const vectors = new MemoryVectors();
   const clock = new Clock();
-  const deps: LoadDeps = { store, embedder, vectors, settings: s, audit: new Audit(), now: clock.now };
+  const deps: LoadDeps = { access: allowAllAccess, store, embedder, vectors, settings: s, audit: new Audit(), now: clock.now };
   const add = async (...lessons: Lesson[]) => {
     await seed(store, ...lessons);
     for (const l of lessons) await vectors.upsert(l.workspaceId, l.project, l.id, await embedder.embed(`${l.title}\n${l.description}\n${l.body}`), { status: l.status });

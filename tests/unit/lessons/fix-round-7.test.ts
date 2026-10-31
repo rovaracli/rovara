@@ -9,7 +9,7 @@ import { processDraft, resumeAndResettle, type ProcessDeps } from "../../../pack
 import { isMeasured } from "../../../packages/broker/src/lessons/reflect.js";
 import { noteCandidateSources } from "../../../packages/broker/src/lessons/sources.js";
 import { InMemoryLessonStore, type LessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, directory, draft, embedder, facts, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, directory, draft, embedder, facts, lessonRecord, seed, settings, verifier, allowAllAccess } from "./lesson-helpers.js";
 
 describe("F10: rollback honours the erasure fence", () => {
   async function erasureInFlight() {
@@ -31,7 +31,7 @@ describe("F10: rollback honours the erasure fence", () => {
   it("the reviewer's probe: during an open erasure a rollback never brings back a head approved by the erased person", async () => {
     const { store, clock } = await erasureInFlight();
     expect((await store.listIntents(KEY, { finished: false })).length).toBe(1);
-    const deps: ApproveDeps = { store, directory: directory(), settings: settings(), audit: new Audit(), now: clock.now };
+    const deps: ApproveDeps = { access: allowAllAccess, store, directory: directory(), settings: settings(), audit: new Audit(), now: clock.now };
     const result = await rollbackLessonSet(deps, { ...KEY, targetSetVersion: 1, actorId: "ann" });
     expect(result).toMatchObject({ ok: true, restored: [] });
     expect(JSON.stringify(await store.get(KEY, "les_rbe00001"))).not.toContain("mallory");
@@ -86,7 +86,7 @@ describe("F5: rollback re-checks kept approvals against current membership and p
     const v1 = lessonRecord({ id: "les_rb000001", tier: 1, tierReasons: ["not_a_fact"], type: "convention", approvals, provenance: { ...draft().provenance, authors: ["carl"] } });
     await seed(store, v1);
     await seed(store, { ...v1, version: 2, citations: [{ ...v1.citations[0]!, startLine: 40, endLine: 50 } as never] });
-    const deps: ApproveDeps = { store, directory: directory({ eligibleIds: opts.eligibleIds, ownerIds: ["owner"] }), settings: settings(opts.policy), audit: new Audit(), now: new Clock().now };
+    const deps: ApproveDeps = { access: allowAllAccess, store, directory: directory({ eligibleIds: opts.eligibleIds, ownerIds: ["owner"] }), settings: settings(opts.policy), audit: new Audit(), now: new Clock().now };
     const result = await rollbackLessonSet(deps, { ...KEY, targetSetVersion: 1, actorId: "owner" });
     return { result, lesson: (await store.get(KEY, "les_rb000001"))! };
   }
@@ -128,7 +128,7 @@ describe("one switch: the tier-0 approval default", () => {
     let n = 0;
     const clock = new Clock();
     const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: clock.now, verifier: verifier("valid"), facts: facts(), settings: settings(tier0Approval === undefined ? {} : { tier0Approval }), newId: () => `les_sw${++n}` };
-    const approve: ApproveDeps = { store, directory: directory(), settings: deps.settings, audit: deps.audit, now: clock.now };
+    const approve: ApproveDeps = { access: allowAllAccess, store, directory: directory(), settings: deps.settings, audit: deps.audit, now: clock.now };
     return { deps, store, approve };
   }
   const strong = { measured: true, authors: ["mallory"], sources: ["member:mallory"], inputSources: ["member:mallory"], supportTasks: ["t1"] };
@@ -154,13 +154,13 @@ describe("one switch: the tier-0 approval default", () => {
     const { deps, store, approve } = pipeline();
     const out = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, ...strong } }));
     const viewer = { principals: [], groups: [] };
-    const before = await buildWeeklyDigest(store, KEY, deps.now(), viewer);
+    const before = await buildWeeklyDigest(store, KEY, deps.now(), viewer, allowAllAccess);
     expect(before.waiting.map((i) => i.id)).toEqual([out.lesson!.id]);
     expect(before.top.map((i) => i.id)).toEqual([out.lesson!.id]);
     expect(before.autoApplied).toEqual([]);
-    expect((await listWaiting(store, KEY, viewer)).map((l) => l.id)).toEqual([out.lesson!.id]);
+    expect((await listWaiting(store, KEY, viewer, allowAllAccess)).map((l) => l.id)).toEqual([out.lesson!.id]);
     expect(await approveLesson(approve, { ...KEY, lessonId: out.lesson!.id, approverId: "bob" })).toMatchObject({ ok: true, status: "active" });
-    const after = await buildWeeklyDigest(store, KEY, deps.now(), viewer);
+    const after = await buildWeeklyDigest(store, KEY, deps.now(), viewer, allowAllAccess);
     expect(after.waiting).toEqual([]);
     expect(after.top.map((i) => i.id)).toEqual([out.lesson!.id]);
     expect(after.autoApplied).toEqual([]);
@@ -186,7 +186,7 @@ describe("one switch: the tier-0 approval default", () => {
     const s = await auto.store.setVersion(KEY);
     await seed(auto.store, lessonRecord({ id: "les_later001" }));
     // The project now runs with "one".
-    const deps: ApproveDeps = { ...auto.approve, settings: settings({ tier0Approval: "one" }) };
+    const deps: ApproveDeps = { access: allowAllAccess, ...auto.approve, settings: settings({ tier0Approval: "one" }) };
     await rollbackLessonSet(deps, { ...KEY, targetSetVersion: s, actorId: "ann" });
     expect(await auto.store.get(KEY, live.id)).toMatchObject({ status: "pending", approvals: [] });
   });
@@ -234,7 +234,7 @@ describe("low items", () => {
 
   it("an author cannot approve their own lesson that was sent back to a person; someone else can", async () => {
     const store = new InMemoryLessonStore();
-    const approve: ApproveDeps = { store, directory: directory(), settings: settings(), audit: new Audit(), now: new Clock().now };
+    const approve: ApproveDeps = { access: allowAllAccess, store, directory: directory(), settings: settings(), audit: new Audit(), now: new Clock().now };
     await seed(store, lessonRecord({ id: "les_sent0001", status: "pending", tier: 0, approvals: [], reviewRequired: true, provenance: { ...draft().provenance, authors: ["Ann"] } }));
     expect(await approveLesson(approve, { ...KEY, lessonId: "les_sent0001", approverId: "ann" })).toEqual({ ok: false, code: "author_cannot_approve_alone" });
     expect(await approveLesson(approve, { ...KEY, lessonId: "les_sent0001", approverId: "bob" })).toMatchObject({ ok: true, status: "active" });
@@ -242,7 +242,7 @@ describe("low items", () => {
 
   it("a sent-back tier-0 lesson needs a person even when the policy would apply tier 0 by itself", async () => {
     const store = new InMemoryLessonStore();
-    const approve: ApproveDeps = { store, directory: directory({ ownerIds: ["ann"], eligibleIds: ["ann"] }), settings: settings(), audit: new Audit(), now: new Clock().now };
+    const approve: ApproveDeps = { access: allowAllAccess, store, directory: directory({ ownerIds: ["ann"], eligibleIds: ["ann"] }), settings: settings(), audit: new Audit(), now: new Clock().now };
     await seed(store, lessonRecord({ id: "les_sent0002", status: "pending", tier: 0, approvals: [], reviewRequired: true, provenance: { ...draft().provenance, authors: ["carl"] } }));
     expect(await approveLesson(approve, { ...KEY, lessonId: "les_sent0002", approverId: "ann" })).toMatchObject({ ok: true, status: "active" });
   });

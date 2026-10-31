@@ -8,7 +8,9 @@ import { renewLesson } from "./expiry.js";
 import { retireLesson } from "./curate.js";
 import { nextVersion, type LessonStore, type LoadManifest, type ScopeKey } from "./store.js";
 import { cleanForLearning, globToRegExp } from "./guards.js";
-import type { Lesson } from "./types.js";
+import type { AccessCheckPort } from "../team-record/access-port.js";
+import { readVisible, type LessonLog } from "./read-visible.js";
+import type { IdentitySet, Lesson } from "./types.js";
 import type { LoadReport } from "@agentx/contracts";
 
 const DAY = 86_400_000;
@@ -117,13 +119,18 @@ export async function settleHelpful(deps: CounterDeps, key: ScopeKey, limit = 20
   return applied;
 }
 
-export type FeedbackFailure = "not_loaded" | "not_found" | "repeat";
+export type FeedbackFailure = "not_loaded" | "not_found" | "repeat" | "not_permitted";
 /** The task page's "Helpful" and "Wrong here". A person can mark a lesson only for a task it was loaded into, once per person. */
-export async function recordFeedback(deps: CounterDeps, input: { workspaceId: string; project: string; taskId: string; lessonId: string; userId: string; kind: "helpful" | "wrong_here" }): Promise<{ ok: true } | { ok: false; code: FeedbackFailure }> {
+export async function recordFeedback(deps: CounterDeps & { access: AccessCheckPort; log?: LessonLog }, input: { workspaceId: string; project: string; taskId: string; lessonId: string; userId: string; /** What the person is in the sources (their linked ids), for the access check. */ viewer: IdentitySet; kind: "helpful" | "wrong_here" }): Promise<{ ok: true } | { ok: false; code: FeedbackFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const manifests = await deps.store.manifests(key, input.taskId);
   if (!reached(manifests).has(input.lessonId)) return { ok: false, code: "not_loaded" };
-  if ((await deps.store.get(key, input.lessonId)) === undefined) return { ok: false, code: "not_found" };
+  const lesson = await deps.store.get(key, input.lessonId);
+  if (lesson === undefined) return { ok: false, code: "not_found" };
+  // Only a person who can read the lesson now can mark it (frozen snapshot AND the access records); an unreadable record is a no. So the two "wrong here" marks that auto-retire a lesson
+  // always come from people with access.
+  const permitted = await readVisible({ access: deps.access, key, viewer: input.viewer, lessons: [lesson], where: "feedback", log: deps.log }).then((list) => list.length === 1, () => false);
+  if (!permitted) return { ok: false, code: "not_permitted" };
   if (!(await deps.store.markOnce(key, `feedback:${input.kind}:${input.taskId}:${input.lessonId}:${createHash("sha256").update(`${key.workspaceId}\u0001${input.userId}`).digest("hex").slice(0, 24)}`))) return { ok: false, code: "repeat" };
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
   if (input.kind === "helpful") await addHelpful(deps, key, input.lessonId, resolved.expiryDays);

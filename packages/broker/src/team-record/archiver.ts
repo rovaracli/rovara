@@ -7,11 +7,12 @@
 import type { LakeClient } from "./lake.js";
 import { LakeError } from "./lake.js";
 import type { LakeDeleteQueue, LakeDeleteTarget } from "./lake-delete.js";
-import { actorSourceHash, buildInsertIfAbsent, scopeHash, sourceHash, type LakeValue } from "./lake-sql.js";
+import { actorSourceHash, buildInsertIfAbsent, developerIdHash, scopeHash, sourceHash, type LakeValue } from "./lake-sql.js";
 import type { RecordEventLike } from "./shared-types.js";
 import { assertSafeId } from "./shared-types.js";
 import type { VectorIndex } from "./vectors.js";
 import type { TeamRecordEdition } from "./edition.js";
+import { lakeAcl, withoutActorFields } from "./person-fields.js";
 
 export const HOT_DAYS = 90;
 const DAY_MS = 86_400_000;
@@ -19,10 +20,14 @@ export const DEFAULT_ROWS_PER_INSERT = 10;
 
 export interface HotArchiveSource {
   /** Live and not yet archived rows of the workspace that occurred before `olderThan`, oldest first. `cursor` resumes inside a run. */
-  listArchivable(request: { workspaceId: string; olderThan: string; limit: number; cursor?: string }): Promise<{ rows: RecordEventLike[]; nextCursor?: string }>;
+  listArchivable(request: { workspaceId: string; olderThan: string; limit: number; cursor?: string }): Promise<{ rows: RecordEventLike[]; nextCursor?: string | undefined }>;
   /** Of these ids, the ones that are still live right now (no tombstone). Asked just before the insert, so a delete that landed during the run wins. */
   filterLive(workspaceId: string, ids: string[]): Promise<Set<string>>;
-  markArchived(workspaceId: string, ids: string[], archivedAt: string): Promise<void>;
+  /**
+   * Marks rows archived. Returns the ids it could NOT mark because the row was deleted after the last check (the record core queues their lake delete); a source that
+   * returns nothing is read as "all marked".
+   */
+  markArchived(workspaceId: string, ids: string[], archivedAt: string): Promise<string[] | void>;
 }
 
 export interface ArchiverDeps {
@@ -81,15 +86,15 @@ export function toLakeEventRow(event: RecordEventLike, archivedAt: string, editi
     source_hash: sourceHash(event.sourceRef.system, event.sourceRef.id),
     source_version: event.sourceRef.version ?? null,
     kind: event.kind,
-    actor_developer_id: event.actor?.developerId ?? null,
+    actor_developer_id: event.actor?.developerId === undefined ? null : developerIdHash(event.actor.developerId), // hashed: an erase queues the hash, not the id
     actor_source_hash: event.actor === undefined ? null : actorSourceHash(event.sourceRef.system, event.actor.sourceId),
     scope_hash: scopeHash(scope),
     trust: event.trust,
     audience_kind: event.audience.kind,
     audience_scope: event.audience.kind === "restricted" ? event.audience.acl.scope : null,
-    acl_json: event.audience.kind === "restricted" ? JSON.stringify(event.audience.acl) : null,
+    acl_json: event.audience.kind === "restricted" ? JSON.stringify(lakeAcl(event.audience.acl)) : null,
     text: textAllowed ? (event.text ?? null) : null,
-    structured_json: event.structured === undefined ? null : JSON.stringify(event.structured),
+    structured_json: withoutActorFields(event.structured) === undefined ? null : JSON.stringify(withoutActorFields(event.structured)),
     links_json: JSON.stringify(event.links),
     retention: event.retention,
     archived_at: archivedAt,
@@ -197,8 +202,14 @@ export async function runArchive(deps: ArchiverDeps, request: { workspaceId: str
       }
       const markable = ready.filter((row) => stillLive.has(row.id));
       if (markable.length > 0) {
-        await deps.source.markArchived(request.workspaceId, markable.map((row) => row.id), archivedAt);
-        summary.archived += markable.length;
+        const lost = new Set((await deps.source.markArchived(request.workspaceId, markable.map((row) => row.id), archivedAt)) ?? []);
+        summary.archived += markable.length - lost.size;
+        if (lost.size > 0) {
+          // The row died between the check and the mark: its lake copy is already queued for delete by the source; its vector goes too.
+          summary.lateTombstoned += lost.size;
+          const keys = markable.filter((row) => lost.has(row.id)).flatMap((row) => (row.embeddingRef === undefined ? [] : [row.embeddingRef]));
+          if (keys.length > 0) await deps.vectors.delete(keys).catch(() => ({ done: 0, failed: keys }));
+        }
       }
     }
     if (cursor === undefined) return summary;

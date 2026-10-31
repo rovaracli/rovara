@@ -3,7 +3,9 @@
 // content; where it is delivered (Slack, email, the Home card) is a later UI task. A lesson from a restricted source appears, with its text, only for a
 // viewer who could see that source; for everyone else it is counted and nothing more.
 import type { LessonStore, ScopeKey } from "./store.js";
-import { satisfiesAcl, type IdentitySet, type Lesson } from "./types.js";
+import type { AccessCheckPort } from "../team-record/access-port.js";
+import { readVisible, type LessonLog } from "./read-visible.js";
+import type { IdentitySet, Lesson } from "./types.js";
 import { lessonValue } from "./value.js";
 
 const WEEK = 7 * 86_400_000;
@@ -26,12 +28,14 @@ export interface WeeklyDigest {
   restrictedHidden: number;
 }
 
-export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: number, viewer: IdentitySet): Promise<WeeklyDigest> {
+export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: number, viewer: IdentitySet, access: AccessCheckPort, log?: LessonLog): Promise<WeeklyDigest> {
   const since = now - WEEK;
   const all = await store.list(key);
   const item = (l: Lesson): DigestItem => ({ id: l.id, title: l.title, type: l.type, tier: l.tier, scope: l.scope, links: l.citations.flatMap((c) => (c.kind === "pr" ? [c.url] : [])) });
-  const visible = (l: Lesson): boolean => l.provenance.audience.kind !== "restricted" || satisfiesAcl(viewer, l.provenance.audience.acl);
-  const shown = all.filter(visible);
+  // The frozen snapshot AND the access records now (an unreadable record fails the digest rather than showing or hiding a guess).
+  const shown = await readVisible({ access, key, viewer, lessons: all, where: "digest", log });
+  const shownIds = new Set(shown.map((l) => l.id));
+  const visible = (l: Lesson): boolean => shownIds.has(l.id);
   const byValue = (a: Lesson, b: Lesson): number => lessonValue(b) - lessonValue(a) || a.id.localeCompare(b.id);
   return {
     since,

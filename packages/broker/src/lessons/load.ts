@@ -9,7 +9,9 @@ import { safeScopeLabel } from "./render.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
-import { isRestricted, satisfiesAcl, type IdentitySet, type Lesson } from "./types.js";
+import type { AccessCheckPort } from "../team-record/access-port.js";
+import { readVisible } from "./read-visible.js";
+import { isRestricted, type IdentitySet, type Lesson } from "./types.js";
 
 export const LOAD_MAX_LESSONS = LEARNED_CONTEXT_MAX_LESSONS;
 export const LOAD_MAX_BYTES = LEARNED_CONTEXT_MAX_BYTES;
@@ -29,10 +31,18 @@ export interface LoadRequest {
   /** Only an eval-batch dispatch may ask for `off`; the broker route refuses it from production (design §4.13, task L8). */
   memory?: { mode: "off" | "live" };
 }
-export type LoadSkip = "mode" | "stage" | "memory_off" | "index_unreachable" | "no_lessons";
+export type LoadSkip = "mode" | "stage" | "memory_off" | "index_unreachable" | "no_lessons" | "access_unavailable";
 export interface LoadResult { context?: LearnedContext; manifest: LoadManifest; skipped?: LoadSkip }
 
-export interface LoadDeps extends LessonDeps { store: LessonStore; embedder: Embedder; vectors: LessonVectors; settings: LearningSettingsReader }
+export interface LoadDeps extends LessonDeps {
+  store: LessonStore; embedder: Embedder; vectors: LessonVectors; settings: LearningSettingsReader;
+  /**
+   * The record core's access check. Each lesson's source places are checked against the access records at load time (not only against the snapshot the lesson froze), so a person
+   * removed from a channel stops getting its lessons. REQUIRED: a caller that cannot supply it gets no lessons (fail closed, with a log line), never the frozen snapshot alone.
+   */
+  access: AccessCheckPort;
+  log?: (event: string, fields: Record<string, unknown>) => void;
+}
 
 
 interface ScopeMatch { matches: boolean; byPath: boolean }
@@ -106,13 +116,25 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     return empty("index_unreachable", setVersion);
   }
 
+  // The access records, asked now for the places each candidate lesson was learned from (one batch for the whole load). A record that cannot be read loads nothing.
+  if ((deps.access as AccessCheckPort | undefined) === undefined) {
+    deps.log?.("learning.load_no_access_port", { stage });
+    deps.metrics?.count("learning_load_skipped", { reason: "access_unavailable" });
+    return empty("access_unavailable", setVersion);
+  }
+  // Every candidate goes through the one read path: the frozen snapshot AND the access records now (one batch). A record that cannot be read loads nothing.
+  const viewer = request.taskAudience.kind === "private" ? { principals: request.taskAudience.identity.principals, groups: request.taskAudience.identity.groups } : undefined;
+  let readable: Set<string>;
+  try {
+    readable = new Set((await readVisible({ access: deps.access, key, viewer, lessons: active.filter((lesson) => stageAllows(lesson, stage)), where: "load", log: deps.log })).map((lesson) => lesson.id));
+  } catch {
+    deps.metrics?.count("learning_load_skipped", { reason: "access_unavailable" });
+    return empty("access_unavailable", setVersion);
+  }
+
   const scored: Array<{ lesson: Lesson; score: number; why: LoadManifestEntry["why"] }> = [];
   for (const lesson of active) {
-    if (!stageAllows(lesson, stage)) continue;
-    if (isRestricted(lesson)) {
-      // A restricted lesson loads only into a private task whose owner may see the source; a shared task never gets one.
-      if (request.taskAudience.kind !== "private" || lesson.provenance.audience.kind !== "restricted" || !satisfiesAcl(request.taskAudience.identity, lesson.provenance.audience.acl)) continue;
-    }
+    if (!stageAllows(lesson, stage) || !readable.has(lesson.id)) continue;
     const match = scopeMatch(lesson, request);
     if (!match.matches) continue;
     const sim = similarity.get(lesson.id) ?? 0;
@@ -147,7 +169,9 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
         if (lesson !== undefined && !isRestricted(lesson)) seen.set(entry.id, { id: lesson.id, type: lesson.type, title: lesson.title });
       }
     }
-    priorLoaded = [...seen.values()];
+    // The titles go through the same read path: a lesson whose source place turned private since is not listed for a task that may no longer read it.
+    const shown = new Set((await readVisible({ access: deps.access, key, viewer, lessons: (await Promise.all([...seen.keys()].map((id) => deps.store.get(key, id)))).flatMap((l) => (l === undefined ? [] : [l])), where: "load", log: deps.log })).map((l) => l.id));
+    priorLoaded = [...seen.values()].filter((entry) => shown.has(entry.id));
   }
 
   const manifest: LoadManifest = { taskId: request.taskId, workspaceId: key.workspaceId, project: key.project, stage, round: request.round, setVersion, memory: "live", at: now, lessons: entries, bytes };

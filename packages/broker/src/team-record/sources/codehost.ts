@@ -167,7 +167,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
     try {
       const drafts: RecordDraft[] = [];
       const project = event.repo.project ?? config.project;
-      const base = { workspaceId: event.repo.workspaceId, ...(project === undefined ? {} : { project }), repo: event.repo.fullName, source: sourceOf(event.repo), links: [] as string[] };
+      const base = { workspaceId: event.repo.workspaceId, ...(project === undefined ? {} : { project }), repo: event.repo.fullName, source: sourceOf(event.repo), scope: repoScope(event.repo), links: [] as string[] };
       const actor = async (person: CodeHostPerson): Promise<NonNullable<RecordDraft["actor"]>> => {
         const resolved = await deps.actors.resolve({ workspaceId: event.repo.workspaceId, project, system: event.repo.host, sourceId: person.id, isBot: person.isBot });
         return { sourceId: person.id, ...(resolved.developerId === undefined ? {} : { developerId: resolved.developerId }), trust: person.isBot ? "system" : resolved.trust };
@@ -180,7 +180,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           drafts.push({
             ...base, kind: "github.pr", occurredAt: event.at,
             sourceRef: { system: event.repo.host, id: prId(event.repo, event.number), url: event.url, version: event.version },
-            actor: who, trust: who.trust, audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
+            actor: who, trust: who.trust, pieceTrusts: [who.trust], audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
             structured: scalars({ number: event.number, action: event.action, merged: event.merged, base: event.baseRef, headSha: event.headSha, mergeCommitSha: event.mergeCommitSha }),
             links: linksOf(event.url), retention: config.retention,
           });
@@ -193,7 +193,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           drafts.push({
             ...base, kind: "github.review", occurredAt: event.at,
             sourceRef: { system: event.repo.host, id: `${prId(event.repo, event.prNumber)}:review${event.id}`, url: event.url, parentId: prId(event.repo, event.prNumber), version: event.version },
-            actor: who, trust: who.trust, audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
+            actor: who, trust: who.trust, pieceTrusts: [who.trust], audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
             structured: scalars({ prNumber: event.prNumber, state: event.state, action: event.action }),
             links: linksOf(event.url), retention: config.retention,
           });
@@ -206,7 +206,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           drafts.push({
             ...base, kind: "github.review_comment", occurredAt: event.at,
             sourceRef: { system: event.repo.host, id: commentId(event), url: event.url, parentId: prId(event.repo, event.prNumber), version: event.version },
-            actor: who, trust: who.trust, audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
+            actor: who, trust: who.trust, pieceTrusts: [who.trust], audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
             structured: scalars({ prNumber: event.prNumber, surface: event.surface, path: event.path }),
             links: linksOf(event.url), retention: config.retention,
           });
@@ -285,7 +285,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
     targets = targets.filter(({ target }) => !seen.has(target.taskId) && seen.add(target.taskId));
     for (const { target, via, at } of targets.slice(0, 20)) {
       const common = {
-        workspaceId: repo.workspaceId, project: target.project, repo: repo.fullName, source: sourceOf(repo), occurredAt: at, retention: retention,
+        workspaceId: repo.workspaceId, project: target.project, repo: repo.fullName, source: sourceOf(repo), scope: repoScope(repo), occurredAt: at, retention: retention,
         audience: audienceOf(repo, at), links: linksOf(target.url),
       };
       await write({

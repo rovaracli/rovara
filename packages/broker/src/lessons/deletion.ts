@@ -18,7 +18,7 @@ import { pendingExpiry } from "./expiry.js";
 import { randomUUID } from "node:crypto";
 import { nextVersion, type DeletionIntent, type LessonStore, type ScopeKey } from "./store.js";
 import { ERASED_MARK, idIn, peopleOf, recordIdsOf, sameId, type Lesson, type LessonCitation } from "./types.js";
-import { scrubLesson } from "./scrub.js";
+import { scrubLesson, stripAudienceIds } from "./scrub.js";
 export { ERASED_MARK, scrubLesson };
 
 export type DeletionCause = "sources_deleted" | "source_deleted" | "person_erased";
@@ -35,6 +35,8 @@ export interface LessonDeletionPort {
   resumePending(orgId: string, project: string): Promise<number>;
   /** The whole erasure of one person in one project: purge what they wrote or alone support, scrub them from the rest. Returns what was purged and scrubbed. */
   erasePerson(orgId: string, project: string, erased: ErasedPerson, deleted: ReadonlySet<string>): Promise<{ purged: string[]; scrubbed: string[] }>;
+  /** Removes an erased person's source ids from the audience snapshot of every version of every lesson of the project (the id must not outlive the erase anywhere). */
+  scrubAudienceIds(orgId: string, project: string, ids: readonly string[]): Promise<void>;
 }
 
 const DONE: ReadonlySet<string> = new Set(["withdrawn", "retired", "rejected"]);
@@ -193,6 +195,11 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
     },
     withdraw,
     forgetSources,
+    async scrubAudienceIds(orgId, project, ids) {
+      const k = key(orgId, project);
+      const gone = new Set(ids);
+      for (const h of await histories(k)) await everyVersion(k, h.head.id, (l) => stripAudienceIds(l, gone));
+    },
     async resumePending(orgId, project) {
       const k = key(orgId, project);
       let finished = 0;

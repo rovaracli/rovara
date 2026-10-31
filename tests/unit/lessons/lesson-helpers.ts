@@ -1,4 +1,5 @@
 // Shared fakes for the learning v2 lane tests (L1-L5). No AWS, no network: every port of packages/broker/src/lessons/ports.ts has an in-memory stand-in.
+import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import type {
   AlertSink, ApproverDirectory, CitationVerifier, CorrectionJudge, Embedder, LearningSpend, LessonAuditEvent, LessonAuditSink, LessonVectors, PipelineModel, RulePublisher,
@@ -11,7 +12,7 @@ import type { CodeFacts } from "../../../packages/broker/src/lessons/ports.js";
 import { pathsToVerify, type VerifiedMaterial } from "../../../packages/broker/src/lessons/render.js";
 import { classifyTier as realClassifyTier, type TierContext, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 
-export const WS = "ws-1";
+export const WS = "org_aaaaaaaaaaaaaaaaaaaa";
 export const PROJECT = "proj-1";
 export const KEY = { workspaceId: WS, project: PROJECT };
 export const BASE = "abcdef0123456789abcdef0123456789abcdef01";
@@ -180,3 +181,6 @@ export function materialFor(lesson: { scope: Lesson["scope"]; citations: readonl
 export function classifyTier(input: TierInput, context?: TierContext, floor?: { tier: 0 | 1 | 2; reasons: readonly string[] }) {
   return realClassifyTier(input.material === undefined ? { ...input, material: materialFor(input) } : input, context, floor);
 }
+
+/** An access-check port that lets every place through: for the tests that exercise the lessons themselves, not the access records. */
+export const allowAllAccess: AccessCheckPort = { mayRead: async (_org, _viewer, places) => places.map(() => true) };

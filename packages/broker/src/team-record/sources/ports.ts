@@ -8,12 +8,14 @@
 // Generic by design (owner rule, 2026-10-30): a tap turns one kind of source event into a `RecordDraft`; it knows nothing about a
 // particular customer, code host, tracker or MCP server beyond the small adapters named in each file.
 
+import { minTrust } from "@agentx/contracts";
+
 export type TrustClass = "member" | "rovara" | "system" | "outsider";
 
 /** Lowest first: an outsider's words are never raised by anyone who later touched the item. */
-const TRUST_RANK: Record<TrustClass, number> = { outsider: 0, system: 1, rovara: 2, member: 3 };
 export function lowestTrust(...classes: TrustClass[]): TrustClass {
-  return classes.reduce<TrustClass>((lowest, next) => (TRUST_RANK[next] < TRUST_RANK[lowest] ? next : lowest), "member");
+  // One order for the whole record (contracts' TRUST_RANK: outsider < system < member < rovara). With nothing to compare the answer stays "member", as before.
+  return classes.length === 0 ? "member" : minTrust(...classes);
 }
 
 export type SourceSystem = "slack" | "github" | "linear" | "jira" | "mcp" | "rovara" | `codehost:${string}`;
@@ -29,6 +31,12 @@ export interface AclSnapshot {
   liveCheck: "none" | "on_read";
 }
 
+/**
+ * The snapshot rule every tap follows: `acl.capturedAt` is the time the member list was READ at the source, never the time of the content it sits on (a message's post time, an
+ * issue's `updated_at`). Snapshots are ordered by it, and the access record trusts a newer snapshot only until the first member or audience event reaches it; a list read from a
+ * cache must carry the time the cache was filled, or it could out-rank a later removal. A source whose ACL belongs to one item (a tracker issue, an MCP record) gives the
+ * item's own list; the record core files it under the item, not the place.
+ */
 export type Audience = { kind: "project" } | { kind: "restricted"; acl: AclSnapshot };
 
 /**
@@ -66,6 +74,19 @@ export interface RecordDraft {
   /** Permalinks only. */
   links: string[];
   retention: Retention;
+  /**
+   * Set by the record core's contract (`RecordDraft` in ../types.ts), filled in here so the taps can say them:
+   * - `origin: "slack"`: a Rovara row made from Slack words (`rovara.ask`, `rovara.remembered` from a thread). The Slack rule follows the words: no text kept in Public.
+   * - `pieceTrusts`: the trust of every author whose own words are in the text (a ticket's creator and its last editor); the row takes the lowest.
+   * - `hasAttachments`: the message carries attachments or shared messages from other authors; without `pieceTrusts` they count as an outsider's.
+   */
+  origin?: "slack";
+  /** The place the item came from (`slack:T1/C9`, `jira:project/SHOP`, `rovara:project/web`). A restricted audience's snapshot names it too; a project-wide row needs it here. */
+  scope?: string;
+  pieceTrusts?: TrustClass[];
+  /** Trust of the quoted or forwarded authors the tap could identify; without it quoted text counts as an outsider's. */
+  quotedTrusts?: TrustClass[];
+  hasAttachments?: boolean;
 }
 
 export type IngestOutcome = { status: "stored" | "duplicate" | "queued" } | { status: "refused"; reason: string };
@@ -101,6 +122,8 @@ export interface RecordSinkPort {
   changePrincipals(input: { workspaceId: string; scope: string; add?: readonly string[]; remove?: readonly string[]; at: string }): Promise<void>;
   /** A channel that became private or public: every row of the scope takes the new audience. */
   replaceScopeAudience(input: { workspaceId: string; scope: string; audience: Audience; at: string }): Promise<void>;
+  /** Seeds the place's access record from its full, freshly read member list (does nothing if already seeded). Optional: a tap calls it before a first member event. */
+  ensureAccessSeed?(input: { workspaceId: string; scope: string; read: () => Promise<Audience | undefined> }): Promise<void>;
 }
 
 /**

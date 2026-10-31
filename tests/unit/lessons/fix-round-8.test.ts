@@ -9,7 +9,7 @@ import { scrubLesson } from "../../../packages/broker/src/lessons/scrub.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { distinctIds, idIn, normId, sameId } from "../../../packages/broker/src/lessons/types.js";
 import { isCorroborated } from "../../../packages/broker/src/lessons/value.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, autoSettings, directory, draft, embedder, facts, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, autoSettings, directory, draft, embedder, facts, lessonRecord, seed, settings, verifier, allowAllAccess } from "./lesson-helpers.js";
 
 describe("N-A: a restored approval is re-checked against today's rules", () => {
   async function restore(approval: { by: string; mode: "one" | "second_person" | "sole_owner_exception" }, over: { tier: 0 | 1 | 2; eligibleIds: string[]; ownerIds?: string[]; authors?: string[]; approvals?: Array<{ by: string; mode: "one" | "second_person" | "sole_owner_exception" }> }) {
@@ -18,7 +18,7 @@ describe("N-A: a restored approval is re-checked against today's rules", () => {
     const v1 = lessonRecord({ id: "les_rb000001", tier: over.tier, tierReasons: ["not_a_fact"], type: "convention", approvals, provenance: { ...draft().provenance, authors: over.authors ?? ["carl"] } });
     await seed(store, v1);
     await seed(store, { ...v1, version: 2, citations: [{ ...v1.citations[0]!, startLine: 40, endLine: 50 } as never] });
-    const deps: ApproveDeps = { store, directory: directory({ eligibleIds: over.eligibleIds, ownerIds: over.ownerIds ?? [over.eligibleIds[0]!] }), settings: settings(), audit: new Audit(), now: new Clock().now };
+    const deps: ApproveDeps = { access: allowAllAccess, store, directory: directory({ eligibleIds: over.eligibleIds, ownerIds: over.ownerIds ?? [over.eligibleIds[0]!] }), settings: settings(), audit: new Audit(), now: new Clock().now };
     await rollbackLessonSet(deps, { ...KEY, targetSetVersion: 1, actorId: over.eligibleIds[0]! });
     return (await store.get(KEY, "les_rb000001"))!;
   }
@@ -99,7 +99,7 @@ describe("N-B: one id normaliser everywhere", () => {
   });
   it("eligibility uses the same normaliser: 'Bob' may approve when the list holds 'bob'", async () => {
     const store = new InMemoryLessonStore();
-    const approve: ApproveDeps = { store, directory: directory({ eligibleIds: ["owner", "ann", "bob"] }), settings: settings(), audit: new Audit(), now: new Clock().now };
+    const approve: ApproveDeps = { access: allowAllAccess, store, directory: directory({ eligibleIds: ["owner", "ann", "bob"] }), settings: settings(), audit: new Audit(), now: new Clock().now };
     await seed(store, lessonRecord({ id: "les_e0000001", status: "pending", tier: 1, tierReasons: ["not_a_fact"], type: "convention", approvals: [], provenance: { ...draft().provenance, authors: ["carl"] } }));
     expect(await approveLesson(approve, { ...KEY, lessonId: "les_e0000001", approverId: " Bob" })).toMatchObject({ ok: true, status: "active" });
   });
@@ -109,7 +109,7 @@ describe("N-B: one id normaliser everywhere", () => {
     await seed(store, lesson);
     // A stale reader holds the lesson with the erased person; the fence goes up; the retire is still accepted.
     await store.fence(KEY, { people: ["mallory"], ids: ["A"] });
-    const approve: ApproveDeps = { store, directory: directory(), settings: settings(), audit: new Audit(), now: new Clock().now };
+    const approve: ApproveDeps = { access: allowAllAccess, store, directory: directory(), settings: settings(), audit: new Audit(), now: new Clock().now };
     expect(await retireByPerson(approve, { ...KEY, lessonId: "les_f0000001", actorId: "ann", reason: "kill" })).toEqual({ ok: true });
     const head = (await store.getHead(KEY, "les_f0000001"))!;
     expect(head.status).toBe("retired");

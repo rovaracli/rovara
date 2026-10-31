@@ -15,7 +15,7 @@ import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import { isCorroborated, lessonValue } from "../../../packages/broker/src/lessons/value.js";
 import type { Audience, Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, Judge, KEY, MemoryVectors, PROJECT, Publisher, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, Judge, KEY, MemoryVectors, PROJECT, Publisher, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings, allowAllAccess } from "./lesson-helpers.js";
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 
 const restricted: Audience = { kind: "restricted", acl: { source: "slack", scope: "slack:T/C9", principals: ["U-member"], capturedAt: "x", liveCheck: "none" } };
@@ -37,7 +37,7 @@ function approveSetup(over: { audit?: LessonAuditSink; dir?: ReturnType<typeof d
   const clock = new Clock();
   const dir = over.dir ?? directory();
   if (over.identities !== undefined) dir.identity = async (_w: string, id: string) => over.identities![id] ?? { principals: [], groups: [] };
-  const deps: ApproveDeps = { store, directory: dir, settings: settings(), audit, now: clock.now, newId: (() => { let n = 0; return () => `ap-${++n}`; })() };
+  const deps: ApproveDeps = { access: allowAllAccess, store, directory: dir, settings: settings(), audit, now: clock.now, newId: (() => { let n = 0; return () => `ap-${++n}`; })() };
   return { deps, store, audit, clock };
 }
 const input = (approverId: string, id = "les_pend0001") => ({ ...KEY, lessonId: id, approverId });
@@ -209,19 +209,19 @@ describe("I2: restricted lessons are shown and decided only by people who can se
   it("the waiting list and the queue show a restricted lesson only to viewers who pass the ACL", async () => {
     const { store } = approveSetup();
     await seed(store, pending(), { ...pending(), id: "les_cand0001", status: "candidate" }, base({ id: "les_open0001" }));
-    expect((await listWaiting(store, KEY, outside)).map((l) => l.id)).toEqual(["les_open0001"]);
-    expect((await listWaiting(store, KEY, inACL)).map((l) => l.id).sort()).toEqual(["les_open0001", "les_pend0001"]);
-    expect((await listQueued(store, KEY, outside)).map((l) => l.id)).toEqual([]);
-    expect((await listQueued(store, KEY, inACL)).map((l) => l.id)).toEqual(["les_cand0001"]);
+    expect((await listWaiting(store, KEY, outside, allowAllAccess)).map((l) => l.id)).toEqual(["les_open0001"]);
+    expect((await listWaiting(store, KEY, inACL, allowAllAccess)).map((l) => l.id).sort()).toEqual(["les_open0001", "les_pend0001"]);
+    expect((await listQueued(store, KEY, outside, allowAllAccess)).map((l) => l.id)).toEqual([]);
+    expect((await listQueued(store, KEY, inACL, allowAllAccess)).map((l) => l.id)).toEqual(["les_cand0001"]);
   });
 
   it("the digest lists restricted waiting lessons for people allowed to see them, and counts them for everyone else", async () => {
     const { store, clock } = approveSetup();
     await seed(store, pending(), base({ id: "les_open0001" }));
-    const member = await buildWeeklyDigest(store, KEY, clock.now(), inACL);
+    const member = await buildWeeklyDigest(store, KEY, clock.now(), inACL, allowAllAccess);
     expect(member.waiting.map((i) => i.id).sort()).toEqual(["les_open0001", "les_pend0001"]);
     expect(member.restrictedHidden).toBe(0);
-    const stranger = await buildWeeklyDigest(store, KEY, clock.now(), outside);
+    const stranger = await buildWeeklyDigest(store, KEY, clock.now(), outside, allowAllAccess);
     expect(stranger.waiting.map((i) => i.id)).toEqual(["les_open0001"]);
     expect(stranger.restrictedHidden).toBe(1);
     expect(JSON.stringify(stranger)).not.toContain("les_pend0001");
@@ -325,7 +325,7 @@ describe("I6: only lessons the worker actually loaded get counters", () => {
   function setup() {
     const store = new InMemoryLessonStore();
     const clock = new Clock();
-    const deps: CounterDeps = { store, judge: new Judge("unrelated"), settings: settings(), audit: new Audit(), alerts: new Alerts(), now: clock.now };
+    const deps: CounterDeps = { access: allowAllAccess, store, judge: new Judge("unrelated"), settings: settings(), audit: new Audit(), alerts: new Alerts(), now: clock.now };
     return { store, clock, deps };
   }
 
@@ -337,7 +337,7 @@ describe("I6: only lessons the worker actually loaded get counters", () => {
     expect(result.queuedHelpful).toEqual([]);
     clock.advance(15 * 86_400_000);
     expect(await settleHelpful(deps, KEY)).toBe(0);
-    expect(await recordFeedback(deps, { ...KEY, taskId: "task-1", lessonId: "les_aaaa1111", userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "not_loaded" });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...KEY, taskId: "task-1", lessonId: "les_aaaa1111", userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "not_loaded" });
     const lesson = (await store.get(KEY, "les_aaaa1111"))!;
     expect(lesson.counters).toMatchObject({ helpful: 0, harmful: 0 });
   });
@@ -348,7 +348,7 @@ describe("I6: only lessons the worker actually loaded get counters", () => {
     await store.putManifest(manifest("unchecked"));
     await applyLoadReport(deps, { ...KEY, taskId: "task-1", stage: "IMPLEMENT", round: 1, report: { v: 1, stage: "IMPLEMENT", lessons: [{ id: "les_aaaa1111", version: 1, citation: "valid" }] } });
     expect((await store.get(KEY, "les_aaaa1111"))!.counters.loaded).toBe(1);
-    expect(await recordFeedback(deps, { ...KEY, taskId: "task-1", lessonId: "les_aaaa1111", userId: "ann", kind: "helpful" })).toEqual({ ok: true });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...KEY, taskId: "task-1", lessonId: "les_aaaa1111", userId: "ann", kind: "helpful" })).toEqual({ ok: true });
   });
 
   it("a stale-dropped lesson is not counted as loaded either", async () => {
@@ -387,7 +387,7 @@ describe("P6: a lesson about weakening review or auth needs two people, by words
     const clock = new Clock();
     let n = 0;
     const proc: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, now: clock.now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => `les_p6${++n}0000` };
-    const ap: ApproveDeps = { store, directory: directory(), settings: settings(), audit, now: clock.now, newId: () => `ap-${Math.random()}` };
+    const ap: ApproveDeps = { access: allowAllAccess, store, directory: directory(), settings: settings(), audit, now: clock.now, newId: () => `ap-${Math.random()}` };
     return { proc, ap, store };
   }
   it.each([
@@ -412,12 +412,12 @@ describe("P9: tenancy across the whole lane", () => {
     expect(await approveLesson(s.deps, { ...B, lessonId: "les_pend0001", approverId: "ann" })).toEqual({ ok: false, code: "not_found" });
     expect(await rejectLesson(s.deps, { ...B, lessonId: "les_pend0001", approverId: "ann", reason: "x" })).toEqual({ ok: false, code: "not_found" });
     expect(await promoteToRule({ ...s.deps, publisher: new Publisher() }, { ...B, lessonId: "les_live0001", approverId: "ann" })).toEqual({ ok: false, code: "not_found" });
-    const counters: CounterDeps = { store: s.store, judge: new Judge("caused"), settings: settings(), audit: new Audit(), now: s.clock.now };
-    expect(await recordFeedback(counters, { ...B, taskId: "task-1", lessonId: "les_live0001", userId: "ann", kind: "wrong_here" })).toEqual({ ok: false, code: "not_loaded" });
+    const counters: CounterDeps = { access: allowAllAccess, store: s.store, judge: new Judge("caused"), settings: settings(), audit: new Audit(), now: s.clock.now };
+    expect(await recordFeedback(counters, { viewer: { principals: [], groups: [] }, ...B, taskId: "task-1", lessonId: "les_live0001", userId: "ann", kind: "wrong_here" })).toEqual({ ok: false, code: "not_loaded" });
     expect(await recordTaskOutcome(counters, { ...B, taskId: "task-1", outcome: "merged", sendBacks: 0, corrections: [] })).toEqual({ harmful: [], queuedHelpful: [] });
     expect((await s.store.get(KEY, "les_live0001"))!.counters.harmful).toBe(0);
-    expect(await listWaiting(s.store, B, inACL)).toEqual([]);
-    expect((await buildWeeklyDigest(s.store, B, s.clock.now(), inACL)).top).toEqual([]);
+    expect(await listWaiting(s.store, B, inACL, allowAllAccess)).toEqual([]);
+    expect((await buildWeeklyDigest(s.store, B, s.clock.now(), inACL, allowAllAccess)).top).toEqual([]);
     const load = await loadLessonsForStage({ store: s.store, embedder, vectors: new MemoryVectors(), settings: settings(), audit: new Audit(), now: s.clock.now }, { workspaceId: "ws-B", project: PROJECT, taskId: "t", stage: "IMPLEMENT", round: 1, intent: "x", repos: ["api"], files: [], languages: [], taskAudience: { kind: "shared" } });
     expect(load.context).toBeUndefined();
   });
@@ -448,8 +448,8 @@ describe("owner decision 'Lesson limits': ranking by value", () => {
   it("the waiting list and the digest lead with the most valuable lessons", async () => {
     const { store, clock } = approveSetup();
     await seed(store, rec("les_low00001", { type: "preference", createdAt: 9 }), rec("les_top00001", { type: "preference", createdAt: 1 }, { sourceKinds: ["send_back"], measured: true }), rec("les_mid00001", { type: "pitfall", createdAt: 5 }, { supportTasks: ["t1", "t2"] }));
-    expect((await listWaiting(store, KEY, inACL)).map((l) => l.id)).toEqual(["les_top00001", "les_mid00001", "les_low00001"]);
-    const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL);
+    expect((await listWaiting(store, KEY, inACL, allowAllAccess)).map((l) => l.id)).toEqual(["les_top00001", "les_mid00001", "les_low00001"]);
+    const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL, allowAllAccess);
     expect(digest.top.map((i) => i.id)).toEqual(["les_top00001", "les_mid00001", "les_low00001"]);
     expect(digest.queuedCount).toBe(0);
   });
@@ -458,7 +458,7 @@ describe("owner decision 'Lesson limits': ranking by value", () => {
     const { store, clock } = approveSetup();
     await seed(store, rec("les_cand0001", { status: "candidate" }, { sources: ["slack:C1"], inputSources: ["slack:C1"] }));
     await store.setFlags(KEY, { pausedSources: { "slack:C1": { at: 1, reason: "spike" } } });
-    const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL);
+    const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL, allowAllAccess);
     expect(digest).toMatchObject({ queuedCount: 1, pausedSources: ["slack:C1"] });
   });
 });

@@ -110,6 +110,7 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
       authors: distinctIds([...target.provenance.authors, ...draft.provenance.authors]).slice(0, 20), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: unionPinned(target.provenance.inputSources, draft.provenance.inputSources, 100, paused), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
       memberSignal: target.provenance.memberSignal || draft.provenance.memberSignal,
       minTrust: minTrust([target.provenance.minTrust, draft.provenance.minTrust]), audience: narrowestAudience([target.provenance.audience, draft.provenance.audience]),
+      ...(target.provenance.sourceScopes === undefined && draft.provenance.sourceScopes === undefined ? {} : { sourceScopes: union(target.provenance.sourceScopes ?? [], draft.provenance.sourceScopes ?? [], 50) }),
     },
   };
 }

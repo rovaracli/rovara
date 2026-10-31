@@ -41,7 +41,8 @@ export function audienceOfVisibility(base: Pick<RovaraEventBase, "taskId" | "vis
 
 export interface RovaraEmitter {
   sendBack(input: RovaraEventBase & { sendBackId: string; round: number; origin: "human" | "automatic"; code?: string; reasonText?: string; actorDeveloperId?: string }): Promise<void>;
-  remembered(input: RovaraEventBase & { noteId: string; text: string; actorDeveloperId: string }): Promise<void>;
+  /** `origin: "slack"` when the note was written in Slack (a thread comment): the Slack rule then follows the words into this row. */
+  remembered(input: RovaraEventBase & { noteId: string; text: string; actorDeveloperId: string; origin?: "slack" }): Promise<void>;
   planOutcome(input: RovaraEventBase & { planId: string; outcome: string; claims: number; claimsHeld: number }): Promise<void>;
   reviewOutcome(input: RovaraEventBase & { publicationId: string; outcome: string; claims: number; claimsHeld: number }): Promise<void>;
   /** The task reached a terminal state. Writes the `rovara.task` row and, only if that was accepted, tells the reflector (once per task: the row's key is the task). */
@@ -52,7 +53,7 @@ export function createRovaraEmitter(deps: RovaraEmitterDependencies): RovaraEmit
   const log: TapLog = deps.log ?? (() => undefined);
 
   async function emit(base: RovaraEventBase, kind: RecordKind, parts: {
-    id: string; version: string; trust: TrustClass; text?: string; structured: Record<string, string | number | boolean | undefined>; actor?: RecordDraft["actor"];
+    id: string; version: string; trust: TrustClass; text?: string; structured: Record<string, string | number | boolean | undefined>; actor?: RecordDraft["actor"]; origin?: "slack";
   }): Promise<"stored" | "duplicate" | "queued" | "refused" | "skipped" | "failed"> {
     try {
       const config = await gate(deps, { workspaceId: base.workspaceId, project: base.project, source: "rovara", scope: rovaraScope(base.project) });
@@ -61,8 +62,9 @@ export function createRovaraEmitter(deps: RovaraEmitterDependencies): RovaraEmit
       const draft: RecordDraft = {
         workspaceId: base.workspaceId, project: base.project, source: "rovara", kind, occurredAt: base.at,
         sourceRef: { system: "rovara", id: parts.id, ...(base.url === undefined ? {} : { url: base.url }), parentId: `task:${base.taskId}`, version: parts.version },
-        ...(parts.actor === undefined ? {} : { actor: parts.actor }), trust: parts.trust, audience: audienceOfVisibility(base),
+        ...(parts.actor === undefined ? {} : { actor: parts.actor }), trust: parts.trust, scope: rovaraScope(base.project), audience: audienceOfVisibility(base),
         ...(text === undefined ? {} : { text }), structured: scalars({ taskId: base.taskId, ...parts.structured }), links: linksOf(base.url), retention: config.retention,
+        ...(parts.origin === undefined ? {} : { origin: parts.origin }),
       };
       const outcome = await deps.sink.put(withRetention(draft, config.retention));
       return outcome.status;
@@ -95,7 +97,7 @@ export function createRovaraEmitter(deps: RovaraEmitterDependencies): RovaraEmit
     },
     async remembered(input) {
       const who = await personTrust(input, input.actorDeveloperId);
-      await emit(input, "rovara.remembered", { id: `task:${input.taskId}:note:${input.noteId}`, version: "1", trust: who.trust, text: input.text, ...(who.actor === undefined ? {} : { actor: who.actor }), structured: {} });
+      await emit(input, "rovara.remembered", { id: `task:${input.taskId}:note:${input.noteId}`, version: "1", trust: who.trust, text: input.text, ...(who.actor === undefined ? {} : { actor: who.actor }), ...(input.origin === undefined ? {} : { origin: input.origin }), structured: {} });
     },
     async planOutcome(input) {
       await emit(input, "rovara.plan", { id: `task:${input.taskId}:plan:${input.planId}`, version: input.outcome, trust: "rovara", structured: { outcome: input.outcome, claims: input.claims, claimsHeld: input.claimsHeld } });

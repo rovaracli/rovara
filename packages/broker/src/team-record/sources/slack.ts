@@ -183,6 +183,15 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     const at = isoOfSlackTs(event.event_ts) ?? new Date().toISOString();
     const scope = slackScope(teamId, channelId);
     deps.directory.invalidate?.(teamId, channelId);
+    // Before the first member event of a place (the app's own invite comes before any message), seed its access record from the full member list as Slack has it now. The list's
+    // time is the time it was READ, which is what a snapshot's `capturedAt` must mean.
+    await deps.sink.ensureAccessSeed?.({
+      workspaceId, scope,
+      read: async () => {
+        const info = await deps.directory.channelInfo(teamId, channelId);
+        return info !== undefined && info.kind === "private" && info.extShared !== true ? audienceOf(teamId, channelId, info, undefined, new Date().toISOString()) : undefined;
+      },
+    });
     await deps.sink.changePrincipals({ workspaceId, scope, ...(event.type === "member_joined_channel" ? { add: [userId] } : { remove: [userId] }), at });
     return { outcome: "acl_updated" };
   }
@@ -193,7 +202,8 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     deps.directory.invalidate?.(teamId, channelId);
     const info = await deps.directory.channelInfo(teamId, channelId).catch(() => undefined);
     const scope = slackScope(teamId, channelId);
-    const at = new Date().toISOString();
+    // Slack's own time for the event (the member events use it too), so the order of changes is Slack's against Slack's, never the broker clock against Slack's.
+    const at = isoOfSlackTs(event.event_ts) ?? new Date().toISOString();
     if (info?.extShared === true) {
       await deps.sink.tombstone({ workspaceId: bound.workspaceId, system: teamId, scope, cause: "excluded" });
       return { outcome: "scope_removed" };
@@ -286,15 +296,17 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     const at = isoOfSlackTs(ts) ?? new Date().toISOString();
     const link = await permalinkOf(teamId, channelId, ts);
     const who = await deps.actors.resolve({ workspaceId: bound.workspaceId, project: bound.project ?? config.project, system: `slack:${teamId}`, sourceId: userId, isBot });
+    // Attachments and shared messages are other people's words inside this message: the record counts them as an outsider's unless it is told better.
+    const hasAttachments = Array.isArray(source.attachments) && source.attachments.length > 0;
     const threadTs = typeof source.thread_ts === "string" && TS.test(source.thread_ts) && source.thread_ts !== ts ? source.thread_ts : undefined;
     const project = bound.project ?? config.project;
     const draft: RecordDraft & { text: string } = {
       workspaceId: bound.workspaceId, ...(project === undefined ? {} : { project }), source: "slack", kind: "slack.message", occurredAt: at,
       sourceRef: { system: teamId, id: messageId(channelId, ts), url: link, ...(threadTs === undefined ? {} : { parentId: messageId(channelId, threadTs) }), version, ...(versionAt === undefined ? {} : { versionAt }) },
       actor: { sourceId: userId, ...(who.developerId === undefined ? {} : { developerId: who.developerId }), trust: isBot ? "system" : who.trust },
-      trust: isBot ? "system" : who.trust, audience: audienceOf(teamId, channelId, info, config, at), text,
+      trust: isBot ? "system" : who.trust, scope, pieceTrusts: [isBot ? "system" : who.trust], audience: audienceOf(teamId, channelId, info, config, at), text,
       structured: scalars({ channelKind: info.kind, edited: subtype === "message_changed", threadReply: threadTs !== undefined }),
-      links: linksOf(link), retention,
+      links: linksOf(link), retention, ...(hasAttachments ? { hasAttachments: true } : {}),
     };
 
     if (retention === "B") {

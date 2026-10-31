@@ -15,9 +15,16 @@ import type { ApproverDirectory, LessonDeps } from "./ports.js";
 import { retireLesson } from "./curate.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
-import { idIn, isRestricted, normId, sameId, satisfiesAcl, type IdentitySet, type Lesson, type Tier } from "./types.js";
+import type { AccessCheckPort } from "../team-record/access-port.js";
+import { readVisible, type LessonLog } from "./read-visible.js";
+import { idIn, normId, sameId, type IdentitySet, type Lesson, type Tier } from "./types.js";
 
-export interface ApproveDeps extends LessonDeps { store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader }
+export interface ApproveDeps extends LessonDeps {
+  store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader;
+  /** The record core's access check: who may see and decide a lesson is asked of the access records NOW, not only of the snapshot the lesson froze. Required (no port, no decisions). */
+  access: AccessCheckPort;
+  log?: LessonLog;
+}
 
 export type ApprovalFailure =
   | "not_found" | "not_pending" | "mode_off" | "not_eligible" | "already_approved" | "author_cannot_approve_alone"
@@ -32,9 +39,12 @@ const MAX_TRIES = 3;
 export class AuditUnavailable extends Error { constructor() { super("audit unavailable"); } }
 
 /** A restricted lesson may be shown to, and decided by, only a person who could see its source (design §1.2, Q14). Unrestricted lessons are open to every eligible person. */
-async function mayHandle(deps: { directory: ApproverDirectory }, key: ScopeKey, lesson: Lesson, personId: string): Promise<boolean> {
-  if (!isRestricted(lesson) || lesson.provenance.audience.kind !== "restricted") return true;
-  try { return satisfiesAcl(await deps.directory.identity(key.workspaceId, personId), lesson.provenance.audience.acl); } catch { return false; }
+async function mayHandle(deps: { directory: ApproverDirectory; access: AccessCheckPort; log?: LessonLog }, key: ScopeKey, lesson: Lesson, personId: string): Promise<boolean> {
+  // The person's frozen-snapshot standing AND the access records now (a person removed from the channel can neither see nor decide its lessons); no port, or no answer, is a no.
+  try {
+    const identity = await deps.directory.identity(key.workspaceId, personId);
+    return (await readVisible({ access: deps.access, key, viewer: identity, lessons: [lesson], where: "approve", log: deps.log })).length === 1;
+  } catch { return false; }
 }
 
 /** Makes a lesson live: status active, expiry set, approvals recorded, and the lesson it supersedes retired. One conditional commit per attempt. */
@@ -262,13 +272,13 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
  * The lessons waiting for people, most valuable first (measured outcomes, then recurrence, then severity), for the Lessons tab and the Home card. A lesson
  * from a restricted source is listed only for a viewer who could see that source.
  */
-export async function listWaiting(store: LessonStore, key: ScopeKey, viewer: IdentitySet): Promise<Lesson[]> {
-  return (await store.list(key, { statuses: ["pending"] })).filter((l) => l.provenance.audience.kind !== "restricted" || satisfiesAcl(viewer, l.provenance.audience.acl))
+export async function listWaiting(store: LessonStore, key: ScopeKey, viewer: IdentitySet, access: AccessCheckPort, log?: LessonLog): Promise<Lesson[]> {
+  return (await readVisible({ access, key, viewer, lessons: await store.list(key, { statuses: ["pending"] }), where: "approve", log }))
     .sort((a, b) => lessonValue(b) - lessonValue(a) || b.createdAt - a.createdAt || a.id.localeCompare(b.id));
 }
 
 /** Lessons collected but not yet in front of people (waiting for corroboration, or held because their source spiked), most valuable first. Nothing is dropped. */
-export async function listQueued(store: LessonStore, key: ScopeKey, viewer: IdentitySet): Promise<Lesson[]> {
-  return (await store.list(key, { statuses: ["candidate"] })).filter((l) => l.provenance.audience.kind !== "restricted" || satisfiesAcl(viewer, l.provenance.audience.acl))
+export async function listQueued(store: LessonStore, key: ScopeKey, viewer: IdentitySet, access: AccessCheckPort, log?: LessonLog): Promise<Lesson[]> {
+  return (await readVisible({ access, key, viewer, lessons: await store.list(key, { statuses: ["candidate"] }), where: "approve", log }))
     .sort((a, b) => lessonValue(b) - lessonValue(a) || a.id.localeCompare(b.id));
 }

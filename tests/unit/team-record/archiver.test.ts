@@ -54,7 +54,7 @@ describe("lake event rows", () => {
     const restricted = toLakeEventRow(event("a", { audience: { kind: "restricted", acl: { source: "slack", scope: "slack:T/C", principals: ["U1"], capturedAt: "2026-01-01T00:00:00Z", liveCheck: "none" } } }), "2026-05-01T00:00:00Z");
     expect(restricted.audience_kind).toBe("restricted");
     expect(restricted.audience_scope).toBe("slack:T/C");
-    expect((JSON.parse(restricted.acl_json as string) as { principals: string[] }).principals).toEqual(["U1"]);
+    expect((JSON.parse(restricted.acl_json as string) as { principals?: string[] }).principals).toBeUndefined(); // the lake keeps no list of people (an erase would have to find it in every archived row)
     expect(restricted.source_hash).toBe(sourceHash("github", "pr-a"));
   });
 });

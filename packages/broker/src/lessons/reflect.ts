@@ -161,6 +161,8 @@ async function toDraft(
   const trust: TrustClass = minTrust(everything.map((s) => s.trust));
   if (trust === "outsider") return undefined;
   const audience: Audience = narrowestAudience([...everything.flatMap((s) => (s.audience === undefined ? [] : [s.audience])), ...(subject.audience === undefined ? [] : [subject.audience])]);
+  // The places everything the model read came from: what the access records are asked about whenever the lesson is read.
+  const sourceScopes = [...new Set([...everything.flatMap((s) => s.scopes ?? []), ...(subject.scopes ?? [])])].slice(0, 50);
   const sourceOf = (s: MarkedSpan): string => s.sourceKey ?? (s.authorId === undefined ? `kind:${s.kind}` : `member:${s.authorId}`);
   const sources = [...new Set(evidence.map(sourceOf))].slice(0, 20);
   // Spike detection counts every source the model read, so flood text it chose not to cite is still seen.
@@ -184,6 +186,7 @@ async function toDraft(
     provenance: {
       sourceEvents: [...events], sourceKinds: [...new Set(evidence.map((s) => s.kind))], authors, supportTasks: subject.kind === "task" ? [subject.id] : [], sources, inputSources, measured,
       minTrust: trust, audience, reflectorRun: runId, model: model.slice(0, 100),
+      ...(sourceScopes.length === 0 ? {} : { sourceScopes }),
       memberSignal: evidence.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit")),
     },
   };

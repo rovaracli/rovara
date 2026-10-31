@@ -10,7 +10,7 @@ import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, codeCite, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, codeCite, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings, allowAllAccess } from "./lesson-helpers.js";
 
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
 const tierOf = (over: Partial<TierInput>) => classifyTier({ ...draft({ description: "" }), citationChecks: valid, ...over });
@@ -158,7 +158,7 @@ describe("deletion that a rollback cannot undo", () => {
     await port.forgetSources(WS, PROJECT, "les_pers0001", new Set(["A"]), "source_deleted");
     expect(await store.get(KEY, "les_auto0001")).toMatchObject({ status: "pending", reviewRequired: true, approvals: [] });
     expect(await store.get(KEY, "les_pers0001")).toMatchObject({ status: "active", reviewRequired: true });
-    const digest = await buildWeeklyDigest(store, KEY, clock.now(), { principals: [], groups: [] });
+    const digest = await buildWeeklyDigest(store, KEY, clock.now(), { principals: [], groups: [] }, allowAllAccess);
     expect(digest.needsReview.map((i) => i.id)).toEqual(["les_pers0001"]);
   });
 
