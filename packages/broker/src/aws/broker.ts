@@ -318,6 +318,7 @@ import { positiveInteger } from "./broker/admin-and-helpers.js";
 import { orgStoreOf } from "./broker/dependency-wiring.js";
 import { createAwsBrokerHandler } from "./broker/handler.js";
 import { installEditionPolicy } from "./broker/edition-wiring.js";
+import { createBrokerPlugins } from "./broker/plugin-wiring.js";
 import { awsClientConfiguration, documentClient, ec2Sessions, stepFunctions } from "./broker/runtime-clients.js";
 export { PROJECT_SETUP_CAPTURE_POLICY, WEB_ROUTE_KEY } from "./broker/definitions.js";
 export type { RegisteredProjectRecord, AwsBrokerInput } from "./broker/definitions.js";
@@ -500,6 +501,8 @@ const egressDomainsSync = projectAllowListId === undefined || projectAllowListId
   : () => syncCellAllowList({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), resolver: new Route53ResolverClient(awsClientConfiguration), listId: projectAllowListId, now: () => new Date() });
 
 const editionPolicy = installEditionPolicy(process.env, cloudOrgResolver !== undefined);
+// Enterprise foundations P4: GitHub is the first code host and check runner plug-in; the router below is what consumers move to (tasks P5a-e).
+const plugins = createBrokerPlugins({ provider: githubCredentials, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), codeBuild, ...(editionPolicy === undefined ? {} : { policy: editionPolicy }) });
 
 export const handler = createAwsBrokerHandler({
   documentClient,
@@ -515,6 +518,7 @@ export const handler = createAwsBrokerHandler({
   callbackSigningKey: requiredEnvironment("CALLBACK_SIGNING_KEY"),
   repositoryGrants,
   githubPullRequests: githubCredentials,
+  codeHost: plugins.codeHost, checkRunner: plugins.checkRunner,
   projectSetupSource: { capture: ({ repositoryUrl, ref }, scope) => githubCredentials.captureE2ESourceSnapshot(repositoryUrl, ref, scope) },
   ...(process.env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID
     ? { projectSetupRuntimeCatalogId: process.env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID }

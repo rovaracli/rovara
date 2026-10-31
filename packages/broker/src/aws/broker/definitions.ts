@@ -17,6 +17,7 @@ import type { ConnectorType } from "../connector-types.js";
 import type { CredentialRegistry, ConnectorCredentialsConfiguration } from "../credentials.js";
 import type { IdentityNoticeDependencies } from "../../developer/identity-notice.js";
 import type { PlanEvidenceEvent } from "../../developer/plan-evidence-jobs.js";
+import type { CodeHostRouter, PluginRegistry } from "../../plugins/registry.js";
 import type { CloudProjectDefaults } from "../../org/cloud-projects.js";
 import type { OrgResolver } from "../../org/resolve.js";
 import type { EgressDomainsDependencies } from "../../org/egress-domains.js";
@@ -243,6 +244,12 @@ export interface AwsBrokerDependencies {
    * install's orgs have a trial lock and a machine-time allowance; a private install's single org is never limited.
    */
   cloud?: boolean;
+  /**
+   * Enterprise foundations P4: the code host router (GitHub for every repository today) and the check runners, from the plug-in registry. `githubPullRequests` stays as an
+   * alias for one release; tasks P5a to P5e move its consumers to these. Absent in a test harness that does not build them.
+   */
+  codeHost?: CodeHostRouter;
+  checkRunner?: PluginRegistry["checkRunner"];
   /** Enterprise foundations E2: the edition's feature table, from the deploy stamp. Absent on an install deployed before editions, which keeps today's behaviour and is never Enterprise. */
   editionPolicy?: EditionPolicy;
   /**
