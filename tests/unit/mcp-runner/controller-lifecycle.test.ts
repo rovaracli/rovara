@@ -3,6 +3,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ServerResources, RunnerSpec } from "../../../packages/gateway/src/mcp-controller.js";
 import type { RunnerTaskInfo } from "../../../packages/gateway/src/mcp-runner/task-runner.js";
+import { CONTROLLER_LIMITS, memoryProbeSlots } from "../../../packages/gateway/src/mcp-controller.js";
+import { HOST_PROBE_TIMEOUT_MS } from "../../../packages/broker/src/context-sources/server-port.js";
+import { PROBE_SLOT_LEASE_MS } from "../../../packages/broker/src/mcp-host/probe-slots.js";
 import { toolsHashOfNames } from "../../support/mcp-controller-fixtures.js";
 import { BROKER, BUNDLE, ECHO, OTHER, approvedOf, mcp, post, specOf, useControllerWorld, world } from "../../support/mcp-controller-world.js";
 
@@ -456,5 +459,41 @@ describe("T7 lifecycle: tools check still holds on a restart", () => {
     expect(w.approved.get(ID)!.toolsHash).toBe(toolsHashOfNames(ECHO));
     expect((await mcp(w.brokerUrl, ID)).status).toBe(409);
     expect(w.changes).toHaveLength(1);
+  });
+});
+
+describe("fix round 1, m6: a probe job is over before its slot can be taken, and before the broker gives up", () => {
+  const proposal = { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [], destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 }, integrity: `sha512-${"A".repeat(86)}==` };
+  it("keeps the job's deadline shorter than the broker's wait, and the broker's wait shorter than the slot's lease", () => {
+    expect(CONTROLLER_LIMITS.probeJobMs).toBeLessThan(HOST_PROBE_TIMEOUT_MS);
+    expect(HOST_PROBE_TIMEOUT_MS).toBeLessThan(PROBE_SLOT_LEASE_MS);
+  });
+  it("answers at the deadline however long its parts would take, stops the tasks as the job ends, and gives the slot back only then", async () => {
+    const slots = memoryProbeSlots(1);
+    const w = await lifecycle({ runner: { neverRunning: true }, controller: { probeSlots: slots, limits: { startMs: 20_000, probeJobMs: 200 } } });
+    await w.bundles.put(BUNDLE, (async function* () { yield Buffer.from("a bundle"); })(), 1_000);
+    const started = Date.now();
+    const answer = await post(w.brokerUrl, "/probe", BROKER, { spec: proposal, pinned: { lockfileHash: "2".repeat(64), bundleHash: BUNDLE } });
+    expect(await answer.json()).toEqual({ error: "host_refused" });
+    expect(Date.now() - started).toBeLessThan(3_000);
+    // the job notices it was told to stop, its task is stopped, and then the slot is free
+    let free = false;
+    for (let tries = 0; tries < 200 && !free; tries += 1) { const release = await slots.acquire(); if (release !== undefined) { free = true; await release(); } else await new Promise((resolve) => setTimeout(resolve, 10)); }
+    expect(free).toBe(true);
+    expect(w.runner.stoppedFor(w.runner.started("probe")[0]!.taskId)).toBe("failed");
+    expect(w.resources.released).toHaveLength(1);
+  });
+  it("cuts an install that never reports at the deadline too, and stops its task", async () => {
+    const w = await lifecycle({ runner: { install: () => new Promise<void>(() => undefined) }, controller: { limits: { installMs: 30_000, probeJobMs: 200 } } });
+    const answer = await post(w.brokerUrl, "/probe", BROKER, { spec: { ...proposal, integrity: undefined } });
+    expect(await answer.json()).toEqual({ error: "host_refused" });
+    for (let tries = 0; tries < 200 && w.runner.stops.length === 0; tries += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(w.runner.stops.map((stop) => stop.reason)).toEqual(["done"]);
+  });
+  it("answers a job that finishes in time as it always did", async () => {
+    const w = await lifecycle({ controller: { limits: { probeJobMs: 5_000 } } });
+    await w.bundles.put(BUNDLE, (async function* () { yield Buffer.from("a bundle"); })(), 1_000);
+    const answer = await post(w.brokerUrl, "/probe", BROKER, { spec: proposal, pinned: { lockfileHash: "2".repeat(64), bundleHash: BUNDLE } });
+    expect(await answer.json()).toMatchObject({ bundleHash: BUNDLE });
   });
 });

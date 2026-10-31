@@ -153,6 +153,9 @@ export function sourceEnvironment(deps: ServerPortDependencies & { port: Context
 // Testing a pasted address
 // ---------------------------------------------------------------------------------------------
 
+/** How long the broker waits for the controller's install-and-probe job. The controller's job deadline (420 s) is shorter, and the probe slot's lease (10 min) is longer. */
+export const HOST_PROBE_TIMEOUT_MS = 450_000;
+
 export interface HostProbeClient {
   /** Asks the MCP host to install a package for a moment and list its tools (with `pinned`: to test the pinned bundle without installing). Throws McpProbeError. */
   probe(spec: Parameters<McpProber["stdio"]>[0], pinned?: Parameters<McpProber["stdio"]>[1]): Promise<{ tools: DiscoveredTool[]; integrity: string; lockfileHash?: string | undefined; bundleHash?: string | undefined }>;
@@ -202,7 +205,7 @@ export function hostProbeClient(host: McpHostEndpoint, fetchImplementation: type
       let response: Response;
       try {
         response = await fetchImplementation(`${host.url.replace(/\/$/u, "")}/probe`, {
-          method: "POST", headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" }, body: JSON.stringify({ spec, ...(pinned === undefined ? {} : { pinned }) }), signal: AbortSignal.timeout(450_000),
+          method: "POST", headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" }, body: JSON.stringify({ spec, ...(pinned === undefined ? {} : { pinned }) }), signal: AbortSignal.timeout(HOST_PROBE_TIMEOUT_MS),
         });
       } catch {
         throw new McpProbeError("host_unavailable");

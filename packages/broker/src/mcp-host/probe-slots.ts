@@ -13,9 +13,12 @@ type DocumentClient = { send(command: unknown): Promise<unknown> };
 
 const isConditionFailure = (error: unknown): boolean => (error as { name?: unknown } | null)?.name === "ConditionalCheckFailedException";
 
+/** A slot is held this long at most if its job never gives it back. Longer than the broker's wait for a job and the controller's job deadline. */
+export const PROBE_SLOT_LEASE_MS = 10 * 60_000;
+
 export function dynamoProbeSlots(options: { documentClient: DocumentClient; tableName: string; orgId: OrgId; max?: number; leaseMs?: number; now?: () => number }): ProbeSlots {
   const max = options.max ?? 2;
-  const leaseMs = options.leaseMs ?? 10 * 60_000;
+  const leaseMs = options.leaseMs ?? PROBE_SLOT_LEASE_MS;
   const now = options.now ?? Date.now;
   if (!Number.isInteger(max) || max < 1 || max > 16) throw new Error("the number of probe slots is not valid");
   const partition = orgScoped(options.orgId, "MCPSLOT");

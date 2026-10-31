@@ -111,6 +111,11 @@ export interface ControllerLimits {
   callMs: number;
   bodyBytes: number;
   replyBytes: number;
+  /**
+   * The longest an install-and-probe job may take, whatever its parts add up to. It must be shorter than the broker's wait for the controller (`HOST_PROBE_TIMEOUT_MS`, 450 s), which
+   * must be shorter than the probe slot's lease (10 min): a job is over, or answered, before its slot can be taken by another.
+   */
+  probeJobMs: number;
   /** A bootstrap nonce is good this long. */
   nonceMs: number;
   /** A server idle this long is stopped. */
@@ -127,7 +132,7 @@ export interface ControllerLimits {
 }
 
 export const CONTROLLER_LIMITS: ControllerLimits = {
-  nonceMs: 3 * 60_000, maxServeTasks: 16, installMs: 4 * 60_000, startMs: 120_000, callMs: 60_000, bodyBytes: 1_048_576, replyBytes: 1_048_576, idleMs: 10 * 60_000, maxLifetimeMs: 12 * 3_600_000, jobMaxMs: 5 * 60_000,
+  probeJobMs: 420_000, nonceMs: 3 * 60_000, maxServeTasks: 16, installMs: 4 * 60_000, startMs: 120_000, callMs: 60_000, bodyBytes: 1_048_576, replyBytes: 1_048_576, idleMs: 10 * 60_000, maxLifetimeMs: 12 * 3_600_000, jobMaxMs: 5 * 60_000,
   maxFailures: 3, failureWindowMs: 10 * 60_000, backoffMs: 10 * 60_000,
 };
 
@@ -512,7 +517,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
 
   // ---- install and probe -------------------------------------------------------------------------------------
   /** Runs the install task for a proposal and returns what it reported. */
-  async function runInstall(proposal: McpStdioProposal): Promise<InstallOutcome> {
+  async function runInstall(proposal: McpStdioProposal, jobCancelled: () => boolean = () => false): Promise<InstallOutcome> {
     let settle!: (outcome: InstallOutcome | undefined) => void;
     const result = new Promise<InstallOutcome | undefined>((resolve) => { settle = resolve; });
     const { token, key } = addGrant({ purpose: "install" }, (outcome) => settle(outcome));
@@ -543,7 +548,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
             if (finished) return;
             const status = await runner.describe(watched).catch(() => undefined);
             if (status === undefined || status.state === "stopped") { await sleep(Math.min(250, pollMs)); done(undefined); return; }
-            if (Date.now() > deadline) { done({ ok: false, code: "timed_out", sentence: "Installing this package took longer than Rovara allows." }); return; }
+            if (Date.now() > deadline || jobCancelled()) { done({ ok: false, code: "timed_out", sentence: "Installing this package took longer than Rovara allows." }); return; }
           }
         };
         void watch();
@@ -565,11 +570,11 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     }
   }
 
-  async function runProbe(spec: RunnerSpec, id: string, secretRef: string | undefined): Promise<ProbedTool[]> {
+  async function runProbe(spec: RunnerSpec, id: string, secretRef: string | undefined, jobCancelled: () => boolean = () => false): Promise<ProbedTool[]> {
     let launched: Launched | undefined;
     activeProbeIds.add(id);
     try {
-      launched = await launch({ kind: "probe", id, spec, secretRef, isCancelled: () => closed, onTask: () => undefined, reason: () => "failed" });
+      launched = await launch({ kind: "probe", id, spec, secretRef, isCancelled: () => closed || jobCancelled(), onTask: () => undefined, reason: () => "failed" });
       return await listTools(launched.base, launched.token);
     } finally {
       if (launched !== undefined) {
@@ -584,14 +589,14 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   }
 
   /** The install-then-probe (or probe-only, when the bundle is pinned) a proposal and an approval need. */
-  async function probe(proposal: McpStdioProposal, pinned: { lockfileHash: string; bundleHash: string } | undefined): Promise<
+  async function probe(proposal: McpStdioProposal, pinned: { lockfileHash: string; bundleHash: string } | undefined, jobCancelled: () => boolean): Promise<
     { ok: true; tools: ProbedTool[]; integrity: string; lockfileHash: string; bundleHash: string } | { ok: false; install?: InstallOutcome & { ok: false } }
   > {
     let lockfileHash: string;
     let bundleHash: string;
     let integrity: string;
     if (pinned === undefined) {
-      const outcome = await runInstall(proposal);
+      const outcome = await runInstall(proposal, jobCancelled);
       if (!outcome.ok) return { ok: false, install: outcome };
       ({ lockfileHash, bundleHash, integrity } = outcome.report);
     } else {
@@ -601,7 +606,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       integrity = proposal.integrity;
     }
     const probeId = `probe${createHash("sha256").update(`${bundleHash}${now()}${Math.random()}`).digest("hex").slice(0, 10)}`;
-    const tools = await runProbe({ name: proposal.name, args: proposal.args, secretEnv: proposal.secretEnv, destinations: proposal.destinations, size: proposal.size, bundleHash }, probeId, undefined);
+    const tools = await runProbe({ name: proposal.name, args: proposal.args, secretEnv: proposal.secretEnv, destinations: proposal.destinations, size: proposal.size, bundleHash }, probeId, undefined, jobCancelled);
     return { ok: true, tools, integrity, lockfileHash, bundleHash };
   }
 
@@ -627,13 +632,15 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     if (installOnly && pinned !== undefined) { send(res, 400, { error: "bad_spec" }); return; }
     const release = await probeSlots.acquire();
     if (release === undefined) { send(res, 429, { error: "busy" }); return; }
+    // The whole job has a deadline. At the deadline the broker is answered and the job is told to stop; its tasks are stopped as it ends, and only then is the slot given back.
+    let overtime = false;
     const job = (async () => {
       try {
         if (installOnly) {
-          const outcome = await runInstall(parsed.data);
+          const outcome = await runInstall(parsed.data, () => overtime);
           return { status: 200, body: outcome.ok ? { ok: true, ...outcome.report } : outcome };
         }
-        const result = await probe(parsed.data, pinned);
+        const result = await probe(parsed.data, pinned, () => overtime);
         if (!result.ok) return { status: 200, body: { error: "host_refused", ...(result.install === undefined ? {} : { install: result.install }) } };
         return { status: 200, body: { tools: result.tools, integrity: result.integrity, lockfileHash: result.lockfileHash, bundleHash: result.bundleHash } };
       } catch (error) {
@@ -644,7 +651,10 @@ export function createMcpController(options: McpControllerOptions): McpControlle
         await release().catch(() => undefined);
       }
     })();
-    const done = await track(job);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<{ status: number; body: unknown }>((resolve) => { timer = setTimeout(() => { overtime = true; log("mcp_controller.probe_job_timed_out", {}); resolve({ status: 200, body: { error: "host_refused" } }); }, limits.probeJobMs); });
+    const done = await Promise.race([track(job), late]);
+    clearTimeout(timer);
     send(res, done.status, done.body);
   }
 
