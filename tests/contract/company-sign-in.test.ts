@@ -236,7 +236,8 @@ describe("owners", () => {
     const old = await signInAs(stale.h, "owner-1", { auth_time: NOW_SECONDS - 3600 });
     expect(old.tokens).toBeUndefined();
     expect(old.redirect.searchParams.get("error_description")).toBe(BREAK_GLASS_NOT_FRESH_MESSAGE);
-    const none = await world({ mapping: false, breakGlass: true, users: [{ ...owner, auth_time: undefined }] });
+    const withoutTime: FakeOidcUser = { sub: owner.sub, name: owner.name!, email: owner.email!, email_verified: true, groups: [] };
+    const none = await world({ mapping: false, breakGlass: true, users: [withoutTime] });
     expect((await signInAs(none.h, "owner-1")).tokens).toBeUndefined();
   });
 
