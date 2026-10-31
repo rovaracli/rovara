@@ -415,8 +415,9 @@ export type ProjectDefinition = z.infer<typeof ProjectDefinitionSchema>;
  * A project definition as a worker is sent it: without `network`, and without any repository's `installationId` and `githubRepositoryId`.
  * Workers of an earlier release parse the definition with a strict schema that does not know the fields, and they are the control plane's
  * alone (the DNS firewall enforces `network`, the broker's start check the pins).
+ * `includeMeta` keeps a meta repository that is not also code, for the one run that reads it whole (the setup draft).
  */
-export function workerProjectDefinition<Definition extends object>(definition: Definition): Omit<Definition, "network" | "origins"> {
+export function workerProjectDefinition<Definition extends object>(definition: Definition, options: { includeMeta?: boolean } = {}): Omit<Definition, "network" | "origins"> {
   const rest: Record<string, unknown> = { ...(definition as Record<string, unknown>) };
   delete rest.network;
   // Meta repo lane A: who set each setting is the control plane's too.
@@ -426,7 +427,8 @@ export function workerProjectDefinition<Definition extends object>(definition: D
     rest.repositories = rest.repositories
       // A meta repository that is not also code is not code to a worker: it is never cloned as a checkout, changed or published. A worker that can read one is
       // sent it beside the project (the prepare payload's `meta`, lane A task A3).
-      .filter((entry: unknown) => !(isPureMetaRepository(entry)))
+      // `includeMeta`: a setup draft reads the meta repository in full, as an ordinary read-only checkout (it has no `meta` request), so its knowledge and citations are there.
+      .filter((entry: unknown) => options.includeMeta === true || !(isPureMetaRepository(entry)))
       .map((entry: unknown) => {
         if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
         const repository: Record<string, unknown> = { ...(entry as Record<string, unknown>) };

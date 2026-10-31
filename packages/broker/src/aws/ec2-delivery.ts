@@ -368,8 +368,9 @@ async function forWorkerFeatures(
   if (invocation.kind === "task" && invocation.payload.workflowMode === "PLAN_CRITIQUE" && !features.includes("task.workflowPlanCritique")) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
-  // Rovara drafts a project's setup (Task 10): an older worker would fail the mode at its own parse, so the mode is never sent to it.
-  if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_DRAFT" && !features.includes("task.setupDraft")) {
+  // Rovara proposes a project's setup (Task 10; version 2 with citations, meta repo lane B): an older worker would fail the mode at its own parse, or answer a draft this broker
+  // no longer reads, so the mode is never sent to it.
+  if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_DRAFT" && !(features.includes("task.setupDraft") && features.includes("task.setupProposal.v2"))) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (carriesFeedbackReview && !features.includes("task.workflowFeedbackReview")) {

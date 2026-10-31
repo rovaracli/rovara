@@ -154,6 +154,8 @@ export * from "./agent-web-views.js";
 export * from "./onboarding.js";
 
 export * from "./setup-draft.js";
+export * from "./setup-proposal.js";
+export * from "./setup-proposal-read.js";
 
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
 

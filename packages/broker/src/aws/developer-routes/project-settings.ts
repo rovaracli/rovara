@@ -1,6 +1,6 @@
 import { readAllowedDomainActorConditions } from "../../org/second-person-evidence.js";
 import { AgentXNameSchema, agentXError, type AppProjectDetail } from "@agentx/contracts";
-import { updateProjectSettings } from "../../org/project-settings.js";
+import { updateProjectSettings, type UpdateProjectSettingsOptions } from "../../org/project-settings.js";
 import { routeMetaConfig } from "../../meta-repo/config-import.js";
 import { StatusReply } from "../status-reply.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
@@ -33,7 +33,7 @@ export async function listGithubRepositories(deps: DeveloperRouteDependencies, c
 }
 
 /** `PUT /v1/app/projects/{name}/settings` (Plan 2, Task 17): a maintainer's change to the project's settings, as a new revision. */
-export async function putProjectSettings(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown): Promise<{ project: AppProjectDetail; warnings: string[] }> {
+export async function putProjectSettings(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, body: unknown, options: UpdateProjectSettingsOptions = {}): Promise<{ project: AppProjectDetail; warnings: string[] }> {
   const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
   let name: string;
   try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
@@ -48,7 +48,7 @@ export async function putProjectSettings(deps: DeveloperRouteDependencies, calle
     allowedDomainAuthorityConditions: (who, project) => readAllowedDomainActorConditions({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer?.signInTableName ?? "", now: deps.now }, { orgId: who.orgId, project, actorId: who.developerId }),
     effectiveRole: async (who, project) => (await visibleProjectRoles(deps, who, project)).get(project),
     readProject: (who, project) => getAppProject(deps, who, project),
-  }, caller, name, body);
+  }, caller, name, body, options);
 }
 
 /**

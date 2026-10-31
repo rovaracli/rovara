@@ -399,7 +399,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
 
   const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client }, deps.orgId);
   // A setup draft's preparation clones and checks out only (no devcontainer, no setup command, no readiness command), as an agent-step run's does.
-  const preparation = await deps.actions.preparation(identity, project, request.requestId, settingUpDraft ? { readOnly: true } : prepared?.runner !== "agent_steps" ? undefined : { ...(prepared.checkout.length === 0 ? {} : { checkout: prepared.checkout }), readOnly: true });
+  const preparation = await deps.actions.preparation(identity, project, request.requestId, settingUpDraft ? { readOnly: true, setupDraft: true } : prepared?.runner !== "agent_steps" ? undefined : { ...(prepared.checkout.length === 0 ? {} : { checkout: prepared.checkout }), readOnly: true });
   const workspaceId = preparation.workspace.id;
   const conversationId = randomUUID();
   const revision = project.definition.revision;

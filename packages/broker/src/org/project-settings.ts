@@ -16,6 +16,7 @@ import {
   StoredProjectDefinitionSchema,
   TEST_TIMEOUT,
   agentXError,
+  errorStatus,
   projectArchivedMessage,
   canonicalJson,
   githubInstallationKey,
@@ -218,6 +219,20 @@ async function changedRepositories(
 }
 
 /**
+ * Who a save is made on behalf of. A person's own save (the default, and the only one the settings route makes) marks what it changes as the person's; the setup agent's
+ * proposal, applied by a maintainer, marks what it changes `agent`, so a later import or draft can tell Rovara's value from one a person typed. It is an option of the
+ * function, never of the request body: no caller can claim it over HTTP.
+ */
+export interface UpdateProjectSettingsOptions { origin?: "person" | "agent" }
+
+/** A save that touched settings the meta repo's config file manages. A typed refusal, so callers need not read the words; it answers 403 FORBIDDEN as it always did. */
+export class ManagedByFileError extends AgentXError {
+  constructor(readonly fields: readonly ProjectOriginField[]) {
+    super("FORBIDDEN", `${fields.join(", ")} ${fields.length === 1 ? "is" : "are"} managed by the meta repo's config file; change ${fields.length === 1 ? "it" : "them"} there`, errorStatus("FORBIDDEN"));
+  }
+}
+
+/**
  * Registers the settings as the project's next revision (`expectedRevision + 1`), applying only the fields given, and answers the project as
  * the app shows it, with a warning for each allowed domain every project already has. A body that changes nothing in the revision (or only
  * the description) writes no revision; a description is the project's META record only.
@@ -230,6 +245,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   caller: Caller,
   name: string,
   rawBody: unknown,
+  options: UpdateProjectSettingsOptions = {},
 ): Promise<{ project: AppProjectDetail; warnings: string[] }> {
   const role = await deps.effectiveRole(caller, name);
   if (role === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
@@ -270,7 +286,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   if (body.allowedDomains !== undefined) touched.push("network");
   if (body.addRepositories !== undefined || body.removeRepositories !== undefined) touched.push("repositories");
   const managed = touched.filter((field) => settingOriginOf(current, field) === "file");
-  if (managed.length > 0) throw agentXError("FORBIDDEN", `${managed.join(", ")} ${managed.length === 1 ? "is" : "are"} managed by the meta repo's config file; change ${managed.length === 1 ? "it" : "them"} there`);
+  if (managed.length > 0) throw new ManagedByFileError(managed);
 
   const { repositories, removed } = await changedRepositories(deps, caller, current.repositories, body);
   if (repositories.length === 0) throw invalid("removeRepositories: a project keeps at least one repository");
@@ -317,10 +333,11 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
     else next.network = { allowedDomains: domains };
   }
 
-  // What a person changes is theirs again: a setting an agent or the config file had set loses that mark (a field with no mark was set by a person).
+  // What a person changes is theirs again: a setting an agent or the config file had set loses that mark (a field with no mark was set by a person). What the setup agent's
+  // proposal changes (applied by a maintainer, with `origin: "agent"`) is marked `agent`.
   const personChanged = touched.filter((field) => canonicalJson((current as Record<string, unknown>)[field] ?? null) !== canonicalJson(next[field] ?? null));
   if (personChanged.length > 0) {
-    const origins = withSettingOrigins(current.origins, personChanged, "person");
+    const origins = withSettingOrigins(current.origins, personChanged, options.origin ?? "person");
     if (origins === undefined) delete next.origins; else next.origins = origins;
   }
 

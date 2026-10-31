@@ -48,5 +48,10 @@ export function createApiClient(host: AppHost) {
    }
    return { kind: "done", value: read(response.body, schema) };
   },
+  /**
+   * A request whose answer is its own body at any 2xx, a 202 included (the setup draft's start answers 202 with the draft's status). It never reads a 202 as a confirmation,
+   * so use it only for a route that cannot ask for one.
+   */
+  async sendAnswer<T>(method: Exclude<ApiMethod, "GET" | "HEAD">, path: string, body: unknown, schema: Reader<T>, options?: { retry: "never" }): Promise<T> { return read((await request({ method, path, body, ...options })).body, schema); },
  };
 }
