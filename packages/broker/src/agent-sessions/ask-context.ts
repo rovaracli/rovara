@@ -20,6 +20,8 @@ import { publicationAttempts, taskPageStage, taskPageStep } from "../aws/develop
 import { promptTagId } from "../aws/developer-tasks/thread-notes.js";
 import { plainBlockReason } from "../developer/workflow-messages.js";
 import { sessionBindingsOf } from "../rovara-code/session-bindings.js";
+import { neutralizeSlackMentions } from "./slack-mentions.js";
+export { neutralizeSlackMentions };
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The tiers
@@ -88,12 +90,6 @@ export interface AskContextData {
   notes?: ReadonlyArray<{ authorLabel?: string | undefined; authority: "owner_instruction" | "information" | "comment"; text: string }> | undefined;
   outsider?: ReadonlyArray<{ source: OutsiderSource; text: string }> | undefined;
 }
-
-/** Slack's mention syntax (`<@U123>`, `<@U123|name>`), which would carry a person's Slack id (or an erased person's) into the model's text. */
-const SLACK_MENTION = /<@[UW][A-Z0-9]{2,}(?:\|[^>]{0,80})?>/gu;
-
-/** A text with every Slack mention (`<@U123>`) replaced by the neutral word, so no Slack id is kept in anything stored or sent. */
-export const neutralizeSlackMentions = (text: string): string => text.replace(SLACK_MENTION, "@member");
 
 /** Text for the model: Slack mentions become a neutral word, secrets are redacted, and angle brackets are made inert so nothing can open or close a tag. */
 function safe(text: string): string {

@@ -12,6 +12,7 @@ import { markAccessErased, placeOfUnit, removePersonFromUnit, unitsOfPerson } fr
 import { identitySystem, markPersonErased } from "./erased.js";
 import { changeScopePrincipals } from "./scope-work.js";
 import { REQUIRED_ERASE_STEPS, type EraseStep } from "./person-fields.js";
+import { eraseAskPerson } from "../agent-sessions/ask-erase.js";
 import type { ScopeCursor } from "./store.js";
 import { scrubConfigDeveloper, scrubTier0Developer, bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
 
@@ -93,7 +94,7 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   // others, and the next run resumes it. The erased markers were written first, so no event, snapshot or join can put an id back while this runs.
   const ids = identities.map((identity) => identity.sourceId);
   const context: EraseContext = { deps, orgId, who, ids, identities, rows, links: allLinks, at, occurrence, budget, queue, lessonsPurged: 0 };
-  const done: Record<EraseStep, boolean> = { lake: true, principals: true, access: true, config: true, lessons: true, rows: true };
+  const done: Record<EraseStep, boolean> = { lake: true, principals: true, access: true, config: true, lessons: true, asks: true, rows: true };
   for (const step of REQUIRED_ERASE_STEPS) {
     try {
       if (step === "rows") continue; // last: the rows go only after the lessons that rest on them are settled
@@ -210,7 +211,20 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     }
     return known;
   },
+  // Live interaction Asks (agent-sessions/ask-erase.ts): the person's own Asks are deleted and their label in other people's stored text becomes "@former-member". The Ask records live in the same State
+  // table as the team record, so no port is needed. Bounded passes, called again until nothing is left or the run's budget is spent; not done means the next run resumes it.
+  async asks(context) {
+    if (context.who.developerId === undefined) return true;
+    for (let pass = 0; pass < ASK_ERASE_PASSES_PER_RUN; pass += 1) {
+      const result = await eraseAskPerson(context.deps.table, context.orgId, context.who.developerId, { maxItems: Math.min(context.budget.maxItems, 200) });
+      if (result.complete) return true;
+    }
+    return false;
+  },
 };
+
+/** The most passes of the Ask erasure in one erase run (each pass handles up to 200 Asks and 200 mentions). */
+const ASK_ERASE_PASSES_PER_RUN = 25;
 
 const ERASE_PROGRESS_PREFIX = "ERASEPROG#";
 

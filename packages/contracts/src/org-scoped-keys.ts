@@ -672,6 +672,20 @@ export function askMentionPk(orgId: OrgId, personTag: string): string {
   return orgScoped(orgId, `ASKMENTION#${keyPart(personTag, "a person tag")}`);
 }
 
+/**
+ * The expiry bucket of the Asks that expire on one day (`YYYY-MM-DD`): partition `ASKEXP#<day>`. The State table deletes by TTL only in named environments, so the 30 days are enforced by a sweep
+ * that reads these buckets; ids only.
+ */
+export function askExpiryKey(orgId: OrgId, day: string, sessionId: SessionId, askId: string): OrgKey {
+  return { pk: askExpiryPk(orgId, day), sk: `${keyPart(sessionId, "a session id")}#${keyPart(askId, "an ask id")}` };
+}
+
+/** The partition of one day's expiring Asks. */
+export function askExpiryPk(orgId: OrgId, day: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(day)) throw new Error("an expiry day is YYYY-MM-DD");
+  return orgScoped(orgId, `ASKEXP#${day}`);
+}
+
 /** A local session's transcript line, `TURN#<number>`; six digits keep a query on `TURN#` in order. */
 export function sessionTurnSk(seq: number): `TURN#${string}` {
   return `TURN#${paddedCounter(seq, "a turn number")}`;
