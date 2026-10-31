@@ -11,7 +11,7 @@
 // What a tool call writes is read by an extractor per connector type (`registerOwnWriteExtractor`): the built-in ones know GitHub, Jira and Linear, and a tracker plug-in registers its own.
 // The call path (`callConnector`) asks `recordOwnWriteOfCall`; a note that cannot be written stops the call (fail closed).
 import { UpdateCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, intakeItemIdOf, intakeOwnWriteKey, type IntakeOwnWriteKind, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, intakeItemIdOf, intakeOwnWriteKey, type IntakeOwnWriteKind, type OrgId } from "@agentx/contracts";
 import type { IntakeTable } from "./store.js";
 
 /** An event may carry a time a little before the write that caused it (the vendor's clock, not ours). */
@@ -32,9 +32,15 @@ export interface OwnWriteNote {
   assignees?: string[] | undefined;
   /** Some change was made to the ticket (even if its labels and assignee are not known). */
   touch?: boolean | undefined;
+  /**
+   * A change that cannot be tied to one ticket (a write with no ticket id, or through a connector type nobody can read): every label or assignment in `system` (or in every system, when `system` is
+   * `*`) shortly after it is not taken for a member's act.
+   */
+  wide?: true | undefined;
 }
 
 const ticketItemId = (system: string, ticket: string): string => intakeItemIdOf(system, ticket.normalize("NFC").trim().toLowerCase());
+const wideItemId = (system: string): string => intakeItemIdOf(system, "*wide*");
 const scopeItemId = (system: string, scope: string): string => intakeItemIdOf(system, `scope:${scope.normalize("NFC").trim().toLowerCase()}`);
 /** The scope a ticket id is in, when its id says (`owner/repo/7` is in `owner/repo`). */
 const scopeOfTicket = (ticket: string): string | undefined => (ticket.includes("/") ? ticket.slice(0, ticket.lastIndexOf("/")) : undefined);
@@ -55,6 +61,7 @@ async function putNote(table: IntakeTable, orgId: OrgId, itemId: string, kind: I
 export async function noteOwnWrite(table: IntakeTable, orgId: OrgId, note: OwnWriteNote): Promise<void> {
   const labels = clean(note.labels);
   const assignees = clean(note.assignees);
+  if (note.wide === true) await putNote(table, orgId, wideItemId(note.system), "touch", "", OWN_WRITE_TOUCH_WINDOW_MS);
   const ids: string[] = [];
   if (note.ticket !== undefined && note.ticket.trim() !== "") ids.push(ticketItemId(note.system, note.ticket));
   else if (note.scope !== undefined && note.scope.trim() !== "") ids.push(scopeItemId(note.system, note.scope));
@@ -72,6 +79,8 @@ export type OwnWriteVerdict = "own" | "touched" | "none";
 export interface OwnWriteQuestion {
   orgId: OrgId;
   externalRef: { system: string; id: string };
+  /** Other spellings of the same ticket (a Jira issue has a key and a numeric id): a note under any of them is the ticket's. */
+  alternateIds?: readonly string[] | undefined;
   act?: { kind: "label" | "assignee"; value: string } | undefined;
   occurredAt?: string | undefined;
 }
@@ -85,27 +94,47 @@ async function readNote(table: IntakeTable, orgId: OrgId, itemId: string, kind: 
   return typeof first === "number" && typeof last === "number" && Number.isFinite(first) && Number.isFinite(last) ? { first, last } : undefined;
 }
 
-const covers = (note: { first: number; last: number }, at: number, window: number): boolean => at >= note.first - OWN_WRITE_SKEW_MS && at <= note.last + window;
+/** How long after Rovara's write an event may be RECEIVED and still be taken for its echo, whatever time the vendor stamped on it (a vendor clock behind ours). */
+export const OWN_WRITE_DELIVERY_LAG_MS = 5 * 60_000;
 
 /**
- * Whether an event on a ticket is the echo of something Rovara wrote (`own`), happened right after Rovara changed the ticket some other way (`touched`: not told apart), or neither.
- * A read that fails throws: nothing is decided on a guess, and the delivery is made again.
+ * Whether an event belongs to a note: the time the vendor stamped on it falls in the note's window, or the time WE received it does (within the delivery lag of the note's last write), so a vendor
+ * clock running behind ours cannot turn Rovara's echo into a member's act.
+ */
+const covers = (note: { first: number; last: number }, stamped: number, received: number, window: number): boolean =>
+  (stamped >= note.first - OWN_WRITE_SKEW_MS && stamped <= note.last + window) || (received >= note.first && received <= note.last + Math.min(window, OWN_WRITE_DELIVERY_LAG_MS));
+
+/**
+ * Whether an event on a ticket is the echo of something Rovara wrote (`own`), happened right after Rovara changed the ticket, its repository or the tracker some other way (`touched`: not told
+ * apart, so it waits for a member), or neither. Only a note on the TICKET ITSELF gives `own`: a note for a whole repository (a ticket Rovara was about to make) can only give `touched`, because it
+ * cannot say which ticket the label was for, and a member's label on another issue must not be lost. A read that fails throws: nothing is decided on a guess, and the delivery is made again.
  */
 export async function ownWriteVerdictOf(table: IntakeTable, question: OwnWriteQuestion): Promise<OwnWriteVerdict> {
   const { orgId, externalRef, act } = question;
   const parsed = question.occurredAt === undefined ? Number.NaN : Date.parse(question.occurredAt);
-  const at = Number.isFinite(parsed) ? parsed : table.now();
-  const ticket = ticketItemId(externalRef.system, externalRef.id);
-  const scope = scopeOfTicket(externalRef.id);
-  const scopeId = scope === undefined ? undefined : scopeItemId(externalRef.system, scope);
-  if (act !== undefined && act.value.trim() !== "") {
-    for (const itemId of scopeId === undefined ? [ticket] : [ticket, scopeId]) {
-      const note = await readNote(table, orgId, itemId, act.kind, act.value);
-      if (note !== undefined && covers(note, at, OWN_WRITE_LABEL_WINDOW_MS)) return "own";
+  const received = table.now();
+  const stamped = Number.isFinite(parsed) ? parsed : received;
+  const forms = [...new Set([externalRef.id, ...(question.alternateIds ?? [])])];
+  let touched = false;
+  for (const form of forms) {
+    const ticket = ticketItemId(externalRef.system, form);
+    if (act !== undefined && act.value.trim() !== "") {
+      const note = await readNote(table, orgId, ticket, act.kind, act.value);
+      if (note !== undefined && covers(note, stamped, received, OWN_WRITE_LABEL_WINDOW_MS)) return "own";
+      const scope = scopeOfTicket(form);
+      if (scope !== undefined) {
+        const wide = await readNote(table, orgId, scopeItemId(externalRef.system, scope), act.kind, act.value);
+        if (wide !== undefined && covers(wide, stamped, received, OWN_WRITE_LABEL_WINDOW_MS)) touched = true;
+      }
     }
+    const touch = await readNote(table, orgId, ticket, "touch", "");
+    if (touch !== undefined && covers(touch, stamped, received, OWN_WRITE_TOUCH_WINDOW_MS)) touched = true;
   }
-  const touch = await readNote(table, orgId, ticket, "touch", "");
-  return touch !== undefined && covers(touch, at, OWN_WRITE_TOUCH_WINDOW_MS) ? "touched" : "none";
+  for (const system of new Set([externalRef.system, "*"])) {
+    const wide = await readNote(table, orgId, wideItemId(system), "touch", "");
+    if (wide !== undefined && covers(wide, stamped, received, OWN_WRITE_TOUCH_WINDOW_MS)) touched = true;
+  }
+  return touched ? "touched" : "none";
 }
 
 // ---- reading a connector call
@@ -116,10 +145,10 @@ export interface OwnWriteCall {
 }
 export type OwnWriteExtractor = (call: OwnWriteCall) => OwnWriteNote | undefined;
 
-const READ_TOOL = /^(get|list|search|read|fetch|find|lookup|query|describe|view)/iu;
-const WRITE_TOOL = /(create|update|edit|add|set|assign|label|transition|write|save|comment|delete|remove|close|reopen|move|merge)/iu;
-/** A tool that changes something: not named for a read, and named for a change. */
-const isWriteTool = (tool: string): boolean => !READ_TOOL.test(tool) && WRITE_TOOL.test(tool);
+/** The verbs of a tool that only reads (`getJiraIssue`, `list_issues`, `search_issues`, `query_logs`): the verb, then the end of the name or a new word. Nothing else is taken for a read. */
+const READ_TOOL = /^(?:[Gg]et|[Ll]ist|[Ss]earch|[Rr]ead|[Ff]etch|[Qq]uery)(?:$|[A-Z_.-])/u;
+/** A tool that changes something: every tool that is not clearly named for a read (fail closed). */
+const isWriteTool = (tool: string): boolean => !READ_TOOL.test(tool);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const own = (record: Record<string, unknown>, key: string): unknown => (Object.hasOwn(record, key) ? record[key] : undefined);
@@ -154,7 +183,8 @@ function githubNote(call: OwnWriteCall): OwnWriteNote | undefined {
   const { args } = call;
   const owner = text(own(args, "owner"));
   const repo = text(own(args, "repo"));
-  if (owner === undefined || repo === undefined) return undefined;
+  // A write that names no repository cannot be tied to a ticket: every GitHub label or assignment shortly after it waits for a member.
+  if (owner === undefined || repo === undefined) return { system: "github", wide: true };
   const number = firstText(args, ["issue_number", "issueNumber", "number"]);
   const labels = [...namesOf(own(args, "labels")), ...namesOf(own(args, "label"))];
   const assignees = [...namesOf(own(args, "assignees")), ...namesOf(own(args, "assignee"))];
@@ -166,7 +196,7 @@ function jiraNote(call: OwnWriteCall): OwnWriteNote | undefined {
   if (!isWriteTool(call.tool)) return undefined;
   const { args } = call;
   const ticket = firstText(args, ["issueIdOrKey", "issueKey", "issue_key", "issue_id_or_key", "key"]);
-  if (ticket === undefined) return undefined;
+  if (ticket === undefined) return { system: "jira", wide: true };
   const fields = isRecord(own(args, "fields")) ? (own(args, "fields") as Record<string, unknown>) : {};
   const update = isRecord(own(args, "update")) ? (own(args, "update") as Record<string, unknown>) : {};
   const labels = [...namesOf(own(args, "labels")), ...namesOf(own(fields, "labels")), ...namesOf(own(update, "labels"))];
@@ -183,13 +213,15 @@ function linearNote(call: OwnWriteCall): OwnWriteNote | undefined {
   if (!isWriteTool(call.tool)) return undefined;
   const { args } = call;
   const ticket = firstText(args, ["id", "identifier", "issueId", "issue_id"]);
-  if (ticket === undefined) return undefined;
+  if (ticket === undefined) return { system: "linear", wide: true };
   const labels = [...namesOf(own(args, "labels")), ...namesOf(own(args, "addLabels"))];
   const assignees = namesOf(own(args, "assignee") === undefined ? [] : [own(args, "assignee")]);
   return { system: "linear", ticket, touch: true, ...(labels.length === 0 ? {} : { labels }), ...(assignees.length === 0 ? {} : { assignees }) };
 }
 
-const extractors = new Map<string, OwnWriteExtractor>([["github", githubNote], ["jira", jiraNote], ["linear", linearNote]]);
+/** Connector types that only read (the native connectors offer no write tool): a call through one writes nothing, whatever its tool is named. */
+const readOnlyTypes = ["sentry", "datadog", "cloudwatch", "github-actions", "grafana", "vercel", "pagerduty"] as const;
+const extractors = new Map<string, OwnWriteExtractor>([["github", githubNote], ["jira", jiraNote], ["linear", linearNote], ...readOnlyTypes.map((type) => [type, () => undefined] as const)]);
 
 /** Registers (or replaces) how a connector type's tool calls are read for what they write. A tracker plug-in registers its own. */
 export function registerOwnWriteExtractor(connectorType: string, extractor: OwnWriteExtractor): void {
@@ -197,17 +229,21 @@ export function registerOwnWriteExtractor(connectorType: string, extractor: OwnW
 }
 /** Removes a registered reader (for tests); the built-in ones stay. */
 export function unregisterOwnWriteExtractor(connectorType: string): void {
-  if (connectorType !== "github" && connectorType !== "jira" && connectorType !== "linear") extractors.delete(connectorType);
+  if (connectorType !== "github" && connectorType !== "jira" && connectorType !== "linear" && !(readOnlyTypes as readonly string[]).includes(connectorType)) extractors.delete(connectorType);
 }
 
-/** What a connector call writes, or undefined for a call that changes nothing Rovara can tell (a read, an unknown connector type). */
+/**
+ * What a connector call writes, or undefined for a read. Fails closed: a connector type with no reader (a generic MCP server that may be pointed at a tracker) that is used for anything but a read
+ * makes a WIDE note, so that every label or assignment in the org shortly after it waits for a member (`unverified`) instead of being taken for a member's act. (A write cannot be refused
+ * for want of a key: no tracker is named by a generic connector, so the note is org-wide.)
+ */
 export function ownWriteNoteOf(connectorType: string, tool: string, args: Record<string, unknown>): OwnWriteNote | undefined {
   const extractor = extractors.get(connectorType);
-  if (extractor === undefined || !isRecord(args)) return undefined;
-  const note = extractor({ tool, args });
+  if (extractor === undefined) return isWriteTool(tool) ? { system: "*", wide: true } : undefined;
+  const note = extractor({ tool, args: isRecord(args) ? args : {} });
   if (note === undefined) return undefined;
-  const hasTarget = (note.ticket !== undefined && note.ticket !== "") || (note.scope !== undefined && note.scope !== "");
-  return hasTarget ? note : undefined;
+  const hasTarget = note.wide === true || (note.ticket !== undefined && note.ticket !== "") || (note.scope !== undefined && note.scope !== "");
+  return hasTarget ? note : { system: note.system, wide: true };
 }
 
 // ---- the call path
@@ -219,9 +255,13 @@ export function registerOwnWriteRecorder(next: OwnWriteRecorder | undefined): vo
   recorder = next;
 }
 
-/** Called by the connector call path before a call is sent. A call that writes nothing Rovara can tell does nothing. A note that can't be written throws, and the call is not sent. */
+/**
+ * Called by the connector call path before a call is sent. A read does nothing. A write is noted first; a note that can't be written throws, and so does a write when no recorder is
+ * registered (fail closed: a deployment that cannot note its writes does not make them).
+ */
 export async function recordOwnWriteOfCall(input: { orgId: OrgId; connectorType: string; tool: string; args: Record<string, unknown> }): Promise<void> {
-  if (recorder === undefined) return;
   const note = ownWriteNoteOf(input.connectorType, input.tool, input.args);
-  if (note !== undefined) await recorder(input.orgId, note);
+  if (note === undefined) return;
+  if (recorder === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "writes to trackers can't be recorded in this deployment, so this call was not made");
+  await recorder(input.orgId, note);
 }

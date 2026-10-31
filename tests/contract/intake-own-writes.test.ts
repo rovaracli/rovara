@@ -9,7 +9,7 @@ import { callConnector, discoverConnector, type ScopeDiscovery } from "../../pac
 import type { ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { ingestIntake, type IntakeCandidate, type IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import {
-  OWN_WRITE_LABEL_WINDOW_MS, OWN_WRITE_SKEW_MS, OWN_WRITE_TOUCH_WINDOW_MS, noteOwnWrite, ownWriteNoteOf, ownWriteVerdictOf, recordOwnWriteOfCall, registerOwnWriteExtractor, registerOwnWriteRecorder,
+  OWN_WRITE_DELIVERY_LAG_MS, OWN_WRITE_LABEL_WINDOW_MS, OWN_WRITE_SKEW_MS, OWN_WRITE_TOUCH_WINDOW_MS, noteOwnWrite, ownWriteNoteOf, ownWriteVerdictOf, recordOwnWriteOfCall, registerOwnWriteExtractor, registerOwnWriteRecorder,
   unregisterOwnWriteExtractor,
 } from "../../packages/broker/src/intake/own-writes.js";
 import { intakeCandidateOf } from "../../packages/broker/src/triggers/intake-dispatch.js";
@@ -93,6 +93,8 @@ describe("a label Rovara wrote through a member's key is Rovara's, not the membe
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
     const before = new Date(T0 - OWN_WRITE_SKEW_MS - 1_000).toISOString();
+    // Received long after the write (outside the delivery lag), stamped before it: not its echo.
+    w.clock.now = T0 + OWN_WRITE_DELIVERY_LAG_MS + 1_000;
     expect((await ingestIntake(w.ports, jiraLabel({ occurredAt: before }))).outcome).toBe("started");
   });
 
@@ -100,6 +102,7 @@ describe("a label Rovara wrote through a member's key is Rovara's, not the membe
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
     const late = new Date(T0 + OWN_WRITE_LABEL_WINDOW_MS + 1_000).toISOString();
+    w.clock.now = T0 + OWN_WRITE_LABEL_WINDOW_MS + 1_000;
     expect((await ingestIntake(w.ports, jiraLabel({ occurredAt: late }))).outcome).toBe("started");
   });
 
@@ -109,16 +112,34 @@ describe("a label Rovara wrote through a member's key is Rovara's, not the membe
     w.clock.now = T0 + OWN_WRITE_LABEL_WINDOW_MS - 1_000;
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
     const later = new Date(T0 + OWN_WRITE_LABEL_WINDOW_MS + 60_000).toISOString();
+    w.clock.now = T0 + OWN_WRITE_LABEL_WINDOW_MS + 60_000;
     expect(await ingestIntake(w.ports, jiraLabel({ occurredAt: later }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
     expect(await ingestIntake(w.ports, jiraLabel({ occurredAt: new Date(T0).toISOString(), eventId: "e-early" }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
   });
 
-  it("covers a ticket Rovara created with the label: the note is for the repository, and any ticket in it matches", async () => {
+  it("a note for a whole repository (a ticket Rovara was about to make) is never `own`: an issue in it waits for a member, so a member's label on another issue is not lost", async () => {
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "github", scope: "acme/web", labels: ["rovara"] });
-    expect(await ingestIntake(w.ports, githubLabel())).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect(await ingestIntake(w.ports, githubLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
     const elsewhere = githubLabel({ externalRef: { ...GITHUB, id: "acme/other/7", url: "https://github.com/acme/other/issues/7" }, eventId: "e-other" });
     expect((await ingestIntake(w.ports, elsewhere)).outcome).toBe("started");
+    expect(w.started).toHaveLength(1);
+  });
+
+  it("an event stamped by a vendor clock far behind ours is still Rovara's echo when we received it right after the write", async () => {
+    const w = world();
+    await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", labels: ["rovara"] });
+    w.clock.now = T0 + 20_000;
+    const behind = new Date(T0 - 30 * 60_000).toISOString();
+    expect(await ingestIntake(w.ports, jiraLabel({ occurredAt: behind }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+  });
+
+  it("Rovara labelled by Jira's numeric id and the event names the issue by its key: still Rovara's", async () => {
+    const w = world();
+    expect(ownWriteNoteOf("jira", "editJiraIssue", { issueIdOrKey: "10042", fields: { labels: ["rovara"] } })).toMatchObject({ ticket: "10042" });
+    await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "10042", labels: ["rovara"] });
+    expect(await ingestIntake(w.ports, jiraLabel({ alternateIds: ["10042"] }))).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect((await ingestIntake(w.ports, jiraLabel({ eventId: "other", externalRef: { ...JIRA, id: "PAY-13", url: "https://acme.atlassian.net/browse/PAY-13" }, alternateIds: ["10099"] }))).outcome).toBe("started");
   });
 });
 
@@ -135,6 +156,7 @@ describe("a ticket Rovara just changed in a way a note can't match is not taken 
     const w = world();
     await noteOwnWrite(w.ports.table, ORG, { system: "jira", ticket: "PAY-12", touch: true });
     const late = new Date(T0 + OWN_WRITE_TOUCH_WINDOW_MS + 1_000).toISOString();
+    w.clock.now = T0 + OWN_WRITE_TOUCH_WINDOW_MS + 1_000;
     expect((await ingestIntake(w.ports, jiraLabel({ occurredAt: late }))).outcome).toBe("started");
   });
 });
@@ -278,5 +300,48 @@ describe("what the event says was put on the ticket reaches the engine", () => {
     expect(intakeCandidateOf(ORG, { ...base, type: "issue.labeled", fields: { label: ["rovara"] } })?.act).toEqual({ kind: "label", value: "rovara" });
     expect(intakeCandidateOf(ORG, { ...base, type: "issue.assigned", fields: { assignee: ["acct-x"] } })?.act).toEqual({ kind: "assignee", value: "acct-x" });
     expect(intakeCandidateOf(ORG, { ...base, type: "issue.labeled", fields: {} })?.act).toBeUndefined();
+  });
+});
+
+describe("the guard fails closed (review round 1)", () => {
+  it("only a tool named for a read is a read: any other name is a write", () => {
+    for (const tool of ["get_issue", "list_issues", "search_issues", "getJiraIssue", "searchJiraIssuesUsingJql", "read_file", "fetch_page", "query_logs"]) {
+      expect(ownWriteNoteOf("github", tool, { owner: "a", repo: "b", issue_number: 1 }), tool).toBeUndefined();
+    }
+    for (const tool of ["frobnicate_issue", "listing_labels", "triage", "labelize", "reopen_issue", "assign_copilot_to_issue"]) {
+      expect(ownWriteNoteOf("github", tool, { owner: "a", repo: "b", issue_number: 1 }), tool).toMatchObject({ system: "github", ticket: "a/b/1", touch: true });
+    }
+  });
+
+  it("a write that names no ticket makes a wide note for its system", () => {
+    expect(ownWriteNoteOf("github", "frobnicate", { title: "x" })).toEqual({ system: "github", wide: true });
+    expect(ownWriteNoteOf("jira", "createJiraIssue", { projectKey: "PAY", fields: { labels: ["rovara"] } })).toEqual({ system: "jira", wide: true });
+  });
+
+  it("a connector type with no reader (a generic MCP server pointed at a tracker) makes an org-wide note for a write, and none for a read", () => {
+    expect(ownWriteNoteOf("mcp", "update_ticket", { id: "T-1", label: "rovara" })).toEqual({ system: "*", wide: true });
+    expect(ownWriteNoteOf("mcp", "get_ticket", { id: "T-1" })).toBeUndefined();
+    // The native connectors only read.
+    expect(ownWriteNoteOf("sentry", "resolve_issue", { id: "1" })).toBeUndefined();
+  });
+
+  it("an event right after a wide note waits for a member (unverified), in that system or any system for an org-wide note, and not in another org", async () => {
+    const w = world();
+    await noteOwnWrite(w.ports.table, ORG, { system: "*", wide: true });
+    expect(await ingestIntake(w.ports, jiraLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
+    const g = world();
+    await noteOwnWrite(g.ports.table, ORG, { system: "github", wide: true });
+    expect(await ingestIntake(g.ports, jiraLabel())).toMatchObject({ outcome: "started" });
+    expect(await ingestIntake(g.ports, githubLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
+    const other = world();
+    await noteOwnWrite(other.ports.table, OTHER_ORG, { system: "*", wide: true });
+    expect((await ingestIntake(other.ports, jiraLabel())).outcome).toBe("started");
+  });
+
+  it("a write with no recorder registered is refused and nothing is sent; a read is not", async () => {
+    registerOwnWriteRecorder(undefined);
+    await expect(recordOwnWriteOfCall({ orgId: ORG, connectorType: "jira", tool: "editJiraIssue", args: { issueIdOrKey: "PAY-12" } })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(recordOwnWriteOfCall({ orgId: ORG, connectorType: "mcp", tool: "post_message", args: {} })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(recordOwnWriteOfCall({ orgId: ORG, connectorType: "jira", tool: "getJiraIssue", args: { issueIdOrKey: "PAY-12" } })).resolves.toBeUndefined();
   });
 });
