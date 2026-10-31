@@ -87,9 +87,9 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
     requireNewWork: (who, project, role) => requireNewWorkAllowed(deps, who.orgId, project, role, "task"),
     latest: async (orgId, project) => {
       const latest = await latestRevision({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, project);
-      return latest === undefined ? undefined : { revision: latest.definition.revision, allowedDomains: latest.definition.network?.allowedDomains ?? [] };
+      return latest === undefined ? undefined : { revision: latest.definition.revision, allowedDomains: latest.definition.network?.allowedDomains ?? [], definition: latest.definition };
     },
-    updateSettings: (who, project, body) => putProjectSettings(deps, who, encodeURIComponent(project), body),
+    updateSettings: (who, project, body, options) => putProjectSettings(deps, who, encodeURIComponent(project), body, options),
     startSetupCheck: async (who, project, requestId) => { await startProjectSetupCheck(deps, who, encodeURIComponent(project), { requestId }); },
     startPullRequest: async (who, request) => {
       const started = await startCodeIntent(codeIntentDependenciesOf(deps, who), who, { requestId: request.requestId, project: request.project, input: { text: request.text }, path: "QUICK", source: "app" });
@@ -97,6 +97,9 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
       return { taskId, ...(started.sessionId === undefined ? {} : { sessionId: started.sessionId }), ...(started.sessionUrl === undefined ? {} : { sessionUrl: started.sessionUrl }) };
     },
     readProject: (who, project) => getAppProject(deps, who, project),
+    // Meta repo lane B: a risky item of the setup agent's proposal gets its own approval card, and its citations are re-read from GitHub.
+    ...(deps.agents === undefined ? {} : { approvals: deps.agents }),
+    ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),
   };
 }
 

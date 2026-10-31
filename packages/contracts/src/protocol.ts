@@ -2,6 +2,7 @@ import {StageIdSchema} from "./stage-model-shared.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowReviewBaseSchema } from "./task-workflow.js";
+import { AgentXNameSchema } from "./names.js";
 import { ProjectCommandSchema } from "./project.js";
 import { StoredProjectDefinitionSchema } from "./project-node.js";
 import { ModelIdentifierSchema,ModelSelectionSchema } from "./models.js";
@@ -27,7 +28,7 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", "prepare.metaRepo", "task.specWrite.v1", "publish.specFiles.v1", "task.workflowReviewSpec.v1"] as const;
+export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "publish.specFiles.v1", "task.workflowReviewSpec.v1"] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -272,6 +273,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         /** The broker-selected tool boundary for the current native workflow stage (spec 056). */
         workflowMode: z.enum(["PLAN", "IMPLEMENT", "REVIEW", "CHECKS", "FEEDBACK_REVIEW", "UNDERSTAND", "PLAN_CRITIQUE", "SETUP_DRAFT", "SPEC_WRITE"]).optional(),
         /**
+         * Meta repo lane B: a setup proposal run is told which of the project's repositories is its meta repository (the team's rules, specs and runbooks live there), so it
+         * knows where to look for them. Sent only with `workflowMode: "SETUP_DRAFT"`, and only to a worker whose /ping lists "task.setupProposal.v2".
+         */
+        setupMetaRepo: AgentXNameSchema.optional(),
+        /**
          * The document a planning run writes in the Full path (a Quick plan has none). The worker uses it to read the
          * planner's answer as that kind of plan. Sent only to a worker whose /ping lists "task.structuredPlans"; an older
          * worker is sent the run without it.
@@ -354,6 +360,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * lists "task.specWrite.v1"; never dropped, because an older worker would not know the mode.
          */
         specWrite: SpecWriteBindingSchema.optional(),
+        /**
+         * Lane E: the project has MCP context sources for this stage (Understand, Plan, Plan check or Review; never Build), so the worker asks the broker for the stage's source tools with its
+         * `context-tools` capability. Sent only to a worker that lists "task.contextSources.v1"; never dropped, because an older worker would run the stage without the team's sources and say nothing.
+         */
+        contextSources: z.literal(true).optional(),
         model: ModelSelectionSchema.optional(),
         /**
          * Sign in with ChatGPT (#341): the task runs on its owner's ChatGPT plan, with this model, and the worker asks

@@ -22,6 +22,7 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowPlanCritique",
   // Rovara Code (Plan 6 Task 10): a read-only run that drafts a project's dev setup.
   "task.setupDraft",
+  "task.setupProposal.v2",
   // Plan 6 Task 13: the code review of a Rovara Code version 2 task states a risk level.
   "task.workflowReviewRisk",
   // Plan 6 Task 15: a coding run that fixes a pull request that is already open (CI, a conflict or comments).
@@ -40,6 +41,8 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.liveSteer.v1",
   // Meta repo lane A3: the prepare invocation's `meta` request (the project's meta repository, read-only and sparse; meta-checkout.ts).
   "prepare.metaRepo",
+  // Lane E (MCP context sources): an Understand, Plan, Plan-check or Review stage asks the broker for the project's source tools (worker/src/context-sources).
+  "task.contextSources.v1",
   // Meta repo lane D: the spec write run (spec-write.ts) and the spec publication (spec-publish.ts).
   "task.specWrite.v1",
   "publish.specFiles.v1",

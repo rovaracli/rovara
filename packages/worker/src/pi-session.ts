@@ -51,6 +51,7 @@ import { readKnowledgeTool } from "./read-knowledge-tool.js";
 import type { KnowledgeStage } from "./knowledge/model.js";
 import type { ResolvedKnowledge } from "./knowledge/resolve.js";
 import type { PiCacheRetention } from "./usage.js";
+import { stubPersistedContextResults } from "./context-sources/transcript.js";
 
 export type PiThinkingLevel = ThinkingLevel;
 export type PiWorkflowMode = "PLAN" | "IMPLEMENT" | "REVIEW" | "UNDERSTAND";
@@ -129,6 +130,11 @@ export interface PiSessionInput {
    * planning session whatever `workflowMode` says.
    */
   agentRun?: AgentRunSession;
+  /**
+   * Lane E: the project's MCP context sources as tools (`src_<id>_<tool>` and `search_team_knowledge`), for an Understand, Plan, Plan-check or Review session
+   * only. They run in the worker and call the broker; a session in Build (IMPLEMENT) or an agent run is refused them (assertContextToolsAllowed).
+   */
+  contextTools?: readonly ToolDefinition[];
 }
 
 /** What makes a session an agent step's (see PiSessionInput.agentRun). */
@@ -141,6 +147,18 @@ export interface AgentRunSession {
 
 /** The names no worker tool of an agent step may take: Pi's own, the shell and `read_skill`. */
 const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "edit", "write", "read", "grep", "find", "ls", "read_skill", "read_knowledge"]);
+
+/**
+ * Context sources are for the stages that read and judge, never for Build, where the shell is: untrusted live text must not reach the stage that can run
+ * commands (design 3.6, Q7). A session that is given source tools in any other mode, or as an agent run, does not start.
+ */
+export function assertContextToolsAllowed(input: { workflowMode?: PiWorkflowMode | undefined; agentRun?: unknown; contextTools?: readonly ToolDefinition[] | undefined }): void {
+  if (input.contextTools === undefined || input.contextTools.length === 0) return;
+  const mode = input.workflowMode ?? "IMPLEMENT";
+  if (mode === "IMPLEMENT" || input.agentRun !== undefined) {
+    throw agentXError("FORBIDDEN", "context sources are not available to a session that can run commands or change files");
+  }
+}
 
 export interface PiSessionAdapter {
   create(input: PiSessionInput): Promise<PiSessionHandle>;
@@ -192,6 +210,9 @@ export async function createWorkspacePiSession(
     agentTools?: readonly string[];
     skills?: readonly AgentSkillFile[];
     agentRun?: AgentRunSession;
+    /** Lane E: the context-source tools and the note that tells the model about them (see PiSessionInput.contextTools). */
+    contextTools?: readonly ToolDefinition[];
+    contextNote?: string;
     /** Where the agent works, when that is not the workspace root: a folder inside it (a parallel part's working copy). Its saved transcript and settings stay in the root's. */
     workingDirectory?: string;
     /**
@@ -215,6 +236,7 @@ export async function createWorkspacePiSession(
   adapter: PiSessionAdapter = defaultPiSessionAdapter,
 ): Promise<PiSessionHandle> {
   assertFileToolsContained(input);
+  assertContextToolsAllowed(input);
   const rootPath = await realpath(resolve(input.rootPath));
   const workingDirectory = input.workingDirectory === undefined ? rootPath : await realpath(resolve(input.workingDirectory));
   if (workingDirectory !== rootPath && !workingDirectory.startsWith(`${rootPath}/`)) {
@@ -230,6 +252,7 @@ export async function createWorkspacePiSession(
   const knowledgeLoad = input.agentRun === undefined ? await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded }) : undefined;
   const contextFiles = knowledgeLoad?.files ?? [];
   const knowledgeSession = knowledgeLoad?.session;
+  if (input.contextNote !== undefined && input.contextTools !== undefined && input.contextTools.length > 0) contextFiles.push({ path: "AGENTX-SOURCES.md", content: input.contextNote });
   const handle = await adapter.create({
     ...(knowledgeSession === undefined ? {} : { knowledgeSession }),
     cwd: workingDirectory,
@@ -249,6 +272,7 @@ export async function createWorkspacePiSession(
     ...(input.agentTools === undefined ? {} : { agentTools: input.agentTools }),
     ...(mergeSkills(input.skills, knowledgeLoad?.skills ?? []) === undefined ? {} : { skills: mergeSkills(input.skills, knowledgeLoad?.skills ?? [])! }),
     ...(input.agentRun === undefined ? {} : { agentRun: input.agentRun }),
+    ...(input.contextTools === undefined ? {} : { contextTools: input.contextTools }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
   return withLoadedKnowledge(handle, knowledgeLoad?.manifest);
@@ -276,6 +300,9 @@ export async function openRegisteredWorkspacePiSession(
     extensionFactories?: InlineExtension[];
     agentTools?: readonly string[];
     skills?: readonly AgentSkillFile[];
+    /** Lane E, as for `createWorkspacePiSession`. */
+    contextTools?: readonly ToolDefinition[];
+    contextNote?: string;
     /** As for `createWorkspacePiSession`. */
     contextFilesAt?: "working-tree" | "base-commit";
     baseCommits?: readonly { repositoryId: string; baseCommitSha?: string | undefined }[];
@@ -285,6 +312,7 @@ export async function openRegisteredWorkspacePiSession(
   adapter: PiSessionAdapter = defaultPiSessionAdapter,
 ): Promise<PiSessionHandle> {
   assertFileToolsContained(input);
+  assertContextToolsAllowed(input);
   const rootPath = await realpath(resolve(input.rootPath));
   const sessionDirectory = resolve(rootPath, "agent-sessions");
   const agentDirectory = workerPiDirectory(rootPath);
@@ -296,8 +324,11 @@ export async function openRegisteredWorkspacePiSession(
   });
   assertContained(sessionDirectory, sessionFile);
   if (!adapter.open) throw new Error("pi session adapter does not support saved-session reopen");
+  // Whatever mode this session reopens in (Build included), a transcript that still holds a source's text from a stage that died before it could stub it is stubbed first: Build never reads untrusted source text.
+  await stubPersistedContextResults(sessionFile);
   const knowledgeLoad = await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded });
   const contextFiles = knowledgeLoad.files;
+  if (input.contextNote !== undefined && input.contextTools !== undefined && input.contextTools.length > 0) contextFiles.push({ path: "AGENTX-SOURCES.md", content: input.contextNote });
   const handle = await adapter.open({
     ...(knowledgeLoad.session === undefined ? {} : { knowledgeSession: knowledgeLoad.session }),
     cwd: rootPath,
@@ -317,6 +348,7 @@ export async function openRegisteredWorkspacePiSession(
     ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
     ...(input.agentTools === undefined ? {} : { agentTools: input.agentTools }),
     ...(mergeSkills(input.skills, knowledgeLoad.skills) === undefined ? {} : { skills: mergeSkills(input.skills, knowledgeLoad.skills)! }),
+    ...(input.contextTools === undefined ? {} : { contextTools: input.contextTools }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
   return withLoadedKnowledge(handle, knowledgeLoad.manifest);
@@ -448,7 +480,9 @@ async function createDefaultSession(
     // whose skills do not match what the agent was published with never starts.
     const skillFiles = input.skills ?? [];
     const skills = skillFiles.length === 0 ? [] : await materializeSkills(input.agentDirectory, skillFiles);
-    const runTools = input.agentRun?.tools ?? [];
+    assertContextToolsAllowed(input);
+    const sourceTools = input.contextTools ?? [];
+    const runTools = [...(input.agentRun?.tools ?? []), ...sourceTools];
     const clash = runTools.find((tool, index) => RESERVED_TOOL_NAMES.has(tool.name) || runTools.findIndex(({ name }) => name === tool.name) !== index);
     if (clash !== undefined) throw agentXError("CONFIG_INVALID", `an agent step cannot have two tools named ${clash.name}, or one named like a file tool, the shell or read_skill`);
     const knowledge = input.agentRun === undefined ? input.knowledgeSession : undefined;
@@ -518,10 +552,15 @@ async function createDefaultSession(
       session.dispose();
       throw error;
     }
+    const savedFile: string = sessionFile;
     return {
       conversationId: conversationId ?? session.sessionId,
       sessionFile,
-      prompt: async (text) => session.prompt(text, { expandPromptTemplates: false }),
+      prompt: async (text) => {
+        try { await session.prompt(text, { expandPromptTemplates: false }); }
+        // A session with source tools keeps stubs, not the sources' text, in its saved transcript (stubPersistedContextResults). The live session still holds what the model read.
+        finally { if (sourceTools.length > 0) await stubPersistedContextResults(savedFile).catch(() => undefined); }
+      },
       // Pi 0.99 returns a disposition ("handled" | "queued"); the adapter's contract stays Promise<void>.
       steer: async (text) => { await session.steer(text); },
       isStreaming: () => session.isStreaming,
@@ -536,7 +575,7 @@ async function createDefaultSession(
       piThinkingLevel: () => session.thinkingLevel,
       getSessionStats: () => conversationStats(session.getSessionStats(), session.sessionManager.getEntries()),
       subscribe: (listener) => session.subscribe((event) => { if (!isSystemMessageEvent(event)) listener(withoutStructuredContent(withoutSystemMessages(event))); }),
-      dispose: () => session.dispose(),
+      dispose: () => { session.dispose(); if (sourceTools.length > 0) void stubPersistedContextResults(savedFile).catch(() => undefined); },
     };
 }
 

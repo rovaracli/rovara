@@ -345,7 +345,8 @@ async function forWorkerFeatures(
   const carriesMeta = invocation.kind === "prepare" && invocation.payload.meta !== undefined;
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy && !carriesSpec) return invocation;
+  const carriesContextSources = invocation.kind === "task" && invocation.payload.contextSources === true;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy && !carriesSpec) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -370,8 +371,9 @@ async function forWorkerFeatures(
   if (invocation.kind === "task" && invocation.payload.workflowMode === "PLAN_CRITIQUE" && !features.includes("task.workflowPlanCritique")) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
-  // Rovara drafts a project's setup (Task 10): an older worker would fail the mode at its own parse, so the mode is never sent to it.
-  if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_DRAFT" && !features.includes("task.setupDraft")) {
+  // Rovara proposes a project's setup (Task 10; version 2 with citations, meta repo lane B): an older worker would fail the mode at its own parse, or answer a draft this broker
+  // no longer reads, so the mode is never sent to it.
+  if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_DRAFT" && !(features.includes("task.setupDraft") && features.includes("task.setupProposal.v2"))) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.
@@ -410,6 +412,10 @@ async function forWorkerFeatures(
   }
   if(carriesModelPolicy&&!features.includes("task.modelPolicy"))throw agentXError("RUNTIME_UNAVAILABLE",AGENT_WORKER_OUTDATED);
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // A stage with MCP context sources (lane E) must not be run by a worker that would run it without them and say nothing, so the field is never dropped.
+  if (carriesContextSources && !features.includes("task.contextSources.v1")) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // A fix to a pull request that is already open (Plan 6 Task 15) must not be run by a worker that would take it for a first build, so the field is never dropped.

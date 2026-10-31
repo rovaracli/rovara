@@ -154,6 +154,8 @@ export * from "./agent-web-views.js";
 export * from "./onboarding.js";
 
 export * from "./setup-draft.js";
+export * from "./setup-proposal.js";
+export * from "./setup-proposal-read.js";
 
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
 
@@ -217,6 +219,8 @@ export * from "./decision-card-tabs.js";
 export * from "./test-environment.js";
 export * from "./service-mocks.js";
 export * from "./team-record-storage.js";
+export * from "./context-sources.js";
+export * from "./mcp-servers.js";
 
 // K1 C4: skills in the meta repo.
 export * from "./knowledge-skills.js";

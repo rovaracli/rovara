@@ -101,12 +101,13 @@ export async function newWorkspacePreparation(
   project: RegisteredProjectRecord,
   targetOwnerKey: string,
   requestId: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; grantedBy?: unknown } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean; grantedBy?: unknown } = {},
 ): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; membership: MembershipRecord | undefined }> {
   const projectName = project.definition.name;
   const projectRevision = project.definition.revision;
   // Meta repo lane A: read before anything is written, so a meta repo that cannot be read refuses the start.
-  const metaPrepare = await metaPrepareOf(dependencies, project, requireOrgId(identity.orgId));
+  // A setup draft reads the meta repo whole, as an ordinary read-only checkout of the project (so no sparse `meta` request, no head to read, no `prepare.metaRepo` needed).
+  const metaPrepare = options.setupDraft === true ? {} as Awaited<ReturnType<typeof metaPrepareOf>> : await metaPrepareOf(dependencies, project, requireOrgId(identity.orgId));
   const now = new Date().toISOString();
   const workspaceId = randomUUID();
   const operationId = randomUUID();
@@ -147,7 +148,7 @@ export async function newWorkspacePreparation(
     projectRevision,
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
     payload: {
-      project: workerProjectDefinition(project.definition),
+      project: workerProjectDefinition(project.definition, options.setupDraft === true ? { includeMeta: true } : {}),
       repositoryGrant: issueRepositoryGrant(
         dependencies,
         project,
@@ -227,19 +228,19 @@ export function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: D
  */
 export async function heldPreparationDispatch(
   dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, workspaceId: string, operationId: string, ownerKey: string,
-  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean } = {},
+  options: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean } = {},
 ): Promise<{ workspace: WorkspaceInstance; items: TransactItems }> {
   const workspace = await requireWorkspace(dependencies, workspaceId);
   const operation = await requireOperation(dependencies, workspaceId, operationId);
   if (workspace.status !== "PREPARING" || workspace.activeOperationId !== operationId || operation.kind !== "prepare" || operation.status !== "ACCEPTED" || operation.fence !== workspace.fence) {
     throw agentXError("STALE_FENCE", "the held preparation is no longer this workspace's");
   }
-  const metaPrepare = await metaPrepareOf(dependencies, project, workspace.orgId);
+  const metaPrepare = options.setupDraft === true ? {} as Awaited<ReturnType<typeof metaPrepareOf>> : await metaPrepareOf(dependencies, project, workspace.orgId);
   const invocation: WorkerInvocation = {
     protocolVersion: 1, kind: "prepare", operationId, workspaceId, fence: workspace.fence, projectRevision: project.definition.revision,
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
     payload: {
-      project: workerProjectDefinition(project.definition),
+      project: workerProjectDefinition(project.definition, options.setupDraft === true ? { includeMeta: true } : {}),
       repositoryGrant: issueRepositoryGrant(dependencies, project, ownerKey, workspaceId, operationId),
       ...(options.checkout === undefined || options.checkout.length === 0 ? {} : { checkout: [...options.checkout] }),
       // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).

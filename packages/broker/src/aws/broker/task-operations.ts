@@ -32,7 +32,7 @@ import { hashJson, isConditional, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChec
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../../e2e/feature-plan-planning-context.js";
 import { offersApplicationE2EPlan } from "../../e2e/feature-plan-executable-kinds.js";
 import { evaluateApplicationPlanApproval, type ApplicationAccountsInput, type ApplicationRefusalScope } from "../../e2e/application-plan-approval.js";
-import { canonicalModelName } from "@agentx/contracts";
+import { canonicalModelName, metaRepositoryOf } from "@agentx/contracts";
 import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
 import { checkE2EAgentRouteCurrent } from "../../e2e/model-route-registry.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
@@ -58,6 +58,7 @@ import { publicWorkspace } from "../../workspaces.js";
 import { parseRuntimeBinding, type AdaptedHttpRequest } from "../lambda.js";
 import { SETUP_DRAFT_PREAMBLE } from "../../rovara-code/setup-draft.js";
 import { object, parseBody, verifyCapability } from "./admin-and-helpers.js";
+import { stageHasContextSources } from "../../context-sources/enabled.js";
 import { MAX_SETUP_PROPOSAL_BYTES, type AwsBrokerDependencies, type RegisteredProjectRecord } from "./definitions.js";
 import { requireRecordProject } from "./dependency-wiring.js";
 import { ROVARA_CODE_NAME } from "./model-access.js";
@@ -462,6 +463,8 @@ export async function taskOperationParts(
   const askGroundingSource = input.workflowMode === "PLAN" && codingPlan && input.legacyTask !== true && offersApplicationE2EPlan(e2ePlanningContext) && projectE2EBaselineWanted(settings);
   if (askGroundingSource) operation.groundingSourceAsked = true;
   const askBaselineSource = input.workflowE2EBaselineSource === true || (input.workflowMode === "IMPLEMENT" && await baselineSourceStillRequested(dependencies, workspace.id));
+  // Lane E: the project's MCP context sources, in the four stages that may read them and never in Build (stageHasContextSources).
+  const contextToolsOn = await stageHasContextSources({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, contextSourcesConfigured: dependencies.contextSources !== undefined }, orgId, workspace.projectName, input.workflowMode);
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "task",
@@ -479,12 +482,15 @@ export async function taskOperationParts(
       agentSkills: (applied?.agentStep?.skills?.length ?? 0) > 0,
       // The connector tools of an agent step whose recipe grants some (Task 19); the broker serves only the granted ones.
       agentTools: givesAgentTools(applied),
+      contextTools: contextToolsOn,
     }),
     payload: {
       conversationId: input.conversationId,
       prompt,
       conversationStarted: input.conversationStarted,
       ...(input.workflowMode === undefined ? {} : { workflowMode: input.workflowMode }),
+      // Meta repo lane B: a setup proposal run is told which repository is the project's meta repository, so it looks there for the team's rules, specs and runbooks.
+      ...(input.workflowMode === "SETUP_DRAFT" && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
       // The worker reads a planning answer as this kind of document (a Quick plan has no phase and is a coding plan).
       ...(input.workflowMode === "PLAN" && input.workflowPhase !== undefined ? { workflowPhase: input.workflowPhase } : {}),
       // Every planning step asks for a structured plan, so the worker checks the answer and asks once more when it is unreadable.
@@ -510,6 +516,8 @@ export async function taskOperationParts(
       ...(input.specWrite === undefined ? {} : { specWrite: input.specWrite }),
       // Meta repo lane D (D3): the spec's requirements for the code review; a worker without "task.workflowReviewSpec.v1" is refused the review at delivery, never sent it without them.
       ...(input.workflowReviewSpec === undefined ? {} : { workflowReviewSpec: input.workflowReviewSpec }),
+      // Lane E: a worker without "task.contextSources.v1" is refused the stage at delivery, never sent it without the field.
+      ...(contextToolsOn ? { contextSources: true as const } : {}),
       // Task 26 (review I1): when a route was chosen the worker is told the model it was chosen for, never left to its install setting, which the key may not allow.
       ...(payloadModel === undefined ? {} : { model: payloadModel }),
       ...(applied?.modelPolicy===undefined?{}:{modelPolicy:applied.modelPolicy}),

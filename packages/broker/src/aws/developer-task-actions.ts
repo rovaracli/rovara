@@ -37,12 +37,12 @@ export interface DeveloperTaskActions {
    * existed from the revision history (index only). CONFIG_INVALID, naming the project, when it cannot be repaired.
    */
   ensureProjectCatalogPointer(orgId: OrgId, projectName: string): Promise<void>;
-  preparation(identity: AuthenticatedIdentity, project: RegisteredProjectRecord, requestId: string, options?: { checkout?: readonly RunCheckout[]; readOnly?: boolean }): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems }>;
+  preparation(identity: AuthenticatedIdentity, project: RegisteredProjectRecord, requestId: string, options?: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean }): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems }>;
   /**
    * Plan 3, Task 32: the outbox item that sends an existing workspace's held preparation (a run started with a run limit of 0), with a new capability and
    * repository grant for it. Refuses a workspace or operation that is no longer the held preparation.
    */
-  preparationDispatch(project: RegisteredProjectRecord, workspaceId: string, operationId: string, ownerKey: string, options?: { checkout?: readonly RunCheckout[]; readOnly?: boolean }): Promise<{ workspace: WorkspaceInstance; items: TransactItems }>;
+  preparationDispatch(project: RegisteredProjectRecord, workspaceId: string, operationId: string, ownerKey: string, options?: { checkout?: readonly RunCheckout[]; readOnly?: boolean; setupDraft?: boolean }): Promise<{ workspace: WorkspaceInstance; items: TransactItems }>;
   /** Unchecked: callers must load the owned task and check project access first. */
   workspace(workspaceId: string): Promise<WorkspaceInstance>;
   /** Every operation of the workspace, across all pages. Unchecked: callers must load the owned task and check project access first. */
