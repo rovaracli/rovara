@@ -27,7 +27,7 @@ import {
 } from "@agentx/contracts";
 import { ticketRunInput, inertTitle, inertTicketLine, inertWriter, prepareTicketBody, WAITING_BODY_MAX_BYTES } from "./ticket-text.js";
 import { intakeRequestId } from "./ids.js";
-import { claimIntakeItem, claimIntakeStart, giveBackIntakeItem, listWaitingIntakeItems, markIntakeStarted, readIntakeItem, releaseIntakeItem, INTAKE_MAX_WAITING_PER_PROJECT, type IntakeItemRecord, type IntakeTable } from "./store.js";
+import { claimIntakeItem, claimIntakeStart, giveBackIntakeItem, intakeItemIsTakeable, listWaitingIntakeItems, markIntakeStarted, readIntakeItem, releaseIntakeItem, INTAKE_MAX_WAITING_PER_PROJECT, type IntakeItemRecord, type IntakeTable } from "./store.js";
 
 /** Who made the act that asks for work, as the tracker's adapter knows them. Only `accountId` can ever make them a member, and only through a link the org holds. */
 export interface IntakeActor {
@@ -122,12 +122,12 @@ async function startHeld(ports: IntakePorts, record: IntakeItemRecord, input: Co
   const { orgId, project, itemId } = record;
   const existing = await ports.sessionOfTicket(orgId, bindingOf(record));
   if (existing !== undefined) {
-    await markIntakeStarted(table, orgId, project, itemId, { sessionId: existing.sessionId });
+    await markIntakeStarted(table, orgId, project, itemId, { sessionId: existing.sessionId, requester: record.requester });
     return { outcome: "duplicate", state: "started" };
   }
   try {
     const started = await ports.start(orgId, developerId, requestOf(record, input, developerId));
-    await markIntakeStarted(table, orgId, project, itemId, { taskId: started.task.taskId, sessionId: started.sessionId });
+    await markIntakeStarted(table, orgId, project, itemId, { taskId: started.task.taskId, sessionId: started.sessionId, requester: record.requester });
     ports.log("intake.started", { orgId, project, system: record.system, channel: record.channel });
     return { outcome: "started", taskId: started.task.taskId, ...(started.sessionId === undefined ? {} : { sessionId: started.sessionId }) };
   } catch (error) {
@@ -136,7 +136,7 @@ async function startHeld(ports: IntakePorts, record: IntakeItemRecord, input: Co
       // already has a session" is the ticket being started by someone else first.
       const raced = await ports.sessionOfTicket(orgId, bindingOf(record)).catch(() => undefined);
       if (raced !== undefined) {
-        await markIntakeStarted(table, orgId, project, itemId, { sessionId: raced.sessionId });
+        await markIntakeStarted(table, orgId, project, itemId, { sessionId: raced.sessionId, requester: record.requester });
         return { outcome: "duplicate", state: "started" };
       }
       await giveBackIntakeItem(table, orgId, project, itemId, "start_refused", errorCode(error));
@@ -168,8 +168,8 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
   const { orgId, project } = candidate;
   const itemId = intakeItemIdOf(ref.data.system, ref.data.id);
   const known = await readIntakeItem(ports.table, orgId, project, itemId);
-  // A ticket that is started or being started is done with, whoever asks again.
-  if (known !== undefined && known.state !== "waiting") return { outcome: "duplicate", state: known.state };
+  // A ticket that is started or being started is done with, whoever asks again. (A start whose lease ran out was cut short; it is taken over below like a waiting ticket.)
+  if (known !== undefined && !intakeItemIsTakeable(known, ports.table.now())) return { outcome: "duplicate", state: known.state };
   const resolved = await resolveStanding(ports, candidate);
   const title = inertTitle(candidate.title, ref.data.id).slice(0, INTAKE_TITLE_MAX);
   const writer = inertWriter(candidate.reporter?.display);
@@ -179,8 +179,11 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
   const mayStartNow = resolved.reason === undefined && resolved.developerId !== undefined;
 
   if (known !== undefined) {
-    // The ticket waits. A member's act now starts it; anything else leaves it as it was.
-    if (!mayStartNow) return { outcome: "duplicate", state: "waiting" };
+    // The ticket waits (or a start of it was cut short). A member's act now starts it; anything else leaves it as it was, waiting where a maintainer can see it.
+    if (!mayStartNow) {
+      if (known.state === "starting") await giveBackIntakeItem(ports.table, orgId, project, itemId, known.reason ?? resolved.reason ?? "outsider");
+      return { outcome: "duplicate", state: "waiting" };
+    }
     if (!await claimIntakeStart(ports.table, orgId, project, itemId, resolved.developerId!)) return { outcome: "duplicate", state: "starting" };
     return startHeld(ports, { ...known, ...base, state: "starting" }, input, resolved.developerId!, false);
   }
@@ -233,7 +236,7 @@ export async function startWaitingIntake(
   if (!await ports.mayStart(orgId, approver, project)) return { outcome: "forbidden" };
   const record = await readIntakeItem(ports.table, orgId, project, itemId);
   if (record === undefined) return { outcome: "not_found" };
-  if (record.state !== "waiting") return { outcome: "duplicate", state: record.state };
+  if (!intakeItemIsTakeable(record, ports.table.now())) return { outcome: "duplicate", state: record.state };
   if (!await claimIntakeStart(ports.table, orgId, project, itemId, approver)) {
     const now = await readIntakeItem(ports.table, orgId, project, itemId);
     return { outcome: "duplicate", state: now?.state ?? "starting" };

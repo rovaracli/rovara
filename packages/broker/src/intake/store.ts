@@ -18,6 +18,10 @@ export interface IntakeTable {
 
 export type StoredIntakeState = "waiting" | "starting" | "started";
 
+/** Whether a ticket's item may be started now: it waits, or a start began and its lease ran out (the process died), which another may take over. */
+export const intakeItemIsTakeable = (record: Pick<IntakeItemRecord, "state" | "leaseUntil">, now: number): boolean =>
+  record.state === "waiting" || (record.state === "starting" && (record.leaseUntil ?? 0) < now);
+
 export interface IntakeItemRecord {
   orgId: OrgId;
   project: string;
@@ -71,7 +75,8 @@ function recordOf(raw: Record<string, unknown> | undefined, orgId: OrgId, projec
   if (typeof raw["itemId"] !== "string" || typeof raw["system"] !== "string" || typeof raw["id"] !== "string" || typeof raw["url"] !== "string" || requester === undefined) return undefined;
   const record: Record<string, unknown> = { ...raw };
   for (const attribute of ["pk", "sk", "entityType", INDEX_EXPIRY_ATTRIBUTE]) delete record[attribute];
-  return record as unknown as IntakeItemRecord;
+  // A started ticket keeps no words of the ticket (see `markIntakeStarted`).
+  return { title: "", ...record } as unknown as IntakeItemRecord;
 }
 
 export async function readIntakeItem(table: IntakeTable, orgId: OrgId, project: string, itemId: string): Promise<IntakeItemRecord | undefined> {
@@ -133,16 +138,19 @@ export async function claimIntakeStart(table: IntakeTable, orgId: OrgId, project
   }
 }
 
-/** The start made a session: `started`, with where it went. Only the start that holds the item can say so. */
-export async function markIntakeStarted(table: IntakeTable, orgId: OrgId, project: string, itemId: string, started: { taskId?: string | undefined; sessionId?: string | undefined }): Promise<void> {
+/**
+ * The start made a session: `started`, with where it went. Only the start that holds the item can say so. The ticket's words (title, body, writer) and the requester's name are removed: a started ticket is kept for
+ * a year only to remember that it was started, as ids and a state.
+ */
+export async function markIntakeStarted(table: IntakeTable, orgId: OrgId, project: string, itemId: string, started: { taskId?: string | undefined; sessionId?: string | undefined; requester: IntakeItemRecord["requester"] }): Promise<void> {
   await table.documentClient.send(new UpdateCommand({
     TableName: table.tableName,
     Key: intakeItemKey(orgId, project, itemId),
-    UpdateExpression: `SET #state = :started, #updated = :at${started.taskId === undefined ? "" : ", taskId = :task"}${started.sessionId === undefined ? "" : ", sessionId = :session"} REMOVE #lease, #reason, #refusal, #body`,
+    UpdateExpression: `SET #state = :started, #updated = :at, #requester = :requester${started.taskId === undefined ? "" : ", taskId = :task"}${started.sessionId === undefined ? "" : ", sessionId = :session"} REMOVE #lease, #reason, #refusal, #body, #title, #writer`,
     ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #project = :project AND #state = :starting",
-    ExpressionAttributeNames: { "#project": "project", "#state": "state", "#updated": "updatedAt", "#lease": "leaseUntil", "#reason": "reason", "#refusal": "lastRefusal", "#body": "body" },
+    ExpressionAttributeNames: { "#project": "project", "#state": "state", "#updated": "updatedAt", "#lease": "leaseUntil", "#reason": "reason", "#refusal": "lastRefusal", "#body": "body", "#title": "title", "#writer": "writer", "#requester": "requester" },
     ExpressionAttributeValues: {
-      ":started": "started", ":starting": "starting", ":at": iso(table), ":org": orgId, ":project": project,
+      ":started": "started", ":starting": "starting", ":at": iso(table), ":org": orgId, ":project": project, ":requester": { ...started.requester, display: "" },
       ...(started.taskId === undefined ? {} : { ":task": started.taskId }), ...(started.sessionId === undefined ? {} : { ":session": started.sessionId }),
     },
   }));

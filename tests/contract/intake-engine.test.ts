@@ -253,6 +253,44 @@ describe("one session per ticket", () => {
     expect(w.started).toHaveLength(1);
   });
 
+  it("takes over a start whose lease ran out (the process died after it began), and starts the ticket once", async () => {
+    const w = world();
+    const { claimIntakeItem } = await import("../../packages/broker/src/intake/store.js");
+    await claimIntakeItem(w.ports.table, { orgId: ORG, project: PROJECT, itemId: intakeItemIdOf("jira", "PAY-12"), channel: "jira", system: "jira", id: "PAY-12", url: REF.url, title: "Refunds fail", requester: { display: "Maya", standing: "member", developerId: MEMBER }, state: "starting", startedBy: MEMBER });
+    w.clock.now += 5 * 60_000;
+    expect(await ingestIntake(w.ports, candidate())).toMatchObject({ outcome: "started" });
+    expect(w.started).toHaveLength(1);
+  });
+
+  it("puts a cut-short start back among the waiting tickets when the one who asks now is not a member", async () => {
+    const w = world();
+    const { claimIntakeItem } = await import("../../packages/broker/src/intake/store.js");
+    await claimIntakeItem(w.ports.table, { orgId: ORG, project: PROJECT, itemId: intakeItemIdOf("jira", "PAY-12"), channel: "jira", system: "jira", id: "PAY-12", url: REF.url, title: "Refunds fail", requester: { display: "Maya", standing: "member", developerId: MEMBER }, state: "starting", startedBy: MEMBER });
+    w.clock.now += 5 * 60_000;
+    expect(await ingestIntake(w.ports, candidate({ actor: undefined }))).toEqual({ outcome: "duplicate", state: "waiting" });
+    expect(await listWaitingIntakeItems(w.ports.table, ORG, PROJECT)).toHaveLength(1);
+    expect(w.started).toEqual([]);
+  });
+
+  it("lets a member say Start for a cut-short start", async () => {
+    const w = world();
+    const { claimIntakeItem } = await import("../../packages/broker/src/intake/store.js");
+    await claimIntakeItem(w.ports.table, { orgId: ORG, project: PROJECT, itemId: intakeItemIdOf("jira", "PAY-12"), channel: "jira", system: "jira", id: "PAY-12", url: REF.url, title: "Refunds fail", requester: { display: "Maya", standing: "member", developerId: MEMBER }, state: "starting", startedBy: MEMBER });
+    w.clock.now += 5 * 60_000;
+    expect(await startWaitingIntake(w.ports, { orgId: ORG, project: PROJECT, itemId: intakeItemIdOf("jira", "PAY-12"), approver: OTHER_MEMBER })).toMatchObject({ outcome: "started" });
+  });
+
+  it("keeps none of the ticket's words once it has started: ids and a state only", async () => {
+    const w = world();
+    await ingestIntake(w.ports, candidate({ actor: undefined }));
+    await startWaitingIntake(w.ports, { orgId: ORG, project: PROJECT, itemId: intakeItemIdOf("jira", "PAY-12"), approver: MEMBER });
+    const stored = JSON.stringify(w.db.find((item) => String(item["pk"]).includes("INTAKE_ITEM")));
+    expect(stored).not.toContain("Refunds fail");
+    expect(stored).not.toContain("Refunds over 100");
+    expect(stored).not.toContain("Dana");
+    expect(stored).toContain("\"state\":\"started\"");
+  });
+
   it("does not start a ticket whose start another caller holds, until its lease runs out", async () => {
     const w = world();
     const id = intakeItemIdOf("jira", "PAY-12");
