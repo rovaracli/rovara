@@ -43,13 +43,17 @@ export function readServeConfig(env: Record<string, string | undefined>): ServeC
   return {
     token, bundleHash, packageName: parsed.data.name, args: parsed.data.args, secretEnv: parsed.data.secretEnv, memoryMiB, port,
     bundleDir: env.MCP_BUNDLE_DIR ?? "/bundle", homeDir: env.MCP_HOME_DIR ?? "/home/server", tmpDir: env.MCP_TMP_DIR ?? "/tmp",
-    tools: { setpriv: env.MCP_SETPRIV ?? DEFAULT_CONFINE_TOOLS.setpriv, prlimit: env.MCP_PRLIMIT ?? DEFAULT_CONFINE_TOOLS.prlimit, node: env.MCP_NODE ?? DEFAULT_CONFINE_TOOLS.node },
+    // The programs that confine the package are the image's, at fixed paths. Nothing in the environment (a RunTask override, a mistake) can name others.
+    tools: { ...DEFAULT_CONFINE_TOOLS },
   };
 }
 
 export interface ServeDependencies {
   env: Record<string, string | undefined>;
   getuid?: () => number | undefined;
+  getgid?: () => number | undefined;
+  /** A test seam only: production never passes it, and the environment cannot. */
+  tools?: ConfineTools;
   /** Called if the program stops. The default exits the process with 1. */
   onChildExit?: () => void;
   log?: (event: string, fields: Record<string, string | number>) => void;
@@ -63,8 +67,9 @@ export async function start(dependencies: ServeDependencies): Promise<{ bridge: 
   const bridge = createBridge({
     token: config.token, bundleHash: config.bundleHash, bundleDir: config.bundleDir, packageName: config.packageName, args: config.args, secretEnv: config.secretEnv,
     memoryMiB: config.memoryMiB, environment: dependencies.env, homeDir: config.homeDir, tmpDir: config.tmpDir,
-    confine: (program, args) => confinedCommand(config.tools, program, args, CONFINE_LIMITS),
+    confine: (program, args) => confinedCommand(dependencies.tools ?? config.tools, program, args, CONFINE_LIMITS),
     ...(dependencies.getuid === undefined ? {} : { getuid: dependencies.getuid }),
+    ...(dependencies.getgid === undefined ? {} : { getgid: dependencies.getgid }),
     onChildExit: dependencies.onChildExit ?? (() => { process.exit(1); }),
     ...(dependencies.log === undefined ? {} : { log: dependencies.log }),
   });

@@ -18,13 +18,13 @@ export function readFetchConfig(env: Record<string, string | undefined>): FetchC
 }
 
 /** Returns the exit code, and writes one line that holds a fixed code only (never the controller's text, a path, or the token). */
-export async function main(dependencies: { env: Record<string, string | undefined>; getuid?: () => number | undefined; write?: (line: string) => void }): Promise<number> {
+export async function main(dependencies: { env: Record<string, string | undefined>; getuid?: () => number | undefined; getgid?: () => number | undefined; write?: (line: string) => void }): Promise<number> {
   const write = dependencies.write ?? ((line: string) => { process.stdout.write(`${line}\n`); });
   let config: FetchConfig;
   try { config = readFetchConfig(dependencies.env); } catch { write(JSON.stringify({ component: "mcp-fetch", ok: false, code: "bad_request" })); return 1; }
   delete dependencies.env.MCP_RUNNER_TOKEN;
   try {
-    await fetchBundle({ ...config, ...(dependencies.getuid === undefined ? {} : { getuid: dependencies.getuid }) });
+    await fetchBundle({ ...config, ...(dependencies.getuid === undefined ? {} : { getuid: dependencies.getuid }), ...(dependencies.getgid === undefined ? {} : { getgid: dependencies.getgid }) });
     write(JSON.stringify({ component: "mcp-fetch", ok: true }));
     return 0;
   } catch (error) {

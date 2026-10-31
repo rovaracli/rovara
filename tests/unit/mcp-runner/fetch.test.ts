@@ -158,6 +158,7 @@ describe("T4 fetch: the controller", () => {
 describe("T4 fetch: refusing wrongly", () => {
   it("refuses to run as uid 0, and before it sends the token anywhere", async () => {
     expect(await failure(fetchBundle(await options({ getuid: () => 0 })))).toBe("root");
+    expect(await failure(fetchBundle(await options({ getuid: () => 10_002, getgid: () => 0 })))).toBe("root");
     expect(served.requests).toEqual([]);
   });
   it("refuses a bundle hash that is not a sha256 and a token that is too short", async () => {

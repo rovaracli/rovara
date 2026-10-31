@@ -35,6 +35,8 @@ export class StdioChildTransport implements Transport {
       for (const key of Object.keys(this.spec.env)) delete this.spec.env[key];
       this.afterSpawn?.();
       child.on("error", (error) => { reject(error); this.onerror?.(error); });
+      // A program that stops reading leaves a write to fail (EPIPE). That is an error to report, not an unhandled one that would stop the bridge before it can say why.
+      child.stdin?.on("error", (error) => { this.onerror?.(error); });
       child.on("spawn", () => resolve());
       child.on("close", () => { this.child = undefined; this.onclose?.(); });
       child.stderr?.on("data", (chunk: Buffer) => { this.stderrCount += chunk.length; });
@@ -50,7 +52,10 @@ export class StdioChildTransport implements Transport {
   async send(message: JSONRPCMessage): Promise<void> {
     const stdin = this.child?.stdin;
     if (stdin === null || stdin === undefined) throw new Error("not connected");
-    await new Promise<void>((resolve) => { if (stdin.write(serializeMessage(message))) resolve(); else stdin.once("drain", resolve); });
+    await new Promise<void>((resolve, reject) => {
+      const done = (error?: Error | null): void => { if (error) reject(error); else resolve(); };
+      if (stdin.write(serializeMessage(message), (error) => { if (error) done(error); })) resolve(); else { stdin.once("drain", () => resolve()); stdin.once("error", (error) => reject(error)); }
+    });
   }
 
   async close(): Promise<void> {

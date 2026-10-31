@@ -85,6 +85,12 @@ describe("T4 bridge: refuses to start wrongly", () => {
     expect(() => createBridge({ ...base(), getuid: () => 10_003 })).not.toThrow();
     expect(() => createBridge({ ...base(), getuid: () => undefined })).not.toThrow();
   });
+  it("refuses to run with group 0 either (ECS `user: \"10003\"` with no group runs as gid 0), and with an effective uid or gid of 0", () => {
+    expect(() => createBridge({ ...base(), getuid: () => 10_003, getgid: () => 0 })).toThrow("must not run as root");
+    expect(() => createBridge({ ...base(), getuid: () => 10_003, getgid: () => 10_003 })).not.toThrow();
+    expect(() => createBridge({ ...base(), getuid: () => 10_003, getgid: () => 10_003, geteuid: () => 0 })).toThrow("must not run as root");
+    expect(() => createBridge({ ...base(), getuid: () => 10_003, getgid: () => 10_003, getegid: () => 0 })).toThrow("must not run as root");
+  });
   function base(): BridgeOptions {
     return { token: TOKEN, bundleHash: HASH, bundleDir: "/nonexistent", packageName: NAME, args: [], secretEnv: [], memoryMiB: 512, environment: {}, homeDir: "/h", tmpDir: "/t", confine: (program, args) => ({ file: program, args: [...args] }) };
   }
@@ -153,7 +159,7 @@ describe("T4 bridge: serving a running program", () => {
   it("lists the program's tools and calls them over MCP, and refuses other paths and methods", async () => {
     const made = await make();
     const mcp = await client(made.url);
-    expect((await mcp.listTools()).tools.map((tool) => tool.name)).toEqual(["echo", "env_keys", "env_get", "who", "big", "slow", "noise", "crash"]);
+    expect((await mcp.listTools()).tools.map((tool) => tool.name)).toEqual(["echo", "env_keys", "env_get", "who", "big", "slow", "noise", "crash", "stubborn"]);
     expect(textOf(await call(mcp, "echo", { word: "hello" }))).toBe("echo:hello");
     expect((await http(made.url, "/nothing")).status).toBe(404);
     expect((await http(made.url, "/mcp")).status).toBe(405);
@@ -244,6 +250,16 @@ describe("T4 bridge: the program stops", () => {
     expect((await http(made.url, "/mcp", { method: "POST", body: "{}" })).status).toBe(503);
     expect(made.exits).toHaveLength(1);
   });
+  it("takes down the program's whole process group when it is closed, even a program and a child that ignore SIGTERM and the end of stdin", async () => {
+    const made = await make();
+    const mcp = await client(made.url);
+    const { pid, grandchild } = JSON.parse(textOf(await call(mcp, "stubborn"))) as { pid: number; grandchild: number };
+    const alive = (id: number): boolean => { try { process.kill(id, 0); return true; } catch { return false; } };
+    expect(alive(pid)).toBe(true);
+    expect(alive(grandchild)).toBe(true);
+    await made.bridge.close();
+    await expect.poll(() => [alive(pid), alive(grandchild)], { timeout: 8_000 }).toEqual([false, false]);
+  }, 20_000);
   it("stops the program when it is closed, and does not call that an exit", async () => {
     const made = await make();
     const mcp = await client(made.url);

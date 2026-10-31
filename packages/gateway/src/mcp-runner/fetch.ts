@@ -11,6 +11,7 @@ import { request as httpsRequest } from "node:https";
 import { createWriteStream } from "node:fs";
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { runsAsRoot } from "./identity.js";
 import { runnerTokenWellFormed } from "./token-scope.js";
 import { BUNDLE_LIMITS, BundleError, assertBundleHash, extractBundle, readBundleIndex, type BundleLimits } from "./bundle.js";
 
@@ -37,6 +38,7 @@ export interface FetchOptions {
   /** A certificate authority for a controller with a private one. */
   ca?: string | undefined;
   getuid?: () => number | undefined;
+  getgid?: () => number | undefined;
 }
 
 function secureUrl(value: string): URL {
@@ -75,7 +77,7 @@ async function download(url: URL, token: string, destination: string, maxBytes: 
 
 /** Fetches, verifies and unpacks the approved bundle into `destination/tree`, and writes `destination/verified.json` last. */
 export async function fetchBundle(options: FetchOptions): Promise<void> {
-  if ((options.getuid ?? (() => process.getuid?.()))() === 0) throw new FetchError("root");
+  if (runsAsRoot({ getuid: options.getuid, getgid: options.getgid })) throw new FetchError("root");
   if (!/^[0-9a-f]{64}$/u.test(options.bundleHash) || !runnerTokenWellFormed(options.token)) throw new FetchError("bad_request");
   const base = secureUrl(options.controllerUrl);
   const limits: BundleLimits = { maxEntries: options.limits?.maxEntries ?? BUNDLE_LIMITS.maxEntries, maxUnpackedBytes: options.limits?.maxUnpackedBytes ?? BUNDLE_LIMITS.maxUnpackedBytes };

@@ -21,7 +21,7 @@ import { request as httpsRequest } from "node:https";
 import { dirname, isAbsolute, join } from "node:path";
 import { McpStdioProposalSchema, type McpStdioProposal } from "@agentx/contracts";
 import {
-  BUNDLE_LIMITS, BundleError, INSTALL_STEPS_SENTENCE, LOCKFILE_LIMITS, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
+  BUNDLE_LIMITS, BundleError, INSTALL_STEPS_SENTENCE, LOCKFILE_LIMITS, runsAsRoot, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
   type LockfileRule, type LockfileVerdict,
 } from "@agentx/gateway";
 
@@ -399,6 +399,7 @@ function boundedNumber(text: string | undefined, fallback: number, min: number, 
 export interface MainDependencies {
   env: Record<string, string | undefined>;
   getuid?: () => number | undefined;
+  getgid?: () => number | undefined;
   /** One line per call. The result line holds fixed codes and hashes, never a token or npm's text. */
   write?: (line: string) => void;
   uploader?: BundleUploader;
@@ -409,7 +410,7 @@ export interface MainDependencies {
 export async function main(dependencies: MainDependencies): Promise<number> {
   const env = dependencies.env;
   const write = dependencies.write ?? ((line: string) => { process.stdout.write(`${line}\n`); });
-  if ((dependencies.getuid ?? (() => process.getuid?.()))() === 0) throw new Error("the install task must not run as root");
+  if (runsAsRoot({ getuid: dependencies.getuid, getgid: dependencies.getgid })) throw new Error("the install task must not run as root");
   const token = env.MCP_RUNNER_TOKEN;
   // The token is held here only; the environment npm gets is built from nothing (npmEnvironment), so it never reaches a child.
   delete dependencies.env.MCP_RUNNER_TOKEN;

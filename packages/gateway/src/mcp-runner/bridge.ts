@@ -23,6 +23,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, CallToolResultSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { McpStdioProposalSchema, mcpSecretEnvNameProblem } from "@agentx/contracts";
 import { binOf } from "./bin.js";
+import { runsAsRoot } from "./identity.js";
 import { runnerTokenWellFormed } from "./token-scope.js";
 import { StdioChildTransport, type ChildProcessSpec } from "./stdio-transport.js";
 
@@ -48,6 +49,9 @@ export interface BridgeOptions {
   /** Turns the program and its arguments into the command that is run (setpriv and prlimit in front). The only place a test may differ from production. */
   confine: (program: string, args: readonly string[]) => { file: string; args: string[] };
   getuid?: () => number | undefined;
+  getgid?: () => number | undefined;
+  geteuid?: () => number | undefined;
+  getegid?: () => number | undefined;
   spawn?: ConstructorParameters<typeof StdioChildTransport>[1];
   callTimeoutMs?: number;
   startTimeoutMs?: number;
@@ -93,7 +97,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 type Tools = Awaited<ReturnType<Client["listTools"]>>["tools"];
 
 export function createBridge(options: BridgeOptions): Bridge {
-  if ((options.getuid ?? (() => process.getuid?.()))() === 0) throw new Error("the bridge must not run as root");
+  if (runsAsRoot({ getuid: options.getuid, getgid: options.getgid, geteuid: options.geteuid, getegid: options.getegid })) throw new Error("the bridge must not run as root");
   if (!runnerTokenWellFormed(options.token)) throw new Error("the bridge's token is not a 256-bit token");
   if (!/^[0-9a-f]{64}$/u.test(options.bundleHash)) throw new Error("the bundle hash is not a sha256");
   // The name, arguments and secret names are validated by the same rules the approval used.

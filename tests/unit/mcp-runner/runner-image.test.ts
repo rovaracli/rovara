@@ -132,17 +132,24 @@ describe("T5 the bundled programs run on their own", () => {
       const port = (probe.address() as AddressInfo).port;
       await new Promise<void>((done) => probe.close(() => done()));
       const { spawn } = await import("node:child_process");
-      const server = spawn(process.execPath, [join(out, "bin", "serve.mjs")], {
+      // The real serve.mjs takes its tools from the image only, so the stub tools are given to the same `start` through a small entry bundled the same way.
+      await writeFile(join(out, "hide-main.ts"), 'process.argv[1] = "/nonexistent/entry";\n');
+      await writeFile(join(out, "serve-with-stubs.ts"), `// (serve-main starts itself when it is the program being run; this entry is, so hide-main.ts, evaluated first, hides that.)\nimport "./hide-main.ts";\nimport { start } from ${JSON.stringify(resolve("packages/broker/src/mcp-runner/serve-main.ts"))};\nawait start({ env: process.env, tools: { setpriv: ${JSON.stringify(join(out, "setpriv"))}, prlimit: ${JSON.stringify(join(out, "prlimit"))}, node: process.execPath } });\n`);
+      await build({ entryPoints: [join(out, "serve-with-stubs.ts")], bundle: true, platform: "node", target: "node22", format: "esm", legalComments: "none", outfile: join(out, "bin", "serve-with-stubs.mjs"), banner: { js: "import { createRequire as __rovaraCreateRequire } from 'node:module'; const require = __rovaraCreateRequire(import.meta.url);" }, logLevel: "silent" });
+      const server = spawn(process.execPath, [join(out, "bin", "serve-with-stubs.mjs")], {
         cwd: out, stdio: ["ignore", "pipe", "pipe"],
-        env: { MCP_RUNNER_TOKEN: TOKEN, MCP_BUNDLE_HASH: bundleHash, MCP_PACKAGE_NAME: "@acme/sim-mcp", MCP_SERVER_ARGS: "[]", MCP_SECRET_ENV: "[]", MCP_MEMORY_MIB: "512", PORT: String(port), MCP_BUNDLE_DIR: volume, MCP_HOME_DIR: join(out, "home"), MCP_TMP_DIR: join(out, "tmp"), MCP_SETPRIV: join(out, "setpriv"), MCP_PRLIMIT: join(out, "prlimit"), MCP_NODE: process.execPath },
+        env: { MCP_RUNNER_TOKEN: TOKEN, MCP_BUNDLE_HASH: bundleHash, MCP_PACKAGE_NAME: "@acme/sim-mcp", MCP_SERVER_ARGS: "[]", MCP_SECRET_ENV: "[]", MCP_MEMORY_MIB: "512", PORT: String(port), MCP_BUNDLE_DIR: volume, MCP_HOME_DIR: join(out, "home"), MCP_TMP_DIR: join(out, "tmp") },
       });
+      let stderr = "";
+      server.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+      server.stdout.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
       try {
         let ready = false;
         for (let attempt = 0; attempt < 100 && !ready; attempt += 1) {
           ready = await fetch(`http://127.0.0.1:${port}/ready`, { headers: { authorization: `Bearer ${TOKEN}` } }).then((r) => r.status === 200, () => false);
           if (!ready) await new Promise((wait) => setTimeout(wait, 100));
         }
-        expect(ready).toBe(true);
+        expect(ready, stderr).toBe(true);
         const reply = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }) });
         const body = await reply.json() as { result: { tools: Array<{ name: string }> } };
         expect(body.result.tools.map((tool) => tool.name)).toContain("echo");

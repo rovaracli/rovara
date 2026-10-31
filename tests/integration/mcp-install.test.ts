@@ -401,6 +401,7 @@ describe("T3 install: handing the bundle to the controller", () => {
   it("refuses to run as root, and says nothing was started", async () => {
     const lines: string[] = [];
     await expect(main({ env: env(), getuid: () => 0, write: (line) => lines.push(line) })).rejects.toThrow("must not run as root");
+    await expect(main({ env: env(), getuid: () => 10_002, getgid: () => 0, write: (line) => lines.push(line) })).rejects.toThrow("must not run as root");
     expect(lines).toEqual([]);
     expect(received).toBeUndefined();
   });

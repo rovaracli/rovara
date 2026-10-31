@@ -49,8 +49,8 @@ const ENV_NAME = /^[A-Z][A-Z0-9_]{1,63}$/;
  * AWS_*, ECS_*, TMPDIR and SHELL. This list is a little stricter: it also holds the other NODE_* names (extra CAs, TLS switches), DYLD_*, NPM_*, the proxy and certificate
  * variables, shell start-up variables, and the names the runner itself uses.
  */
-const ENV_DENIED_EXACT = new Set(["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SHELL", "USER", "LOGNAME", "PWD", "OLDPWD", "IFS", "BASH_ENV", "ENV", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO"]);
-const ENV_DENIED_PREFIXES = ["NODE_", "LD_", "DYLD_", "NPM_", "AWS_", "ECS_", "MCP_", "ROVARA_", "GIT_", "PYTHON"];
+const ENV_DENIED_EXACT = new Set(["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SHELL", "USER", "LOGNAME", "PWD", "OLDPWD", "IFS", "BASH_ENV", "ENV", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "TZ", "LANG", "LANGUAGE"]);
+const ENV_DENIED_PREFIXES = ["NODE_", "LD_", "DYLD_", "NPM_", "AWS_", "ECS_", "MCP_", "ROVARA_", "GIT_", "PYTHON", "OPENSSL_", "UV_", "LC_"];
 
 /** Why an env name may not be given to a package-run server, or undefined when it may. */
 export function mcpSecretEnvNameProblem(name: string): string | undefined {

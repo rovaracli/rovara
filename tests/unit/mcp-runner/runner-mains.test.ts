@@ -36,6 +36,10 @@ const serveEnv = (over: Record<string, string | undefined> = {}): Record<string,
 });
 
 describe("T4 serve-main: settings", () => {
+  it("takes the confinement programs from the image only: the environment cannot replace setpriv, prlimit or node", () => {
+    const config = readServeConfig(serveEnv({ MCP_SETPRIV: "/tmp/evil", MCP_PRLIMIT: "/tmp/evil", MCP_NODE: "/tmp/evil" }));
+    expect(config.tools).toEqual({ setpriv: "/usr/bin/setpriv", prlimit: "/usr/bin/prlimit", node: "/usr/local/bin/node" });
+  });
   it("reads the task's settings, with the defaults for the image's paths", () => {
     expect(readServeConfig(serveEnv())).toEqual({
       token: TOKEN, bundleHash: "a".repeat(64), packageName: "@acme/sim-mcp", args: ["--read-only"], secretEnv: ["JIRA_TOKEN"], memoryMiB: 512, port: 8080,
@@ -59,6 +63,7 @@ describe("T4 serve-main: starting", () => {
     const port = await freePort();
     const env = serveEnv({ PORT: String(port), MCP_BUNDLE_DIR: join(work, "nowhere") });
     await expect(startServe({ env, getuid: () => 0 })).rejects.toThrow("must not run as root");
+    await expect(startServe({ env: serveEnv({ PORT: String(port), MCP_BUNDLE_DIR: join(work, "nowhere") }), getuid: () => 10_003, getgid: () => 0 })).rejects.toThrow("must not run as root");
     expect(env.MCP_RUNNER_TOKEN).toBeUndefined();
     // nothing listens on the port
     await expect(fetch(`http://127.0.0.1:${port}/healthz`)).rejects.toThrow();
@@ -90,8 +95,9 @@ describe("T4 serve-main: starting", () => {
     await chmod(prlimit, 0o755);
     const port = await freePort();
     const exits: number[] = [];
-    const env = serveEnv({ PORT: String(port), MCP_BUNDLE_DIR: dir, MCP_HOME_DIR: join(dir, "home"), MCP_TMP_DIR: join(dir, "tmp"), MCP_SETPRIV: setpriv, MCP_PRLIMIT: prlimit, MCP_NODE: process.execPath, JIRA_TOKEN: "s3cret", AWS_SECRET_ACCESS_KEY: "nope" });
-    const { bridge, server } = await startServe({ env, getuid: () => 10_003, onChildExit: () => { exits.push(1); } });
+    const env = serveEnv({ PORT: String(port), MCP_BUNDLE_DIR: dir, MCP_HOME_DIR: join(dir, "home"), MCP_TMP_DIR: join(dir, "tmp"), JIRA_TOKEN: "s3cret", AWS_SECRET_ACCESS_KEY: "nope" });
+    // (The tools are a test seam of start(); the environment is not one.)
+    const { bridge, server } = await startServe({ env, getuid: () => 10_003, getgid: () => 10_003, tools: { setpriv, prlimit, node: process.execPath }, onChildExit: () => { exits.push(1); } });
     cleanups.push(async () => { await bridge.close(); await new Promise<void>((done) => { server.close(() => done()); server.closeAllConnections(); }); });
 
     const mcp = new Client({ name: "t", version: "1" });
@@ -157,7 +163,8 @@ describe("T4 fetch-main", () => {
     expect(await fetchMain({ env: env({ MCP_BUNDLE_HASH: "b".repeat(64) }), getuid: () => 10_002, write: (line) => lines.push(line) })).toBe(1);
     expect(await fetchMain({ env: env({ MCP_BUNDLE_HASH: "x" }), getuid: () => 10_002, write: (line) => lines.push(line) })).toBe(1);
     expect(await fetchMain({ env: env(), getuid: () => 0, write: (line) => lines.push(line) })).toBe(1);
-    expect(lines.map((line) => (JSON.parse(line) as { code: string }).code)).toEqual(["refused", "bad_request", "root"]);
+    expect(await fetchMain({ env: env(), getuid: () => 10_002, getgid: () => 0, write: (line) => lines.push(line) })).toBe(1);
+    expect(lines.map((line) => (JSON.parse(line) as { code: string }).code)).toEqual(["refused", "bad_request", "root", "root"]);
     expect(lines.join("\n")).not.toContain(TOKEN);
     expect(await readdir(join(work, "volume"))).toEqual([]);
   });
