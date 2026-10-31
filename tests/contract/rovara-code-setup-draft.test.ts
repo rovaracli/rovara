@@ -84,7 +84,7 @@ async function setup(options: { proxy?: boolean; memberLimit?: number; files?: R
     ...(options.memberLimit === undefined ? {} : { memberLimit: options.memberLimit }),
     brokerExtra: {
       cloud: true, agents: {}, cloudProjects: { runtimeBinding: BINDING, githubCredentialRef: "github-app" },
-      githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity, getFileAtCommit },
+      githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity, getFileAtCommit, getDefaultBranchHead: vi.fn(async () => "c".repeat(40)) },
       checkRepositoryAccess: vi.fn(async () => undefined),
       ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" } }),
     },
@@ -176,6 +176,34 @@ describe("POST /v1/app/projects/{name}/setup-draft", () => {
     const prepare = t.operations(stored.workspaceId).find((operation) => operation.kind === "prepare")!;
     const outbox = t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === prepare.id)[0] as { invocation: { payload: { readOnly?: boolean } } };
     expect(outbox.invocation.payload.readOnly).toBe(true);
+  });
+
+  it("clones a separate meta repo in full for the draft (an ordinary read-only checkout, no sparse request), while an ordinary task of the same project still gets it sparse", async () => {
+    const t = await setup();
+    withDefinition(t, { repositories: [
+      { name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app", role: "code" },
+      { name: "meta", url: "https://github.com/acme/meta.git", path: "repo/meta", defaultBranch: "main", credentialRef: "github-app", role: "meta" },
+    ] });
+    const prepareOf = (workspaceId: string) => {
+      const prepare = t.operations(workspaceId).find((operation) => operation.kind === "prepare")!;
+      return (t.db.find((item) => item.entityType === "OUTBOX" && item.operationId === prepare.id)[0] as { invocation: { payload: { readOnly?: boolean; meta?: unknown; project: { repositories: Array<Record<string, unknown>> } } } }).invocation.payload;
+    };
+    const reply = await t.ask();
+    expect(reply.status, JSON.stringify(reply.body)).toBe(202);
+    const draft = prepareOf(t.task().workspaceId);
+    expect(draft.readOnly).toBe(true);
+    expect(draft.project.repositories.map((repository) => repository["name"])).toEqual(["web", "meta"]);
+    // The worker's strict repository entry has no role, and the draft sends no sparse request.
+    expect(draft.project.repositories.every((repository) => repository["role"] === undefined && repository["alsoCode"] === undefined)).toBe(true);
+    expect(draft.meta).toBeUndefined();
+    expect(WorkerInvocationSchema.safeParse({ ...(t.db.find((item) => item.entityType === "OUTBOX")[0] as { invocation: object }).invocation }).success).toBe(true);
+    // An ordinary task: the meta repo is not code, so it is left out of the project and sent sparse beside it.
+    const started = await t.dev(OMAR, "POST", `/v1/app/projects/${NAME}/code`, { requestId: randomUUID(), input: { text: "Fix the retry bug" }, path: "QUICK" });
+    expect(started.status, JSON.stringify(started.body)).toBe(202);
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const stage = prepareOf((t.db.get(`DEVTASK#${taskId}`, "META") as { workspaceId: string }).workspaceId);
+    expect(stage.project.repositories.map((repository) => repository["name"])).toEqual(["web"]);
+    expect(stage.meta).toMatchObject({ repository: { name: "meta" } });
   });
 
   it("asks for the draft's own read-only operation once the machine is ready, never a coding one", async () => {
