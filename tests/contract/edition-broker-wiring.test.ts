@@ -45,7 +45,9 @@ describe("GET /v1/app/install", () => {
   for (const edition of ["enterprise", "public"] as const) {
     it(`answers the ${edition} table and nothing else`, async () => {
       const h = await createDeveloperTaskBroker({ brokerExtra: { editionPolicy: editionPolicy(edition) } });
-      const answer = await h.dev(MAYA, "GET", "/v1/app/install");
+      // A company (oidc) session: the only kind an Enterprise install serves.
+      h.db.set({ ...h.db.get(`SESSION#${MAYA.sessionId}`, "META")!, amr: "oidc" });
+      const answer = await h.dev({ ...MAYA, provider: "oidc" }, "GET", "/v1/app/install");
       expect(answer.status).toBe(200);
       const body = { ...answer.body };
       delete body.requestId;
