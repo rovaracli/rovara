@@ -113,6 +113,8 @@ describe("refusals (fail closed, and before anything is written about the person
     // No membership, no developer record, no session, no Slack lookup.
     expect(await h.orgs.orgForDeveloper(id)).toBeUndefined();
     expect(await h.deps.store.getDeveloper(id)).toBeUndefined();
+    // Not even the identity link (or a merge of duplicates) is written for a person who is refused.
+    expect(await h.deps.store.getIdentityLink(id)).toBeUndefined();
     expect(lookup).not.toHaveBeenCalled();
     expect(capture!.recordedBy("sso.sign_in_refused")[0]).toMatchObject({ facts: { refusal: reason } });
     expect(capture!.recordedBy("sso.sign_in")).toEqual([]);

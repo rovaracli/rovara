@@ -1,6 +1,6 @@
 import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 import { withDecideIsolation } from "./confirm-page.js";
-import { SessionIdSchema } from "@agentx/contracts";
+import { SessionIdSchema, agentXError } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // packages/broker/src/developer/server.ts
 // Spec 025 FR-001 to FR-008: the control plane as the developers' sign-in server. Behind
@@ -626,21 +626,18 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       return client({ error: "access_denied", error_description: `${result.reason}${hint}` });
     }
     const identity = result.identity;
-    // One developer per person: a second sign-in route for the same verified email is linked to the first route's developer.
-    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log, ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }), ...(deps.raceOrgBlocker === undefined ? {} : { raceOrgBlocker: deps.raceOrgBlocker }) }, { method, identity });
-    const { developerId, identityKey } = resolved;
-    const existing = await store.getDeveloper(developerId);
-    if (existing?.revoked === true) {
-      deps.log({ event: "signin.refused", method, reason: "developer_revoked", developerId });
-      if (join) return page(403, "Your sign-in was turned off", ["Contact a Rovara administrator."]);
-      if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "ended");
-      return client({ error: "access_denied", error_description: "your AgentX sign-in was turned off by an admin; contact an admin" });
-    }
     // Enterprise foundations I1: where the edition has company group sign-in, the person's groups decide whether they come in, as what, and for how long.
-    // This is before anything else is written or looked up about them (the Slack lookup, the developer record, the org, a session or a code).
+    // This is before anything else is written or looked up about them: the identity link and any merge, the Slack lookup, the developer record, the org, a session or a code.
+    // The developer a company sign-in resolves to is read, not written: its identity's link if it has one, else its own key (a merge or a join of another route is for the cloud and GitHub methods).
     let companySignIn: Extract<CompanySignIn, { allow: true }> | undefined;
+    let decidedFor: string | undefined;
     if (deps.editionPolicy?.features.sso === true) {
-      const decided = await decideCompanySignInFor(method, identity, developerId, request.id);
+      const key = ownerKeyForSubject(identity.issuer, identity.subject);
+      const link = await store.getIdentityLink(key);
+      const decisionId = link !== undefined && (link.unlinkedFrom === undefined || link.developerId === key) ? link.developerId : key;
+      decidedFor = decisionId;
+      const developerId = decisionId;
+      const decided = await decideCompanySignInFor(method, identity, decisionId, request.id);
       if (!decided.allow) {
         deps.log({ event: "signin.refused", method, reason: decided.reason, developerId });
         // A person the mapping no longer lets in loses their Slack access too (Enterprise foundations I-6).
@@ -650,6 +647,18 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         return client({ error: "access_denied", error_description: decided.message });
       }
       companySignIn = decided;
+    }
+    // One developer per person: a second sign-in route for the same verified email is linked to the first route's developer.
+    const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log, ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }), ...(deps.raceOrgBlocker === undefined ? {} : { raceOrgBlocker: deps.raceOrgBlocker }) }, { method, identity });
+    const { developerId, identityKey } = resolved;
+    // The decision was made for a developer read before the link was written; a race that resolves to another developer gets no access from it.
+    if (decidedFor !== undefined && developerId !== decidedFor) throw agentXError("CHANGE_STALE", "the sign-in changed while it was being decided; run it again");
+    const existing = await store.getDeveloper(developerId);
+    if (existing?.revoked === true) {
+      deps.log({ event: "signin.refused", method, reason: "developer_revoked", developerId });
+      if (join) return page(403, "Your sign-in was turned off", ["Contact a Rovara administrator."]);
+      if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "ended");
+      return client({ error: "access_denied", error_description: "your AgentX sign-in was turned off by an admin; contact an admin" });
     }
     let slackUserId = identity.slackUserId;
     // ProviderIdentity.email is set only for a verified email (providers.ts), so only a verified

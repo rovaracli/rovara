@@ -2125,7 +2125,7 @@ export class GitHubAppCredentialProvider {
       try { this.options.onTokenIssued({ ...issued, ...grantOf(body) }); } catch { /* a report that cannot be made never fails the mint */ }
     }
     if (expiry !== undefined) {
-      const stated = grantOf(body as Record<string, unknown>).expiresAt;
+      const stated = grantOf(body).expiresAt;
       if (stated !== undefined) expiry.expiresAt = stated;
     }
     return body.token;
