@@ -163,6 +163,7 @@ import {
   submitWorkflowFeedbackDecision,
 } from "./developer-tasks.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
+import { routeIntake } from "./developer-routes/intake.js";
 import { StatusReply } from "./status-reply.js";
 import { getModels } from "../agents/models-route.js";
 import { isAgentRoute, routeAgentRequest } from "../agents/routes.js";
@@ -444,6 +445,9 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   const projectArchiveRoute = /^\/v1\/app\/projects\/([^/]+)\/(archive|restore)$/.exec(url.pathname);
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
+  // Meta repo lane F: the tickets that wait for a member, and the places work is asked for.
+  const intakeReply = await routeIntake(deps, caller, request, url);
+  if (intakeReply !== undefined) return intakeReply;
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
   if (request.method === "POST" && codeIntentRoute !== null) return routeCodeIntentStart(codeIntentDependenciesOf(deps, caller), caller, codeIntentRoute[1]!, jsonBody(request), request.headers);
   // Rovara Code (Plan 6 Task 19): a project's code settings. Anyone who can see the project reads them; a maintainer changes them.

@@ -1,0 +1,182 @@
+// Shared fakes for the learning v2 lane tests (L1-L5). No AWS, no network: every port of packages/broker/src/lessons/ports.ts has an in-memory stand-in.
+import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
+import type {
+  AlertSink, ApproverDirectory, CitationVerifier, CorrectionJudge, Embedder, LearningSpend, LessonAuditEvent, LessonAuditSink, LessonVectors, PipelineModel, RulePublisher,
+} from "../../../packages/broker/src/lessons/ports.js";
+import type { LearningSettings, LearningSettingsReader } from "../../../packages/broker/src/lessons/policy.js";
+import type { ReflectSubject, EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
+import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
+import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
+import type { CodeFacts } from "../../../packages/broker/src/lessons/ports.js";
+import { pathsToVerify, type VerifiedMaterial } from "../../../packages/broker/src/lessons/render.js";
+import { classifyTier as realClassifyTier, type TierContext, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
+
+export const WS = "ws-1";
+export const PROJECT = "proj-1";
+export const KEY = { workspaceId: WS, project: PROJECT };
+export const BASE = "abcdef0123456789abcdef0123456789abcdef01";
+export const MERGED = "1234567890abcdef1234567890abcdef12345678";
+
+export class Clock { constructor(public t = 1_800_000_000_000) {} now = (): number => this.t; advance(ms: number): void { this.t += ms; } }
+
+/** A bag-of-words embedder: the same words give the same direction, so cosine similarity tracks word overlap. */
+export const embedder: Embedder & { fail: boolean } = {
+  fail: false,
+  async embed(text: string): Promise<number[]> {
+    if (this.fail) throw new Error("embed down");
+    const v = new Array<number>(256).fill(0);
+    for (const word of text.toLowerCase().match(/[a-z0-9_]+/gu) ?? []) {
+      let h = 2166136261;
+      for (const c of word) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
+      v[h % 256]! += 1;
+    }
+    const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
+    return v.map((x) => x / norm);
+  },
+};
+
+export class MemoryVectors implements LessonVectors {
+  rows = new Map<string, { id: string; vector: readonly number[] }>();
+  fail = false;
+  private k(ws: string, p: string, id: string): string { return `${ws}\u0001${p}\u0001${id}`; }
+  async upsert(ws: string, p: string, id: string, vector: readonly number[], _meta?: { status: string }): Promise<void> {
+    void _meta; this.rows.set(this.k(ws, p, id), { id, vector }); }
+  async query(ws: string, p: string, vector: readonly number[], k: number): Promise<Array<{ id: string; score: number }>> {
+    if (this.fail) throw new Error("index down");
+    const prefix = `${ws}\u0001${p}\u0001`;
+    return [...this.rows.entries()].filter(([key]) => key.startsWith(prefix)).map(([, row]) => ({ id: row.id, score: row.vector.reduce((s, x, i) => s + x * (vector[i] ?? 0), 0) })).sort((a, b) => b.score - a.score).slice(0, k);
+  }
+  async remove(ws: string, p: string, id: string): Promise<void> { this.rows.delete(this.k(ws, p, id)); }
+}
+
+export class ScriptedModel implements PipelineModel {
+  calls: Array<Record<string, unknown>> = [];
+  constructor(public replies: Array<string | Error | { text: string; costUsd: number }> = []) {}
+  async complete(request: Parameters<PipelineModel["complete"]>[0]): Promise<{ text: string; costUsd: number; model: string }> {
+    this.calls.push({ ...request });
+    const next = this.replies.shift();
+    if (next === undefined) throw new Error("no scripted reply");
+    if (next instanceof Error) throw next;
+    return typeof next === "string" ? { text: next, costUsd: 0.01, model: "test-model" } : { ...next, model: "test-model" };
+  }
+}
+
+export class Spend implements LearningSpend {
+  charges: Array<{ usd: number; purpose: string }> = [];
+  admitted = true;
+  async admit(): Promise<boolean> { return this.admitted; }
+  async charge(_ws: string, _p: string, usd: number, purpose: string): Promise<void> { this.charges.push({ usd, purpose }); }
+  get total(): number { return this.charges.reduce((s, c) => s + c.usd, 0); }
+}
+
+export class Audit implements LessonAuditSink {
+  events: LessonAuditEvent[] = [];
+  async emit(event: LessonAuditEvent): Promise<void> { this.events.push(event); }
+  actions(): string[] { return this.events.map((e) => e.action); }
+}
+export class Alerts implements AlertSink { sent: string[] = []; async alert(_w: string, _p: string, code: string): Promise<void> { this.sent.push(code); } }
+
+export const settings = (value: LearningSettings = {}): LearningSettingsReader => ({ read: async () => value });
+/** Settings for a test of the AUTO path: the pilot default is "one" (a person approves), so a test of automatic go-live says so explicitly. */
+export const autoSettings = (value: LearningSettings = {}): LearningSettingsReader => settings({ tier0Approval: "auto", ...value });
+
+export function directory(over: Partial<Awaited<ReturnType<ApproverDirectory["eligibility"]>>> = {}): ApproverDirectory & { value: Awaited<ReturnType<ApproverDirectory["eligibility"]>> } {
+  const value = { complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner", "ann", "bob"], lastEligibleLossAtMs: null, ...over };
+  return { value, eligibility: async () => value, identity: async () => ({ principals: [], groups: [] }) };
+}
+
+export const facts = (): FakeFacts => defaultFacts;
+export const verifier = (result: "valid" | "moved" | "stale" | "unknown" = "valid"): CitationVerifier & { calls: number } => ({
+  calls: 0,
+  async verify() { this.calls += 1; return result === "moved" ? { result, startLine: 20, endLine: 30 } : { result }; },
+});
+
+export class Publisher implements RulePublisher {
+  published: Array<{ paragraph: string; lessonId: string }> = [];
+  async publish(input: { paragraph: string; lessonId: string }): Promise<{ ruleId: string }> { this.published.push(input); return { ruleId: `rule-${this.published.length}` }; }
+}
+
+export class Judge implements CorrectionJudge {
+  calls = 0;
+  constructor(public answer: "caused" | "contradicts" | "unrelated" | "same_ignored" | Error = "unrelated") {}
+  async rate(): Promise<"caused" | "contradicts" | "unrelated" | "same_ignored"> { this.calls += 1; if (this.answer instanceof Error) throw this.answer; return this.answer; }
+}
+
+export const codeCite = (over: Record<string, unknown> = {}) => ({ kind: "code" as const, repo: "api", path: "src/retry/index.ts", startLine: 12, endLine: 30, anchor: "export function withRetry(", commit: BASE, ...over });
+
+export function draft(over: Partial<LessonDraft> = {}): LessonDraft {
+  return {
+    type: "fact", title: "Retries use withRetry", description: "HTTP retries in api use withRetry.", body: "HTTP retries in the api service use withRetry from src/retry/index.ts.",
+    scope: { repos: ["api"], paths: ["src/**"] }, stages: ["UNDERSTAND", "PLAN", "IMPLEMENT"], citations: [codeCite()],
+    provenance: { sourceEvents: ["ev-1"], sourceKinds: ["human_edit"], authors: ["ann"], supportTasks: ["task-1"], sources: ["member:ann"], inputSources: ["member:ann"], measured: false, minTrust: "member", audience: { kind: "project" }, reflectorRun: "run-1", model: "m", memberSignal: true },
+    ...over,
+  };
+}
+
+/** A tier-0-shaped draft whose words are all distinct (so the curator does not merge a run of them) and all repeated from its own cited anchor (so the slot allow-list accepts them). */
+export function uniqueDraft(i: number, prov: Partial<LessonDraft["provenance"]> = {}, over: Partial<LessonDraft> = {}): LessonDraft {
+  const tokens = Array.from({ length: 6 }, (_, j) => `w${i}x${j}q${i * 31 + j}`);
+  defaultFacts.addFile(`src/m${i}/index.ts`);
+  defaultFacts.addIdentifiers(...tokens);
+  // Two words of the cited code in the thing slot (the most a slot may take); the rest of the distinct words sit in the description, which tier 0 replaces.
+  return draft({ title: `Helper ${i}`, description: tokens.join(" "), body: `The ${tokens.slice(0, 2).join(" ")} is in src/m${i}/index.ts.`, citations: [codeCite({ anchor: `const ${tokens.join("_")} = load();` })], provenance: { ...draft().provenance, ...prov }, ...over });
+}
+
+export function subject(spans: EvidenceSpan[], over: Partial<ReflectSubject> = {}): ReflectSubject {
+  return {
+    kind: "task", id: "task-1", workspaceId: WS, project: PROJECT, repositories: ["api"], baseCommit: BASE, mergedCommit: MERGED, outcome: "merged",
+    initiatorTrust: "member", initiatorId: "initiator-1", steeringTrust: ["member"], intentTrust: "member", links: ["https://github.com/acme/api/pull/7"], spans, ...over,
+  };
+}
+
+export const memberSpan = (text: string, over: Partial<EvidenceSpan> = {}): EvidenceSpan => ({ kind: "human_edit", text, trust: "member", eventId: "ev-1", authorId: "ann", ...over });
+
+export const candidateJson = (over: Record<string, unknown> = {}) => ({
+  type: "convention", title: "Retries use withRetry", description: "The retry helper is called withRetry.", body: "HTTP retries in api use withRetry from src/retry/index.ts.",
+  scope: { repos: ["api"], paths: ["src/**"] }, stages: ["IMPLEMENT"], citations: [codeCite()], evidenceSpanIds: ["S1"], ...over,
+});
+export const reply = (...candidates: unknown[]): string => JSON.stringify({ candidates });
+
+export function newStore(): InMemoryLessonStore { return new InMemoryLessonStore(); }
+
+export type LessonOver = Partial<Lesson>;
+export function lessonRecord(over: LessonOver = {}): Lesson {
+  const d = draft();
+  return {
+    id: "les_aaaa1111", version: 1, workspaceId: WS, project: PROJECT, scope: d.scope, type: d.type, stages: d.stages, title: d.title, description: d.description, body: d.body,
+    citations: d.citations, citationChecks: [{ index: 0, result: "valid", at: 1 }], provenance: d.provenance, tier: 0, tierReasons: ["cited_fact"], status: "active",
+    counters: { loaded: 0, helpful: 0, harmful: 0, citationStale: 0 }, staleAt: [], expiresAt: 1_800_000_000_000 + 90 * 86_400_000, approvals: [{ approvalId: "a", by: "system:auto", at: 1, mode: "auto" }],
+    createdAt: 1, updatedAt: 1, ...over,
+  };
+}
+export async function seed(store: InMemoryLessonStore, ...lessons: Lesson[]): Promise<void> {
+  for (const lesson of lessons) await store.commit({ workspaceId: lesson.workspaceId, project: lesson.project }, await store.setVersion({ workspaceId: lesson.workspaceId, project: lesson.project }), [lesson], 1);
+}
+
+/**
+ * The repository as the tests see it: files at the cited commit, the identifiers of the cited code, and the project's repositories. Everything a tier-0 lesson
+ * renders must be found here; tests that need more add it (`uniqueDraft` does). Real code reads the base objects instead.
+ */
+export class FakeFacts implements CodeFacts {
+  files = new Set<string>(["src/retry/index.ts", "src/billing/money.ts", "config/sagemaker.py", "docs/pr.md", "src/a.ts", "packages/api/client.ts", "src/lib.ts"]);
+  idSet = new Set<string>(["withRetry", "retry", "axios", "buildId", "timeout", "handler", "load"]);
+  repos = ["api"];
+  addFile(path: string): void { this.files.add(path); }
+  addIdentifiers(...ids: string[]): void { for (const id of ids) this.idSet.add(id); }
+  exists(path: string): boolean {
+    const prefix = path.split(/[*?]/u)[0]!.replace(/\/$/u, "");
+    return prefix === "" || [...this.files].some((f) => f === path || f === prefix || f.startsWith(`${prefix}/`));
+  }
+  async identifiers(): Promise<string[]> { return [...this.idSet]; }
+  async pathExists(input: { path: string }): Promise<boolean> { return this.exists(input.path); }
+  async repositories(): Promise<string[]> { return this.repos; }
+}
+export const defaultFacts = new FakeFacts();
+/** Verified material the way the settle step builds it, synchronously, for tests that call `classifyTier` directly. */
+export function materialFor(lesson: { scope: Lesson["scope"]; citations: readonly Lesson["citations"][number][]; body: string }, facts: FakeFacts = defaultFacts): VerifiedMaterial {
+  return { identifiers: new Set(facts.idSet), paths: new Set(pathsToVerify(lesson).filter((p) => facts.exists(p))), repos: new Set((lesson.scope.repos ?? []).filter((r) => facts.repos.includes(r))) };
+}
+/** `classifyTier` with the default verified material (a lesson whose words and paths exist in the fake repository). */
+export function classifyTier(input: TierInput, context?: TierContext, floor?: { tier: 0 | 1 | 2; reasons: readonly string[] }) {
+  return realClassifyTier(input.material === undefined ? { ...input, material: materialFor(input) } : input, context, floor);
+}

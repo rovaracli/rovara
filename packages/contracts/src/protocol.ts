@@ -17,7 +17,7 @@ import { ResultContractSchema, RunCheckoutSchema } from "./agent-run-node.js";
 import { WorkflowFixPayloadSchema } from "./rovara-code.js";
 import { LiveSteerPayloadSchema } from "./live-steer.js";
 import { PrepareMetaSchema } from "./meta-project.js";
-import { LearnedContextSchema } from "./lessons.js";
+import { LearnedContextSchema } from "./learned-context.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
 

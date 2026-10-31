@@ -7,13 +7,9 @@ import { z } from "zod";
 import { OrgIdSchema } from "./browser-ids.js";
 import { AudienceSchema, RecordProjectSchema, TRUST_RANK, TrustClassSchema, type TrustClass } from "./team-record.js";
 
-export const LESSON_TYPES = ["fact", "convention", "pitfall", "procedure", "preference", "review_check"] as const;
-export const LessonTypeSchema = z.enum(LESSON_TYPES);
-export type LessonType = z.infer<typeof LessonTypeSchema>;
 
-export const LESSON_STAGES = ["UNDERSTAND", "PLAN", "IMPLEMENT", "PLAN_CRITIQUE", "REVIEW"] as const;
-export const LessonStageSchema = z.enum(LESSON_STAGES);
-export type LessonStage = z.infer<typeof LessonStageSchema>;
+// The stage and type enums live in learned-context.ts (the learning lane's definition of what a worker receives); lessons use the same ones.
+import { LESSON_STAGES, LessonStageSchema, LessonTypeSchema, type LessonStage } from "./learned-context.js";
 /** The stages a lesson may reach without two people: the build stages. Reviewer stages are tier 2 only. */
 export const LESSON_BUILD_STAGES: readonly LessonStage[] = ["UNDERSTAND", "PLAN", "IMPLEMENT"];
 export const LESSON_REVIEWER_STAGES: readonly LessonStage[] = ["PLAN_CRITIQUE", "REVIEW"];
@@ -265,26 +261,7 @@ export const MemorySnapshotSchema = z.object({
 export type MemorySnapshot = z.infer<typeof MemorySnapshotSchema>;
 
 // ---------------------------------------------------------------------------------------------------------------------------
-// What the worker receives and reports (feature `task.learnedContext.v1`; L4 wires it)
-
-/** A lesson as the worker renders it. The worker re-checks its code citations against the task's base commit before use. */
-export const LearnedContextLessonSchema = z.object({
-  id: LessonIdSchema,
-  version: z.number().int().min(1),
-  type: LessonTypeSchema,
-  scope: LessonScopeSchema,
-  title: z.string().min(1).max(LESSON_TITLE_MAX),
-  body: z.string().min(1).max(LESSON_BODY_MAX),
-  citations: z.array(LessonCodeCitationSchema).max(LESSON_CITATIONS_MAX),
-}).strict();
-export const LearnedContextSchema = z.object({
-  setVersion: z.number().int().min(0),
-  lessons: z.array(LearnedContextLessonSchema).max(LESSONS_PER_STAGE_MAX),
-}).strict().superRefine((context, ctx) => {
-  const bytes = context.lessons.reduce((total, lesson) => total + new TextEncoder().encode(lesson.title + lesson.body).byteLength, 0);
-  if (bytes > LESSONS_PER_STAGE_BYTES_MAX) ctx.addIssue({ code: "custom", path: ["lessons"], message: `lessons exceed ${String(LESSONS_PER_STAGE_BYTES_MAX)} bytes` });
-});
-export type LearnedContext = z.infer<typeof LearnedContextSchema>;
+// What the worker reports back (feature `task.learnedContext.v1`; the payload itself is `LearnedContextSchema` in learned-context.ts)
 
 /** What the worker reports back for each lesson it was given; the broker writes `LOAD#` from it. */
 export const LearnedLoadReportSchema = z.array(z.object({ id: LessonIdSchema, version: z.number().int().min(1), citation: CitationCheckSchema }).strict()).max(LESSONS_PER_STAGE_MAX);

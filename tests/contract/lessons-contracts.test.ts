@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  LearnedContextSchema, LearnedSkillSchema, LessonCandidateSchema, LessonSchema, LoadManifestSchema, MemoryInputSchema, MemorySnapshotSchema, ReflectorOutputSchema,
+  LearnedSkillSchema, LessonCandidateSchema, LessonSchema, LoadManifestSchema, MemoryInputSchema, MemorySnapshotSchema, ReflectorOutputSchema,
   WorkerInvocationSchema, skillFrontMatterRefusal, type OrgId,
 } from "@agentx/contracts";
 
@@ -114,23 +114,16 @@ describe("load manifest, memory input, snapshot and learned context", () => {
     expect(MemorySnapshotSchema.safeParse(snapshot).success).toBe(true);
     expect(MemorySnapshotSchema.safeParse({ ...snapshot, lessons: [{ id: "les_0123456789abcdef0123", version: 2, body: "text" }] }).success).toBe(false);
   });
-  it("limits learned context to 12 lessons and 6 KB of text", () => {
-    const entry = { id: "les_0123456789abcdef0123", version: 1, type: "pitfall", scope: {}, title: "t", body: "b".repeat(600), citations: [] };
-    expect(LearnedContextSchema.safeParse({ setVersion: 1, lessons: Array.from({ length: 10 }, () => entry) }).success).toBe(true);
-    expect(LearnedContextSchema.safeParse({ setVersion: 1, lessons: Array.from({ length: 11 }, () => entry) }).success).toBe(false); // 6,611 bytes
-    expect(LearnedContextSchema.safeParse({ setVersion: 1, lessons: Array.from({ length: 13 }, () => ({ ...entry, body: "b" })) }).success).toBe(false);
-    expect(LearnedContextSchema.safeParse({ setVersion: 1, lessons: [{ ...entry, tools: ["x"] }] }).success).toBe(false);
-  });
   it("rides on a task invocation as an optional, strict field", () => {
     const base = {
       protocolVersion: 1, kind: "task", operationId: "11111111-1111-4111-8111-111111111111", workspaceId: "22222222-2222-4222-8222-222222222222", fence: 1, projectRevision: 1,
       callbackCapability: "c".repeat(32), payload: { conversationId: "33333333-3333-4333-8333-333333333333", prompt: "Plan it.", workflowMode: "PLAN" },
     };
-    const entry = { id: "les_0123456789abcdef0123", version: 1, type: "pitfall", scope: {}, title: "t", body: "b", citations: [] };
+    const entry = { id: "les_0123456789abcdef0123", version: 1, type: "pitfall", title: "t", description: "d", body: "b", scopeLabel: "web", citations: [] };
     const send = (learnedContext: unknown) => WorkerInvocationSchema.safeParse({ ...base, payload: { ...base.payload, learnedContext } }).success;
     expect(WorkerInvocationSchema.safeParse(base).success).toBe(true);
-    expect(send({ setVersion: 2, lessons: [entry] })).toBe(true);
-    expect(send({ setVersion: 2, lessons: [{ ...entry, tools: ["Bash"] }] })).toBe(false);
-    expect(send({ setVersion: 2, lessons: [entry], allowedDomains: ["x.com"] })).toBe(false);
+    expect(send({ v: 1, setVersion: 2, stage: "PLAN", lessons: [entry] })).toBe(true);
+    expect(send({ v: 1, setVersion: 2, stage: "PLAN", lessons: [{ ...entry, tools: ["Bash"] }] })).toBe(false);
+    expect(send({ v: 1, setVersion: 2, stage: "PLAN", lessons: [entry], allowedDomains: ["x.com"] })).toBe(false);
   });
 });

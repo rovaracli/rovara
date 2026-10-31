@@ -13,7 +13,7 @@ export type RunContextItem = z.infer<typeof RunContextItemSchema>;
 export type RunInput = z.infer<typeof RunInputSchema>;
 
 /** Where a run was started from. */
-export const WORK_ORIGINS = ["app", "cli", "mcp", "slack", "linear", "offer", "test_run", "event", "schedule", "chain"] as const;
+export const WORK_ORIGINS = ["app", "cli", "mcp", "slack", "linear", "jira", "github_issue", "tracker", "offer", "test_run", "event", "schedule", "chain"] as const;
 
 export const WorkOriginSchema = z.enum(WORK_ORIGINS);
 
