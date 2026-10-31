@@ -80,6 +80,7 @@ import {
 } from "./workflow-inputs.js";
 import { fedThroughUpdate, promptTagId, withCurrentThreadNotes } from "./thread-notes.js";
 import { finishedReleaseMarkItem, releaseFinishedTaskQuietly } from "./release.js";
+import { specAfterPlanApproval } from "./spec-wiring.js";
 
 /**
  * The task a caller may decide, through the one access rule (resolveTaskAccess and the role table). Anyone whose role may
@@ -463,6 +464,8 @@ export async function decideTaskWorkflow(
   const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
   // M1.3 Task 3.7 (owner decision D2): the approved application plan asks for its informational baseline round. Best effort and after the approval is committed: whatever
   // happens to the baseline, the approval and the checks stand exactly as they are.
+  // Meta repo lane D: the approval makes a spec due when the project's spec target says so. Best effort and after the approval is committed; it records an obligation and runs nothing.
+  if (request.decision === "APPROVE" && mode === "IMPLEMENT") await specAfterPlanApproval(deps, taskId);
   if (request.decision === "APPROVE" && mode === "IMPLEMENT") await deps.startWorkflowE2EBaseline?.({ task: fresh }).catch((error: unknown) => log(deps, { event: "developer.e2e_baseline_not_started", taskId, errorName: error instanceof Error ? error.name : "unknown" }));
   const view = await taskView(deps, fresh, { events: 0, details: false });
   await syncIndex(deps, fresh, view.status, view.updatedAt);

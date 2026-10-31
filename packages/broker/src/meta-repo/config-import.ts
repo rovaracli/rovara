@@ -256,7 +256,7 @@ export const ApplyMetaConfigBodySchema = z.object({
   /** The commit of the file the person looked at; a newer push replaces the pending change, and this must then be asked again. */
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
   /** Fields whose value a person typed, which the person agrees to replace with the file's. */
-  useFile: z.array(z.enum(["repositories", "setup", "readiness"])).max(3).optional(),
+  useFile: z.array(z.enum(["repositories", "setup", "readiness", "specTarget"])).max(4).optional(),
   /** Repositories the file no longer lists, which the person confirms should leave the project. */
   confirmRemovals: z.array(AgentXNameSchema).max(32).optional(),
 }).strict();
@@ -372,6 +372,11 @@ export async function applyMetaConfigChange<Caller extends MetaConfigCaller>(dep
         next[key] = desired.commands;
         changedFields.push(field);
       }
+    }
+    // Meta repo lane D: the spec target the file names (validated when the file was read; the project definition is parsed again below).
+    if (chosen.some((item) => item.field === "specTarget") && config.specTarget !== undefined) {
+      next.specTarget = config.specTarget;
+      changedFields.push("specTarget");
     }
     // A repository that leaves must not leave a command or the devcontainer behind: those would run in a folder that is gone.
     const devcontainer = current.devcontainer;

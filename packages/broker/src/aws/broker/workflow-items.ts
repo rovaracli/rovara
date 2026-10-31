@@ -37,6 +37,8 @@ import { workflowRunEndedReason } from "../outbox-failure.js";
 import { autofixBlockRows } from "../workflow-autofix-dispatch-exhaust.js";
 import { setupDraftEndItems, setupDraftRepositoriesOf } from "../../rovara-code/setup-draft.js";
 import { githubRepositoryFullName, pullRequestKey, pullRequestMatchesRepository } from "./admin-and-helpers.js";
+import { isSpecOperation, specOperationEndItems } from "../../spec/end-items.js";
+import { specEndEnvironmentOf } from "./spec-wiring.js";
 import { MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES, type AwsBrokerDependencies, type PullRequestRecord } from "./definitions.js";
 import { knowledgeCommitToStore, taskPreparedUpdate } from "../../meta-repo/prepare-meta.js";
 import { requireRecordProject } from "./dependency-wiring.js";
@@ -467,6 +469,8 @@ export async function completedWorkflowItems(
     return setupDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now);
   }
   if (task?.workflow === undefined) return [];
+  // Meta repo lane D: a spec write's or a spec publication's end settles the task's spec state; neither is a step of the workflow, so nothing below applies to it.
+  if (isSpecOperation(operation)) return specOperationEndItems(specEndEnvironmentOf(dependencies), task.taskId, operation, { status: terminalStatus, result });
   if (operation.kind === "prepare") {
     // The commit preparation checked out is the task's base until a verified candidate pins it. It comes from the
     // prepare's own result, before the agent has run, never from a later candidate the agent's workspace reports.
