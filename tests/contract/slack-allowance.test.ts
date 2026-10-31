@@ -21,7 +21,7 @@ const RULES = [{ id: "users", group: "rovara-users", orgRole: "member" as const,
 describe("the Slack ingress", () => {
   async function broker(options: { policy?: typeof enterprise | undefined; allow?: { until: number } | "none"; member?: boolean }) {
     const db = new FakeDynamoDb();
-    const orgs = new OrgStore({ documentClient: db as never, tableName: "state", now: () => NOW });
+    const orgs = new OrgStore({ documentClient: db, tableName: "state", now: () => NOW });
     await orgs.ensureOrg(TEST_ORG, "staging");
     const developerId = "d".repeat(64);
     if (options.member !== false) await orgs.addMember({ orgId: TEST_ORG, developerId, role: "member" });
@@ -53,7 +53,7 @@ describe("the Slack ingress", () => {
 
   it("both Slack entry points ask: the workflow caller and the service identity", () => {
     const wiring = readFileSync(new URL("../../packages/broker/src/aws/broker/dependency-wiring.ts", import.meta.url), "utf8");
-    expect(wiring).toMatch(/await requireSlackAllowedByEdition\(dependencies, userId, orgId\);\n  return slackWorkflowCaller/);
+    expect(wiring).toMatch(/await requireSlackAllowedByEdition\(dependencies, userId, orgId\);\n {2}return slackWorkflowCaller/);
     const preparation = readFileSync(new URL("../../packages/broker/src/aws/broker/workspace-preparation.ts", import.meta.url), "utf8");
     expect(preparation).toMatch(/await requireSlackAllowedByEdition\(dependencies, context\.requester\.userId, orgId\);/);
   });
