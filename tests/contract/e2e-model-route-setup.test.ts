@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { E2EPolicySchema, E2E_DEFAULT_LIMITS, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, canonicalJson, e2ePolicyDigest, OrgIdSchema, type OrgId, type E2EApplicationPlanIntent } from "@agentx/contracts";
@@ -17,6 +16,7 @@ import { contractSnapshot } from "../support/e2e-application-plan-fixtures.js";
 import { FakeDynamoDb, assumeDrivingTestsPassed } from "../support/fake-dynamodb.js";
 import { SECRET_ARN } from "../support/e2e-model-fixtures.js";
 import { TEST_ORG, testProjectPk } from "../support/orgs.js";
+import { readBrokerSource } from "../support/broker-source.js";
 
 // The gate itself is tested in e2e-driving-test-gate.test.ts; here every digest counts as driven (Task 4.10C).
 assumeDrivingTestsPassed();
@@ -422,7 +422,7 @@ describe("dispatch re-derives the route before an AI navigation round starts", (
 describe("the dispatch wiring in broker.ts", () => {
   // The pre-warm-up site is exercised end to end (tests/unit/workflow-e2e-application-planning.test.ts); the admission site runs only past a committed candidate export, which no
   // agent-capable harness has, so its presence is pinned here: the route check, and the agentSteps flag on the reference that makes delivery demand the worker feature.
-  const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+  const source = readBrokerSource();
 
   it("checks the route both before compute is woken and when the round is admitted", () => {
     const calls = source.split("\n").filter((line) => line.includes("await requireAgentRouteStillCurrent("));

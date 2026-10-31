@@ -9,6 +9,7 @@ import { guardedConnect, mcpEndpointGuard, pinnedFetch, pinnedLookup } from "../
 import { mcpConnectorType } from "../../packages/broker/src/aws/connector-presets.js";
 import { linearConnectorType } from "../../packages/broker/src/aws/linear-connector-type.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
+import { readBrokerSource } from "../support/broker-source.js";
 
 beforeAll(async () => { await loadSlackBroker(); }, 60_000);
 
@@ -243,8 +244,7 @@ describe("the MCP connector type", () => {
   });
 
   it("the production broker puts the guard on every request to a company's endpoint on Rovara Cloud", async () => {
-    const { readFileSync } = await import("node:fs");
-    const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    const source = readBrokerSource();
     expect(source).toContain("...(cloudOrgResolver === undefined ? {} : { mcpEndpointGuard: mcpEndpointGuard() }),");
   });
 

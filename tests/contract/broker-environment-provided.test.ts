@@ -8,6 +8,7 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { DEPLOY_PARAMETER_VALUES, lambdaEnvironments, type Template as ResolvableTemplate } from "../support/lambda-environment-size.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
+import { brokerSourceFiles } from "../support/broker-source.js";
 
 skipLambdaBundling();
 
@@ -92,7 +93,7 @@ describe("what the broker reads is still there when it starts (final review C1)"
 
       it("provides, or marks optional, every variable the broker's code reads", () => {
         const files = [
-          "packages/broker/src/aws/broker.ts",
+          ...brokerSourceFiles(),
           "packages/broker/src/aws/workflow-dependencies-configuration.ts",
           "packages/broker/src/org/resolve.ts",
           "packages/broker/src/org/cloud-projects.ts",

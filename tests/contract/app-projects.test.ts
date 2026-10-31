@@ -1,8 +1,6 @@
 // Plan 2, Task 11: project META records, the effective project role (org owners and admins maintain every project in their org), the
 // refusals that belong where new work starts, and the app's project list and detail.
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   AppProjectDetailSchema, AppProjectsResponseSchema, PROJECT_PERMISSIONS, ProjectSetupStatusSchema, agentXError, formatCommandLine, parseCommandLine,
@@ -19,6 +17,7 @@ import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { developerTaskIdentity, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { readBrokerSource } from "../support/broker-source.js";
 
 const OTHER_ORG: OrgId = "org_bbbbbbbbbbbbbbbbbbbb";
 const start = (overrides: Record<string, unknown> = {}) => ({ requestId: randomUUID(), project: "payments", instructions: "Fix the flaky retry test", client: "claude-code", ...overrides });
@@ -574,11 +573,13 @@ describe("what authorizes work on a project's task paths (requireProjectAuthorit
   });
 
   it("is what every task path calls: none of the five still asks requireMembership", () => {
-    const source = readFileSync(join(import.meta.dirname, "../../packages/broker/src/aws/broker.ts"), "utf8");
+    const source = readBrokerSource();
     for (const name of ["acceptTask", "acceptPullRequest", "acceptPullRequestLifecycle", "getAuthorizedOperation", "authorizeWorkspaceConnectors"]) {
       const at = source.indexOf(`async function ${name}(`);
       expect(at, name).toBeGreaterThan(-1);
-      const body = source.slice(at, source.indexOf("\nasync function ", at + 10));
+      // (a function another module of the split calls is exported: `export async function`)
+      const next = source.slice(at + 10).search(/\n(?:export )?async function /);
+      const body = next === -1 ? source.slice(at) : source.slice(at, at + 10 + next);
       expect(body, name).toContain("requireProjectAuthority(");
       expect(body, name).not.toContain("requireMembership(");
     }

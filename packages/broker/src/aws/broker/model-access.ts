@@ -1,0 +1,510 @@
+// Part of the broker (split out of ../broker.ts): write gate, model access (web and Slack), turn routing and budgets.
+
+import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, orgMemberKey, orgMetaKey, orgRemovedKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, PER_TASK_BUDGET_USD, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place } from "@agentx/contracts";
+import { queryAllItems } from "../admin-reads.js";
+import { DynamoConnectorLedger, GITHUB_LEDGER, connectorLedgerKeys } from "../connector-ledger.js";
+import { callConnector } from "../connector-routes.js";
+import { DeveloperSignInStore } from "../../developer/store.js";
+import { monthOf } from "../../org/trial.js";
+import { TERMINAL, getItem, operationKey, requestCancellation, requireOperation, type CallbackClaims, type OperationRecord } from "../cancellation.js";
+import { requireCreatorStillMember } from "../../developer/creator-member.js";
+import type { AgentRunHost } from "../../agents/run-engine.js";
+import { requireRecipeAllowed } from "../../agents/roster.js";
+import { developerTaskIdentity, effectiveTaskOwner, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { developerIdForSlackUser } from "../admin-actions.js";
+import { keyIdOf, mintKeyHealing } from "../../org/budget.js";
+import { admitWork, mintOperationKey, type MintOperationKeyInput } from "../../spend/admission.js";
+import { forgetKey, registerKey } from "../../spend/ledger.js";
+import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTaskResolved, resolvePayer } from "../../spend/payer.js";
+import { readProjectAi, readSpendPolicy } from "../../spend/settings.js";
+import { followMerges } from "../../agents/access.js";
+import type { AgentRouteDependencies } from "../../agents/routes.js";
+import { readTaskRecipe } from "../../agents/runs.js";
+import { agentGitHubConnector, approvalsNotWiredGate, attributionOf, classifyDependenciesOf, ownerGithubLoginOf, regrantAgentTool } from "../../agents/agent-tools-routes.js";
+import type { WriteGateRuntime } from "../../agents/write-gate.js";
+import { inGeography, stepForOperation } from "../../agents/dispatch.js";
+import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
+import { effectiveSources, routeOnWire, servingRoutes, type ModelRoute, type RoutingDependencies } from "../../model-sources/routing.js";
+import { json } from "../json-reply.js";
+import { developerTaskRouteDependencies, type DeveloperCaller } from "../developer-routes.js";
+import type { DeveloperTaskActions, TransactItems } from "../developer-task-actions.js";
+import { ADMISSION_REFUSALS, agentStepNotes, taskPageUrl } from "../developer-tasks.js";
+import type { AdaptedHttpRequest } from "../lambda.js";
+import { resolveTaskAccess } from "../../developer/task-access.js";
+import { acceptTask } from "./acceptance.js";
+import { parseBody, verifyCapability } from "./admin-and-helpers.js";
+import type { AwsBrokerDependencies } from "./definitions.js";
+import { orgStoreOf, slackTeamOrg } from "./dependency-wiring.js";
+import { putArtifact } from "./pull-request-reconcile.js";
+import { requireProjectAuthority, requireWorkspace } from "./records.js";
+import { creatorCheckOf, routingOf } from "./scope-helpers.js";
+import { ledgerOf } from "./sweeps-and-readiness.js";
+import { agentToolsBase, workspaceTask } from "./task-operations.js";
+import { releaseIfFinished } from "./terminal-and-github-events.js";
+import { askForPausedTask, blockEndedOperationKeys } from "./terminal-result.js";
+import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole } from "./workspace-preparation.js";
+
+/**
+ * Task 21's write gate runtime, built from Task 19's own pieces: what an approved write needs to be classified, re-granted and sent, long after the step's request
+ * ended. It is on the request-time dependencies and, the same object, on the ones the settlement job hands `runApprovalSweep`, so a retry finds it.
+ */
+/**
+ * Plan 3, Task 22: what the agent-step engine needs of the broker. `startStep` is `acceptTask` with the step's payload (the engine's own update of the run
+ * rides in the operation's transaction); the creator and recipe checks are the ones every other dispatch makes; ending a task blocks the keys of its
+ * operations (Task 30) and gives its workspace back (`releaseFinishedTask`); a step's report is kept as `agent-step-<id>.md`.
+ */
+export function agentRunHostOf(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, routeDependencies: AgentRouteDependencies): AgentRunHost {
+  const developer = dependencies.developer;
+  return {
+    startStep: async (input) => {
+      const accepted = await acceptTask(dependencies, developerTaskIdentity(input.task, input.task.orgId as OrgId), input.task.workspaceId,
+        { requestId: input.requestId, conversationId: input.task.conversationId, prompt: input.prompt }, (operation) => input.extra(operation.id),
+        { operationId: input.operationId, programStepId: input.step.id, agentRun: { step: input.step, inputs: input.inputs, resultContract: input.resultContract, checkout: input.checkout } });
+      return { operationId: accepted.operation.id, duplicate: accepted.duplicate };
+    },
+    requireCreator: (task) => requireCreatorStillMember(creatorCheckOf(dependencies), task),
+    // Plan 5 Task 11b: the messages people sent to this run from its session, for the step about to be made.
+    stepNotes: (task, requestId, redoFrom) => agentStepNotes(dependencies, task.taskId, requestId, redoFrom),
+    requireRecipeAllowed: (task, recipe) => requireRecipeAllowed(routeDependencies, task.orgId as OrgId, task.project, task.agent?.name ?? "This agent", recipe),
+    releaseWorkspace: (taskId) => releaseIfFinished(dependencies, taskId),
+    blockKeys: async (task) => {
+      for (const item of await queryAllItems(dependencies, `WORKSPACE#${task.workspaceId}`, "OPERATION#")) {
+        if (item.entityType === "OPERATION" && item.kind === "task") await blockEndedOperationKeys(dependencies, item as unknown as OperationRecord);
+      }
+    },
+    // A run that ends while its step runs asks the worker to stop it; a step that already ended, or is being stopped, is left alone (Task 22 review, I3).
+    stopOperation: async (task, operationId) => {
+      const operation = await getItem<OperationRecord>(dependencies, operationKey(task.workspaceId, operationId));
+      if (operation === undefined || operation.kind !== "task" || TERMINAL.has(operation.status) || operation.status === "CANCEL_REQUESTED") return;
+      const workspace = await requireWorkspace(dependencies, task.workspaceId);
+      if (workspace.activeOperationId !== operationId) return;
+      await requestCancellation(dependencies, workspace, operationId, {});
+    },
+    spentUsd: async (task) => {
+      const keys = task.modelKeyIds ?? [];
+      return dependencies.modelAccess === undefined || keys.length === 0 ? 0 : dependencies.modelAccess.access.keySpend(keys);
+    },
+    saveReport: async ({ task, operationId, stepId, text }) => {
+      const name = `agent-step-${stepId}.md`;
+      const kept = (await queryAllItems(dependencies, `WORKSPACE#${task.workspaceId}`, "ARTIFACT#")).find((item) => item.operationId === operationId && item.name === name);
+      if (kept !== undefined) return String(kept.objectKey);
+      const operation = await requireOperation(dependencies, task.workspaceId, operationId);
+      const artifactId = await putArtifact(dependencies, operation, { name, mediaType: "text/markdown", content: text });
+      return (await getItem<{ objectKey?: unknown }>(dependencies, { pk: `WORKSPACE#${task.workspaceId}`, sk: `ARTIFACT#${artifactId}` }))?.objectKey as string | undefined;
+    },
+    // The pause (and the request) a budget stop of this operation stands for, when none was written (the proxy's mid-step stop): the sweep asks again through here.
+    askForPause: async (task, operationId) => {
+      if (await askForPausedTask(dependencies, task.taskId, { id: operationId }) === "failed") throw agentXError("RUNTIME_UNAVAILABLE", "the pause could not be asked for");
+    },
+    ...(developer === undefined ? {} : { taskUrl: (taskId: string) => taskPageUrl(developer.issuer, taskId) }),
+    ...(developer?.slackTeamId === undefined ? {} : {
+      slackChannels: async (orgId: OrgId, project: string) => (await queryAllItems(dependencies, slackBindingPk(orgId, developer.slackTeamId!), SLACK_BINDING_SK_PREFIX))
+        .filter((binding) => binding.projectName === project).map((binding) => String(binding.channelId)).sort(),
+    }),
+  };
+}
+
+export function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, signInStore: Pick<DeveloperSignInStore, "getDeveloper">): WriteGateRuntime {
+  // The stand-in gate is never used here: only the connectors, the ledger, the catalogs and the checks are.
+  const tools = () => dependencies.agentTools?.configure?.(agentToolsBase(dependencies, approvalsNotWiredGate)) ?? agentToolsBase(dependencies, approvalsNotWiredGate);
+  const taskOf = async (orgId: OrgId, taskId: string): Promise<DeveloperTaskRecord> => {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    // A task partition is global: the org is re-checked on the item.
+    if (task === undefined || task.orgId !== orgId) throw agentXError("NOT_FOUND", "no agent task belongs to this approval");
+    return task;
+  };
+  const ledgers = (workspaceId: string, connector: string) => [connectorLedgerKeys(connector), GITHUB_LEDGER].map((keys) => new DynamoConnectorLedger(dependencies.documentClient, dependencies.tableName, workspaceId, keys, connector));
+  return {
+    classify: classifyDependenciesOf(tools(), {}),
+    regrant: async ({ record, definition }) => {
+      const task = await taskOf(record.orgId, record.subject.taskId);
+      const workspace = await requireWorkspace(dependencies, task.workspaceId);
+      return regrantAgentTool(tools(), {
+        orgId: record.orgId, task, workspace, stepId: record.subject.stepId, connector: record.connector, scope: record.scope, tool: record.tool, args: record.arguments,
+        definition: definition as unknown as ProjectDefinition,
+      });
+    },
+    requireRunAuthority: async ({ orgId, ownerKey, project, taskId }) => {
+      await requireProjectAuthority(dependencies, orgId, ownerKey, project, { taskCreator: async () => effectiveTaskOwner(await taskOf(orgId, taskId)).developerId });
+    },
+    // Who can see an approval besides its approvers (Task 22): whoever the task page lets read the task, by the page's own access check, now.
+    canViewTask: async (caller, { taskId, project }) => {
+      const developer = dependencies.developer;
+      if (developer === undefined) return false;
+      try {
+        const record = await signInStore.getDeveloper(caller.developerId);
+        if (record === undefined || record.revoked) return false;
+        const devCaller: DeveloperCaller = {
+          developerId: caller.developerId, sessionId: "approval-view", amr: record.provider, name: record.displayName, orgId: caller.orgId, orgRole: caller.orgRole,
+          ...(record.slackUserId === undefined ? {} : { slackUserId: record.slackUserId }),
+        };
+        const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies) }, devCaller);
+        return (await resolveTaskAccess(routeDeps, devCaller, taskId, "read")).task.project === project;
+      } catch (error) {
+        // Not allowed, or not readable now: either way not seen (fail closed). An outage is logged by its name.
+        if (!(error instanceof AgentXError)) console.log(JSON.stringify({ component: "broker", event: "approval.view_access_unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
+        return false;
+      }
+    },
+    // What the connector ledger recorded for the approval's request id, without calling the vendor: the same record `runConnector` replays from.
+    recordedResult: async ({ workspaceId, connector, requestId }) => {
+      for (const ledger of ledgers(workspaceId, connector)) {
+        const found = await ledger.get(requestId);
+        if (found !== undefined) return found.result;
+      }
+      return undefined;
+    },
+    // Never throws once the vendor may have been asked: a call whose outcome is in doubt is an UNKNOWN result, which the approval's retry settles from the ledger.
+    runConnector: async (call) => {
+      const t = tools();
+      const task = await taskOf(call.orgId, call.taskId);
+      const workspace = await requireWorkspace(dependencies, call.workspaceId);
+      // The workspace comes from an org-checked task; the org is checked on it too.
+      if (workspace.orgId !== call.orgId) throw agentXError("NOT_FOUND", "no agent task belongs to this approval");
+      const definition = call.definition as unknown as ProjectDefinition;
+      const connector = t.connectors({ orgId: call.orgId, definition }).find((entry) => entry.name === call.connector);
+      // Before anything is sent, the same refusals `callConnector` makes first: these are fine to throw.
+      if (connector === undefined) throw agentXError("NOT_FOUND", "connector not found");
+      if (!connector.scopes.some((entry) => entry.alias === call.request.scope)) throw agentXError("NOT_FOUND", "connector scope not found");
+      if (!connector.approvals.some((entry) => entry.name === call.request.tool)) throw agentXError("FORBIDDEN", `${connector.vendor} MCP tool is not approved for this project`);
+      const executing = connector.type === "github" ? agentGitHubConnector(connector, t, { orgId: call.orgId, tool: call.request.tool }) : connector;
+      try {
+        return await callConnector({
+          connector: executing, workspace, context: { orgId: call.orgId, workspaceId: call.workspaceId, ownerKey: call.ownerKey, settingsRevision: definition.revision },
+          catalogs: t.catalogs, ledger: t.ledger(call.workspaceId, connector), request: call.request,
+          // Every approved call is claimed and recorded in the ledger, whatever access the project gave the tool: a retry replays it instead of sending it again.
+          durable: true,
+          ...(connector.attribution ? { attribution: attributionOf(task, call.agentName, await ownerGithubLoginOf(t, task)) } : {}),
+        });
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "approval.write_outcome_unknown", approvalRequest: call.request.requestId, errorName: error instanceof Error ? error.name : "unknown" }));
+        return { requestId: call.request.requestId, status: "UNKNOWN", text: "Rovara could not confirm whether the connector carried this out.", truncated: false, replayed: false };
+      }
+    },
+  };
+}
+
+/**
+ * Task 21, Re-check R-2: no key is minted once the org is closed, or for work whose owner (or whose paying member) has been removed from it. Read live at every mint, so work that
+ * is still running when an org closes (a plain task, a task from before sessions, a Slack thread's operation) gets no new key at its next model call. A read that fails is the proxy's
+ * retryable answer, and nothing is minted. An org with no record of its own (an install from before orgs) is not closed by this; a person with no member record and no removal tombstone never joined.
+ */
+async function requireOrgOpenFor(dependencies: AwsBrokerDependencies, orgId: OrgId, people: ReadonlyArray<string | undefined>): Promise<void> {
+  const denied = agentXError("TASK_ACCESS_DENIED", "This organization is closed, or the person this work is for has left it, so Rovara stopped this work.");
+  try {
+    const meta = await getItem<{ closedAt?: unknown }>(dependencies, orgMetaKey(orgId));
+    if (meta?.closedAt !== undefined) throw denied;
+    for (const developerId of new Set(people)) {
+      if (developerId === undefined) throw denied;
+      if (await getItem(dependencies, orgMemberKey(orgId, developerId)) !== undefined) continue;
+      if (await getItem(dependencies, orgRemovedKey(orgId, developerId)) !== undefined) throw denied;
+    }
+  } catch (error) {
+    if (error === denied) throw error;
+    console.log(JSON.stringify({ component: "broker", event: "model_access.org_state_unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+  }
+}
+
+/**
+ * Ruling R29: the key a running task's worker calls models with, minted for the task's org and developer and capped at the
+ * task's budget. The capability is checked like a callback's (signature, expiry, scope, fence); a refused one is 401.
+ * The proxy's own failures all answer MODEL_PROXY_UNAVAILABLE, without their detail. The key is never stored or logged.
+ */
+export async function handleModelAccess(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest) {
+  const token = request.headers["x-agentx-callback-capability"];
+  if (!token) throw agentXError("AUTH_REQUIRED", "callback capability is required");
+  let claims: CallbackClaims;
+  try { claims = verifyCapability(dependencies, token, "model-access"); }
+  catch { throw agentXError("AUTH_REQUIRED", "invalid callback capability"); }
+  const operation = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
+  if (operation.fence !== claims.fence) throw agentXError("STALE_FENCE", "callback fence is stale");
+  if (TERMINAL.has(operation.status)) throw agentXError("STALE_FENCE", "terminal operations cannot ask for model access");
+  const modelAccess = dependencies.modelAccess;
+  if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
+  // A developer task names its org, owner and budget, and the keys already minted for it. Work with no task record (a Slack
+  // thread's) is minted for from the signed operation: its org, the operation as the reference and as the record that keeps its
+  // keys, and the default per-task budget (ruling R31; its start was admitted in ensureThreadWorkspace). Read afresh each attempt.
+  const unreadable = async <T>(what: string, read: () => Promise<T>): Promise<T> => read().catch((error: unknown) => {
+    console.log(JSON.stringify({ component: "broker", event: `model_access.${what}_unreadable`, operationId: claims.operationId, errorName: error instanceof Error ? error.name : "unknown" }));
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+  });
+  // Task 26: the route chosen when the operation was built, checked against the live sources now (once: a retry after a lost race keeps it). An operation built
+  // before routing has none, and is keyed as it was.
+  const merges = dependencies.developer === undefined ? undefined : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  const resolveMember = (developerId: string): Promise<string> => (merges === undefined ? Promise.resolve(developerId) : followMerges(merges, developerId));
+  const routing = routingOf(dependencies);
+  const route = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
+    : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
+  const loadScope = async (): Promise<ModelKeyScope | undefined> => {
+    const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
+    const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
+    const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+    // Task 29: with agents set up a key says who pays and what ran, and carries a member's name only when a member pays. Without them
+    // (an install that never had agents) the key is minted exactly as it always was.
+    const withAgents = dependencies.agents !== undefined;
+    if (task !== undefined) {
+      if (task.orgId === undefined) return undefined;
+      // A payer recorded before a merge counts against the member they are now (Task 21, M-3); a merge pointer that can't be read is the proxy's retryable answer.
+      const payment = withAgents ? await unreadable("payer", () => paymentOfTaskResolved(task, resolveMember)) : undefined;
+      // The org must be open and the task's owner (and the member whose budget pays) still in it, or no key is minted (Task 21, Re-check R-2).
+      await requireOrgOpenFor(dependencies, task.orgId, [tryEffectiveTaskOwner(task)?.developerId, ...(payment?.payer.kind === "member" ? [payment.payer.developerId] : [])]);
+      const taskOrg = task.orgId;
+      const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
+      const taskKeyIds = task.modelKeyIds ?? [];
+      // What these reads cannot answer is the retryable answer of the proxy, as the payer's read is; nothing is minted.
+      const testCapUsd = payment?.origin === "test_run" ? await unreadable("spend_policy", () => readSpendPolicy(dependencies, taskOrg)).then((policy) => policy.perTestCapUsd) : undefined;
+      const stepBudgetUsd = payment === undefined ? undefined : await unreadable("step_budget", () => stepBudgetOf(dependencies, task, current));
+      // Plan 4 Task 28: a chain step's key says which chain and which run it is for (its ledger lines carry both). The chain is the run's, read under the task's own org; a run that
+      // cannot be read is the proxy's retryable answer, and a run that is not there leaves the key as any agent key is.
+      const chainRun = payment === undefined || task.chain === undefined ? undefined
+        : await unreadable("chain_run", () => getItem<{ chainId?: string }>(dependencies, chainRunKey(taskOrg, task.chain!.chainRunId, "META")));
+      const chainTag = chainRun?.chainId === undefined || task.chain === undefined ? undefined : { chainId: chainRun.chainId, chainRunId: task.chain.chainRunId };
+      return {
+        orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,
+        ...(route === undefined ? {} : { route }),
+        runLimitUsd, stopAtUsd: task.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, task.maxPerRunUsd),
+        taskKeyIds, budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
+        // Task 31: with agents set up, the key is held on every budget the task counts against, recorded on the operation as well as the task, and a refusal
+        // pauses the task with the scope that is full.
+        ...(payment === undefined ? { recordOn: [{ key: taskKey(task.taskId), knownCount: taskKeyIds.length }] } : {
+          agentName: task.agent?.name ?? ROVARA_CODE_NAME,
+          tags: mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId, ...(chainTag === undefined ? {} : { chain: chainTag }) }),
+          scopes: payment.scopes,
+          operationKeyIds: current.modelKeyIds ?? [],
+          // Understand spends from the planning limit too (a refusal while it runs pauses with the planning scope).
+          // The plan check spends from the task's planning limit like planning does (the run limit is the planning limit until the plan is approved). It is advice: running out never pauses the task or asks for money
+          // (the plan goes on to the person, "stopped at the planning limit"), so it is given no pause to write.
+          planning: current.workflowMode === "PLAN" || current.workflowMode === "UNDERSTAND",
+          ...(testCapUsd === undefined ? {} : { testCapUsd }),
+          ...(stepBudgetUsd === undefined ? {} : { stepBudgetUsd }),
+          ...(current.workflowMode === "PLAN_CRITIQUE" || current.planRevision === true ? {} : { pause: { taskId: task.taskId, key: taskKey(task.taskId), operationId: current.id } }),
+          recordOn: [{ key: taskKey(task.taskId), knownCount: taskKeyIds.length }, { key: operationKey(current.workspaceId, current.id) }],
+        }),
+      };
+    }
+    if (current.orgId === undefined) return undefined;
+    const project = withAgents ? (await requireWorkspace(dependencies, current.workspaceId)).projectName : undefined;
+    // Who pays is read from the project's settings: a setting that can't be read is the proxy's retryable answer, and no key is minted.
+    const slack = project === undefined ? undefined : await slackWorkPayment(dependencies, current.orgId, project, current.requestedBy).catch((error: unknown) => {
+      console.log(JSON.stringify({ component: "broker", event: "model_access.payer_unreadable", operationId: current.id, errorName: error instanceof Error ? error.name : "unknown" }));
+      throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+    });
+    const taskKeyIds = current.modelKeyIds ?? [];
+    const keyed = slack === undefined ? await linkedRequester(dependencies, current.orgId, current.requestedBy) : keyMember(slack.payer);
+    // A thread's work has no task record: the org must still be open and the member the key is for still in it (Task 21, Re-check R-2).
+    // Check the requester independently of the payer lookup: removing membership makes linkedRequester return undefined,
+    // but must not downgrade previously attributable work to anonymous org-funded work (C1).
+    const requestedBy = current.requestedBy;
+    const requesterId = requestedBy === undefined ? undefined : await unreadable("requester", () => resolveMember(
+      "kind" in requestedBy ? requestedBy.developerId : developerIdForSlackUser(requestedBy.userId),
+    ));
+    await requireOrgOpenFor(dependencies, current.orgId, [...(requesterId === undefined ? [] : [requesterId]), ...(keyed === undefined ? [] : [keyed])]);
+    return {
+      orgId: current.orgId, developerId: keyed, refId: current.id,
+      ...(route === undefined ? {} : { route }),
+      runLimitUsd: PER_TASK_BUDGET_USD, stopAtUsd: PER_TASK_BUDGET_USD, taskKeyIds, budgetBaselineUsd: 0,
+      recordOn: [{ key: operationKey(current.workspaceId, current.id), knownCount: taskKeyIds.length }],
+      ...(slack === undefined ? {} : {
+        agentName: ROVARA_CODE_NAME,
+        tags: mintTagsFor({ ...slack, origin: "slack", operationId: current.id, stepId: current.programStepId }),
+        scopes: budgetScopesFor(slack.payer, slack.place, { agentId: slack.agentId }),
+      }),
+    };
+  };
+  const budgets = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true, now: Date.now };
+  const ledger = ledgerOf(dependencies);
+  let scope = await loadScope();
+  if (scope === undefined) throw agentXError("NOT_FOUND", "this operation belongs to no organisation");
+  try {
+    // Two attempts: a mint that races another for the same task finds the record changed under it, gives its key back and
+    // counts again with the other's key included, so concurrent mints cannot each take the task's whole remainder.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (attempt > 0) scope = await loadScope();
+      if (scope === undefined) throw new Error("the operation lost its organisation");
+      // Ruling R30 and Task 31: the key's cap is the least of what the run's limits, the step, the member, the org and every budget the task counts against
+      // have left; it is reserved before it is handed out, and recorded on the task and the operation.
+      const minted = await mintOperationKey({ ...budgets, ledger }, { ...scope, ttlSeconds: MODEL_KEY_TTL_SECONDS, ...(attempt > 0 ? { keepEarlierKeys: true } : {}) });
+      if (minted.outcome === "minted") return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt }, request.requestId);
+    }
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+  } catch (error) {
+    // A spent budget is the member's to know about (402); every other failure is the proxy's, and says nothing of it.
+    if (error instanceof AgentXError && ADMISSION_REFUSALS.has(error.code)) throw error;
+    console.log(JSON.stringify({ component: "broker", event: "model_access.mint_failed", operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown" }));
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+  }
+}
+
+/**
+ * Task 26: the route a key is minted for. The operation recorded it when it was built; it is checked against the live sources each time a key is asked for (a
+ * source taken out of the org's order, removed, or no longer usable stops serving), but a reorder that leaves the source in the order does not end a running
+ * operation. Absent for an operation built before routing, whose key is unscoped as it was.
+ */
+async function liveRouteOf(routing: RoutingDependencies, operation: OperationRecord, orgId: OrgId, project: string): Promise<{ alias: string; sourceId: string } | undefined> {
+  const recorded = operation.modelRoute;
+  if (recorded === undefined) return undefined;
+  if (recorded === null) throw agentXError("MODEL_NOT_ALLOWED", "This task's ChatGPT plan has no backup among your company's AI sources, so no company AI key can be issued for it.");
+  const serving = await servingRoutes(routing, { orgId, project, model: recorded.model });
+  if (!serving.some((route) => route.sourceId === recorded.sourceId && route.alias === recorded.alias)) {
+    throw agentXError("MODEL_NOT_ALLOWED", "The AI source this step was running on is no longer available to your company. Ask an admin to check your AI sources, then continue the task.");
+  }
+  return { alias: recorded.alias, sourceId: recorded.sourceId };
+}
+
+/** What `handleModelAccess` knows of the work a key is for: the input of `mintOperationKey` less the key's lifetime. */
+export type ModelKeyScope = Omit<MintOperationKeyInput, "ttlSeconds">;
+
+/** The name an agent-less run is called in a budget message. */
+export const ROVARA_CODE_NAME = "Rovara Code";
+
+/**
+ * Task 31: the budget of the recipe step an operation runs, when the task's frozen recipe sets one. A task whose snapshot is not there has none (the dispatch
+ * refused to run it without one).
+ */
+async function stepBudgetOf(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, operation: OperationRecord): Promise<number | undefined> {
+  if (task.agent === undefined || task.orgId === undefined) return undefined;
+  const frozen = await readTaskRecipe(dependencies, task.taskId, task.orgId);
+  if (frozen === undefined) return undefined;
+  // The digest is computed from the recipe itself, as the dispatch does: a snapshot that is not the one the task recorded sets no budget.
+  if (recipeDigest(frozen.recipe) !== task.agent.digest) throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
+  const step = stepForOperation(frozen.recipe, operation.workflowMode, operation.programStepId);
+  const budget = step?.kind === "check" ? undefined : step?.settings.stepBudgetUsd;
+  return typeof budget === "number" ? budget : undefined;
+}
+
+/**
+ * Task 13 and ruling R32: the key the Slack orchestrator calls models with for one turn. The caller is the orchestrator role;
+ * the team and channel come from the signed thread header and the member from the signed user header, never from the body.
+ * The org is the one the team is bound to, and a body `orgId`, if sent, must equal it. A channel bound to no project in that
+ * org gets no key. The key is minted in the member's name only if the org has them as a member, else for the org alone.
+ * The proxy's failures all answer MODEL_PROXY_UNAVAILABLE, without detail; the key is never logged.
+ */
+export async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, request: AdaptedHttpRequest) {
+  requireSlackServiceRole(dependencies, request);
+  const body = SlackModelAccessRequestSchema.safeParse(parseBody(request.body));
+  if (!body.success) throw agentXError("CONFIG_INVALID", "model access needs a turnId and optionally the thread's orgId");
+  const { thread, requester } = parseSlackHeaders(request.headers);
+  const teamOrg = await slackTeamOrg(dependencies, thread.teamId);
+  if (body.data.orgId !== undefined && body.data.orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack workspace is not connected to that organization");
+  const binding = await getSlackBinding(dependencies, teamOrg, thread.teamId, thread.channelId);
+  if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
+  const modelAccess = dependencies.modelAccess;
+  if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
+  // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
+  // known) and tagged so; without them it is minted as it always was.
+  try {
+    // Task 26: the turn's model is routed before anything is admitted or charged; a refusal here costs nothing.
+    const routing = routingOf(dependencies);
+    const routed = routing === undefined ? undefined : await routeTurn(routing, teamOrg, binding.projectName, body.data);
+    const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, teamOrg, binding.projectName, requester);
+    const developerId = slack === undefined ? await linkedRequester(dependencies, teamOrg, requester) : keyMember(slack.payer);
+    // Ruling R50: a turn is admitted like any chat work (which also syncs the proxy, the lazy half of syncBudgets), and its key is
+    // capped at what every budget it counts against has left, never above one turn's allowance. Nothing left is a 402, before any key.
+    const admitted = await admitWork(
+      { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
+      { orgId: teamOrg, payer: slack?.payer ?? (developerId === undefined ? { kind: "project", project: binding.projectName } : { kind: "member", developerId }),
+        project: binding.projectName, agentId: ROVARA_CODE_AGENT_ID, agentName: ROVARA_CODE_NAME, path: "CHAT" },
+    );
+    const maxBudgetUsd = Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd);
+    const tags = slack === undefined ? undefined : routed === undefined ? mintTagsFor({ ...slack, origin: "slack" }) : { ...mintTagsFor({ ...slack, origin: "slack" }), source: routed.route.sourceId };
+    const minted = await mintKeyHealing(
+      { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
+      { orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId, maxBudgetUsd, ttlSeconds: TURN_KEY_TTL_SECONDS,
+        ...(routed === undefined ? {} : { models: routed.models }), ...(tags === undefined ? {} : { tags }) },
+    );
+    // Task 30: a turn's key reserves nothing (R50) and settles into the counters; one that can't be recorded is given back.
+    const ledger = tags === undefined || slack === undefined ? undefined : ledgerOf(dependencies);
+    if (ledger !== undefined && tags !== undefined && slack !== undefined) {
+      try {
+        await registerKey(ledger, {
+          orgId: teamOrg, month: monthOf(Date.now()), keyId: keyIdOf(minted.key), capUsd: maxBudgetUsd, tags, expiresAt: minted.expiresAt,
+          scopes: budgetScopesFor(slack.payer, slack.place, { agentId: slack.agentId }).map((key) => ({ key })),
+        });
+      } catch (error) {
+        await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
+        await forgetKey(ledger, teamOrg, keyIdOf(minted.key)).catch(() => undefined);
+        throw error;
+      }
+    }
+    return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt, ...(routed?.wire === undefined ? {} : { route: routed.wire }) }, request.requestId);
+  } catch (error) {
+    // A spent budget (or a locked trial) is the member's to know about; every other failure is the proxy's, and says nothing of it.
+    if (error instanceof AgentXError && (ADMISSION_REFUSALS.has(error.code) || error.code === "MODEL_NOT_ALLOWED")) throw error;
+    console.log(JSON.stringify({ component: "broker", event: "model_access.turn_mint_failed", errorName: error instanceof Error ? error.name : "unknown" }));
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+  }
+}
+
+/**
+ * Task 26: where a Slack turn's model comes from. The org's assistant model when it set one, else the model the service is configured to answer with
+ * (Rovara's own AI): an org that has neither Rovara in its order nor an assistant model has nothing to answer with and is told to set one. The key may call the
+ * turn's route, and the gate classifier's and router's model when it is one of Rovara's catalog and Rovara is in the org's order (they share the turn's key).
+ */
+async function routeTurn(routing: RoutingDependencies, orgId: OrgId, project: string, body: { model?: ModelIdentifier | undefined; classifierModel?: ModelIdentifier | undefined }): Promise<{ route: ModelRoute; models: string[]; wire?: InvocationModelRoute }> {
+  const sources = await effectiveSources(routing, orgId, project);
+  if (sources === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
+  const assistant = sources.stored.assistantModel;
+  const rovara = sources.order.includes("rovara");
+  if (assistant === undefined && !rovara) {
+    throw agentXError("MODEL_NOT_ALLOWED", "Your company's AI sources don't include Rovara's AI, so Slack has no model to answer with. Ask an admin to set an assistant model.");
+  }
+  const model: ModelIdentifier = assistant ?? body.model ?? { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.orchestrator, routing.rovaraGeography) };
+  const [route] = await servingRoutes(routing, { orgId, project, model });
+  if (route?.alias === undefined) {
+    throw agentXError("MODEL_NOT_ALLOWED", `Slack's model ${model.provider}/${model.modelId} isn't served by any AI source your company can use. Ask an admin to set another assistant model.`);
+  }
+  const classifier: ModelIdentifier = body.classifierModel ?? { provider: "amazon-bedrock", modelId: inGeography(DEFAULT_BEDROCK_MODELS.classifier, routing.rovaraGeography) };
+  const classifierRoute = rovara ? (await servingRoutes(routing, { orgId, project, model: classifier })).find((candidate) => candidate.sourceId === "rovara") : undefined;
+  const wire = routeOnWire(route, model);
+  return { route, models: [...new Set([route.alias, ...(classifierRoute?.alias === undefined ? [] : [classifierRoute.alias])])], ...(wire === undefined ? {} : { wire }) };
+}
+
+/** What one Slack turn's key may spend, and how long it lasts (a turn holds a queue message for at most 15 minutes). */
+const PER_TURN_BUDGET_USD = 2;
+const TURN_KEY_TTL_SECONDS = 900;
+
+/**
+ * Task 29: who pays for Slack-thread work, which has no task record: the project its channel is bound to is the place, the member the Slack user
+ * signs in as pays (a person starting from Slack), and the project pays instead when its settings say so or when no member is known. The agent is
+ * Rovara Code, which a thread's workers run.
+ */
+export async function slackWorkPayment(dependencies: AwsBrokerDependencies, orgId: OrgId, project: string, requester: OperationRequester | undefined): Promise<{ payer: Payer; place: Place; agentId: AgentId }> {
+  const linked = await linkedRequester(dependencies, orgId, requester);
+  const projectPays = (await readProjectAi(dependencies, orgId, project)).projectPays;
+  const payer: Payer = linked === undefined
+    ? { kind: "project", project }
+    : resolvePayer({ origin: "slack", project, projectPays, agentId: ROVARA_CODE_AGENT_ID, startedBy: { developerId: linked } });
+  return { payer, place: { project }, agentId: ROVARA_CODE_AGENT_ID };
+}
+
+/**
+ * The member who asked for an operation, when the org knows them: a developer requester, or the developer a Slack user
+ * signs in as. Anyone the org has no member record for is unknown, so a key is not minted in a name the proxy lacks.
+ */
+export async function linkedRequester(dependencies: AwsBrokerDependencies, orgId: OrgId, requester: OperationRequester | undefined): Promise<string | undefined> {
+  if (requester === undefined) return undefined;
+  const developerId = "kind" in requester ? requester.developerId : developerIdForSlackUser(requester.userId);
+  const membership = await orgStoreOf(dependencies).orgForDeveloper(developerId);
+  return membership?.orgId === orgId ? developerId : undefined;
+}
+
+/** How long a task's model key lasts; the worker asks for a new one a minute before it ends. */
+const MODEL_KEY_TTL_SECONDS = 3_600;
+
+/** #341: the developer who owns the task a workspace runs now (the effective owner, Plan 5 Task 12a), or undefined for a workspace that runs no developer task. */
+export async function workspaceTaskOwner(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<string | undefined> {
+  const task = await workspaceTask(dependencies, workspaceId);
+  return task === undefined ? undefined : effectiveTaskOwner(task).developerId;
+}
+
+export async function gatedTaskWorkspace(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<boolean> {
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
+  return pointer !== undefined && (await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)))?.workflow !== undefined;
+}
+
+/** Ordinary turn admission keeps policy/source/identity fences and its audit within one small transaction. */
+export function boundedTurnAdmission(items:TransactItems):TransactItems {
+  if(items.some(item=>item.Put?.Item?.modelTurnPin!==undefined)&&items.length>25)throw agentXError("RUNTIME_UNAVAILABLE","The turn's atomic model admission is unavailable.");
+  return items;
+}
