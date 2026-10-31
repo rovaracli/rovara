@@ -32,6 +32,8 @@ interface Common {
   serverSecrets: McpServerSecrets;
   /** `parseInstallCidrs(process.env.ROVARA_PRIVATE_MCP_CIDRS)`: the ranges outside which no private MCP server is tested or called. */
   privateCidrs?: readonly string[] | undefined;
+  /** `ROVARA_VPC_CIDRS`: the network Rovara itself runs in, never called as a private MCP server. */
+  rovaraCidrs?: readonly string[] | undefined;
 }
 
 /** Registered servers' tokens, in the org's secret store (the same org-tagged role and path as connection secrets). */
@@ -65,7 +67,7 @@ export function connectionLookupFromStore(deps: OrgConnectionDeps): ConnectionLo
 export function createContextSourcesRuntime(deps: Common & { teamSink?: ContextSourcesRuntime["teamSink"]; teamSearch?: ContextSourcesRuntime["teamSearch"] }): ContextSourcesRuntime {
   const servers = dynamoMcpServerStore(deps);
   return {
-    servers: gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, serverSecrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }) }),
+    servers: gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, serverSecrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }), ...(deps.rovaraCidrs === undefined ? {} : { rovaraCidrs: deps.rovaraCidrs }) }),
     citations: dynamoCitationStore(deps), results: dynamoResultStore(deps),
     ...(deps.teamSink === undefined ? {} : { teamSink: deps.teamSink }), ...(deps.teamSearch === undefined ? {} : { teamSearch: deps.teamSearch, teamRecordAvailable: true }),
   };
@@ -73,7 +75,7 @@ export function createContextSourcesRuntime(deps: Common & { teamSink?: ContextS
 
 export function createContextSourceRouteDependencies(deps: Common & { requireProjectRole: ContextSourceRouteDependencies["requireProjectRole"]; audit?: ContextSourceRouteDependencies["audit"] }): ContextSourceRouteDependencies {
   const servers = dynamoMcpServerStore(deps);
-  const port = gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, serverSecrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }) });
+  const port = gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, serverSecrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }), ...(deps.rovaraCidrs === undefined ? {} : { rovaraCidrs: deps.rovaraCidrs }) });
   return {
     store: dynamoContextSourceStore(deps), env: sourceEnvironment({ edition: deps.edition, connections: deps.connections, servers, port }), now: deps.now,
     requireProjectRole: deps.requireProjectRole, table: { documentClient: deps.documentClient, tableName: deps.tableName }, ...(deps.audit === undefined ? {} : { audit: deps.audit }),
@@ -85,7 +87,7 @@ export function createMcpServerDependencies(deps: Common & { audit?: McpServerDe
     store: dynamoMcpServerStore(deps), edition: deps.edition, now: deps.now, probeAllowed: probeLimiter({ max: 10, windowMs: 600_000, now: deps.now }),
     // The host is handed to the prober only when package-run servers are switched on: with it off the broker never calls the host.
     secrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled,
-    prober: gatewayProber({ ...(deps.mcpHost === undefined || !stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled }) ? {} : { host: hostProbeClient(deps.mcpHost) }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }) }),
+    prober: gatewayProber({ ...(deps.mcpHost === undefined || !stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled }) ? {} : { host: hostProbeClient(deps.mcpHost) }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }), ...(deps.rovaraCidrs === undefined ? {} : { rovaraCidrs: deps.rovaraCidrs }) }),
     ...(deps.audit === undefined ? {} : { audit: deps.audit }), ...(deps.secondAdminToApprove === undefined ? {} : { secondAdminToApprove: deps.secondAdminToApprove }),
   };
 }

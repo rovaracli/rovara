@@ -48,6 +48,8 @@ export interface ServerPortDependencies {
   stdioEnabled?: boolean | undefined;
   /** The install's private address ranges (`parseInstallCidrs(process.env.ROVARA_PRIVATE_MCP_CIDRS)`). None: no private server is called. */
   privateCidrs?: readonly string[] | undefined;
+  /** The network Rovara itself runs in (`ROVARA_VPC_CIDRS`): never called, whatever the allow-list says. */
+  rovaraCidrs?: readonly string[] | undefined;
   /** For a public connection. Default: the existing guard. */
   publicGuard?: McpEndpointGuard | undefined;
   /** For an approved private server. Default: the allow-list guard over `servers`. */
@@ -76,7 +78,7 @@ async function targetOf(deps: ServerPortDependencies, orgId: OrgId, server: Cont
   if (entry === undefined || entry.status !== "approved") throw agentXError("FORBIDDEN", "that MCP server is not approved");
   if (entry.transport.kind === "http") {
     const endpoint = new URL(entry.transport.address);
-    const guard = (deps.privateGuard ?? ((org: OrgId) => privateMcpEndpointGuard({ allowed: () => allowedTargets(deps.servers, org, deps.privateCidrs ?? []) })))(orgId);
+    const guard = (deps.privateGuard ?? ((org: OrgId) => privateMcpEndpointGuard({ allowed: () => allowedTargets(deps.servers, org, deps.privateCidrs ?? []), rovaraCidrs: deps.rovaraCidrs })))(orgId);
     // The server's own token, read now and sent only to this server's checked host and port (the pinned fetch refuses any other origin).
     let token: string | undefined;
     if (entry.hasSecret === true) {
@@ -173,13 +175,13 @@ function classify(error: unknown): McpProbeError {
  * Tests a pasted address: the form and the never-called list apply, the allow-list does not (nothing is approved yet), and the connection is pinned to the checked
  * addresses. `host` serves stdio specs. Every failure is one of the fixed codes.
  */
-export function gatewayProber(deps: { host?: HostProbeClient | undefined; privateCidrs?: readonly string[] | undefined; guard?: McpEndpointGuard | undefined; list?: typeof listMcpTools | undefined; timeoutMs?: number | undefined }): McpProber {
+export function gatewayProber(deps: { host?: HostProbeClient | undefined; privateCidrs?: readonly string[] | undefined; rovaraCidrs?: readonly string[] | undefined; guard?: McpEndpointGuard | undefined; list?: typeof listMcpTools | undefined; timeoutMs?: number | undefined }): McpProber {
   const list = deps.list ?? listMcpTools;
   return {
     async http(address, token) {
       try {
         const endpoint = new URL(address);
-        const fetchImplementation = await (deps.guard ?? probeMcpEndpointGuard({ installCidrs: deps.privateCidrs ?? [] }))(endpoint);
+        const fetchImplementation = await (deps.guard ?? probeMcpEndpointGuard({ installCidrs: deps.privateCidrs ?? [], rovaraCidrs: deps.rovaraCidrs }))(endpoint);
         return toDiscovered(await list({ endpoint, token: token ?? "", signal: AbortSignal.timeout(deps.timeoutMs ?? 15_000), ...(token === undefined ? { auth: NO_TOKEN_AUTH } : {}), fetchImplementation }));
       } catch (error) {
         throw classify(error);

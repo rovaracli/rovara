@@ -8,6 +8,7 @@
 //
 // No certificate, name or range is written into the code: each comes from the install's own configuration. Every wrong value stops synth, naming its setting and never echoing a secret.
 import type { Edition } from "@agentx/contracts";
+import { AGENTX_PRODUCTION_VPC_CIDR } from "./production-foundation.js";
 import { ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, parseEnterpriseEgressCidrs } from "./vpc-endpoints.js";
 
 export const PRIVATE_MCP_CONTEXT_KEYS = {
@@ -22,6 +23,8 @@ const KEYS = PRIVATE_MCP_CONTEXT_KEYS;
 export interface PrivateMcpInstall {
   /** Private ranges for ROVARA_PRIVATE_MCP_CIDRS. Empty: every private server is refused (fail closed). */
   privateCidrs: string[];
+  /** The network Rovara itself runs in, given to the broker (`ROVARA_VPC_CIDRS`) so it refuses the same overlap and never tests or calls an address inside it. Set with `privateCidrs`. */
+  vpcCidrs?: string[];
   /** Always false in a result: asking for package-run servers stops synth. Kept in the type so a later release can lift the refusal in one place. */
   stdioRequested: boolean;
   certificateArn?: string;
@@ -36,6 +39,23 @@ const HOSTED_ZONE_ID = /^Z[0-9A-Z]{1,31}$/u;
 
 const isSet = (value: unknown): boolean => value !== undefined;
 
+/** Whether two IPv4 ranges share an address (ranges nest, so: one contains the other's first address). A range that does not parse overlaps everything. */
+function ipv4RangesOverlap(a: string, b: string): boolean {
+  const parse = (cidr: string): { first: number; mask: number } | undefined => {
+    const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/u.exec(cidr);
+    if (match === null) return undefined;
+    const octets = [match[1]!, match[2]!, match[3]!, match[4]!].map(Number);
+    const prefix = Number(match[5]);
+    if (octets.some((octet) => octet > 255) || prefix > 32) return undefined;
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    return { first: (((octets[0]! << 24) >>> 0) + (octets[1]! << 16) + (octets[2]! << 8) + octets[3]!) >>> 0, mask };
+  };
+  const left = parse(a), right = parse(b);
+  if (left === undefined || right === undefined) return true;
+  const inside = (outer: { first: number; mask: number }, address: number) => ((address & outer.mask) >>> 0) === ((outer.first & outer.mask) >>> 0);
+  return inside(left, right.first) || inside(right, left.first);
+}
+
 function stdioOf(value: unknown): boolean {
   if (value === undefined || value === false || value === "false" || value === 0 || value === "0" || value === "") return false;
   if (value === true || value === "true" || value === 1 || value === "1") return true;
@@ -46,7 +66,7 @@ function stdioOf(value: unknown): boolean {
  * Reads and checks the settings. Outside an Enterprise install none may be set (Public never carries a private network setting). `get` reads one CDK context key
  * (`(key) => app.node.tryGetContext(key)`).
  */
-export function parsePrivateMcpContext(input: { edition: Edition | undefined; get: (key: string) => unknown }): PrivateMcpInstall {
+export function parsePrivateMcpContext(input: { edition: Edition | undefined; get: (key: string) => unknown; /** The install's network; default the production foundation's. */ vpcCidrs?: readonly string[] }): PrivateMcpInstall {
   const cidrsValue = input.get(KEYS.cidrs);
   const cidrsGiven = isSet(cidrsValue) && cidrsValue !== "";
   const stdioRequested = stdioOf(input.get(KEYS.stdio));
@@ -68,7 +88,12 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
     }
   }
 
-  const install: PrivateMcpInstall = { privateCidrs, stdioRequested: false };
+  // A range that shares an address with the network Rovara runs in would let a test of a pasted address find the install's own services.
+  const vpcCidrs = [...(input.vpcCidrs ?? [AGENTX_PRODUCTION_VPC_CIDR])];
+  for (const cidr of privateCidrs) {
+    if (vpcCidrs.some((own) => ipv4RangesOverlap(cidr, own))) throw new Error(`${KEYS.cidrs} entry ${JSON.stringify(cidr)} overlaps the network Rovara itself runs in (${vpcCidrs.join(", ")}); list the customer's own ranges only`);
+  }
+  const install: PrivateMcpInstall = { privateCidrs, stdioRequested: false, ...(privateCidrs.length === 0 ? {} : { vpcCidrs }) };
   const certificateArn = input.get(KEYS.certificateArn);
   if (isSet(certificateArn)) {
     if (typeof certificateArn !== "string" || !ACM_CERTIFICATE_ARN.test(certificateArn)) throw new Error(`${KEYS.certificateArn} must be the ARN of an ACM certificate (arn:aws:acm:<region>:<account>:certificate/<id>)`);
@@ -89,7 +114,7 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
 
 /** The environment variables the broker reads. Only what was set; package-run servers are never switched on from here. */
 export function privateMcpBrokerEnvironment(install: PrivateMcpInstall): Record<string, string> {
-  return install.privateCidrs.length === 0 ? {} : { ROVARA_PRIVATE_MCP_CIDRS: install.privateCidrs.join(",") };
+  return install.privateCidrs.length === 0 ? {} : { ROVARA_PRIVATE_MCP_CIDRS: install.privateCidrs.join(","), ...(install.vpcCidrs === undefined || install.vpcCidrs.length === 0 ? {} : { ROVARA_VPC_CIDRS: install.vpcCidrs.join(",") }) };
 }
 
 /**

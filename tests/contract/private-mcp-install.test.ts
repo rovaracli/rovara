@@ -29,13 +29,23 @@ describe("the private MCP context", () => {
   it("hands the private ranges to the broker as ROVARA_PRIVATE_MCP_CIDRS", () => {
     const install = parsePrivateMcpContext({ edition: "enterprise", get: context({ [KEYS.cidrs]: "10.1.0.0/16, 192.168.4.0/24, 10.1.0.0/16" }) });
     expect(install.privateCidrs).toEqual(["10.1.0.0/16", "192.168.4.0/24"]);
-    expect(privateMcpBrokerEnvironment(install)).toEqual({ ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16,192.168.4.0/24" });
+    expect(privateMcpBrokerEnvironment(install)).toEqual({ ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16,192.168.4.0/24", ROVARA_VPC_CIDRS: "10.42.0.0/16" });
   });
   it("refuses a range that is public, too wide, or not a range, naming this setting", () => {
     for (const cidr of ["8.8.8.0/24", "0.0.0.0/0", "10.0.0.0/7", "10.1.0.0/33", "nonsense", "10.1.0.0"]) {
       expect(() => parsePrivateMcpContext({ edition: "enterprise", get: context({ [KEYS.cidrs]: cidr }) }), cidr).toThrow(new RegExp(KEYS.cidrs, "u"));
     }
     expect(() => parsePrivateMcpContext({ edition: "enterprise", get: context({ [KEYS.cidrs]: ["10.1.0.0/16"] }) })).toThrow(/comma-separated string/u);
+  });
+  it("fix round: refuses a range that overlaps the network Rovara runs in, and tells the broker that network so it refuses the same", () => {
+    for (const cidr of ["10.0.0.0/8", "10.42.0.0/16", "10.42.8.0/24", "10.40.0.0/14"]) {
+      expect(() => parsePrivateMcpContext({ edition: "enterprise", get: context({ [KEYS.cidrs]: cidr }) }), cidr).toThrow(/overlaps the network Rovara/u);
+    }
+    // a range elsewhere is fine, and an install whose network is another range is judged against that one
+    const install = parsePrivateMcpContext({ edition: "enterprise", get: context({ [KEYS.cidrs]: "10.43.0.0/16" }) });
+    expect(privateMcpBrokerEnvironment(install)).toEqual({ ROVARA_PRIVATE_MCP_CIDRS: "10.43.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" });
+    expect(() => parsePrivateMcpContext({ edition: "enterprise", vpcCidrs: ["10.43.0.0/20"], get: context({ [KEYS.cidrs]: "10.43.4.0/24" }) })).toThrow(/overlaps the network Rovara/u);
+    expect(parsePrivateMcpContext({ edition: "enterprise", vpcCidrs: ["10.43.0.0/20"], get: context({ [KEYS.cidrs]: "10.42.0.0/16" }) }).privateCidrs).toEqual(["10.42.0.0/16"]);
   });
   it("keeps package-run servers off: they are never in the broker's environment, and asking for them stops synth", () => {
     expect(privateMcpBrokerEnvironment(parsePrivateMcpContext({ edition: "enterprise", get: context({ [KEYS.cidrs]: "10.1.0.0/16" }) }))).not.toHaveProperty("ROVARA_STDIO_MCP_SERVERS");
@@ -90,7 +100,9 @@ const ENTERPRISE = { agentxEnv: "ent", rovaraEdition: "enterprise", rovaraEnterp
 
 describe("the app, built as `rovara deploy` builds it", () => {
   it("gives the broker the private ranges in an Enterprise install, and nothing private-network by default", () => {
-    expect(brokerEnvironment({ ...ENTERPRISE, [KEYS.cidrs]: "10.1.0.0/16,192.168.4.0/24" }).ROVARA_PRIVATE_MCP_CIDRS).toBe("10.1.0.0/16,192.168.4.0/24");
+    const withRanges = brokerEnvironment({ ...ENTERPRISE, [KEYS.cidrs]: "10.1.0.0/16,192.168.4.0/24" });
+    expect(withRanges.ROVARA_PRIVATE_MCP_CIDRS).toBe("10.1.0.0/16,192.168.4.0/24");
+    expect(withRanges.ROVARA_VPC_CIDRS).toBe("10.42.0.0/16");
     const plain = brokerEnvironment(ENTERPRISE);
     expect(plain).not.toHaveProperty("ROVARA_PRIVATE_MCP_CIDRS");
     expect(plain).not.toHaveProperty("ROVARA_STDIO_MCP_SERVERS");
@@ -98,6 +110,7 @@ describe("the app, built as `rovara deploy` builds it", () => {
   });
   it("stops synth for a wrong setting, for package-run servers, and for any setting outside Enterprise", () => {
     expect(() => buildAgentXApp({ ...ENTERPRISE, [KEYS.cidrs]: "8.8.8.0/24" })).toThrow(new RegExp(KEYS.cidrs, "u"));
+    expect(() => buildAgentXApp({ ...ENTERPRISE, [KEYS.cidrs]: "10.42.0.0/24" })).toThrow(/overlaps the network Rovara/u);
     expect(() => buildAgentXApp({ ...ENTERPRISE, [KEYS.stdio]: "true" })).toThrow(/switched off/u);
     expect(() => buildAgentXApp({ ...ENTERPRISE, [KEYS.certificateArn]: "nope" })).toThrow(new RegExp(KEYS.certificateArn, "u"));
     expect(() => buildAgentXApp({ agentxEnv: "staging", agentxCloud: true, [KEYS.cidrs]: "10.1.0.0/16" })).toThrow(/Enterprise/u);

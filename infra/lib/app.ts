@@ -150,7 +150,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     });
   }
   // The private MCP settings (rovaraPrivateMcpCidrs and the MCP host's certificate): Enterprise only, checked here so a wrong one stops synth, and given to the broker as its environment.
-  const privateMcp = parsePrivateMcpContext({ edition: explicitEdition, get: (key) => app.node.tryGetContext(key) as unknown });
+  const privateMcp = parsePrivateMcpContext({ edition: explicitEdition, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], get: (key) => app.node.tryGetContext(key) as unknown });
   new ControlPlaneStack(app, "AgentXControlPlane", {
     description: "AgentX authenticated control plane and durable dispatch foundation",
     naming,

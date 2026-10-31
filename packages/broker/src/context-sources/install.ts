@@ -2,13 +2,14 @@
 //
 //   ROVARA_EDITION              enterprise | public (unset is Public; anything else stops the install)
 //   ROVARA_PRIVATE_MCP_CIDRS    Enterprise: the private ranges outside which no private MCP server is tested or called (unset: none, so every private server is refused)
+//   ROVARA_VPC_CIDRS            Enterprise: the network Rovara itself runs in (set by the install). A private range that overlaps it stops the install; an address inside it is never tested or called
 //   ROVARA_STDIO_MCP_SERVERS    Enterprise: exactly "1" runs servers from a package through the MCP host. OFF by default; NOT FOR PRODUCTION until the host is redesigned (register ME-14)
 //   MCP_HOST_URL, MCP_HOST_TOKEN  the host's address (https; http only on this machine's loopback) and the bearer the broker presents
 //
 // Public ignores every private-network setting. A host address that is not https stops the install even while package-run servers are off, so a later switch-on cannot send the token in clear.
 import { EditionSchema, agentXError, type Edition } from "@agentx/contracts";
 import type { AuditDeps } from "../audit/outbox.js";
-import { parseInstallCidrs } from "../connections/private-endpoints.js";
+import { cidrBlockListOf, parseInstallCidrs } from "../connections/private-endpoints.js";
 import { contextSourceAudit, mcpServerAudit } from "./audit.js";
 import { connectionLookupFromStore, createContextSourceRouteDependencies, createContextSourcesRuntime, createMcpServerDependencies, serverSecretsFromOrgSecrets } from "./wiring.js";
 import type { OrgConnectionDeps } from "../connections/store.js";
@@ -24,6 +25,8 @@ export interface PrivateMcpInstallConfig {
   edition: Edition;
   /** `parseInstallCidrs(ROVARA_PRIVATE_MCP_CIDRS)`; empty means every private server is refused. */
   privateCidrs: string[];
+  /** `ROVARA_VPC_CIDRS`: the network Rovara runs in. */
+  rovaraCidrs: string[];
   /** True only for Enterprise with `ROVARA_STDIO_MCP_SERVERS=1` and a host. */
   stdioEnabled: boolean;
   mcpHost?: McpHostEndpoint;
@@ -38,19 +41,21 @@ export function privateMcpInstallConfig(env: Environment): PrivateMcpInstallConf
     if (!parsed.success) throw agentXError("CONFIG_INVALID", "ROVARA_EDITION must be exactly enterprise or public");
     edition = parsed.data;
   }
-  if (edition !== "enterprise") return { edition, privateCidrs: [], stdioEnabled: false };
+  if (edition !== "enterprise") return { edition, privateCidrs: [], rovaraCidrs: [], stdioEnabled: false };
 
-  const privateCidrs = parseInstallCidrs(env.ROVARA_PRIVATE_MCP_CIDRS);
+  const rovaraCidrs = (env.ROVARA_VPC_CIDRS ?? "").split(",").map((part) => part.trim()).filter((part) => part !== "");
+  if (cidrBlockListOf(rovaraCidrs) === undefined) throw agentXError("CONFIG_INVALID", "ROVARA_VPC_CIDRS is not a list of ranges such as 10.42.0.0/16");
+  const privateCidrs = parseInstallCidrs(env.ROVARA_PRIVATE_MCP_CIDRS, rovaraCidrs);
   const stdioEnabled = env.ROVARA_STDIO_MCP_SERVERS === "1";
   const url = env.MCP_HOST_URL;
   const token = env.MCP_HOST_TOKEN;
   const hostGiven = url !== undefined && url !== "";
   if (stdioEnabled && !hostGiven) throw agentXError("CONFIG_INVALID", "ROVARA_STDIO_MCP_SERVERS=1 needs MCP_HOST_URL, the address of the MCP host");
-  if (!hostGiven) return { edition, privateCidrs, stdioEnabled: false };
+  if (!hostGiven) return { edition, privateCidrs, rovaraCidrs, stdioEnabled: false };
   // https only, checked now: the token never goes to an http:// address, whether or not package-run servers are on yet.
   assertSecureHostUrl(url);
   if (token === undefined || token === "") throw agentXError("CONFIG_INVALID", "MCP_HOST_URL needs MCP_HOST_TOKEN, the host's bearer token");
-  return { edition, privateCidrs, stdioEnabled, mcpHost: { url, token } };
+  return { edition, privateCidrs, rovaraCidrs, stdioEnabled, mcpHost: { url, token } };
 }
 
 export interface ContextSourcesInstall {
@@ -87,6 +92,7 @@ export function installContextSources(input: ContextSourcesInstallInput): Contex
     serverSecrets: serverSecretsFromOrgSecrets({ env: connectionDeps.env, secrets: connectionDeps.secrets }),
     stdioEnabled: config.stdioEnabled,
     privateCidrs: config.privateCidrs,
+    rovaraCidrs: config.rovaraCidrs,
     ...(config.mcpHost === undefined ? {} : { mcpHost: config.mcpHost }),
   };
   const runtime = createContextSourcesRuntime(common);

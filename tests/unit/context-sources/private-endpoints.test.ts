@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { checkAllowedPrivateEndpoint, checkPrivateEndpointForProbe, isNeverCalledAddress, parseInstallCidrs, parsePrivateTarget, privateMcpEndpointGuard } from "../../../packages/broker/src/connections/private-endpoints.js";
+import { checkAllowedPrivateEndpoint, checkPrivateEndpointForProbe, isNeverCalledAddress, parseInstallCidrs, parsePrivateTarget, privateMcpEndpointGuard, probeMcpEndpointGuard } from "../../../packages/broker/src/connections/private-endpoints.js";
 
 const resolves = (...addresses: string[]) => async () => addresses;
 const INSTALL = ["10.0.0.0/8"];
@@ -94,5 +94,38 @@ describe("review I2: the install's address ranges bound a test and a call", () =
     expect(parseInstallCidrs(undefined)).toEqual([]);
     expect(parseInstallCidrs("")).toEqual([]);
     for (const bad of ["0.0.0.0/0", "8.8.8.0/24", "10.0.0.0/7", "10.0.0.0", "garbage", "10.0.0.0/8,203.0.113.0/24", "169.254.0.0/16", "127.0.0.0/8"]) expect(() => parseInstallCidrs(bad), bad).toThrow();
+  });
+});
+
+describe("fix round: the install's own network is never a private MCP server", () => {
+  const VPC = ["10.42.0.0/16"];
+  it("refuses an install range that overlaps the install network (contains it, sits inside it, or is the same), and accepts a disjoint one", () => {
+    for (const cidr of ["10.0.0.0/8", "10.42.0.0/16", "10.42.5.0/24", "10.40.0.0/14"]) expect(() => parseInstallCidrs(cidr, VPC), cidr).toThrow(/ROVARA_PRIVATE_MCP_CIDRS.*Rovara/u);
+    expect(parseInstallCidrs("10.43.0.0/16, 192.168.4.0/24", VPC)).toEqual(["10.43.0.0/16", "192.168.4.0/24"]);
+    // without the install network given, as before
+    expect(parseInstallCidrs("10.0.0.0/8")).toEqual(["10.0.0.0/8"]);
+  });
+  it("refuses a test of a host that resolves inside the install network before any connection, with the one fixed answer, whatever the ranges say", async () => {
+    const request = vi.fn();
+    for (const address of ["10.42.7.9", "::ffff:10.42.7.9"]) {
+      await expect(checkPrivateEndpointForProbe("https://sim.corp.example/mcp", ["10.0.0.0/8"], resolves(address), VPC), address).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      await expect(checkPrivateEndpointForProbe("https://sim.corp.example/mcp", ["10.0.0.0/8"], resolves(address), VPC), address).rejects.toThrow(/never calls/u);
+    }
+    // the answer is the same as for a metadata address, so an open port in the install network cannot be told from a closed one
+    const metadata = await checkPrivateEndpointForProbe("https://sim.corp.example/mcp", ["10.0.0.0/8"], resolves("169.254.169.254"), VPC).catch((error: Error) => error.message);
+    const inside = await checkPrivateEndpointForProbe("https://sim.corp.example/mcp", ["10.0.0.0/8"], resolves("10.42.7.9"), VPC).catch((error: Error) => error.message);
+    expect(inside).toBe(metadata);
+    const guard = probeMcpEndpointGuard({ installCidrs: ["10.0.0.0/8"], resolveHost: resolves("10.42.7.9"), rovaraCidrs: VPC, request });
+    await expect(guard(new URL("https://sim.corp.example/mcp"))).rejects.toThrow(/never calls/u);
+    expect(request).not.toHaveBeenCalled();
+    // outside the install network the same test passes
+    await expect(checkPrivateEndpointForProbe("https://sim.corp.example/mcp", ["10.0.0.0/8"], resolves("10.43.7.9"), VPC)).resolves.toMatchObject({ addresses: ["10.43.7.9"] });
+  });
+  it("refuses a call to an approved server that now resolves inside the install network", async () => {
+    const allowed = [{ host: "sim.corp.example", port: 443, cidrs: ["10.0.0.0/8"] }];
+    await expect(checkAllowedPrivateEndpoint("https://sim.corp.example/mcp", allowed, resolves("10.42.1.1"), VPC)).rejects.toThrow(/never calls/u);
+    const request = vi.fn();
+    await expect(privateMcpEndpointGuard({ allowed: async () => allowed, resolveHost: resolves("10.42.1.1"), rovaraCidrs: VPC, request })(new URL("https://sim.corp.example/mcp"))).rejects.toThrow(/never calls/u);
+    expect(request).not.toHaveBeenCalled();
   });
 });
