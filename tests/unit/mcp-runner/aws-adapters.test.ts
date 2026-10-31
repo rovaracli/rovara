@@ -139,19 +139,27 @@ describe("EC2 security group adapter (T7)", () => {
       ], IpPermissions: [{ IpProtocol: "tcp", FromPort: 8080, ToPort: 8080, UserIdGroupPairs: [{ GroupId: "sg-3" }] }] },
       { Tags: [] },
     ] }) });
-    const [group, ...rest] = await api.describeGroups({ "rovara:managed": "rovara-mcp", "rovara:server": "mcpx" });
+    const [group, ...rest] = await api.describeGroups({ tags: { "rovara:managed": "rovara-mcp", "rovara:server": "mcpx" }, vpcId: "vpc-1", name: "rovara-mcp-serve-mcpx" });
     expect(rest).toEqual([]);
     expect(group).toEqual({
       groupId: "sg-1", tags: { a: "b" }, foreignRules: 3,
       egress: [{ port: 443, target: { kind: "cidr", cidr: "10.1.2.3/32" } }, { port: 443, target: { kind: "group", groupId: "sg-2" } }, { port: 443, target: { kind: "prefixList", prefixListId: "pl-1" } }],
       ingress: [{ port: 8080, target: { kind: "group", groupId: "sg-3" } }],
     });
-    expect(sent[0]!.input.Filters).toEqual([{ Name: "tag:rovara:managed", Values: ["rovara-mcp"] }, { Name: "tag:rovara:server", Values: ["mcpx"] }]);
+    expect(sent[0]!.input.Filters).toEqual([{ Name: "tag:rovara:managed", Values: ["rovara-mcp"] }, { Name: "tag:rovara:server", Values: ["mcpx"] }, { Name: "vpc-id", Values: ["vpc-1"] }, { Name: "group-name", Values: ["rovara-mcp-serve-mcpx"] }]);
   });
-  it("revokes the default 'all traffic to anywhere' rule of a new group", async () => {
+  it("revokes both default 'all traffic out' rules of a new group, IPv4 and IPv6, and takes a rule that is not there as done", async () => {
     const { api, sent } = ec2();
     await api.revokeDefaultEgress("sg-1");
-    expect(sent[0]).toEqual({ command: "RevokeSecurityGroupEgressCommand", input: { GroupId: "sg-1", IpPermissions: [{ IpProtocol: "-1", IpRanges: [{ CidrIp: "0.0.0.0/0" }] }] } });
+    expect(sent).toEqual([
+      { command: "RevokeSecurityGroupEgressCommand", input: { GroupId: "sg-1", IpPermissions: [{ IpProtocol: "-1", IpRanges: [{ CidrIp: "0.0.0.0/0" }] }] } },
+      { command: "RevokeSecurityGroupEgressCommand", input: { GroupId: "sg-1", IpPermissions: [{ IpProtocol: "-1", Ipv6Ranges: [{ CidrIpv6: "::/0" }] }] } },
+    ]);
+    const missing = ec2({ RevokeSecurityGroupEgressCommand: () => { throw Object.assign(new Error("none"), { name: "InvalidPermission.NotFound" }); } });
+    await expect(missing.api.revokeDefaultEgress("sg-1")).resolves.toBeUndefined();
+    expect(missing.sent).toHaveLength(2);
+    const denied = ec2({ RevokeSecurityGroupEgressCommand: () => { throw Object.assign(new Error("denied"), { name: "UnauthorizedOperation" }); } });
+    await expect(denied.api.revokeDefaultEgress("sg-1")).rejects.toThrow("denied");
   });
   it("authorizes and revokes TCP rules for one port in the right direction, for a host, a group and a prefix list", async () => {
     const { api, sent } = ec2();

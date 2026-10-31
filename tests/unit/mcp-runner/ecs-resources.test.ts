@@ -108,10 +108,12 @@ describe("runner security group rules", () => {
 // A fake cloud: groups and task definitions in memory, every call recorded in order.
 function fakeCloud() {
   const calls: string[] = [];
-  const groups = new Map<string, DescribedGroup & { name: string }>();
+  const groups = new Map<string, DescribedGroup & { name: string; vpcId?: string }>();
   const revisions = new Map<string, Array<{ arn: string; hash: string; definition: RunnerTaskDefinition }>>();
   let counter = 0;
   const failAt = { step: "", times: 0 };
+  const behaviour = { keepIpv6Default: false, vpcOf: "vpc-0123456789abcdef0" };
+  const describeFilters: Array<{ tags: Record<string, string>; vpcId?: string | undefined; name?: string | undefined }> = [];
   const trip = (step: string): void => { if (failAt.step === step && failAt.times > 0) { failAt.times -= 1; throw Object.assign(new Error(step), { name: step === "deleteGroup" ? "DependencyViolation" : "Error" }); } };
   const matches = (group: DescribedGroup, tags: Record<string, string>): boolean => Object.entries(tags).every(([key, value]) => group.tags[key] === value);
   const rulesLabel = (rules: GroupRule[]): string => rules.map(ruleKey).join(",");
@@ -121,11 +123,15 @@ function fakeCloud() {
       counter += 1;
       const groupId = `sg-${String(counter).padStart(17, "0")}`;
       // EC2 gives a new group "all traffic out"
-      groups.set(groupId, { groupId, name: args.name, tags: args.tags, egress: [{ port: -1, target: { kind: "cidr", cidr: "0.0.0.0/0" } }], ingress: [], foreignRules: 0 });
+      // and, in a VPC that has IPv6, "all traffic out" to ::/0 as well (a rule this model cannot express, so it counts as foreign)
+      groups.set(groupId, { groupId, name: args.name, vpcId: args.vpcId, tags: args.tags, egress: [{ port: -1, target: { kind: "cidr", cidr: "0.0.0.0/0" } }], ingress: [], foreignRules: 1 });
       return groupId;
     },
-    async describeGroups(tags) { return [...groups.values()].filter((group) => matches(group, tags)).map((group) => ({ ...group, egress: [...group.egress], ingress: [...group.ingress] })); },
-    async revokeDefaultEgress(groupId) { calls.push("revokeDefaultEgress"); trip("revokeDefaultEgress"); groups.get(groupId)!.egress = []; },
+    async describeGroups(filter) {
+      describeFilters.push(filter);
+      return [...groups.values()].filter((group) => matches(group, filter.tags) && (filter.vpcId === undefined || group.vpcId === filter.vpcId) && (filter.name === undefined || group.name === filter.name)).map((group) => ({ ...group, egress: [...group.egress], ingress: [...group.ingress] }));
+    },
+    async revokeDefaultEgress(groupId) { calls.push("revokeDefaultEgress"); trip("revokeDefaultEgress"); const group = groups.get(groupId)!; group.egress = []; group.foreignRules = behaviour.keepIpv6Default ? 1 : 0; },
     async authorize({ groupId, direction, rules }) { calls.push(`authorize:${direction}:${rulesLabel(rules)}`); trip(`authorize:${direction}`); const group = groups.get(groupId)!; (direction === "egress" ? group.egress : group.ingress).push(...rules); },
     async revoke({ groupId, direction, rules }) {
       calls.push(`revoke:${direction}:${rulesLabel(rules)}`);
@@ -148,7 +154,7 @@ function fakeCloud() {
     async deregisterAll(family) { calls.push(`deregisterAll:${family}`); revisions.delete(family); },
     async listFamilies(prefix) { return [...revisions.keys()].filter((family) => family.startsWith(prefix)); },
   };
-  return { ec2, definitions, calls, groups, revisions, failAt };
+  return { ec2, definitions, calls, groups, revisions, failAt, behaviour, describeFilters };
 }
 
 function setup(over: Partial<EcsResourcesConfig> = {}) {
@@ -169,6 +175,7 @@ describe("per-server resources: ensure", () => {
     const w = setup();
     const made = await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET });
     expect(made).toEqual({ family: `rovara-mcp-serve-${ID}`, securityGroupId: "sg-00000000000000001" });
+    expect(w.groups.get("sg-00000000000000001")!.foreignRules).toBe(0);
     expect(w.calls.slice(0, 4).map((call) => call.split(":").slice(0, 2).join(":"))).toEqual([`createGroup:rovara-mcp-serve-${ID}`, "revokeDefaultEgress", "authorize:ingress", "authorize:egress"]);
     expect(w.calls.at(-1)).toBe(`register:rovara-mcp-serve-${ID}`);
     const group = w.groups.get("sg-00000000000000001")!;
@@ -221,11 +228,54 @@ describe("per-server resources: ensure", () => {
     expect(group.egress.map(ruleKey)).not.toContain("tcp:22:cidr:10.9.9.9/32");
     expect(group.ingress.map(ruleKey)).toEqual(["tcp:8080:group:sg-0123456789abcdef0"]);
   });
-  it("refuses a group that holds rules it cannot read (any protocol, a range of ports), rather than guessing", async () => {
+  it("replaces a group that holds rules it did not make (a half-made group whose clean-up failed, or a hand edit) instead of stalling the server on it", async () => {
     const w = setup();
     await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET });
     w.groups.get("sg-00000000000000001")!.foreignRules = 1;
-    await expect(w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET })).rejects.toThrow(/did not make/u);
+    const made = await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET });
+    expect(made.securityGroupId).toBe("sg-00000000000000002");
+    expect(w.groups.has("sg-00000000000000001")).toBe(false);
+    expect(w.groups.get("sg-00000000000000002")!.foreignRules).toBe(0);
+  });
+  it("does not replace such a group while a task still uses it: it says so and the server does not start in it", async () => {
+    const w = setup();
+    await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET });
+    w.groups.get("sg-00000000000000001")!.foreignRules = 1;
+    w.failAt.step = "deleteGroup"; w.failAt.times = 10;
+    await expect(w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET })).rejects.toThrow();
+    expect(w.groups.has("sg-00000000000000001")).toBe(true);
+  });
+  it("uses a group only when its tags, its VPC and its exact name all match, and refuses two matches", async () => {
+    const w = setup();
+    await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET });
+    // a group with the right tags in another VPC, and one with the right tags and another name, are not this server's group
+    w.groups.set("sg-elsewhere", { ...w.groups.get("sg-00000000000000001")!, groupId: "sg-elsewhere", vpcId: "vpc-other", egress: [] });
+    w.groups.set("sg-renamed", { ...w.groups.get("sg-00000000000000001")!, groupId: "sg-renamed", name: "other-name", egress: [] });
+    expect((await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET })).securityGroupId).toBe("sg-00000000000000001");
+    await w.resources.release("serve", ID);
+    expect(w.groups.has("sg-elsewhere")).toBe(true);
+    expect(w.groups.has("sg-renamed")).toBe(true);
+    expect(w.describeFilters.at(-1)).toEqual({ tags: { "rovara:managed": "rovara-mcp", "rovara:server": ID, "rovara:purpose": "serve" }, vpcId: "vpc-0123456789abcdef0", name: `rovara-mcp-serve-${ID}` });
+    await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET });
+    const mine = [...w.groups.values()].find((group) => group.name === `rovara-mcp-serve-${ID}` && group.vpcId === "vpc-0123456789abcdef0")!;
+    w.groups.set("sg-twin", { ...mine, groupId: "sg-twin" });
+    await expect(w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET })).rejects.toThrow(/more than one/u);
+    await expect(w.resources.release("serve", ID)).rejects.toThrow(/more than one/u);
+  });
+  it("does not start in a group that still holds a default rule (IPv6 all out): it reads the group back, deletes it and says so", async () => {
+    const w = setup();
+    w.behaviour.keepIpv6Default = true;
+    await expect(w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET })).rejects.toThrow(/wanted rules/u);
+    expect(w.groups.size).toBe(0);
+    expect(w.revisions.size).toBe(0);
+  });
+  it("reads an updated group back too, and refuses it if it is not exactly the wanted rules", async () => {
+    const w = setup();
+    await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET });
+    w.state.resolved = [{ host: "jira.corp.example", port: 443, addresses: ["10.1.2.9"] }];
+    const revoke = w.ec2.revoke.bind(w.ec2);
+    w.ec2.revoke = async (args) => { if (args.direction === "egress") return; await revoke(args); };
+    await expect(w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET })).rejects.toThrow(/wanted rules/u);
   });
   it("makes nothing when a destination is refused", async () => {
     const w = setup();
@@ -295,10 +345,12 @@ describe("per-server resources: release and list", () => {
     await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET });
     await w.resources.ensure({ kind: "probe", id: "probe0123456789", spec, secretRef: SECRET });
     // a group whose definition is gone, and a definition whose group is gone
-    w.groups.set("sg-orphan", { groupId: "sg-orphan", name: "x", tags: { "rovara:managed": "rovara-mcp", "rovara:server": "mcporphan0001", "rovara:purpose": "serve" }, egress: [], ingress: [], foreignRules: 0 });
-    w.groups.set("sg-other", { groupId: "sg-other", name: "x", tags: { "rovara:managed": "rovara-mcp", "rovara:server": "evil", "rovara:purpose": "serve" }, egress: [], ingress: [], foreignRules: 0 });
+    w.groups.set("sg-orphan", { groupId: "sg-orphan", name: "x", vpcId: "vpc-0123456789abcdef0", tags: { "rovara:managed": "rovara-mcp", "rovara:server": "mcporphan0001", "rovara:purpose": "serve" }, egress: [], ingress: [], foreignRules: 0 });
+    w.groups.set("sg-other", { groupId: "sg-other", name: "x", vpcId: "vpc-0123456789abcdef0", tags: { "rovara:managed": "rovara-mcp", "rovara:server": "evil", "rovara:purpose": "serve" }, egress: [], ingress: [], foreignRules: 0 });
     w.revisions.set("rovara-mcp-serve-mcpnogroup001", []);
     w.revisions.set("rovara-mcp-serve-notanid", []);
-    expect((await w.resources.list!()).map((item) => `${item.kind}:${item.id}`).sort()).toEqual(["probe:probe0123456789", "serve:mcpnogroup001", "serve:mcporphan0001", `serve:${ID}`]);
+    const listed = await w.resources.list!();
+    expect(w.describeFilters.at(-1)).toEqual({ tags: { "rovara:managed": "rovara-mcp" }, vpcId: "vpc-0123456789abcdef0" });
+    expect(listed.map((item) => `${item.kind}:${item.id}`).sort()).toEqual(["probe:probe0123456789", "serve:mcpnogroup001", "serve:mcporphan0001", `serve:${ID}`]);
   });
 });

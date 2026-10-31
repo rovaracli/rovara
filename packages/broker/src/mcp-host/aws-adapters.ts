@@ -179,8 +179,11 @@ export function ec2GroupApiFromSdk(client: Pick<EC2Client, "send">): Ec2GroupApi
       if (out.GroupId === undefined) throw new Error("the security group was not created");
       return out.GroupId;
     },
-    async describeGroups(tags) {
-      const out = await client.send(new DescribeSecurityGroupsCommand({ Filters: Object.entries(tags).map(([key, value]) => ({ Name: `tag:${key}`, Values: [value] })) }));
+    async describeGroups({ tags, vpcId, name }) {
+      const out = await client.send(new DescribeSecurityGroupsCommand({ Filters: [
+        ...Object.entries(tags).map(([key, value]) => ({ Name: `tag:${key}`, Values: [value] })),
+        ...(vpcId === undefined ? [] : [{ Name: "vpc-id", Values: [vpcId] }]), ...(name === undefined ? [] : [{ Name: "group-name", Values: [name] }]),
+      ] }));
       return (out.SecurityGroups ?? []).filter((group) => group.GroupId !== undefined).map((group): DescribedGroup => {
         const egress = rulesOf(group.IpPermissionsEgress);
         const ingress = rulesOf(group.IpPermissions);
@@ -191,7 +194,12 @@ export function ec2GroupApiFromSdk(client: Pick<EC2Client, "send">): Ec2GroupApi
       });
     },
     async revokeDefaultEgress(groupId) {
-      await client.send(new RevokeSecurityGroupEgressCommand({ GroupId: groupId, IpPermissions: [{ IpProtocol: "-1", IpRanges: [{ CidrIp: "0.0.0.0/0" }] }] }));
+      // A new group has "all traffic out" to 0.0.0.0/0 and, in a VPC that has an IPv6 range, to ::/0. Both go; a rule that is not there is fine.
+      for (const permission of [{ IpProtocol: "-1", IpRanges: [{ CidrIp: "0.0.0.0/0" }] }, { IpProtocol: "-1", Ipv6Ranges: [{ CidrIpv6: "::/0" }] }]) {
+        try { await client.send(new RevokeSecurityGroupEgressCommand({ GroupId: groupId, IpPermissions: [permission] })); } catch (error) {
+          if ((error as { name?: unknown } | null)?.name !== "InvalidPermission.NotFound") throw error;
+        }
+      }
     },
     async authorize({ groupId, direction, rules }) {
       const input = { GroupId: groupId, IpPermissions: rules.map(permissionOf) };

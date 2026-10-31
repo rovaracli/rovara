@@ -131,9 +131,9 @@ export interface DescribedGroup { groupId: string; tags: Record<string, string>;
 
 export interface Ec2GroupApi {
   createGroup(input: { name: string; description: string; vpcId: string; tags: Record<string, string> }): Promise<string>;
-  /** The groups whose tags include all of `tags`. */
-  describeGroups(tags: Record<string, string>): Promise<DescribedGroup[]>;
-  /** Removes the "all traffic to 0.0.0.0/0" rule EC2 puts on a new group. */
+  /** The groups that match ALL of the filter: the tags, and the VPC and the exact group name when given. */
+  describeGroups(filter: { tags: Record<string, string>; vpcId?: string | undefined; name?: string | undefined }): Promise<DescribedGroup[]>;
+  /** Removes the "all traffic" egress rules EC2 puts on a new group: to 0.0.0.0/0 and, in a VPC with IPv6, to ::/0. A rule that is not there is fine. */
   revokeDefaultEgress(groupId: string): Promise<void>;
   authorize(input: { groupId: string; direction: "egress" | "ingress"; rules: GroupRule[] }): Promise<void>;
   revoke(input: { groupId: string; direction: "egress" | "ingress"; rules: GroupRule[] }): Promise<void>;
@@ -225,19 +225,34 @@ export function ecsServerResources(config: EcsResourcesConfig): ServerResources 
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
   const tagsOf = (kind: "serve" | "probe", id: string): Record<string, string> => ({ [MANAGED_TAG]: MANAGED_VALUE, "rovara:server": id, "rovara:purpose": kind });
 
-  async function removeGroup(kind: "serve" | "probe", id: string): Promise<void> {
-    const found = await config.groups.describeGroups(tagsOf(kind, id));
-    for (const group of found) {
-      for (let attempt = 0; ; attempt += 1) {
-        try { await config.groups.deleteGroup(group.groupId); break; } catch (error) {
-          const name = (error as { name?: unknown } | null)?.name;
-          if (name === "InvalidGroup.NotFound") break;
-          // A stopped task releases its network interface after a while; until then the group is in use.
-          if (name !== "DependencyViolation" || attempt + 1 >= retries) throw error;
-          await sleep(retryMs);
-        }
+  const nameOf = (kind: "serve" | "probe", id: string): string => `rovara-mcp-${kind}-${id}`;
+  /** The one group of a server: matched by its tags AND its VPC AND its exact name. More than one match is not guessed at. */
+  async function findGroup(kind: "serve" | "probe", id: string): Promise<DescribedGroup | undefined> {
+    const found = await config.groups.describeGroups({ tags: tagsOf(kind, id), vpcId: config.vpcId, name: nameOf(kind, id) });
+    if (found.length > 1) throw new Error("more than one security group matches this server");
+    return found[0];
+  }
+  /** Deletes a group, waiting (a few tries) for a stopped task to let go of it. A group that is already gone is deleted. */
+  async function deleteGroupPatiently(groupId: string): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try { await config.groups.deleteGroup(groupId); return; } catch (error) {
+        const name = (error as { name?: unknown } | null)?.name;
+        if (name === "InvalidGroup.NotFound") return;
+        // A stopped task releases its network interface after a while; until then the group is in use.
+        if (name !== "DependencyViolation" || attempt + 1 >= retries) throw error;
+        await sleep(retryMs);
       }
     }
+  }
+  async function removeGroup(kind: "serve" | "probe", id: string): Promise<void> {
+    const group = await findGroup(kind, id);
+    if (group !== undefined) await deleteGroupPatiently(group.groupId);
+  }
+  /** The group holds exactly the wanted rules and nothing else (in particular no default rule that was left). */
+  function exactlyWanted(group: DescribedGroup | undefined, wanted: { egress: GroupRule[]; ingress: GroupRule[] }): boolean {
+    if (group === undefined || group.foreignRules > 0) return false;
+    const same = (left: GroupRule[], right: GroupRule[]): boolean => left.length === right.length && new Set(left.map(ruleKey)).size === left.length && right.every((rule) => left.some((other) => ruleKey(other) === ruleKey(rule)));
+    return same(group.egress, wanted.egress) && same(group.ingress, wanted.ingress);
   }
 
   return {
@@ -248,14 +263,18 @@ export function ecsServerResources(config: EcsResourcesConfig): ServerResources 
       const resolved = await config.resolveDestinations(spec.destinations);
       const wanted = runnerGroupRules(config.endpoints, resolved);
       // 2. The security group: made empty, then filled; or an existing one brought to exactly the wanted rules.
-      const [existing] = await config.groups.describeGroups(tagsOf(kind, id));
+      let existing = await findGroup(kind, id);
+      // A group with a rule this controller did not make (a half-made group whose clean-up failed, or one edited by hand) is replaced, not trusted and not left to stall the server.
+      if (existing !== undefined && existing.foreignRules > 0) { await deleteGroupPatiently(existing.groupId); existing = undefined; }
       let groupId: string;
       if (existing === undefined) {
-        groupId = await config.groups.createGroup({ name: `rovara-mcp-${kind}-${id}`, description: `Rovara MCP runner ${kind} ${id}`, vpcId: config.vpcId, tags: tagsOf(kind, id) });
+        groupId = await config.groups.createGroup({ name: nameOf(kind, id), description: `Rovara MCP runner ${kind} ${id}`, vpcId: config.vpcId, tags: tagsOf(kind, id) });
         try {
           await config.groups.revokeDefaultEgress(groupId);
           await config.groups.authorize({ groupId, direction: "ingress", rules: wanted.ingress });
           await config.groups.authorize({ groupId, direction: "egress", rules: wanted.egress });
+          // Read it back: no task starts in a group that does not hold exactly what was wanted.
+          if (!exactlyWanted(await findGroup(kind, id), wanted)) throw new Error("the security group does not hold the wanted rules");
         } catch (error) {
           // A group that could not be made exactly right is not left behind.
           await config.groups.deleteGroup(groupId).catch(() => undefined);
@@ -264,7 +283,6 @@ export function ecsServerResources(config: EcsResourcesConfig): ServerResources 
         config.onEgressChange?.({ serverId: id, added: resolved.flatMap((item) => item.addresses.map((address) => `${address}:${item.port}`)), removed: [] });
       } else {
         groupId = existing.groupId;
-        if (existing.foreignRules > 0) throw new Error("the security group holds rules this controller did not make");
         const have = new Map(existing.egress.map((rule) => [ruleKey(rule), rule]));
         const want = new Map(wanted.egress.map((rule) => [ruleKey(rule), rule]));
         const add = [...want.entries()].filter(([key]) => !have.has(key)).map(([, rule]) => rule);
@@ -279,6 +297,7 @@ export function ecsServerResources(config: EcsResourcesConfig): ServerResources 
         if (drop.length > 0) await config.groups.revoke({ groupId, direction: "egress", rules: drop });
         const cidrs = (rules: GroupRule[]): string[] => rules.flatMap((rule) => (rule.target.kind === "cidr" ? [`${rule.target.cidr.replace("/32", "")}:${rule.port}`] : []));
         if (add.length > 0 || drop.length > 0) config.onEgressChange?.({ serverId: id, added: cidrs(add), removed: cidrs(drop) });
+        if (!exactlyWanted(await findGroup(kind, id), wanted)) throw new Error("the security group does not hold the wanted rules");
       }
       // 3. The task definition: registered when there is none or the definition changed (a new image, size or secret), and left alone otherwise.
       const definition = buildRunnerTaskDefinition({
@@ -307,7 +326,7 @@ export function ecsServerResources(config: EcsResourcesConfig): ServerResources 
           if ((kind === "serve" ? SERVE_ID : PROBE_ID).test(id)) found.set(`${kind}:${id}`, { kind, id });
         }
       }
-      for (const group of await config.groups.describeGroups({ [MANAGED_TAG]: MANAGED_VALUE })) {
+      for (const group of await config.groups.describeGroups({ tags: { [MANAGED_TAG]: MANAGED_VALUE }, vpcId: config.vpcId })) {
         const kind = group.tags["rovara:purpose"];
         const id = group.tags["rovara:server"];
         if ((kind === "serve" || kind === "probe") && id !== undefined && (kind === "serve" ? SERVE_ID : PROBE_ID).test(id)) found.set(`${kind}:${id}`, { kind, id });
