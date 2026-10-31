@@ -43,8 +43,11 @@ export interface CompanyLocks {
   retentionCeiling?: Partial<Record<RecordSourceKind | "default", RetentionMode>>;
 }
 
+/** A ceiling that is not a retention mode is treated as `A` (keep nothing): fail closed (review M-3). */
 function ceilingFor(locks: CompanyLocks | undefined, source: RecordSourceKind): RetentionMode | undefined {
-  return locks?.retentionCeiling?.[source] ?? locks?.retentionCeiling?.default;
+  const raw = locks?.retentionCeiling?.[source] ?? locks?.retentionCeiling?.default;
+  if (raw === undefined) return undefined;
+  return (RETENTION_ORDER as readonly string[]).includes(raw) ? raw : "A";
 }
 
 /** A lock fixes the mode. An unknown stored value counts as `off` (fail closed). */
@@ -76,33 +79,36 @@ export type RetentionCheck = { ok: true; needsSecondPerson: boolean } | { ok: fa
  * Checks a request to set a source's retention. Raising retention (for example B to C, or C to D) is a less-safe change and needs a second
  * person in Enterprise (design 4.2, SOURCE# config).
  */
-export function checkRetentionChange(input: { edition: TeamRecordEdition; source: string; from: RetentionMode; to: string; locks?: CompanyLocks }): RetentionCheck {
+export function checkRetentionChange(input: { edition: TeamRecordEdition; source: string; stored: string | undefined; to: string; locks?: CompanyLocks }): RetentionCheck {
   if (!(SOURCES as readonly string[]).includes(input.source)) return { ok: false, refusal: "SOURCE_UNKNOWN" };
   const source = input.source as RecordSourceKind;
   if (!(allowedRetention(input.edition, source) as string[]).includes(input.to)) return { ok: false, refusal: "RETENTION_NOT_OFFERED" };
   const to = input.to as RetentionMode;
   const ceiling = ceilingFor(input.locks, source);
   if (ceiling !== undefined && rank(to) > rank(ceiling)) return { ok: false, refusal: "RETENTION_ABOVE_COMPANY_CEILING" };
-  return { ok: true, needsSecondPerson: input.edition === "enterprise" && rank(to) > rank(input.from) };
+  // The starting point is derived from the stored row, never taken from the caller (review M-4).
+  const from = effectiveRetention(input.edition, source, input.stored, input.locks);
+  return { ok: true, needsSecondPerson: input.edition === "enterprise" && rank(to) > rank(from) };
 }
 
 export type SlackScope = "public_channel" | "private_channel" | "dm" | "mpim" | "slack_connect";
 
 /**
  * Which Slack places may be a source (design 4.4.1). Slack Connect: never. DMs and group DMs: Enterprise only, and only added explicitly.
- * Private channels: only added explicitly (and a less-safe change in Enterprise), in either edition.
+ * Private channels: only added explicitly, in either edition. In Enterprise adding a private channel, DM or group DM is a less-safe change
+ * that needs a second person (design 4.2, review M-5).
  */
-export function slackScopeAllowed(edition: TeamRecordEdition, scope: SlackScope): { allowed: boolean; explicitOnly: boolean } {
+export function slackScopeAllowed(edition: TeamRecordEdition, scope: SlackScope): { allowed: boolean; explicitOnly: boolean; needsSecondPerson: boolean } {
   switch (scope) {
     case "public_channel":
-      return { allowed: true, explicitOnly: false };
+      return { allowed: true, explicitOnly: false, needsSecondPerson: false };
     case "private_channel":
-      return { allowed: true, explicitOnly: true };
+      return { allowed: true, explicitOnly: true, needsSecondPerson: edition === "enterprise" };
     case "dm":
     case "mpim":
-      return { allowed: edition === "enterprise", explicitOnly: true };
+      return { allowed: edition === "enterprise", explicitOnly: true, needsSecondPerson: edition === "enterprise" };
     case "slack_connect":
-      return { allowed: false, explicitOnly: true };
+      return { allowed: false, explicitOnly: true, needsSecondPerson: false };
   }
 }
 

@@ -10,6 +10,35 @@ const KMS_KEY_ARN = /^arn:aws[a-z-]*:kms:[a-z0-9-]+:\d{12}:key\/[0-9a-f-]{36}$/;
 const ROLE_ARN = /^arn:aws[a-z-]*:iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/;
 const MAX_ATHENA_USERS = 20;
 
+/**
+ * The key-policy statements the customer's KMS key needs so S3 Tables maintenance (compaction, snapshot expiry, unreferenced-file removal)
+ * and S3 Vectors indexing can use it (review I-6). The key is imported by ARN, so CDK cannot add them: the install emits them (stack output
+ * `TeamRecordKmsKeyPolicyStatements`) for the customer to add to the key policy. Without them maintenance fails quietly, which also breaks the
+ * deletion promise. [verify] the exact service principal names, the actions and the aws:SourceAccount condition against the S3 Tables and
+ * S3 Vectors encryption pages, then run the post-deploy check (table maintenance status healthy) in the test environment.
+ */
+export function kmsKeyPolicyStatements(account: string): Array<Record<string, unknown>> {
+  const condition = { StringEquals: { "aws:SourceAccount": account } };
+  return [
+    {
+      Sid: "TeamRecordS3TablesMaintenance",
+      Effect: "Allow",
+      Principal: { Service: ["maintenance.s3tables.amazonaws.com", "s3tables.amazonaws.com"] },
+      Action: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
+      Resource: "*",
+      Condition: condition,
+    },
+    {
+      Sid: "TeamRecordS3VectorsIndexing",
+      Effect: "Allow",
+      Principal: { Service: ["indexing.s3vectors.amazonaws.com", "s3vectors.amazonaws.com"] },
+      Action: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
+      Resource: "*",
+      Condition: condition,
+    },
+  ];
+}
+
 export interface TeamRecordParameters {
   readonly edition: TeamRecordEditionName;
   readonly embeddingModelId: string;

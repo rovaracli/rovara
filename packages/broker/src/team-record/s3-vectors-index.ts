@@ -7,7 +7,6 @@ import {
   buildMetadataFilter,
   parseMetadata,
   validateMetadata,
-  vectorBucketFor,
   vectorIndexName,
   NON_FILTERABLE_KEYS,
   type BatchResult,
@@ -86,8 +85,8 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
 
 export interface S3VectorsIndexOptions {
   port: S3VectorsPort;
-  /** The cell's vector buckets. Public: one per 8,000 workspaces. Enterprise: one. */
-  buckets: readonly string[];
+  /** The workspace's vector bucket, read from where the workspace stored its assignment (review I-7). Never derived from a list at run time. */
+  bucket: string;
   /** From the caller's org, never from a request body. */
   workspaceId: string;
   dimension: number;
@@ -105,7 +104,8 @@ export class S3VectorsIndex implements VectorIndex {
     if (!Number.isInteger(options.dimension) || options.dimension < 1 || options.dimension > S3_VECTORS_LIMITS.dimensionMax) throw new Error("team-record: index dimension is not valid");
     this.dimension = options.dimension;
     this.port = options.port;
-    this.bucket = vectorBucketFor(options.workspaceId, options.buckets);
+    if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(options.bucket)) throw new Error("team-record: vector bucket name is not valid");
+    this.bucket = options.bucket;
     this.indexName = vectorIndexName(options.workspaceId);
     this.retry = options.retry ?? DEFAULT_RETRY;
   }

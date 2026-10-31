@@ -42,17 +42,17 @@ describe("team record storage per edition", () => {
   const actions = (b: ReturnType<typeof build>) => actionsOf(b.storage.brokerStatements());
 
   it("Public: vector buckets without a pinned index, the lake, run-time index creation, and no analyst policy", () => {
-    const b = build({}, { publicVectorBucketCount: 2 });
-    b.template.resourceCountIs("AWS::S3Vectors::VectorBucket", 2);
+    const b = build({});
+    b.template.resourceCountIs("AWS::S3Vectors::VectorBucket", 1);
     b.template.resourceCountIs("AWS::S3Vectors::Index", 0);
     b.template.resourceCountIs("AWS::S3Tables::Table", 4);
     b.template.resourceCountIs("AWS::IAM::Policy", 0);
     expect(actions(b)).toContain("s3vectors:CreateIndex");
-    expect(b.storage.environment).toMatchObject({ ROVARA_EDITION: "public", TEAM_RECORD_LAKE_ENABLED: "true", TEAM_RECORD_VECTOR_BUCKETS: "rovara-test-record-vectors-1,rovara-test-record-vectors-2" });
+    expect(b.storage.environment).toMatchObject({ ROVARA_EDITION: "public", TEAM_RECORD_LAKE_ENABLED: "true", TEAM_RECORD_VECTOR_BUCKETS: "rovara-test-record-vectors" });
   });
 
   it("Enterprise: one bucket with its pinned index, their key everywhere, no run-time index creation, analysts get read-only SQL", () => {
-    const b = build({ edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme", athenaUsers: [ROLE] }, { publicVectorBucketCount: 5 });
+    const b = build({ edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme", athenaUsers: [ROLE] });
     b.template.resourceCountIs("AWS::S3Vectors::VectorBucket", 1);
     b.template.resourceCountIs("AWS::S3Vectors::Index", 1);
     expect(actions(b)).not.toContain("s3vectors:CreateIndex");
@@ -64,6 +64,23 @@ describe("team record storage per edition", () => {
     expect(analystActions).not.toContain("s3tables:UpdateTableMetadataLocation");
     expect(analystActions.some((a) => a.startsWith("s3vectors:"))).toBe(false);
     expect(policies[0]!.Properties.Roles).toEqual(["analyst"]);
+  });
+
+  it("I-6: with a customer key the stack prints the key-policy statements for S3 Tables maintenance and S3 Vectors indexing; without one it prints nothing", () => {
+    const withKey = build({ edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme" });
+    const outputs = withKey.template.toJSON().Outputs as Record<string, { Value: unknown }>;
+    const value = JSON.stringify(outputs[Object.keys(outputs).find((name) => name.includes("KmsKeyPolicyStatements"))!]!.Value);
+    expect(value).toContain("maintenance.s3tables.amazonaws.com");
+    expect(value).toContain("indexing.s3vectors.amazonaws.com");
+    expect(value).toContain("kms:GenerateDataKey");
+    expect(value).toContain("aws:SourceAccount");
+    expect(build({}).template.toJSON().Outputs).toBeUndefined();
+  });
+
+  it("M-14: analysts cannot stop the broker's queries", () => {
+    const b = build({ edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme", athenaUsers: [ROLE] });
+    const analystActions = policiesOf(b.template)[0]!.Properties.PolicyDocument.Statement.flatMap((s) => [s.Action].flat());
+    expect(analystActions).not.toContain("athena:StopQueryExecution");
   });
 
   it("lakeEnabled false leaves no tables, workgroup or Athena rights", () => {
@@ -92,6 +109,7 @@ describe("team record storage per edition", () => {
 
   it("refuses a bad name prefix and an out-of-range bucket count", () => {
     expect(() => build({}, { namePrefix: "Bad Prefix" })).toThrow(/namePrefix/);
-    expect(() => build({}, { publicVectorBucketCount: 0 })).toThrow(/1 to 20/);
+    expect(() => build({}, { publicVectorBucketCount: 0 })).toThrow(/must be 1/);
+    expect(() => build({}, { publicVectorBucketCount: 2 })).toThrow(/must be 1/);
   });
 });

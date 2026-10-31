@@ -1,19 +1,21 @@
 // E1: the whole Team-record storage of one install or cell: vector buckets (R3), the lake (R4) and the rights the broker needs.
 // The hot DynamoDB table (task R2, record lane) is not part of this construct. The controller adds `brokerStatements()` to the broker role
 // and `environment` to the broker environment when the stack is wired (see report.md, "Wiring pending").
-import { Stack, aws_iam as iam } from "aws-cdk-lib";
+import { CfnOutput, Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { teamRecordEmbeddingFamily } from "@agentx/contracts";
 import { TeamRecordLake } from "./team-record-lake.js";
-import { teamRecordParameters, type TeamRecordContext, type TeamRecordParameters } from "./team-record-edition.js";
+import { kmsKeyPolicyStatements, teamRecordParameters, type TeamRecordContext, type TeamRecordParameters } from "./team-record-edition.js";
 import { TeamRecordVectors } from "./team-record-vectors.js";
 
 export interface TeamRecordStorageProps {
   /** Resource-name prefix, for example `rovara-staging`. Lowercase letters, digits and hyphens. */
   readonly namePrefix: string;
   readonly context: TeamRecordContext;
-  /** Public cells: how many vector buckets (each holds about 8,000 workspace indexes). Enterprise is always one. */
+  /** Only 1 is allowed until each workspace stores its assigned vector bucket (review I-7). */
   readonly publicVectorBucketCount?: number;
+  /** The broker role or principal. When given, vector access goes through a data role with per-workspace session policies (review I-8). */
+  readonly brokerPrincipal?: iam.IPrincipal;
   readonly bytesScannedCutoffPerQuery?: number;
 }
 
@@ -28,12 +30,13 @@ export class TeamRecordStorage extends Construct {
     this.parameters = teamRecordParameters(props.context);
     const params = this.parameters;
     const count = params.edition === "enterprise" ? 1 : (props.publicVectorBucketCount ?? 1);
-    if (!Number.isInteger(count) || count < 1 || count > 20) throw new Error("team record: publicVectorBucketCount must be 1 to 20");
+    if (count !== 1) throw new Error("team record: publicVectorBucketCount must be 1 until each workspace stores its assigned vector bucket");
 
     this.vectors = new TeamRecordVectors(this, "Vectors", {
       bucketNames: Array.from({ length: count }, (_, i) => `${props.namePrefix}-record-vectors${count === 1 ? "" : `-${i + 1}`}`),
       ...(params.kmsKeyArn === undefined ? {} : { kmsKeyArn: params.kmsKeyArn }),
       dimension: params.dimension,
+      ...(props.brokerPrincipal === undefined ? {} : { brokerPrincipal: props.brokerPrincipal }),
       ...(params.enterpriseWorkspaceId === undefined ? {} : { enterpriseWorkspaceId: params.enterpriseWorkspaceId }),
     });
 
@@ -45,6 +48,14 @@ export class TeamRecordStorage extends Construct {
           ...(props.bytesScannedCutoffPerQuery === undefined ? {} : { bytesScannedCutoffPerQuery: props.bytesScannedCutoffPerQuery }),
         })
       : undefined;
+
+    // The customer's key policy must name the S3 Tables and S3 Vectors service principals (review I-6). The install prints the statements.
+    if (params.kmsKeyArn !== undefined) {
+      new CfnOutput(this, "KmsKeyPolicyStatements", {
+        description: "Add these statements to the KMS key policy of the Team-record key (S3 Tables maintenance, S3 Vectors indexing). [verify] in the test environment.",
+        value: Stack.of(this).toJsonString(kmsKeyPolicyStatements(Stack.of(this).account)),
+      });
+    }
 
     // Enterprise: the customer's own admins get read-only SQL on their workgroup. Public has none.
     if (this.lake !== undefined && params.athenaUsers.length > 0) {

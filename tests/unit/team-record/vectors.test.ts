@@ -4,7 +4,7 @@ import {
   buildMetadataFilter,
   searchVisible,
   validateMetadata,
-  vectorBucketFor,
+  chooseVectorBucketForNewWorkspace,
   vectorIndexName,
   type VectorHit,
   type VectorIndex,
@@ -34,7 +34,7 @@ function fakePort(over: Partial<S3VectorsPort> = {}) {
   };
   return { port, calls };
 }
-const make = (port: S3VectorsPort) => new S3VectorsIndex({ port, buckets: ["b1"], workspaceId: "ws1", dimension: DIM, retry: noSleep });
+const make = (port: S3VectorsPort) => new S3VectorsIndex({ port, bucket: "bucket-1", workspaceId: "ws1", dimension: DIM, retry: noSleep });
 const err = (code: string) => Object.assign(new Error("x"), { code });
 
 describe("metadata filter", () => {
@@ -73,8 +73,8 @@ describe("index naming and isolation", () => {
     expect(vectorIndexName("ws-b")).not.toBe(a);
   });
   it("picks a bucket deterministically and refuses an empty list", () => {
-    expect(vectorBucketFor("ws-a", ["b1", "b2", "b3"])).toBe(vectorBucketFor("ws-a", ["b1", "b2", "b3"]));
-    expect(() => vectorBucketFor("ws-a", [])).toThrow(/bucket/);
+    expect(chooseVectorBucketForNewWorkspace("ws-a", ["b1", "b2", "b3"])).toBe(chooseVectorBucketForNewWorkspace("ws-a", ["b1", "b2", "b3"]));
+    expect(() => chooseVectorBucketForNewWorkspace("ws-a", [])).toThrow(/bucket/);
   });
   it("sends every request to the index of the workspace it was built for", async () => {
     const { port, calls } = fakePort();
@@ -83,7 +83,7 @@ describe("index naming and isolation", () => {
     await index.query({ vector: vec(1), topK: 3, filter: { project: "p1" } });
     await index.delete(["fact:1"]);
     expect(new Set(calls.map((c) => c.request.indexName))).toEqual(new Set([vectorIndexName("ws1")]));
-    expect(new Set(calls.map((c) => c.request.vectorBucketName))).toEqual(new Set(["b1"]));
+    expect(new Set(calls.map((c) => c.request.vectorBucketName))).toEqual(new Set(["bucket-1"]));
   });
 });
 

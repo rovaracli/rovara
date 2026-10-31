@@ -1,8 +1,8 @@
-import { App, Stack } from "aws-cdk-lib";
+import { App, Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { teamRecordVectorIndexName } from "@agentx/contracts";
-import { actionsOf, statementJson } from "../support/team-record-cdk.js";
+import { actionsOf, policiesOf, statementJson } from "../support/team-record-cdk.js";
 import { TeamRecordVectors } from "../../infra/lib/team-record-vectors.js";
 
 const KMS = "arn:aws:kms:us-west-2:111122223333:key/11111111-2222-3333-4444-555555555555";
@@ -14,9 +14,9 @@ function stackWith(build: (stack: Stack) => void): Template {
 }
 
 describe("team record vector buckets", () => {
-  it("creates one retained vector bucket per name, KMS-encrypted when a key is given", () => {
-    const template = stackWith((stack) => new TeamRecordVectors(stack, "V", { bucketNames: ["rovara-record-vectors-a", "rovara-record-vectors-b"], kmsKeyArn: KMS }));
-    template.resourceCountIs("AWS::S3Vectors::VectorBucket", 2);
+  it("creates a retained vector bucket, KMS-encrypted when a key is given", () => {
+    const template = stackWith((stack) => new TeamRecordVectors(stack, "V", { bucketNames: ["rovara-record-vectors-a"], kmsKeyArn: KMS }));
+    template.resourceCountIs("AWS::S3Vectors::VectorBucket", 1);
     template.hasResourceProperties("AWS::S3Vectors::VectorBucket", {
       VectorBucketName: "rovara-record-vectors-a",
       EncryptionConfiguration: { SseType: "aws:kms", KmsKeyArn: KMS },
@@ -47,8 +47,21 @@ describe("team record vector buckets", () => {
     const build = (props: ConstructorParameters<typeof TeamRecordVectors>[2]) => () => stackWith((stack) => new TeamRecordVectors(stack, "V", props));
     expect(build({ bucketNames: [] })).toThrow(/at least one/);
     expect(build({ bucketNames: ["Bad_Name"] })).toThrow(/not a valid/);
-    expect(build({ bucketNames: ["same-name", "same-name"] })).toThrow(/differ/);
-    expect(build({ bucketNames: ["aaa-bucket", "bbb-bucket"], enterpriseWorkspaceId: "acme" })).toThrow(/exactly one/);
+    expect(build({ bucketNames: ["aaa-bucket", "bbb-bucket"] })).toThrow(/exactly one vector bucket/);
+    expect(build({ bucketNames: ["aaa-bucket", "bbb-bucket"], enterpriseWorkspaceId: "acme" })).toThrow(/exactly one vector bucket/);
+  });
+
+  it("I-8: with a broker principal the data rights sit on a role the broker assumes, and the broker role itself gets only AssumeRole", () => {
+    const stack = new Stack(new App(), "T", { env: { account: "111122223333", region: "us-west-2" } });
+    const vectors = new TeamRecordVectors(stack, "V", { bucketNames: ["rovara-record-vectors"], brokerPrincipal: new iam.AccountRootPrincipal() });
+    expect(actionsOf(vectors.brokerStatements())).toEqual(["sts:AssumeRole"]);
+    expect(actionsOf(vectors.brokerIndexCreationStatements())).toEqual([]);
+    const template = Template.fromStack(stack);
+    const policies = policiesOf(template);
+    expect(policies).toHaveLength(1);
+    const roleActions = policies[0]!.Properties.PolicyDocument.Statement.flatMap((s) => [s.Action].flat());
+    expect(roleActions).toEqual(expect.arrayContaining(["s3vectors:QueryVectors", "s3vectors:CreateIndex"]));
+    template.hasResourceProperties("AWS::IAM::Role", { MaxSessionDuration: 3600 });
   });
 
   it("grants the broker data actions on index ARNs only; index creation is a separate grant", () => {

@@ -176,8 +176,12 @@ export function vectorIndexName(workspaceId: string): string {
   return teamRecordVectorIndexName(workspaceId);
 }
 
-/** Picks the vector bucket for a workspace from the cell's fixed bucket list (10,000 indexes per bucket; about 8,000 workspaces each). */
-export function vectorBucketFor(workspaceId: string, buckets: readonly string[]): string {
+/**
+ * Picks a vector bucket for a NEW workspace, once, when it is created (10,000 indexes per bucket; about 8,000 workspaces each). The result
+ * must be stored on the workspace and read back from there: running this again after the bucket list changed gives another answer, which
+ * would orphan the workspace's vectors (review I-7). The stack allows one bucket until that storage exists.
+ */
+export function chooseVectorBucketForNewWorkspace(workspaceId: string, buckets: readonly string[]): string {
   assertSafeId(workspaceId, "workspace id");
   if (buckets.length === 0) throw new Error("team-record: no vector bucket is configured");
   const digest = createHash("sha256").update(`team-record-bucket\u0000${workspaceId}`).digest();
