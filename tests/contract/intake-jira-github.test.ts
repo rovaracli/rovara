@@ -268,7 +268,7 @@ function dispatchWorld(options: { members?: Record<string, string> } = {}) {
     log: () => undefined,
     memberOfAccount: async (_org, system, accountId) => (system === "github" ? members.get(accountId) : undefined),
     mayStart: async () => true,
-    start: async (_org, developerId, request) => { started.push({ developerId, source: request.source, binding: request.binding }); return { task: { taskId: `task-${String(started.length)}` }, sessionId: "ses_aaaaaaaaaaaaaaaaaaaa" }; },
+    start: async (_org, developerId, request) => { started.push({ developerId, source: request.source, binding: request.binding }); return { task: { taskId: `task-${String(started.length)}` }, sessionId: `ses_${String(started.length).padStart(20, "0")}` }; },
     sessionOfTicket: async () => undefined,
   };
   const intake = { ingest: async (candidate: IntakeCandidate, options?: { admit?: () => Promise<boolean> }): Promise<IntakeOutcome> => { ingested.push(candidate); return ingestIntake(ports, candidate, options?.admit === undefined ? {} : { admit: options.admit }); } };
@@ -423,6 +423,48 @@ describe("a Rovara Code trigger on a label", () => {
     });
     expect(outcome).toMatchObject({ outcome: "skipped", reason: "intake_outsider" });
     expect(w.started).toEqual([]);
+  });
+});
+
+describe("a re-label after the task ended, through dispatch", () => {
+  const again = (key: string): TriggerEvent => ({ ...LABELED, eventKey: key });
+  function endable() {
+    const w = dispatchWorld();
+    const bound = new Map<string, string>();
+    const ended = new Set<string>();
+    const linked: string[] = [];
+    const start = w.ports.start.bind(w.ports);
+    w.ports.start = async (orgId, developerId, request) => {
+      const answer = await start(orgId, developerId, request);
+      if (request.binding?.kind === "tracker_item") bound.set(request.binding.id, answer.sessionId ?? "");
+      return answer;
+    };
+    w.ports.sessionOfTicket = async (_o, binding) => { const sessionId = bound.get(binding.id); return sessionId === undefined ? undefined : { sessionId, ended: ended.has(sessionId) }; };
+    w.ports.freeTicket = async (_o, sessionId) => { for (const [ticket, id] of bound) if (id === sessionId) bound.delete(ticket); };
+    w.ports.linkPrevious = async (_o, next, previous) => { linked.push(`${next}<${previous}`); };
+    return { w, bound, ended, linked };
+  }
+
+  it("starts a new task for a member's second label event, once, however often it is delivered", async () => {
+    const { w, bound, ended, linked } = endable();
+    await w.trigger();
+    expect((await w.dispatch(LABELED))[0]).toMatchObject({ outcome: "started" });
+    for (const id of bound.values()) ended.add(id);
+    expect((await w.dispatch(again("gh:issue:101:7:labeled:rovara:second")))[0]).toMatchObject({ outcome: "started" });
+    expect((await w.dispatch(again("gh:issue:101:7:labeled:rovara:second")))[0]).toMatchObject({ outcome: "duplicate" });
+    expect((await w.dispatch(LABELED))[0]).toMatchObject({ outcome: "duplicate" });
+    expect(w.started).toHaveLength(2);
+    expect(linked).toHaveLength(1);
+  });
+
+  it("makes an outsider's second label wait, and a label seen while the task still runs a duplicate", async () => {
+    const { w, bound, ended } = endable();
+    await w.trigger();
+    await w.dispatch(LABELED);
+    expect((await w.dispatch(again("running")))[0]).toMatchObject({ outcome: "duplicate" });
+    for (const id of bound.values()) ended.add(id);
+    expect((await w.dispatch({ ...again("by-eve"), actor: { kind: "external", id: "eve", accountId: "999" } }))[0]).toMatchObject({ outcome: "skipped", reason: "intake_outsider" });
+    expect(w.started).toHaveLength(1);
   });
 });
 

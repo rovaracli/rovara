@@ -4,9 +4,10 @@ import { createHash } from "node:crypto";
 
 const REQUEST_NAMESPACE = Buffer.from("7e4a1b9c2d6f4a8e9b0c3d5f7a1e2c48", "hex");
 
-/** Plan 3's request id for the start of one ticket by one member. */
-export function intakeRequestId(orgId: string, system: string, id: string, developerId: string): string {
-  const hash = createHash("sha1").update(REQUEST_NAMESPACE).update(`${orgId}\0${system}\0${id}\0${developerId}`).digest();
+/** Plan 3's request id for the start of one ticket by one member (and, for a ticket asked for again after its task ended, one generation). */
+export function intakeRequestId(orgId: string, system: string, id: string, developerId: string, generation = 1): string {
+  // A ticket asked for again after its task ended is a new start: its generation is part of the id, or the run start would answer the first task.
+  const hash = createHash("sha1").update(REQUEST_NAMESPACE).update(`${orgId}\0${system}\0${id}\0${developerId}${generation > 1 ? `\0${String(generation)}` : ""}`).digest();
   hash[6] = (hash[6]! & 0x0f) | 0x50;
   hash[8] = (hash[8]! & 0x3f) | 0x80;
   const hex = hash.subarray(0, 16).toString("hex");

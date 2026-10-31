@@ -8,7 +8,7 @@
 // `starting` carries a lease: a start that died half way is taken over once its lease ran out, and the start itself is idempotent (its request id is fixed per ticket and member).
 // The title is a person's words; it is kept only inert and cut, and read back as text.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, INTAKE_MAX_WAITING_PER_PROJECT, intakeItemKey, type IntakeStanding, type IntakeTrackerChannel, type IntakeWaitReason, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, INTAKE_MAX_WAITING_PER_PROJECT, intakeEventKey, intakeItemKey, type IntakeStanding, type IntakeTrackerChannel, type IntakeWaitReason, type OrgId } from "@agentx/contracts";
 
 export interface IntakeTable {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -46,6 +46,11 @@ export interface IntakeItemRecord {
   startedBy?: string;
   taskId?: string;
   sessionId?: string;
+  /** 1 for the ticket's first task; each time the ticket is asked for again after its task ended it is one more (it is part of the start's request id). */
+  generation?: number;
+  /** The task and session this generation follows (ids only). */
+  previousTaskId?: string;
+  previousSessionId?: string;
 }
 
 /** How long a start may take before another may take it over. A start takes seconds. */
@@ -95,7 +100,7 @@ export async function claimIntakeItem(table: IntakeTable, input: NewIntakeItem):
   const record: IntakeItemRecord = {
     orgId: input.orgId, project: input.project, itemId: input.itemId, channel: input.channel, system: input.system, id: input.id, url: input.url, title: input.title, requester: input.requester,
     ...(input.writer === undefined ? {} : { writer: input.writer }),
-    state: input.state, since: at, updatedAt: at,
+    state: input.state, since: at, updatedAt: at, generation: 1,
     ...(input.body !== undefined && input.body !== "" ? { body: input.body } : {}),
     ...(input.reason === undefined ? {} : { reason: input.reason }),
     ...(input.state === "starting" ? { leaseUntil: table.now() + INTAKE_START_LEASE_MS, ...(input.startedBy === undefined ? {} : { startedBy: input.startedBy }) } : {}),
@@ -217,4 +222,81 @@ export async function listWaitingIntakeItems(table: IntakeTable, orgId: OrgId, p
     pages += 1;
   } while (start !== undefined && pages < 10);
   return found.sort((a, b) => a.since.localeCompare(b.since)).slice(0, limit);
+}
+
+/**
+ * Takes a label event in: true the first time, false for an event already taken in (a webhook delivered again, a replay). It is given back with `releaseIntakeEvent` when the ticket could
+ * not be handled for a fault that may pass, so the redelivery is handled. Kept for 30 days, far past the age window of an event.
+ */
+export async function claimIntakeEvent(table: IntakeTable, orgId: OrgId, project: string, itemId: string, eventId: string): Promise<boolean> {
+  try {
+    await table.documentClient.send(new PutCommand({
+      TableName: table.tableName,
+      Item: { ...intakeEventKey(orgId, project, itemId, eventId), entityType: "INTAKE_EVENT", orgId, project, at: iso(table), [INDEX_EXPIRY_ATTRIBUTE]: expiryAfter(table, 30) },
+      ConditionExpression: "attribute_not_exists(pk)",
+    }));
+    return true;
+  } catch (error) {
+    if (isConditional(error)) return false;
+    throw error;
+  }
+}
+
+export async function releaseIntakeEvent(table: IntakeTable, orgId: OrgId, project: string, itemId: string, eventId: string): Promise<void> {
+  await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: intakeEventKey(orgId, project, itemId, eventId) })).catch(() => undefined);
+}
+
+/**
+ * A ticket whose task ended is asked for again (a new label event): the item of generation `generation` (which must still be `started`) becomes the next generation, either `starting`
+ * under `holder`'s lease (a member's act) or `waiting` (anyone else's), with the new words and the ids of the task it follows. One conditional update, so of two re-labels only one wins.
+ */
+export async function reopenIntakeItem(
+  table: IntakeTable,
+  input: {
+    orgId: OrgId; project: string; itemId: string; generation: number; to: "waiting" | "starting"; holder?: string | undefined; reason?: IntakeWaitReason | undefined;
+    title: string; body?: string | undefined; writer: string; requester: IntakeItemRecord["requester"]; previousSessionId?: string | undefined; previousTaskId?: string | undefined;
+  },
+): Promise<boolean> {
+  const waiting = input.to === "waiting";
+  const sets = ["#state = :to", "#gen = :next", "#title = :title", "#writer = :writer", "#requester = :requester", "#updated = :at", "#expires = :expires"];
+  const removes = ["#refusal"];
+  const names: Record<string, string> = { "#project": "project", "#state": "state", "#gen": "generation", "#title": "title", "#writer": "writer", "#requester": "requester", "#updated": "updatedAt", "#expires": INDEX_EXPIRY_ATTRIBUTE, "#refusal": "lastRefusal", "#task": "taskId", "#session": "sessionId" };
+  const values: Record<string, unknown> = {
+    ":to": input.to, ":started": "started", ":gen": input.generation, ":next": input.generation + 1, ":title": input.title, ":writer": input.writer, ":requester": input.requester,
+    ":at": iso(table), ":org": input.orgId, ":project": input.project, ":expires": expiryAfter(table, waiting ? INTAKE_WAITING_KEPT_DAYS : INTAKE_STARTED_KEPT_DAYS),
+  };
+  removes.push("#task", "#session");
+  if (input.body !== undefined && input.body !== "") { sets.push("#body = :body"); names["#body"] = "body"; values[":body"] = input.body; } else { removes.push("#body"); names["#body"] = "body"; }
+  if (input.previousSessionId !== undefined) { sets.push("#prevS = :prevS"); names["#prevS"] = "previousSessionId"; values[":prevS"] = input.previousSessionId; }
+  if (input.previousTaskId !== undefined) { sets.push("#prevT = :prevT"); names["#prevT"] = "previousTaskId"; values[":prevT"] = input.previousTaskId; }
+  if (waiting) {
+    sets.push("#reason = :reason");
+    names["#reason"] = "reason";
+    values[":reason"] = input.reason ?? "outsider";
+    removes.push("#lease", "#by");
+    names["#lease"] = "leaseUntil";
+    names["#by"] = "startedBy";
+  } else {
+    sets.push("#lease = :lease", "#by = :by");
+    names["#lease"] = "leaseUntil";
+    names["#by"] = "startedBy";
+    values[":lease"] = table.now() + INTAKE_START_LEASE_MS;
+    values[":by"] = input.holder;
+    removes.push("#reason");
+    names["#reason"] = "reason";
+  }
+  try {
+    await table.documentClient.send(new UpdateCommand({
+      TableName: table.tableName,
+      Key: intakeItemKey(input.orgId, input.project, input.itemId),
+      UpdateExpression: `SET ${sets.join(", ")} REMOVE ${removes.join(", ")}`,
+      ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #project = :project AND #state = :started AND #gen = :gen",
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+    }));
+    return true;
+  } catch (error) {
+    if (isConditional(error)) return false;
+    throw error;
+  }
 }

@@ -27,7 +27,7 @@ import {
 } from "@agentx/contracts";
 import { ticketRunInput, inertTitle, inertTicketLine, inertWriter, prepareTicketBody, WAITING_BODY_MAX_BYTES } from "./ticket-text.js";
 import { intakeRequestId } from "./ids.js";
-import { claimIntakeItem, claimIntakeStart, giveBackIntakeItem, intakeItemIsTakeable, listWaitingIntakeItems, markIntakeStarted, readIntakeItem, releaseIntakeItem, INTAKE_MAX_WAITING_PER_PROJECT, type IntakeItemRecord, type IntakeTable } from "./store.js";
+import { claimIntakeEvent, claimIntakeItem, claimIntakeStart, giveBackIntakeItem, intakeItemIsTakeable, listWaitingIntakeItems, markIntakeStarted, readIntakeItem, releaseIntakeEvent, releaseIntakeItem, reopenIntakeItem, INTAKE_MAX_WAITING_PER_PROJECT, type IntakeItemRecord, type IntakeTable } from "./store.js";
 
 /** Who made the act that asks for work, as the tracker's adapter knows them. Only `accountId` can ever make them a member, and only through a link the org holds. */
 export interface IntakeActor {
@@ -51,6 +51,11 @@ export interface IntakeCandidate {
   actor?: IntakeActor | undefined;
   /** The ticket's text is read for the session once, now. */
   occurredAt?: string | undefined;
+  /**
+   * The label event (or assignment) that asked for work: its own key, so that an event handed over twice is one event. Only a webhook has one. A candidate WITHOUT it (a poll, which only sees
+   * that the ticket carries a label) never restarts a ticket whose task ended: only a new label event does.
+   */
+  eventId?: string | undefined;
 }
 
 export type IntakeOutcome =
@@ -69,8 +74,12 @@ export interface IntakePorts {
   mayStart(orgId: OrgId, developerId: string, project: string): Promise<boolean>;
   /** `startCodeIntent`, as that member. Throws what a start throws. */
   start(orgId: OrgId, developerId: string, request: CodeIntentRequest): Promise<{ task: { taskId: string }; sessionId?: string | undefined }>;
-  /** The session this ticket already follows in the org (a binding, whoever made it), or undefined. */
-  sessionOfTicket(orgId: OrgId, binding: Extract<SessionBinding, { kind: "tracker_item" }>): Promise<{ sessionId: string } | undefined>;
+  /** The session this ticket already follows in the org (a binding, whoever made it), or undefined. `ended`: its task finished, failed, was cancelled or closed (absent: it runs). */
+  sessionOfTicket(orgId: OrgId, binding: Extract<SessionBinding, { kind: "tracker_item" }>): Promise<{ sessionId: string; ended?: boolean | undefined } | undefined>;
+  /** Lets an ended session's hold on its ticket go (the binding and the surface), so a new session may follow the ticket. Absent: a ticket is never started a second time. */
+  freeTicket?(orgId: OrgId, sessionId: string): Promise<void>;
+  /** Links the new session to the one it follows (its `retryOf`). Best effort: a failure is logged and the new session stands. */
+  linkPrevious?(orgId: OrgId, nextSessionId: string, previousSessionId: string): Promise<void>;
   /** Tells the project's maintainers once that a flood of waiting tickets is not being stored (optional). */
   notifyWaitingFull?(orgId: OrgId, project: string): Promise<void>;
 }
@@ -102,10 +111,10 @@ async function resolveStanding(ports: IntakePorts, candidate: IntakeCandidate): 
   return { standing: "member", developerId };
 }
 
-function requestOf(record: Pick<IntakeItemRecord, "orgId" | "project" | "system" | "id" | "url" | "channel">, input: CodeIntentRequest["input"], developerId: string): CodeIntentRequest {
+function requestOf(record: Pick<IntakeItemRecord, "orgId" | "project" | "system" | "id" | "url" | "channel" | "generation">, input: CodeIntentRequest["input"], developerId: string): CodeIntentRequest {
   const source = record.channel;
   return {
-    requestId: intakeRequestId(record.orgId, record.system, record.id, developerId), project: record.project, input, source,
+    requestId: intakeRequestId(record.orgId, record.system, record.id, developerId, record.generation ?? 1), project: record.project, input, source,
     binding: { kind: "tracker_item", system: record.system, id: record.id, url: record.url },
   };
 }
@@ -120,6 +129,7 @@ const bindingOf = (record: Pick<IntakeItemRecord, "system" | "id" | "url">): Ext
  * would start (never for a ticket that waits): when it says no, the ticket waits with `RATE_LIMITED`, for a member to press Start.
  */
 async function startHeld(ports: IntakePorts, record: IntakeItemRecord, input: CodeIntentRequest["input"], developerId: string, created: boolean, admit?: IngestContext["admit"]): Promise<IntakeOutcome> {
+  const previousSessionId = record.previousSessionId;
   const { table } = ports;
   const { orgId, project, itemId } = record;
   const existing = await ports.sessionOfTicket(orgId, bindingOf(record));
@@ -136,6 +146,10 @@ async function startHeld(ports: IntakePorts, record: IntakeItemRecord, input: Co
     const started = await ports.start(orgId, developerId, requestOf(record, input, developerId));
     if (!await markIntakeStarted(table, orgId, project, itemId, { holder: developerId, taskId: started.task.taskId, sessionId: started.sessionId, requester: record.requester })) {
       ports.log("intake.mark_not_holder", { orgId, project, system: record.system });
+    }
+    // A ticket asked for again after its task ended: the new session points back to the old one (best effort; the new session stands without the link).
+    if (previousSessionId !== undefined && started.sessionId !== undefined && ports.linkPrevious !== undefined) {
+      await ports.linkPrevious(orgId, started.sessionId, previousSessionId).catch((error: unknown) => { ports.log("intake.link_previous_failed", { orgId, project, error: errorCode(error) }); });
     }
     ports.log("intake.started", { orgId, project, system: record.system, channel: record.channel });
     return { outcome: "started", taskId: started.task.taskId, ...(started.sessionId === undefined ? {} : { sessionId: started.sessionId }) };
@@ -176,18 +190,39 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
   if (!ref.success || candidate.title.trim() === "") return { outcome: "skipped", reason: "invalid" };
   // The loop guard: what Rovara's own account did never starts what Rovara does.
   if (candidate.actor?.kind === "rovara") return { outcome: "skipped", reason: "caused_by_rovara" };
-  const { orgId, project } = candidate;
+  const { orgId, project, eventId } = candidate;
+  if (eventId === undefined || eventId === "") return ingestOnce(ports, candidate, context);
+  // Each label event counts once: an event handed over again (a webhook delivered twice, a replay) is the same event. A fault that may pass gives the event back, so the redelivery is handled.
   const itemId = intakeItemIdOf(ref.data.system, ref.data.id);
+  if (!await claimIntakeEvent(ports.table, orgId, project, itemId, eventId)) {
+    const seen = await readIntakeItem(ports.table, orgId, project, itemId);
+    return { outcome: "duplicate", state: seen?.state ?? "started" };
+  }
+  try {
+    return await ingestOnce(ports, candidate, context);
+  } catch (error) {
+    await releaseIntakeEvent(ports.table, orgId, project, itemId, eventId);
+    throw error;
+  }
+}
+
+async function ingestOnce(ports: IntakePorts, candidate: IntakeCandidate, context: IngestContext): Promise<IntakeOutcome> {
+  const ref = IntakeExternalRefSchema.parse(candidate.externalRef);
+  const { orgId, project } = candidate;
+  const itemId = intakeItemIdOf(ref.system, ref.id);
   const known = await readIntakeItem(ports.table, orgId, project, itemId);
-  // A ticket that is started or being started is done with, whoever asks again. (A start whose lease ran out was cut short; it is taken over below like a waiting ticket.)
-  if (known !== undefined && !intakeItemIsTakeable(known, ports.table.now())) return { outcome: "duplicate", state: known.state };
+  // A ticket that is started or being started is done with, whoever asks again, unless a new label EVENT asks for a ticket whose task has ended (below). (A start whose lease ran out was cut short; it is taken over like a waiting ticket.)
+  const relabeling = known?.state === "started" && candidate.eventId !== undefined && candidate.eventId !== "";
+  if (known !== undefined && !relabeling && !intakeItemIsTakeable(known, ports.table.now())) return { outcome: "duplicate", state: known.state };
   const resolved = await resolveStanding(ports, candidate);
-  const title = inertTitle(candidate.title, ref.data.id).slice(0, INTAKE_TITLE_MAX);
+  const title = inertTitle(candidate.title, ref.id).slice(0, INTAKE_TITLE_MAX);
   const writer = inertWriter(candidate.reporter?.display);
-  const input = ticketRunInput({ system: ref.data.system, id: ref.data.id, title, body: prepareTicketBody(candidate.body), writer });
+  const input = ticketRunInput({ system: ref.system, id: ref.id, title, body: prepareTicketBody(candidate.body), writer });
   const requester = { display: inertTicketLine(candidate.actor?.display ?? candidate.reporter?.display ?? "someone", 80) || "someone", standing: resolved.standing, ...(resolved.developerId === undefined ? {} : { developerId: resolved.developerId }) };
-  const base = { orgId, project, itemId, channel: candidate.channel, system: ref.data.system, id: ref.data.id, url: ref.data.url, title, writer, requester };
+  const base = { orgId, project, itemId, channel: candidate.channel, system: ref.system, id: ref.id, url: ref.url, title, writer, requester };
   const mayStartNow = resolved.reason === undefined && resolved.developerId !== undefined;
+
+  if (known !== undefined && relabeling) return relabel(ports, known, { base, body: prepareTicketBody(candidate.body, WAITING_BODY_MAX_BYTES), input, resolved, mayStartNow, context, binding: bindingOf(known) });
 
   if (known !== undefined) {
     // The ticket waits (or a start of it was cut short). A member's act now starts it; anything else leaves it as it was, waiting where a maintainer can see it.
@@ -215,8 +250,44 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
   const claimed = await claimIntakeItem(ports.table, { ...base, state: "waiting", reason: resolved.reason!, body: prepareTicketBody(candidate.body, WAITING_BODY_MAX_BYTES) });
   if (claimed.result !== "created") return { outcome: "duplicate", state: claimed.result === "exists" ? claimed.record.state : "waiting" };
   waiting.count += 1;
-  ports.log("intake.waiting", { orgId, project, system: ref.data.system, reason: resolved.reason });
+  ports.log("intake.waiting", { orgId, project, system: ref.system, reason: resolved.reason });
   return { outcome: "waiting", reason: resolved.reason! };
+}
+
+/**
+ * A new label event on a ticket that was started. While its session still runs it is a duplicate. Once the session has ended (finished, failed, cancelled or closed, or its hold is gone)
+ * the ticket lets go of it and is asked for again: a member's act starts a NEW task (the next generation, with a request id of its own), linked to the old one; anyone else's act makes the
+ * ticket wait for a member to say "Start", as a first ask does. The same checks as the first start apply, because the same code runs them.
+ */
+async function relabel(
+  ports: IntakePorts, known: IntakeItemRecord,
+  ctx: { base: Omit<IntakeItemRecord, "state" | "since" | "updatedAt">; body: string; input: CodeIntentRequest["input"]; resolved: Resolved; mayStartNow: boolean; context: IngestContext; binding: Extract<SessionBinding, { kind: "tracker_item" }> },
+): Promise<IntakeOutcome> {
+  const { orgId, project, itemId } = known;
+  const current = await ports.sessionOfTicket(orgId, ctx.binding);
+  if (current !== undefined && current.ended !== true) return { outcome: "duplicate", state: "started" };
+  // Without a way to let the old session go, a ticket is never started a second time (fail closed).
+  if (ports.freeTicket === undefined) return { outcome: "duplicate", state: "started" };
+  const generation = known.generation ?? 1;
+  const previousSessionId = known.sessionId ?? current?.sessionId;
+  const reopen = { orgId, project, itemId, generation, title: ctx.base.title, body: ctx.body, writer: ctx.base.writer ?? "someone", requester: ctx.base.requester, previousSessionId, previousTaskId: known.taskId };
+  if (!ctx.mayStartNow) {
+    const waiting = ctx.context.waiting ?? { count: (await listWaitingIntakeItems(ports.table, orgId, project)).length };
+    if (waiting.count >= INTAKE_MAX_WAITING_PER_PROJECT) return { outcome: "skipped", reason: "waiting_full" };
+    if (current !== undefined) await ports.freeTicket(orgId, current.sessionId);
+    if (!await reopenIntakeItem(ports.table, { ...reopen, to: "waiting", reason: ctx.resolved.reason ?? "outsider" })) return { outcome: "duplicate", state: "started" };
+    waiting.count += 1;
+    ports.log("intake.waiting", { orgId, project, system: known.system, reason: ctx.resolved.reason, again: true });
+    return { outcome: "waiting", reason: ctx.resolved.reason ?? "outsider" };
+  }
+  const developerId = ctx.resolved.developerId!;
+  // The old session lets go first (it is repeatable): a ticket still held by an ended session could not be started again, and a lost race for the item below only leaves it free.
+  if (current !== undefined) await ports.freeTicket(orgId, current.sessionId);
+  if (!await reopenIntakeItem(ports.table, { ...reopen, to: "starting", holder: developerId })) return { outcome: "duplicate", state: "started" };
+  const next: IntakeItemRecord = { ...known, ...ctx.base, state: "starting", generation: generation + 1, startedBy: developerId, ...(previousSessionId === undefined ? {} : { previousSessionId }), ...(known.taskId === undefined ? {} : { previousTaskId: known.taskId }) };
+  delete next.sessionId;
+  delete next.taskId;
+  return startHeld(ports, next, ctx.input, developerId, false, ctx.context.admit);
 }
 
 /**

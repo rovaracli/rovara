@@ -80,9 +80,50 @@ describe("the session a ticket already follows", () => {
     const binding = { kind: "tracker_item" as const, system: "jira", id: "PAY-12", url: "https://acme.atlassian.net/browse/PAY-12" };
     expect(await p.sessionOfTicket(ORG_A, binding)).toBeUndefined();
     await bindSessionSurface({ documentClient: w.db, tableName: "state", now: () => w.clock.now }, { orgId: ORG_A, sessionId: sessionId, binding });
-    expect(await p.sessionOfTicket(ORG_A, binding)).toEqual({ sessionId });
+    expect(await p.sessionOfTicket(ORG_A, binding)).toEqual({ sessionId, ended: false });
     expect(await p.sessionOfTicket(ORG_B, binding)).toBeUndefined();
     expect(await p.sessionOfTicket(ORG_A, { ...binding, id: "PAY-13" })).toBeUndefined();
+  });
+});
+
+/** The task ended after the ticket was bound to it (a session cannot be bound once it has ended). */
+function endSession(w: ReturnType<typeof sessionWorld>, sessionId: string) {
+  const meta = w.db.find((item) => item["sessionId"] === sessionId && item["sk"] === "META")[0]!;
+  w.db.set({ ...meta, endedAt: "2026-10-22T08:30:00.000Z" });
+}
+
+describe("a ticket asked for again after its session ended", () => {
+  const binding = { kind: "tracker_item" as const, system: "jira", id: "PAY-12", url: "https://acme.atlassian.net/browse/PAY-12" };
+
+  it("says whether the ticket's session ended, lets go of the ticket when asked, and links the new session to the old one once", async () => {
+    const { w, ports: p } = ports();
+    const table = { documentClient: w.db, tableName: "state", now: () => w.clock.now } as never;
+    const old = w.seedSession().sessionId;
+    const running = w.seedSession().sessionId;
+    await bindSessionSurface(table, { orgId: ORG_A, sessionId: old, binding });
+    endSession(w, old);
+    expect(await p.sessionOfTicket(ORG_A, binding)).toEqual({ sessionId: old, ended: true });
+    await p.freeTicket!(ORG_A, old);
+    expect(await p.sessionOfTicket(ORG_A, binding)).toBeUndefined();
+    // The ticket can be bound again, to the new session, which then points back.
+    await bindSessionSurface(table, { orgId: ORG_A, sessionId: running, binding });
+    expect(await p.sessionOfTicket(ORG_A, binding)).toEqual({ sessionId: running, ended: false });
+    await p.linkPrevious!(ORG_A, running, old);
+    const meta = () => w.db.find((item) => item["sessionId"] === running && item["sk"] === "META")[0];
+    expect(meta()?.["retryOf"]).toBe(old);
+    // A link already there is not overwritten, and asking again is not an error.
+    await p.linkPrevious!(ORG_A, running, w.seedSession().sessionId);
+    expect(meta()?.["retryOf"]).toBe(old);
+  });
+
+  it("does not let go of a session of another org", async () => {
+    const { w, ports: p } = ports();
+    const table = { documentClient: w.db, tableName: "state", now: () => w.clock.now } as never;
+    const old = w.seedSession().sessionId;
+    await bindSessionSurface(table, { orgId: ORG_A, sessionId: old, binding });
+    endSession(w, old);
+    await p.freeTicket!(ORG_B, old);
+    expect(await p.sessionOfTicket(ORG_A, binding)).toEqual({ sessionId: old, ended: true });
   });
 });
 

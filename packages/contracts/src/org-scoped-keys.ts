@@ -913,3 +913,13 @@ export function intakeCallsKey(orgId: OrgId, sourceId: string, hour: string): Or
 export function intakeNoticeKey(orgId: OrgId, developerId: string, at: string, sourceId: string): OrgKey {
   return { pk: orgScoped(orgId, `INTAKE_NOTICES#${keyPart(developerId, "a developer id")}`), sk: `${canonicalInstant(at)}#${keyPart(sourceId, "a source id")}` };
 }
+
+/**
+ * A ticket's label event that intake has taken in (one item per event), so a webhook that is delivered again, or replayed, is the same event and starts nothing more. `eventId` is the
+ * event's own key (the label added, the change, the time); it is hashed here, so nothing a person typed is a key.
+ */
+export function intakeEventKey(orgId: OrgId, project: string, itemId: string, eventId: string): OrgKey {
+  if (!/^[a-f0-9]{32}$/u.test(itemId)) throw new Error("an intake item id is 32 hex characters");
+  if (eventId.length === 0) throw new Error("an event id can't be empty");
+  return { pk: orgScoped(orgId, `INTAKE_EVENT#${keyPart(project, "a project name")}`), sk: `${itemId}#${createHash("sha256").update(eventId, "utf8").digest("hex").slice(0, 32)}` };
+}

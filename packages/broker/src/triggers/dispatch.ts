@@ -369,7 +369,8 @@ async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcom
     if (existing !== undefined) return { outcome: await settle(work, trigger, { outcome: "duplicate", taskId: existing.taskId }) };
   }
   // The subject this trigger just started a run for: what that run did to it may be what this event is, so it is not started again at once. No allowance is used.
-  if (await recentlyStarted(work, trigger)) return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "recent_subject" }) };
+  // (An intake trigger is not held by this guard: its tickets are one item each, and a label event counts once, so a new label right after a task ended is a new ask, not an echo of it.)
+  if (!isIntakeTrigger(trigger) && await recentlyStarted(work, trigger)) return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "recent_subject" }) };
   // 4 and 5. The trigger's allowance for the hour (never above the platform's), then the org's for the day. An intake trigger (Rovara Code asked for by a label) counts them only when a member's
   // start is about to start work (`admit`, below): an outsider's label that only waits, or a repeat, must not use the allowance other agents' triggers share, and the work is the member's own.
   const intakeTrigger = isIntakeTrigger(trigger);

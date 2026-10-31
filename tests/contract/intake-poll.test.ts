@@ -146,6 +146,21 @@ describe("no double start", () => {
     expect(w.started).toEqual([`${MEMBER}:T-1`]);
   });
 
+  it("does not start a ticket again that still carries its label after its task ended (a poll has no label event)", async () => {
+    const w = world();
+    await w.addSource();
+    w.ports.freeTicket = async () => undefined;
+    w.state.search = async () => [item("T-1", { actor: { kind: "person", accountId: "u-member" } })];
+    await runIntakePoll(w.deps);
+    expect(w.started).toHaveLength(1);
+    // The task ended and its hold on the ticket is gone; the ticket still has its label.
+    for (let tick = 0; tick < 4; tick += 1) {
+      w.clock.now += 2 * MINUTE;
+      await runIntakePoll(w.deps);
+    }
+    expect(w.started).toHaveLength(1);
+  });
+
   it("keeps a ticket nobody has asked for as one waiting item however many times it is seen", async () => {
     const w = world();
     await w.addSource();

@@ -3,7 +3,10 @@
 // membership), and so is their role on the project (`roleOnProject`, `requireNewWorkAllowed`). The start is `startCodeIntent` as that member, so the project role, the company's
 // rules, the payer and the budget are the ones that already exist; nothing here decides money or access.
 import { AgentXError, agentXError, type CodeIntentRequest, type OrgId } from "@agentx/contracts";
-import { sessionForSurface } from "../agent-sessions/bindings.js";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { agentSessionKey, SessionIdSchema } from "@agentx/contracts";
+import { sessionForSurface, unbindSessionSurface } from "../agent-sessions/bindings.js";
+import { isEnded } from "../agent-sessions/stop.js";
 import { roleOnProject } from "../agents/roster.js";
 import type { AgentRunStarter } from "../agents/runs.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
@@ -65,7 +68,23 @@ export function intakePortsOf(wiring: IntakeWiring): IntakePorts {
     },
     sessionOfTicket: async (orgId, binding) => {
       const session = await sessionForSurface(table, orgId, binding);
-      return session === undefined ? undefined : { sessionId: session.sessionId };
+      return session === undefined ? undefined : { sessionId: session.sessionId, ended: isEnded(session) };
+    },
+    // A ticket asked for again after its task ended: the ended session lets go of the ticket (its binding and the surface item), as the Linear "free the surface" step does.
+    freeTicket: async (orgId, sessionId) => {
+      await unbindSessionSurface(table, { orgId, sessionId: SessionIdSchema.parse(sessionId), kind: "tracker_item" });
+    },
+    // The new session points back to the one it follows (`retryOf`, written only if it has none).
+    linkPrevious: async (orgId, nextSessionId, previousSessionId) => {
+      try {
+        await wiring.documentClient.send(new UpdateCommand({
+          TableName: wiring.tableName, Key: agentSessionKey(orgId, SessionIdSchema.parse(nextSessionId), "META"), UpdateExpression: "SET retryOf = :old ADD #revision :one",
+          ConditionExpression: "attribute_exists(pk) AND orgId = :org AND attribute_not_exists(retryOf)", ExpressionAttributeNames: { "#revision": "revision" },
+          ExpressionAttributeValues: { ":old": SessionIdSchema.parse(previousSessionId), ":one": 1, ":org": orgId },
+        }));
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
+      }
     },
     ...(wiring.notifyWaitingFull === undefined ? {} : { notifyWaitingFull: wiring.notifyWaitingFull }),
   };

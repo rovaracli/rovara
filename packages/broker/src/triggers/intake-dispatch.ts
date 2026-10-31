@@ -39,7 +39,7 @@ export function intakeCandidateOf(orgId: OrgId, event: TriggerEvent): IntakeCand
   return {
     orgId, project: event.project, channel: mapped.channel,
     externalRef: { system: mapped.system, id: event.subject.id, url: event.subject.url },
-    title: event.subject.title, body: event.subject.body, occurredAt: event.occurredAt,
+    title: event.subject.title, body: event.subject.body, occurredAt: event.occurredAt, eventId: event.eventKey,
     actor: actor.kind === "rovara" ? { kind: "rovara" }
       : actor.kind === "external" ? { kind: actor.bot === true ? "bot" : "person", ...(actor.accountId === undefined ? {} : { accountId: actor.accountId }), ...(actor.id === undefined || event.source !== "github" ? {} : { display: actor.id }) }
         : { kind: "unknown" },
