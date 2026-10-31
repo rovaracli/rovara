@@ -9,7 +9,7 @@ import type { AgentPrincipal, ApprovalId, SkillId } from "./agent-node.js";
 import type { SessionId } from "./agent-sessions.js";
 import type { DeviceId, SessionBinding } from "./agent-sessions-node.js";
 import { OrgIdSchema, type OrgId } from "./org.js";
-import { orgScoped, type OrgKey } from "./org-node.js";
+import { orgPk, orgScoped, type OrgKey } from "./org-node.js";
 import type { ChainId, ChainRunId } from "./chains.js";
 import type { EventSource } from "./trigger-specs.js";
 import type { TriggerTarget } from "./triggers.js";
@@ -88,6 +88,11 @@ export function projectMemberKey(orgId: OrgId, ownerKey: string, project: string
  */
 export function defaultWorkspaceKey(orgId: OrgId, ownerKey: string, project: string): OrgKey {
   return { pk: orgScoped(orgId, `OWNER#${ownerKey}`), sk: `PROJECT#${project}` };
+}
+
+/** The company's own learning settings (the master "suggestions" switch): `ORG#<org>` / `LEARNING_SETTINGS`. Absent until the company first chooses. */
+export function orgLearningSettingsKey(orgId: OrgId): OrgKey {
+  return { pk: orgPk(orgId), sk: "LEARNING_SETTINGS" };
 }
 
 export type OrgSettingName = "WORKSPACE_LIMITS" | "BUDGET" | "BUDGET_SYNCED" | "SPEND_POLICY" | "LOCAL_AGENTS" | "TASK_STOP_POLICY" | "MODEL_SELECTION_POLICY";
@@ -820,6 +825,23 @@ export function codeSettingsKey(orgId: OrgId, project: string): OrgKey {
 /** A project's playbook ("How we work"): the process the project runs by default. */
 export function projectPlaybookKey(orgId: OrgId, project: string): OrgKey {
   return { pk: orgScoped(orgId, `PROJECT_PLAYBOOK#${keyPart(project, "a project name")}`), sk: "META" };
+}
+
+/** The partition holding everything the learning loop keeps for one project: its corrections, suggestions, rules and counters. */
+export function projectLearningPk(orgId: OrgId, project: string): string {
+  return orgScoped(orgId, `PROJECT_LEARNING#${keyPart(project, "a project name")}`);
+}
+
+/** One item of a project's learning partition (`STATE`, `CORRECTION#<createdAt>#<id>`, `SUGGESTION#<id>`, ...). The sort key is the caller's, so it is checked to stay one segment list. */
+export function projectLearningKey(orgId: OrgId, project: string, sk: string): OrgKey {
+  if (sk.length === 0 || /[\p{Cc}\p{Cf}]/u.test(sk)) throw new Error("a learning sort key can't be empty or hold a control character");
+  return { pk: projectLearningPk(orgId, project), sk };
+}
+
+/** The resume point of a company-wide learning walk (`close`, `sweep`, `erase#<developerId>`); outside the project partitions, and it holds no text. */
+export function learningWalkKey(orgId: OrgId, kind: string): OrgKey {
+  if (kind.length === 0 || /[\p{Cc}\p{Cf}]/u.test(kind)) throw new Error("a learning walk kind can't be empty or hold a control character");
+  return { pk: orgScoped(orgId, "LEARNING_WALK"), sk: kind };
 }
 
 /** How long recent tasks of one project took, per path (`QUICK` or `FULL`), for the plan's time estimate. */

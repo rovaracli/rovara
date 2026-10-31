@@ -40,6 +40,7 @@
   "packages/contracts/src/org.ts",
   "packages/contracts/src/outcomes.ts",
   "packages/contracts/src/pending-api.ts",
+  "packages/contracts/src/project-learning.ts",
   "packages/contracts/src/project-playbook.ts",
   "packages/contracts/src/project.ts",
   "packages/contracts/src/public-suffix-rules.ts",

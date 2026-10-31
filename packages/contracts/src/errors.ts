@@ -86,6 +86,13 @@ export const AgentXErrorCodeSchema = z.enum([
   "PLAYBOOK_STALE",
   "PROCESS_SELF_CONFIRM",
   "PROCESS_IN_USE",
+  // v1.2 learning loop (B6): a rule cannot be accepted or removed right now.
+  "LEARNING_LAYER_BUSY",
+  "LEARNING_RULES_FULL",
+  "LEARNING_SOURCES_GONE",
+  // The company's master suggestions switch: a stale revision of the switch, and a suggestion decision while it is off.
+  "LEARNING_SETTINGS_CHANGED",
+  "LEARNING_SUGGESTIONS_OFF",
 ]);
 
 export const CSRF_STALE_MESSAGE = "Your sign-in changed in another tab. Trying again.";

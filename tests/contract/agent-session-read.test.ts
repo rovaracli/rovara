@@ -1006,6 +1006,15 @@ describe("the link /s/<id>", () => {
     const comment = await t.browser(`/review/${taskId}/task/api/comments`, OMAR, { method: "POST", body: { requestId: randomUUID(), document: "plan", version: 1, target: { kind: "document" }, text: "hello", ask: false } });
     expect(`${String(comment.status)} ${comment.body}`).toContain("not_allowed");
     expect(comment.status).toBe(403);
+    // v1.2 learning loop (B3): the Remember and Forget paths are wired to the page API and refuse a person who may not comment, whatever they hold in the session.
+    const remember = await t.browser(`/review/${taskId}/task/api/comments/${randomUUID()}/remember`, OMAR, { method: "POST", body: {} });
+    expect(remember.status, remember.body).toBeGreaterThanOrEqual(403);
+    expect(remember.status, remember.body).toBeLessThanOrEqual(404);
+    expect(remember.body).not.toContain("correction");
+    // The React route is wired too, and learning writes are browser-only: a bearer-token caller is refused (403) before the body or anything else is read.
+    const react = await t.dev(MAYA, "POST", "/v1/app/projects/payments/learning/remember", { standing: "member" });
+    expect(react.status, JSON.stringify(react.body)).toBe(403);
+    expect(JSON.stringify(react.body)).toContain("live browser session");
     const take = await t.browser(`/review/${taskId}/task/api/people/take-ownership`, OMAR, { method: "POST", body: { requestId: randomUUID(), expectedPeopleRevision: 1 } });
     expect(take.status, take.body).toBe(404);
     const decide = await t.browser(`/review/${taskId}/task/api/decision`, OMAR, { method: "POST", body: { requestId: randomUUID(), expectedRevision: 1, artifactDigest: "a".repeat(64), decision: "APPROVE", answers: [], includedCommentIds: [] } });

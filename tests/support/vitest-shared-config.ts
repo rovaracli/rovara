@@ -15,4 +15,7 @@ export const sharedVitestSettings = {
   setupFiles: ["tests/support/test-file-temp-dir.ts"] as string[],
   passWithNoTests: false,
   testTimeout: 60_000,
+  // v1.2 learning: the install default of the company's master suggestions switch is OFF in production; the existing learning tests exercise suggestions, so the test environment has it on.
+  // The switch's own tests (tests/contract/learning-suggestions-switch*.test.ts) set and clear it themselves.
+  env: { LEARNING_SUGGESTIONS_DEFAULT: "on" } as Record<string, string>,
 } as const;

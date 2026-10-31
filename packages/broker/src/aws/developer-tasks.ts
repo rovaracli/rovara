@@ -297,6 +297,9 @@ import { pageCommentViews, type CommentViewContext, type PageCommentView } from 
 import { loadPlanSelfCheck } from "../developer/plan-self-check.js";
 import type { PlanAnchor } from "./plan-page/render-plan.js";
 import { WORK_ACTIONS, can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, taskOpen, type TaskAccess, type TaskAction } from "../developer/task-access.js";
+import type { AuditRuntime } from "../audit/outbox.js";
+import { captureSendBackQuietly } from "../learning/capture-decision.js";
+import { commentLearningFlags } from "../learning/comment-flags.js";
 import { getTaskPeoplePresentation, loadTaskPeople, resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 import { getTaskPeople as readTaskPeople, getTaskPeopleCapabilities as readTaskPeopleCapabilities, type TaskPersonCheck } from "../developer/task-people.js";
 import { confirmTaskPeopleProposal as confirmPeopleProposal, getTaskPeopleProposal as readPeopleProposal, getTaskPeopleProposalMetadata as readPeopleProposalMetadata, proposeTaskOwnership, proposeTaskPeopleRole,
@@ -462,6 +465,8 @@ export interface DeveloperTaskRouteDependencies {
    * agents are not set up.
    */
   pausedTaskGate?(caller: { orgId: OrgId; developerId: string }, task: DeveloperTaskRecord): Promise<{ allowed: true } | { allowed: false; who: string }>;
+  /** v1.2 learning loop: the Audit Ledger, so a send-back that opens a suggested rule emits `rule.suggested` (learning/capture-decision.ts). Absent on a legacy install. Its own name: other code reads `audit` of the dependencies it is handed. */
+  learningAudit?: AuditRuntime;
 }
 
 /** Ruling R60: refuses a task whose creator is no longer a member of its org, before any other access check (see developer/creator-member.ts). */
@@ -3266,6 +3271,12 @@ export async function decideTaskWorkflow(
   if (request.decision === "APPROVE" && mode === "IMPLEMENT") await deps.startWorkflowE2EBaseline?.({ task: fresh }).catch((error: unknown) => log(deps, { event: "developer.e2e_baseline_not_started", taskId, errorName: error instanceof Error ? error.name : "unknown" }));
   const view = await taskView(deps, fresh, { events: 0, details: false });
   await syncIndex(deps, fresh, view.status, view.updatedAt);
+  // v1.2 learning loop (B4): a plan send-back's reason becomes a correction. The one hook for every surface (page, developer API, Slack, MCP). It runs last, after the decision, its
+  // detail, the comment locks and the index sync, and within its own small time budget: a slow or failing capture can neither leave the index unsynced nor fail a decision that
+  // committed. The decider's own standing is read inside; a failure is logged. (A crash between the commit and this point loses that one correction: replay never captures. Accepted.)
+  if (request.decision === "REQUEST_CHANGES" && documentType !== undefined) {
+    await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: options.note ?? request.reason, included });
+  }
   return { task: view };
 }
 
@@ -5584,6 +5595,8 @@ export async function getTaskPageState(deps: DeveloperTaskRouteDependencies, cal
   });
   const counter = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: commentCounterKey(taskId), ConsistentRead: true })) as { Item?: { seq?: unknown } };
   const permissions = pageAccess(access, await projectWorkAllowed(deps, task, caller));
+  // v1.2 learning loop: only for a person with standing in the project; absent for everyone else, and when it can't be worked out in time.
+  const flags = await commentLearningFlags(deps, { caller, access }, taskId, []);
   return {
     revision: workflow?.revision ?? 0, waiting: workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && task.closedAt === undefined,
     stage: taskPageStep(workflow, task.closedAt !== undefined), documents, commentSeq: typeof counter.Item?.seq === "number" ? counter.Item.seq : 0,
@@ -5591,6 +5604,7 @@ export async function getTaskPageState(deps: DeveloperTaskRouteDependencies, cal
     canComment: permissions.canComment, canSuggest: permissions.canSuggest, canDecide: permissions.canDecide,
     canAsk: permissions.canAsk && await commentAnswersAvailable(deps, task),
     canManagePeople: capabilities.canManagePeople, canTakeOwnership: capabilities.canTakeOwnership,
+    ...(flags === undefined ? {} : { canRemember: flags.canRemember }),
     ...(taskViewRecord?.e2ePresentation === undefined ? {} : { e2ePresentation: taskViewRecord.e2ePresentation }),
   };
 }
@@ -5608,10 +5622,16 @@ const commentViewContext = (deps: DeveloperTaskRouteDependencies, actor: PageAct
  * version (names and "you" only), so an open page can refresh both. Suggestions that cannot be worked out are left out
  * (logged); comments still answer.
  */
-export async function listPageComments(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<{ comments: PageCommentView[]; suggestions: PageSuggestionListing[] }> {
+export async function listPageComments(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<{ comments: PageCommentView[]; suggestions: PageSuggestionListing[]; canRemember?: boolean }> {
   const actor = await pageActor(deps, caller, taskId);
   const stored = await listTaskComments(deps, taskId);
-  const comments = pageCommentViews(stored, { ...commentViewContext(deps, actor), ...await replyLookups(deps, actor.task, stored) });
+  const views = pageCommentViews(stored, { ...commentViewContext(deps, actor), ...await replyLookups(deps, actor.task, stored) });
+  // v1.2 learning loop: which comments are remembered, for a person with standing only. A read that fails leaves `learning` off and the page is served.
+  const flags = await commentLearningFlags(deps, { caller, access: actor }, taskId, stored.filter((comment) => comment.author.kind === "person").map((comment) => comment.commentId));
+  const comments = flags?.learning === undefined ? views : views.map((view) => {
+    const learning = flags.learning!.get(view.id);
+    return learning === undefined ? view : { ...view, learning };
+  });
   let suggestions: PageSuggestionListing[] = [];
   try {
     suggestions = (await currentSuggestions(deps, actor.task)).map((suggestion) => ({
@@ -5620,7 +5640,7 @@ export async function listPageComments(deps: DeveloperTaskRouteDependencies, cal
   } catch (error) {
     log(deps, { event: "developer.task_page_suggestions_unavailable", taskId, errorName: error instanceof Error ? error.name : "unknown" });
   }
-  return { comments, suggestions };
+  return { comments, suggestions, ...(flags === undefined ? {} : { canRemember: flags.canRemember }) };
 }
 
 /** What is worked out from one stored document for a planner's reply: which claim cites each comment, and its claim IDs. */

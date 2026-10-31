@@ -764,6 +764,16 @@ describe("I4: the builders", () => {
     ["auditProcessRolledBack", (occurrence) => builders.auditProcessRolledBack({ ...base, occurrence, details, agentId: "agt_1", fromVersion: 3, toVersion: 2, safety: "safe" })],
     ["auditPlaybookDefaultProcessChanged", (occurrence) => builders.auditPlaybookDefaultProcessChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, processKind: "builtin" })],
     ["auditCompanyChangeAppliedToProject", (occurrence) => builders.auditCompanyChangeAppliedToProject({ ...base, occurrence, details, projectName: "Secret Project", changeRevision: 5, settingCount: 2 })],
+    // v1.2 learning loop (B7)
+    ["auditRuleSuggested", (occurrence) => builders.auditRuleSuggested({ ...base, occurrence, details, projectName: "Secret Project", suggestionId: "sug_1", stage: "build", sourceCount: 2, sourceKinds: "comment,send_back", lessSafe: false, fromOnePerson: false })],
+    ["auditRuleAccepted", (occurrence) => builders.auditRuleAccepted({ ...base, occurrence, details, projectName: "Secret Project", suggestionId: "sug_1", ruleId: "rul_1", stage: "build", processAgentId: "agt_1", outcome: "published", processVersion: 4, edited: true, lessSafe: false })],
+    ["auditRuleNotApplied", (occurrence) => builders.auditRuleNotApplied({ ...base, occurrence, details, projectName: "Secret Project", suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "declined" })],
+    ["auditRuleDismissed", (occurrence) => builders.auditRuleDismissed({ ...base, occurrence, details, projectName: "Secret Project", suggestionId: "sug_1", stage: "build", dismissKind: "wrong" })],
+    ["auditRuleWithdrawn", (occurrence) => builders.auditRuleWithdrawn({ ...base, occurrence, details, projectName: "Secret Project", suggestionId: "sug_1", stage: "build", cause: "forgotten" })],
+    ["auditRuleRolledBack", (occurrence) => builders.auditRuleRolledBack({ ...base, occurrence, details, projectName: "Secret Project", ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 })],
+    ["auditRuleCorrectionRemembered", (occurrence) => builders.auditRuleCorrectionRemembered({ ...base, occurrence, details, projectName: "Secret Project", correctionId: "cor_1", stage: "build", standing: "member", op: "remember" })],
+    ["auditProjectLearningChanged", (occurrence) => builders.auditProjectLearningChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, enabled: true, selfConfirmedSoleOwner: false })],
+    ["auditRuleSuggestionsSet", (occurrence) => builders.auditRuleSuggestionsSet({ ...base, occurrence, details, setting: "on", previous: "off", source: "company" })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
@@ -811,6 +821,17 @@ describe("I4: the builders", () => {
     expect(selection.facts).toStrictEqual({ surface: "cli", cleared: true });
     const company = builders.auditCompanyChangeAppliedToProject({ ...base, occurrence: "p1", projectName: "web", changeRevision: 5, settingCount: 0 });
     expect(company.facts).toStrictEqual({ changeRevision: 5, settingCount: 0 });
+  });
+
+  it("the learning events target the project by name, carry only their fixed facts, and an accepted rule differs from one awaiting approval", () => {
+    const accepted = (outcome: "published" | "awaiting_approval") => builders.auditRuleAccepted({ ...base, occurrence: "rul_1", projectName: "web", suggestionId: "sug_1", ruleId: "rul_1", stage: "build", processAgentId: "agt_1", outcome, edited: false, lessSafe: true });
+    expect(accepted("published")).toMatchObject({ action: "rule.accepted", target: { kind: "project", name: "web" }, facts: { outcome: "published", edited: false, lessSafe: true } });
+    expect(accepted("published").facts).not.toHaveProperty("processVersion");
+    expect(accepted("published").eventId).not.toBe(accepted("awaiting_approval").eventId);
+    const remembered = (op: "remember" | "forget") => builders.auditRuleCorrectionRemembered({ ...base, occurrence: "cor_1", projectName: "web", correctionId: "cor_1", stage: "build", standing: "member", op });
+    expect(remembered("remember").eventId).not.toBe(remembered("forget").eventId);
+    const notApplied = builders.auditRuleNotApplied({ ...base, occurrence: "rul_1", projectName: "web", suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "expired" });
+    expect(notApplied.facts).toStrictEqual({ suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "expired" });
   });
 
   it("the id also depends on the pinned parts: the decision, the terminal status", () => {

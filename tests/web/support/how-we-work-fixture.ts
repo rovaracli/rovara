@@ -1,3 +1,4 @@
+import { LearningViewAnswerSchema } from "@agentx/contracts/web";
 import type { ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { agentProfile } from "./agent-fixture.js";
 import { meFixture } from "./fixtures.js";
@@ -16,6 +17,8 @@ export function howWeWorkHost(options: { view?: unknown; canEdit?: boolean; over
   if (url.pathname === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
   if (url.pathname === "/v1/app/projects/payments/overview") return { status: 200, body: projectFixture({ you: { role: options.canEdit === false ? "viewer" : "maintainer", canStartWork: options.canEdit !== false, canEditSettings: options.canEdit !== false, canViewSpend: false } }) };
   if (url.pathname === "/v1/app/projects/payments/how-we-work") return { status: 200, body: state.view };
+  // The Suggested rules section reads this on the same tab: a project with nothing to decide.
+  if (url.pathname === "/v1/app/projects/payments/learning") return { status: 200, body: LearningViewAnswerSchema.parse({ settings: { prComments: "off", locked: false }, suggestions: [], dismissed: [], rules: [], skippedUnlinked: 0, canDecide: options.canEdit !== false }) };
   if (url.pathname === "/v1/app/projects/payments/playbook/process") return { status: 200, body: { agentId: LAYER, draftRevision: state.revision, currentVersion: 2 } };
   if (url.pathname === `/v1/app/agents/${LAYER}/draft` && request.method === "GET") return { status: 200, body: draftBody(state.overlay, state.revision) };
   if (url.pathname === `/v1/app/agents/${LAYER}/draft` && request.method === "PUT") { const body = request.body as { overlay: Record<string, unknown> };state.overlay = body.overlay;state.revision += 1;return { status: 200, body: draftBody(state.overlay, state.revision) }; }

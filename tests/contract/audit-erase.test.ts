@@ -111,7 +111,7 @@ function bench() {
     audit,
     now: () => clock.now,
     log: (entry) => logs.push(entry),
-    purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
+    eraseLearning: async () => undefined, purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
   };
   const sleeps: number[] = [];
   const shred: AuditShredDeps = {
@@ -167,6 +167,45 @@ function event(orgId: string, n: number, subjects: Array<[string, string]> = [["
     details: subjects.map(([subject, name]) => ({ subject, fields: { name } })),
   });
 }
+
+describe("eraseAuditSubject and the learning loop (B7)", () => {
+  it("clears the person's learning data after the tombstone, and again on a repeat of the request", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    const asked: Array<[string, string]> = [];
+    const deps: AuditEraseDeps = { ...b.erase, eraseLearning: async (orgId, developerId) => { asked.push([orgId, developerId]); } };
+    await eraseAuditSubject(deps, request());
+    await eraseAuditSubject(deps, request());
+    expect(asked).toEqual([[A, "dev_1"], [A, "dev_1"]]);
+  });
+
+  it("answers that the request should be sent again when the learning clean-up fails, after the details are erased, and logs the error's name only", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    const deps: AuditEraseDeps = { ...b.erase, eraseLearning: async () => { throw new Error("SECRET-CORRECTION-WORDS"); } };
+    await expect(eraseAuditSubject(deps, request())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(b.keyItems(A).find((item) => item.sk === "SUBJECT#dev_1")).toHaveProperty("erasedAt");
+    expect(JSON.stringify(b.logs)).not.toContain("SECRET-CORRECTION-WORDS");
+    const again = await eraseAuditSubject({ ...b.erase, eraseLearning: async () => undefined }, request());
+    expect(again.alreadyErased).toBe(true);
+  });
+});
+
+describe("the learning erase hook is required", () => {
+  it("a wiring that forgot it fails loudly after the details are erased, and never reads as nothing to erase", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    const { eraseLearning: _hook, ...without } = b.erase; // eslint-disable-line @typescript-eslint/no-unused-vars
+    await expect(eraseAuditSubject(without as unknown as AuditEraseDeps, request())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(b.logs.some((entry) => entry.event === "audit.erase_learning_failed")).toBe(true);
+  });
+
+  it("the broker wires it into the erase dependencies", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    expect(source).toMatch(/purgeExports: exportPurger[^\n]*\n[^\n]*\n\s*eraseLearning: learningEraseHook\(/);
+  });
+});
 
 describe("eraseAuditSubject", () => {
   it("replaces the person's key with a tombstone and puts audit.subject_erased in one transaction across the keys and State tables", async () => {
@@ -904,7 +943,7 @@ describe("after a shred: no new export, and no link for an old one", () => {
     expect(before).toContain(`Person of ${ROUTES_A}`);
     const erase: AuditEraseDeps = {
       documentClient: b.h.deps.documentClient, keysTable: KEYS, tableName: STATE, ...(b.deps.audit === undefined ? {} : { audit: b.deps.audit }), now: () => b.h.clock.now, log: () => undefined,
-      purgeExports: async (orgId) => { await purgeAuditExports({ s3: x.bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
+      eraseLearning: async () => undefined, purgeExports: async (orgId) => { await purgeAuditExports({ s3: x.bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
     };
     await eraseAuditSubject(erase, request({ orgId: ROUTES_A }));
     expect(x.bucket.keysUnder(`${ROUTES_A}/`)).toStrictEqual([]);
@@ -968,7 +1007,7 @@ describe("POST /v1/admin/audit/{orgId}/erase-subject", () => {
     for (const orgId of [ROUTES_A, ROUTES_B]) bucket.objects.set(`${orgId}/aex_${"0".repeat(32)}.0123456789abcdef.rovara-audit.json.gz`, Buffer.from("Person of " + orgId));
     const erase: AuditEraseDeps = {
       documentClient: b.h.deps.documentClient, keysTable: KEYS, tableName: STATE, ...(b.deps.audit === undefined ? {} : { audit: b.deps.audit }), now: () => b.h.clock.now, log: () => undefined,
-      purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
+      eraseLearning: async () => undefined, purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
     };
     const orgs = orgStore(b);
     const names = new Map([["dev_1", "Alice Example"]]);
@@ -1104,7 +1143,7 @@ describe("through the broker's handler", () => {
     bucket.objects.set(`${ROUTES_A}/aex_x.0123456789abcdef.rovara-audit.json.gz`, Buffer.from("export"));
     const erase: AuditEraseDeps = {
       documentClient: b.h.deps.documentClient, keysTable: KEYS, tableName: STATE, ...(b.deps.audit === undefined ? {} : { audit: b.deps.audit }), now: () => b.h.clock.now, log: () => undefined,
-      purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
+      eraseLearning: async () => undefined, purgeExports: async (orgId) => { await purgeAuditExports({ s3: bucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
     };
     const developer = {
       issuer: "https://dev.example.test", env: "staging", methods: { slack: true, oidc: false }, slackTeamId: "T0TEAM1", signInTableName: "signin",

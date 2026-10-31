@@ -288,6 +288,26 @@ export const ProjectOverviewBudgetSchema = z
   .strict();
 
 /**
+ * The learning loop's block on a maintainer's project page (design 6.2, 6.4): this month's member corrections and how many of them repeated an earlier one, last month's share when it had enough
+ * corrections, and the repeats of each rule that is still active ("same correction given twice, after a rule"). Counts and ids only; never a correction's or a rule's words.
+ */
+export const ProjectOverviewLearningSchema = z
+  .object({
+    thisMonth: z.object({ repeats: z.number().int().min(0), corrections: z.number().int().min(0), enoughData: z.boolean() }).strict(),
+    lastMonthShare: z.number().min(0).max(1).optional(),
+    repeatsAfterRule: z.array(z.object({ ruleId: z.string().min(1).max(100), stage: z.string().min(1).max(100), repeats: z.number().int().min(1) }).strict()).max(50),
+    /** Present (as `500+`) only when the month's corrections read to count `repeatsAfterRule` hit the read cap, so those counts are at least what they say. */
+    repeatsAfterRuleLabel: z.string().min(1).max(12).optional(),
+    /** The company's master "suggestions" switch (optional: an absent field, from an older server, means `on`). `collecting`: corrections are kept, no suggestion is made. */
+    suggestions: z.discriminatedUnion("state", [
+      z.object({ state: z.literal("on") }).strict(),
+      z.object({ state: z.literal("collecting"), corrections: z.number().int().min(0) }).strict(),
+    ]).optional(),
+  })
+  .strict();
+export type ProjectOverviewLearning = z.infer<typeof ProjectOverviewLearningSchema>;
+
+/**
  * `GET /v1/app/projects/{name}/overview`: a project's page. Read now for the reader: a person with no role in the project gets `PROJECT_NOT_FOUND`; `budget` is present only for a reader
  * who may see spend; `agents` are the agents the reader may see; `running` is the Live wall's `team` filter for this project (at most one page of `LiveTile`s the reader can view).
  */
@@ -299,6 +319,8 @@ export const ProjectOverviewSchema = z
     you: ProjectOverviewYouSchema,
     agents: z.array(ProjectOverviewAgentSchema).max(PROJECT_OVERVIEW_AGENTS_MAX),
     budget: ProjectOverviewBudgetSchema.optional(),
+    /** Present only for a project maintainer (a role that may edit the project's settings). */
+    learning: ProjectOverviewLearningSchema.optional(),
     running: z.array(LiveTileSchema).max(LIVE_PAGE_MAX),
   })
   .strict();

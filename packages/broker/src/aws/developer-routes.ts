@@ -198,6 +198,7 @@ import { chainViewPortsFor } from "../chains/view-ports.js";
 import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { decidingOf, isAgentSessionRoute, routeAgentSessionRequest, type SessionRouteDependencies } from "../agent-sessions/routes.js";
 import { closeOrgSessions, stopOrgSessions } from "../agent-sessions/lifecycle.js";
+import { clearArchivedProjectLearning as clearArchivedProject, clearOrgLearning } from "../learning/cleanup.js";
 import type { HandoffRuntime } from "../agent-sessions/handoff.js";
 import { stopSession } from "../agent-sessions/stop.js";
 import { requireSessionLevel } from "../agent-sessions/access.js";
@@ -208,6 +209,9 @@ import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart, type CodeIntentRouteDependencies } from "../rovara-code/routes.js";
 import { getCodeSettings, putCodeSettings } from "../rovara-code/code-settings.js";
 import { projectProcessOf } from "../playbook/project-process.js";
+import { forgetTaskComment, rememberTaskComment } from "../learning/capture-comment.js";
+import { LEARNING_PATH, routeLearning } from "../learning/routes.js";
+import { LEARNING_SETTINGS_PATH, routeLearningSettings } from "../learning/settings-routes.js";
 import { HOW_WE_WORK_PATH, PLAYBOOK_PATH, PLAYBOOK_PROCESS_PATH, getProjectHowWeWork, routeProjectPlaybook, routeProjectProcess } from "../playbook/routes.js";
 import { mergeViewOf } from "../rovara-code/merge.js";
 import { applySetupDraft, getSetupDraft, startSetupDraft, type SetupDraftDependencies } from "../rovara-code/setup-draft.js";
@@ -301,7 +305,7 @@ export interface DeveloperRouteDependencies {
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
    */
-  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void>; clearSessions?: (orgId: OrgId) => Promise<void>; stopWork?: (orgId: OrgId) => Promise<void> };
+  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void>; clearSessions?: (orgId: OrgId) => Promise<void>; stopWork?: (orgId: OrgId) => Promise<void>; clearLearning?: (orgId: OrgId) => Promise<void> };
   /**
    * Plan 3 Task 11: what follows a project's archive on the agents platform (`onProjectArchived`). Called once the archive has applied, never on a
    * replay; a failure is logged and never undoes or fails the archive. Absent where agents are not set up.
@@ -1099,6 +1103,19 @@ async function getAppProject(deps: DeveloperRouteDependencies, caller: Developer
 }
 
 /**
+ * v1.2 learning loop: an archived project's learning data (people's words) is deleted with it. Best effort, bounded, and run after the archive has applied: a failure logs the error's name only
+ * and never undoes or fails the archive. It does ONE bounded page inline so the request answers quickly; a project with more leaves an entry in the index of open walks and the broker's scheduled
+ * run finishes it (`resumeOpenLearningWalks`). What is left meanwhile is ignored by every read of a project created again.
+ */
+async function clearArchivedProjectLearning(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">, orgId: OrgId, project: string): Promise<void> {
+  try {
+    await clearArchivedProject({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, project);
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.project_archived_learning_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
+/**
  * `POST /v1/app/projects/{name}/archive` and `.../restore` (Plan 2, Task 20): a maintainer of the project (an org owner or admin, or the
  * project's own maintainer) archives it or brings it back, and the answer is the project as the app now shows it. No access is a 404 and a
  * role without `archive` a 403. Repeating either call on a project already in that state answers 200 and changes nothing (it does run the
@@ -1124,6 +1141,7 @@ async function changeProjectArchive(deps: DeveloperRouteDependencies, caller: De
       logDeveloperEvent({ event: "developer.project_archived_hook_failed", orgId: caller.orgId, project: name, error: error instanceof Error ? error.name : "unknown" });
     }
   }
+  if (!replayed && change === "archive") await clearArchivedProjectLearning(deps, caller.orgId, name);
   return { project: await getAppProject(deps, caller, name), warnings };
 }
 
@@ -1849,6 +1867,7 @@ export function developerTaskRouteDependencies(
     };
   };
   const agents = deps.agents;
+  const ledger = agents?.audit ?? deps.audit;
   const agentSessions = sessionDependenciesOf(deps);
   return {
     documentClient: deps.documentClient,
@@ -1876,6 +1895,8 @@ export function developerTaskRouteDependencies(
     ...(agents?.codeMerge !== undefined ? { mergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => mergeViewOf(agents, task, items, caller.developerId) }
       : deps.codeMergeView === undefined ? {} : { mergeView: (task: DeveloperTaskRecord, items: MergeTrackingItem[]) => deps.codeMergeView!(task, items, caller.developerId) }),
     ...(agents === undefined ? {} : { agentRuns: agents, agentEngine: agents, withdrawSpendRequests: (task: DeveloperTaskRecord) => withdrawTaskSpendRequests(agents, task), pausedTaskGate: (who, task: DeveloperTaskRecord) => pausedTaskGate(agents, who, task) }),
+    // v1.2 learning loop: the ledger a send-back's `rule.suggested` goes to (learning/capture-decision.ts).
+    ...(ledger === undefined ? {} : { learningAudit: ledger }),
     ...(deps.developer.taskPeopleConfiguration === undefined ? {} : { taskPeopleConfiguration: deps.developer.taskPeopleConfiguration }),
     ...(deps.developer.workflowDependenciesEnabled === undefined ? {} : { workflowDependenciesEnabled: deps.developer.workflowDependenciesEnabled }),
     checkTaskPerson: async (task, developerId, admission) => {
@@ -1951,6 +1972,14 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (/^\/v1\/app\/projects\/[^/]+\/allowed-websites(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for allowed websites.");
   }
+  // v1.2 learning (the view and the writes: Remember, Forget, Accept, Dismiss, Reopen, Remove) is browser-only. Refused here, before authentication or any read, so a token learns nothing about a suggestion or rule.
+  if (/^\/v1\/app\/projects\/[^/]+\/learning(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
+    throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
+  }
+  // The company's master suggestions switch is browser-only too: no token, CLI or Slack path reads or changes it.
+  if (url.pathname === LEARNING_SETTINGS_PATH && authenticated?.caller.browserSession !== true) {
+    throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
+  }
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
   if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
@@ -1991,6 +2020,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
           editComment: (caller, taskId, input) => editPageComment(routeDeps(caller), caller, taskId, input),
           deleteComment: (caller, taskId, input) => deletePageComment(routeDeps(caller), caller, taskId, input),
           setSuggestion: (caller, taskId, input) => setPageSuggestion(routeDeps(caller), caller, taskId, input),
+          rememberComment: (caller, taskId, commentId) => rememberTaskComment(routeDeps(caller), caller, taskId, commentId, { audit: deps.agents?.audit }),
+          forgetComment: (caller, taskId, commentId) => forgetTaskComment(routeDeps(caller), caller, taskId, commentId, { audit: deps.agents?.audit }),
           decide: (caller, taskId, input) => decideOnPage(routeDeps(caller), caller, taskId, input),
           retryApplicationRound: (caller, taskId, input) => retryApplicationRoundOnPage(routeDeps(caller), caller, taskId, input),
           readE2EArtifact: (caller, taskId, sha256) => getTaskE2EArtifact(routeDeps(caller), caller, taskId, sha256),
@@ -2108,7 +2139,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     try { name = decodeURIComponent(reviewedArchiveRoute[1]!); } catch { throw agentXError("NOT_FOUND", "That project is unavailable in this company."); }
     if (!AgentXNameSchema.safeParse(name).success) throw agentXError("NOT_FOUND", "That project is unavailable in this company.");
     if (request.method === "GET") return readReviewedProjectArchiveAppPreview(deps, caller, name);
-    return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps) }, caller, name, jsonBody(request));
+    return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps), clearLearning: (orgId, project) => clearArchivedProjectLearning(deps, orgId, project) }, caller, name, jsonBody(request));
   }
   // Lane B reviewed restore; existing browser auth/CSRF runs before this method/path pair.
   const reviewedRestoreRoute = /^\/v1\/app\/projects\/([^/]+)\/(restore-preview|reviewed-restore)$/.exec(url.pathname);
@@ -2188,6 +2219,18 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const howWeWorkRoute = HOW_WE_WORK_PATH.exec(url.pathname);
   if (request.method === "GET" && howWeWorkRoute !== null) {
     return getProjectHowWeWork({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) }, caller, howWeWorkRoute[1]!);
+  }
+  if (url.pathname === LEARNING_SETTINGS_PATH && (request.method === "GET" || request.method === "PUT")) {
+    return routeLearningSettings({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, audit: deps.agents?.audit }, caller, request.method, () => jsonBody(request));
+  }
+  // v1.2 learning loop: Remember and Forget (more routes are added to learning/routes.ts by later steps).
+  if (LEARNING_PATH.test(url.pathname)) {
+    const projectFor = (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName);
+    const learned = await routeLearning({
+      task: developerTaskRouteDependencies(deps, caller), projectFor, audit: deps.agents?.audit,
+      ...(deps.agents === undefined ? {} : { decide: { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents.store, audit: deps.agents.audit, approvals: deps.agents, projectFor } }),
+    }, caller, request.method, url, () => jsonBody(request));
+    if (learned !== undefined) return learned;
   }
   const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
   if (setupDraftRoute !== null) {
@@ -2560,6 +2603,8 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
       await stopOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, deadline: deps.now() + CLOSE_STOP_BUDGET_MS }, orgId, async (sessionId, requestId) => { await stopSession(sessionDeps, caller, sessionId, { requestId }); });
     });
     const clearSessions = deps.closeOrgHooks?.clearSessions ?? ((orgId: OrgId) => closeOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId));
+    // v1.2 learning loop: the company's learning data is deleted by a bounded walk over its projects; a walk that does not finish is resumed later (`resumeLearningWalks`).
+    const clearLearning = deps.closeOrgHooks?.clearLearning ?? (async (orgId: OrgId) => { await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId); });
     await deps.orgs.closeOrg(caller.orgId, {
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)),
       // Plan 3 Task 12, PF11: the org's connection secrets are scheduled for deletion with the org.
@@ -2571,6 +2616,7 @@ async function leaveOrganization(deps: DeveloperRouteDependencies, caller: Devel
       // The org's company AI sources leave the model proxy with it, vendor keys included (Task 24b).
       ...(releaseModelSources === undefined ? {} : { releaseModelSources }),
       clearSessions,
+      clearLearning,
       stopWork,
       emails,
       by: { kind: "member", id: caller.developerId },

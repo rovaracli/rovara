@@ -190,8 +190,8 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
 .comment-meta{margin:0;font-size:.85rem;color:var(--muted)}
 .comment-author{color:var(--fg);font-weight:600}
 .comment-text{margin:.2rem 0;white-space:pre-wrap;overflow-wrap:anywhere}
-.comment-state,.comment-sent,.comment-deleted,.from-version,.comment-edited{color:var(--muted);font-size:.9rem}
-.comment-state,.comment-sent,.comment-deleted,.comment-link{margin:.2rem 0}
+.comment-state,.comment-sent,.comment-deleted,.from-version,.comment-edited,.comment-remembered{color:var(--muted);font-size:.9rem}
+.comment-state,.comment-sent,.comment-deleted,.comment-link,.comment-remember{margin:.2rem 0}
 .comment-link{font-size:.9rem}
 .chip{display:inline-block;border-radius:999px;padding:0 .5rem;font-size:.8rem;font-weight:600;background:var(--focus);color:var(--bg)}
 .tag-owner{font-size:.75rem}
@@ -300,6 +300,10 @@ export const TASK_PAGE_DECIDING_COPY = {
   peopleSending: "Sending…",
   peoplePending: "Open the confirmation page to finish this change.",
   peopleDone: "People updated.",
+  remember: "Remember this",
+  forget: "Forget",
+  remembered: "Remembered for this project",
+  rememberedOutside: "Remembered (from outside: shown only, won't be suggested)",
 } as const;
 
 /**
@@ -327,7 +331,7 @@ var revision=Number(data.revision)||0;
 var commentSeq=Number(data.commentSeq)||0;
 var canComment=data.canComment===true,canDecide=data.canDecide===true,canSuggest=data.canSuggest===true,canAsk=data.canAsk===true&&data.askAvailable!==false;
 var canRead=data.canRead===undefined?true:data.canRead===true,canManagePeople=data.canManagePeople===true,canTakeOwnership=data.canTakeOwnership===true;
-var canRetry=data.canRetry===true;
+var canRetry=data.canRetry===true,canRemember=false;
 var hasProjection=false,peopleRevision=null,accessGeneration=0;
 function validProjection(state){
   var keys=["canRead","canComment","canSuggest","canDecide","canAsk","canManagePeople","canTakeOwnership"];
@@ -348,8 +352,12 @@ function applyProjection(state){
   hasProjection=true;
   if(state.peopleRevision!==undefined)peopleRevision=state.peopleRevision;
   canRead=state.canRead;canComment=canRead&&state.canComment;canSuggest=canRead&&state.canSuggest;canDecide=canRead&&state.canDecide;canAsk=canRead&&state.canAsk&&state.askAvailable!==false;canManagePeople=canRead&&state.canManagePeople;canTakeOwnership=canRead&&state.canTakeOwnership;
+  var remembered0=canRemember;
+  canRemember=canRead&&state.canRemember===true;
   if(changed)accessGeneration+=1;
   applyCurrentAccess();
+  /* Turned on: the rows come now, not at the next comment change (turned off: applyCurrentAccess took them away). */
+  if(canRemember&&!remembered0)known?renderAll():refreshComments();
   return true;
 }
 var current=data.current&&typeof data.current==="object"?data.current:null;
@@ -405,6 +413,15 @@ function applyCurrentAccess(){
     for(i=0;i<dialogButtons.length;i++)dialogButtons[i].disabled=!canDecide&&dialogButtons[i].textContent!==COPY.cancel;
     if(!canDecide&&dialog.open&&typeof dialog.close==="function")dialog.close();
   }
+  if(!canRemember){
+    /* The actions go; a refusal's message stays beside the comment. */
+    var learnRows=document.querySelectorAll(".comment-remember");
+    for(i=0;i<learnRows.length;i++){
+      var said1=learnRows[i].querySelector(".comment-error");
+      if(!said1){learnRows[i].remove();continue;}
+      while(learnRows[i].firstChild&&learnRows[i].firstChild!==said1)learnRows[i].removeChild(learnRows[i].firstChild);
+    }
+  }
   var roleForms=document.querySelectorAll("[data-people-role-form]");
   for(i=0;i<roleForms.length;i++){
     var roleSelect=roleForms[i].querySelector("select"),roleButton=roleForms[i].querySelector("button");
@@ -423,7 +440,7 @@ function hideRemovedTask(){
 }
 function stopAccess(clearAllDrafts){
   if(!stopped){stopped=true;accessGeneration+=1;}
-  canRead=false;canComment=false;canSuggest=false;canDecide=false;canAsk=false;canManagePeople=false;canTakeOwnership=false;
+  canRead=false;canComment=false;canSuggest=false;canDecide=false;canAsk=false;canManagePeople=false;canTakeOwnership=false;canRemember=false;
   if(timer!==null){clearTimeout(timer);timer=null;}
   applyCurrentAccess();hideRemovedTask();
   if(clearAllDrafts)clearDrafts();else clearTaskDrafts();
@@ -433,12 +450,14 @@ function canPost(path,body){
   if(path==="decision")return canDecide;
   if(path==="retry")return canRetry;
   if(path==="suggestions")return canSuggest;
+  if(learnPath(path))return canRemember;
   if(path==="comments"||path.indexOf("comments/")===0)return canComment&&!(body&&body.ask===true&&!canAsk);
   if(path==="people/role")return canManagePeople;
   if(path==="people/take-ownership")return canTakeOwnership;
   if(/^people\/requests\/[0-9a-f-]{36}\/confirm$/i.test(path))return canManagePeople||canTakeOwnership;
   return false;
 }
+function learnPath(path){return /^comments\/[0-9a-f-]{36}\/(remember|forget)$/i.test(path);}
 function peoplePath(path){return path==="people/role"||path==="people/take-ownership"||path.indexOf("people/requests/")===0;}
 
 /* ---------- talking to the API ---------- */
@@ -458,7 +477,8 @@ function call(method,path,body,retried){
       if((peoplePath(path)||path==="retry")&&((answer.status===403&&answer.body.error!=="request_refused")||answer.status===404)&&!retried){
         return readState().then(function(){return answer;});
       }
-      if((answer.status===403&&answer.body.error!=="request_refused")||answer.status===404)stopAccess(false);
+      /* Remember and Forget refusals are about that one comment: the caller shows the message and re-reads state. */
+      if(!learnPath(path)&&((answer.status===403&&answer.body.error!=="request_refused")||answer.status===404))stopAccess(false);
       return answer;
     });
   });
@@ -640,12 +660,61 @@ function commentNode(c,shownVersion,isReply){
     actions.push(make("button",{type:"button","class":"comment-delete","data-comment":c.id,"aria-describedby":"comment-"+c.id},COPY.remove));
   }
   if(!isReply&&canComment&&!agentx&&c.deleted!==true)actions.push(make("button",{type:"button","class":"reply-open","data-comment":c.id,"aria-describedby":"comment-"+c.id},COPY.reply));
+  if(canRemember&&!agentx&&c.deleted!==true)article.appendChild(rememberRow(c.id,Boolean(c.learning&&typeof c.learning==="object"&&c.learning.remembered===true)));
   if(actions.length>0){
     var p=make("p",{"class":"comment-actions"});
     for(var i=0;i<actions.length;i++){if(i>0)p.appendChild(document.createTextNode(" "));p.appendChild(actions[i]);}
     article.appendChild(p);
   }
   return article;
+}
+/* Remember this / Forget: shown only while the server says this reader may (canRemember). Nothing is kept in the browser. */
+var outsiders={};
+function rememberRow(id,remembered,note){
+  var row=make("p",{"class":"comment-remember","data-comment":id});
+  paintRemember(row,remembered,note);
+  return row;
+}
+function paintRemember(row,remembered,note){
+  var id=row.getAttribute("data-comment");
+  while(row.firstChild)row.removeChild(row.firstChild);
+  if(remembered){
+    row.appendChild(make("span",{"class":"comment-remembered"},has(outsiders,id)?COPY.rememberedOutside:COPY.remembered));
+    row.appendChild(document.createTextNode(" "));
+  }
+  var action=make("button",{type:"button","class":remembered?"forget":"remember","data-comment":id,"aria-describedby":"comment-"+id},remembered?COPY.forget:COPY.remember);
+  if(has(pendingLearn,id))action.disabled=true;
+  row.appendChild(action);
+  if(note){row.appendChild(document.createTextNode(" "));row.appendChild(make("span",{"class":"comment-error",role:"alert"},note));}
+}
+var pendingLearn={};
+function rowOf(id){var article=document.getElementById("comment-"+id);return article?article.querySelector(".comment-remember"):null;}
+function learnComment(button,forgetting){
+  if(stopped||!canRead||!canRemember)return;
+  var id=button.getAttribute("data-comment")||"";
+  if(!UUID.test(id)||has(pendingLearn,id))return;
+  pendingLearn[id]=true;
+  button.disabled=true;
+  var generation=accessGeneration;
+  function settle(on,note){
+    var row=rowOf(id);
+    if(row)paintRemember(row,on,note);
+  }
+  call("POST","comments/"+id+"/"+(forgetting?"forget":"remember"),{}).then(function(answer){
+    delete pendingLearn[id];
+    /* A 401 ended the sign-in (the page has stopped); a changed access generation means the page's rights changed meanwhile. */
+    if(answer.status===401||generation!==accessGeneration)return;
+    var correction=answer.body.correction;
+    if(answer.status===200&&(forgetting?answer.body.forgotten===true:correction&&typeof correction==="object")){
+      var on=!forgetting;
+      if(on&&correction.standing==="outsider")outsiders[id]=true;else delete outsiders[id];
+      if(known)for(var k=0;k<known.length;k++)if(known[k].id===id)known[k].learning={remembered:on};
+      settle(on);
+      return;
+    }
+    settle(forgetting,said(answer));
+    return readState();
+  },function(){delete pendingLearn[id];if(generation!==accessGeneration)return;settle(forgetting,COPY.unavailable);}).then(null,function(){});
 }
 function threadList(comments,shownVersion){
   var top=comments.filter(function(c){return c.parentId===undefined;});
@@ -740,12 +809,18 @@ function setSuggest(button,on){
   if(on)button.setAttribute("data-mine","true");else button.removeAttribute("data-mine");
   button.textContent=on?COPY.youSuggest:COPY.suggest;
 }
+var commentsAsked=0,commentsApplied=0;
 function refreshComments(){
-  var generation=accessGeneration;
+  var generation=accessGeneration,ticket=++commentsAsked;
   return call("GET","comments").then(function(answer){
     if(generation!==accessGeneration||stopped||!canRead)return;
-    if(answer.status!==200)return;
+    /* An answer older than one already applied would put back an older canRemember or learning. */
+    if(ticket<commentsApplied)return;
+    if(answer.status!==200||Object.prototype.toString.call(answer.body.comments)!=="[object Array]")return;
+    commentsApplied=ticket;
     known=arr(answer.body.comments).filter(validComment);
+    canRemember=canRead&&answer.body.canRemember===true;
+    applyCurrentAccess();
     renderAll();
     if(answer.body.suggestions!==undefined)renderSuggestions(arr(answer.body.suggestions));
   },function(){});
@@ -983,6 +1058,8 @@ document.addEventListener("click",function(event){
     if(gone&&UUID.test(gone.getAttribute("data-comment")||""))deleteComment(gone,button);
   }else if(button.classList.contains("suggest")&&canSuggest&&current){
     suggestOption(button);
+  }else if(button.classList.contains("remember")||button.classList.contains("forget")){
+    learnComment(button,button.classList.contains("forget"));
   }
 });
 
@@ -1337,5 +1414,7 @@ document.addEventListener("visibilitychange",function(){
 var refresh=document.getElementById("moved-on-refresh");
 if(refresh)refresh.addEventListener("click",function(){location.reload();});
 if(hasProjection&&!canRead)stopAccess(false);
+/* The page is served without the learning flags (canRemember, and which comments are remembered): one read of the comments brings them. */
+else if(canRead)refreshComments();
 schedule();
 })();`;

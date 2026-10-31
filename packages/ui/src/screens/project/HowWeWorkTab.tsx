@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useBuilderApi } from "../../api/builder.js";
 import { ApiError } from "../../api/errors.js";
 import { howWeWorkKey, useHowWeWork, useHowWeWorkApi } from "../../api/how-we-work.js";
+import { learningKey } from "../../api/learning.js";
 import { useStageModels } from "../../api/stage-models.js";
 import { cardStages, editBaseStage, referenceKind } from "../../api/stage-cards.js";
 import { Button } from "../../design/Button.js";
@@ -11,6 +12,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { failureText } from "../agents/agent-context.js";
 import { HowWeWorkCard, stageDomId } from "./HowWeWorkCard.js";
 import { HowWeWorkHistory } from "./HowWeWorkHistory.js";
+import { LearningSection } from "./LearningSection.js";
 import { EDITABLE_KINDS, REVIEWING_KINDS, hasChanged, type Filter } from "./how-we-work-rows.js";
 import { EMPTY_RULES, UNUSED_STAGE_ID, applyRuleEdits, ruleValues, type RuleEdits } from "./how-we-work-draft.js";
 import type { Overlay } from "../builder/draft-state.js";
@@ -103,7 +105,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
    if (failure instanceof ApiError && failure.code === "AGENT_REVISION_CONFLICT") void draft.refetch();
   } finally { setSaving(false); }
  }
- function refresh() { void query.invalidateQueries({ queryKey: howWeWorkKey(project) });if (layerId !== undefined) void query.invalidateQueries({ queryKey: ["agent", layerId] }); }
+ function refresh() { void query.invalidateQueries({ queryKey: howWeWorkKey(project) });void query.invalidateQueries({ queryKey: learningKey(project) });if (layerId !== undefined) void query.invalidateQueries({ queryKey: ["agent", layerId] }); }
  /** A version of the layer the project does not run (it was set back to the built-in): shown as such, offered, and what a publish is compared with. */
  const savedVersion = data.process.kind === "builtin" ? data.process.draftLayer?.currentVersion : undefined;
  const published = data.process.kind === "project_process" ? data.process.version : savedVersion;
@@ -125,6 +127,7 @@ export function HowWeWorkTab({ project, canEdit }: { project: string; canEdit: b
    {canEdit && <Button busy={choosing} onClick={() => { void chooseSaved(); }}>Use it</Button>}
    {chooseError !== undefined && <p role="alert"><VisibleText text={chooseError} /></p>}
   </section>}
+  <LearningSection project={project} />
   <ol className="rv-hww-stages" aria-label="Stages">{data.stages.map(stage => <li key={stage.id}><button type="button" className="rv-hww-stage" onClick={() => { const card = document.getElementById(stageDomId(stage.id) + "-title");card?.scrollIntoView({ block: "start" });card?.focus(); }}><VisibleText text={stage.name} />{hasChanged(stage, data) && <span className="rv-muted"> (changed here)</span>}</button></li>)}</ol>
   <div className="rv-hww-controls">
    <fieldset className="rv-hww-filter"><legend>Show</legend>{FILTERS.map(option => <label key={option.value}><input type="radio" name="hww-filter" value={option.value} checked={filter === option.value} onChange={() => setFilter(option.value)} /> {option.label}</label>)}</fieldset>

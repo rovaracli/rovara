@@ -874,7 +874,7 @@ function eraseDepsOf(r: Rig): AuditEraseDeps {
     tableName: STATE,
     now: () => r.h.clock.now,
     log: (entry) => r.logs.push(entry),
-    purgeExports: async (orgId) => { await purgeAuditExports({ s3: r.exportsBucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
+    eraseLearning: async () => undefined, purgeExports: async (orgId) => { await purgeAuditExports({ s3: r.exportsBucket.client, exportsBucket: EXPORTS_BUCKET }, orgId); },
   };
 }
 
