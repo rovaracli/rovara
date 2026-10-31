@@ -554,7 +554,9 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   const key = applyKey(caller.orgId, name, body.requestId);
   const stored = await getItem(deps.documentClient, deps.tableName, key);
   if (stored !== undefined && !(typeof stored[INDEX_EXPIRY_ATTRIBUTE] === "number" && stored[INDEX_EXPIRY_ATTRIBUTE] <= Math.floor(deps.now() / 1000))) {
-    if (stored["by"] !== caller.developerId) throw agentXError("IDEMPOTENCY_CONFLICT", "that request id was already used for a different request; use a new one");
+    // A request id kept by the version 1 apply (no per-item results) was a different kind of request: it is refused in words, never replayed as this one.
+    const previous = stored["outcome"] as { results?: unknown } | undefined;
+    if (stored["by"] !== caller.developerId || !Array.isArray(previous?.results)) throw agentXError("IDEMPOTENCY_CONFLICT", "that request id was already used for a different request; use a new one");
     return new StatusReply(200, await replayOf(deps, caller, name, stored["outcome"] as StoredOutcome));
   }
   const latest = await deps.latest(caller.orgId, name);

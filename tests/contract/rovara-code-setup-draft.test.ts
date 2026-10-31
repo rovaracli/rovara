@@ -705,6 +705,20 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: settings", () => {
     expect(t.latestSettings().revision).toBe(1);
   });
 
+  it("refuses in words a request id that the version 1 apply kept, exactly as it stored it, instead of replaying it as this request", async () => {
+    const t = await setup();
+    await t.drafted();
+    const requestId = randomUUID();
+    t.db.set({
+      pk: setupDraftKey(TEST_ORG, NAME).pk, sk: `APPLY#${requestId}`, entityType: "SETUP_DRAFT_APPLY", orgId: TEST_ORG, project: NAME, by: OMAR.developerId,
+      outcome: { warnings: [], setupCheck: "started", offers: [] }, at: new Date().toISOString(), expiresAtEpoch: Math.floor(Date.now() / 1000) + 3600,
+    });
+    const reply = await t.apply([{ id: "tests-web", useSuggestion: true }], { requestId });
+    expect(reply.status).toBe(409);
+    expect(errorOf(reply).code).toBe("IDEMPOTENCY_CONFLICT");
+    expect(t.latestSettings().revision).toBe(1);
+  });
+
   it("answers a repeat of the request id with the first outcome and applies nothing twice; another person's use of the id is refused", async () => {
     const t = await setup();
     await t.person(KIT, "member", "maintainer");
