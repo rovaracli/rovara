@@ -64,6 +64,7 @@ import {
 } from "./access.js";
 import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
+import { CONTEXT_SOURCES_PATH, routeContextSources, type ContextSourceRouteDependencies } from "../context-sources/settings-routes.js";
 import { listOptOutViews, registerCommentTriggerApprovals } from "./comment-trigger-optouts.js";
 import { requireNotCurrentProcess } from "../playbook/process-in-use.js";
 import { diffLessSafe } from "../playbook/process-diff.js";
@@ -137,6 +138,8 @@ export interface AgentRouteDependencies extends ApprovalDependencies {
   requestRunLimit?: RequestRunLimit;
   /** Task 12b: the org's connections (`/v1/app/connections*`). Without it (no connection secrets role) those routes answer NOT_FOUND. */
   connections?: ConnectionRouteDependencies["store"];
+  /** Lane E (MCP context sources): the settings of a project's sources (`/v1/app/projects/{p}/context-sources*`). Absent where they are not set up: those routes then answer 404. */
+  contextSources?: ContextSourceRouteDependencies;
   /** Plan 4 Task 16: the broker function's role ARN, for the trust policy a CloudWatch connection shows. */
   brokerRoleArn?: string;
   /** Starts a person's run (Task 15). The developer API supplies it, since it holds the task start; without it the route answers NOT_FOUND. */
@@ -973,6 +976,11 @@ export async function routeAgentRequest(deps: AgentRouteDependencies, caller: Ag
   if (isConnectionRoute(url.pathname)) {
     if (deps.connections === undefined) throw agentXError("NOT_FOUND", "connections are not set up in this deployment");
     return routeConnectionRequest({ store: deps.connections, documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.brokerRoleArn === undefined ? {} : { brokerRoleArn: deps.brokerRoleArn }) }, caller, request, url);
+  }
+  // Lane E: the Sources settings of a project; matched before the generic project routes below.
+  if (CONTEXT_SOURCES_PATH.test(url.pathname)) {
+    if (deps.contextSources === undefined) throw agentXError("NOT_FOUND", "context sources are not set up in this deployment");
+    return routeContextSources(deps.contextSources, caller, request, url);
   }
   // Task 14b's `…/connectors/github/comment-triggers` is matched before Task 13's project connectors, which would otherwise take every `…/connectors/…` path (PF24).
   const commentTriggers = COMMENT_TRIGGERS_PATH.exec(url.pathname);
