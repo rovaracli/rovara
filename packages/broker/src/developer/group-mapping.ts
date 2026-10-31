@@ -7,11 +7,13 @@
 //  - A mapping never grants `owner`, and never changes an owner's role. Owners go through the mapping like everyone else; only when the mapping itself is
 //    broken may one of at most two named owners sign in as break-glass (audited, alerted, one hour, fresh sign-in): see `decideSignIn`.
 //  - The mapped role replaces the person's role at every sign-in, so leaving a group takes the access away.
-import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { auditTransact, type AuditRuntime } from "../audit/outbox.js";
+import { flushAuditEvents } from "../audit/flush.js";
 import {
   agentXError, featureEnabled, requireFeature, BREAK_GLASS_FRESH_AUTH_SECONDS, BREAK_GLASS_SESSION_MAX_SECONDS, BROKEN_MAPPING_REFUSALS, BreakGlassOwnersSchema, GROUP_CLAIM_MAX_GROUPS, GROUP_MAPPING_MESSAGES, GROUP_NAME_MAX_CHARS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE,
-  PROJECT_ROLE_PRECEDENCE, groupMappingKey,
-  type BreakGlassOwner, type EditionPolicy, type GroupMappingConfig, type GroupMappingEvaluation, type GroupMappingRefusal, type MappedAccess, type OrgId, type OrgRole, type SignInDecision,
+  PROJECT_ROLE_PRECEDENCE, BREAK_GLASS_MAX_DAYS, BreakGlassRecordSchema, breakGlassKey, groupMappingKey,
+  type BreakGlassOwner, type BreakGlassRecord, type AuditEventInput, type EditionPolicy, type GroupMappingConfig, type GroupMappingEvaluation, type GroupMappingRefusal, type MappedAccess, type OrgId, type OrgRole, type SignInDecision,
 } from "@agentx/contracts";
 
 /**
@@ -103,6 +105,9 @@ export function decideSignIn(input: {
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };
 
+/** What a save also records, in the same transaction as the save (the Audit Ledger's outbox). The events are built by the caller, who knows the diff. */
+type SaveEvents = readonly AuditEventInput[];
+
 export interface GroupMappingStore {
   /** The org's mapping, or undefined when none is saved. A stored record that does not parse throws: the caller refuses the sign-in. */
   get(orgId: OrgId): Promise<GroupMappingConfig | undefined>;
@@ -110,11 +115,12 @@ export interface GroupMappingStore {
    * Saves a mapping. `expectedVersion` is the version the admin read (0 when none is saved): the save is refused (IDEMPOTENCY_CONFLICT) if another save came
    * first. The saved version is `expectedVersion + 1`.
    */
-  put(orgId: OrgId, config: Omit<GroupMappingConfig, "version">, expectedVersion: number): Promise<GroupMappingConfig>;
+  put(orgId: OrgId, config: Omit<GroupMappingConfig, "version">, expectedVersion: number, events?: SaveEvents): Promise<GroupMappingConfig>;
 }
 
-export function dynamoGroupMappingStore(input: { documentClient: DocumentClient; tableName: string; policy: EditionPolicy }): GroupMappingStore {
+export function dynamoGroupMappingStore(input: { documentClient: DocumentClient; tableName: string; policy: EditionPolicy; audit?: AuditRuntime }): GroupMappingStore {
   const { documentClient, tableName, policy } = input;
+  const deps = { documentClient, ...(input.audit === undefined ? {} : { audit: input.audit }) };
   return {
     async get(orgId) {
       requireFeature(policy, "sso");
@@ -127,17 +133,19 @@ export function dynamoGroupMappingStore(input: { documentClient: DocumentClient;
       if (!parsed.success) throw agentXError("CONFIG_INVALID", GROUP_MAPPING_MESSAGES.config_invalid);
       return parsed.data;
     },
-    async put(orgId, config, expectedVersion) {
+    async put(orgId, config, expectedVersion, events = []) {
       requireFeature(policy, "sso");
       if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) throw agentXError("CONFIG_INVALID", "the mapping version is invalid");
       const next = GroupMappingConfigSchema.parse({ ...config, version: expectedVersion + 1 });
       try {
-        await documentClient.send(new PutCommand({
+        // The save and its audit record commit together (or, with no ledger, the save alone).
+        await auditTransact(deps, { Put: {
           TableName: tableName, Item: { ...groupMappingKey(orgId), ...next },
           ...(expectedVersion === 0
             ? { ConditionExpression: "attribute_not_exists(pk)" }
             : { ConditionExpression: "#version = :expected", ExpressionAttributeNames: { "#version": "version" }, ExpressionAttributeValues: { ":expected": expectedVersion } }),
-        }));
+        } }, [...events]);
+        await flushAuditEvents(deps, [...events]);
       } catch (error) {
         if ((error as { name?: string }).name === "ConditionalCheckFailedException") throw agentXError("IDEMPOTENCY_CONFLICT", "Someone else changed the group mapping. Reload it and make your change again.");
         throw error;
@@ -157,6 +165,67 @@ export async function readMappingForSignIn(store: GroupMappingStore, orgId: OrgI
   } catch (error) {
     if ((error as { code?: string }).code === "CONFIG_INVALID") return { unreadable: true };
     throw error;
+  }
+}
+
+// ---- the break-glass list
+
+export interface BreakGlassStore {
+  /** The org's list, or undefined when none is saved. A stored record that does not parse throws. */
+  get(orgId: OrgId): Promise<BreakGlassRecord | undefined>;
+  /** Saves the list (at most two owners, each with an expiry within BREAK_GLASS_MAX_DAYS). `expectedVersion` is the version read (0 when none is saved). */
+  put(orgId: OrgId, owners: readonly BreakGlassOwner[], by: string, expectedVersion: number, nowMs: number, events?: SaveEvents): Promise<BreakGlassRecord>;
+}
+
+export function dynamoBreakGlassStore(input: { documentClient: DocumentClient; tableName: string; policy: EditionPolicy; audit?: AuditRuntime }): BreakGlassStore {
+  const { documentClient, tableName, policy } = input;
+  const deps = { documentClient, ...(input.audit === undefined ? {} : { audit: input.audit }) };
+  return {
+    async get(orgId) {
+      requireFeature(policy, "sso");
+      const result = await documentClient.send(new GetCommand({ TableName: tableName, Key: breakGlassKey(orgId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+      if (result.Item === undefined) return undefined;
+      const { pk: _pk, sk: _sk, ...rest } = result.Item;
+      void _pk; void _sk;
+      const parsed = BreakGlassRecordSchema.safeParse(rest);
+      if (!parsed.success) throw agentXError("CONFIG_INVALID", GROUP_MAPPING_MESSAGES.config_invalid);
+      return parsed.data;
+    },
+    async put(orgId, owners, by, expectedVersion, nowMs, events = []) {
+      requireFeature(policy, "sso");
+      if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) throw agentXError("CONFIG_INVALID", "the break-glass list version is invalid");
+      const latest = nowMs + BREAK_GLASS_MAX_DAYS * 86_400_000;
+      // Every entry expires, soon enough that the list is renewed on purpose.
+      if (owners.some((owner) => owner.expiresAt === undefined || owner.expiresAt <= nowMs || owner.expiresAt > latest)) {
+        throw agentXError("CONFIG_INVALID", `each break-glass owner needs an expiry within ${String(BREAK_GLASS_MAX_DAYS)} days`);
+      }
+      const next = BreakGlassRecordSchema.parse({ owners, version: expectedVersion + 1, updatedAt: new Date(nowMs).toISOString(), updatedBy: by });
+      try {
+        await auditTransact(deps, { Put: {
+          TableName: tableName, Item: { ...breakGlassKey(orgId), ...next },
+          ...(expectedVersion === 0
+            ? { ConditionExpression: "attribute_not_exists(pk)" }
+            : { ConditionExpression: "#version = :expected", ExpressionAttributeNames: { "#version": "version" }, ExpressionAttributeValues: { ":expected": expectedVersion } }),
+        } }, [...events]);
+        await flushAuditEvents(deps, [...events]);
+      } catch (error) {
+        if ((error as { name?: string }).name === "ConditionalCheckFailedException") throw agentXError("IDEMPOTENCY_CONFLICT", "Someone else changed the break-glass list. Reload it and make your change again.");
+        throw error;
+      }
+      return next;
+    },
+  };
+}
+
+/**
+ * The break-glass owners as the sign-in reads them. Safer reading: no stored list, a list that cannot be read, or one that does not parse is NO break-glass (an empty
+ * list). The list is never guessed, and a broken mapping with no list locks owners out until the list is saved (an operator can write it).
+ */
+export async function readBreakGlassForSignIn(store: BreakGlassStore, orgId: OrgId): Promise<readonly BreakGlassOwner[]> {
+  try {
+    return (await store.get(orgId))?.owners ?? [];
+  } catch {
+    return [];
   }
 }
 

@@ -18,6 +18,7 @@ import type { CredentialRegistry, ConnectorCredentialsConfiguration } from "../c
 import type { IdentityNoticeDependencies } from "../../developer/identity-notice.js";
 import type { PlanEvidenceEvent } from "../../developer/plan-evidence-jobs.js";
 import type { CodeHostRouter, PluginRegistry } from "../../plugins/registry.js";
+import type { SsoStores } from "../../developer/sso-sign-in.js";
 import type { CloudProjectDefaults } from "../../org/cloud-projects.js";
 import type { OrgResolver } from "../../org/resolve.js";
 import type { EgressDomainsDependencies } from "../../org/egress-domains.js";
@@ -250,6 +251,8 @@ export interface AwsBrokerDependencies {
    */
   codeHost?: CodeHostRouter;
   checkRunner?: PluginRegistry["checkRunner"];
+  /** Enterprise foundations I1: the group mapping and break-glass stores, built once. Absent where the edition has no company sign-in. */
+  sso?: SsoStores;
   /** Enterprise foundations E2: the edition's feature table, from the deploy stamp. Absent on an install deployed before editions, which keeps today's behaviour and is never Enterprise. */
   editionPolicy?: EditionPolicy;
   /**

@@ -319,6 +319,7 @@ import { orgStoreOf } from "./broker/dependency-wiring.js";
 import { createAwsBrokerHandler } from "./broker/handler.js";
 import { installEditionPolicy } from "./broker/edition-wiring.js";
 import { createBrokerPlugins } from "./broker/plugin-wiring.js";
+import { ssoStoresFor } from "../developer/sso-sign-in.js";
 import { awsClientConfiguration, documentClient, ec2Sessions, stepFunctions } from "./broker/runtime-clients.js";
 export { PROJECT_SETUP_CAPTURE_POLICY, WEB_ROUTE_KEY } from "./broker/definitions.js";
 export type { RegisteredProjectRecord, AwsBrokerInput } from "./broker/definitions.js";
@@ -502,6 +503,8 @@ const egressDomainsSync = projectAllowListId === undefined || projectAllowListId
 
 const editionPolicy = installEditionPolicy(process.env, cloudOrgResolver !== undefined);
 // Enterprise foundations P4: GitHub is the first code host and check runner plug-in; the router below is what consumers move to (tasks P5a-e).
+// Enterprise foundations I1: the group mapping and break-glass stores, built once (only where the edition has company sign-in).
+const ssoStores = ssoStoresFor({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), policy: editionPolicy, ...(audit === undefined ? {} : { audit }) });
 const plugins = createBrokerPlugins({ provider: githubCredentials, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), codeBuild, ...(editionPolicy === undefined ? {} : { policy: editionPolicy }) });
 
 export const handler = createAwsBrokerHandler({
@@ -577,6 +580,7 @@ export const handler = createAwsBrokerHandler({
   cloud: cloudOrgResolver !== undefined,
   // Enterprise foundations E2: the edition is the deploy stamp, read once; no stamp (an install deployed before editions) is no policy, never Enterprise.
   ...(editionPolicy === undefined ? {} : { editionPolicy }),
+  ...(ssoStores === undefined ? {} : { sso: ssoStores }),
   // Task 12b's acceptance item: on Rovara Cloud every request to a company's MCP endpoint is checked again and connects only to what was checked.
   ...(cloudOrgResolver === undefined ? {} : { mcpEndpointGuard: mcpEndpointGuard() }),
   ...(orgConnections === undefined ? {} : { orgConnections }),

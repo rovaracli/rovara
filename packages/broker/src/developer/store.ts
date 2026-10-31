@@ -129,7 +129,7 @@ export type RefreshLookup =
  * stale-lock race between two local processes does not sign the person out. */
 export const REFRESH_REUSE_GRACE_SECONDS = 60;
 
-interface CodeRecord { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string; codeChallenge: string; redirectUri: string; expiresAt: number; usedAt?: string }
+interface CodeRecord { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string; /** The session this code starts ends at this time (epoch seconds): the edition's sign-in cap (Enterprise foundations I1). */ sessionEndsAt?: number; codeChallenge: string; redirectUri: string; expiresAt: number; usedAt?: string }
 interface RefreshRecord { sessionId: string; expiresAt: number; usedAt?: string; graceUsedAt?: string }
 interface CancellationReason { Code?: string }
 
@@ -824,7 +824,7 @@ export class DeveloperSignInStore {
   }
 
   /** `authTime`: when the person signed in at the provider, if the provider says it was before this answer (its `auth_time`); else now. */
-  async issueCode(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string; codeChallenge: string; redirectUri: string }): Promise<string> {
+  async issueCode(input: { developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string; sessionEndsAt?: number; codeChallenge: string; redirectUri: string }): Promise<string> {
     const code = randomToken("agxc_");
     // The code is issued the moment the provider has answered, so this is when the person signed in interactively (unless the provider says earlier).
     const record: CodeRecord = { ...input, authTime: input.authTime ?? this.iso(), expiresAt: this.seconds() + DEVELOPER_CODE_SECONDS };
@@ -832,7 +832,7 @@ export class DeveloperSignInStore {
     return code;
   }
 
-  async redeemCode(input: { code: string; verifier: string; redirectUri: string }): Promise<{ developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string } | undefined> {
+  async redeemCode(input: { code: string; verifier: string; redirectUri: string }): Promise<{ developerId: string; amr: DeveloperSignInMethod; slackUserId?: string; identityKey?: string; authTime?: string; sessionEndsAt?: number } | undefined> {
     const pk = `CODE#${sha256Hex(input.code)}`;
     try {
       // Burned first, whatever the verifier: a code is tried once.
@@ -849,7 +849,7 @@ export class DeveloperSignInStore {
     }
     const record = await this.get<CodeRecord>(pk);
     if (record === undefined || record.redirectUri !== input.redirectUri || !pkceChallengeMatches(input.verifier, record.codeChallenge)) return undefined;
-    return { developerId: record.developerId, amr: record.amr, ...(record.slackUserId === undefined ? {} : { slackUserId: record.slackUserId }), ...(record.identityKey === undefined ? {} : { identityKey: record.identityKey }), ...(record.authTime === undefined ? {} : { authTime: record.authTime }) };
+    return { developerId: record.developerId, amr: record.amr, ...(record.slackUserId === undefined ? {} : { slackUserId: record.slackUserId }), ...(record.identityKey === undefined ? {} : { identityKey: record.identityKey }), ...(record.authTime === undefined ? {} : { authTime: record.authTime }), ...(record.sessionEndsAt === undefined ? {} : { sessionEndsAt: record.sessionEndsAt }) };
   }
 
   /** `authTime` is when the person signed in interactively (the code's, for the CLI); a refresh keeps it. `endsAt` (epoch seconds) is for a browser review sign-in, which has its own fixed length; every other session lasts DEVELOPER_SESSION_SECONDS. The stored record's clean-up time follows `endsAt`. */

@@ -675,6 +675,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...(dependencies.editionPolicy === undefined ? {} : { editionPolicy: dependencies.editionPolicy }),
+          ...(dependencies.sso === undefined ? {} : { sso: dependencies.sso }),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),

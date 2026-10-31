@@ -29,6 +29,7 @@ import { OrgStore } from "../org/store.js";
 import { unlockTrial } from "../org/trial.js";
 import { trialAvailable } from "../org/trial-availability.js";
 import { installEditionPolicy } from "./broker/edition-wiring.js";
+import { ssoStoresFor } from "../developer/sso-sign-in.js";
 import type { HttpApiV2Event } from "./lambda.js";
 
 const SECRET_CACHE_MS = 5 * 60 * 1000;
@@ -269,6 +270,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   const singleOrg = singleOrgIdFor(config);
   // Enterprise foundations E2/E3: the edition from the deploy stamp, read once; the hosted cloud method is the cross-check, as in the broker.
   const editionPolicy = installEditionPolicy(env, config.cloud !== undefined);
+  const ssoStores = ssoStoresFor({ documentClient, tableName: stateTableName, policy: editionPolicy });
   // Plan 2, Task 8: the notice of a newly linked sign-in method goes out through the cloud sign-in's SES sender (empty: no sender, no notice).
   // SES identities are regional, so the client sends in the region of the sender's identity ARN when the stack names one.
   const noticeFrom = env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";
@@ -291,6 +293,9 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     store,
     notice,
     ...(editionPolicy === undefined ? {} : { editionPolicy }),
+    // Enterprise foundations I1: the group mapping and the break-glass list, built once for this process; and the ledger a break-glass sign-in is recorded in.
+    ...(ssoStores === undefined ? {} : { sso: ssoStores }),
+    ...(audit === undefined ? {} : { audit }),
     ...(decide === undefined ? {} : { decide }),
     // A duplicate member of one person (from before identity links) is merged into the member their email names, in one transaction over both tables.
     ...duplicateMerger({

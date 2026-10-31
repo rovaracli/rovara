@@ -80,9 +80,32 @@ export function groupMappingKey(orgId: OrgId): OrgKey {
   return { pk: orgPk(orgId), sk: "SSO_GROUP_MAPPING" };
 }
 
+/**
+ * The break-glass list, stored apart from the mapping on purpose: the list is for the day the mapping cannot be read, so it must not live inside it. A save names the
+ * version it read (compare and set). Every entry must expire, within BREAK_GLASS_MAX_DAYS of the save, so the list cannot be left standing.
+ */
+export const BREAK_GLASS_MAX_DAYS = 90;
+export const BreakGlassRecordSchema = z.object({
+  owners: BreakGlassOwnersSchema,
+  version: z.number().int().min(1),
+  updatedAt: z.string().min(1).max(64),
+  updatedBy: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type BreakGlassRecord = z.infer<typeof BreakGlassRecordSchema>;
+export function breakGlassKey(orgId: OrgId): OrgKey {
+  return { pk: orgPk(orgId), sk: "SSO_BREAK_GLASS" };
+}
+
 /** Why a sign-in was refused by the mapping: a fixed list, never the provider's words. */
 export const GROUP_MAPPING_REFUSALS = ["edition_off", "not_configured", "config_invalid", "claim_missing", "claim_invalid", "no_group"] as const;
 export type GroupMappingRefusal = (typeof GROUP_MAPPING_REFUSALS)[number];
+
+/** The sentence for a break-glass owner whose sign-in at the provider is too old (or says no time): fixed, and not a mapping refusal. */
+export const BREAK_GLASS_NOT_FRESH_MESSAGE = "A recent sign-in at your identity provider is needed. Sign out of it, then sign in again.";
+export const BREAK_GLASS_NOT_FRESH_REASON = "break_glass_not_fresh";
+/** An emergency sign-in is let in only once it is on record; with no ledger to record it in, or the ledger down, it is refused. */
+export const BREAK_GLASS_NOT_RECORDED_MESSAGE = "Rovara could not record this emergency sign-in, so it did not let you in. Try again in a minute.";
+export const BREAK_GLASS_NOT_RECORDED_REASON = "break_glass_not_recorded";
 
 /** What the person sees. Fixed sentences: nothing from the sign-in is echoed. */
 export const GROUP_MAPPING_MESSAGES: Readonly<Record<GroupMappingRefusal, string>> = {

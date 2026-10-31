@@ -184,6 +184,7 @@ describe("the event catalog", () => {
       // Lane E (private MCP servers, project Sources)
       "mcp_server.added", "mcp_server.approved", "mcp_server.disabled", "mcp_server.removed", "mcp_server.token_changed",
       "context_source.proposed", "context_source.applied", "context_source.rejected",
+      "sso.sign_in", "sso.sign_in_refused", "sso.break_glass_used", "sso.group_mapping_changed", "sso.break_glass_changed",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
