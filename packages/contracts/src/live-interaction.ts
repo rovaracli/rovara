@@ -258,14 +258,23 @@ export function setupCheckErrorRef(input: { project: string; status: string; at:
   return errorRefOf({ kind: "setup_check", code: input.status === "failed" ? "SETUP_CHECK_FAILED" : "SETUP_CHECK_OUTDATED", subject: { project: input.project }, at: input.at });
 }
 
-/** A health row of a connector or a stored runtime (`connectorId` is its fixed id) that is not healthy; `reason` is the row's own fixed word. */
-export function connectorHealthErrorRef(input: { connectorId: string; reason: string; at: string }): ErrorRef | undefined {
-  return errorRefOf({ kind: "connector_health", code: `CONNECTOR_${input.reason.replace(/[^A-Za-z0-9]+/gu, "_").toUpperCase()}`, subject: { connectorId: input.connectorId }, at: input.at });
+/** The reasons a connector or a stored runtime can be unhealthy. A closed set: a caller's free text can never become part of a code. */
+export const CONNECTOR_HEALTH_REASONS = ["expired", "not_ready", "invalid_evidence", "unavailable", "token_expired", "unreachable", "access_denied"] as const;
+export type ConnectorHealthReason = (typeof CONNECTOR_HEALTH_REASONS)[number];
+/** The reasons a model is not reachable for a project. Closed, like the connector reasons. */
+export const MODEL_ACCESS_REASONS = ["access_denied", "not_enabled", "quota_exceeded", "unavailable"] as const;
+export type ModelAccessReason = (typeof MODEL_ACCESS_REASONS)[number];
+
+/** A health row of a connector or a stored runtime (`connectorId` is its fixed id) that is not healthy. A reason outside the closed set gives no reference. */
+export function connectorHealthErrorRef(input: { connectorId: string; reason: ConnectorHealthReason; at: string }): ErrorRef | undefined {
+  if (!(CONNECTOR_HEALTH_REASONS as readonly string[]).includes(input.reason)) return undefined;
+  return errorRefOf({ kind: "connector_health", code: `CONNECTOR_${input.reason.toUpperCase()}`, subject: { connectorId: input.connectorId }, at: input.at });
 }
 
-/** A model that is not reachable for a project (access denied, not enabled, over quota); `reason` is a fixed word. */
-export function modelAccessErrorRef(input: { project: string; reason: string; at: string }): ErrorRef | undefined {
-  return errorRefOf({ kind: "model_access", code: `MODEL_ACCESS_${input.reason.replace(/[^A-Za-z0-9]+/gu, "_").toUpperCase()}`, subject: { project: input.project }, at: input.at });
+/** A model that is not reachable for a project. A reason outside the closed set gives no reference. */
+export function modelAccessErrorRef(input: { project: string; reason: ModelAccessReason; at: string }): ErrorRef | undefined {
+  if (!(MODEL_ACCESS_REASONS as readonly string[]).includes(input.reason)) return undefined;
+  return errorRefOf({ kind: "model_access", code: `MODEL_ACCESS_${input.reason.toUpperCase()}`, subject: { project: input.project }, at: input.at });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -316,18 +325,49 @@ export type DiagnosisProposal = z.infer<typeof DiagnosisProposalSchema>;
 export const DIAGNOSIS_PROPOSAL_KINDS = ["explain", "retry_with_note", "redirect", "settings_change", "new_task", "admin_steps", "contact_support"] as const;
 
 /**
- * The settings a diagnosis may never prefill (owner Q8): secrets, budgets and spend limits, roles and members, approval rules (the tier-0 approval setting included), egress allow-lists, model
- * endpoints and MCP servers. For these it may explain and link only. A path is compared with every non-letter and non-digit removed and lower-cased, so `Tier-0_approval`, `tier0.approval` and
- * `approvals[0]` are all caught. The list is deliberately broad: a path it wrongly refuses only loses a prefilled proposal, never a safe explanation.
+ * What a diagnosis MAY prefill: a short allow-list per target, each path with the one kind of value it can take. Anything not named here (every other path, the whole `connector` and
+ * `model_access` targets, any other value) is explain-and-link only. Owner Q8 forbids prefilling secrets, budgets and spend limits, roles and members, approval rules (tier-0 included),
+ * egress, model endpoints and MCP servers, so this is an allow-list of safe, named settings and not a list of forbidden words: a deny-list is bypassed by the next spelling
+ * (`tierZero`, `toolServers`, `model.url`). Adding a path here is a reviewed one-line change. Values are checked too: an enum word, a boolean or a plain relative file path, never free text.
+ */
+type PrefillValue = { kind: "enum"; values: readonly string[] } | { kind: "boolean" } | { kind: "relative_path" };
+export const DIAGNOSIS_PREFILL_ALLOW: Readonly<Record<(typeof DIAGNOSIS_SETTINGS_TARGETS)[number], Readonly<Record<string, PrefillValue>>>> = {
+  code_settings: { mergeMethod: { kind: "enum", values: ["squash", "merge"] } },
+  setup_item: { "devcontainer.configPath": { kind: "relative_path" } },
+  playbook: { "e2e.screenshots": { kind: "boolean" }, "e2e.traces": { kind: "boolean" } },
+  connector: {},
+  model_access: {},
+};
+
+const RELATIVE_PATH = /^(?!.*\.\.)[A-Za-z0-9_.][A-Za-z0-9_./-]{0,199}$/u;
+
+function prefillValueOk(rule: PrefillValue, value: unknown): boolean {
+  if (rule.kind === "boolean") return typeof value === "boolean";
+  if (rule.kind === "enum") return typeof value === "string" && rule.values.includes(value);
+  return typeof value === "string" && RELATIVE_PATH.test(value) && !value.startsWith("/");
+}
+
+/** Whether a settings change may be prefilled: the exact path is on the target's allow-list, and both values are the kind that path takes (`from` may be null: the setting was unset). */
+export function diagnosisPrefillAllowed(target: string, path: string, from: unknown, to: unknown): boolean {
+  if (!Object.hasOwn(DIAGNOSIS_PREFILL_ALLOW, target)) return false;
+  const paths = DIAGNOSIS_PREFILL_ALLOW[target as keyof typeof DIAGNOSIS_PREFILL_ALLOW];
+  if (!Object.hasOwn(paths, path)) return false;
+  const rule = paths[path]!;
+  return prefillValueOk(rule, to) && (from === null || prefillValueOk(rule, from)) && !diagnosisPathDenied(path);
+}
+
+/**
+ * A second check behind the allow-list: words that mark the settings owner Q8 forbids. A path is compared with every non-letter and non-digit removed and lower-cased. It cannot allow anything;
+ * it only refuses an allow-listed path that someone later names too broadly.
  */
 const DIAGNOSIS_DENIED_FRAGMENTS = [
-  "secret", "token", "password", "passphrase", "credential", "apikey", "privatekey", "accesskey",
-  "budget", "spend", "limit", "cost", "price", "billing", "payer", "perrun", "maxrun", "monthly", "usd", "cents", "dollar", "cap",
-  "role", "member", "owner", "admin", "permission", "access", "invite",
-  "approv", "tier0", "autoapply", "lock", "ceiling", "reviewer", "consent",
-  "egress", "allowlist", "allowdomain", "alloweddomain", "allowedwebsite", "allowedhost", "denylist", "firewall",
-  "endpoint", "baseurl", "modelendpoint", "provider",
-  "mcp", "stdio",
+  "secret", "token", "password", "passphrase", "credential", "apikey", "privatekey", "accesskey", "githubpat", "webhook", "vault", "header", "signingkey", "keys", "signing", "env",
+  "budget", "spend", "limit", "cost", "price", "billing", "payer", "perrun", "maxrun", "monthly", "usd", "cents", "dollar", "quota",
+  "role", "member", "maintainer", "seat", "owner", "admin", "permission", "access", "invite",
+  "approv", "tier0", "tierzero", "t0", "autoapply", "lock", "ceiling", "reviewer", "consent", "signoff", "quorum", "required", "requiretwo",
+  "egress", "allowlist", "allowdomain", "alloweddomain", "allowedwebsite", "allowedhost", "denylist", "firewall", "outbound", "proxy", "website",
+  "endpoint", "baseurl", "model", "provider", "bedrock", "inferenceprofile",
+  "mcp", "stdio", "server", "tool", "plugin", "network", "host", "domain", "url",
 ] as const;
 
 export function diagnosisPathDenied(path: string): boolean {
@@ -337,8 +377,7 @@ export function diagnosisPathDenied(path: string): boolean {
 }
 
 /**
- * Reads a model's list of proposals against the closed schema. A proposal with an unknown kind or any unknown field is dropped whole (never repaired); a settings change on a path a diagnosis may never
- * prefill is dropped; at most `DIAGNOSIS_PROPOSALS_MAX` survive. Counts say what was dropped, so the audit can show it. Nothing is ever applied here.
+ * Reads a model's list of proposals against the closed schema. A proposal with an unknown kind or any unknown field is dropped whole (never repaired); a settings change that is not on the per-target allow-list (path and value) is dropped; at most `DIAGNOSIS_PROPOSALS_MAX` survive. Counts say what was dropped, so the audit can show it. Nothing is ever applied here.
  */
 export function parseDiagnosisProposals(raw: unknown): { proposals: DiagnosisProposal[]; dropped: number } {
   if (!Array.isArray(raw)) return { proposals: [], dropped: 0 };
@@ -346,7 +385,7 @@ export function parseDiagnosisProposals(raw: unknown): { proposals: DiagnosisPro
   let dropped = 0;
   for (const item of raw) {
     const parsed = DiagnosisProposalSchema.safeParse(item);
-    if (!parsed.success || (parsed.data.kind === "settings_change" && diagnosisPathDenied(parsed.data.path)) || proposals.length >= DIAGNOSIS_PROPOSALS_MAX) {
+    if (!parsed.success || (parsed.data.kind === "settings_change" && !diagnosisPrefillAllowed(parsed.data.target, parsed.data.path, parsed.data.from, parsed.data.to)) || proposals.length >= DIAGNOSIS_PROPOSALS_MAX) {
       dropped += 1;
       continue;
     }

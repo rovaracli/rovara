@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ASK_LIMITS, ASK_RATE, AUDIT_FACT_KEYS, AskBodySchema, AskRecordSchema, AuditEventInputSchema, BROKER_SETTINGS, DIAGNOSIS_PROPOSALS_MAX, DIAGNOSIS_RATE, ERROR_REF_KINDS, ErrorRefSchema,
-  LIVE_INTERACTION_FLAGS, OWNER_REDIRECT_FEATURE, OwnerRedirectInvocationSchema, REDIRECT_RATE, RedirectBodySchema, RedirectRecordSchema, askAuditMode, askStoresText, diagnosisPathDenied,
+  LIVE_INTERACTION_FLAGS, OWNER_REDIRECT_FEATURE, OwnerRedirectInvocationSchema, REDIRECT_RATE, RedirectBodySchema, RedirectRecordSchema, askAuditMode, askStoresText, diagnosisPathDenied, diagnosisPrefillAllowed, DIAGNOSIS_PREFILL_ALLOW,
   editionPolicy, errorRefKey, errorRefOf, liveInteractionFlagOn, parseDiagnosisProposals, requireFeature,
 } from "../../packages/contracts/src/index.js";
 import {
@@ -187,16 +187,59 @@ describe("diagnosis proposals", () => {
     expect(dropped).toBe(7);
   });
 
-  it("drops a settings change on a path a diagnosis may never prefill", () => {
-    for (const path of ["approvals.tier0", "tier-0_approval", "Tier0Approval", "tier0ApprovalDefault", "budget.monthlyUsd", "spendLimit", "maxPerRun", "members[0].role", "roles.admin", "secrets.GITHUB_TOKEN", "apiKey", "egress.allowedDomains", "allowedWebsites", "modelEndpoint.baseUrl", "mcpServers[0]", "mcp.servers", "stdioServers", "reviewers", "approvalRules.minApprovals", "autoApply", "learning.lock"]) {
-      expect(diagnosisPathDenied(path), path).toBe(true);
-      expect(parseDiagnosisProposals([{ ...settings, path }]), path).toEqual({ proposals: [], dropped: 1 });
+  // Every spelling the Opus review (I1) found to pass the old deny-list, plus the obvious ones: none may be prefilled, whatever the target or the value.
+  const BYPASSES = [
+    "tierZero", "tier_zero", "t0.auto", "approvals.tier0", "tier-0_approval", "Tier0Approval", "tier0ApprovalDefault", "autoApply",
+    "signoffs", "quorum", "gates.merge.required", "howWeWork.planCheck.required", "requireTwoPeople", "approvalRules.minApprovals", "reviewers",
+    "maintainers", "seats", "members[0].role", "roles.admin",
+    "model.url", "model.host", "modelId", "bedrockRegion", "inference.profileArn", "modelEndpoint.baseUrl",
+    "toolServers", "servers.x.command", "tools.allowed", "plugins", "mcpServers[0]", "mcp.servers", "stdioServers",
+    "network.hosts", "outbound.domains", "proxy.url", "websites", "allowedWebsites", "egress.allowedDomains",
+    "github.pat", "env.GITHUB_PAT", "env.SLACK_WEBHOOK", "auth.header", "keys.signing", "vault.ref", "secrets.GITHUB_TOKEN", "apiKey",
+    "quota", "budget.monthlyUsd", "spendLimit", "maxPerRun",
+  ];
+
+  it("drops a settings change on any path that is not on its target's allow-list: every bypass spelling, on every target, with an allowed-looking value", () => {
+    for (const target of ["code_settings", "setup_item", "playbook", "connector", "model_access"] as const) {
+      for (const path of BYPASSES) {
+        for (const to of ["merge", true, "https://evil.example.com", "ghp_notarealtoken"]) {
+          expect(parseDiagnosisProposals([{ ...settings, target, path, to }]), `${target} ${path}`).toEqual({ proposals: [], dropped: 1 });
+        }
+      }
     }
+    // Paths that are not on the list at all drop too, deny-listed or not.
+    for (const path of ["workingBranch", "checks.lint.command", "env.X", "setupCommands", "a"]) expect(parseDiagnosisProposals([{ ...settings, path }]).proposals, path).toEqual([]);
     expect(diagnosisPathDenied("")).toBe(true);
   });
 
-  it("allows an ordinary settings path", () => {
-    for (const path of ["mergeMethod", "checks.lint.command", "workingBranch", "e2e.screenshots"]) expect(diagnosisPathDenied(path), path).toBe(false);
+  it("refuses the connector and model_access targets outright, even for a path another target allows", () => {
+    for (const target of ["connector", "model_access"] as const) {
+      expect(parseDiagnosisProposals([{ ...settings, target, path: "mergeMethod" }]).proposals, target).toEqual([]);
+      expect(parseDiagnosisProposals([{ ...settings, target, path: "url", to: "https://evil" }]).proposals, target).toEqual([]);
+    }
+    expect(Object.values(DIAGNOSIS_PREFILL_ALLOW.connector)).toEqual([]);
+    expect(Object.values(DIAGNOSIS_PREFILL_ALLOW.model_access)).toEqual([]);
+  });
+
+  it("checks the value of an allowed path: an enum word, a boolean or a plain relative file path, never a secret or a URL", () => {
+    const ok = (target: string, path: string, from: unknown, to: unknown) => parseDiagnosisProposals([{ ...settings, target, path, from, to }]).proposals.length === 1;
+    expect(ok("code_settings", "mergeMethod", "squash", "merge")).toBe(true);
+    expect(ok("code_settings", "mergeMethod", null, "squash")).toBe(true);
+    expect(ok("code_settings", "mergeMethod", "squash", "rebase")).toBe(false);
+    expect(ok("code_settings", "mergeMethod", "ghp_notarealtoken", "merge")).toBe(false);
+    expect(ok("code_settings", "mergeMethod", "squash", true)).toBe(false);
+    expect(ok("playbook", "e2e.traces", false, true)).toBe(true);
+    expect(ok("playbook", "e2e.traces", false, "true")).toBe(false);
+    expect(ok("setup_item", "devcontainer.configPath", ".devcontainer/devcontainer.json", ".devcontainer/other.json")).toBe(true);
+    for (const bad of ["https://evil.example.com/x.json", "/etc/passwd", "../../x", ".devcontainer/../../x", "a b", `ghp_${"a".repeat(36)}?x=1`]) expect(ok("setup_item", "devcontainer.configPath", null, bad), bad).toBe(false);
+    // Prototype names are not paths or targets.
+    for (const path of ["__proto__", "constructor", "toString", "hasOwnProperty"]) expect(diagnosisPrefillAllowed("code_settings", path, null, "merge"), path).toBe(false);
+    expect(diagnosisPrefillAllowed("__proto__", "mergeMethod", null, "merge")).toBe(false);
+  });
+
+  it("keeps the deny-list as a second check: it names the forbidden categories and passes the allow-listed paths", () => {
+    for (const path of BYPASSES) expect(diagnosisPathDenied(path), path).toBe(true);
+    for (const [target, paths] of Object.entries(DIAGNOSIS_PREFILL_ALLOW)) for (const path of Object.keys(paths)) expect(diagnosisPathDenied(path), `${target} ${path}`).toBe(false);
   });
 
   it("refuses a path that smuggles characters", () => {

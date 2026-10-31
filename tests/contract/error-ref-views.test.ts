@@ -53,8 +53,13 @@ describe("the codes", () => {
     expect(setupCheckErrorRef({ project: "web", status: "failed", at: AT })).toEqual({ kind: "setup_check", code: "SETUP_CHECK_FAILED", subject: { project: "web" }, at: AT });
     expect(setupCheckErrorRef({ project: "web", status: "outdated", at: AT })?.code).toBe("SETUP_CHECK_OUTDATED");
     expect(setupCheckErrorRef({ project: "Not A Name", status: "failed", at: AT })).toBeUndefined();
-    expect(connectorHealthErrorRef({ connectorId: "github-main", reason: "token expired", at: AT })).toMatchObject({ kind: "connector_health", code: "CONNECTOR_TOKEN_EXPIRED", subject: { connectorId: "github-main" } });
+    expect(connectorHealthErrorRef({ connectorId: "github-main", reason: "token_expired", at: AT })).toMatchObject({ kind: "connector_health", code: "CONNECTOR_TOKEN_EXPIRED", subject: { connectorId: "github-main" } });
     expect(modelAccessErrorRef({ project: "web", reason: "access_denied", at: AT })).toMatchObject({ kind: "model_access", code: "MODEL_ACCESS_ACCESS_DENIED" });
+    // A reason that is free text (a token, a name) is not a code: the closed set refuses it.
+    for (const reason of ["ghp_abcdefghijklmnop", "token expired", "", "EXPIRED"]) {
+      expect(connectorHealthErrorRef({ connectorId: "github-main", reason: reason as never, at: AT }), reason).toBeUndefined();
+      expect(modelAccessErrorRef({ project: "web", reason: reason as never, at: AT }), reason).toBeUndefined();
+    }
     expect(ERROR_REF_KINDS).toHaveLength(6);
   });
 });

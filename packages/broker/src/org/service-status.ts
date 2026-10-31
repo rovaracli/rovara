@@ -17,8 +17,8 @@ export interface ServiceObservation {
  */
 export function withServiceErrorRefs(rows: readonly ServiceObservation[], at: string): ServiceObservation[] {
  return rows.map(row => {
-  const faulty = row.reason === "expired" || row.reason === "not_ready" || row.reason === "invalid_evidence" || row.reason === "unavailable";
-  const errorRef = faulty ? connectorHealthErrorRef({ connectorId: `runtime-${row.kind}`, reason: row.reason, at }) : undefined;
+  const reason = row.reason;
+  const errorRef = reason === "expired" || reason === "not_ready" || reason === "invalid_evidence" || reason === "unavailable" ? connectorHealthErrorRef({ connectorId: `runtime-${row.kind}`, reason, at }) : undefined;
   return errorRef === undefined ? row : { ...row, errorRef };
  });
 }
