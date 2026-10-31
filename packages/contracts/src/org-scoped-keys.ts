@@ -1138,6 +1138,11 @@ export function intakeSourceKey(orgId: OrgId, project: string, sourceId: string)
   return { pk: "INTAKE_SOURCES", sk: `${orgId}#${keyPart(project, "a project name")}#${keyPart(sourceId, "a source id")}` };
 }
 
+/** How many sources a project holds, kept beside them so that the most a project may have is enforced in one conditional update (two applies at once cannot both take the last place). */
+export function intakeSourceCountKey(orgId: OrgId, project: string): OrgKey {
+  return { pk: orgScoped(orgId, "INTAKE_SOURCE_COUNT"), sk: keyPart(project, "a project name") };
+}
+
 /** What the poll counts a source's reads in, per hour (`hour` is `YYYY-MM-DDTHH`): the cap on reads an hour is a conditional count on this item. */
 export function intakeCallsKey(orgId: OrgId, sourceId: string, hour: string): OrgKey {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}$/u.test(hour)) throw new Error("an hour is YYYY-MM-DDTHH");

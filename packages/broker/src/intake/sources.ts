@@ -2,8 +2,8 @@
 // partition (`intakeSourceKey`) so the poll finds every due source with one query. A maintainer sets the sources of a project; the poll keeps its own state on the record (when it
 // is next due, how many reads in a row failed, when it last told the maintainers). The record names a connection by name only: never an address, never a secret.
 import { createHash } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, IntakeChannelRefSchema, intakeSourceKey, intakeSystemOf, type IntakeChannelRef, type OrgId } from "@agentx/contracts";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { agentXError, IntakeChannelRefSchema, intakeSourceCountKey, intakeSourceKey, intakeSystemOf, type IntakeChannelRef, type OrgId } from "@agentx/contracts";
 import type { IntakeTable } from "./store.js";
 
 export interface IntakeSourceRecord {
@@ -118,6 +118,8 @@ export async function replaceIntakeSources(table: IntakeTable, input: { orgId: O
     if (wanted.has(sourceId)) continue;
     await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: intakeSourceKey(input.orgId, input.project, sourceId) }));
   }
+  // The count kept beside the sources follows what was set.
+  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...intakeSourceCountKey(input.orgId, input.project), entityType: "INTAKE_SOURCE_COUNT", orgId: input.orgId, project: input.project, count: result.length } }));
   return result;
 }
 
@@ -136,11 +138,23 @@ export async function addIntakeSource(table: IntakeTable, input: { orgId: OrgId;
   const now = table.now();
   const at = new Date(now).toISOString();
   const record: IntakeSourceRecord = { orgId: input.orgId, project: input.project, sourceId, ref, setBy: input.setBy, createdAt: at, updatedAt: at, nextPollAt: now, failures: 0 };
+  const countKey = intakeSourceCountKey(input.orgId, input.project);
+  // The count of the project's sources is kept beside them. It starts from what is there, and a place is taken in ONE transaction that raises it only while it is under the most, so two
+  // applies at once cannot both take the last place.
+  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...countKey, entityType: "INTAKE_SOURCE_COUNT", orgId: input.orgId, project: input.project, count: have.length }, ConditionExpression: "attribute_not_exists(pk)" }))
+    .catch((error: unknown) => { if (!isConditional(error)) throw error; });
   try {
-    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...intakeSourceKey(input.orgId, input.project, sourceId), entityType: "INTAKE_SOURCE", ...record }, ConditionExpression: "attribute_not_exists(pk)" }));
+    await table.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      { Update: { TableName: table.tableName, Key: countKey, UpdateExpression: "ADD #count :one", ConditionExpression: "#count < :max", ExpressionAttributeNames: { "#count": "count" }, ExpressionAttributeValues: { ":one": 1, ":max": INTAKE_MAX_SOURCES_PER_PROJECT } } },
+      { Put: { TableName: table.tableName, Item: { ...intakeSourceKey(input.orgId, input.project, sourceId), entityType: "INTAKE_SOURCE", ...record }, ConditionExpression: "attribute_not_exists(pk)" } },
+    ] }));
   } catch (error) {
-    if (isConditional(error)) return "already_set";
-    throw error;
+    if (!(error instanceof Error) || (error.name !== "TransactionCanceledException" && !isConditional(error))) throw error;
+    // Lost a race: look again. The same place is there now, or the project is full.
+    const now2 = await listIntakeSources(table, input.orgId, input.project);
+    const there = now2.find((source) => source.sourceId === sourceId);
+    if (there !== undefined) return JSON.stringify(there.ref) === JSON.stringify(ref) ? "already_set" : "differs";
+    throw agentXError("CONFIG_INVALID", "This project already has the most intake sources it can have. Remove one before adding another.");
   }
   return "added";
 }

@@ -47,4 +47,26 @@ describe("adding one source", () => {
     await expect(addIntakeSource(t, { orgId: ORG, project: "web", ref: ref("rovara", "extra"), setBy: "x" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(await listIntakeSources(t, ORG, "web")).toHaveLength(INTAKE_MAX_SOURCES_PER_PROJECT);
   });
+
+  it("cannot go over the most when two applies take the last place at once: one is added, the other refused", async () => {
+    const t = table();
+    for (let n = 0; n < INTAKE_MAX_SOURCES_PER_PROJECT - 1; n += 1) await addIntakeSource(t, { orgId: ORG, project: "web", ref: ref("rovara", `s${String(n)}`), setBy: "x" });
+    const results = await Promise.allSettled([
+      addIntakeSource(t, { orgId: ORG, project: "web", ref: ref("rovara", "late-a"), setBy: "x" }),
+      addIntakeSource(t, { orgId: ORG, project: "web", ref: ref("rovara", "late-b"), setBy: "y" }),
+      addIntakeSource(t, { orgId: ORG, project: "web", ref: ref("rovara", "late-c"), setBy: "z" }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled" && r.value === "added")).toHaveLength(1);
+    expect(results.filter((r) => r.status === "rejected")).toHaveLength(2);
+    expect(await listIntakeSources(t, ORG, "web")).toHaveLength(INTAKE_MAX_SOURCES_PER_PROJECT);
+  });
+
+  it("the same place applied twice at once is added once, and a set made by the sources editor keeps the count right", async () => {
+    const t = table();
+    const both = await Promise.all([addIntakeSource(t, { orgId: ORG, project: "web", ref: ref("rovara", "one"), setBy: "x" }), addIntakeSource(t, { orgId: ORG, project: "web", ref: ref("rovara", "one"), setBy: "y" })]);
+    expect([...both].sort()).toEqual(["added", "already_set"]);
+    await replaceIntakeSources(t, { orgId: ORG, project: "web", refs: [ref("a", "x1"), ref("a", "x2"), ref("a", "x3")], setBy: "m" });
+    for (let n = 0; n < INTAKE_MAX_SOURCES_PER_PROJECT - 3; n += 1) expect(await addIntakeSource(t, { orgId: ORG, project: "web", ref: ref("rovara", `n${String(n)}`), setBy: "x" })).toBe("added");
+    await expect(addIntakeSource(t, { orgId: ORG, project: "web", ref: ref("rovara", "over"), setBy: "x" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
 });
