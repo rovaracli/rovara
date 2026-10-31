@@ -32,6 +32,12 @@ export interface FakeKitOptions {
   badTemplate?: "array" | "no-resources";
   /** Extra fields written into kit.json (a kit must not be able to bring settings of its own). */
   kitJsonExtra?: Record<string, unknown>;
+  /** Try to reach a TCP port on localhost, a Unix socket, the instance metadata address and a name server, and record what happened in the foundation template. */
+  probe?: { tcpPort: number; unixSocket: string };
+  /** Print this many bytes before doing anything else. */
+  printBytes?: number;
+  /** Never finish. */
+  hang?: boolean;
   nodeMajor?: number;
 }
 
@@ -43,7 +49,20 @@ export async function writeFakeKit(dir: string, options: FakeKitOptions = {}): P
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 const [contextFile, out] = process.argv.slice(2);
 ${options.fail === true ? 'process.exit(3);' : ""}
+${options.printBytes === undefined ? "" : `process.stdout.write("x".repeat(${String(options.printBytes)}));`}
+${options.hang === true ? "await new Promise(() => setInterval(() => undefined, 1000));" : ""}
 const { context } = JSON.parse(readFileSync(contextFile, "utf8"));
+const probe = {};
+${options.probe === undefined ? "" : `
+import net from "node:net";
+import dns from "node:dns/promises";
+const attempt = (opts) => new Promise((resolve) => { const s = net.connect(opts); const t = setTimeout(() => { s.destroy(); resolve("blocked"); }, 2500); s.on("connect", () => { clearTimeout(t); s.destroy(); resolve("connected"); }); s.on("error", () => { clearTimeout(t); resolve("blocked"); }); });
+probe.tcp = await attempt({ host: "127.0.0.1", port: ${String(options.probe.tcpPort)} });
+probe.unix = await attempt({ path: ${JSON.stringify(options.probe.unixSocket)} });
+probe.imds = await attempt({ host: "169.254.169.254", port: 80 });
+probe.fetch = await fetch("http://127.0.0.1:${String(options.probe.tcpPort)}/").then(() => "connected", () => "blocked");
+probe.dns = await Promise.race([dns.lookup("example.com").then(() => "resolved", () => "blocked"), new Promise((r) => setTimeout(() => r("blocked"), 2500))]);
+`}
 const env = context.agentxEnv;
 const asset = ${JSON.stringify(FAKE_ASSET)};
 mkdirSync(out + "/templates", { recursive: true });
@@ -55,7 +74,7 @@ const base = (part) => ({ Description: ${options.placeholder === true ? '"built 
 for (const part of ["access", "foundation", "identity", "runtime", "control-plane", "slack"]) {
   if (part === "identity" && context.agentxIdentity === "oidc") continue;
   const template = base(part);
-  if (part === "foundation") template.Metadata = { ...metadata, Outside: outside };
+  if (part === "foundation") template.Metadata = { ...metadata, Outside: outside, Probe: probe };
   if (part === "control-plane") {
     template.Parameters = ${options.omitParameters === true ? "{}" : '{ ["AssetParameters" + asset + "S3Bucket"]: { Type: "String" }, ["AssetParameters" + asset + "S3VersionKey"]: { Type: "String" }, ["AssetParameters" + asset + "ArtifactHash"]: { Type: "String" } }'};
     ${options.unknownAsset === true ? 'template.Parameters.AssetParameters0000S3Bucket = { Type: "String" };' : ""}

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApprovalRecordSchema, BuiltManifestSchema, sha256OfBytes, synthContext, synthSettingsSha256 } from "@agentx/contracts";
 import { buildAtApproval } from "../../packages/cli/src/upgrade/bundle/build-at-approval.js";
-import { nodeSynthRunner } from "../../packages/cli/src/upgrade/bundle/synth-run.js";
+import { nodeSynthRunner, testRunner } from "../support/kit-runner.js";
 import { readSynthSettings, recordSynthSettings } from "../../packages/cli/src/upgrade/bundle/synth-settings.js";
 import type { BuiltBundle } from "../support/bundle-fixture.js";
 import { EnterpriseWorld, INSTALL, SETTINGS_ENT } from "../support/enterprise-approval-world.js";
@@ -20,10 +20,10 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 const refused = (promise: Promise<unknown>, pattern: RegExp) => expect(promise).rejects.toThrow(pattern);
-const buildWith = async (world: EnterpriseWorld, settings = SETTINGS_ENT()) => {
+const buildWith = async (world: EnterpriseWorld, settings = SETTINGS_ENT(), runner = testRunner) => {
   const verified = await world.verify();
   try {
-    return await buildAtApproval({ bundle: verified, settings, runner: nodeSynthRunner });
+    return await buildAtApproval({ bundle: verified, settings, runner });
   } finally {
     await verified.cleanup();
   }

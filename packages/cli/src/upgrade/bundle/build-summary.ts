@@ -56,7 +56,7 @@ export interface BuildSummary {
   lines: string[];
 }
 
-export function summariseBuild(input: { built: BuiltBundle; settings: SynthSettings; deployed: ReadonlyMap<BuiltPart, string | undefined>; confined: boolean }): BuildSummary {
+export function summariseBuild(input: { built: BuiltBundle; settings: SynthSettings; deployed: ReadonlyMap<BuiltPart, string | undefined>; confined: boolean; sandbox: string }): BuildSummary {
   const { built, settings, deployed } = input;
   const diffs: StackDiff[] = [];
   const lines: string[] = [
@@ -81,6 +81,7 @@ export function summariseBuild(input: { built: BuiltBundle; settings: SynthSetti
   const deployedAccess = deployed.get("access");
   const accessAgrees = builtAccess !== undefined && deployedAccess !== undefined && accessTemplatesAgree(builtAccess, deployedAccess);
   if (!accessAgrees) lines.push("  The access stack differs from the deployed one (or could not be read). The deployer never changes the access stack, so it would refuse this build: your administrators deploy the access stack first.");
-  if (!input.confined) lines.push("  Note: this Node cannot confine the kit to its own files; it ran with the bundle's signature as its only protection.");
+  lines.push(`  The kit ran inside ${input.sandbox}.`);
+  if (!input.confined) lines.push("  Note: this Node cannot confine the kit's file access itself; the sandbox above still denied it the network and writes outside its own directories.");
   return { diffs, accessAgrees, lines };
 }

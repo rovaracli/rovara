@@ -5,7 +5,7 @@ import { editionRecordParameter, environmentStackName, synthSettingsParameter, t
 import type { ApprovalStore } from "../../packages/cli/src/upgrade/bundle/approve.js";
 import { approveEnterpriseBundle, type ApproveEnterpriseInput } from "../../packages/cli/src/upgrade/bundle/approve-enterprise.js";
 import { buildAtApproval } from "../../packages/cli/src/upgrade/bundle/build-at-approval.js";
-import { nodeSynthRunner } from "../../packages/cli/src/upgrade/bundle/synth-run.js";
+import { testRunner } from "./kit-runner.js";
 import { verifyBundle, type VerifiedBundle } from "../../packages/cli/src/upgrade/bundle/verify.js";
 import type { EnvironmentSettings } from "../../packages/cli/src/environments/settings.js";
 import { builtBundle, type BuiltBundle } from "./bundle-fixture.js";
@@ -55,7 +55,7 @@ export class EnterpriseWorld {
   async deployAsBuilt(settings: SynthSettings = SETTINGS_ENT()): Promise<void> {
     const verified = await this.verify();
     try {
-      const built = await buildAtApproval({ bundle: verified, settings, runner: nodeSynthRunner });
+      const built = await buildAtApproval({ bundle: verified, settings, runner: testRunner });
       for (const part of ["access", "foundation", "identity", "runtime", "control-plane", "slack"] as const) {
         const file = built.files.find((entry) => entry.file === `built/templates/${part}.template.json`)?.body.toString("utf8");
         const stack = this.world.stacks.get(environmentStackName("ent", part))!;
@@ -74,7 +74,7 @@ export class EnterpriseWorld {
     const verified = await this.verify();
     try {
       const { record } = await approveEnterpriseBundle({
-        bundle: verified, install: INSTALL, store: this.store, runner: nodeSynthRunner, approvalStore: this.approvalStore(),
+        bundle: verified, install: INSTALL, store: this.store, runner: testRunner, approvalStore: this.approvalStore(),
         readDeployedTemplate: async (stackName) => this.world.stacks.get(stackName)?.template,
         approvedBy: "arn:aws:sts::123456789012:assumed-role/security/alice", parameters: {}, rollback: false, now: () => T0, yes: true, interactive: false,
         ask: async () => "y", write: (line) => this.output.push(line), ...overrides,

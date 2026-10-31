@@ -108,8 +108,9 @@ export function synthContext(settings: SynthSettings): Record<string, string> {
 export const SYNTH_KIT_MANIFEST_FILE = "synth-kit/kit.json";
 /**
  * synth-kit/kit.json: the release's own pinned CDK app. `entry` is a Node ES module in the kit, run as `node <entry> <context.json> <out dir>`; it reads the context file (the
- * whole of its input), builds the app with it and writes the output tree described by `SynthOutputSchema`. It carries everything it needs: it is run with no network, no
- * credentials and a scrubbed environment, and a kit that cannot build without something outside the signed bundle fails.
+ * whole of its input), builds the app with it and writes the output tree described by `SynthOutputSchema`. It carries everything it needs: it is run inside an operating system
+ * sandbox that denies the network and every socket (macOS sandbox-exec, Linux bubblewrap; where neither exists it is not run at all), with no credentials and a scrubbed environment, and a
+ * kit that cannot build without something outside the signed bundle fails.
  */
 export const SynthKitManifestSchema = z
   .object({

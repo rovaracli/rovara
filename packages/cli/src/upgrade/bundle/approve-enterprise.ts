@@ -46,7 +46,7 @@ export async function approveEnterpriseBundle(input: ApproveEnterpriseInput): Pr
 
   const deployed = new Map<BuiltPart, string | undefined>();
   for (const part of requiredParts(settings.identityMode)) deployed.set(part, await input.readDeployedTemplate(environmentStackName(install.env, part)));
-  const summary = summariseBuild({ built: build, settings, deployed, confined: input.runner.confined });
+  const summary = summariseBuild({ built: build, settings, deployed, confined: input.runner.confined, sandbox: input.runner.sandbox });
   for (const line of summary.lines) input.write(line);
   // The deployer only updates stacks, and never the access stack: an approval it must refuse is not written.
   const missing = summary.diffs.find((diff) => diff.status === "new" || diff.status === "unreadable");
