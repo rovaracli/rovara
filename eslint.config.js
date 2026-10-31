@@ -21,6 +21,7 @@ export default tseslint.config(
       "coverage/**",
       "tests/fixtures/e2e-web-api-app/**",
       "tests/support/stdio-mcp-fixture.mjs",
+      "tests/support/stdio-runner-fixture.mjs",
       "packages/verifier/assets/qualification-app/**",
       "tests/fixtures/orders-web-starter/**",
       "packages/audit-verifier/scripts/**",

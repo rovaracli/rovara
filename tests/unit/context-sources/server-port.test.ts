@@ -90,7 +90,7 @@ describe("a registered http server", () => {
 });
 
 describe("a registered stdio server", () => {
-  const stdio = (): McpServerEntry => ({ ...http(), transport: { kind: "stdio", spec: { registry: "npm", name: "pkg", version: "1.0.0", args: [], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) } } });
+  const stdio = (): McpServerEntry => ({ ...http(), transport: { kind: "stdio", spec: { registry: "npm", name: "pkg", version: "1.0.0", args: [], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64), destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } } } });
   it("is reached through the MCP host with the host's token, and no address is on its site", async () => {
     const w = world({ entries: [stdio()], mcpHost: { url: "https://mcp-host.internal:8080/", token: "h".repeat(40) } });
     await w.seed();
@@ -115,7 +115,7 @@ describe("a registered stdio server", () => {
 
 describe("the settings view of the world", () => {
   it("ME-16: reports a package-run server as such, and whether the install runs them", async () => {
-    const w = world({ entries: [{ ...http(), transport: { kind: "stdio", spec: { registry: "npm", name: "pkg", version: "1.0.0", args: [], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) } } }] });
+    const w = world({ entries: [{ ...http(), transport: { kind: "stdio", spec: { registry: "npm", name: "pkg", version: "1.0.0", args: [], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64), destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } } } }] });
     await w.seed();
     const off = sourceEnvironment({ edition: "enterprise", connections: connection(), servers: w.store, port: w.port, stdioEnabled: false });
     expect(await off.registeredServer(ORG, "mcpsim000001")).toEqual({ status: "approved", transport: "stdio" });
@@ -169,7 +169,7 @@ describe("review I2: the default private guard uses the install's ranges", () =>
 });
 
 describe("review I6: the MCP host is reached over https", () => {
-  const stdioEntry = (): McpServerEntry => ({ ...http(), transport: { kind: "stdio", spec: { registry: "npm", name: "pkg", version: "1.0.0", args: [], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) } } });
+  const stdioEntry = (): McpServerEntry => ({ ...http(), transport: { kind: "stdio", spec: { registry: "npm", name: "pkg", version: "1.0.0", args: [], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64), destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } } } });
   it("refuses an http:// host address, except this machine's own loopback", async () => {
     const { assertSecureHostUrl } = await import("../../../packages/broker/src/context-sources/server-port.js");
     expect(() => assertSecureHostUrl("http://mcp-host.internal:8080")).toThrow(/https/u);

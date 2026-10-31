@@ -22,3 +22,7 @@ export * from "./mcp-runner/lockfile-policy.js";
 export * from "./mcp-runner/tar.js";
 export * from "./mcp-runner/npm-tarball.js";
 export * from "./mcp-runner/bin.js";
+export * from "./mcp-runner/bridge.js";
+export * from "./mcp-runner/confine.js";
+export * from "./mcp-runner/fetch.js";
+export * from "./mcp-runner/stdio-transport.js";

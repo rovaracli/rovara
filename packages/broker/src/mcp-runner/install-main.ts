@@ -10,6 +10,8 @@
 //
 // No package code runs: scripts are off at every npm call, nothing in the tree is executed, and `git` does not exist for npm to call. Every failure is a fixed code and sentence;
 // npm's own text (which holds addresses, paths and package contents) is read only to pick a code and is never kept, logged or shown.
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -410,6 +412,12 @@ export async function main(dependencies: MainDependencies): Promise<number> {
   return 0;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+/** Whether this file is the program being run (and not just imported). The real path is compared: a program started through a link would otherwise never start. */
+function isMainModule(): boolean {
+  if (process.argv[1] === undefined) return false;
+  try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; }
+}
+
+if (isMainModule()) {
   void main({ env: process.env }).then((code) => { process.exitCode = code; }, () => { process.exitCode = 1; });
 }

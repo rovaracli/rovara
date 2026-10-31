@@ -10,7 +10,7 @@
 // fields and compared byte for byte, so an archive with another mode, owner, time, order, padding or extra record is not accepted even if its hash were approved.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, lstat, open, readdir, readlink, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readlink, rm, symlink } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { TAR_BLOCK, TarError, decodeHeader, decodePaxBody, encodeHeader, encodePaxBody, isZeroBlock, paddingFor } from "./tar.js";
 
@@ -377,5 +377,42 @@ export async function readBundleIndex(path: string, limits: BundleLimits = BUNDL
     throw error;
   } finally {
     await handle.close();
+  }
+}
+
+/**
+ * Creates the entries of `entries` (from `readBundleIndex`, in its order) under `destination`, a new folder. Folders are 0755 and files 0644 (0755 when the archive says
+ * executable), set explicitly so that the process's umask does not change them. Nothing is created through a link: `readBundleIndex` guarantees that every parent is a folder
+ * entry, and every file is opened with 'wx', so an existing name is an error rather than an overwrite.
+ */
+export async function extractBundle(archive: string, destination: string, entries: readonly BundleEntry[]): Promise<void> {
+  const source = await open(archive, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const buffer = Buffer.allocUnsafe(65_536);
+    for (const entry of entries) {
+      const target = join(destination, ...entry.path.split("/"));
+      if (entry.kind === "dir") {
+        await mkdir(target, { mode: 0o755 });
+        await chmod(target, 0o755);
+      } else if (entry.kind === "symlink") {
+        await symlink(entry.linkTarget!, target);
+      } else {
+        const out = await open(target, "wx", 0o600);
+        try {
+          let done = 0;
+          while (done < entry.size) {
+            const { bytesRead } = await source.read(buffer, 0, Math.min(buffer.length, entry.size - done), entry.dataOffset + done);
+            if (bytesRead === 0) throw new BundleError("bad_archive");
+            await out.write(buffer, 0, bytesRead);
+            done += bytesRead;
+          }
+          await out.chmod(entry.executable ? 0o755 : 0o644);
+        } finally {
+          await out.close();
+        }
+      }
+    }
+  } finally {
+    await source.close();
   }
 }
