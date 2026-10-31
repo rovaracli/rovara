@@ -45,8 +45,6 @@ export const RUN_SCOPED_DEFAULT_MAX_HOLD_MS = 14 * 24 * 3_600_000;
 const MIN_HOLD_MS = 60_000;
 /** A store write is tried this many times before it is an alert. */
 export const RUN_SCOPED_STORE_ATTEMPTS = 3;
-/** At most this many replayed credentials per account (the round's session cookie and its bearer, say). */
-export const RUN_SCOPED_SESSION_PROBES_MAX = 3;
 const SECRETS_MAX = 8;
 const SECRET_MAX_LENGTH = 512;
 
@@ -332,8 +330,11 @@ export async function revokeRunScopedAccounts(input: { leases: readonly RunScope
     // The positive controls, BEFORE anything is revoked: the account must be seen PRESENT, and each credential seen ALIVE. A probe that cannot see them proves nothing afterwards.
     let existenceControl = false;
     const controlled: SessionCredential[] = [];
-    let uncontrolled = 0;
-    const credentials = (input.sessions?.get(lease.profileId) ?? []).filter((credential) => (credential.kind === "cookie" || credential.kind === "bearer") && typeof credential.value === "string" && credential.value.length > 0).slice(0, RUN_SCOPED_SESSION_PROBES_MAX);
+    // EVERY credential the round was issued is checked (PC-N1): the set is bounded by what the round really held, not by a constant, so a credential past some count can never stay alive unseen. One that cannot be
+    // replayed at all (an unknown kind, no value) is UNCONTROLLED, the same as one that was not alive before the revoke: it can never show "dead", so the proof is at best "unclear" (held for the token lifetime).
+    const issued = input.sessions?.get(lease.profileId) ?? [];
+    const credentials = issued.filter((credential) => (credential?.kind === "cookie" || credential?.kind === "bearer") && typeof credential.value === "string" && credential.value.length > 0);
+    let uncontrolled = issued.length - credentials.length;
     if (control) {
       existenceControl = (await probe((signal) => port.accountExists({ account: scoped, revokeHandle: lease.revokeHandle, signal }), "unclear")) === "present";
       for (const credential of credentials) {
@@ -354,7 +355,7 @@ export async function revokeRunScopedAccounts(input: { leases: readonly RunScope
         if (after === "alive") { sessionProof = "alive"; break; }
         if (after !== "dead") sessionProof = "unclear";
       }
-    } else if (control && sessionsEnded && revoked && credentials.length > 0) {
+    } else if (control && sessionsEnded && revoked && issued.length > 0) {
       sessionProof = "unclear";
     }
     if (control && sessionsEnded && revoked && accountGone && (sessionProof === "not_possible" || sessionProof === "unclear" || !existenceControl)) needsHold = true;
