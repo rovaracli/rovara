@@ -101,8 +101,9 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
 
     if (approvals.some((a) => a.by === input.approverId)) return { ok: false, code: "already_approved" };
     const tier: Tier = working.tier;
-    const required = approversRequired(tier, resolved.approval);
-    const isAuthor = working.provenance.authors.includes(input.approverId);
+    // A lesson sent back to a person (review required) needs at least one person even if the policy would let its tier apply by itself.
+    const required = Math.max(approversRequired(tier, resolved.approval), working.reviewRequired === true ? 1 : 0) as 0 | 1 | 2;
+    const isAuthor = working.provenance.authors.some((a) => a.toLowerCase() === input.approverId.toLowerCase());
     let mode: Lesson["approvals"][number]["mode"] = "one";
 
     if (required === 0) {
@@ -217,7 +218,34 @@ export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId:
   if (!result.ok) return { ok: false, code: "conflict" };
   const restored = result.restored ?? [];
   for (const id of restored) { try { await input.onRestored?.(id); } catch { /* the lesson stays pending for a person */ } }
+  for (const id of restored) { try { await recheckRestored(deps, key, id, group); } catch { /* the lesson stays pending for a person */ } }
   return { ok: true, setVersion: result.setVersion, restored };
+}
+
+/**
+ * A restored lesson comes back pending. A person\'s earlier approval counts again only if it still stands NOW: the approver is still eligible, the current policy\'s
+ * number of approvers is met, and every required group is represented. Approvals that no longer stand are removed (the lesson stays pending for a person).
+ */
+async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, group: Awaited<ReturnType<ApproverDirectory["eligibility"]>>): Promise<void> {
+  const lesson = await deps.store.get(key, id);
+  if (lesson === undefined || lesson.status !== "pending") return;
+  const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
+  const eligible = new Set(group.eligibleIds.map((e) => e.toLowerCase()));
+  const persons = lesson.approvals.filter((a) => a.mode !== "auto");
+  const valid = persons.filter((a) => eligible.has(a.by.toLowerCase()));
+  if (valid.length !== lesson.approvals.length) {
+    const setVersion = await deps.store.setVersion(key);
+    const kept = await deps.store.commit(key, setVersion, [{ ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: valid, updatedAt: deps.now() }], deps.now());
+    if (!kept.ok) return;
+  }
+  const required = Math.max(approversRequired(lesson.tier, resolved.approval), 1);
+  const sole = valid.some((a) => a.mode === "sole_owner_exception");
+  const enough = sole || new Set(valid.map((a) => a.by.toLowerCase())).size >= required;
+  const groupsOk = resolved.requiredGroups.every((name) => valid.some((a) => (group.groups?.[name] ?? []).some((m) => m.toLowerCase() === a.by.toLowerCase())));
+  if (valid.length === 0 || !enough || !groupsOk) return;
+  const fresh = await deps.store.get(key, id);
+  if (fresh === undefined) return;
+  try { await activateLesson(deps, key, fresh, valid, resolved.expiryDays, "lesson.activated"); } catch (error) { if (!(error instanceof AuditUnavailable)) throw error; }
 }
 
 /**

@@ -81,6 +81,8 @@ export interface LessonStore {
    * project's fence item.
    */
   fence(key: ScopeKey, fence: { people?: readonly string[]; ids?: readonly string[] }): Promise<void>;
+  /** Whether a person is fenced (erased). Ids are compared case-insensitively. */
+  isErased(key: ScopeKey, person: string): Promise<boolean>;
   putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void>;
   getIntent(key: ScopeKey, id: string): Promise<DeletionIntent | undefined>;
   listIntents(key: ScopeKey, filter?: { finished?: boolean }): Promise<DeletionIntent[]>;
@@ -151,7 +153,7 @@ export class InMemoryLessonStore implements LessonStore {
       if (lesson.version !== (existing?.version ?? 0) + 1) return { ok: false, reason: "conflict" };
       if (staged.some((x) => x.id === lesson.id)) throw new Error("one commit writes a lesson once");
       // The fence: nothing that names an erased person or a deleted record may be written back, whatever the writer read earlier.
-      if (s.gone.get(lesson.id) === "purged" || peopleOf(lesson).some((p) => s.erased.has(p)) || recordIdsOf(lesson).some((id) => s.deletedIds.has(id))) return { ok: false, reason: "erased" };
+      if (s.gone.get(lesson.id) === "purged" || peopleOf(lesson).some((p) => s.erased.has(p.toLowerCase())) || recordIdsOf(lesson).some((id) => s.deletedIds.has(id))) return { ok: false, reason: "erased" };
       staged.push(lesson);
     }
     const members = new Map(s.members);
@@ -190,6 +192,10 @@ export class InMemoryLessonStore implements LessonStore {
       if (head !== undefined && (head.status === "retired" || head.status === "rejected")) { members.set(m.id, head.version); continue; }
       const content = s.versions.get(m.id)?.find((v) => v.version === m.version);
       if (content === undefined) return { ok: false, reason: "conflict" };
+      // The fence applies to a rollback too: content that names an erased person or a deleted row is never brought back, and a lesson with a deletion still open is
+      // left alone until its intent finishes.
+      const openIntent = [...s.intents.values()].some((i) => !i.finished && i.lessonId === m.id);
+      if (head !== undefined && (openIntent || peopleOf(content).some((p) => s.erased.has(p.toLowerCase())) || recordIdsOf(content).some((id) => s.deletedIds.has(id)))) { members.set(m.id, head.version); continue; }
       const current = s.heads.get(m.id);
       const restored = clone(content);
       // Counters and expiry are bookkeeping about use, not content: a rollback does not rewind them.
@@ -206,7 +212,9 @@ export class InMemoryLessonStore implements LessonStore {
       }
       restored.approvals = restored.approvals.filter((a) => a.mode !== "auto");
       restored.reviewRequired = true;
-      if ((restored.status === "active" || restored.status === "stale") && restored.approvals.length === 0) { restored.status = "pending"; restored.pendingExpiresAt = at + CHANGE_APPROVAL_TTL_DAYS * DAY; }
+      // It always comes back pending. A person\'s earlier approval is kept as a record, but it counts only after it is re-checked against who may approve NOW and the
+      // current policy (rollbackLessonSet does that); until then nothing is live.
+      if (restored.status === "active" || restored.status === "stale") { restored.status = "pending"; restored.pendingExpiresAt = at + CHANGE_APPROVAL_TTL_DAYS * DAY; }
       s.heads.set(m.id, restored);
       members.set(m.id, m.version);
       restoredIds.push(m.id);
@@ -259,9 +267,10 @@ export class InMemoryLessonStore implements LessonStore {
   }
   async fence(key: ScopeKey, fence: { people?: readonly string[]; ids?: readonly string[] }): Promise<void> {
     const s = this.of(key);
-    for (const p of fence.people ?? []) s.erased.add(p);
+    for (const p of fence.people ?? []) s.erased.add(p.toLowerCase());
     for (const id of fence.ids ?? []) s.deletedIds.add(id);
   }
+  async isErased(key: ScopeKey, person: string): Promise<boolean> { return this.of(key).erased.has(person.toLowerCase()); }
   async putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void> { this.of(key).intents.set(intent.id, clone(intent)); }
   async getIntent(key: ScopeKey, id: string): Promise<DeletionIntent | undefined> { const i = this.of(key).intents.get(id); return i === undefined ? undefined : clone(i); }
   async listIntents(key: ScopeKey, filter?: { finished?: boolean }): Promise<DeletionIntent[]> {

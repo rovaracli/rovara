@@ -19,7 +19,9 @@ export interface OutcomeEvent { kind: "revert" | "send_back" | "ci_failure"; act
  */
 export function isMeasured(input: { authors: readonly string[]; initiatorId: string | undefined; events: readonly OutcomeEvent[] }): boolean {
   if (input.authors.length === 0 || input.initiatorId === undefined) return false;
-  return input.events.some((e) => e.actor !== undefined && !input.authors.includes(e.actor) && e.actor !== input.initiatorId);
+  // Ids are compared without case, so "Ann" and "ann" are one person.
+  const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+  return input.events.some((e) => e.actor !== undefined && !input.authors.some((a) => same(a, e.actor!)) && !same(e.actor, input.initiatorId!));
 }
 
 /** A lesson as the reflector proposes it, checked by code, with its provenance. It is not yet in any store. */

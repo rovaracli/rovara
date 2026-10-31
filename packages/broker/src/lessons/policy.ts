@@ -26,7 +26,13 @@ export const ApprovalPolicySchema = z.object({
   requiredGroup: z.string().min(1).max(100).optional(),
 }).strict();
 export type ApprovalPolicy = z.infer<typeof ApprovalPolicySchema>;
-export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = { tier0: "auto", tier1: "one" };
+/**
+ * THE switch for the pilot: how a tier-0 lesson (a cited, rendered, corroborated fact) goes live. "auto": by itself, audited (owner decision Q2). "one": only after one
+ * person approves it, on every path (ingest, rollback, resume). A project or company can set `tier0Approval` in its learning settings; this is the default when it does not.
+ */
+export type Tier0Approval = "auto" | "one";
+export const TIER0_APPROVAL_DEFAULT: Tier0Approval = "auto";
+export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = { tier0: TIER0_APPROVAL_DEFAULT, tier1: "one" };
 /** What the project runs with when nothing is set (Q2). A company lock or a project setting may choose another mode. */
 export const DEFAULT_LEARNING_MODE: LearningMode = "On";
 
@@ -63,6 +69,8 @@ export interface LearningSettings {
   /** The company's approval floor: a project can ask for more approvers than this, never fewer, and cannot drop a required group set here. */
   companyApproval?: Partial<ApprovalPolicy>;
   approval?: Partial<ApprovalPolicy>;
+  /** The named switch for tier-0 approval ("auto" | "one"); `approval.tier0` still wins when set. Unset: TIER0_APPROVAL_DEFAULT. A company floor can only make it "one". */
+  tier0Approval?: Tier0Approval;
   expiryDays?: number;
 }
 export interface LearningSettingsReader { read(workspaceId: string, project: string): Promise<LearningSettings> }
@@ -90,7 +98,7 @@ export async function resolveLearning(reader: LearningSettingsReader, workspaceI
   const lock = settings.companyLock === undefined ? undefined : LearningModeSchema.safeParse(settings.companyLock);
   if (!own.success || (lock !== undefined && !lock.success)) return off;
   const mode = { success: true as const, data: lock === undefined ? own.data : stricterMode(own.data, lock.data) };
-  const projectApproval = ApprovalPolicySchema.safeParse({ ...DEFAULT_APPROVAL_POLICY, ...(settings.approval ?? {}) });
+  const projectApproval = ApprovalPolicySchema.safeParse({ ...DEFAULT_APPROVAL_POLICY, tier0: settings.tier0Approval ?? TIER0_APPROVAL_DEFAULT, ...(settings.approval ?? {}) });
   const floor = ApprovalPolicySchema.safeParse({ ...DEFAULT_APPROVAL_POLICY, ...(settings.companyApproval ?? {}) });
   if (!projectApproval.success || !floor.success) return off;
   const approval = { success: true as const, data: stricterApproval(projectApproval.data, floor.data, settings.companyApproval !== undefined) };

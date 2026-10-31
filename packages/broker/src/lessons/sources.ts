@@ -30,6 +30,8 @@ export async function noteCandidateSources(deps: LessonDeps, store: LessonStore,
   const now = deps.now();
   await noteProjectVolume(deps, store, key, alerts);
   for (const source of new Set(sources)) {
+    // A late event of a person who was erased is not recorded, and cannot start a pause for them.
+    if (source.startsWith("member:") && (await store.isErased(key, source.slice("member:".length)))) continue;
     await store.recordSourceEvent(key, { at: now, source });
     const days = await store.sourceDays(key, source, SPIKE.baselineDays + 1, now);
     const today = days[0] ?? 0;
