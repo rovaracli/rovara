@@ -11,7 +11,7 @@ import { writeBundle } from "../../../packages/gateway/src/mcp-runner/bundle.js"
 import { FetchError, fetchBundle } from "../../../packages/gateway/src/mcp-runner/fetch.js";
 import { TAR_BLOCK, encodeHeader, paddingFor } from "../../../packages/gateway/src/mcp-runner/tar.js";
 
-const TOKEN = "t".repeat(40);
+const TOKEN = "t".repeat(43);
 let work: string;
 let bundleBytes: Buffer;
 let bundleHash: string;
@@ -133,7 +133,7 @@ describe("T4 fetch: bytes that are not the approved ones", () => {
 
 describe("T4 fetch: the controller", () => {
   it("refuses a wrong token, an error status, a redirect and an unreachable controller, with nothing left behind", async () => {
-    for (const [over, expected] of [[{ token: "w".repeat(40) }, "refused"], [{ controllerUrl: "http://127.0.0.1:1/" }, "unavailable"]] as const) {
+    for (const [over, expected] of [[{ token: "w".repeat(43) }, "refused"], [{ controllerUrl: "http://127.0.0.1:1/" }, "unavailable"]] as const) {
       const opts = await options(over);
       expect(await failure(fetchBundle(opts)), JSON.stringify(over)).toBe(expected);
       expect(await readdir(opts.destination)).toEqual([]);
@@ -161,7 +161,7 @@ describe("T4 fetch: refusing wrongly", () => {
     expect(served.requests).toEqual([]);
   });
   it("refuses a bundle hash that is not a sha256 and a token that is too short", async () => {
-    for (const over of [{ bundleHash: "A".repeat(64) }, { bundleHash: "a".repeat(63) }, { bundleHash: "../etc" }, { token: "short" }]) {
+    for (const over of [{ bundleHash: "A".repeat(64) }, { bundleHash: "a".repeat(63) }, { bundleHash: "../etc" }, { token: "short" }, { token: "t".repeat(42) }]) {
       expect(await failure(fetchBundle(await options(over))), JSON.stringify(over)).toBe("bad_request");
     }
     expect(served.requests).toEqual([]);

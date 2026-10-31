@@ -7,7 +7,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createServer, type Server } from "node:http";
 import { McpStdioProposalSchema } from "@agentx/contracts";
-import { CONFINE_LIMITS, DEFAULT_CONFINE_TOOLS, confinedCommand, createBridge, type Bridge, type ConfineTools } from "@agentx/gateway";
+import { CONFINE_LIMITS, DEFAULT_CONFINE_TOOLS, confinedCommand, createBridge, runnerTokenWellFormed, type Bridge, type ConfineTools } from "@agentx/gateway";
 
 export interface ServeConfig {
   token: string;
@@ -31,7 +31,7 @@ function jsonList(text: string | undefined, label: string): unknown {
 /** Reads and checks the task's settings. A setting that is missing or not valid stops the task; nothing is defaulted that the approval decides. */
 export function readServeConfig(env: Record<string, string | undefined>): ServeConfig {
   const token = env.MCP_RUNNER_TOKEN;
-  if (token === undefined || token.length < 24) throw new Error("MCP_RUNNER_TOKEN is not set");
+  if (token === undefined || !runnerTokenWellFormed(token)) throw new Error("MCP_RUNNER_TOKEN is not set");
   const bundleHash = env.MCP_BUNDLE_HASH;
   if (bundleHash === undefined || !/^[0-9a-f]{64}$/u.test(bundleHash)) throw new Error("MCP_BUNDLE_HASH is not valid");
   const parsed = McpStdioProposalSchema.safeParse({ registry: "npm", name: env.MCP_PACKAGE_NAME, version: "0.0.0", args: jsonList(env.MCP_SERVER_ARGS, "MCP_SERVER_ARGS"), secretEnv: jsonList(env.MCP_SECRET_ENV, "MCP_SECRET_ENV") });

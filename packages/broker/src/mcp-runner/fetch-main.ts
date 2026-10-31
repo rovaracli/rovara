@@ -2,7 +2,7 @@
 // it into the bundle volume, and exits 0; any failure exits 1 and leaves nothing behind, so the `server` container (which depends on this one succeeding) never starts.
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { FetchError, fetchBundle } from "@agentx/gateway";
+import { FetchError, fetchBundle, runnerTokenWellFormed } from "@agentx/gateway";
 
 export interface FetchConfig { controllerUrl: string; token: string; bundleHash: string; destination: string; ca?: string | undefined }
 
@@ -12,7 +12,7 @@ export function readFetchConfig(env: Record<string, string | undefined>): FetchC
   const token = env.MCP_RUNNER_TOKEN;
   const bundleHash = env.MCP_BUNDLE_HASH;
   if (controllerUrl === undefined || controllerUrl === "") throw new Error("MCP_CONTROLLER_URL is not set");
-  if (token === undefined || token.length < 24) throw new Error("MCP_RUNNER_TOKEN is not set");
+  if (token === undefined || !runnerTokenWellFormed(token)) throw new Error("MCP_RUNNER_TOKEN is not set");
   if (bundleHash === undefined || !/^[0-9a-f]{64}$/u.test(bundleHash)) throw new Error("MCP_BUNDLE_HASH is not valid");
   return { controllerUrl, token, bundleHash, destination: env.MCP_BUNDLE_DIR ?? "/bundle", ...(env.ROVARA_MCP_CONTROLLER_CA === undefined ? {} : { ca: env.ROVARA_MCP_CONTROLLER_CA }) };
 }

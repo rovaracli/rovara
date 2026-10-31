@@ -23,6 +23,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, CallToolResultSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { McpStdioProposalSchema, mcpSecretEnvNameProblem } from "@agentx/contracts";
 import { binOf } from "./bin.js";
+import { runnerTokenWellFormed } from "./token-scope.js";
 import { StdioChildTransport, type ChildProcessSpec } from "./stdio-transport.js";
 
 export const BRIDGE_LIMITS = { bodyBytes: 1_048_576, replyBytes: 1_048_576, callMs: 60_000, startMs: 90_000, listPages: 10 } as const;
@@ -93,7 +94,7 @@ type Tools = Awaited<ReturnType<Client["listTools"]>>["tools"];
 
 export function createBridge(options: BridgeOptions): Bridge {
   if ((options.getuid ?? (() => process.getuid?.()))() === 0) throw new Error("the bridge must not run as root");
-  if (options.token.length < 24) throw new Error("the bridge's token is too short");
+  if (!runnerTokenWellFormed(options.token)) throw new Error("the bridge's token is not a 256-bit token");
   if (!/^[0-9a-f]{64}$/u.test(options.bundleHash)) throw new Error("the bundle hash is not a sha256");
   // The name, arguments and secret names are validated by the same rules the approval used.
   const spec = McpStdioProposalSchema.safeParse({ registry: "npm", name: options.packageName, version: "0.0.0", args: options.args, secretEnv: options.secretEnv });

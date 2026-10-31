@@ -26,3 +26,4 @@ export * from "./mcp-runner/bridge.js";
 export * from "./mcp-runner/confine.js";
 export * from "./mcp-runner/fetch.js";
 export * from "./mcp-runner/stdio-transport.js";
+export * from "./mcp-runner/token-scope.js";

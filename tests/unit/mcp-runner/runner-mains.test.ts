@@ -13,7 +13,7 @@ import { writeBundle } from "../../../packages/gateway/src/mcp-runner/bundle.js"
 import { main as fetchMain, readFetchConfig } from "../../../packages/broker/src/mcp-runner/fetch-main.js";
 import { readServeConfig, start as startServe } from "../../../packages/broker/src/mcp-runner/serve-main.js";
 
-const TOKEN = "t".repeat(40);
+const TOKEN = "t".repeat(43);
 const FIXTURE = resolve("tests/support/stdio-runner-fixture.mjs");
 let work: string;
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -45,7 +45,7 @@ describe("T4 serve-main: settings", () => {
   });
   it("refuses a setting that is missing or not valid", () => {
     const bad: Array<Record<string, string | undefined>> = [
-      { MCP_RUNNER_TOKEN: undefined }, { MCP_RUNNER_TOKEN: "short" }, { MCP_BUNDLE_HASH: undefined }, { MCP_BUNDLE_HASH: "A".repeat(64) }, { MCP_BUNDLE_HASH: "a".repeat(63) },
+      { MCP_RUNNER_TOKEN: undefined }, { MCP_RUNNER_TOKEN: "short" }, { MCP_RUNNER_TOKEN: "t".repeat(42) }, { MCP_BUNDLE_HASH: undefined }, { MCP_BUNDLE_HASH: "A".repeat(64) }, { MCP_BUNDLE_HASH: "a".repeat(63) },
       { MCP_PACKAGE_NAME: undefined }, { MCP_PACKAGE_NAME: "Bad Name" }, { MCP_SERVER_ARGS: "not json" }, { MCP_SERVER_ARGS: '["a b"]' }, { MCP_SERVER_ARGS: '"x"' }, { MCP_SERVER_ARGS: '["a","b","c","d","e","f","g","h","i"]' },
       { MCP_SECRET_ENV: "not json" }, { MCP_SECRET_ENV: '["PATH"]' }, { MCP_SECRET_ENV: '["NODE_OPTIONS"]' }, { MCP_SECRET_ENV: '["lower"]' }, { MCP_SECRET_ENV: '["AWS_SECRET_ACCESS_KEY"]' },
       { MCP_MEMORY_MIB: undefined }, { MCP_MEMORY_MIB: "100" }, { MCP_MEMORY_MIB: "4096" }, { MCP_MEMORY_MIB: "abc" }, { PORT: "0" }, { PORT: "70000" }, { PORT: "x" },
@@ -138,7 +138,7 @@ describe("T4 fetch-main", () => {
 
   it("reads its settings and refuses what is missing or not valid", () => {
     expect(readFetchConfig(env())).toMatchObject({ controllerUrl: url, token: TOKEN, bundleHash, destination: join(work, "volume") });
-    for (const over of [{ MCP_CONTROLLER_URL: undefined }, { MCP_CONTROLLER_URL: "" }, { MCP_RUNNER_TOKEN: undefined }, { MCP_RUNNER_TOKEN: "short" }, { MCP_BUNDLE_HASH: undefined }, { MCP_BUNDLE_HASH: "x" }]) {
+    for (const over of [{ MCP_CONTROLLER_URL: undefined }, { MCP_CONTROLLER_URL: "" }, { MCP_RUNNER_TOKEN: undefined }, { MCP_RUNNER_TOKEN: "short" }, { MCP_RUNNER_TOKEN: "t".repeat(42) }, { MCP_BUNDLE_HASH: undefined }, { MCP_BUNDLE_HASH: "x" }]) {
       expect(() => readFetchConfig(env(over)), JSON.stringify(over)).toThrow();
     }
   });

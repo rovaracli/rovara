@@ -13,7 +13,7 @@ import { writeBundle } from "../../../packages/gateway/src/mcp-runner/bundle.js"
 
 const dockerfile = await readFile("environments/mcp-runner/Dockerfile", "utf8");
 const NODE_IMAGE = "public.ecr.aws/docker/library/node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5";
-const TOKEN = "t".repeat(40);
+const TOKEN = "t".repeat(43);
 
 describe("T5 runner Dockerfile", () => {
   it("builds from the one pinned node image and from nothing else but scratch", () => {

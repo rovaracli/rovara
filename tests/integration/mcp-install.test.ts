@@ -336,7 +336,7 @@ describe("T3 install: handing the bundle to the controller", () => {
 
   const env = (over: Record<string, string | undefined> = {}) => ({
     MCP_INSTALL_REQUEST: JSON.stringify(proposal(NAME, "1.4.2")), ROVARA_MCP_NPM_REGISTRY: registry.url, ROVARA_MCP_NPM_CAFILE: registry.caFile, MCP_CONTROLLER_URL: controllerUrl,
-    MCP_RUNNER_TOKEN: "t".repeat(40), MCP_INSTALL_WORKDIR: "", ...over,
+    MCP_RUNNER_TOKEN: "t".repeat(43), MCP_INSTALL_WORKDIR: "", ...over,
   });
 
   it("PUTs the tar to /bundles/<its hash> with the task's token, and prints one result line that holds no token", async () => {
@@ -349,9 +349,9 @@ describe("T3 install: handing the bundle to the controller", () => {
     const report = JSON.parse(lines[0]!.replace("ROVARA_MCP_INSTALL_RESULT ", "")) as { ok: boolean; bundleHash: string; lockfileHash: string };
     expect(report).toMatchObject({ ok: true });
     expect(report).not.toHaveProperty("scriptsSkipped");
-    expect(received).toMatchObject({ method: "PUT", url: `/bundles/${report.bundleHash}`, auth: `Bearer ${"t".repeat(40)}` });
+    expect(received).toMatchObject({ method: "PUT", url: `/bundles/${report.bundleHash}`, auth: `Bearer ${"t".repeat(43)}` });
     expect(createHash("sha256").update(received!.body).digest("hex")).toBe(report.bundleHash);
-    expect(lines.join("\n")).not.toContain("t".repeat(40));
+    expect(lines.join("\n")).not.toContain("t".repeat(43));
   });
   it("reports upload_failed, and not success, when the controller refuses or cannot be reached", async () => {
     for (const refuse of [500, 401]) {
@@ -392,10 +392,10 @@ describe("T3 install: handing the bundle to the controller", () => {
     expect(lines[0]).toContain('"code":"invalid_request"');
   });
   it("sends the controller token only over https, or to this machine's own loopback", () => {
-    expect(() => controllerUploader({ url: "http://controller.internal:8080/", token: "x".repeat(40) })).toThrow();
-    expect(() => controllerUploader({ url: "https://user:pw@controller.internal/", token: "x".repeat(40) })).toThrow();
-    expect(() => controllerUploader({ url: "not a url", token: "x".repeat(40) })).toThrow();
-    expect(() => controllerUploader({ url: "https://controller.internal:8080/", token: "x".repeat(40) })).not.toThrow();
-    expect(() => controllerUploader({ url: "http://127.0.0.1:8080/", token: "x".repeat(40) })).not.toThrow();
+    expect(() => controllerUploader({ url: "http://controller.internal:8080/", token: "x".repeat(43) })).toThrow();
+    expect(() => controllerUploader({ url: "https://user:pw@controller.internal/", token: "x".repeat(43) })).toThrow();
+    expect(() => controllerUploader({ url: "not a url", token: "x".repeat(43) })).toThrow();
+    expect(() => controllerUploader({ url: "https://controller.internal:8080/", token: "x".repeat(43) })).not.toThrow();
+    expect(() => controllerUploader({ url: "http://127.0.0.1:8080/", token: "x".repeat(43) })).not.toThrow();
   });
 });

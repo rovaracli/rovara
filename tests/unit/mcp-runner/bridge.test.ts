@@ -15,7 +15,7 @@ import { CONFINE_LIMITS, DEFAULT_CONFINE_TOOLS, confinedCommand } from "../../..
 import { createBridge, type Bridge, type BridgeOptions } from "../../../packages/gateway/src/mcp-runner/bridge.js";
 
 const FIXTURE = resolve("tests/support/stdio-runner-fixture.mjs");
-const TOKEN = "t".repeat(40);
+const TOKEN = "t".repeat(43);
 const HASH = "a".repeat(64);
 const NAME = "@acme/sim-mcp";
 
@@ -89,7 +89,7 @@ describe("T4 bridge: refuses to start wrongly", () => {
     return { token: TOKEN, bundleHash: HASH, bundleDir: "/nonexistent", packageName: NAME, args: [], secretEnv: [], memoryMiB: 512, environment: {}, homeDir: "/h", tmpDir: "/t", confine: (program, args) => ({ file: program, args: [...args] }) };
   }
   it("refuses a token that is too short, a hash that is not a sha256, a package name, argument or secret name that the approval would not have allowed, and a size out of range", () => {
-    for (const bad of [{ token: "short" }, { bundleHash: "A".repeat(64) }, { bundleHash: "a".repeat(63) }, { packageName: "Not A Name" }, { packageName: "../x" }, { args: ["a b"] }, { args: ["; rm -rf /"] }, { args: ["../x"] },
+    for (const bad of [{ token: "short" }, { token: "t".repeat(42) }, { bundleHash: "A".repeat(64) }, { bundleHash: "a".repeat(63) }, { packageName: "Not A Name" }, { packageName: "../x" }, { args: ["a b"] }, { args: ["; rm -rf /"] }, { args: ["../x"] },
       { secretEnv: ["PATH"] }, { secretEnv: ["NODE_OPTIONS"] }, { secretEnv: ["lower"] }, { secretEnv: ["AWS_ACCESS_KEY_ID"] }, { secretEnv: ["A_B", "A_B"] }, { memoryMiB: 100 }, { memoryMiB: 4096 }, { memoryMiB: 512.5 }]) {
       expect(() => createBridge({ ...base(), ...bad }), JSON.stringify(bad)).toThrow();
     }

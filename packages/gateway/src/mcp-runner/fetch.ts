@@ -11,6 +11,7 @@ import { request as httpsRequest } from "node:https";
 import { createWriteStream } from "node:fs";
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { runnerTokenWellFormed } from "./token-scope.js";
 import { BUNDLE_LIMITS, BundleError, assertBundleHash, extractBundle, readBundleIndex, type BundleLimits } from "./bundle.js";
 
 export type FetchFailure = "root" | "bad_request" | "unavailable" | "refused" | "too_large" | "hash_mismatch" | "bad_archive" | "destination";
@@ -75,7 +76,7 @@ async function download(url: URL, token: string, destination: string, maxBytes: 
 /** Fetches, verifies and unpacks the approved bundle into `destination/tree`, and writes `destination/verified.json` last. */
 export async function fetchBundle(options: FetchOptions): Promise<void> {
   if ((options.getuid ?? (() => process.getuid?.()))() === 0) throw new FetchError("root");
-  if (!/^[0-9a-f]{64}$/u.test(options.bundleHash) || options.token.length < 24) throw new FetchError("bad_request");
+  if (!/^[0-9a-f]{64}$/u.test(options.bundleHash) || !runnerTokenWellFormed(options.token)) throw new FetchError("bad_request");
   const base = secureUrl(options.controllerUrl);
   const limits: BundleLimits = { maxEntries: options.limits?.maxEntries ?? BUNDLE_LIMITS.maxEntries, maxUnpackedBytes: options.limits?.maxUnpackedBytes ?? BUNDLE_LIMITS.maxUnpackedBytes };
   // The tar is the content plus one header block and padding per entry, and the end blocks.
