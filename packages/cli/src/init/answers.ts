@@ -2,8 +2,9 @@ import { DEFAULT_BEDROCK_MODELS, DEFAULT_DIRECT_MODELS, PROVIDER_KEY_MIN_LENGTH,
 // FR-016's questions, each with a flag (FR-020). Only flags the engineer typed arrive here, so a
 // commander default never silently skips a question. An alert webhook carries its integration
 // key, so it is a secret: it is never a flag value and never stored in the answers.
-import { agentXError, ImageDigest, KEYED_MODEL_PROVIDERS, MODEL_PROVIDERS, keyedProviderSecretName, type KeyedModelProvider, type ModelProvider } from "@agentx/contracts";
+import { EditionSchema, agentXError, editionAtSynth, ImageDigest, KEYED_MODEL_PROVIDERS, MODEL_PROVIDERS, keyedProviderSecretName, type KeyedModelProvider, type ModelProvider } from "@agentx/contracts";
 import { CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, defaultAuditLockProfile, DIRECT_PROVIDERS, bootStage2ImagesProblem, GITHUB_LOGIN_PATTERN, ModelsAnswersSchema, providerSecretArn, type DirectProvider } from "../deploy/answer-schemas.js";
+import { EDITION_NEEDS_CDK_MESSAGE } from "../deploy/edition.js";
 import type { BundleAnswers } from "../deploy/export-bundle.js";
 import { SecretAlreadyExistsError } from "../deploy/signing-key.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
@@ -78,6 +79,8 @@ export interface InitFlags {
   bootStage2Sha256?: string;
   /** --rovara-cloud: install the hosted Rovara cloud (R45); it needs the cdk engine. The next three are its sign-in settings (R46). */
   rovaraCloud?: boolean;
+  /** --edition: the edition of a new install ("enterprise", or "public" with --rovara-cloud). Enterprise foundations E2. */
+  edition?: string;
   googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
   /** Sign up and sign in with GitHub on the cloud install: the GitHub OAuth app's client id and its client secret's secret ARN (Task 22). */
   githubSignInClientId?: string; githubSignInClientSecretArn?: string;
@@ -200,6 +203,7 @@ export async function collectInitAnswers(input: {
     };
   }
   const cloudSignIn = collectCloudSignIn(flags);
+  const edition = collectEdition(flags, platform.engine);
   if (platform.models.orchestrator === GLM) notes.push(GLM_NOTE);
   if (platform.models.classifier === HAIKU) notes.push(HAIKU_NOTE);
 
@@ -281,6 +285,7 @@ export async function collectInitAnswers(input: {
     auditLock,
     ...(flags.rovaraCloud === true ? { cloud: true as const } : {}),
     ...(cloudSignIn === undefined ? {} : { cloudSignIn }),
+    ...(edition === undefined ? {} : { edition }),
     github: { account: githubAccount, accountType, appName },
     slack: { appName: slackAppName, appPostedMessages },
     ...(email === undefined ? {} : { adminEmail: email }),
@@ -293,6 +298,21 @@ export async function collectInitAnswers(input: {
     ...(openRouterKey === undefined ? {} : { openRouterKey, ...(openRouterProviders === undefined ? {} : { openRouterProviders }) }),
     ...(directKeys === undefined ? {} : { directKeys }),
   };
+}
+
+/**
+ * Enterprise foundations E2: the edition of a new install. A new install must choose: `--edition enterprise`, or the hosted cloud (`--rovara-cloud`, which is
+ * Public). The prebuilt templates carry no edition, so an edition needs the cdk engine; the templates engine installs the way it always has.
+ */
+export function collectEdition(flags: InitFlags, engine: "templates" | "cdk"): InitAnswers["edition"] {
+  const given = flags.edition === undefined ? undefined : EditionSchema.safeParse(flags.edition);
+  if (given !== undefined && !given.success) throw agentXError("CONFIG_INVALID", '--edition must be "enterprise" or "public"');
+  const explicit = given?.data;
+  if (explicit !== undefined && engine === "templates") throw agentXError("CONFIG_INVALID", `--edition ${explicit}: ${EDITION_NEEDS_CDK_MESSAGE}`);
+  // The synth's own rules (Enterprise inside the hosted cloud, Public outside it, a new install with no edition), applied here so a wrong flag stops before any AWS call.
+  if (engine === "templates") return undefined;
+  editionAtSynth({ explicit, cloud: flags.rovaraCloud === true, newInstall: true });
+  return explicit;
 }
 
 /** The cloud sign-in flags as answers: Google is optional, but its id and secret go together; none without --rovara-cloud. */
@@ -474,6 +494,7 @@ type ResumeCheckKind = "url" | "login" | "email";
 
 const RESUME_CHECKS: Array<{ flag: string; key: keyof InitFlags; kind?: ResumeCheckKind; stored: (answers: InitAnswers) => string | undefined }> = [
   { flag: "--engine", key: "engine", stored: (a) => a.engine },
+  { flag: "--edition", key: "edition", stored: (a) => a.edition },
   { flag: "--identity", key: "identity", stored: (a) => a.identity.mode },
   { flag: "--oidc-issuer", key: "oidcIssuer", kind: "url", stored: (a) => (a.identity.mode === "oidc" ? a.identity.issuer : undefined) },
   { flag: "--oidc-audience", key: "oidcAudience", stored: (a) => (a.identity.mode === "oidc" ? a.identity.audience : undefined) },

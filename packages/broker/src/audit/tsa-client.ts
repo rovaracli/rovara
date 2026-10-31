@@ -261,6 +261,12 @@ export interface TsaEnvironmentDeps {
 export async function loadTsaDeps(environment: Record<string, string | undefined>, deps: TsaEnvironmentDeps): Promise<TsaDeps> {
   const kind = variable(environment, "AUDIT_TSA_KIND");
   if (kind !== "public" && kind !== "custom" && kind !== "off") throw new Error("audit anchor: AUDIT_TSA_KIND must be public, custom or off");
+  // Enterprise foundations E2: an Enterprise install sends nothing to Rovara or to public services by default, and the public authorities are two outside hosts
+  // (the synth refuses this too; this is the same check at start, for a function deployed from another source). Any stamp that is not exactly "enterprise" or
+  // "public" is refused as well, so a misspelt edition cannot slip past this check.
+  const edition = environment.ROVARA_EDITION;
+  if (edition !== undefined && edition !== "enterprise" && edition !== "public") throw new Error("audit anchor: ROVARA_EDITION must be enterprise or public");
+  if (edition === "enterprise" && kind === "public") throw new Error("audit anchor: an Enterprise install must not use the public timestamp authorities (set AUDIT_TSA_KIND to custom or off)");
   const timeoutMs = wholeNumber(environment, "AUDIT_TSA_TIMEOUT_MS");
   const spacingMs = wholeNumber(environment, "AUDIT_TSA_SPACING_MS");
   if (kind === "off") return { settings: { kind: "off" }, fetch: deps.fetch };

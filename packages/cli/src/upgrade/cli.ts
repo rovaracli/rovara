@@ -4,6 +4,7 @@ import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { STSClient } from "@aws-sdk/client-sts";
 import type { Command } from "commander";
 import { cdkDiff } from "../deploy/cdk-engine.js";
+import { resolveDeployEdition } from "../deploy/edition.js";
 import { prepareDeployment, readlineAsk, realCommandRunner, type DeployCliDependencies } from "../deploy/commands.js";
 import { loadRelease } from "../deploy/release.js";
 import { realDoctorServices } from "../doctor/aws.js";
@@ -66,7 +67,11 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
           identityMode: input.settings.identity.mode, ...(input.settings.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), release: input.release, ...(input.source === undefined ? {} : { source: input.source }),
           deps: context.deploy ?? {}, stderr: context.stderr,
         })),
-        cdkDiff: overrides.cdkDiff ?? ((request, settings, source, reservedConcurrency) => cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), request })),
+        // Enterprise foundations E2: the diff is synthesized with the install's recorded edition, as the deploy is, so it does not show the edition stamp as removed.
+        cdkDiff: overrides.cdkDiff ?? (async (request, settings, source, reservedConcurrency) => {
+          const edition = await resolveDeployEdition({ store, env: settings.env, engine: settings.engine, cloud: settings.cloud === true });
+          return cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), ...(edition === undefined ? {} : { edition }), request });
+        }),
         ask: overrides.ask ?? readlineAsk(),
         isInteractive: overrides.isInteractive ?? (() => process.stdin.isTTY === true),
         githubWebhook: overrides.githubWebhook ?? ((settings) => ({ secrets: secretsManagerInitSecrets(new SecretsManagerClient({ region: settings.region })), github: githubRestApi(context.fetch) })),

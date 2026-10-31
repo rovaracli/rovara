@@ -1,6 +1,7 @@
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
 // The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
 import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./developer-routes/spec-routes.js";
+import { getInstallInfo } from "./developer-routes/install.js";
 import { specOwnerChoice } from "./developer-tasks/spec-wiring.js";
 import "../org/service-status.js";
 import "../model-selection/company-prepare.js";
@@ -360,6 +361,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     const log = sessionDependenciesOf(deps)?.log;
     return routeDeviceRequest({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(log === undefined ? {} : { log }), ...(deps.audit === undefined ? {} : { audit: deps.audit }) }, caller, request, url);
   }
+  if (request.method === "GET" && url.pathname === "/v1/app/install") return getInstallInfo(deps);
   if (request.method === "GET" && url.pathname === "/v1/app/me") {
     const me = await getAppMe(deps, caller);
     return authenticated === undefined ? me : { ...me, csrf: authenticated.csrf };

@@ -1,4 +1,4 @@
-import type { CreateProjectFromMetaBody } from "@agentx/contracts";
+import type { CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
 import type { MetaProjectCreated } from "../../org/create-from-meta.js";
 import type { MetaConfigDependencies } from "../../meta-repo/config-import.js";
 import type { ServiceStatusDependencies } from "../../org/service-status.js";
@@ -155,6 +155,8 @@ export interface DeveloperRouteDependencies {
   modelAccess?: ModelAccess;
   /** A cloud install (ruling R42): trial lock and machine-time allowance apply to its orgs. */
   cloud?: boolean;
+  /** Enterprise foundations E2: the edition's feature table. Absent on an install deployed before editions (no gates, today's behaviour). */
+  editionPolicy?: EditionPolicy;
   /**
    * Plan 2, Task 16: creates a project in the caller's org from a repository the org's GitHub connection reaches, through the broker's
    * registration, and grants the caller access; a replay of the same request answers the same project with `duplicate: true`. The route

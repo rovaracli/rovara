@@ -1017,7 +1017,8 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
     deployment: () => {
       if (deployment === undefined) {
         const preparing = (deps.prepareDeployment ?? prepareDeployment)({
-          engine: finalAnswers.engine, env, region, account: finalAnswers.account, identityMode: finalAnswers.identity.mode, ...(finalAnswers.cloud === true ? { cloud: true } : {}), release,
+          engine: finalAnswers.engine, env, region, account: finalAnswers.account, identityMode: finalAnswers.identity.mode, ...(finalAnswers.cloud === true ? { cloud: true } : {}),
+          ...(finalAnswers.edition === undefined ? {} : { edition: finalAnswers.edition }), ...(finalAnswers.engine === "cdk" ? { newInstall: true } : {}), release,
           ...(options.source === undefined ? {} : { source: options.source }),
           deps: { ...deployDeps, store, secrets, identity: { get: async () => caller } },
           stderr: session.output,

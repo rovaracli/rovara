@@ -303,13 +303,15 @@ function recordingSecrets(prompter: ReturnType<typeof scriptedPrompter>) {
 
 describe("the hosted Rovara cloud (R45, R46)", () => {
   const cdkFlags: InitFlags = { ...everyFlag, engine: "cdk" };
+  // A new cdk install must choose its edition (Enterprise foundations E2): Enterprise here, and the hosted cloud (Public) with --rovara-cloud.
+  const enterpriseFlags: InitFlags = { ...cdkFlags, edition: "enterprise" };
   const SECRET = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/google-AbCdEf";
 
   it("--rovara-cloud stores cloud: true with the cdk engine, and the sign-in flags beside it", async () => {
     const { answers } = await collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true, googleClientId: "gid", googleClientSecretArn: SECRET, cloudDomainPrefix: "rovara-acme" } });
     expect(answers).toMatchObject({ engine: "cdk", cloud: true, cloudSignIn: { googleClientId: "gid", googleClientSecretArn: SECRET, domainPrefix: "rovara-acme" } });
     expect((await collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true } })).answers).not.toHaveProperty("cloudSignIn");
-    expect((await collectWithFlags({ ...base, flags: cdkFlags })).answers).not.toHaveProperty("cloud");
+    expect((await collectWithFlags({ ...base, flags: enterpriseFlags })).answers).not.toHaveProperty("cloud");
   });
 
   it("the GitHub sign-in flags are stored beside the Google ones, go together, and need --rovara-cloud", async () => {
@@ -327,7 +329,7 @@ describe("the hosted Rovara cloud (R45, R46)", () => {
   });
 
   it("refuses a resume that adds --rovara-cloud to an install that started without it", async () => {
-    const { answers } = await collectWithFlags({ ...base, flags: cdkFlags });
+    const { answers } = await collectWithFlags({ ...base, flags: enterpriseFlags });
     expect(() => assertResumeFlagsMatch(answers, { rovaraCloud: true })).toThrow(/--rovara-cloud differs/);
   });
 });

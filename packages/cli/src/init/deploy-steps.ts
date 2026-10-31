@@ -55,6 +55,7 @@ export function initDeployAnswers(answers: InitAnswers, progress: InstallProgres
     ...(answers.auditLock === undefined ? {} : { auditLock: answers.auditLock }),
     ...(answers.cloud === true ? { cloud: true as const } : {}),
     ...(answers.cloudSignIn === undefined ? {} : { cloudSignIn: answers.cloudSignIn }),
+    ...(answers.edition === undefined ? {} : { edition: answers.edition }),
   };
 }
 

@@ -15,7 +15,7 @@ import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SSMClient } from "@aws-sdk/client-ssm";
 import { STSClient } from "@aws-sdk/client-sts";
 import { z } from "zod";
-import { AgentXError, agentXError, environmentStackName, EnvironmentNameSchema, STACK_PARTS, type StackPart } from "@agentx/contracts";
+import { AgentXError, agentXError, environmentStackName, EnvironmentNameSchema, EditionSchema, STACK_PARTS, type Edition, type StackPart } from "@agentx/contracts";
 import type { CallerIdentity } from "../environments/adopt.js";
 import { cloudFormationStackReader, stsCallerIdentity } from "../environments/adopt.js";
 import { ssmParameterStore, type ParameterStore } from "../environments/parameter-store.js";
@@ -23,6 +23,7 @@ import { settingsParameterName } from "../environments/settings.js";
 import { ACCOUNT_PATTERN, AuditLockProfileSchema, BudgetAnswersSchema, CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, IdentityAnswersSchema, ImagesAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
 import { assertCdkBootstrapped, assertSourceAtRelease, buildSource, cdkDeployer, type CommandRunner } from "./cdk-engine.js";
 import { synthDeclaredParameters } from "./cdk-source.js";
+import { resolveDeployEdition } from "./edition.js";
 import type { ChangeSetChange, DeployEvent, StackDeployer, StackOutputs } from "./deployer.js";
 import { deployEnvironment, type DeployAnswers, type DeployEnvironmentResult } from "./deploy-environment.js";
 import { ensureCdkPassRole } from "../init/pass-role.js";
@@ -117,6 +118,8 @@ export const DeployAnswersSchema = z
     auditLock: AuditLockProfileSchema.optional(),
     cloud: z.literal(true).optional(),
     cloudSignIn: CloudSignInAnswersSchema.optional(),
+    /** Enterprise foundations E2: "enterprise" (or "public" with cloud: true). Absent keeps the edition the environment recorded, if any. */
+    edition: EditionSchema.optional(),
   })
   .strict()
   .superRefine(requireOidcAdminAndClient)
@@ -190,6 +193,7 @@ function toDeployAnswers(parsed: z.infer<typeof DeployAnswersSchema>): DeployAns
     ...(parsed.auditLock === undefined ? {} : { auditLock: parsed.auditLock }),
     ...(parsed.cloud === true ? { cloud: true as const } : {}),
     ...(parsed.cloudSignIn === undefined ? {} : { cloudSignIn: parsed.cloudSignIn }),
+    ...(parsed.edition === undefined ? {} : { edition: parsed.edition }),
   };
 }
 
@@ -603,6 +607,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
     ...(answers.partition === undefined ? {} : { partition: answers.partition }),
     identityMode: answers.identity.mode,
     ...(answers.cloud === true ? { cloud: true } : {}),
+    ...(answers.edition === undefined ? {} : { edition: answers.edition }),
     release,
     ...(options.source === undefined ? {} : { source: options.source }),
     deps,
@@ -681,6 +686,10 @@ export async function prepareDeployment(input: {
   cloud?: boolean;
   /** `agentx upgrade --no-reserved-concurrency`: the cdk app is synthesized with agentxReservedConcurrency=false. */
   reservedConcurrency?: false;
+  /** Enterprise foundations E2: the edition this run asks for (`rovara init --edition`); absent, the recorded edition is kept. Refused when it differs from the recorded one. */
+  edition?: Edition;
+  /** `rovara init` on a first install: the cdk app is synthesized with rovaraNewInstall=true, so a new install with no edition is refused. */
+  newInstall?: boolean;
   release: LoadedRelease;
   source?: string;
   deps: DeployCliDependencies;
@@ -709,11 +718,17 @@ export async function prepareDeployment(input: {
 
   const store = deps.store ?? ssmParameterStore(new SSMClient({ region }));
   const secrets = deps.secrets ?? secretsManagerValueStore(new SecretsManagerClient({ region }));
+  // Enterprise foundations E2: the edition is set once. Read the recorded one before anything is built or deployed; a changed edition is refused here, and a redeploy
+  // that names none keeps the recorded one (a synth without it would drop the edition stamp from every function).
+  const resolveEdition = () => resolveDeployEdition({ store, env: input.env, engine: input.engine, cloud: input.cloud === true, requested: input.edition });
+  let edition: Edition | undefined;
 
   let deployer: StackDeployer;
   let cdkOutputsDir: string | undefined;
   let declaredParameters: PreparedDeployment["declaredParameters"];
   if (deps.deployer !== undefined) {
+    // A test seam with no synth: the edition is only checked (a changed one is refused).
+    await resolveEdition();
     deployer = deps.deployer;
   } else if (input.engine === "cdk") {
     const source = input.source;
@@ -721,12 +736,16 @@ export async function prepareDeployment(input: {
     const runner = deps.commandRunner ?? realCommandRunner(input.stderr);
     await assertSourceAtRelease({ runner, source, version: release.manifest.version });
     await assertCdkBootstrapped({ store, region });
+    edition = await resolveEdition();
     // After the cheap checks, before any cdk deploy: infra/dist is gitignored, so only a fresh
     // install and build guarantees `cdk deploy` synthesizes the tagged source.
     await buildSource({ runner, source });
     // Issue 152: one synth of the built source, with the deploy's own app and context, says which
     // parameters each stack declares; the release's templates may not exist (a source-built agentx).
-    const cloud = { ...(input.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}) };
+    const cloud = {
+      ...(input.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
+      ...(edition === undefined ? {} : { edition }), ...(input.newInstall === true ? { newInstall: true } : {}),
+    };
     declaredParameters = await synthDeclaredParameters({ runner, source, env: input.env, region, identityMode: input.identityMode, ...cloud });
     cdkOutputsDir = await mkdtemp(join(tmpdir(), "agentx-cdk-outputs-"));
     deployer = cdkDeployer({
@@ -740,6 +759,8 @@ export async function prepareDeployment(input: {
       outputs: deps.stackOutputs ?? cloudFormationOutputsReader(new CloudFormationClient({ region })),
     });
   } else {
+    // The prebuilt templates carry no edition: this refuses an Enterprise install, or an edition request, on this engine.
+    await resolveEdition();
     const clients: TemplatesEngineClients = deps.templatesClients ?? { cloudFormation: new CloudFormationClient({ region }), s3: new S3Client({ region }) };
     deployer = buildTemplatesDeployer({ clients, release, env: input.env, region, partition });
   }

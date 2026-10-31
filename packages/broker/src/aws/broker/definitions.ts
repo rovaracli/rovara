@@ -3,7 +3,7 @@
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { S3Client } from "@aws-sdk/client-s3";
-import { E2EPolicySchema, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource } from "@agentx/contracts";
+import { E2EPolicySchema, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource, type EditionPolicy } from "@agentx/contracts";
 import { e2ePrivateTransferMaxBytes } from "@agentx/verifier";
 import type { AdminReadDependencies } from "../admin-reads.js";
 import type { AuditExportClientDeps } from "../../audit/export.js";
@@ -243,6 +243,8 @@ export interface AwsBrokerDependencies {
    * install's orgs have a trial lock and a machine-time allowance; a private install's single org is never limited.
    */
   cloud?: boolean;
+  /** Enterprise foundations E2: the edition's feature table, from the deploy stamp. Absent on an install deployed before editions, which keeps today's behaviour and is never Enterprise. */
+  editionPolicy?: EditionPolicy;
   /**
    * Ruling R55: where, and with which credential, a cloud org's owner or admin creates a project (the foundation's launch template and
    * subnets, and the built-in GitHub App). Absent, POST /v1/dev/projects answers RUNTIME_UNAVAILABLE.

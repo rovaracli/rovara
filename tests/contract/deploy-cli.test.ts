@@ -370,7 +370,7 @@ describe("agentx init --export", () => {
   // Issue 152 replaces live check L7: --engine cdk --source needs no release (init-cli.test.ts).
   it("init --engine cdk from a source build without --release or --source says --source is needed, before touching AWS", async () => {
     const io = capture();
-    const code = await executeCli(["--env", ENV, "init", "--region", REGION, "--engine", "cdk"], { ...io, init: { deploy: safeDeployDeps(), releaseVersion: null } });
+    const code = await executeCli(["--env", ENV, "init", "--region", REGION, "--engine", "cdk", "--edition", "enterprise"], { ...io, init: { deploy: safeDeployDeps(), releaseVersion: null } });
     expect(code).toBe(2);
     expect(io.err.join("")).toContain("the cdk engine needs --source <a checkout of a release tag>");
   });

@@ -317,6 +317,7 @@ import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { positiveInteger } from "./broker/admin-and-helpers.js";
 import { orgStoreOf } from "./broker/dependency-wiring.js";
 import { createAwsBrokerHandler } from "./broker/handler.js";
+import { installEditionPolicy } from "./broker/edition-wiring.js";
 import { awsClientConfiguration, documentClient, ec2Sessions, stepFunctions } from "./broker/runtime-clients.js";
 export { PROJECT_SETUP_CAPTURE_POLICY, WEB_ROUTE_KEY } from "./broker/definitions.js";
 export type { RegisteredProjectRecord, AwsBrokerInput } from "./broker/definitions.js";
@@ -498,6 +499,8 @@ const egressDomainsSync = projectAllowListId === undefined || projectAllowListId
   ? undefined
   : () => syncCellAllowList({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), resolver: new Route53ResolverClient(awsClientConfiguration), listId: projectAllowListId, now: () => new Date() });
 
+const editionPolicy = installEditionPolicy(process.env, cloudOrgResolver !== undefined);
+
 export const handler = createAwsBrokerHandler({
   documentClient,
   ...(audit === undefined ? {} : { audit }),
@@ -568,6 +571,8 @@ export const handler = createAwsBrokerHandler({
   ...(modelAccess ? { modelAccess } : {}),
   ...(egressDomainsSync === undefined ? {} : { egressDomainsSync }),
   cloud: cloudOrgResolver !== undefined,
+  // Enterprise foundations E2: the edition is the deploy stamp, read once; no stamp (an install deployed before editions) is no policy, never Enterprise.
+  ...(editionPolicy === undefined ? {} : { editionPolicy }),
   // Task 12b's acceptance item: on Rovara Cloud every request to a company's MCP endpoint is checked again and connects only to what was checked.
   ...(cloudOrgResolver === undefined ? {} : { mcpEndpointGuard: mcpEndpointGuard() }),
   ...(orgConnections === undefined ? {} : { orgConnections }),
