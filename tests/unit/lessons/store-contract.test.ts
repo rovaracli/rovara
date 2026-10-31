@@ -390,6 +390,53 @@ describe("the DynamoDB lesson store only", () => {
       }
     });
 
+    it("an early head group cannot land once the intent is no longer open (a heal got in first): nothing stays half rolled back", async () => {
+      const db = new FakeDynamoDb();
+      const store = await seeded(db);
+      let healed = false;
+      const racing = new DynamoLessonStore({
+        documentClient: { send: async (command: unknown) => {
+          const input = (command as { input?: unknown }).input;
+          const early = (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand" && JSON.stringify(input).includes("LESSONSET#RBINTENT") && !JSON.stringify(input).includes("LESSONSET#SNAP#");
+          if (!healed && early) { healed = true; await store.heal(KEY); }
+          return db.send(command as never);
+        } },
+        tableName: "TeamRecord",
+      });
+      const result = await racing.rollback(KEY, 5, 10, 30);
+      expect(healed).toBe(true);
+      const big = (await store.list(KEY)).filter((l) => l.id.startsWith("les_big"));
+      expect(big).toHaveLength(130);
+      // Either the retry landed the whole rollback (all pending, set flipped) or it lost and everything is as it was (all active): never a mix.
+      const statuses = new Set(big.map((l) => l.status));
+      expect(statuses.size).toBe(1);
+      expect(result.ok ? [...statuses][0] === "pending" : [...statuses][0] === "active").toBe(true);
+      expect(db.find((item) => item.sk === "LESSONSET#RBINTENT")).toEqual([]);
+    });
+
+    it("a heal that cannot finish throws and KEEPS the intent: a missing version item, or a lesson that keeps changing under it", async () => {
+      const dieAndLeaveIntent = async () => {
+        const db = new FakeDynamoDb();
+        const store = await seeded(db);
+        const dying = new DynamoLessonStore({ documentClient: { send: async (command: unknown) => { if (isFinal(command)) throw new Error("process died"); return db.send(command as never); } }, tableName: "TeamRecord" });
+        await expect(dying.rollback(KEY, 5, 10, 30)).rejects.toThrow("process died");
+        return { db, store };
+      };
+      const missing = await dieAndLeaveIntent();
+      // The version the set holds for one rewritten lesson is gone.
+      const early = (missing.db.find((item) => item.sk === "LESSONSET#RBINTENT")[0]?.ids as string[])[0]!;
+      missing.db.delete({ pk: missing.db.find((item) => item.sk === "LESSONSET#RBINTENT")[0]!.pk as string, sk: `LESSON#${early}#V#000000000002` });
+      await expect(missing.store.heal(KEY)).rejects.toThrow();
+      expect(missing.db.find((item) => item.sk === "LESSONSET#RBINTENT")).toHaveLength(1);
+      await expect(missing.store.heal(KEY)).rejects.toThrow();
+      expect(missing.db.find((item) => item.sk === "LESSONSET#RBINTENT")).toHaveLength(1);
+
+      const busy = await dieAndLeaveIntent();
+      busy.db.injectFault({ command: "PutCommand", match: (input) => String((input.Item as { sk?: string } | undefined)?.sk ?? "").startsWith("LESSON#les_big"), error: { name: "ConditionalCheckFailedException" }, times: 1000 });
+      await expect(busy.store.heal(KEY)).rejects.toThrow();
+      expect(busy.db.find((item) => item.sk === "LESSONSET#RBINTENT")).toHaveLength(1);
+    });
+
     it("a rollback still lands when nothing goes wrong, and leaves no intent behind", async () => {
       const db = new FakeDynamoDb();
       const store = await seeded(db);

@@ -402,18 +402,21 @@ export class DynamoLessonStore implements LessonStore {
       }
     }
     for (const id of (intent.ids ?? []) as string[]) {
-      for (let attempt = 0; attempt < RETRIES; attempt += 1) {
+      let done = false;
+      for (let attempt = 0; attempt < RETRIES && !done; attempt += 1) {
         const set = await this.readSet(key);
         const wanted = set.members[id];
         const head = this.headOf(await this.getItem(this.headKey(key, id)));
-        // Out of the set, or already as the set has it: nothing to put back.
-        if (wanted === undefined || head === undefined || head.lesson.version === wanted) break;
+        // Out of the set, gone, or already as the set has it: nothing to put back.
+        if (wanted === undefined || head === undefined || head.lesson.version === wanted) { done = true; break; }
         const content = this.versionOf(await this.getItem(this.versionKey(key, id, wanted)));
-        if (content === undefined) break;
+        // The version the set holds for it must be there: without it the lesson cannot be put back, and the intent stays so the next call tries again (and an operator sees it).
+        if (content === undefined) throw unavailable("a lesson of an unfinished rollback cannot be put back: its version is missing");
         const restored: Lesson = { ...withUsageOf(content, head.lesson), expiresAt: head.lesson.expiresAt };
         if (head.lesson.retireProposedAt === undefined) delete restored.retireProposedAt; else restored.retireProposedAt = head.lesson.retireProposedAt;
-        if (await this.putHeadIf(key, LessonSchema.parse(restored), head)) break;
+        done = await this.putHeadIf(key, LessonSchema.parse(restored), head);
       }
+      if (!done) throw unavailable("a lesson of an unfinished rollback kept changing; the intent stays");
     }
     await this.del(this.intentRbKey(key));
   }
