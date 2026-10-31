@@ -14,7 +14,6 @@ const T3 = "2026-10-30T13:00:00.000Z"; // after the world clock (12:00): an eras
 const SC = "slack:T1/C30";
 const acl = (principals: string[], capturedAt: string) => ({ kind: "restricted" as const, acl: { source: "slack" as const, scope: SC, principals, capturedAt, liveCheck: "none" as const } });
 const slackRow = (id: string, principals: string[], at: string) => githubDraft({ source: "slack", kind: "slack.message", repo: undefined, occurredAt: at, sourceRef: { system: "T1", id, version: "1" }, audience: acl(principals, at), actor: { sourceId: "U1", trust: "member" }, text: "launch plan", links: [] });
-const everything = (w: World): string => JSON.stringify(w.db.find(() => true));
 
 async function seeded(): Promise<World> {
   const w = world();
