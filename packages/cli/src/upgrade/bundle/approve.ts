@@ -7,13 +7,17 @@ import { join } from "node:path";
 import {
   ApprovalRecordSchema,
   BUNDLE_MANIFEST_FILE,
+  BUNDLE_PUBLIC_DEPLOYED_KINDS,
   BUNDLE_SIGNATURE_FILE,
   agentXError,
   approvedFileKey,
   bundleApprovalKey,
+  redactedSynthSettings,
   sha256OfBytes,
   type ApprovalRecord,
+  type SynthSettings,
 } from "@agentx/contracts";
+import type { BuiltBundle } from "./build-at-approval.js";
 import type { VerifiedBundle } from "./verify.js";
 
 export interface ApprovalStore {
@@ -23,11 +27,14 @@ export interface ApprovalStore {
   remove(key: string): Promise<void>;
 }
 
-export async function approveBundle(input: { bundle: VerifiedBundle; approvedBy: string; parameters: unknown; rollback: boolean; store: ApprovalStore; now: () => number }): Promise<ApprovalRecord> {
+export async function approveBundle(input: { bundle: VerifiedBundle; approvedBy: string; parameters: unknown; rollback: boolean; store: ApprovalStore; now: () => number; /** An Enterprise install: the build made at this approval and the recorded settings it used. The bundle's own templates are then not placed at all. */ built?: { build: BuiltBundle; settings: SynthSettings } }): Promise<ApprovalRecord> {
   const { bundle } = input;
   const parameters = ApprovalRecordSchema.shape.parameters.safeParse(input.parameters ?? {});
   if (!parameters.success) throw agentXError("CONFIG_INVALID", "the parameters file must be {\"<stack part>\": {\"<ParameterName>\": \"<value>\"}} for foundation, identity, runtime, control-plane or slack");
-  const names = [BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, ...bundle.manifest.files.filter((entry) => entry.kind !== "image" && entry.kind !== "notes").map((entry) => entry.file)];
+  // The files placed: the signed lineage always; then either the bundle's own deployable files (Public), or only release.json and the build made for this install (Enterprise).
+  const names = input.built === undefined
+    ? [BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, ...bundle.manifest.files.filter((entry) => BUNDLE_PUBLIC_DEPLOYED_KINDS.includes(entry.kind)).map((entry) => entry.file)]
+    : [BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, "release.json"];
   const files: ApprovalRecord["files"] = [];
   for (const file of names) {
     // From the verified private copy: the bytes that were hashed are the bytes placed.
@@ -35,9 +42,17 @@ export async function approveBundle(input: { bundle: VerifiedBundle; approvedBy:
     const { versionId } = await input.store.put(approvedFileKey(bundle.bundleId, file), body);
     files.push({ file, versionId, sha256: sha256OfBytes(body), bytes: body.length });
   }
+  if (input.built !== undefined) {
+    // The build's bytes, as built (held in memory since they were checked), pinned like every other file.
+    for (const { file, body } of input.built.build.files) {
+      const { versionId } = await input.store.put(approvedFileKey(bundle.bundleId, file), body);
+      files.push({ file, versionId, sha256: sha256OfBytes(body), bytes: body.length });
+    }
+  }
   const record = ApprovalRecordSchema.parse({
     schemaVersion: 1, bundleId: bundle.bundleId, version: bundle.manifest.version, approvedAt: new Date(input.now()).toISOString(), approvedBy: input.approvedBy,
     files, parameters: parameters.data, rollback: input.rollback,
+    ...(input.built === undefined ? {} : { build: { resultSha256: input.built.build.resultSha256, kitSha256: input.built.build.kitSha256, settingsSha256: input.built.build.settingsSha256, settings: redactedSynthSettings(input.built.settings) } }),
   });
   await input.store.put(bundleApprovalKey(bundle.bundleId), Buffer.from(JSON.stringify(record)));
   return record;

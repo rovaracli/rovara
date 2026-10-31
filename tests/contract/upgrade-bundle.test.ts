@@ -1,6 +1,6 @@
 // Enterprise foundations, N3: `rovara upgrade --bundle` verifies the signature and every hash before it changes anything, and records a restore point.
 // Every verification step has a test that goes red when the step is removed (see the lane report's mutation table).
-import { link, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
@@ -322,7 +322,7 @@ describe("rovara upgrade --bundle", () => {
     nothingTouched(h);
   });
 
-  it("refuses to combine --bundle with another release source, and refuses a cdk environment", async () => {
+  it("refuses to combine --bundle with another release source", async () => {
     const bundle = await build();
     for (const extra of [{ releaseDir: "/x" }, { to: "1.4.0" }, { source: "/x" }, { exportDir: "/x" }]) {
       const h = await harness(bundle);
@@ -331,11 +331,85 @@ describe("rovara upgrade --bundle", () => {
     }
     const h = await harness(bundle);
     await expect(runUpgrade({ env: "staging", yes: true, allowReplace: [], approvedBundleSha256: "a".repeat(64) }, h.deps)).rejects.toThrow(/applies to --bundle only/);
-    const cdk = await harness(bundle);
-    await writeEnvironmentSettings(cdk.store, { ...INSTALLED, engine: "cdk" });
-    await expect(runUpgrade(options(bundle), cdk.deps)).rejects.toThrow(/prebuilt templates, which the templates engine deploys/);
-    expect(cdk.events).toEqual([]);
-    expect(cdk.store.values.has(installedBundleParameter("staging"))).toBe(false);
+  });
+
+  // N3b: a cdk-engine (Enterprise) install takes a bundle through the same approve-then-deploy path as everything else; nothing of the bundle's prebuilt templates is deployed.
+  describe("on a cdk-engine install (built at approval)", () => {
+    const cdkHarness = async (bundle: BuiltBundle, outcome: { status: string; done: string[] } | Error = { status: "done", done: ["foundation", "runtime"] }) => {
+      const h = await harness(bundle);
+      await writeEnvironmentSettings(h.store, { ...INSTALLED, engine: "cdk" });
+      h.store.calls.length = 0;
+      const calls: Array<{ bundleId: string; yes: boolean; engine: string }> = [];
+      h.deps.approveAndDeploy = async ({ bundle: verified, settings, yes }) => {
+        calls.push({ bundleId: verified.bundleId, yes, engine: settings.engine });
+        if (outcome instanceof Error) throw outcome;
+        return outcome;
+      };
+      return { ...h, calls };
+    };
+
+    it("builds, approves and starts the customer's deployer for exactly this bundle, deploys nothing itself, then runs doctor", async () => {
+      const bundle = await build();
+      const h = await cdkHarness(bundle);
+      const result = await runUpgrade(options(bundle, { approveBuild: true }), h.deps);
+      expect(h.calls).toEqual([{ bundleId: bundle.bundleSha256, yes: true, engine: "cdk" }]);
+      // --yes answers the upgrade's own questions and NEVER approves a build (review M2): the build still asks the approver, and with --yes alone it is told to use --approve-build.
+      const asking = await cdkHarness(bundle);
+      await runUpgrade(options(bundle), asking.deps);
+      expect(asking.calls).toEqual([{ bundleId: bundle.bundleSha256, yes: false, engine: "cdk" }]);
+      expect(result).toMatchObject({ env: "staging", from: "1.2.3", to: "1.4.0", parts: ["foundation", "runtime"], doctor: { failed: 0 } });
+      // The engine, the prebuilt templates and the restore point of the local path are untouched: the deployer owns them.
+      expect(h.events).toEqual([]);
+      expect(h.deployer.requests).toEqual([]);
+      expect(h.touched).not.toContain("prepare");
+      expect(h.store.values.has(installedBundleParameter("staging"))).toBe(false);
+      expect([...h.store.values.keys()].some((name) => name.includes("restore-points"))).toBe(false);
+    });
+
+    it("--approve-build belongs to --bundle only", async () => {
+      const bundle = await build();
+      const h = await harness(bundle);
+      await expect(runUpgrade({ env: "staging", yes: true, allowReplace: [], approveBuild: true }, h.deps)).rejects.toThrow(/--approve-build applies to --bundle only/);
+    });
+
+    it("needs no --source, and refuses what could change what is built: --no-reserved-concurrency", async () => {
+      const bundle = await build();
+      const h = await cdkHarness(bundle);
+      await expect(runUpgrade(options(bundle, { reservedConcurrency: false }), h.deps)).rejects.toThrow(/recorded for it/);
+      expect(h.calls).toEqual([]);
+    });
+
+    it("refuses when this agentx cannot build at approval, when the deployer did not finish, and a downgrade; and the Rovara operator still cannot run it", async () => {
+      const bundle = await build();
+      const none = await cdkHarness(bundle);
+      delete none.deps.approveAndDeploy;
+      await expect(runUpgrade(options(bundle), none.deps)).rejects.toThrow(/cannot build an install's templates at approval/);
+      const unfinished = await cdkHarness(bundle, { status: "in-progress", done: ["foundation"] });
+      await expect(runUpgrade(options(bundle), unfinished.deps)).rejects.toThrow(/did not finish \(in-progress\).*foundation.*the approval stands/);
+      const old = await build({ version: "1.0.0" });
+      const downgrade = await cdkHarness(old);
+      await expect(runUpgrade(options(old), downgrade.deps)).rejects.toThrow(/older than 1\.2\.3/);
+      expect(downgrade.calls).toEqual([]);
+      const operator = await cdkHarness(bundle);
+      operator.deps.identity = { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/agentx-staging-rovara-operator/ana" }) };
+      await expect(runUpgrade(options(bundle), operator.deps)).rejects.toThrow(/Rovara operator role starts approved deployments/);
+      expect(operator.calls).toEqual([]);
+    });
+
+    it("refuses a prerelease bundle before anything is built", async () => {
+      const bundle = await build({ version: "1.5.0-rc.1" });
+      const h = await cdkHarness(bundle);
+      await expect(runUpgrade(options(bundle), h.deps)).rejects.toThrow(/prerelease|release/i);
+      expect(h.calls).toEqual([]);
+    });
+
+    it("needs --yes without a terminal, before anything is built", async () => {
+      const bundle = await build();
+      const h = await cdkHarness(bundle);
+      h.deps.isInteractive = () => false;
+      await expect(runUpgrade(options(bundle, { yes: false }), h.deps)).rejects.toThrow(/needs --yes/);
+      expect(h.calls).toEqual([]);
+    });
   });
 
   it("refuses a bundle older than the installed release, after verifying it, and records no restore point", async () => {
@@ -391,15 +465,24 @@ describe("the bytes that were verified are the bytes used (review I4)", () => {
   });
 
   it("removes the private copy when verification fails, and when the upgrade ends", async () => {
-    const bundle = await build();
-    const before = (await readdir(tmpdir())).filter((name) => name.startsWith("rovara-bundle-")).length;
-    await writeFile(join(bundle.dir, "legal", "LICENSE"), "changed");
-    await refused(verifyBundle({ dir: bundle.dir, trustedKeys: trust(bundle) }), /does not match the signed manifest/);
-    expect((await readdir(tmpdir())).filter((name) => name.startsWith("rovara-bundle-")).length).toBe(before);
-    const good = await build();
-    const h = await harness(good);
-    await runUpgrade(options(good), h.deps);
-    expect((await readdir(tmpdir())).filter((name) => name.startsWith("rovara-bundle-")).length).toBe(before);
+    // A temp directory of its own: other test files make private copies at the same time, so the shared one cannot be counted.
+    const own = await mkdtemp(join(tmpdir(), "copy-count-"));
+    const previous = process.env.TMPDIR;
+    process.env.TMPDIR = own;
+    try {
+      const copies = async () => (await readdir(own)).filter((name) => name.startsWith("rovara-bundle-")).length;
+      const bundle = await build();
+      await writeFile(join(bundle.dir, "legal", "LICENSE"), "changed");
+      await refused(verifyBundle({ dir: bundle.dir, trustedKeys: trust(bundle) }), /does not match the signed manifest/);
+      expect(await copies()).toBe(0);
+      const good = await build();
+      const h = await harness(good);
+      await runUpgrade(options(good), h.deps);
+      expect(await copies()).toBe(0);
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous;
+      await rm(own, { recursive: true, force: true });
+    }
   });
 
   it("refuses a file with another name on the disk (a hard link), which the checks cannot tell apart from the original", async () => {

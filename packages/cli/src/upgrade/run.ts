@@ -28,7 +28,7 @@ import { writeUpgradeBundle } from "./export.js";
 import { cdkDiffRisks, cdkReviewedDeployer, guardData, upgradeConfirm } from "./review.js";
 import { notesText, refusePrereleaseTarget, upgradeDirection, type ReleaseNotes } from "./target.js";
 
-export interface UpgradeOptions { env: string; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
+export interface UpgradeOptions { env: string; /** With `--bundle` on a cdk install: the build made at approval is approved without asking. `--yes` never does this. */ approveBuild?: boolean; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
 
 export interface UpgradeDependencies {
   store: ParameterStore;
@@ -41,6 +41,12 @@ export interface UpgradeDependencies {
   verifyBundle?(input: { dir: string; approvedBundleSha256?: string }): Promise<VerifiedBundle>;
   /** N3: loads a verified bundle's images into the install's ECR, digests preserved. Required when the bundle carries images. */
   loadBundleImages?(input: { bundle: VerifiedBundle; settings: EnvironmentSettings }): Promise<void>;
+  /**
+   * Enterprise foundations N3b: `--bundle` on a cdk-engine install. Builds the install's templates at approval from its recorded settings, shows them, writes the approval that pins
+   * the result and starts the customer-owned deployer for exactly that bundle id: the same approve-then-deploy path the Rovara operator's deployment takes. Nothing here deploys
+   * the bundle's own prebuilt templates, and nothing is built from a flag.
+   */
+  approveAndDeploy?(input: { bundle: VerifiedBundle; settings: EnvironmentSettings; /** The build is approved without asking (`--approve-build`); false asks the approver. */ yes: boolean }): Promise<{ status: string; done: string[] }>;
   /** Issue 152: a source-built CLI's cdk upgrade with no --release or --to builds its release from
    * the --source checkout (release-fetch.ts's sourceRelease): the tag's version, the images from the
    * image flags or the tag's published release.json. */
@@ -185,6 +191,7 @@ async function setUpGithubWebhook(env: string, deps: UpgradeDependencies): Promi
 /** N3: the bundle path, checked before anything else is read: nothing in AWS is touched until the signature and every hash have passed. */
 async function verifiedBundle(options: UpgradeOptions, deps: UpgradeDependencies): Promise<VerifiedBundle | undefined> {
   if (options.bundleDir === undefined) {
+    if (options.approveBuild === true) throw agentXError("CONFIG_INVALID", "--approve-build applies to --bundle only");
     if (options.approvedBundleSha256 !== undefined) throw agentXError("CONFIG_INVALID", "--approved-bundle-sha256 applies to --bundle only");
     return undefined;
   }
@@ -223,10 +230,11 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
   if (options.reservedConcurrency === false && first.engine !== "cdk") {
     throw agentXError("CONFIG_INVALID", "--no-reserved-concurrency (reserved concurrency off) needs the cdk engine: this environment deploys the release's prebuilt templates, which reserve Lambda concurrency");
   }
-  if (bundle !== undefined && first.engine === "cdk") {
-    throw agentXError("CONFIG_INVALID", "a bundle upgrade deploys the bundle's prebuilt templates, which the templates engine deploys; this environment uses the cdk engine, so the bundle was refused and nothing was changed");
+  // A bundle on a cdk install is built at approval, from the install's recorded settings alone: a flag that would change what is built is refused, never ignored.
+  if (bundle !== undefined && first.engine === "cdk" && options.reservedConcurrency === false) {
+    throw agentXError("CONFIG_INVALID", "--no-reserved-concurrency cannot be combined with --bundle: an Enterprise install's templates are built from the settings recorded for it (agentx bundle record-settings), and from nothing given here. Nothing was changed");
   }
-  if (first.engine === "cdk" && options.source === undefined) {
+  if (first.engine === "cdk" && options.source === undefined && bundle === undefined) {
     throw agentXError("CONFIG_INVALID", "the cdk engine upgrades from a checkout of the target release's tag; pass --source <dir>");
   }
   if (options.exportDir === undefined && !options.yes && !deps.isInteractive()) throw agentXError("CONFIG_INVALID", "agentx upgrade needs --yes when stdin is not a terminal");
@@ -243,6 +251,8 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
   if (operator && first.engine === "cdk") {
     throw agentXError("CONFIG_INVALID", "a cdk environment upgrades with admin credentials (the operator role cannot use CDK's bootstrap resources); run agentx upgrade again with admin credentials");
   }
+
+  if (bundle !== undefined && first.engine === "cdk") return runBuiltBundleUpgrade({ options, deps, bundle, first });
 
   const version = options.releaseDir === undefined && bundle === undefined ? options.to ?? deps.cliVersion : undefined;
   // Issue 152: a source-built CLI's cdk upgrade needs no release: the version is the source's tag.
@@ -349,7 +359,12 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     return { settings, parts };
   });
 
-  // Outside the lock on purpose: it changes only GitHub's hook and the App secret, never the environment's settings or stacks.
+  return finishUpgrade({ env, from: settings.version, target, parts, deps });
+}
+
+/** After the stacks are on the target: the GitHub webhook (outside the lock, since it changes only GitHub's hook and the App secret), then doctor. */
+async function finishUpgrade(input: { env: string; from: string; target: string; parts: DeployPart[]; deps: UpgradeDependencies }): Promise<UpgradeResult> {
+  const { env, from, target, parts, deps } = input;
   await setUpGithubWebhook(env, deps);
 
   deps.write("Checking the environment with agentx doctor");
@@ -363,5 +378,21 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
   if (report.failed > 0) {
     throw agentXError("CONFIG_INVALID", `upgraded ${env} to ${target}, but ${report.failed} doctor ${report.failed === 1 ? "check" : "checks"} failed; fix what each one names, then run agentx doctor again`);
   }
-  return { env, from: settings.version, to: target, parts, doctor: { failed: report.failed, warned: report.warned } };
+  return { env, from, to: target, parts, doctor: { failed: report.failed, warned: report.warned } };
+}
+
+/** N3b: a bundle on a cdk-engine install goes through the same approve-then-deploy path as everything Enterprise: built at approval, pinned, installed by the customer's deployer. */
+async function runBuiltBundleUpgrade(input: { options: UpgradeOptions; deps: UpgradeDependencies; bundle: VerifiedBundle; first: EnvironmentSettings }): Promise<UpgradeResult> {
+  const { options, deps, bundle, first } = input;
+  const target = bundle.manifest.version;
+  refusePrereleaseTarget(target);
+  upgradeDirection(first.env, first.version, target);
+  if (deps.approveAndDeploy === undefined) throw agentXError("CONFIG_INVALID", "this agentx cannot build an install's templates at approval; the bundle was refused and nothing was changed");
+  deps.write(`Upgrading ${first.env} from ${first.version} to ${target} with bundle ${bundle.bundleId}: its templates are built from the settings recorded for this install, then installed by your own deployer`);
+  // `--yes` answers the upgrade's own questions; it does not approve a build nobody read. Only `--approve-build` does that.
+  const outcome = await deps.approveAndDeploy({ bundle, settings: first, yes: options.approveBuild === true });
+  if (outcome.status !== "done") {
+    throw agentXError("CONFIG_INVALID", `the deployer did not finish (${outcome.status}); stacks done so far: ${outcome.done.length === 0 ? "none" : outcome.done.join(", ")}. Run agentx upgrade again; the approval stands`);
+  }
+  return finishUpgrade({ env: first.env, from: first.version, target, parts: outcome.done as DeployPart[], deps });
 }

@@ -532,6 +532,17 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, ...result.connection }, true) : chatGptDisconnectText(result));
     });
 
+  /** The fresh sign-in `signin unlink`, `signin link` and `audit export` run when the server asks for one: today's developer login, then the request again. */
+  const freshSignInFor = (command: Command, browser: boolean): FreshSignIn => async ({ url, exclude, reason }) => {
+    services.stderr.write(`This needs a fresh sign-in (${reason}). Signing in again now.\n`);
+    await developerLogin({
+      url, allowLoopback: globalOptions(command).allowLoopback, browser, home, tokenStore: services.tokenStore, fetch: services.fetchImplementation,
+      write: (line) => { services.stderr.write(`${line}\n`); },
+      ...(dependencies.login?.openBrowser === undefined ? {} : { openBrowser: dependencies.login.openBrowser }),
+      ...(exclude === undefined ? {} : { excludeMethod: exclude }),
+      fresh: true,
+    });
+  };
   // The audit log (Task 14): an organization's owners and admins read, export and check it with their own sign-in.
   const auditRuntime = (): AuditRuntime => ({
     fetch: services.fetchImplementation,
@@ -560,11 +571,12 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--to <record>", "the last record number to export (at most 200,000 records)")
     .option("--with-details", "include the names and other personal details", false)
     .option("--out <file>", "where to save the export; it is never written over an existing file")
-    .action(async (options: { from?: string; to?: string; withDetails: boolean; out?: string }, command: Command) => {
+    .option("--no-browser", "if a fresh sign-in is needed (an export needs a sign-in from the last 10 minutes), print the sign-in link instead of opening a browser")
+    .action(async (options: { from?: string; to?: string; withDetails: boolean; out?: string; browser: boolean }, command: Command) => {
       const globals = globalOptions(command);
       const range = exportRange(options.from, options.to);
       if (options.out === undefined) throw agentXError("CONFIG_INVALID", "say where to save the export: --out <file>");
-      services.stdout.write(await exportAuditFile(developerExportTransport(developerSession(), developerEnv(command)), auditRuntime(), {
+      services.stdout.write(await exportAuditFile(developerExportTransport(developerSession(), developerEnv(command), freshSignInFor(command, options.browser)), auditRuntime(), {
         ...range, withDetails: options.withDetails, out: resolve(options.out), json: globals.json,
       }));
     });
@@ -576,10 +588,11 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--extends <file>", "an older export you kept: check that this one keeps its history")
     .option("--trust <label=pem-file>", "trust this root certificate for the timestamp authority with this label (repeatable)", collectTrust, [] as string[])
     .option("--out <file>", "also keep the export you checked")
-    .action(async (options: { from?: string; to?: string; extends?: string; trust: string[]; out?: string }, command: Command) => {
+    .option("--no-browser", "if a fresh sign-in is needed (checking starts an export, which needs a sign-in from the last 10 minutes), print the sign-in link instead of opening a browser")
+    .action(async (options: { from?: string; to?: string; extends?: string; trust: string[]; out?: string; browser: boolean }, command: Command) => {
       const globals = globalOptions(command);
       const range = exportRange(options.from, options.to);
-      const result = await verifyAuditExport(developerExportTransport(developerSession(), developerEnv(command)), auditRuntime(), {
+      const result = await verifyAuditExport(developerExportTransport(developerSession(), developerEnv(command), freshSignInFor(command, options.browser)), auditRuntime(), {
         ...range, trust: options.trust, extendsPath: options.extends, out: options.out === undefined ? undefined : resolve(options.out), json: globals.json,
       });
       services.stdout.write(result.text);
@@ -1212,17 +1225,6 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   // commands are the operator's).
   const signinCommand = program.commands.find((candidate) => candidate.name() === "signin");
   if (signinCommand === undefined) throw new Error("the signin command is registered by registerSigninCommands");
-  /** The fresh sign-in `signin unlink` and `signin link` run when the server asks for one: today's developer login, then the request again. */
-  const freshSignInFor = (command: Command, browser: boolean): FreshSignIn => async ({ url, exclude, reason }) => {
-    services.stderr.write(`This needs a fresh sign-in (${reason}). Signing in again now.\n`);
-    await developerLogin({
-      url, allowLoopback: globalOptions(command).allowLoopback, browser, home, tokenStore: services.tokenStore, fetch: services.fetchImplementation,
-      write: (line) => { services.stderr.write(`${line}\n`); },
-      ...(dependencies.login?.openBrowser === undefined ? {} : { openBrowser: dependencies.login.openBrowser }),
-      ...(exclude === undefined ? {} : { excludeMethod: exclude }),
-      fresh: true,
-    });
-  };
   signinCommand
     .command("unlink")
     .description("remove a sign-in method (cloud or github) from your own Rovara account; sessions signed in that way end. Needs a sign-in from the last 10 minutes with another method")

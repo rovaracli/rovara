@@ -27,11 +27,15 @@ const Sha256 = z.string().regex(/^[a-f0-9]{64}$/);
  * segment, no leading "/"), only the characters the release builder writes. The schema is the first guard; the verifier checks
  * containment again against the real directory.
  */
-const BundlePath = z.string().max(300).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/);
+export const BundlePath = z.string().max(300).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/);
 export const BundleImageName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/);
 
-export const BundleFileKind = z.enum(["release-manifest", "template", "package", "legal", "image", "notes"]);
+export const BundleFileKind = z.enum(["release-manifest", "template", "package", "legal", "image", "notes", "synth-kit"]);
 export type BundleFileKind = z.infer<typeof BundleFileKind>;
+/** The directory of a bundle that holds the release's own pinned CDK app (task N3b). Only files of kind `synth-kit` live there, and every one of them does. */
+export const BUNDLE_SYNTH_KIT_DIR = "synth-kit";
+/** The kinds of file a bundle upgrade of a Public install deploys from the bundle itself. The kit, images and notes are never placed in the approval bucket for it. */
+export const BUNDLE_PUBLIC_DEPLOYED_KINDS: readonly BundleFileKind[] = ["release-manifest", "template", "package", "legal"];
 
 export const BundleManifestSchema = z
   .object({
@@ -63,12 +67,19 @@ export const BundleManifestSchema = z
     for (const entry of manifest.files) {
       if (kinds.has(entry.file)) context.addIssue({ code: "custom", message: `file ${entry.file} is listed twice`, path: ["files"] });
       kinds.set(entry.file, entry.kind);
+      // The kit has a directory of its own, and nothing else may sit in it: a file's kind is never decided by what it is called.
+      if ((entry.kind === "synth-kit") !== entry.file.startsWith(`${BUNDLE_SYNTH_KIT_DIR}/`)) {
+        context.addIssue({ code: "custom", message: `file ${entry.file}: the synth-kit kind is for files under ${BUNDLE_SYNTH_KIT_DIR}/ and only for them`, path: ["files"] });
+      }
       if (entry.file === BUNDLE_MANIFEST_FILE || entry.file === BUNDLE_SIGNATURE_FILE) {
         context.addIssue({ code: "custom", message: `${entry.file} cannot list itself`, path: ["files"] });
       }
     }
     if (manifest.files.filter((entry) => entry.kind === "release-manifest").length !== 1 || kinds.get("release.json") !== "release-manifest") {
       context.addIssue({ code: "custom", message: "exactly one release-manifest file, release.json, is required", path: ["files"] });
+    }
+    if (kinds.size > 0 && [...kinds.values()].includes("synth-kit") && kinds.get(`${BUNDLE_SYNTH_KIT_DIR}/kit.json`) !== "synth-kit") {
+      context.addIssue({ code: "custom", message: `a bundle with a synthesis kit lists ${BUNDLE_SYNTH_KIT_DIR}/kit.json`, path: ["files"] });
     }
     const names = new Set<string>();
     for (const image of manifest.images) {

@@ -1,12 +1,12 @@
 // The `agentx upgrade` command (FR-042 to FR-044, FR-026's upgrade --export), kept out of main.ts.
-import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
+import { CloudFormationClient, GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { ECRClient } from "@aws-sdk/client-ecr";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { STSClient } from "@aws-sdk/client-sts";
 import { readFile } from "node:fs/promises";
-import { agentXError, bundleTrustParameter } from "@agentx/contracts";
+import { agentXError, bundleTrustParameter, type ApprovalRecord } from "@agentx/contracts";
 import type { Command } from "commander";
 import { cdkDiff } from "../deploy/cdk-engine.js";
 import { resolveDeployEdition } from "../deploy/edition.js";
@@ -15,7 +15,7 @@ import { loadRelease } from "../deploy/release.js";
 import { realDoctorServices } from "../doctor/aws.js";
 import { runDoctor } from "../doctor/run.js";
 import { cloudFormationStackReader, stsCallerIdentity } from "../environments/adopt.js";
-import { readEnvironmentSettings } from "../environments/settings.js";
+import { readEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { secretsManagerInitSecrets } from "../init/context.js";
 import { githubRestApi } from "../init/github-app.js";
@@ -24,11 +24,14 @@ import { fetchRelease, sourceRelease } from "../init/release-fetch.js";
 import { formatSuccess } from "../output.js";
 import { RELEASE_VERSION } from "../version.js";
 import { approveBundle, withdrawApproval, type ApprovalStore } from "./bundle/approve.js";
+import { approveEnterpriseBundle, installIsEnterprise } from "./bundle/approve-enterprise.js";
+import { nodeSynthRunner, type SynthRunner } from "./bundle/synth-run.js";
+import { recordSynthSettings } from "./bundle/synth-settings.js";
 import { startApprovedDeployment, type DeployerInvoker } from "./bundle/deployer-client.js";
 import { loadBundleImages } from "./bundle/load-images.js";
 import { resetDeployment } from "./bundle/reset-deployment.js";
 import { PINNED_BUNDLE_SIGNING_KEYS } from "./bundle/trusted-keys.js";
-import { verifyBundle } from "./bundle/verify.js";
+import { verifyBundle, type VerifiedBundle } from "./bundle/verify.js";
 import { runUpgrade, type UpgradeDependencies } from "./run.js";
 import { releaseNotes } from "./target.js";
 
@@ -44,6 +47,8 @@ export interface UpgradeCommandContext {
   deployerInvoker?: DeployerInvoker;
   /** Tests: the approval bucket's store. */
   approvalStore?: (bucket: string, region: string) => ApprovalStore;
+  /** Tests: runs the bundle's synthesis kit. */
+  synthRunner?: SynthRunner;
 }
 
 function lambdaInvoker(client: LambdaClient): DeployerInvoker {
@@ -67,6 +72,26 @@ function s3ApprovalStore(client: S3Client, bucket: string): ApprovalStore {
   };
 }
 
+/** An Enterprise install's approval: build the install's templates at approval from its recorded settings, show them, and write the approval that pins the result. */
+async function enterpriseApproval(context: UpgradeCommandContext, input: { bundle: VerifiedBundle; install: EnvironmentSettings; store: ParameterStore; aws: { region?: string }; caller: string; parameters: unknown; rollback: boolean; yes: boolean; beforeApproval: () => Promise<void>; approvalStore: ApprovalStore; writeBuildTo?: string; confirmFlag?: string }): Promise<ApprovalRecord> {
+  const cloudFormation = new CloudFormationClient(input.aws);
+  const { record } = await approveEnterpriseBundle({
+    bundle: input.bundle, install: input.install, store: input.store, runner: context.synthRunner ?? nodeSynthRunner, approvalStore: input.approvalStore, approvedBy: input.caller, parameters: input.parameters,
+    rollback: input.rollback, now: Date.now, yes: input.yes, interactive: process.stdin.isTTY === true, ask: readlineAsk(), write: (line) => { context.stderr.write(`${line}\n`); },
+    readDeployedTemplate: async (stackName) => {
+      try {
+        return ((await cloudFormation.send(new GetTemplateCommand({ StackName: stackName, TemplateStage: "Original" }))) as { TemplateBody?: string }).TemplateBody;
+      } catch (error) {
+        if (error instanceof Error && /does not exist/.test(error.message)) return undefined;
+        throw error;
+      }
+    },
+    beforeApproval: input.beforeApproval,
+    ...(input.writeBuildTo === undefined ? {} : { writeBuildTo: input.writeBuildTo }), ...(input.confirmFlag === undefined ? {} : { confirmFlag: input.confirmFlag }),
+  });
+  return record;
+}
+
 const collect = (value: string, previous: string[]) => [...previous, value];
 
 export function registerUpgradeCommand(program: Command, context: UpgradeCommandContext): void {
@@ -78,6 +103,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .option("--bundle <dir>", "a signed release bundle (Enterprise): its signature and every hash are checked before anything changes, a restore point is recorded, its images are loaded into your registry; instead of --release and --to")
     .option("--approved-bundle-sha256 <hex>", "with --bundle: the bundle id (SHA-256 of bundle.json) your team approved; any other bundle is refused")
     .option("--bundle-public-key <file>", "with --bundle: a PEM public key to trust for bundle signatures, besides the ones this agentx pins; repeat for each", collect, [])
+    .option("--approve-build", "with --bundle on an Enterprise (cdk) install: approve the templates that are built from your recorded settings, without asking (the summary is printed first). --yes alone never approves a build: it is asked for, and without a terminal this flag is required", false)
     .option("--deploy-approved <bundle id>", "(Rovara operator) start the deployer in your account for a bundle your team approved with `agentx bundle approve`; the deployer re-verifies the bundle and deploys; nothing else is accepted with it")
     .option("--source <dir>", "the cdk engine only: a clean checkout of the target release's tag; --to or --release, when given, must match it")
     .option("--allow-replace <logical-id>", "accept replacing or deleting this table, user pool, bucket, key or secret; repeat for each", collect, [])
@@ -88,13 +114,13 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .option("--yes", "apply without asking; every change and the release notes are still printed", false)
     .option("--no-reserved-concurrency", "the cdk engine only: deploy with no Lambda reserved concurrency, for an AWS account whose Lambda concurrency limit is too low to reserve any (a new account's limit of 10); keep it on in production")
     .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
-    .action(async (options: { deployApproved?: string; bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean }, command: Command) => {
+    .action(async (options: { approveBuild: boolean; deployApproved?: string; bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean }, command: Command) => {
       const globals = command.optsWithGlobals<{ env: string; json: boolean; configDir: string }>();
       const overrides = context.overrides ?? {};
       const aws = options.region === undefined ? {} : { region: options.region };
       if (options.deployApproved !== undefined) {
         // The operator's whole path: a bundle id to the customer's deployer. No release, bundle, source or setting of the operator's choosing is accepted beside it.
-        if (options.bundle !== undefined || options.to !== undefined || options.release !== undefined || options.source !== undefined || options.export !== undefined || options.approvedBundleSha256 !== undefined || options.workerImage !== undefined || options.slackImage !== undefined || options.bootStage2Sha256 !== undefined) {
+        if (options.approveBuild || options.bundle !== undefined || options.to !== undefined || options.release !== undefined || options.source !== undefined || options.export !== undefined || options.approvedBundleSha256 !== undefined || options.workerImage !== undefined || options.slackImage !== undefined || options.bootStage2Sha256 !== undefined) {
           throw agentXError("CONFIG_INVALID", "--deploy-approved takes a bundle id and nothing else");
         }
         const result = await startApprovedDeployment({ env: globals.env, bundleId: options.deployApproved, invoker: context.deployerInvoker ?? lambdaInvoker(new LambdaClient(aws)), write: (line) => { context.stderr.write(`${line}\n`); } });
@@ -127,6 +153,18 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
           return verifyBundle({ ...input, trustedKeys: [...PINNED_BUNDLE_SIGNING_KEYS, ...installed, ...extra] });
         }),
         loadBundleImages: overrides.loadBundleImages ?? (async ({ bundle, settings }) => loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner })),
+        approveAndDeploy: overrides.approveAndDeploy ?? (async ({ bundle, settings, yes }) => {
+          // The same path `bundle approve` and the operator's deployment take: build at approval from the recorded settings, pin it, then the customer-owned deployer installs those bytes.
+          const bucket = (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks.access ?? `agentx-${settings.env}-access`))?.outputs.ApprovedBundlesBucketName;
+          if (bucket === undefined) throw agentXError("CONFIG_INVALID", "this install has no approval bucket and no bundle deployer; the Rovara operator role is not set up (rovaraOperatorAccess). Nothing was changed");
+          const caller = await stsCallerIdentity(new STSClient(aws)).get();
+          const record = await enterpriseApproval(context, {
+            bundle, install: settings, store, aws, caller: caller.arn, parameters: {}, rollback: false, yes, approvalStore: context.approvalStore?.(bucket, settings.region) ?? s3ApprovalStore(new S3Client({ region: settings.region }), bucket), confirmFlag: "--approve-build",
+            beforeApproval: async () => { if (bundle.manifest.images.length > 0) await loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner }); },
+          });
+          const result = await startApprovedDeployment({ env: settings.env, bundleId: record.bundleId, invoker: context.deployerInvoker ?? lambdaInvoker(new LambdaClient(aws)), write });
+          return { status: result.status, done: result.done ?? [] };
+        }),
         sourceRelease: overrides.sourceRelease ?? (async (input) => (await sourceRelease({ runner, source: input.source, images: input.images, fetch: context.fetch })).release),
         notes: overrides.notes ?? ((version) => releaseNotes({ fetch: context.fetch, version })),
         prepare: overrides.prepare ?? ((input) => prepareDeployment({
@@ -153,7 +191,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       };
       const result = await runUpgrade({
         env: globals.env, yes: options.yes, allowReplace: options.allowReplace,
-        ...(options.bundle === undefined ? {} : { bundleDir: options.bundle }), ...(options.approvedBundleSha256 === undefined ? {} : { approvedBundleSha256: options.approvedBundleSha256 }),
+        ...(options.bundle === undefined ? {} : { bundleDir: options.bundle }), ...(options.approveBuild ? { approveBuild: true } : {}), ...(options.approvedBundleSha256 === undefined ? {} : { approvedBundleSha256: options.approvedBundleSha256 }),
         ...(options.to === undefined ? {} : { to: options.to }), ...(options.release === undefined ? {} : { releaseDir: options.release }),
         ...(options.source === undefined ? {} : { source: options.source }), ...(options.export === undefined ? {} : { exportDir: options.export }),
         ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
@@ -171,9 +209,11 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .requiredOption("--approved-bundle-sha256 <hex>", "the bundle id your team approved (SHA-256 of bundle.json); any other bundle is refused")
     .option("--parameters <file>", "JSON {\"<stack part>\": {\"<ParameterName>\": \"<value>\"}}: the only parameters the deployment may set; every other parameter keeps its current value")
     .option("--rollback", "approve moving back to an older release than the installed one, on purpose", false)
+    .option("--yes", "an Enterprise install: approve what was built without asking (the summary is still printed)", false)
+    .option("--write-build <dir>", "an Enterprise install: also write the whole build (every template and package, the manifest and the summary) to this new or empty folder before you are asked, to read or diff it")
     .option("--bundle-public-key <file>", "a PEM public key to trust for this run, besides the ones this agentx pins and your install lists; repeat for each", collect, [])
     .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
-    .action(async (options: { bundle: string; approvedBundleSha256: string; parameters?: string; rollback: boolean; bundlePublicKey: string[]; region?: string }, command: Command) => {
+    .action(async (options: { bundle: string; approvedBundleSha256: string; parameters?: string; rollback: boolean; yes: boolean; writeBuild?: string; bundlePublicKey: string[]; region?: string }, command: Command) => {
       const globals = command.optsWithGlobals<{ env: string; json: boolean }>();
       const aws = options.region === undefined ? {} : { region: options.region };
       const store = context.parameterStore(options.region);
@@ -195,16 +235,47 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       const bundle = await verifyBundle({ dir: options.bundle, trustedKeys: [...PINNED_BUNDLE_SIGNING_KEYS, ...installed, ...extra], approvedBundleSha256: options.approvedBundleSha256 });
       try {
         const runner = realCommandRunner(context.stderr);
-        if (bundle.manifest.images.length > 0) await loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner });
+        const loadImages = async (): Promise<void> => {
+          if (bundle.manifest.images.length > 0) await loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner });
+        };
         const caller = await stsCallerIdentity(new STSClient(aws)).get();
         let parameters: unknown = {};
         if (options.parameters !== undefined) parameters = JSON.parse(await readFile(options.parameters, "utf8").catch(() => { throw agentXError("CONFIG_INVALID", `the parameters file ${options.parameters} could not be read`); })) as unknown;
         const store_ = context.approvalStore?.(bucket, settings.region) ?? s3ApprovalStore(new S3Client({ region: settings.region }), bucket);
-        const record = await approveBundle({ bundle, approvedBy: caller.arn, parameters, rollback: options.rollback, store: store_, now: Date.now });
+        let record;
+        if (await installIsEnterprise(store, globals.env)) {
+          // Owner decision 2026-10-31 (option A): an Enterprise install's templates are built here, at approval, from its own recorded settings. No option of this command
+          // reaches the build; the only inputs are the verified bundle and the install's records.
+          record = await enterpriseApproval(context, { bundle, install: settings, store, aws, caller: caller.arn, parameters, rollback: options.rollback, yes: options.yes, beforeApproval: loadImages, approvalStore: store_, ...(options.writeBuild === undefined ? {} : { writeBuildTo: options.writeBuild }) });
+        } else {
+          await loadImages();
+          record = await approveBundle({ bundle, approvedBy: caller.arn, parameters, rollback: options.rollback, store: store_, now: Date.now });
+        }
         context.stdout.write(globals.json ? formatSuccess(record, true) : `Approved bundle ${record.bundleId} (release ${record.version}) for ${globals.env}. The Rovara operator can now start its deployment; withdraw it with: agentx bundle withdraw ${record.bundleId}\n`);
       } finally {
         await bundle.cleanup();
       }
+    });
+  bundleCommand
+    .command("record-settings")
+    .description("Enterprise: record the settings your install's templates are built from at each approval (network ranges, timestamp authority, operator access); replaces the earlier record, which ends every approval built from it")
+    .requiredOption("--file <file>", "JSON: {\"schemaVersion\":1,\"edition\":\"enterprise\",\"env\":...,\"region\":...,\"identityMode\":...,\"context\":{...}}; only the keys the release's build accepts")
+    .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
+    .action(async (options: { file: string; region?: string }, command: Command) => {
+      const globals = command.optsWithGlobals<{ env: string; json: boolean }>();
+      const store = context.parameterStore(options.region);
+      const install = await readEnvironmentSettings(store, globals.env);
+      if (install === undefined) throw agentXError("CONFIG_INVALID", `environment ${globals.env} is not installed in this account and region`);
+      if (!(await installIsEnterprise(store, globals.env))) throw agentXError("CONFIG_INVALID", `${globals.env} is not recorded as an Enterprise install; build settings are for Enterprise installs only`);
+      const text = await readFile(options.file, "utf8").catch(() => { throw agentXError("CONFIG_INVALID", `the settings file ${options.file} could not be read`); });
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw agentXError("CONFIG_INVALID", `the settings file ${options.file} is not JSON`);
+      }
+      const { sha256 } = await recordSynthSettings({ store, install, settings: parsed });
+      context.stdout.write(globals.json ? formatSuccess({ env: globals.env, settingsSha256: sha256 }, true) : `Recorded the build settings for ${globals.env} (hash ${sha256}). Bundles approved before this are refused by the deployer; approve them again.\n`);
     });
   bundleCommand
     .command("reset-deployment")
