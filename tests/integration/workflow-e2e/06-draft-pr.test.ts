@@ -56,7 +56,7 @@ describe("Suite 6: draft PR", () => {
     const outbox = e2e.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operation.id);
     expect(outbox.length).toBeGreaterThan(0);
     const payload = (outbox[0]!.invocation as { payload: { attribution?: { requester?: { state: string; name?: string; ref?: string }; auditUrl?: string } } }).payload;
-    expect(payload.attribution?.requester).toMatchObject({ state: "named", name: "Maya Chen", ref: expect.stringMatching(/^[a-f0-9]{16}$/u) });
+    expect(payload.attribution?.requester).toMatchObject({ state: "named", name: "Maya Chen", ref: expect.stringMatching(/^[a-f0-9]{16}$/u) as string });
     expect(payload.attribution?.auditUrl).toMatch(/\/v1\/app\/audit\/view\?action=pull_request\.opened$/u);
     // The operation records the full ids of those named (for the pull_request.opened event); the host's description and the worker's payload hold none.
     const related = (operation.publication as { relatedIds?: string[] }).relatedIds ?? [];

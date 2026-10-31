@@ -146,7 +146,7 @@ describe("starting an audit export", () => {
     for (const authTime of [stale, undefined, "not a time"]) {
       const f = fixtureWithSession(role, authTime);
       for (const path of ["/v1/app/org/audit/exports", "/v1/dev/org/audit/exports"]) {
-        expect(await f.call("POST", path, exportBody), `${role} ${path} ${authTime}`).toMatchObject({ code: "REAUTH_REQUIRED", message: expect.stringContaining(AUDIT_EXPORT_FRESH_SIGN_IN_MESSAGE) });
+        expect(await f.call("POST", path, exportBody), `${role} ${path} ${authTime}`).toMatchObject({ code: "REAUTH_REQUIRED", message: expect.stringContaining(AUDIT_EXPORT_FRESH_SIGN_IN_MESSAGE) as string });
       }
     }
   });

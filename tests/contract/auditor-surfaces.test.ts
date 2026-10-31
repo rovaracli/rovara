@@ -96,7 +96,7 @@ describe("Slack", () => {
     const { slackCallerFor } = await import("../../packages/broker/src/aws/broker/dependency-wiring.js");
     const enterprise = editionPolicy("enterprise");
     const policy = { ...enterprise, features: { ...enterprise.features, sso: false } };
-    await expect(slackCallerFor({ ...h.brokerInput, editionPolicy: policy } as never, USER, SLACK_TEAM)).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("has not signed in to Rovara") });
+    await expect(slackCallerFor({ ...h.brokerInput, editionPolicy: policy } as never, USER, SLACK_TEAM)).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("has not signed in to Rovara") as string });
   });
 });
 
