@@ -58,6 +58,47 @@ export async function finishWebCaseCapture(input: { capture: E2EWebCapturePorts 
 }
 
 /**
+ * Video and trace of a case (proof and evidence B4). Supplied only by the executor host, only when the plan proves every account of the round run-scoped and the admitted policy asks for the kind (`admittedMediaPolicy`):
+ * absent otherwise, and then nothing below runs. Best effort like every capture, so it changes no verdict.
+ */
+export type E2EWebMediaPorts = Readonly<{
+  trace: boolean;
+  /** Where Playwright writes the case's trace, and a bounded read of it afterwards. The file is removed by the host with the rest of the case's scratch. */
+  tracePath(caseId: string): string;
+  readFile(path: string): Promise<Uint8Array>;
+  /** The case's video, when the engine recorded one (its context option belongs to the engine); undefined when it did not. */
+  readVideo?(caseId: string): Promise<Uint8Array | undefined>;
+  /** Stores one file under the executor's gate, scrub, scan and caps. */
+  record(input: { caseId: string; kind: "video" | "trace"; bytes: Uint8Array }): Promise<unknown>;
+}>;
+
+/** Starts the trace of a case on its owned context. Best effort. Returns whether a trace is running. */
+export async function startWebCaseTrace(input: { media: E2EWebMediaPorts | undefined; context: Pick<BrowserContext, "tracing"> | null }): Promise<boolean> {
+  if (!input.media?.trace || !input.context) return false;
+  try { await input.context.tracing.start({ screenshots: true, snapshots: true }); return true; } catch { return false; }
+}
+
+/** Stops the case's trace, hands it (and the case's video, if there is one) to the recorder, which scrubs and scans it. Best effort: a missing or unreadable file leaves none. */
+export async function finishWebCaseMedia(input: { media: E2EWebMediaPorts | undefined; caseId: string; context: Pick<BrowserContext, "tracing"> | null; tracing: boolean }): Promise<void> {
+  const { media, caseId, context, tracing } = input;
+  if (media === undefined) return;
+  if (tracing && context) {
+    try {
+      const path = media.tracePath(caseId);
+      await context.tracing.stop({ path });
+      const bytes = await media.readFile(path);
+      if (bytes.byteLength > 0) await media.record({ caseId, kind: "trace", bytes });
+    } catch { /* a trace that cannot be stopped or read leaves none */ }
+  }
+  if (media.readVideo !== undefined) {
+    try {
+      const bytes = await media.readVideo(caseId);
+      if (bytes !== undefined && bytes.byteLength > 0) await media.record({ caseId, kind: "video", bytes });
+    } catch { /* a video that cannot be read leaves none */ }
+  }
+}
+
+/**
  * Takes the strip frame a step earns, after the step's action window is finished: only in mode "all", only for the steps `stripStepIndexes` picks for a case of this many steps (so the same scenario on the
  * unchanged code and on the candidate is photographed at the same steps), and best effort like every capture: a page that cannot be photographed or a recorder that refuses (its budget, a credential in the
  * picture) leaves no frame and changes no verdict.
@@ -89,6 +130,8 @@ export type E2EWebAgentPorts = Readonly<{
 export type E2EWebRuntimePorts = Readonly<{
   /** Screenshots of failed cases; absent when the admission approves none. */
   capture?: E2EWebCapturePorts;
+  /** Video and trace; absent unless the plan proves the round's accounts run-scoped and the policy asks (B4). */
+  media?: E2EWebMediaPorts;
   /** Present only when the executor was given a model channel (a group with an agent step). */
   agent?: E2EWebAgentPorts;
   casePlans: E2EApplicationCliCasePlanReader;
@@ -565,6 +608,8 @@ export function createWebApplicationCliHost(input: { launchContext: E2EApplicati
       let sessionClosed: boolean;
       // For capture only: the live page once the case has one, and what the case turned out to be.
       let ownedPage = null as Page | null;
+      let ownedContext = null as BrowserContext | null;
+      let tracing = false;
       let captureOutcome: WebCaseCaptureOutcome = "unknown";
       try {
         const chain = await runInsideAssertionSteps(fixtures[ASSERTION_FIXTURE], scenario.assertions.length, async () => {
@@ -575,6 +620,8 @@ export function createWebApplicationCliHost(input: { launchContext: E2EApplicati
         if (!surface) throw new Error("web engine live surface is unavailable before approved authentication can be applied");
         const context = surface.context();
         const page = surface.page();
+        ownedContext = context;
+        tracing = await startWebCaseTrace({ media: ports.media, context });
         await ports.applyToOwnedBrowserContext(session.sessionRef, context, operationSignal);
         ownedPage = page;
         const protectedObservation = await readValidatedE2EApplicationCaseObservation({ reader: ports.caseObservations,
@@ -621,6 +668,7 @@ export function createWebApplicationCliHost(input: { launchContext: E2EApplicati
       } finally {
         // Before the session closes, while the page is still the case's own; best effort, so it can change neither the verdict nor the cleanup below.
         await finishWebCaseCapture({ capture: ports.capture, caseId, outcome: captureOutcome, page: ownedPage });
+        await finishWebCaseMedia({ media: ports.media, caseId, context: ownedContext, tracing });
         try { sessionClosed = (await ports.closeCaseSession(session.sessionRef, AbortSignal.timeout(5_000))).confirmed; }
         catch { sessionClosed = false; }
       }

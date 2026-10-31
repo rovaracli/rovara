@@ -10,6 +10,8 @@ export { createE2EApplicationSelectionPacket, compareE2EApplicationPublicList } 
 export { buildE2EApplication } from "./application-build.js";
 export { encodeE2EApplicationBuildSourceArchive, materializeE2EApplicationBuildSource, validateE2EApplicationBuildSourceManifest } from "./application-build-source.js";
 export { runIsolatedE2E } from "./runtime.js";
+// Proof and evidence B4: the trace scrub (node:zlib only), so the broker can re-scrub a worker's trace before it keeps one.
+export { scrubTraceZip, scrubTraceLines } from "./executor/trace-scrub.js";
 export type { E2EIndependentAssertionReceipt } from "./runtime-assertions.js";
 export { evaluateE2EAssertions } from "./runtime-assertions.js";
 export { E2E_RUNTIME_ASSET_VERSION, createE2ERuntimeAssets, createE2ERuntimeLaunchId, parseE2EFirstPartyCapture } from "./runtime-assets.js";
