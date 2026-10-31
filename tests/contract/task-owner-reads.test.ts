@@ -45,6 +45,9 @@ const ROWS: readonly Row[] = [
   ["spend/payer.ts", "paymentOfTask", "money", ".developerId*2", ".startedBy"],
   // Wiring A (LR-W1): who started the task, read to tell the initiator apart from a third party's send-back or revert in a lesson's evidence; it decides nothing about who owns the task now
   ["lessons/task-subject.ts", "taskStartActor", "history", ".developerId", ".startedBy*2"],
+  // I3: the reference rows of a commit's attribution store the person a reference stood for (the requester or approver of a task); it decides nothing about who owns the task
+  ["attribution/links.ts", "dynamoAttributionLinkStore>put", "history", ".developerId*2"],
+  ["attribution/links.ts", "linkOf", "history", ".developerId"],
   ["developer/task-person-identity.ts", "resolveTaskPickerPerson", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "registerTaskChannelPeople", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "checkTaskPersonIdentity", "history", ".developerId*3", ".provider*3", ".slackUserId*6", ".developerName"],
