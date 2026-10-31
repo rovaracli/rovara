@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MCP_PROBE_FAILURES } from "@agentx/contracts";
-import { type McpServerSecrets, McpProbeError, STDIO_OFF_MESSAGE, stdioAvailable, allowedTargets, approveMcpServer, disableMcpServer, dynamoMcpServerStore, listMcpServers, proposeMcpServer, removeMcpServer, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
+import { MCP_PROBE_FAILURES, orgScoped } from "@agentx/contracts";
+import { type McpServerSecrets, McpProbeError, STDIO_OFF_MESSAGE, stdioAvailable, allowedTargets, approveMcpServer, disableMcpServer, clearOrgMcpServers, dynamoMcpServerStore, listMcpServers, probeLimiter, proposeMcpServer, removeMcpServer, summariseProbe, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { routeMcpServers } from "../../../packages/broker/src/context-sources/mcp-server-routes.js";
 import { StatusReply } from "../../../packages/broker/src/aws/status-reply.js";
 import type { AgentCaller } from "../../../packages/broker/src/agents/access.js";
@@ -130,6 +130,119 @@ describe("adding a server is easy: paste, test, see, approve", () => {
     await removeMcpServer(deps, admin(), a.serverId);
     expect(vault.has(a.serverId)).toBe(false);
     expect(vault.get(b.serverId)).toBe("tok-b");
+  });
+  it("ME-16: disabling a server deletes its token as well as taking it off the allow-list (approved, and one that was still waiting)", async () => {
+    const { deps, vault, secretLog } = world();
+    const approved = await proposeMcpServer(deps, admin(), { label: "A", transport: HTTP, secret: "tok-a" });
+    await approveMcpServer(deps, admin(), approved.serverId);
+    const waiting = await proposeMcpServer(deps, admin(), { label: "B", transport: { kind: "http", address: "https://b.corp.example/mcp" }, secret: "tok-b" });
+    const other = await proposeMcpServer(deps, admin(), { label: "C", transport: { kind: "http", address: "https://c.corp.example/mcp" }, secret: "tok-c" });
+    await disableMcpServer(deps, admin(), approved.serverId);
+    await disableMcpServer(deps, admin(), waiting.serverId);
+    expect(vault.has(approved.serverId)).toBe(false);
+    expect(vault.has(waiting.serverId)).toBe(false);
+    expect(vault.get(other.serverId)).toBe("tok-c");
+    expect(secretLog.filter((line) => line.startsWith("remove:"))).toEqual([`remove:${approved.serverId}`, `remove:${waiting.serverId}`]);
+    expect(await allowedTargets(deps.store, ORG, ["10.0.0.0/8"])).toEqual([]);
+  });
+  it("ME-16: a server with no token deletes nothing when it is disabled", async () => {
+    const { deps, secretLog } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "A", transport: HTTP });
+    await disableMcpServer(deps, admin(), entry.serverId);
+    expect(secretLog.filter((line) => line.startsWith("remove:"))).toEqual([]);
+  });
+  it("ME-16: when the token cannot be deleted the server is still off, the admin is told, and removing the server tries again", async () => {
+    const { deps, vault } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "A", transport: HTTP, secret: "tok-a" });
+    await approveMcpServer(deps, admin(), entry.serverId);
+    const secrets = deps.secrets, remove = secrets.remove.bind(secrets);
+    secrets.remove = async () => { throw new Error("secrets are down"); };
+    await expect(disableMcpServer(deps, admin(), entry.serverId)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect((await deps.store.get(ORG, entry.serverId))!.status).toBe("disabled");
+    expect(await allowedTargets(deps.store, ORG, ["10.0.0.0/8"])).toEqual([]);
+    expect(vault.has(entry.serverId)).toBe(true);
+    secrets.remove = remove;
+    await removeMcpServer(deps, admin(), entry.serverId);
+    expect(vault.has(entry.serverId)).toBe(false);
+  });
+  it("fix round: when the retry in remove also cannot delete the token, the entry stays (nothing is orphaned) and the error is shown; a later retry finishes", async () => {
+    const { deps, vault } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "A", transport: HTTP, secret: "tok-a" });
+    await approveMcpServer(deps, admin(), entry.serverId);
+    const secrets = deps.secrets, remove = secrets.remove.bind(secrets);
+    secrets.remove = async () => { throw new Error("secrets are down"); };
+    await expect(disableMcpServer(deps, admin(), entry.serverId)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(removeMcpServer(deps, admin(), entry.serverId)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect((await deps.store.get(ORG, entry.serverId))?.status).toBe("disabled");
+    expect(vault.has(entry.serverId)).toBe(true);
+    secrets.remove = remove;
+    await removeMcpServer(deps, admin(), entry.serverId);
+    expect(await deps.store.get(ORG, entry.serverId)).toBeUndefined();
+    expect(vault.has(entry.serverId)).toBe(false);
+  });
+  it("ME-16: closing an org removes every server and token of that org and no other org's, and can be run again", async () => {
+    const { deps, vault } = world();
+    const a = await proposeMcpServer(deps, admin(), { label: "A", transport: HTTP, secret: "tok-a" });
+    await approveMcpServer(deps, admin(), a.serverId);
+    const b = await proposeMcpServer(deps, admin(), { label: "B", transport: { kind: "http", address: "https://b.corp.example/mcp" }, secret: "tok-b" });
+    const c = await proposeMcpServer(deps, admin(), { label: "C", transport: { kind: "http", address: "https://c.corp.example/mcp" } });
+    const OTHER = "org_bbbbbbbbbbbbbbbbbbbb" as typeof ORG;
+    const theirs = await proposeMcpServer(deps, { ...admin(), orgId: OTHER }, { label: "T", transport: { kind: "http", address: "https://t.corp.example/mcp" }, secret: "tok-t" });
+    await clearOrgMcpServers(deps, ORG);
+    expect(await deps.store.list(ORG)).toEqual([]);
+    for (const id of [a.serverId, b.serverId, c.serverId]) expect(vault.has(id), id).toBe(false);
+    expect(vault.get(theirs.serverId)).toBe("tok-t");
+    expect((await deps.store.list(OTHER)).map((entry) => entry.serverId)).toEqual([theirs.serverId]);
+    await expect(clearOrgMcpServers(deps, ORG)).resolves.toBeUndefined();
+  });
+  it("ME-16: closing an org stops, keeping the entry, when a token cannot be deleted, so the close can be run again", async () => {
+    const { deps, vault } = world();
+    const a = await proposeMcpServer(deps, admin(), { label: "A", transport: HTTP, secret: "tok-a" });
+    const secrets = deps.secrets, remove = secrets.remove.bind(secrets);
+    secrets.remove = async () => { throw new Error("secrets are down"); };
+    await expect(clearOrgMcpServers(deps, ORG)).rejects.toThrow("secrets are down");
+    expect((await deps.store.list(ORG)).map((entry) => entry.serverId)).toEqual([a.serverId]);
+    secrets.remove = remove;
+    await clearOrgMcpServers(deps, ORG);
+    expect(vault.has(a.serverId)).toBe(false);
+    expect(await deps.store.list(ORG)).toEqual([]);
+  });
+  it("fix round: closing an org clears every page of servers (more than the 200 one read returns) and every token", async () => {
+    const world1 = world();
+    const { deps, vault } = world1;
+    const ids = Array.from({ length: 450 }, (_, index) => `mcp${String(index).padStart(6, "0")}`);
+    for (const serverId of ids) {
+      await deps.store.create(ORG, { serverId, label: "S", status: "disabled", transport: { kind: "http", address: `https://${serverId}.corp.example/mcp` }, probe: summariseProbe([], NOW), requestedBy: "dev1", requestedAt: "2026-11-01T10:00:00Z", hasSecret: true, secretVersion: "v1" });
+      vault.set(serverId, "tok");
+    }
+    expect((await deps.store.list(ORG)).length).toBe(200);
+    await clearOrgMcpServers(deps, ORG);
+    expect(await deps.store.listAll(ORG)).toEqual({ entries: [], unreadable: 0 });
+    expect(vault.size).toBe(0);
+  });
+  it("fix round: closing an org stops, with nothing silently left behind, when a server entry cannot be read", async () => {
+    const table = new FakeDynamoDb();
+    const { deps } = world();
+    const store = dynamoMcpServerStore({ documentClient: table, tableName: "state" });
+    const good = { serverId: "mcpgood00001", label: "S", status: "disabled" as const, transport: { kind: "http" as const, address: "https://g.corp.example/mcp" }, probe: summariseProbe([], NOW), requestedBy: "dev1", requestedAt: "2026-11-01T10:00:00Z" };
+    await store.create(ORG, good);
+    table.set({ pk: orgScoped(ORG, "MCPSRV"), sk: "SRV#mcpbad000001", serverId: "mcpbad000001", status: "nonsense" });
+    await expect(clearOrgMcpServers({ ...deps, store }, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    // the entry that can be read is not touched either: the close stops as a whole and can be run again once the item is dealt with
+    expect((await store.listAll(ORG)).unreadable).toBe(1);
+    expect((await store.listAll(ORG)).entries.map((entry) => entry.serverId)).toEqual(["mcpgood00001"]);
+  });
+  it("tidy round: the limiter forgets orgs that have been idle for a whole window, so its map does not grow without bound", () => {
+    let now = NOW;
+    const limiter = probeLimiter({ max: 2, windowMs: 600_000, now: () => now });
+    for (let index = 0; index < 1000; index += 1) expect(limiter(`org_${String(index).padStart(20, "0")}`)).toBe(true);
+    expect(limiter.size()).toBe(1000);
+    now += 600_001;
+    expect(limiter(ORG)).toBe(true);
+    expect(limiter.size()).toBe(1);
+    // the limit itself still holds
+    expect(limiter(ORG)).toBe(true);
+    expect(limiter(ORG)).toBe(false);
   });
   it("does not add the same host and port twice", async () => {
     const { deps } = world();

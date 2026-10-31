@@ -36,6 +36,8 @@ export interface McpProber {
 export interface McpServerStore {
   get(orgId: OrgId, serverId: string): Promise<McpServerEntry | undefined>;
   list(orgId: OrgId): Promise<McpServerEntry[]>;
+  /** Every entry of the org, page after page, and how many items could not be read (they are not served by `list` either). For closing an org. */
+  listAll(orgId: OrgId): Promise<{ entries: McpServerEntry[]; unreadable: number }>;
   /** Stores a new entry; false when the id is taken. */
   create(orgId: OrgId, entry: McpServerEntry): Promise<boolean>;
   /** Moves an entry from one status to another only if it still has `from` (and, for an approval, the tools hash that was shown). */
@@ -66,6 +68,23 @@ export function dynamoMcpServerStore(deps: { documentClient: DocumentClient; tab
         TableName: deps.tableName, ConsistentRead: true, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": partition(orgId), ":prefix": "SRV#" }, Limit: 200,
       }))) as { Items?: Array<Record<string, unknown>> };
       return (found.Items ?? []).map(parse).filter((entry): entry is McpServerEntry => entry !== undefined);
+    },
+    async listAll(orgId) {
+      const entries: McpServerEntry[] = [];
+      let unreadable = 0;
+      let startKey: Record<string, unknown> | undefined;
+      do {
+        const page = (await deps.documentClient.send(new QueryCommand({
+          TableName: deps.tableName, ConsistentRead: true, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": partition(orgId), ":prefix": "SRV#" }, Limit: 200,
+          ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }),
+        }))) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+        for (const item of page.Items ?? []) {
+          const entry = parse(item);
+          if (entry === undefined) unreadable += 1; else entries.push(entry);
+        }
+        startKey = page.LastEvaluatedKey;
+      } while (startKey !== undefined);
+      return { entries, unreadable };
     },
     async create(orgId, entry) {
       try {
@@ -140,6 +159,11 @@ export const STDIO_OFF_MESSAGE = "Servers that Rovara runs from a package are no
 
 export interface McpServerActor { orgId: OrgId; developerId: string; orgRole: string }
 
+/** What the audit trail is told: ids, fixed words and flags. The label goes in the event's org details; an address and a token never do. */
+export type McpServerAuditEvent =
+  | { action: "mcp_server.added" | "mcp_server.approved" | "mcp_server.disabled" | "mcp_server.removed"; actor: McpServerActor; serverId: string; label: string; transport: "http" | "stdio"; hasToken: boolean }
+  | { action: "mcp_server.token_changed"; actor: McpServerActor; serverId: string; change: "stored" | "deleted" };
+
 export interface McpServerDependencies {
   store: McpServerStore;
   prober: McpProber;
@@ -157,7 +181,7 @@ export interface McpServerDependencies {
   /** Install setting: the admin who added a server may not be the one who approves it. Off by default, because adding one must be easy. */
   secondAdminToApprove?: boolean;
   newId?: () => string;
-  audit?: (event: { action: "mcp_server.added" | "mcp_server.approved" | "mcp_server.disabled" | "mcp_server.removed"; actor: McpServerActor; serverId: string; label: string }) => Promise<void>;
+  audit?: (event: McpServerAuditEvent) => Promise<void>;
 }
 
 function guard(deps: McpServerDependencies, actor: McpServerActor): void {
@@ -170,7 +194,7 @@ export function stdioAvailable(deps: Pick<McpServerDependencies, "edition" | "st
   return deps.stdioEnabled === true && featureEnabled(editionPolicy(deps.edition), "stdioMcpServers");
 }
 
-const told = async (deps: McpServerDependencies, event: Parameters<NonNullable<McpServerDependencies["audit"]>>[0]): Promise<void> => {
+const told = async (deps: McpServerDependencies, event: McpServerAuditEvent): Promise<void> => {
   try { await deps.audit?.(event); } catch { /* an audit hiccup does not undo the decision */ }
 };
 
@@ -182,16 +206,25 @@ export function summariseProbe(tools: readonly DiscoveredTool[], now: number): M
   return { at: new Date(now).toISOString(), toolsHash: createHash("sha256").update(canonicalJson(shown.map((tool) => [tool.name, tool.schemaHash]))).digest("hex"), tools: shown };
 }
 
-/** At most `max` tests per org in `windowMs`, counted in this process. */
-export function probeLimiter(options: { max: number; windowMs: number; now: () => number }): (orgId: OrgId) => boolean {
+/**
+ * At most `max` tests per org in `windowMs`, counted in this process. An org that has been idle for a whole window is forgotten (swept at most once a window), so the map
+ * holds only orgs seen recently; `size()` says how many.
+ */
+export function probeLimiter(options: { max: number; windowMs: number; now: () => number }): ((orgId: OrgId) => boolean) & { size(): number } {
   const seen = new Map<string, number[]>();
-  return (orgId) => {
+  let sweptAt = options.now();
+  const limiter = (orgId: OrgId): boolean => {
     const at = options.now();
+    if (at - sweptAt >= options.windowMs) {
+      for (const [key, times] of seen) if (times.every((time) => at - time >= options.windowMs)) seen.delete(key);
+      sweptAt = at;
+    }
     const recent = (seen.get(orgId) ?? []).filter((time) => at - time < options.windowMs);
     if (recent.length >= options.max) { seen.set(orgId, recent); return false; }
     seen.set(orgId, [...recent, at]);
     return true;
   };
+  return Object.assign(limiter, { size: () => seen.size });
 }
 
 async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerTransport | { kind: "stdio"; spec: McpStdioProposal }, token: string | undefined): Promise<{ probe: McpServerProbe; integrity?: string }> {
@@ -244,7 +277,8 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
     await deps.secrets.remove(actor.orgId, serverId).catch(() => undefined);
     throw agentXError("IDEMPOTENCY_CONFLICT", "that server id is taken; try again");
   }
-  await told(deps, { action: "mcp_server.added", actor, serverId: entry.serverId, label: entry.label });
+  await told(deps, { action: "mcp_server.added", actor, serverId: entry.serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
+  if (secretVersion !== undefined) await told(deps, { action: "mcp_server.token_changed", actor, serverId: entry.serverId, change: "stored" });
   return entry;
 }
 
@@ -272,7 +306,7 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
   if (await deps.store.decide({ orgId: actor.orgId, serverId, from: "awaiting_approval", to: "approved", by: actor.developerId, at, toolsHash: entry.probe.toolsHash }) === "stale") {
     throw agentXError("CHANGE_STALE", "That server was already decided. Reload the list.");
   }
-  await told(deps, { action: "mcp_server.approved", actor, serverId, label: entry.label });
+  await told(deps, { action: "mcp_server.approved", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
   return { ...entry, status: "approved", decidedBy: actor.developerId, decidedAt: at };
 }
 
@@ -283,7 +317,27 @@ export async function disableMcpServer(deps: McpServerDependencies, actor: McpSe
   if (entry === undefined || entry.status === "disabled") throw agentXError("NOT_FOUND", "no MCP server with that id is in use");
   const result = await deps.store.decide({ orgId: actor.orgId, serverId, from: entry.status, to: "disabled", by: actor.developerId, at: new Date(deps.now()).toISOString() });
   if (result === "stale") throw agentXError("CHANGE_STALE", "That server changed while this was decided. Reload the list.");
-  await told(deps, { action: "mcp_server.disabled", actor, serverId, label: entry.label });
+  await told(deps, { action: "mcp_server.disabled", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
+  // ME-16: a disabled server is never turned back on, so its token has no further use: delete it now. The server is already off (the allow-list reads the entry at every call); if the delete
+  // fails the admin is told and removing the server tries again.
+  if (entry.hasSecret === true) {
+    try { await deps.secrets.remove(actor.orgId, serverId); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "The server is turned off, but its token could not be deleted just now. Remove the server to try again."); }
+    await told(deps, { action: "mcp_server.token_changed", actor, serverId, change: "deleted" });
+  }
+}
+
+/**
+ * What closing an org does to its MCP servers (ME-16): every entry and every token of the org goes, in any status, and no other org's. The token is deleted first and the entry after,
+ * so a failure leaves the entry for the next run; running it again after a stop part-way finishes the rest. Every page is read, and an unreadable item stops it before anything is removed.
+ */
+export async function clearOrgMcpServers(deps: Pick<McpServerDependencies, "store" | "secrets">, orgId: OrgId): Promise<void> {
+  const { entries, unreadable } = await deps.store.listAll(orgId);
+  // An item that cannot be read may hold a token that cannot be found: stop, before anything else is removed, rather than call the org cleared.
+  if (unreadable > 0) throw agentXError("RUNTIME_UNAVAILABLE", `${unreadable} MCP server record${unreadable === 1 ? " is" : "s are"} unreadable, so the organization's servers were not cleared. An operator must look at them.`);
+  for (const entry of entries) {
+    if (entry.hasSecret === true) await deps.secrets.remove(orgId, entry.serverId);
+    await deps.store.remove(orgId, entry.serverId);
+  }
 }
 
 export async function removeMcpServer(deps: McpServerDependencies, actor: McpServerActor, serverId: string): Promise<void> {
@@ -291,10 +345,13 @@ export async function removeMcpServer(deps: McpServerDependencies, actor: McpSer
   const entry = await deps.store.get(actor.orgId, serverId);
   if (entry === undefined) throw agentXError("NOT_FOUND", "no MCP server has that id");
   if (entry.status === "approved") throw agentXError("CONFIG_INVALID", "Turn the server off first, then remove it.");
+  // Its token goes first. A failed delete keeps the entry (which still points at the token), so the admin can try again; the entry is never removed while its token may remain.
+  if (entry.hasSecret === true) {
+    try { await deps.secrets.remove(actor.orgId, serverId); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "The server's token could not be deleted just now, so the server was kept. Try removing it again."); }
+  }
   await deps.store.remove(actor.orgId, serverId);
-  // Its token goes with it.
-  if (entry.hasSecret === true) await deps.secrets.remove(actor.orgId, serverId).catch(() => undefined);
-  await told(deps, { action: "mcp_server.removed", actor, serverId, label: entry.label });
+  if (entry.hasSecret === true) await told(deps, { action: "mcp_server.token_changed", actor, serverId, change: "deleted" });
+  await told(deps, { action: "mcp_server.removed", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
 }
 
 /** The list the settings page shows an admin: every entry, with the tools each offers. */

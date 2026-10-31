@@ -182,9 +182,9 @@ const waiting = (result: Extract<ChangeResult<unknown>, { applied: false }>): St
  */
 export function isAgentRoute(pathname: string): boolean {
   return /^\/v1\/app\/(agents|skills|approvals|spend-requests|connections|budget)(\/|$)/.test(pathname)
-    || /^\/v1\/app\/org\/(agent-guardrails|model-sources|model-sources-order|spend|spend-policy)(\/|$)/.test(pathname)
+    || /^\/v1\/app\/org\/(agent-guardrails|model-sources|model-sources-order|spend|spend-policy|mcp-servers)(\/|$)/.test(pathname)
     || /^\/v1\/app\/tasks\/[^/]+\/(continue-as-task|run-limit-request)$/.test(pathname)
-    || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors|builtin-triggers|event-hooks)(\/|$)/.test(pathname);
+    || /^\/v1\/app\/projects\/[^/]+\/(agents|ai|spend|connectors|builtin-triggers|event-hooks|context-sources)(\/|$)/.test(pathname);
 }
 
 // ---- bodies

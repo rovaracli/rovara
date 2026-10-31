@@ -12,6 +12,7 @@ import { AGENTX_PRODUCTION_VPC_CIDR, ProductionFoundationStack } from "./product
 import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
 import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@agentx/contracts";
 import { EditionEnvironment } from "./edition-env.js";
+import { parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
 import { RetainExceptOnCreate } from "./retention.js";
@@ -148,9 +149,12 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       env: { region },
     });
   }
+  // The private MCP settings (rovaraPrivateMcpCidrs and the MCP host's certificate): Enterprise only, checked here so a wrong one stops synth, and given to the broker as its environment.
+  const privateMcp = parsePrivateMcpContext({ edition: explicitEdition, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], get: (key) => app.node.tryGetContext(key) as unknown });
   new ControlPlaneStack(app, "AgentXControlPlane", {
     description: "AgentX authenticated control plane and durable dispatch foundation",
     naming,
+    ...(Object.keys(privateMcpBrokerEnvironment(privateMcp)).length === 0 ? {} : { brokerEnvironment: privateMcpBrokerEnvironment(privateMcp) }),
     ...(reservedConcurrency ? {} : { reservedConcurrency: false }),
     ...(agentxCloud ? { cloud: true } : {}),
     ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs] } : {}),

@@ -69,7 +69,9 @@ export interface SourceEnvironment {
   /** The org connection, if it is this org's. */
   connection(orgId: OrgId, connectionId: string): Promise<{ type: string; access: "read" | "read_write" } | undefined>;
   /** The approved MCP server entry (see mcp-servers.ts), if it is this org's. */
-  registeredServer(orgId: OrgId, serverId: string): Promise<{ status: "approved" | "awaiting_approval" | "disabled" } | undefined>;
+  registeredServer(orgId: OrgId, serverId: string): Promise<{ status: "approved" | "awaiting_approval" | "disabled"; /** Absent: a server with an address. */ transport?: "http" | "stdio" } | undefined>;
+  /** Whether this install runs servers from a package. Absent counts as no: a package-run server is then not offered and not saved (ME-16). */
+  stdioAvailable?(): boolean;
   /** The tools the source's server lists now. It throws when the server cannot be reached; the message is not shown. */
   discoverTools(orgId: OrgId, server: ContextSourceServer): Promise<DiscoveredTool[]>;
   /** Whether a live check at the source with the viewer's own identity exists for this source (`source_acl` needs it). */
@@ -111,6 +113,7 @@ export async function validateContextSource(env: SourceEnvironment, orgId: OrgId
     const server = await env.registeredServer(orgId, source.server.serverId);
     if (server === undefined) problems.push("server: that MCP server is not registered in this organisation");
     else if (server.status !== "approved") problems.push("server: that MCP server has not been approved by an admin");
+    else if (server.transport === "stdio" && env.stdioAvailable?.() !== true) problems.push("server: that MCP server runs from a package, which is switched off on this install; choose a server that has an address");
   }
   if (problems.length > 0) return { problems, secondAdminReasons, source };
 
@@ -193,7 +196,7 @@ export interface SettingsDependencies {
   now: () => number;
   newId?: () => string;
   /** Told after a decision, for the audit trail. A failure is not the caller's problem. */
-  audit?: (event: { action: "context_source.proposed" | "context_source.applied" | "context_source.rejected"; actor: SettingsActor; project: string; sourceId: string; changeId: string }) => Promise<void>;
+  audit?: (event: { action: "context_source.proposed" | "context_source.applied" | "context_source.rejected"; actor: SettingsActor; project: string; sourceId: string; changeId: string; change: "set" | "remove" }) => Promise<void>;
 }
 
 function requireAdmin(actor: SettingsActor): void {
@@ -227,7 +230,7 @@ export async function proposeSourceChange(deps: SettingsDependencies, actor: Set
     change = { ...base, kind: "set", sourceId: checked.source.sourceId, source: checked.source, secondAdminReasons: checked.secondAdminReasons };
   }
   await deps.store.putChange(change);
-  await told(deps, { action: "context_source.proposed", actor, project, sourceId: change.sourceId, changeId: change.changeId });
+  await told(deps, { action: "context_source.proposed", actor, project, sourceId: change.sourceId, changeId: change.changeId, change: change.kind });
   return change;
 }
 
@@ -260,7 +263,7 @@ export async function confirmSourceChange(deps: SettingsDependencies, actor: Set
   if (await deps.store.apply({ change, next, decidedBy: actor.developerId, decidedAt: at }) === "stale") {
     throw agentXError("CHANGE_STALE", "The project's sources changed while this was confirmed. Propose it again.");
   }
-  await told(deps, { action: "context_source.applied", actor, project, sourceId: change.sourceId, changeId });
+  await told(deps, { action: "context_source.applied", actor, project, sourceId: change.sourceId, changeId, change: change.kind });
   return next;
 }
 
@@ -271,5 +274,5 @@ export async function rejectSourceChange(deps: SettingsDependencies, actor: Sett
   if (change === undefined || change.status !== "pending") throw agentXError("NOT_FOUND", "no pending change has that id");
   const result = await deps.store.reject({ change, decidedBy: actor.developerId, decidedAt: new Date(deps.now()).toISOString() });
   if (result === "stale") throw agentXError("CHANGE_STALE", "That change was already decided.");
-  await told(deps, { action: "context_source.rejected", actor, project, sourceId: change.sourceId, changeId });
+  await told(deps, { action: "context_source.rejected", actor, project, sourceId: change.sourceId, changeId, change: change.kind });
 }

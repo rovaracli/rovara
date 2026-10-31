@@ -2,7 +2,7 @@
 // it was revoked, an existence probe says it is gone AND replaying a credential the round really held is refused; where the replay cannot run, publication is held for the token lifetime. Leases are durable
 // before the account exists, and a sweeper revokes what a crash left behind.
 import { describe, expect, it } from "vitest";
-import { RUN_SCOPED_ASSUMED_TOKEN_TTL_MS, RUN_SCOPED_DEFAULT_MAX_HOLD_MS, RUN_SCOPED_GRACE_MS, RUN_SCOPED_MAX_ROUND_MS, RUN_SCOPED_REVOKE_ATTEMPTS, RUN_SCOPED_STORE_ATTEMPTS, cognitoPresenceOf, cognitoTestPoolProvisioner, evidenceAccountsOf, holdFor, httpHookProvisioner, provisionRunScopedAccounts, revocationSettledAt,
+import { RUN_SCOPED_ASSUMED_TOKEN_TTL_MS, RUN_SCOPED_DEFAULT_MAX_HOLD_MS, RUN_SCOPED_GRACE_MS, RUN_SCOPED_MAX_ROUND_MS, RUN_SCOPED_REVOKE_ATTEMPTS, RUN_SCOPED_SESSION_PROBES_MAX, RUN_SCOPED_STORE_ATTEMPTS, cognitoPresenceOf, cognitoTestPoolProvisioner, evidenceAccountsOf, holdFor, httpHookProvisioner, provisionRunScopedAccounts, revocationSettledAt,
   revokeRunScopedAccounts, runScopedExpiry, seedCommandProvisioner, sessionStateOfStatus, sweepRunScopedLeases,
   type AccountPresence, type AccountProvisionerPort, type LeaseAlert, type AccountProvisionerPorts, type LeaseRecord, type LeaseStore, type RunScopedAccount, type RunScopedLease, type SessionCredential, type SessionState } from "../../packages/broker/src/e2e/run-scoped-accounts.js";
 import { TestEnvAccountSchema, type TestEnvAccount } from "../../packages/contracts/src/index.js";
@@ -353,13 +353,67 @@ describe("revocation and its proof (C1)", () => {
     expect((await revokeRunScopedAccounts({ leases: [leases[0]!], accounts: all, ports: { seed_command: undefined, cognito_test_pool: undefined, http_hook: undefined }, now: NOW })).confirmed).toBe(false);
     expect((await revokeRunScopedAccounts({ leases: [lease("old", "seed_command")], accounts: [registered], ports: ports(fake()), now: NOW })).confirmed).toBe(false);
   });
-  it("replays each account's OWN credentials (per-case attribution) and at most three of them", async () => {
+  it("replays each account's OWN credentials (per-case attribution), every one the round held, however many", async () => {
     const replayed: Array<[string, string]> = [];
     const port = live(fake());
-    port.sessionState = async ({ account, credential }) => { replayed.push([account.profileId, credential.value]); return "dead"; };
-    const many = new Map<string, SessionCredential[]>([["buyer", [COOKIE, BEARER, { kind: "cookie", value: "third-value-3" }, { kind: "cookie", value: "fourth-value-4" }]], ["admin", [BEARER]]]);
+    const ended = new Set<string>();
+    const endSessions = port.endSessions.bind(port);
+    port.endSessions = async (input) => { ended.add(input.account.profileId); return endSessions(input); };
+    port.sessionState = async ({ account, credential }) => { replayed.push([account.profileId, credential.value]); return ended.has(account.profileId) ? "dead" : "alive"; };
+    const many = new Map<string, SessionCredential[]>([["buyer", [COOKIE, BEARER, { kind: "cookie", value: "third-value-3" }, { kind: "cookie", value: "fourth-value-4" }, { kind: "bearer", value: "fifth-value-5" }]], ["admin", [BEARER]]]);
     await revokeRunScopedAccounts({ leases: leases.slice(0, 2), accounts: all, ports: ports(port), now: NOW, sessions: many });
-    expect(replayed).toEqual([["buyer", COOKIE.value], ["buyer", BEARER.value], ["buyer", "third-value-3"], ["admin", BEARER.value]]);
+    // each credential is replayed before the revoke (the control) and after it
+    expect(replayed.filter(([profile]) => profile === "buyer").map(([, value]) => value)).toEqual([COOKIE.value, BEARER.value, "third-value-3", "fourth-value-4", "fifth-value-5", COOKIE.value, BEARER.value, "third-value-3", "fourth-value-4", "fifth-value-5"]);
+    expect(replayed.filter(([profile]) => profile === "admin").map(([, value]) => value)).toEqual([BEARER.value, BEARER.value]);
+  });
+  it("PC-N1: a fourth credential that stays alive after the revoke keeps the revocation unconfirmed, and waiting never settles it", async () => {
+    const issued: SessionCredential[] = [COOKIE, BEARER, { kind: "cookie", value: "third-value-3" }, { kind: "bearer", value: "fourth-value-4" }];
+    const port = live(fake({ replay: (credential, ended) => (!ended || credential.value === "fourth-value-4" ? "alive" : "dead") }));
+    const report = await revokeRunScopedAccounts({ leases: leases.slice(0, 1), accounts: all, ports: ports(port), now: NOW, sessions: new Map([["buyer", issued]]) });
+    expect(report.accounts[0]?.sessionProof).toBe("alive");
+    expect(report.confirmed).toBe(false);
+    expect(revocationSettledAt(report, NOW + 10 * RUN_SCOPED_ASSUMED_TOKEN_TTL_MS)).toBe(false);
+    // the same round with that credential refused is confirmed, so the test is not passing for another reason
+    const dead = await revokeRunScopedAccounts({ leases: leases.slice(0, 1), accounts: all, ports: ports(live(fake())), now: NOW, sessions: new Map([["buyer", issued]]) });
+    expect(dead.confirmed).toBe(true);
+  });
+  it("fix round: replays at most 32 credentials per account, and any beyond that count as uncontrolled, so the proof fails closed", async () => {
+    expect(RUN_SCOPED_SESSION_PROBES_MAX).toBe(32);
+    const issued: SessionCredential[] = Array.from({ length: 33 }, (_, index) => ({ kind: "bearer" as const, value: `bearer-value-${String(index).padStart(2, "0")}` }));
+    const replayed: string[] = [];
+    const port = live(fake());
+    const ended = new Set<string>();
+    const endSessions = port.endSessions.bind(port);
+    port.endSessions = async (input) => { ended.add(input.account.profileId); return endSessions(input); };
+    port.sessionState = async ({ account, credential }) => { replayed.push(credential.value); return ended.has(account.profileId) ? "dead" : "alive"; };
+    const report = await revokeRunScopedAccounts({ leases: leases.slice(0, 1), accounts: all, ports: ports(port), now: NOW, sessions: new Map([["buyer", issued]]), maxTokenTtlMs: 600_000 });
+    // 32 credentials, each replayed before and after; the 33rd is never replayed and is uncontrolled
+    expect(replayed).toHaveLength(64);
+    expect(replayed).not.toContain("bearer-value-32");
+    expect(report.accounts[0]?.sessionProof).toBe("unclear");
+    expect(report.confirmed).toBe(false);
+    expect(report.heldUntil).toBe("2026-11-03T10:10:00.000Z");
+    expect(revocationSettledAt(report, NOW + 599_999)).toBe(false);
+    // exactly 32 is fully proved
+    const exact = await revokeRunScopedAccounts({ leases: leases.slice(0, 1), accounts: all, ports: ports(live(fake())), now: NOW, sessions: new Map([["buyer", issued.slice(0, 32)]]) });
+    expect(exact.accounts[0]?.sessionProof).toBe("dead");
+    expect(exact.confirmed).toBe(true);
+  });
+  it("PC-N1: a credential that cannot be replayed (unusable, or not alive before the revoke) is uncontrolled: not confirmed until the hold runs out", async () => {
+    const unusable = { kind: "header", value: "x-token-value" } as unknown as SessionCredential;
+    const empty: SessionCredential = { kind: "cookie", value: "" };
+    for (const extra of [unusable, empty]) {
+      const report = await revokeRunScopedAccounts({ leases: leases.slice(0, 1), accounts: all, ports: ports(live(fake())), now: NOW, sessions: new Map([["buyer", [COOKIE, extra]]]), maxTokenTtlMs: 600_000 });
+      expect(report.accounts[0]?.sessionProof).toBe("unclear");
+      expect(report.confirmed).toBe(false);
+      expect(report.heldUntil).toBe("2026-11-03T10:10:00.000Z");
+      expect(revocationSettledAt(report, NOW + 599_999)).toBe(false);
+      expect(revocationSettledAt(report, NOW + 600_000)).toBe(true);
+    }
+    // the only credential is unusable: still "unclear", never a silent pass
+    const only = await revokeRunScopedAccounts({ leases: leases.slice(0, 1), accounts: all, ports: ports(live(fake())), now: NOW, sessions: new Map([["buyer", [unusable]]]), maxTokenTtlMs: 600_000 });
+    expect(only.accounts[0]?.sessionProof).toBe("unclear");
+    expect(only.confirmed).toBe(false);
   });
   it("reads an HTTP status from a replayed credential: 401 and 403 are dead, 2xx and 3xx alive, the rest proves nothing", () => {
     expect([401, 403].map(sessionStateOfStatus)).toEqual(["dead", "dead"]);
@@ -505,7 +559,8 @@ describe("a probe that proves nothing never confirms (C1-a, C1-b)", () => {
   it("an empty credential, a credential of an unknown scheme, and a junk one that was never alive are never evidence", async () => {
     for (const credential of [{ kind: "bearer", value: "" }, { kind: "basic" as never, value: "abc" }]) {
       const report = await round(hookServer({ replay: "honest" }), new Map([["partner", [credential as SessionCredential]]]));
-      expect(report.accounts[0]?.sessionProof, JSON.stringify(credential)).toBe("not_possible");
+      // PC-N1: a credential the round was issued but cannot be replayed is uncontrolled ("unclear", held for the token lifetime), not silently dropped to "nothing to prove"
+      expect(report.accounts[0]?.sessionProof, JSON.stringify(credential)).toBe("unclear");
       expect(report.confirmed).toBe(false);
     }
     // a credential that was not alive before the revoke (junk, the wrong scheme) cannot be shown dead

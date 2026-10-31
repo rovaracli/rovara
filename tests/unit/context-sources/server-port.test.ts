@@ -114,12 +114,22 @@ describe("a registered stdio server", () => {
 });
 
 describe("the settings view of the world", () => {
+  it("ME-16: reports a package-run server as such, and whether the install runs them", async () => {
+    const w = world({ entries: [{ ...http(), transport: { kind: "stdio", spec: { registry: "npm", name: "pkg", version: "1.0.0", args: [], integrity: `sha512-${"A".repeat(86)}==` } } }] });
+    await w.seed();
+    const off = sourceEnvironment({ edition: "enterprise", connections: connection(), servers: w.store, port: w.port, stdioEnabled: false });
+    expect(await off.registeredServer(ORG, "mcpsim000001")).toEqual({ status: "approved", transport: "stdio" });
+    expect(off.stdioAvailable?.()).toBe(false);
+    expect(sourceEnvironment({ edition: "enterprise", connections: connection(), servers: w.store, port: w.port, stdioEnabled: true }).stdioAvailable?.()).toBe(true);
+    // Public never has them, whatever the switch says
+    expect(sourceEnvironment({ edition: "public", connections: connection(), servers: w.store, port: w.port, stdioEnabled: true }).stdioAvailable?.()).toBe(false);
+  });
   it("reports a connection's access and a server's status, and can list every tool", async () => {
     const w = world({ entries: [http()] });
     await w.seed();
     const env = sourceEnvironment({ edition: "enterprise", connections: connection(), servers: w.store, port: w.port });
     expect(await env.connection(ORG, CONNECTION)).toEqual({ type: "mcp", access: "read" });
-    expect(await env.registeredServer(ORG, "mcpsim000001")).toEqual({ status: "approved" });
+    expect(await env.registeredServer(ORG, "mcpsim000001")).toEqual({ status: "approved", transport: "http" });
     expect(await env.registeredServer(ORG, "mcpnope000001")).toBeUndefined();
     expect((await env.discoverTools(ORG, { kind: "connection", connectionId: CONNECTION })).map((tool) => tool.name)).toEqual(["search_tickets", "get_ticket"]);
     expect(env.perUserCheckAvailable({} as never)).toBe(false);

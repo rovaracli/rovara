@@ -28,8 +28,8 @@ export function ContextSources({ project }: { project: string }) {
   queryFn: async () => {
    const sources = await api.sources(project);
    // The servers and connections only fill the "Add a source" choices; a failure to read them leaves the list empty, not the page broken.
-   const [servers, connections] = await Promise.all([api.servers().then(value => value.servers, (): McpServerView[] => []), api.connections().then(value => value.connections, (): Array<{ connectionId: string; label: string; type: string }> => [])]);
-   return { sources: sources.document.sources, pending: sources.pending, servers, connections };
+   const [{ servers, stdioAvailable }, connections] = await Promise.all([api.servers().then(value => ({ servers: value.servers, stdioAvailable: value.stdioAvailable === true }), (): { servers: McpServerView[]; stdioAvailable: boolean } => ({ servers: [], stdioAvailable: false })), api.connections().then(value => value.connections, (): Array<{ connectionId: string; label: string; type: string }> => [])]);
+   return { sources: sources.document.sources, pending: sources.pending, servers, stdioAvailable, connections };
   },
  });
  const hidden = read.error instanceof ApiError && (read.error.status === 403 || read.error.status === 404);
@@ -37,7 +37,8 @@ export function ContextSources({ project }: { project: string }) {
  const servers = data?.servers ?? [], connections = data?.connections ?? [];
  const choices: ServerChoice[] = [
   ...connections.filter(c => c.type === "mcp").map(c => ({ key: `c:${c.connectionId}`, label: `${c.label} (connection)`, server: { kind: "connection" as const, connectionId: c.connectionId } })),
-  ...servers.filter(s => s.status === "approved").map(s => ({ key: `s:${s.serverId}`, label: `${s.label} (on your network)`, server: { kind: "registered_server" as const, serverId: s.serverId } })),
+  // A server that Rovara runs from a package is offered only where the install runs them (the broker refuses it otherwise).
+  ...servers.filter(s => s.status === "approved" && (s.transport.kind !== "stdio" || data?.stdioAvailable === true)).map(s => ({ key: `s:${s.serverId}`, label: `${s.label} (on your network)`, server: { kind: "registered_server" as const, serverId: s.serverId } })),
  ];
  async function run(action: () => Promise<void>) { setBusy(true);setError(undefined);setNotice(undefined);try { await action();await client.invalidateQueries({ queryKey: key }); } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Rovara couldn't do that. Try again."); } finally { setBusy(false); } }
  if (hidden) return null;

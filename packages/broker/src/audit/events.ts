@@ -545,6 +545,35 @@ export function auditEvidenceDownloaded(input: AuditBuilderBase & { taskId: stri
   return build("evidence.downloaded", input, { kind: "task", id: input.taskId }, { artifactKind: input.artifactKind, retentionClass: input.retentionClass });
 }
 
+// Lane E: private MCP servers and project Sources ---------------------------------------------------------------------------
+
+/** A server's label is free text an admin typed (it could hold an address): it is capped here and otherwise left as it is. It sits in the org details, never in a fact. */
+const AUDIT_LABEL_MAX_CHARS = 60;
+
+/**
+ * `occurrence`: `auditOccurrence(serverId, time of the change)`. The target is the server's id; its label goes in `details` (org), its address and its token nowhere.
+ * `transport` is `http` or `stdio`. Added and approved also say whether the server has a token (a flag, never the value).
+ */
+export function auditMcpServerChanged(input: AuditBuilderBase & { action: "mcp_server.added" | "mcp_server.approved" | "mcp_server.disabled" | "mcp_server.removed"; serverId: string; label: string; transport: "http" | "stdio"; hasToken?: boolean }): AuditEventInput {
+  const { action, serverId, label, transport, hasToken, ...base } = input;
+  const withToken = action === "mcp_server.added" || action === "mcp_server.approved";
+  return build(action, { ...base, details: [...(base.details ?? []), { subject: "org", fields: { label: label.slice(0, AUDIT_LABEL_MAX_CHARS) } }] }, { kind: "mcp_server", id: serverId }, { transport, ...(withToken ? { hasCredential: hasToken === true } : {}) });
+}
+
+/** `occurrence`: `auditOccurrence(serverId, time)`. `change` is `stored` or `deleted`: that the server's token changed, never the token. */
+export function auditMcpServerTokenChanged(input: AuditBuilderBase & { serverId: string; change: "stored" | "deleted" }): AuditEventInput {
+  return build("mcp_server.token_changed", input, { kind: "mcp_server", id: input.serverId }, { change: input.change }, [input.change]);
+}
+
+/**
+ * `occurrence`: `auditOccurrence(changeId)`. A change to a project's Sources: the project is the (name-keyed) target, the change's id is `related`, the source's short id goes in
+ * `details` (org). `change` is `set` or `remove`.
+ */
+export function auditContextSourceChange(input: AuditBuilderBase & { action: "context_source.proposed" | "context_source.applied" | "context_source.rejected"; projectName: string; sourceId: string; change: "set" | "remove" }): AuditEventInput {
+  const { action, projectName, sourceId, change, ...base } = input;
+  return build(action, { ...base, details: [...(base.details ?? []), { subject: "org", fields: { sourceId } }] }, { kind: "project", name: projectName }, { change });
+}
+
 // G3 registrations/builders only. Writers must pair each event with the actual state change atomically.
 export function auditModelFallbackUsed(input:AuditBuilderBase&{projectName:string;stage:StageId;used:ModelIdentifier;wanted?:ModelIdentifier;reasonCode:ModelFallback["reasonCode"];companyRevision:number}):AuditEventInput {
  const digest=(model:ModelIdentifier)=>createHash("sha256").update(JSON.stringify([model.provider,model.modelId])).digest("hex");

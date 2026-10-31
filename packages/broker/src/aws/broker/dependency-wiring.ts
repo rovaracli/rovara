@@ -52,6 +52,8 @@ import type { ChainRouteDependencies } from "../../chains/routes.js";
 import { chainOwnerMoverFor, chainReadAccessFor } from "../../chains/session-seam.js";
 import { realtimeConfigFromEnvironment } from "../../realtime/sink.js";
 import { startAgentRun, type AgentRunStarter } from "../../agents/runs.js";
+import { roleOnProject } from "../../agents/roster.js";
+import { sharedContextSourcesInstall } from "../../context-sources/install.js";
 import { servableModels } from "../../model-sources/routing.js";
 import { mintConfirmUrl, requireDecideSession } from "../../developer/decide-session.js";
 import { agentRunStarterOf, codeIntentDependenciesOf, projectMembersOf, type DeveloperCaller, type DeveloperRouteDependencies } from "../developer-routes.js";
@@ -242,6 +244,14 @@ export function agentRouteDependencies(dependencies: AwsBrokerDependencies, task
       owner: { developerId: approved.developerId }, startedBy: { developerId: approved.developerId }, versionApproved: true,
     });
   };
+  // Lane E (ME-13): the project Sources settings and, in Enterprise, the org's MCP servers. The install reads ROVARA_PRIVATE_MCP_CIDRS, ROVARA_STDIO_MCP_SERVERS and the MCP host from the environment;
+  // it is built once per container, so the limiter on server tests is not reset by each request. Inert where the install has no connection secrets role.
+  const contextSourcesInstall = contextSourcesInstallOf(dependencies);
+  if (contextSourcesInstall !== undefined) {
+    const sources = contextSourcesInstall.routes({ requireProjectRole: async (caller, project) => { await roleOnProject(routeDependencies, caller, project); } });
+    routeDependencies.contextSources ??= sources.contextSources;
+    if (sources.mcpServers !== undefined) routeDependencies.mcpServers ??= sources.mcpServers;
+  }
   // Plan 3, Task 21a-wiring: decisions need a person present. The decide routes call this guard first (a token is sent to the page with a ticketed
   // confirmUrl), and `GET /v1/app/approvals/{id}` mints the same ticket for the person who may decide it. Both use the page's own context.
   if (dependencies.decide !== undefined) {
@@ -417,6 +427,11 @@ export async function requireRecordProject(
 }
 
 /** The handler's dependencies from what callers supply (see AwsBrokerInput). */
+/** The lane E install for these dependencies (undefined, inert, where there is no connection secrets role). A wrong install setting throws, which stops the container at its first request. */
+function contextSourcesInstallOf(dependencies: Pick<AwsBrokerDependencies, "orgConnections" | "documentClient" | "tableName" | "audit">) {
+  return sharedContextSourcesInstall({ env: process.env, orgConnections: dependencies.orgConnections, documentClient: dependencies.documentClient, tableName: dependencies.tableName, ...(dependencies.audit === undefined ? {} : { audit: { audit: dependencies.audit } }) });
+}
+
 export function brokerDependencies(input: AwsBrokerInput): AwsBrokerDependencies {
   // One cache per container: discovery per revision, connector and repository costs one vendor round trip.
   const { connectorCredentials, turnRecordsTableName, ...rest } = input;
@@ -429,8 +444,11 @@ export function brokerDependencies(input: AwsBrokerInput): AwsBrokerDependencies
         projectOf: workspaceProjectReader(input.documentClient, input.tableName),
       })
     : undefined);
+  // Lane E (ME-13): the stage routes' sources runtime; an explicit one (tests) wins.
+  const contextSources = input.contextSources ?? contextSourcesInstallOf(input)?.runtime;
   return {
     ...rest,
+    ...(contextSources === undefined ? {} : { contextSources }),
     catalogs: input.catalogs ?? new CatalogCache<ScopeDiscovery>({ ttlMs: 600_000, maxEntries: 256 }),
     ...(credentialRegistry ? { credentialRegistry } : {}),
     ...(turnRecords ? { turnRecords } : {}),

@@ -20,12 +20,14 @@ const tools = [
  { name: "close_ticket", description: "Close", schemaHash: hash("c"), annotation: "unsafe", nameSuggestsChange: true, takesAddress: true },
 ];
 
-function sourcesHost(options: { pending?: unknown[]; sources?: unknown[]; forbidden?: boolean } = {}) {
+const packageRun = { ...approved, serverId: "mcppkg000001", label: "Notes", transport: { kind: "stdio", spec: { name: "@acme/wiki-mcp", version: "1.0.0", integrity: "sha512-x" } } };
+
+function sourcesHost(options: { pending?: unknown[]; sources?: unknown[]; forbidden?: boolean; servers?: unknown[]; stdioAvailable?: boolean } = {}) {
  const posts: ApiRequest[] = [];
  const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => {
   if (input.method === "POST") posts.push(input);
   if (input.path === "/v1/app/projects/payments/context-sources") return options.forbidden ? { status: 403, body: { error: { code: "FORBIDDEN", message: "no" } } } : { status: 200, body: { project: "payments", document: { revision: 1, sources: options.sources ?? [] }, pending: options.pending ?? [] } };
-  if (input.path === "/v1/app/org/mcp-servers") return { status: 200, body: { servers: [approved] } };
+  if (input.path === "/v1/app/org/mcp-servers") return { status: 200, body: { servers: options.servers ?? [approved], ...(options.stdioAvailable === undefined ? {} : { stdioAvailable: options.stdioAvailable }) } };
   if (input.path === "/v1/app/connections") return { status: 200, body: { connections: [{ connectionId: "con_aaaaaaaaaaaaaaaaaaaa", label: "Wiki", type: "mcp" }, { connectionId: "con_bbbbbbbbbbbbbbbbbbbb", label: "Tracker", type: "linear" }] } };
   if (input.path.endsWith("/discover")) return { status: 200, body: { tools } };
   if (input.path.endsWith("/changes")) return { status: 202, body: { status: "NEEDS_CONFIRMATION", changeId: "11111111-1111-4111-8111-111111111111", needsSecondAdmin: [] } };
@@ -79,6 +81,15 @@ describe("a project's Sources", () => {
   } });
   expect(JSON.stringify(post.body)).not.toContain("IMPLEMENT");
   expect(JSON.stringify(post.body)).not.toContain("close_ticket");
+ });
+ it("ME-16: does not offer an approved package-run server while package-run servers are off, and offers it when they are on", async () => {
+  for (const [stdioAvailable, expected] of [[undefined, ["Choose a server", "Wiki (connection)", "SIM (on your network)"]], [false, ["Choose a server", "Wiki (connection)", "SIM (on your network)"]], [true, ["Choose a server", "Wiki (connection)", "SIM (on your network)", "Notes (on your network)"]]] as const) {
+   const f = sourcesHost({ servers: [approved, packageRun], ...(stdioAvailable === undefined ? {} : { stdioAvailable }) });
+   const view = mountSources(f);
+   const server = await screen.findByLabelText<HTMLSelectElement>("Server");
+   expect([...server.options].map(option => option.text), String(stdioAvailable)).toEqual(expected);
+   view.unmount();
+  }
  });
  it("shows a change waiting, says when a second admin is needed, and confirms or turns it down", async () => {
   const f = sourcesHost({ pending: [{ changeId: "11111111-1111-4111-8111-111111111111", kind: "set", sourceId: "sim", proposedBy: "dev1", proposedAt: "t", secondAdminReasons: ["lookup_page does not say it only reads"], source: { sourceId: "sim", label: "SIM", server: { kind: "connection", connectionId: "con_aaaaaaaaaaaaaaaaaaaa" }, tools: [], stages: ["PLAN"], quotes: "citations_only", retention: "team_record", limits: { callsPerStage: 25, bytesPerResult: 16384, bytesPerStage: 196608 }, liveFacts: [], sendCodeSnippets: false } }] });
