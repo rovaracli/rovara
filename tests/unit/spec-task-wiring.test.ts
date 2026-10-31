@@ -119,6 +119,17 @@ describe("the code pull request", () => {
     expect(request.prompt).toContain(PLAN_TEXT);
     expect(options).toMatchObject({ workflowMode: "SPEC_WRITE", specWrite: { format: "kiro", kind: "feature", planDigest: PLAN_DIGEST } });
   });
+  it("fails the write for good, with Retry and Continue, when the workspace is closed or never got ready (it does not wait as busy)", async () => {
+    for (const status of ["CLOSED", "PREPARATION_FAILED"]) {
+      const t = await setup();
+      await specAfterPlanApproval(t.deps, TASK);
+      const closed = { ...t.deps, actions: { ...t.deps.actions, workspace: async () => ({ status }) } } as DeveloperTaskRouteDependencies;
+      const gate = await specPublicationGate(closed, t.task, t.task.workflow!);
+      expect(gate, status).toMatchObject({ proceed: false, hold: { reason: "failed", ownerActions: ["retry", "continue_without_spec"] } });
+      expect(t.startedWrites, status).toHaveLength(0);
+      expect((await t.store.load(TASK)).state, status).toMatchObject({ status: "failed" });
+    }
+  });
   it("holds, never goes on, when the record cannot be read or the check itself fails", async () => {
     const t = await setup();
     await t.db.send(new PutCommand({ TableName: "t", Item: { pk: `DEVTASK#${TASK}`, sk: "SPEC#STATE", nonsense: true } }));

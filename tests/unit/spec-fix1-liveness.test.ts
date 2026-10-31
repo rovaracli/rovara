@@ -77,7 +77,7 @@ function memoryWorld(extra: Partial<SpecWorld> = {}) {
   const store: SpecStore = {
     load: async (id) => (corrupt ? { state: undefined, corrupt: true } : { state: rows.get(id), corrupt: false }),
     save: async (next, replaces) => { const current = rows.get(next.taskId); if ((current?.revision) !== replaces) return false; rows.set(next.taskId, next); return true; },
-    force: async (next) => { corrupt = false; rows.set(next.taskId, next); },
+    force: async (next) => { corrupt = false; rows.set(next.taskId, next); return true; },
   };
   const world: SpecWorld = { tableName: "t", now: () => NOW, store, log: () => undefined, startWrite: async ({ items }) => { for (const item of items(randomUUID())) { const next = item.Put!.Item as SpecState; rows.set(next.taskId, next); } return "STARTED"; }, publish: async () => ({ ok: false, transient: true }), ...extra };
   return { world, rows, setCorrupt: (value: boolean) => { corrupt = value; } };

@@ -48,7 +48,13 @@ export function unescapeMarkdown(text: string): string {
  * GitHub does not link them, and `@` and `#<digit>` so nothing mentions anyone or cross-references an issue. Text that is already escaped is unescaped first, so applying it twice gives the same text.
  */
 export function inertSpecText(text: string): string {
-  return unescapeMarkdown(text)
+  // Our own joiners go first, so the second pass of anything gives what the first did.
+  return escapeUnescaped(unescapeMarkdown(text.replaceAll("\u200D", "")));
+}
+
+/** The escaping itself, for text that is already unescaped (the text as the model meant it). */
+function escapeUnescaped(text: string): string {
+  return text
     .replaceAll("@", "@\u200D")
     .replaceAll("://", ":\u200D//\u200D")
     .replace(/\bwww\./giu, (match) => `${match.slice(0, 3)}\u200D.`)
@@ -71,7 +77,7 @@ export function specLine(text: string, max: number = SPEC_LINE_MAX): string {
   }
   const points = Array.from(bare);
   const cut = points.length <= max ? bare : `${points.slice(0, max - 1).join("")}…`;
-  return inertSpecText(cut).trim();
+  return escapeUnescaped(cut).trim();
 }
 
 /** A code fence line: its character and length, or undefined. A backtick fence's info string has no backtick (CommonMark). */
@@ -92,25 +98,62 @@ export function nextFenceState(open: { char: "`" | "~"; length: number } | undef
   return fence.char === open.char && fence.length >= open.length && fence.rest.trim() === "" ? undefined : open;
 }
 
-/** Untrusted multi-line markdown (a design section) made safe to sit inside one section of a spec: hidden characters gone, every heading turned into a bold line, links, images and HTML made inert outside code fences, fences kept balanced, bounded. */
+/**
+ * Untrusted multi-line markdown (a design section) made safe to sit inside one section of a spec. The model never decides where a fence opens or closes: a code block it writes at column 0 (a run of three or
+ * more backticks or tildes, closed by a run of the same character at least as long) is taken apart and written again by us, its content inside a backtick fence we generate at column 0 that is longer than any
+ * backtick run in the content, closed even if the model did not close it. Anything that merely looks like a fence anywhere else (indented, in a list item, in a block quote) is ordinary text. Every other line is escaped
+ * (see inertSpecText), headings become bold lines, hidden characters are gone, and the result is bounded by whole blocks. Applying it twice gives the same text.
+ */
 export function specMarkdown(text: string, max: number = SPEC_DESIGN_MAX): string {
-  // Comments can span lines; they go first (a fenced example that mentions one loses it, which is harmless).
   const lines = redactText(text).replace(/\r\n?/gu, "\n").replace(HIDDEN_BUT_NEWLINE, "").split("\n");
-  const out: string[] = [];
-  let fence: { char: "`" | "~"; length: number } | undefined;
-  for (const raw of lines) {
-    const line = raw.replace(/[ \t]+$/u, "");
-    const wasOpen = fence !== undefined;
-    fence = nextFenceState(fence, line);
-    if (wasOpen || fence !== undefined || markdownFenceOf(line) !== undefined) { out.push(line); continue; }
-    const heading = /^\s{0,3}#{1,6}\s+(.*)$/u.exec(line);
-    // A heading becomes a bold line; every other line is escaped as it is (list markers, numbers and indentation are kept; nothing that can form a link, image, tag or definition is).
-    out.push(heading === null ? inertSpecText(line) : `**${inertSpecText((heading[1] ?? "").replace(/\s*#+\s*$/u, "").trim())}**`);
+  const blocks: string[][] = [];
+  let index = 0;
+  let blank = false;
+  while (index < lines.length) {
+    const line = lines[index]!;
+    const open = /^(`{3,}|~{3,})(.*)$/u.exec(line);
+    if (open !== null && !(open[1]![0] === "`" && open[2]!.includes("`"))) {
+      const char = open[1]![0]!;
+      const content: string[] = [];
+      index += 1;
+      while (index < lines.length) {
+        const closer = /^(`{3,}|~{3,})[ \t]*$/u.exec(lines[index]!);
+        if (closer !== null && closer[1]![0] === char && closer[1]!.length >= open[1]!.length) { index += 1; break; }
+        content.push(lines[index]!);
+        index += 1;
+      }
+      const longest = Math.max(0, ...content.flatMap((entry) => [...entry.matchAll(/`+/gu)].map((run) => run[0].length)));
+      const fence = "`".repeat(Math.max(3, longest + 1));
+      const info = open[2]!.trim();
+      blocks.push([`${fence}${/^[A-Za-z0-9_+.-]{1,20}$/u.test(info) ? info : ""}`, ...content, fence]);
+      blank = false;
+      continue;
+    }
+    index += 1;
+    const trimmed = line.replace(/[ \t]+$/u, "");
+    if (trimmed === "") { if (!blank) blocks.push([""]); blank = true; continue; }
+    blank = false;
+    const heading = /^\s{0,3}#{1,6}\s+(.*)$/u.exec(trimmed);
+    // A bold line made of text that is already in its escaped form is one of our own headings from an earlier pass: kept as it is. Any other bold line is escaped like the rest.
+    const ours = /^\*\*(.+)\*\*$/u.exec(trimmed);
+    const ourInner = ours?.[1];
+    if (heading !== null) blocks.push([`**${inertSpecText((heading[1] ?? "").replace(/\s*#+\s*$/u, "").trim())}**`]);
+    else if (ourInner !== undefined && inertSpecText(ourInner).replaceAll("\u200D", "") === ourInner) blocks.push([`**${inertSpecText(ourInner)}**`]);
+    else blocks.push([inertSpecText(trimmed)]);
   }
-  if (fence !== undefined) out.push(fence.char.repeat(fence.length));
-  const joined = out.join("\n").replace(/\n{3,}/gu, "\n\n").trim();
-  const points = Array.from(joined);
-  return points.length <= max ? joined : `${points.slice(0, max - 1).join("")}…`;
+  while (blocks.length > 0 && blocks[0]!.length === 1 && blocks[0]![0] === "") blocks.shift();
+  while (blocks.length > 0 && blocks[blocks.length - 1]!.length === 1 && blocks[blocks.length - 1]![0] === "") blocks.pop();
+  // Bounded by whole blocks, so a fence is never cut open.
+  const kept: string[] = [];
+  let size = 0;
+  let cut = false;
+  for (const block of blocks) {
+    const length = block.reduce((sum, entry) => sum + Array.from(entry).length + 1, 0);
+    if (size + length > max - 2) { cut = true; break; }
+    kept.push(...block);
+    size += length;
+  }
+  return cut ? `${kept.join("\n").trimEnd()}\n…` : kept.join("\n");
 }
 const HIDDEN_BUT_NEWLINE = /(?![\n\t])[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Default_Ignorable_Code_Point}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/gu;
 

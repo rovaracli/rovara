@@ -154,7 +154,7 @@ export function specGateForReview(state: SpecState | undefined, corrupt = false,
   if (state === undefined) return specGate(state, corrupt, now);
   const { editPrompt: _edit, ...rest } = state;
   void _edit;
-  return specGate({ ...rest, target: { ...state.target, linkStyle: "together" } }, corrupt);
+  return specGate({ ...rest, target: { ...state.target, linkStyle: "together" } }, corrupt, now);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -48,9 +48,9 @@ describe("M1: fences are CommonMark's", () => {
     expect(cleaned).not.toMatch(/^## outside/mu);
     expect(cleaned).toContain("**outside**");
   });
-  it("closes an open fence with the same fence it opened with, and the extractor reads fences the same way", () => {
+  it("closes an open fence with a fence of our own, and the extractor reads fences the same way", () => {
     const cleaned = specMarkdown("~~~~\nopen forever");
-    expect(cleaned.trimEnd().endsWith("~~~~")).toBe(true);
+    expect(cleaned.trimEnd()).toBe("```\nopen forever\n```");
     const file = { path: "specs/x/spec.md", content: ["## Requirements", "~~~", "```", "~~~", "- 9.1 THE SYSTEM SHALL skip", "```"].join("\n") };
     expect(extractLabelledLines(file, { sectionHeadings: /^requirements$/iu }).map((entry) => entry.id)).toEqual(["9.1"]);
   });

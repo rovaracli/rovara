@@ -44,7 +44,12 @@ export class SpecPublishError extends Error {
 export function classifyPublishError(error: unknown): boolean {
   if (error instanceof SpecPublishError) return error.transient;
   if (error instanceof GitHubSpecError) return error.status >= 500 || error.status === 429 || error.status === 408;
-  if (error instanceof AgentXError) return error.code === "RUNTIME_UNAVAILABLE";
+  if (error instanceof AgentXError) {
+    // The connection's pull request step says what GitHub answered ("... failed with HTTP 422"): a 4xx is a refusal, not an outage.
+    const status = /\bHTTP (\d{3})\b/u.exec(error.message);
+    if (status !== null) return classifyPublishError(new GitHubSpecError(Number(status[1])));
+    return error.code === "RUNTIME_UNAVAILABLE";
+  }
   if (error instanceof TypeError || (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"))) return true;
   // Anything else (a credential that is not an installation token, a repository that is not on GitHub) is the project's to fix.
   return false;

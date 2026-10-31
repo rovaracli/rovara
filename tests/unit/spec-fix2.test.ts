@@ -56,7 +56,7 @@ function memory(extra: Partial<SpecWorld> = {}, initial?: SpecState) {
   const store: SpecStore = {
     load: async (id) => ({ state: rows.get(id), corrupt: false }),
     save: async (next, replaces) => { const current = rows.get(next.taskId); if (current?.revision !== replaces) return false; rows.set(next.taskId, next); return true; },
-    force: async (next) => { rows.set(next.taskId, next); },
+    force: async (next) => { rows.set(next.taskId, next); return true; },
   };
   const world: SpecWorld = { tableName: "t", now: () => clock.now, store, log: () => undefined, startWrite: async () => "STARTED", publish: async () => ({ ok: false, transient: true }), ...extra };
   return { world, rows, clock };

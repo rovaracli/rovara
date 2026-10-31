@@ -4,7 +4,7 @@
 //   specOwnerChoice         -- the task owner's Retry / Continue without spec on a held spec.
 // The pure parts (state, rendering, the link) are in ../../spec/; the effects here are the same ones the workflow already uses (a system-started run with its own conversation, the broker's publish).
 import { createHash } from "node:crypto";
-import { PutCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { SPEC_REVIEW_REQUIREMENTS_MAX, SpecReviewInputSchema, agentXError, metaRepositoryOf, specStripHidden, workflowRequestId, type SpecFile, type SpecKind, type SpecReviewInput, type WorkflowSnapshot } from "@agentx/contracts";
 import { developerTaskIdentity, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional, workflowDispatchItem } from "../broker-shared.js";
@@ -37,7 +37,7 @@ export function specKindOf(task: Pick<DeveloperTaskRecord, "title" | "requestTex
 function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, fence?: TransactItems[number]): SpecWorld {
   const plain = dynamoSpecStore(deps);
   // An owner's choice is written with the access fence (the task's people revision read when the choice was authorized), so a co-owner removed meanwhile lands nothing.
-  const store = fence === undefined ? plain : { ...plain, save: (next: SpecState, replaces: number | undefined) => plain.save(next, replaces, [fence]) };
+  const store = fence === undefined ? plain : { ...plain, save: (next: SpecState, replaces: number | undefined) => plain.save(next, replaces, [fence]), force: (next: SpecState) => plain.force(next, [fence]) };
   const log = (event: string, fields: Record<string, string | number | boolean>) => deps.log?.({ event, ...fields });
   return {
     tableName: deps.tableName, now: () => iso(deps), store, log,
@@ -55,7 +55,8 @@ function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecor
       const base = workflow === undefined ? {} : taskBaseOption(task, workflow);
       if (base.workflowBase === undefined || base.workflowBase.length === 0) return "REFUSED";
       const workspace = await deps.actions.workspace(task.workspaceId);
-      if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "BUSY";
+      // A workspace that is closed or never got ready will not be free later: the write fails (Retry and Continue), it does not wait for ever.
+      if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "REFUSED";
       const access = await systemTaskAccess(deps, task);
       const conversationId = specConversationId(task.taskId);
       const receivedAt = iso(deps);
@@ -208,13 +209,16 @@ export async function specReviewGate(deps: DeveloperTaskRouteDependencies, task:
 }
 
 /** Queues the code publication again after an owner's choice. Overwrites a row that is still waiting. */
-async function queueRepublish(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<void> {
+async function queueRepublish(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, fence?: TransactItems[number]): Promise<void> {
   const workflow = task.workflow;
   if (workflow === undefined || workflow.candidate === undefined) return;
   const kind = workflow.stage === "REVIEW" && workflow.state === "WAITING" ? "REVIEW" as const : workflow.stage === "PULL_REQUEST" && workflow.state === "READY" ? "PUBLISH" as const : undefined;
   if (kind === undefined) return;
   const row = workflowDispatchItem(deps.tableName, task.taskId, workflow.revision, kind, workflow.candidate.digest, iso(deps));
-  if (row.Put !== undefined) await deps.documentClient.send(new PutCommand({ TableName: row.Put.TableName, Item: row.Put.Item }));
+  if (row.Put === undefined) return;
+  // After an owner's choice the row is written with the access fence, so a co-owner removed meanwhile queues nothing.
+  if (fence === undefined) await deps.documentClient.send(new PutCommand({ TableName: row.Put.TableName, Item: row.Put.Item }));
+  else await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: row.Put.TableName, Item: row.Put.Item } }, fence] }));
 }
 
 /** The task owner's choice on a held spec. Only the owner's own authority to publish counts (the same as pressing Retry on a publication). */
@@ -223,10 +227,10 @@ export async function specOwnerChoice(deps: DeveloperTaskRouteDependencies, call
   const task = access.task;
   const hooks = createSpecHooks(worldFor(deps, task, accessFence(deps, access)));
   // "Retry" on a task with no record (the check itself failed) has nothing to change: it makes the waiting step due again, which looks again.
-  if (action === "retry" && (await dynamoSpecStore(deps).load(taskId)).state === undefined) { await queueRepublish(deps, task); return { status: "retrying" }; }
+  if (action === "retry" && (await dynamoSpecStore(deps).load(taskId)).state === undefined) { await queueRepublish(deps, task, accessFence(deps, access)); return { status: "retrying" }; }
   const next = await hooks.ownerChoice({ taskId, action, by: caller.developerId });
   if (next === undefined) throw agentXError("IDEMPOTENCY_CONFLICT", "this choice is out of date; refresh the task and try again");
-  await queueRepublish(deps, task);
+  await queueRepublish(deps, task, accessFence(deps, access));
   return { status: next.status };
 }
 

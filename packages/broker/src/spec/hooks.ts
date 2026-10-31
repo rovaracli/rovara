@@ -29,7 +29,7 @@ export interface SpecStore {
   /** Writes `next` over the revision `replaces`; false when another writer moved it first. */
   save(next: SpecState, replaces: number | undefined, extra?: readonly TransactItem[]): Promise<boolean>;
   /** Writes `next` over whatever is there (a record this release cannot read): only the owner's "continue without spec" uses it. */
-  force(next: SpecState): Promise<void>;
+  force(next: SpecState, extra?: readonly TransactItem[]): Promise<boolean>;
 }
 
 export interface SpecTaskRef {
@@ -197,7 +197,7 @@ export function createSpecHooks(world: SpecWorld) {
       if (input.action === "continue_without_spec" && (corrupt || state === undefined)) {
         const base = SpecStateSchema.parse({ ...newSpecState({ taskId: input.taskId, planDigest: "0".repeat(64), kind: "feature", target: defaultSpecTarget(), knowledgeCommit: "0".repeat(40), now }), status: "skipped" });
         const continued = continueWithoutSpec(base, input.by, now)!;
-        if (corrupt) await world.store.force(continued);
+        if (corrupt) { if (!(await world.store.force(continued))) return undefined; }
         else if (!(await world.store.save(continued, undefined))) return undefined;
         return continued;
       }

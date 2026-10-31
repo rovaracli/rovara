@@ -11,8 +11,15 @@ export function dynamoSpecStore(dependencies: { documentClient: { send(command: 
       const parsed = SpecStateSchema.safeParse(result.Item);
       return parsed.success ? { state: parsed.data, corrupt: false } : { state: undefined, corrupt: true };
     },
-    force: async (next: SpecState) => {
-      await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: next }));
+    force: async (next: SpecState, extra) => {
+      try {
+        if (extra !== undefined && extra.length > 0) await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: dependencies.tableName, Item: next } }, ...extra] }));
+        else await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: next }));
+        return true;
+      } catch (error) {
+        if (error instanceof Error && error.name === "TransactionCanceledException") return false;
+        throw error;
+      }
     },
     save: async (next: SpecState, replaces, extra) => {
       try {

@@ -187,16 +187,18 @@ export function readSpecPullRequestOf(dependencies: AwsBrokerDependencies): (tas
       const toCheck = [...latest.values()].filter((index) => ["APPROVED", "CHANGES_REQUESTED"].includes(status.reviews[index]!.state));
       const tooMany = toCheck.length > REVIEWERS_CHECKED_MAX;
       const eligible = new Map<number, boolean>();
+      // A look-up that ERRORS (not a clean "none") leaves that reviewer's standing unknown. For an approver that means no approval; for an objector it must not mean the objection is ignored, so any error makes the list incomplete.
+      let lookupFailed = false;
       if (!tooMany) {
         await Promise.all(toCheck.map(async (index) => {
           const review = status.reviews[index]!;
           const person = review.userType !== "Bot" && !/\[bot\]$/iu.test(review.login) && permission !== undefined;
-          const level = person ? await permission.call(dependencies.githubPullRequests, repositoryUrl, review.login, scope).catch(() => "none") : "none";
+          const level = person ? await permission.call(dependencies.githubPullRequests, repositoryUrl, review.login, scope).catch(() => { lookupFailed = true; return "none"; }) : "none";
           eligible.set(index, person && (level === "write" || level === "admin"));
         }));
       }
       const reviews = status.reviews.map((review, index) => ({ state: review.state, commitId: review.commitId, login: review.login, userId: review.githubUserId, eligible: eligible.get(index) === true }));
-      return { state: status.state, headSha: status.headSha, reviews, ...(status.reviewsIncomplete === true || tooMany ? { reviewsIncomplete: true } : {}) };
+      return { state: status.state, headSha: status.headSha, reviews, ...(status.reviewsIncomplete === true || tooMany || lookupFailed ? { reviewsIncomplete: true } : {}) };
     } catch {
       return undefined;
     }
