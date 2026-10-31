@@ -3,7 +3,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it, vi } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { createEditionGuard, EDITION_RECORD_UNREADABLE_MESSAGE, EDITION_STAMP_DIFFERS_MESSAGE, EDITION_STAMP_MISSING_MESSAGE, editionRecordName } from "../../packages/broker/src/aws/broker/edition-wiring.js";
+import { createEditionGuard, EDITION_RECORD_UNREADABLE_MESSAGE, EDITION_STAMP_DIFFERS_MESSAGE, EDITION_STAMP_MISSING_MESSAGE, editionRecordName, ssmEditionRecordReader } from "../../packages/broker/src/aws/broker/edition-wiring.js";
 import { createAdminBroker, adminCall } from "../support/admin-broker.js";
 
 // Enterprise foundations I-2 (fix round 1): the edition record survives, and a process whose stamp is not the recorded edition does not serve.
@@ -69,12 +69,24 @@ describe("the guard", () => {
     expect(await refusal(guard(undefined, "garbage").run)).toContain(EDITION_RECORD_UNREADABLE_MESSAGE);
   });
 
-  it("serves an install deployed before editions (no stamp, no record), and one whose record it may not read (logged)", async () => {
+  it("serves an install deployed before editions (no stamp, and the record does not exist)", async () => {
     await guard(undefined, undefined).run();
-    const unreadable = guard(undefined, new Error("AccessDeniedException"));
-    await unreadable.run();
-    expect(unreadable.log).toHaveBeenCalledWith(expect.objectContaining({ event: "edition.record_unreadable" }));
     await guard("public", undefined).run();
+  });
+
+  it("refuses when the record cannot be READ, with or without a stamp: a failed read is not a missing record", async () => {
+    for (const stamp of [undefined, "public", "enterprise"] as const) {
+      const unreadable = guard(stamp, new Error("AccessDeniedException"));
+      expect(await refusal(unreadable.run), String(stamp)).toContain(EDITION_RECORD_UNREADABLE_MESSAGE);
+      expect(unreadable.log).toHaveBeenCalledWith(expect.objectContaining({ event: "edition.record_unreadable" }));
+    }
+  });
+
+  it("the SSM reader answers undefined only for a parameter that does not exist, and throws for every other failure", async () => {
+    const notFound = Object.assign(new Error("ParameterNotFound"), { name: "ParameterNotFound" });
+    expect(await ssmEditionRecordReader({ send: async () => { throw notFound; } })("/agentx/ent/edition")).toBeUndefined();
+    await expect(ssmEditionRecordReader({ send: async () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); } })("/agentx/ent/edition")).rejects.toThrow("denied");
+    expect(await ssmEditionRecordReader({ send: async () => ({ Parameter: { Value: "enterprise" } }) })("/agentx/ent/edition")).toBe("enterprise");
   });
 
   it("tries again after a refusal (a read error is not remembered)", async () => {

@@ -56,11 +56,12 @@ export function isSlackChatGptFinishEvent(event: unknown): event is SlackChatGpt
  * Slack workspace connects, as only they can sign in with Slack.
  */
 export async function answerSlackChatGpt(
-  deps: { chatgpt?: ChatGptConnections; slackTeamId?: string },
+  deps: { chatgpt?: ChatGptConnections; slackTeamId?: string; /** Enterprise foundations I-6: refuses a Slack user the edition's company sign-in does not currently allow. */ allow?: (userId: string, teamId: string) => Promise<void> },
   event: SlackChatGptCommandEvent | SlackChatGptFinishEvent,
 ): Promise<unknown> {
   if (deps.chatgpt === undefined) throw agentXError("NOT_FOUND", "Sign in with ChatGPT is not set up in this deployment");
   if (deps.slackTeamId !== undefined && deps.slackTeamId !== event.teamId) throw agentXError("FORBIDDEN", "ChatGPT can be connected only from this Rovara's own Slack workspace");
+  await deps.allow?.(event.userId, event.teamId);
   const developerId = developerIdForSlackUser(event.userId);
   if (event.action === "chatgpt-finish") return deps.chatgpt.finish(developerId, { callbackUrl: event.callbackUrl });
   if (event.command === "connect") return deps.chatgpt.start(developerId);

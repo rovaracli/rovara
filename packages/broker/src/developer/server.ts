@@ -660,6 +660,9 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "ended");
       return client({ error: "access_denied", error_description: "your AgentX sign-in was turned off by an admin; contact an admin" });
     }
+    /** What a company sign-in leaves on its session for a later mapping change to check itself against (Enterprise foundations N-2). */
+    const sessionClaims = (): { groupClaims?: Record<string, unknown>; ssoBreakGlass?: true } => companySignIn === undefined ? {}
+      : { groupClaims: identity.claims ?? {}, ...(companySignIn.breakGlass ? { ssoBreakGlass: true as const } : {}) };
     let slackUserId = identity.slackUserId;
     // ProviderIdentity.email is set only for a verified email (providers.ts), so only a verified
     // email is ever looked up in Slack.
@@ -720,7 +723,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       }
       if (outcome === "joined") {
         const endsAt = Math.min(Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS, companySignIn?.sessionEndsAt ?? Number.MAX_SAFE_INTEGER);
-        const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime: signInTime(identity.authTime),
+        const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime: signInTime(identity.authTime), ...sessionClaims(),
           ...(slackUserId === undefined ? {} : { slackUserId }), reviewExpiresAt: endsAt, endsAt });
         return browserReturn(endpoint(`/join/done?request=${request.id}`), true, session.sessionId);
       }
@@ -736,14 +739,14 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (request.browserReturnTo !== undefined) {
       // A fixed 30 days from sign-in, with no renewal (an edition's sign-in cap, when it has one, comes sooner): the session record ends then, whatever the cookie says.
       const endsAt = Math.min(Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS, companySignIn?.sessionEndsAt ?? Number.MAX_SAFE_INTEGER);
-      const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime,
+      const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime, ...sessionClaims(),
         ...(slackUserId === undefined ? {} : { slackUserId }),
         reviewExpiresAt: endsAt, endsAt,
       });
       deps.log({ event: "signin.browser_succeeded", method, developerId });
       return browserReturn(request.browserReturnTo, true, session.sessionId);
     }
-    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, authTime, ...(companySignIn === undefined ? {} : { sessionEndsAt: companySignIn.sessionEndsAt }), ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
+    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, authTime, ...sessionClaims(), ...(companySignIn === undefined ? {} : { sessionEndsAt: companySignIn.sessionEndsAt }), ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
     deps.log({ event: "signin.succeeded", method, developerId, linkedToSlack: slackUserId !== undefined });
     // An invite that was not used (the person is already in an org, or it is unknown, used, expired or for another email) is reported, not hidden.
     return client({ code: agentxCode, ...(org.inviteError === undefined ? {} : { inviteError: org.inviteError }) });

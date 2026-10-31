@@ -12,6 +12,7 @@ import {
 } from "@agentx/contracts";
 import { auditOccurrence, auditSsoBreakGlassChanged, auditSsoGroupMappingChanged } from "../../audit/events.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
+import { evaluateGroupMapping } from "../../developer/group-mapping.js";
 import { isFreshSignIn, type SessionRecord } from "../../developer/store.js";
 import { getSignIn } from "./authentication.js";
 import { jsonBody } from "./organization.js";
@@ -38,12 +39,16 @@ export const SSO_FRESH_SIGN_IN_MESSAGE = "Sign in again to change company sign-i
  * mapping can make any provider group an admin, and saving the emergency list decides who can bypass the mapping. And it needs the audit ledger: a change that could not
  * be recorded is not made.
  */
-async function requireFreshBrowserWrite(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<void> {
+async function requireFreshBrowserWrite(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<Pick<SessionRecord, "groupClaims" | "ssoBreakGlass">> {
   if (caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session to change company sign-in.");
-  const session = await getSignIn<Pick<SessionRecord, "authTime">>(deps, `SESSION#${caller.sessionId}`);
+  const session = await getSignIn<Pick<SessionRecord, "authTime" | "groupClaims" | "ssoBreakGlass">>(deps, `SESSION#${caller.sessionId}`);
   if (session === undefined || !isFreshSignIn(session, deps.now())) throw agentXError("REAUTH_REQUIRED", SSO_FRESH_SIGN_IN_MESSAGE);
   if (deps.audit === undefined) throw agentXError("AUDIT_UNAVAILABLE", AUDIT_ERROR_MESSAGES.AUDIT_UNAVAILABLE);
+  return session;
 }
+
+export const lockoutMessage = (claim: string): string =>
+  `This mapping would lock you out: the groups in your last sign-in (claim "${claim}") match none of its rules. Add a rule for one of your groups, or check the claim name, then save again.`;
 
 export async function routeSsoRequest(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, pathname: string): Promise<unknown> {
   // Not in this edition: an install with no edition has no company sign-in to configure, and Public is told so in the edition's own words.
@@ -62,12 +67,18 @@ export async function routeSsoRequest(deps: DeveloperRouteDependencies, caller: 
       return { mapping: mapping ?? null, version: mapping?.version ?? 0 };
     }
     if (request.method === "PUT") {
-      await requireFreshBrowserWrite(deps, caller);
+      const own = await requireFreshBrowserWrite(deps, caller);
       const parsed = MappingBodySchema.safeParse(jsonBody(request));
       if (!parsed.success) throw agentXError("CONFIG_INVALID", "The group mapping is not valid.");
       const { expectedVersion, claim, rules } = parsed.data;
       const current = await stores.mappings.get(orgId);
       if ((current?.version ?? 0) !== expectedVersion) throw agentXError("IDEMPOTENCY_CONFLICT", "Someone else changed the group mapping. Reload it and make your change again.");
+      // Fix round 2 (N-2): the saving admin's own groups, as their last company sign-in carried them, must still get in under the NEW mapping; a claim name the provider does
+      // not send, or rules that name no group of theirs, would refuse every sign-in. A session that came in through the emergency list is the recovery actor and is not held to it.
+      if (own.ssoBreakGlass !== true) {
+        const mine = evaluateGroupMapping({ policy: deps.editionPolicy, config: { claim, rules, version: expectedVersion + 1, updatedAt: new Date().toISOString(), updatedBy: caller.developerId }, claims: own.groupClaims ?? {} });
+        if (!mine.ok) throw agentXError("CONFIG_INVALID", lockoutMessage(claim));
+      }
       const before = new Set((current?.rules ?? []).map((rule) => rule.id));
       const after = new Set(rules.map((rule) => rule.id));
       const saved = systemSaved(caller);

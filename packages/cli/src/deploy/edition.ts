@@ -35,3 +35,26 @@ export async function resolveDeployEdition(input: { store: ParameterStore; env: 
   if (effective !== undefined && input.engine === "templates") throw agentXError("CONFIG_INVALID", effective === "enterprise" ? EDITION_NEEDS_CDK_MESSAGE : CLOUD_NEEDS_CDK_MESSAGE);
   return effective;
 }
+
+/**
+ * Fix round 2 (N-1). The edition record is retained when its stack goes (or when a raw deploy without the edition drops it from the template). A later deploy that names the
+ * edition again would then meet a parameter of that name that its stack no longer owns, and CloudFormation refuses to create it. Just before the foundation deploys,
+ * a record the foundation stack does not own is removed so that the deploy re-creates it with the same value (the edition is Enterprise either way: `resolveDeployEdition`
+ * has already refused any other). While it is gone the broker and the sign-in server refuse to serve (an Enterprise stamp needs its record), which is the safe side.
+ * [verify] CloudFormation's create-time behaviour for an existing named SSM parameter, and the window above, in the install proof (N10).
+ */
+export async function adoptOrphanedEditionRecord(input: {
+  store: ParameterStore;
+  env: string;
+  edition: Edition | undefined;
+  /** The physical ids of the foundation stack's resources, or undefined when the stack does not exist. */
+  foundationResources: () => Promise<readonly string[] | undefined>;
+}): Promise<"owned" | "adopted" | "none"> {
+  if (input.edition !== "enterprise") return "none";
+  const name = editionRecordName(input.env);
+  if ((await input.store.get(name)) === undefined) return "none";
+  const owned = await input.foundationResources();
+  if (owned?.includes(name) === true) return "owned";
+  await input.store.delete(name);
+  return "adopted";
+}

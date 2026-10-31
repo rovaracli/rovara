@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { BREAK_GLASS_MAX_DAYS, editionPolicy } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { dynamoBreakGlassStore, readBreakGlassForSignIn } from "../../packages/broker/src/developer/group-mapping.js";
+import { lockoutMessage } from "../../packages/broker/src/aws/developer-routes/sso.js";
 import { ssoStoresFor } from "../../packages/broker/src/developer/sso-sign-in.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
@@ -37,7 +38,7 @@ async function world(options: { policy?: ReturnType<typeof editionPolicy> | unde
     let id = browserSessions.get(who.developerId);
     if (id === undefined) {
       id = randomUUID();
-      h.db.set({ ...h.db.get(`SESSION#${who.sessionId}`, "META")!, pk: `SESSION#${id}`, sessionId: id, reviewExpiresAt: Math.floor(Date.now() / 1000) + 3600, authTime: new Date().toISOString() });
+      h.db.set({ ...h.db.get(`SESSION#${who.sessionId}`, "META")!, pk: `SESSION#${id}`, sessionId: id, reviewExpiresAt: Math.floor(Date.now() / 1000) + 3600, authTime: new Date().toISOString(), groupClaims: { groups: ["rovara-admins", "rovara-users"] } });
       browserSessions.set(who.developerId, id);
     }
     return id;
@@ -163,6 +164,47 @@ describe("a change to company sign-in needs a fresh sign-in and the audit ledger
     const saved = await web(MAYA, "PUT", MAPPING, { expectedVersion: 0, claim: "groups", rules: RULES });
     expect(saved.status).toBe(200);
     expect(capture.pending().filter((event) => event.action === "sso.group_mapping_changed")).toHaveLength(1);
+  });
+});
+
+describe("a mapping that would lock its author out is refused (fix round 2, N-2)", () => {
+  const setGroups = (h: { db: { get: (pk: string, sk: string) => unknown; set: (item: Record<string, unknown>) => void } }, id: string, groupClaims: Record<string, unknown> | undefined, extra: Record<string, unknown> = {}) => {
+    const record = { ...(h.db.get(`SESSION#${id}`, "META") as Record<string, unknown>), ...extra };
+    if (groupClaims === undefined) delete record.groupClaims; else record.groupClaims = groupClaims;
+    h.db.set(record);
+  };
+
+  it("refuses rules that name none of the saving admin's own groups, naming the claim, and a claim the provider does not send; nothing is saved or audited", async () => {
+    const { h, web, capture } = await world();
+    await web(MAYA, "GET", MAPPING);
+    const id = (h.db.find((item) => String(item.pk).startsWith("SESSION#") && item.reviewExpiresAt !== undefined)[0] as { sessionId: string }).sessionId;
+    const otherGroups = { expectedVersion: 0, claim: "groups", rules: [{ id: "x", group: "somebody-else", orgRole: "admin", projectRoles: [] }] };
+    const refused = await web(MAYA, "PUT", MAPPING, otherGroups);
+    expect(refused.status).toBe(400);
+    expect((refused.body.error as { message: string }).message).toBe(lockoutMessage("groups"));
+    // The provider sends the groups under another claim than the one saved.
+    setGroups(h, id, { roles: ["rovara-admins"] });
+    const wrongClaim = await web(MAYA, "PUT", MAPPING, { expectedVersion: 0, claim: "groups", rules: RULES });
+    expect(wrongClaim.status).toBe(400);
+    expect((wrongClaim.body.error as { message: string }).message).toContain('claim "groups"');
+    // No groups recorded for the session at all (a session from before this check): refused too.
+    setGroups(h, id, undefined);
+    expect((await web(MAYA, "PUT", MAPPING, { expectedVersion: 0, claim: "groups", rules: RULES })).status).toBe(400);
+    expect((await web(MAYA, "GET", MAPPING)).body).toMatchObject({ version: 0 });
+    expect(capture.recordedBy("sso.group_mapping_changed")).toEqual([]);
+  });
+
+  it("saves rules that still let the admin in, and one that keeps another group's rule", async () => {
+    const { web } = await world();
+    expect((await web(MAYA, "PUT", MAPPING, { expectedVersion: 0, claim: "groups", rules: [RULES[1]] })).status).toBe(200);
+  });
+
+  it("a session that came in through the emergency list is the recovery actor and is not held to it", async () => {
+    const { h, web } = await world({ role: "owner" });
+    await web(MAYA, "GET", MAPPING);
+    const id = (h.db.find((item) => String(item.pk).startsWith("SESSION#") && item.reviewExpiresAt !== undefined)[0] as { sessionId: string }).sessionId;
+    setGroups(h, id, {}, { ssoBreakGlass: true });
+    expect((await web(MAYA, "PUT", MAPPING, { expectedVersion: 0, claim: "groups", rules: [{ id: "x", group: "somebody-else", orgRole: "admin", projectRoles: [] }] })).status).toBe(200);
   });
 });
 

@@ -37,8 +37,8 @@ export const EDITION_RECORD_UNREADABLE_MESSAGE = "This process could not read th
  *  - an Enterprise stamp needs a record that says Enterprise (no record, an unreadable record or another value refuses);
  *  - no stamp with a record refuses (the stamp was lost);
  *  - a stamp that differs from the record refuses;
- *  - no stamp and no record is an install deployed before editions (and a record that cannot be read for a process with no stamp is let through, logged: an old
- *    install's role may not be allowed to read it).
+ *  - no stamp and no record (the parameter does not exist) is an install deployed before editions: today's behaviour;
+ *  - a record that cannot be READ (an error, not "not found") refuses, whatever the stamp.
  * A pass is remembered; a refusal is not, so a transient read error is tried again on the next request.
  */
 export function createEditionGuard(input: {
@@ -57,9 +57,10 @@ export function createEditionGuard(input: {
     try {
       value = await input.read(name);
     } catch {
-      if (input.stamp === "enterprise") throw agentXError("RUNTIME_UNAVAILABLE", EDITION_RECORD_UNREADABLE_MESSAGE);
-      input.log?.({ event: "edition.record_unreadable", level: "warn" });
-      return;
+      // A read that FAILED (denied, throttled, down) is not "there is no record": the process cannot tell an install with an edition from one without, so it does not serve.
+      // Only a parameter that does not exist (the reader answers undefined) is a legacy install.
+      input.log?.({ event: "edition.record_unreadable", level: "error" });
+      throw agentXError("RUNTIME_UNAVAILABLE", EDITION_RECORD_UNREADABLE_MESSAGE);
     }
     if (value === undefined) {
       if (input.stamp === "enterprise") throw agentXError("RUNTIME_UNAVAILABLE", EDITION_RECORD_UNREADABLE_MESSAGE);

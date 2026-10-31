@@ -50,6 +50,8 @@ export interface DeployEnvironmentInput {
    * CloudFormation (init/pass-role.ts). Called once, just before the first stack deployed through that
    * role (any part but access); a throw stops the deploy there. The templates engine never calls it. */
   ensurePassRole?: () => Promise<unknown>;
+  /** The cdk engine, Enterprise only: makes a retained edition record the foundation stack no longer owns creatable again. Called just before the foundation part deploys. */
+  adoptEditionRecord?: () => Promise<unknown>;
 }
 
 export interface DeployEnvironmentResult {
@@ -305,6 +307,7 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
         passRoleChecked = true;
         await input.ensurePassRole();
       }
+      if (part === "foundation" && input.adoptEditionRecord !== undefined) await input.adoptEditionRecord();
       const rawParameters = stackParameters(part, fullAnswers, outputs, { packages: engine === "templates" });
       // F24: only when this deploy is actually sending a stored sign-in choice to the control plane
       // are the declared parameters even consulted (every other deploy never calls `release.template`).

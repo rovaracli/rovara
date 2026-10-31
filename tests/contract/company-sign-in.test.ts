@@ -74,6 +74,17 @@ describe("a person in a mapped group", () => {
     expect(JSON.stringify(capture!.recorded())).not.toContain(USER_GROUP);
   });
 
+  it("leaves the group claims (and the emergency-list mark) on the session, for a later mapping change to check itself against", async () => {
+    const { h } = await world({ mapping: false, breakGlass: true });
+    const viaBreakGlass = await signInAs(h, "owner-1");
+    const session = (id: string) => h.deps.store.getSession(id);
+    expect(await session(String(decodeJwt(String(viaBreakGlass.tokens!.access_token)).sid))).toMatchObject({ ssoBreakGlass: true });
+    const mapped = await world();
+    const user = await signInAs(mapped.h, "una");
+    expect(await mapped.h.deps.store.getSession(String(decodeJwt(String(user.tokens!.access_token)).sid))).toMatchObject({ groupClaims: { groups: [USER_GROUP] } });
+    expect(await mapped.h.deps.store.getSession(String(decodeJwt(String(user.tokens!.access_token)).sid))).not.toHaveProperty("ssoBreakGlass");
+  });
+
   it("gets the strongest mapped role of the groups the token carries", async () => {
     const { h } = await world();
     const admin = await signInAs(h, "ada");

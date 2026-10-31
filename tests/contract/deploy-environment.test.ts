@@ -287,6 +287,20 @@ describe("deploy environment", () => {
     });
   });
 
+  it("adopts a retained edition record just before the foundation deploys, and only then (fix round 2, N-1)", async () => {
+    const store = new MemoryParameterStore();
+    const secrets = memorySecrets();
+    const events: string[] = [];
+    const scripted = fakeDeployer(scriptedOutputs());
+    const deployer: StackDeployer = { outputs: (name) => scripted.deployer.outputs(name), async deploy(request) { events.push(`deploy ${request.part}`); return scripted.deployer.deploy(request); } };
+    await deployEnvironment({
+      mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer, store, secrets, holder: HOLDER,
+      adoptEditionRecord: async () => { events.push("adopt"); },
+    });
+    expect(events.filter((event) => event === "adopt")).toHaveLength(1);
+    expect(events.indexOf("adopt")).toBe(events.indexOf("deploy foundation") - 1);
+  });
+
   it("upgrades in upgrade order and reads outputs of parts it does not deploy", async () => {
     const store = new MemoryParameterStore();
     const secrets = memorySecrets();

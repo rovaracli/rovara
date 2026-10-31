@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
+import { CloudFormationClient, DescribeStacksCommand, ListStackResourcesCommand } from "@aws-sdk/client-cloudformation";
 import { IAMClient } from "@aws-sdk/client-iam";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -23,7 +23,7 @@ import { settingsParameterName } from "../environments/settings.js";
 import { ACCOUNT_PATTERN, AuditLockProfileSchema, BudgetAnswersSchema, CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, IdentityAnswersSchema, ImagesAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
 import { assertCdkBootstrapped, assertSourceAtRelease, buildSource, cdkDeployer, type CommandRunner } from "./cdk-engine.js";
 import { synthDeclaredParameters } from "./cdk-source.js";
-import { resolveDeployEdition } from "./edition.js";
+import { adoptOrphanedEditionRecord, resolveDeployEdition } from "./edition.js";
 import type { ChangeSetChange, DeployEvent, StackDeployer, StackOutputs } from "./deployer.js";
 import { deployEnvironment, type DeployAnswers, type DeployEnvironmentResult } from "./deploy-environment.js";
 import { ensureCdkPassRole } from "../init/pass-role.js";
@@ -57,6 +57,8 @@ export interface DeployCliDependencies {
   iam?: Pick<IAMClient, "send">;
   /** The cdk engine's stack-outputs reader (CloudFormation DescribeStacks by default). */
   stackOutputs?: (stackName: string) => Promise<StackOutputs | undefined>;
+  /** The physical ids of the foundation stack's resources (ListStackResources by default), for the edition record's adoption. */
+  foundationResources?: () => Promise<readonly string[] | undefined>;
   /** The deployed stacks' parameters an upgrade keeps (DescribeStacks by default). */
   stackParameters?: (stackName: string) => Promise<Record<string, string> | undefined>;
   /** The templates engine's AWS clients (real CloudFormation and S3 clients by default). */
@@ -427,6 +429,25 @@ function isStackAbsentError(error: unknown): boolean {
   return error instanceof Error && error.name === "ValidationError" && /does not exist/.test(error.message);
 }
 
+/** The physical ids of a stack's resources, or undefined when the stack does not exist. */
+export function cloudFormationResourceIds(client: CloudFormationClient, stackName: string): () => Promise<readonly string[] | undefined> {
+  return async () => {
+    const ids: string[] = [];
+    let token: string | undefined;
+    try {
+      do {
+        const page = await client.send(new ListStackResourcesCommand({ StackName: stackName, ...(token === undefined ? {} : { NextToken: token }) }));
+        for (const summary of page.StackResourceSummaries ?? []) if (summary.PhysicalResourceId !== undefined) ids.push(summary.PhysicalResourceId);
+        token = page.NextToken;
+      } while (token !== undefined);
+    } catch (error) {
+      if (isStackAbsentError(error)) return undefined;
+      throw error;
+    }
+    return ids;
+  };
+}
+
 export function cloudFormationOutputsReader(client: CloudFormationClient): (stackName: string) => Promise<StackOutputs | undefined> {
   return async (stackName) => {
     let stack;
@@ -630,6 +651,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
       deployedParameters: deps.stackParameters ?? cloudFormationParametersReader(new CloudFormationClient({ region: answers.region })),
       ...(prepared.declaredParameters === undefined ? {} : { declaredParameters: prepared.declaredParameters }),
       ...(prepared.ensurePassRole === undefined ? {} : { ensurePassRole: prepared.ensurePassRole }),
+      ...(prepared.adoptEditionRecord === undefined ? {} : { adoptEditionRecord: prepared.adoptEditionRecord }),
       onEvent,
       ...(confirm === undefined ? {} : { confirm }),
       ...(deps.now === undefined ? {} : { now: deps.now }),
@@ -664,6 +686,8 @@ export interface PreparedDeployment {
    * deployEnvironment's ensurePassRole. Undefined for the templates engine and when a test overrides
    * the whole deployer without an IAM client. */
   ensurePassRole?: () => Promise<"present" | "added">;
+  /** The cdk engine, Enterprise only: see `adoptOrphanedEditionRecord`. */
+  adoptEditionRecord?: () => Promise<"owned" | "adopted" | "none">;
   /** Removes the cdk engine's outputs directory; a no-op for templates. */
   cleanup(): Promise<void>;
 }
@@ -779,6 +803,7 @@ export async function prepareDeployment(input: {
     partition,
     ...(declaredParameters === undefined ? {} : { declaredParameters }),
     ...(ensurePassRole === undefined ? {} : { ensurePassRole }),
+    ...(input.engine === "cdk" && edition === "enterprise" ? { adoptEditionRecord: () => adoptOrphanedEditionRecord({ store, env: input.env, edition, foundationResources: deps.foundationResources ?? cloudFormationResourceIds(new CloudFormationClient({ region }), environmentStackName(input.env, "foundation")) }) } : {}),
     async cleanup() {
       if (outputsDir !== undefined) await rm(outputsDir, { recursive: true, force: true });
     },

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { cdkAppArguments, cdkDiff, CDK_CONSTRUCT_IDS, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
 import { DeployAnswersSchema, prepareDeployment } from "../../packages/cli/src/deploy/commands.js";
-import { editionRecordName, readRecordedEdition, resolveDeployEdition } from "../../packages/cli/src/deploy/edition.js";
+import { adoptOrphanedEditionRecord, editionRecordName, readRecordedEdition, resolveDeployEdition } from "../../packages/cli/src/deploy/edition.js";
 import { collectEdition, type InitFlags } from "../../packages/cli/src/init/answers.js";
 import { initDeployAnswers } from "../../packages/cli/src/init/deploy-steps.js";
 import { InitAnswersSchema } from "../../packages/cli/src/init/install-state.js";
@@ -141,6 +141,21 @@ describe("prepareDeployment synthesizes with the edition", () => {
     expect(run.synth().join(" ")).not.toContain("rovara");
   });
 
+  it("hands the deploy the adoption of a retained edition record, for an Enterprise cdk install only (fix round 2, N-1)", async () => {
+    const run = sourceRunner("1.2.3");
+    const store = storeWith("enterprise");
+    const prepared = await prepareDeployment({
+      env: "staging", region: REGION, account: ACCOUNT, identityMode: "cognito", engine: "cdk", source: "/src", release: fakeRelease(), stderr: { write: () => undefined },
+      deps: { identity: { get: async () => caller }, store, secrets: { get: async () => undefined, create: async () => undefined }, commandRunner: run.runner, foundationResources: async () => ["vpc-1"] },
+    });
+    expect(await prepared.adoptEditionRecord!()).toBe("adopted");
+    expect(store.values.has(editionRecordName("staging"))).toBe(false);
+    await prepared.cleanup();
+    const plain = await prepare(storeWith(), sourceRunner("1.2.3").runner);
+    expect(plain.adoptEditionRecord).toBeUndefined();
+    await plain.cleanup();
+  });
+
   it("refuses a changed edition before anything is built", async () => {
     const run = sourceRunner("1.2.3");
     const failure = await thrown(() => prepare(storeWith("enterprise"), run.runner, { edition: "public", cloud: true }));
@@ -183,4 +198,30 @@ describe("answers", () => {
     expect(DeployAnswersSchema.safeParse({ ...file, edition: "enterprise" }).success).toBe(true);
     expect(DeployAnswersSchema.safeParse({ ...file, edition: "other" }).success).toBe(false);
   });
+});
+
+describe("a retained edition record that its stack no longer owns (fix round 2, N-1)", () => {
+  const withRecord = (value?: string) => { const store = new MemoryParameterStore(); if (value !== undefined) store.values.set(editionRecordName("staging"), value); return store; };
+  const adopt = (store: MemoryParameterStore, resources: readonly string[] | undefined, edition: "enterprise" | "public" | "unset" = "enterprise") =>
+    adoptOrphanedEditionRecord({ store, env: "staging", edition: edition === "unset" ? undefined : edition, foundationResources: async () => resources });
+
+  it("is removed before the foundation deploys, so the deploy creates it again; one the stack owns is left alone", async () => {
+    const orphan = withRecord("enterprise");
+    expect(await adopt(orphan, ["vpc-1"])).toBe("adopted");
+    expect(orphan.values.has(editionRecordName("staging"))).toBe(false);
+    const orphanNoStack = withRecord("enterprise");
+    expect(await adopt(orphanNoStack, undefined)).toBe("adopted");
+    const owned = withRecord("enterprise");
+    expect(await adopt(owned, ["vpc-1", editionRecordName("staging")])).toBe("owned");
+    expect(owned.values.get(editionRecordName("staging"))).toBe("enterprise");
+  });
+
+  it("does nothing where there is no record or the deploy is not Enterprise", async () => {
+    expect(await adopt(withRecord(), [])).toBe("none");
+    const store = withRecord("enterprise");
+    expect(await adopt(store, [], "unset")).toBe("none");
+    expect(await adopt(store, [], "public")).toBe("none");
+    expect(store.values.has(editionRecordName("staging"))).toBe(true);
+  });
+
 });
