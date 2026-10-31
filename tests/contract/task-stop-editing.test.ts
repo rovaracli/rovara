@@ -1,3 +1,5 @@
+import { writeProjectAi } from "../../packages/broker/src/spend/settings.js";
+import { fixtureProject } from "../support/project-ai-source.js";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { AgentXError, errorStatus, orgSettingsKey, orgMemberKey, developerOrgKey, orgMetaKey, projectAiKey, orgProjectCatalogKey, projectMetaKey } from "@agentx/contracts";
@@ -7,6 +9,7 @@ import { capturingAuditDeps } from "../support/audit-capture.js";
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa", a = "a".repeat(64), b = "b".repeat(64);
 function fixture() {
  const db = new FakeDynamoDb(), capture = capturingAuditDeps({ db });
+ fixtureProject(db, orgId, "web");
  db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
  for (const id of [a, b]) {
   db.set({ ...orgMemberKey(orgId, id), orgId, developerId: id, role: "owner" });
@@ -38,14 +41,24 @@ for (const project of [false, true]) it(`Spending editing applies an exact tight
  const row = f.db.get(project ? projectAiKey(orgId, "web") : f.key)!;
  expect(project ? row.taskStopPolicy : row.policy).toEqual(project ? { schemaVersion: 1, stopMicrousd: 1234567 } : { schemaVersion: 2, defaultPolicy: body.policy });
  expect(row.enrollment ?? { state: "disabled" }).toMatchObject({ state: "disabled" });
- expect(f.capture.recordedBy("spending.policy_changed" as never)).toHaveLength(1);
+ expect(f.capture.recordedBy("spending.policy_changed")).toHaveLength(1);
 });
 it("Spending loosening pins original terms and uses distinct people even without membership version", async () => {
  const f = fixture(), view = await f.call("GET", `${base}/editing`), proposalId = randomUUID();
  expect((await f.call("PUT", base, { requestId: proposalId, expectedRevision: view.body.revision, expectedPolicyDigest: view.body.sourceDigest, policy: { kind: "rovara_estimate" } })).body.state).toBe("pending");
  expect(f.db.get(f.key)?.policy).toEqual({ schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 10000000 } });
  expect((await f.call("POST", `${base}/decisions`, { requestId: randomUUID(), proposalId, decision: "approve" })).status).not.toBe(200);
- const approved = await f.call("POST", `${base}/decisions`, { requestId: randomUUID(), proposalId, decision: "approve" }, b);
+ const pending = (await f.call("GET", `${base}/editing`)).body.pending as { proposalDigest: string };
+ const approved = await f.call("POST", `${base}/decisions`, { requestId: randomUUID(), proposalId, decision: "approve", expectedProposalDigest: pending.proposalDigest }, b);
  expect(approved.status, JSON.stringify(approved.body)).toBe(200); expect(approved.body.state).toBe("applied");
  expect(f.db.get(f.key)?.policy).toEqual({ schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } });
+});
+
+it("monthly project edits preserve pending Spending terms and migrated identity", async () => {
+ const f = fixture(), key = projectAiKey(orgId, "web"), before = f.db.get(key)!;
+ const pending = { version: 1, proposalId: randomUUID(), requestedBy: a, createdAt: "2026-10-30T23:00:00.000Z", baseRevision: 1,
+  beforePolicy: before.taskStopPolicy, proposedPolicy: { kind: "inherit" }, proposalDigest: "d".repeat(64), sourceDigest: "c".repeat(64), scopeKind: "project", project: "web" };
+ f.db.set({ ...before, pendingTaskStopChange: pending });
+ await writeProjectAi({ ...f.deps, projectAiSignInTableName: "signin" }, orgId, "web", { projectPays: false, monthlyBudgetUsd: 51 }, a, { actor: { developerId: a, role: "owner" }, expectedRevision: 1 });
+ expect(f.db.get(key)).toMatchObject({ orgId, project: "web", monthlyBudgetUsd: 51, revision: 2, pendingTaskStopChange: pending, taskStopPolicy: before.taskStopPolicy });
 });
