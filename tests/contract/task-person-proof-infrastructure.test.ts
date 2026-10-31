@@ -290,18 +290,21 @@ describe("the named TEST proof-only installation gate", () => {
     // Staging v0.4.9: the invalid `GET /app/` web route (an empty path segment, refused by API Gateway) was removed with its Lambda permission, so the named and foreign digests were retaken from the test's output; legacy did not move.
     // Round 11 (mainline #408 sync): the notifier's role gained the WORKFLOW_DISPATCH read (blocked cards are no longer lost, LIVEFIX-1); the named and foreign digests were retaken from the test's output, legacy did not move.
     // Round 13b (mainline #409, AUTOREQUALIFY and DRYMSG): the pinned worker AMI (a read grant and a state machine step), the reconciler's pin variable, the pin alarm; the named and foreign digests were retaken from the test's output, legacy did not move (its pins are #409's own, taken as merged).
+    // 2026-10-31, cloud/next: the named and foreign digests were retaken after three intended additions to the named control plane (compared against cloud/integration's template: nothing else moved): the evidence lifecycle rules
+    // (ExpireEvidenceShort and ExpireEvidenceStd on the artifact bucket, proof and evidence P6), the intake poll schedule (IntakePollSchedule, meta repo lane F), and the gateway route for GET /v1/internal/context-tools
+    // (ContextToolsListRoute, meta repo lane E). The legacy digests did not move (named environments only).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "9941efa5f43a72f44f46df833599bde2c4f8013393e59450f10368e7e551eb0d",
-        withoutRoute: "ae7b9f56e63fac32e7214f3eb0f83b4d1780d0d8818dd69091ba9d1382ca1d0a",
+        withRoute: "8648f653bee1b771425e76a726d50aecdca5b090635097687e9073219ab709f2",
+        withoutRoute: "fa1badcaa22e30861ecd572c6732ecb0ed313dd6f91fbeff42349486f13fdbfd",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "b075455cfd7b2607c80e1e459ce65582e0a7241d3c3a9c022d21264d1fea6aba",
-        withoutRoute: "f2158754491697bbe153a06c18c26d8600b9316c0c65bbaa0e7afd77207dface",
+        withRoute: "aceac3ad18fda7375c8ca1ccfe947664c4b9331e68c29e83f574fc8b61430e1c",
+        withoutRoute: "1fb28fe0dfaa1005844fa691ad03bf2f47f8f28c42232e8890d77a5119c14005",
       },
       {
         label: "legacy",
