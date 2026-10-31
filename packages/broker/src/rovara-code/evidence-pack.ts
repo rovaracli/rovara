@@ -22,6 +22,8 @@ export type EvidenceProblem =
   | "tests_names_exceed_counts"
   | "coverage_inconsistent"
   | "findings_inconsistent"
+  | "findings_disagree_with_check"
+  | "selection_inconsistent"
   | "artifact_missing"
   | "media_not_allowed"
   | "pack_invalid";
@@ -46,8 +48,12 @@ export interface EvidenceBuildInput {
   notTested?: readonly EvidenceNotTested[] | undefined;
   /** What the artifact store really holds, by sha256: a reference to anything else is dropped. */
   storedArtifacts: ReadonlyMap<string, StoredArtifact>;
-  /** Whether the company setting and the run-scoped-account gate let a video or a trace be kept. Absent or false: none is, and each is withheld. */
-  mediaAllowed?: { video: boolean; trace: boolean } | undefined;
+  /**
+   * The video/trace gate (design 3.4), every part defaulting to "no": `companyAllows` is the approved setting per kind; `revocationConfirmed` is the broker's own proof that the run's accounts were revoked
+   * and a login then failed; `tierAllowed` is the approved environment's tier rule (tier 1 or 2, or tier 3 only with a provisioner that deletes). On top of these the pack itself must show no long-lived
+   * (`registered`) account, and a shared-tier run must name at least one run-scoped account. Data is synthetic by the pack's schema. Absent: nothing is kept.
+   */
+  media?: { companyAllows: { video: boolean; trace: boolean }; revocationConfirmed: boolean; tierAllowed: boolean } | undefined;
 }
 
 export interface NewArtifact {
@@ -61,6 +67,8 @@ export interface EvidenceBuildResult {
   problems: EvidenceProblem[];
   /** The output tails to store before the pack is kept (their refs are in the pack). */
   newArtifacts: NewArtifact[];
+  /** Video and trace the gate withheld: the caller DELETES these from the store (design 3.4), so a withheld file cannot be fetched by its hash. */
+  withheldArtifacts: ArtifactRef[];
 }
 
 /** One plain line, redacted again, cut. The raw file's text is never trusted to be redacted already. */
@@ -89,11 +97,12 @@ const SERVICE_WORDS: Record<EvidenceEnvironment["services"][number]["mode"], str
 export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResult {
   const problems = new Set<EvidenceProblem>();
   const newArtifacts: NewArtifact[] = [];
+  const withheldArtifacts: ArtifactRef[] = [];
   const raw = readRaw(input, problems);
   const rawByCheck = new Map((raw?.checks ?? []).map((entry) => [entry.checkId, entry] as const));
   for (const id of rawByCheck.keys()) if (!input.checks.some((entry) => entry.id === id)) problems.add("unknown_check_ignored");
-  const mediaAllowed = input.mediaAllowed ?? { video: false, trace: false };
-  const registered = input.environment.accounts.some((account) => account.kind === "registered");
+  const media = input.media;
+  const accountsOk = !input.environment.accounts.some((account) => account.kind === "registered") && (input.environment.tier !== "shared" || input.environment.accounts.length > 0);
 
   const checks = input.checks.slice(0, EVIDENCE_CHECKS_MAX).map((entry) => {
     const extra = rawByCheck.get(entry.id);
@@ -104,7 +113,8 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
       problems.add("tests_not_trusted");
       tests = undefined;
     }
-    if (tests !== undefined && entry.after === "passed" && tests.failed + tests.errored > 0) {
+    // A check's outcome is the broker's own: a passed check with failing tests, and a failed check whose report shows no failing test (a stale or partial report, a hook failure the report missed), both disagree.
+    if (tests !== undefined && ((entry.after === "passed" && tests.failed + tests.errored > 0) || (entry.after === "failed" && tests.failed + tests.errored === 0))) {
       problems.add("tests_disagree_with_check");
       tests = undefined;
     }
@@ -120,6 +130,15 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
     let findings = extra?.findings;
     if (findings !== undefined && findings.items.length > findings.newCount) {
       problems.add("findings_inconsistent");
+      findings = undefined;
+    }
+    // A scan that failed with "0 new findings" is a scan whose findings were not read: never shown as clean.
+    if (findings !== undefined && entry.after === "failed" && findings.newCount === 0) {
+      problems.add("findings_disagree_with_check");
+      findings = undefined;
+    }
+    if (findings !== undefined && !trusted) {
+      problems.add("tests_not_trusted");
       findings = undefined;
     }
     let outputTailRef: ArtifactRef | undefined;
@@ -152,15 +171,21 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
   const api = (raw?.api ?? []).map((scenario) => ({ ...scenario, scenarioId: plain(scenario.scenarioId, 120), samples: scenario.samples.filter(held), changedPaths: scenario.changedPaths.map((path) => plain(path, 300)) }));
   const browser = (raw?.browser ?? []).map((scenario) => {
     const withheld: NonNullable<EvidenceRaw["browser"]>[number]["withheld"] & unknown[] = [];
-    const media = (artifact: "video" | "trace", ref: ArtifactRef | undefined): ArtifactRef | undefined => {
+    const kept = (artifact: "video" | "trace", ref: ArtifactRef | undefined): ArtifactRef | undefined => {
       if (ref === undefined) return undefined;
-      if (registered) { withheld.push({ artifact, reason: "account_not_run_scoped" }); problems.add("media_not_allowed"); return undefined; }
-      if (!mediaAllowed[artifact]) { withheld.push({ artifact, reason: "company_setting_off" }); problems.add("media_not_allowed"); return undefined; }
+      // The first failing condition names the reason, in the design's order; each withheld file is also listed for deletion.
+      const reason = !accountsOk ? "account_not_run_scoped" : media?.tierAllowed !== true ? "tier_not_allowed" : media.companyAllows[artifact] !== true ? "company_setting_off" : !media.revocationConfirmed ? "revocation_not_confirmed" : undefined;
+      if (reason !== undefined) {
+        withheld.push({ artifact, reason });
+        withheldArtifacts.push(ref);
+        problems.add("media_not_allowed");
+        return undefined;
+      }
       if (!held(ref)) { withheld.push({ artifact, reason: "upload_failed" }); return undefined; }
       return ref;
     };
-    const video = media("video", scenario.video);
-    const trace = media("trace", scenario.trace);
+    const video = kept("video", scenario.video);
+    const trace = kept("trace", scenario.trace);
     return {
       scenarioId: plain(scenario.scenarioId, 120), consoleErrors: scenario.consoleErrors,
       strip: { before: scenario.strip.before.filter(held), after: scenario.strip.after.filter(held) },
@@ -171,13 +196,18 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
 
   const testChecks = checks.filter((entry) => entry.tests !== undefined);
   const measured = testChecks.reduce((sum, entry) => sum + (entry.tests?.total ?? 0), 0);
-  const selection = raw?.selection ?? { method: "full" as const, selected: measured, total: measured };
+  // A selection that claims fewer tests than the reports measured cannot be true: it is dropped, and the pack says only what ran.
+  const rawSelection = raw?.selection;
+  if (rawSelection !== undefined && measured > 0 && rawSelection.selected < measured) problems.add("selection_inconsistent");
+  const reported = rawSelection !== undefined && !(measured > 0 && rawSelection.selected < measured);
+  const selection = reported ? rawSelection : { method: "full" as const, selected: measured, total: measured };
 
   const notTested = new Map<string, EvidenceNotTested>();
   const add = (item: EvidenceNotTested) => {
     if (notTested.size < EVIDENCE_NOT_TESTED_MAX && !notTested.has(`${item.kind}:${item.id}`)) notTested.set(`${item.kind}:${item.id}`, item);
   };
   for (const item of input.notTested ?? []) add({ kind: item.kind, id: plain(item.id, 64), text: item.text === "" ? "" : plain(item.text, 300), reason: plain(item.reason, 100) });
+  if (!reported && checks.some((entry) => entry.kind === "test")) add({ kind: "not_selected", id: "selection", text: "Which tests ran was not reported", reason: "selection not reported" });
   if (selection.selected < selection.total) add({ kind: "not_selected", id: "selection", text: `${selection.total - selection.selected} of ${selection.total} tests were not run`, reason: `not selected (${selection.method.replace("_", " ")})` });
   for (const service of input.environment.services) {
     if (service.mode === "mocked") add({ kind: "mocked_service", id: plain(service.name, 64), text: `${plain(service.name, 80)} is mocked`, reason: service.unrecordedAnswered === undefined || service.unrecordedAnswered === 0 ? "answered from recorded responses" : `answered ${service.unrecordedAnswered} unrecorded requests` });
@@ -201,9 +231,9 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
   const parsed = EvidencePackSchema.safeParse(pack);
   if (!parsed.success) {
     problems.add("pack_invalid");
-    return { pack: undefined, problems: [...problems], newArtifacts: [] };
+    return { pack: undefined, problems: [...problems], newArtifacts: [], withheldArtifacts };
   }
-  return { pack: parsed.data, problems: [...problems], newArtifacts };
+  return { pack: parsed.data, problems: [...problems], newArtifacts, withheldArtifacts };
 }
 
 function dedupeWithheld<T extends { artifact: "video" | "trace" }>(items: T[]): T[] {
@@ -248,9 +278,9 @@ export function evidenceHref(taskId: string, ref: Pick<ArtifactRef, "sha256">): 
 
 /**
  * The pack as the task page reads it: each artifact is a link while it is available, and `expired` or `withheld` (no link) when it is not. `stateOf` says, per artifact, whether the retention
- * period has passed or the store no longer holds it; without it every artifact is read as available. Undefined when the result does not fit the view's schema (never a partial view).
+ * period has passed or the store no longer holds it. It is required: there is no default, because "available" is a claim the caller must make. Undefined when the result does not fit the view's schema (never a partial view).
  */
-export function evidenceViewOf(pack: EvidencePack, taskId: string, stateOf: (ref: ArtifactRef) => EvidenceArtifactState = () => "available"): EvidenceView | undefined {
+export function evidenceViewOf(pack: EvidencePack, taskId: string, stateOf: (ref: ArtifactRef) => EvidenceArtifactState): EvidenceView | undefined {
   const link = (ref: ArtifactRef): ArtifactLink => {
     const state = stateOf(ref);
     return ArtifactLinkSchema.parse({ ...ArtifactRefSchema.parse(ref), state, ...(state === "available" ? { href: evidenceHref(taskId, ref) } : {}) });

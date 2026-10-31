@@ -12,6 +12,8 @@ const entry = (id: string, label: string, over: Partial<CheckEntry> = {}): Check
 const environment = (over: Partial<EvidenceEnvironment> = {}): EvidenceEnvironment => ({ tier: "sandbox", envRevision: 3, services: [{ name: "partner-scorer", mode: "mocked", fixtureRevision: 2, schemaVersion: 3, recordedAt: "2026-11-02T00:00:00.000Z" }], data: "synthetic", accounts: [{ profileId: "buyer", kind: "run_scoped" }], ...over });
 const tests = (over: Record<string, unknown> = {}) => ({ total: 4, passed: 3, failed: 0, skipped: 1, errored: 0, names: [{ name: "test_match.py::test_no_region", status: "passed", proof: "proves_change" }], newTests: ["test_match.py::test_no_region"], ...over });
 const raw = (over: Record<string, unknown> = {}) => JSON.stringify({ schemaVersion: 1, candidateDigest: DIGEST, checks: [{ checkId: "readiness:0", tests: tests(), coverage: { linesChanged: 48, linesCovered: 41, files: [{ path: "src/match.py", uncovered: [3, 4] }] } }], ...over });
+const ALL_OK = { companyAllows: { video: true, trace: true }, revocationConfirmed: true, tierAllowed: true };
+const available = () => "available" as const;
 const stored = (...refs: ArtifactRef[]): Map<string, StoredArtifact> => new Map(refs.map((item) => [item.sha256, { kind: item.kind, bytes: item.bytes }]));
 const input = (over: Partial<EvidenceBuildInput> = {}): EvidenceBuildInput => ({
   candidateDigest: DIGEST, rawText: raw(), checks: [entry("readiness:0", "pytest -q"), entry("readiness:1", "ruff check .")],
@@ -91,6 +93,22 @@ describe("test details are checked against the broker's own outcome", () => {
     expect(built.problems).toEqual([]);
     expect(built.pack?.checks[0]?.tests?.failed).toBe(1);
   });
+  it("drops counts that show no failing test under a check that failed: a stale or partial report must not read as clean", () => {
+    const built = withTests({}, [entry("readiness:0", "pytest", { after: "failed", class: "regression", exitCode: 1 })]);
+    expect(built.problems).toEqual(["tests_disagree_with_check"]);
+    expect(built.pack?.checks[0]?.tests).toBeUndefined();
+    expect(built.pack?.checks[0]?.after).toBe("failed");
+  });
+  it("drops a scan that failed with zero new findings, and findings under a check that did not finish", () => {
+    const zero = { tool: "bandit", newCount: 0, bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, items: [] };
+    const failed = buildEvidencePack(input({ checks: [entry("readiness:1", "bandit", { after: "failed", class: "regression", exitCode: 1 })], checkKinds: new Map([["readiness:1", "security"]]), rawText: raw({ checks: [{ checkId: "readiness:1", findings: zero }] }) }));
+    expect(failed.problems).toEqual(["findings_disagree_with_check"]);
+    expect(failed.pack?.checks[0]?.findings).toBeUndefined();
+    const timedOut = buildEvidencePack(input({ checks: [entry("readiness:1", "bandit", { after: "timed_out", class: "not_rerun", exitCode: null })], rawText: raw({ checks: [{ checkId: "readiness:1", findings: zero }] }) }));
+    expect(timedOut.pack?.checks[0]?.findings).toBeUndefined();
+    const clean = buildEvidencePack(input({ checks: [entry("readiness:1", "bandit")], rawText: raw({ checks: [{ checkId: "readiness:1", findings: zero }] }) }));
+    expect(clean.pack?.checks[0]?.findings?.newCount).toBe(0);
+  });
   it("drops a report under a check that timed out, was stopped or never ran: it may be left from an older run", () => {
     for (const after of ["timed_out", "unknown", "not_run"] as const) {
       const built = withTests({}, [entry("readiness:0", "pytest", { after, class: "not_rerun", exitCode: null })]);
@@ -125,6 +143,16 @@ describe("selection", () => {
     const built = buildEvidencePack(input({ rawText: raw({ selection }) }));
     expect(built.pack?.selection).toEqual(selection);
     expect(built.pack?.notTested).toContainEqual({ kind: "not_selected", id: "selection", text: "1203 of 1240 tests were not run", reason: "not selected (coverage map)" });
+  });
+  it("says the selection was not reported, instead of implying a full run, when a test check ran and the worker sent none", () => {
+    const built = buildEvidencePack(input());
+    expect(built.pack?.notTested).toContainEqual({ kind: "not_selected", id: "selection", text: "Which tests ran was not reported", reason: "selection not reported" });
+    expect(buildEvidencePack(input({ checks: [entry("readiness:1", "ruff")], rawText: undefined })).pack?.notTested.some((item) => item.kind === "not_selected")).toBe(false);
+  });
+  it("drops a selection that claims fewer tests than the reports measured", () => {
+    const built = buildEvidencePack(input({ rawText: raw({ selection: { method: "coverage_map", selected: 2, total: 1240 } }) }));
+    expect(built.problems).toEqual(["selection_inconsistent"]);
+    expect(built.pack?.selection).toEqual({ method: "full", selected: 4, total: 4 });
   });
   it("is refused when the worker selected more than the total", () => {
     expect(buildEvidencePack(input({ rawText: raw({ selection: { method: "full", selected: 5, total: 4 } }) })).pack).toBeUndefined();
@@ -169,7 +197,7 @@ describe("artifacts", () => {
     storedArtifacts: stored(sample, shot, video, trace), ...over,
   }));
   it("keeps references the store really holds, and nothing else", () => {
-    const built = build({ mediaAllowed: { video: true, trace: true } });
+    const built = build({ media: ALL_OK });
     expect(built.problems).toEqual([]);
     expect(built.pack?.api[0]?.samples).toEqual([sample]);
     expect(built.pack?.browser[0]).toMatchObject({ strip: { before: [shot], after: [shot] }, video, trace });
@@ -189,20 +217,34 @@ describe("artifacts", () => {
     expect(built.problems).toContain("media_not_allowed");
     expect(built.pack?.browser[0]?.video).toBeUndefined();
     expect(built.pack?.browser[0]?.trace).toBeUndefined();
-    expect(built.pack?.browser[0]?.withheld).toEqual([{ artifact: "video", reason: "company_setting_off" }, { artifact: "trace", reason: "company_setting_off" }]);
+    expect(built.pack?.browser[0]?.withheld).toEqual([{ artifact: "video", reason: "tier_not_allowed" }, { artifact: "trace", reason: "tier_not_allowed" }]);
     expect(built.pack?.browser[0]?.strip.after).toEqual([shot]);
   });
+  it("names the failing gate condition, in order: tier, setting, revocation, and lists every withheld file for deletion", () => {
+    const reasons = (media: EvidenceBuildInput["media"], environmentOver: Partial<EvidenceEnvironment> = {}) => build({ media, environment: environment(environmentOver) }).pack?.browser[0]?.withheld?.map((item) => item.reason);
+    expect(reasons({ ...ALL_OK, tierAllowed: false })).toEqual(["tier_not_allowed", "tier_not_allowed"]);
+    expect(reasons({ ...ALL_OK, companyAllows: { video: false, trace: false } })).toEqual(["company_setting_off", "company_setting_off"]);
+    expect(reasons({ ...ALL_OK, revocationConfirmed: false })).toEqual(["revocation_not_confirmed", "revocation_not_confirmed"]);
+    expect(reasons(undefined)).toEqual(["tier_not_allowed", "tier_not_allowed"]);
+    expect(reasons({ companyAllows: { video: true, trace: true }, revocationConfirmed: false, tierAllowed: false })).toEqual(["tier_not_allowed", "tier_not_allowed"]);
+    // A shared environment with no run-scoped account at all cannot show its accounts were dead.
+    expect(reasons(ALL_OK, { tier: "shared", accounts: [] })).toEqual(["account_not_run_scoped", "account_not_run_scoped"]);
+    expect(build({ media: { ...ALL_OK, revocationConfirmed: false } }).withheldArtifacts).toEqual([video, trace]);
+    expect(build({ media: ALL_OK }).withheldArtifacts).toEqual([]);
+    expect(build({ media: ALL_OK }).pack?.browser[0]).toMatchObject({ video, trace });
+    expect(build({ media: ALL_OK, environment: environment({ tier: "shared" }) }).pack?.browser[0]).toMatchObject({ video, trace });
+  });
   it("allows the video and withholds the trace when only the video is allowed", () => {
-    const built = build({ mediaAllowed: { video: true, trace: false } });
+    const built = build({ media: { ...ALL_OK, companyAllows: { video: true, trace: false } } });
     expect(built.pack?.browser[0]).toMatchObject({ video, withheld: [{ artifact: "trace", reason: "company_setting_off" }] });
   });
   it("withholds both when any account is a long-lived registered one, even if the setting allows them", () => {
-    const built = build({ mediaAllowed: { video: true, trace: true }, environment: environment({ accounts: [{ profileId: "old", kind: "registered" }] }) });
+    const built = build({ media: ALL_OK, environment: environment({ accounts: [{ profileId: "old", kind: "registered" }] }) });
     expect(built.pack?.browser[0]?.video).toBeUndefined();
     expect(built.pack?.browser[0]?.withheld).toEqual([{ artifact: "video", reason: "account_not_run_scoped" }, { artifact: "trace", reason: "account_not_run_scoped" }]);
   });
   it("says the upload failed when an allowed video is not in the store", () => {
-    const built = build({ mediaAllowed: { video: true, trace: true }, storedArtifacts: stored(sample, shot, trace) });
+    const built = build({ media: ALL_OK, storedArtifacts: stored(sample, shot, trace) });
     expect(built.pack?.browser[0]?.video).toBeUndefined();
     expect(built.pack?.browser[0]?.withheld).toEqual([{ artifact: "video", reason: "upload_failed" }]);
     expect(built.pack?.browser[0]?.trace).toEqual(trace);
@@ -233,7 +275,7 @@ describe("the task page's view", () => {
   const pack = buildEvidencePack(input({ rawText: raw({ api: [{ scenarioId: "rank", samples: [sample], diff: "none", changedPaths: [] }], browser: [{ scenarioId: "login", strip: { before: [shot], after: [shot] }, consoleErrors: 0 }], checks: [{ checkId: "readiness:0", outputTail: "ok" }] }), storedArtifacts: stored(sample, shot) })).pack!;
   const task = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
   it("links each artifact to a Rovara route while it is available", () => {
-    const view = evidenceViewOf(pack, task)!;
+    const view = evidenceViewOf(pack, task, available)!;
     expect(EvidenceViewSchema.safeParse(view).success).toBe(true);
     expect(view.api[0]?.samples[0]).toMatchObject({ state: "available", href: `/v1/app/tasks/${task}/evidence/${sample.sha256}` });
     expect(view.browser[0]?.strip.after[0]?.href).toBe(evidenceHref(task, shot));
@@ -247,6 +289,6 @@ describe("the task page's view", () => {
     expect(view.api[0]?.samples[0]).not.toHaveProperty("href");
   });
   it("is undefined, not partial, for a task id that cannot make a route", () => {
-    expect(evidenceViewOf(pack, "../../x?y=1")).toBeUndefined();
+    expect(evidenceViewOf(pack, "../../x?y=1", available)).toBeUndefined();
   });
 });
