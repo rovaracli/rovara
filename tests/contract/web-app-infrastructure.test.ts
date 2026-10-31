@@ -65,7 +65,7 @@ describe("named web hosting and isolated throttle budgets", () => {
  });
  it("gives the 256 MB, ten-second web function only log permissions", () => {
   const [, fn] = webFunction(hosted);expect(fn.Properties.Runtime).toBe("nodejs22.x");expect(fn.Properties.MemorySize).toBe(256);expect(fn.Properties.Timeout).toBe(10);expect(fn.Properties.TracingConfig).toBeUndefined();
-  const environment = record(record(fn.Properties.Environment).Variables);expect(environment.ASSET_ORIGIN).toBeTruthy();expect(Object.keys(environment).sort()).toEqual(["ASSET_ORIGIN", "REALTIME_HTTP_HOST", "REALTIME_WS_HOST"]);
+  const environment = record(record(fn.Properties.Environment).Variables);expect(environment.ASSET_ORIGIN).toBeTruthy();expect(Object.keys(environment).sort()).toEqual(["ASSET_ORIGIN", "REALTIME_HTTP_HOST", "REALTIME_WS_HOST", "ROVARA_EDITION"]);
   const roleId = (record(fn.Properties.Role)["Fn::GetAtt"] as string[])[0]!;const role = hosted.Resources[roleId]!;
   const policies = ofType(hosted, "AWS::IAM::Policy").filter(([, policy]) => JSON.stringify(policy.Properties.Roles).includes(roleId));
   for (const [, policy] of policies) for (const statement of statements(policy.Properties.PolicyDocument)) expect([statement.Action].flat().every(action => typeof action === "string" && action.startsWith("logs:"))).toBe(true);
