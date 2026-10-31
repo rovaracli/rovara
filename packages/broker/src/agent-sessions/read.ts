@@ -139,12 +139,13 @@ async function payerOf(deps: SessionReadDependencies, session: AgentSessionRecor
 
 function bindingLink(binding: SessionBinding): { kind: SessionBinding["kind"]; url: string } {
   if (binding.kind === "linear_issue") return { kind: "linear_issue", url: binding.url };
+  if (binding.kind === "tracker_item") return { kind: "tracker_item", url: binding.url };
   return { kind: "slack_thread", url: `https://app.slack.com/client/${binding.teamId}/${binding.channelId}/thread/${binding.channelId}-${binding.threadTs}` };
 }
 
 async function bindingsOf(deps: SessionReadDependencies, session: AgentSessionRecord): Promise<Array<{ kind: SessionBinding["kind"]; url: string }>> {
   const found: Array<{ kind: SessionBinding["kind"]; url: string }> = [];
-  for (const kind of ["slack_thread", "linear_issue"] as const) {
+  for (const kind of ["slack_thread", "linear_issue", "tracker_item"] as const) {
     const item = await getItem(deps, sessionBindingKey(session.orgId, session.sessionId, kind));
     const parsed = SessionBindingSchema.safeParse(item?.["binding"]);
     if (parsed.success && parsed.data.kind === kind) found.push(bindingLink(parsed.data));

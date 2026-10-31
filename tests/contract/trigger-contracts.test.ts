@@ -23,8 +23,8 @@ describe("the tables", () => {
   it("lists the nine sources and exactly the event types of each", () => {
     expect([...EVENT_SOURCES]).toEqual(["github", "linear", "jira", "pagerduty", "sentry", "datadog", "grafana", "vercel", "cloudwatch"]);
     expect(EVENT_TYPES).toEqual({
-      github: ["pull_request.opened", "pull_request.ready_for_review", "issues.opened", "deployment_status.success", "deployment_status.failure", "workflow_run.completed"],
-      linear: ["issue.created"], jira: ["issue.created"], pagerduty: ["incident.triggered"], sentry: ["issue.created", "alert.triggered"], datadog: ["monitor.triggered"],
+      github: ["pull_request.opened", "pull_request.ready_for_review", "issues.opened", "issues.labeled", "issues.assigned", "deployment_status.success", "deployment_status.failure", "workflow_run.completed"],
+      linear: ["issue.created"], jira: ["issue.created", "issue.labeled", "issue.assigned"], pagerduty: ["incident.triggered"], sentry: ["issue.created", "alert.triggered"], datadog: ["monitor.triggered"],
       grafana: ["alert.firing"], vercel: ["deployment.succeeded", "deployment.error"], cloudwatch: ["alarm.fired"],
     });
   });
@@ -33,6 +33,10 @@ describe("the tables", () => {
     expect(eventFilterKeys("github", "pull_request.opened")).toEqual(["baseBranch", "label", "authorAssociation"]);
     expect(eventFilterKeys("github", "pull_request.ready_for_review")).toEqual(["baseBranch", "label", "authorAssociation"]);
     expect(eventFilterKeys("github", "issues.opened")).toEqual(["label", "authorAssociation"]);
+    expect(eventFilterKeys("github", "issues.labeled")).toEqual(["label"]);
+    expect(eventFilterKeys("github", "issues.assigned")).toEqual(["assignee"]);
+    expect(eventFilterKeys("jira", "issue.labeled")).toEqual(["label"]);
+    expect(eventFilterKeys("jira", "issue.assigned")).toEqual(["assignee"]);
     expect(eventFilterKeys("github", "deployment_status.failure")).toEqual(["environment"]);
     expect(eventFilterKeys("github", "workflow_run.completed")).toEqual(["workflow", "conclusion", "branch"]);
     expect(eventFilterKeys("linear", "issue.created")).toEqual(["label", "issueType"]);

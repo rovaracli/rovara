@@ -46,6 +46,7 @@ import { runApprovalSweep } from "../../agents/approvals.js";
 import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain } from "../../agents/lifecycle.js";
 import { escalateOwnerRequests } from "../../spend/requests.js";
 import { fireChainSchedule, sweepSchedules } from "../../triggers/schedules.js";
+import { runIntakePoll } from "../../triggers/poll-intake.js";
 import { deliverGithubTriggerEvents, type AuthorQuery } from "../../triggers/github-events.js";
 import { sweepChainRuns } from "../../chains/lifecycle.js";
 import type { ChainRouteDependencies } from "../../chains/routes.js";
@@ -69,7 +70,7 @@ import { cancelWorkspaceTask, stopWorkspace } from "./acceptance.js";
 import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
-import { adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
+import { adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
 import { runWokenTrackingPass, trackingPassDependencies } from "./e2e-rounds.js";
 import { handleProjectSetupCallback, handleProjectSetupEvidenceChunk, handleProjectSetupEvidenceFinalize, handleProjectSetupEvidenceInit, handleProjectSetupExecutionRead } from "./evidence-and-setup.js";
 import { handleModelAccess, handleSlackModelAccess } from "./model-access.js";
@@ -78,7 +79,7 @@ import { createCloudProject, prepareWorkspace, registerProject, registerProjectF
 import { getProjectModels, putProjectModel } from "./records.js";
 import { decideEgress, decideRequestContext, egressDepsOf, githubScope, listEgressPending, orgConnectionStoreOf, orgResolverOf, putInstallBudget, routingOf, webhookRepositoryUrl } from "./scope-helpers.js";
 import { authorizeSlackTaskAction, captureSlackWorkflowFeedbackNote, closeSlackWorkflowTask, confirmSlackTaskPeople, decideSlackWorkflow, decideSlackWorkflowFeedbackFindings, handleSlackTaskPeople, isSlackStopTaskEvent, isSlackTaskAuthorizationEvent, isSlackTaskPeopleChangeEvent, isSlackTaskPeopleConfirmEvent, isSlackTaskPeopleReadEvent, isSlackTaskPeopleTakeOwnershipEvent, isSlackThreadNoteEvent, isSlackWorkflowCloseEvent, isSlackWorkflowDecisionEvent, isSlackWorkflowFeedbackFindingsDecisionEvent, isSlackWorkflowFeedbackNoteEvent, isSlackWorkflowFeedbackReviewRetryEvent, isSlackWorkflowKeepPullRequestsEvent, isSlackWorkflowPublishRetryEvent, isSlackWorkflowResolveFindingsEvent, isSlackWorkflowRetryEvent, isSlackWorkflowReviewRetryEvent, isSlackWorkflowSendBackEvent, isSlackWorkflowStartEvent, reviseSlackWorkflowPlan, keepSlackWorkflowPullRequests, recordSlackThreadNote, resolveSlackWorkflowFindings, retrySlackWorkflowChecks, retrySlackWorkflowFeedbackReview, retrySlackWorkflowPublication, retrySlackWorkflowReviews, sendSlackWorkflowBack, startSlackWorkflow, stopSlackThreadTask, workflowApplicationRouteDependencies, type SlackStopTaskEvent, type SlackTaskAuthorizationEvent, type SlackTaskPeopleChangeEvent, type SlackTaskPeopleConfirmEvent, type SlackTaskPeopleReadEvent, type SlackTaskPeopleTakeOwnershipEvent, type SlackWorkflowCloseEvent, type SlackWorkflowDecisionEvent, type SlackWorkflowResolveFindingsEvent, type SlackWorkflowRetryEvent, type SlackWorkflowReviewRetryEvent, type SlackWorkflowSendBackEvent, type SlackWorkflowStartEvent } from "./slack-workflow-events.js";
-import { SESSION_EVENT_BUDGET_MS, auditModelKeys, isAuditDrainEvent, isChainScheduleEvent, isChainSweepEvent, isEgressDomainsSyncEvent, isGithubInstallRequestReminderEvent, isGithubWebhookRecoveryEvent, isSessionSweepEvent, isSpendSettlementEvent, isWorkflowMergeRecoveryEvent, ledgerOf, modelSourceSweepOf } from "./sweeps-and-readiness.js";
+import { SESSION_EVENT_BUDGET_MS, auditModelKeys, isAuditDrainEvent, isChainScheduleEvent, isChainSweepEvent, isEgressDomainsSyncEvent, isIntakePollEvent, isGithubInstallRequestReminderEvent, isGithubWebhookRecoveryEvent, isSessionSweepEvent, isSpendSettlementEvent, isWorkflowMergeRecoveryEvent, ledgerOf, modelSourceSweepOf } from "./sweeps-and-readiness.js";
 import { handleAgentSkills, handleAgentTools } from "./task-operations.js";
 import { handleContextTools } from "./context-tools.js";
 import { SWEEP_EVENT_BUDGET_MS, headEventDependencies, processGithubWorkflowEvent, reconcileWorkflowMergeRecoveryTask, retryDueGithubWebhookEvents, retryGithubWebhookAsAdministrator } from "./terminal-and-github-events.js";
@@ -106,7 +107,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   }
   const adminReads = adminReadDependencies(dependencies);
   const adminChanges = adminChangeDependencies(dependencies, adminReads);
-  return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.chain-sweep" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
+  return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.chain-sweep" } | { source: "agentx.intake-poll" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" }, context?: { awsRequestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Plan 3, Task 21a-wiring (hand-off 1): the sign-in function asks whether a member may decide an approval, by a direct invoke (never through
     // API Gateway). The same live evaluation as the page, answered as one word (and the words for a refusal); a failure here is an error, never "open".
     if (isDecideInspectEvent(event)) {
@@ -201,6 +202,16 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (chainDependencies?.triggerSchedules === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "schedules are not set up in this deployment");
       // The scheduler calls the broker asynchronously, so a throw would never reach its retry policy or the chain queue (review I-1): a fire that fails records itself in the chain queue.
       return json(await fireChainSchedule(chainDependencies, event, Date.now(), dependencies.agents?.scheduleDeadLetters), "chain-schedule");
+    }
+    // Meta repo lane F (F2): every minute, the intake sources that are due are read (each by its own interval and hourly cap); a source that fails is backed off and, after an hour, its maintainers are told.
+    if (isIntakePollEvent(event)) {
+      try {
+        const poll = intakePollDependenciesFrom(dependencies, tasks, agents);
+        return json(poll === undefined ? { skipped: true } : await runIntakePoll(poll), "intake-poll");
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "intake_poll.failed", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "poll_failed" }, "intake-poll", 500);
+      }
     }
     // Plan 4 Task 9: every 5 minutes, the chain runs that are due (a step or run that ran out of time, a callback or a decision the run did not hear, an ending left half done).
     if (isChainSweepEvent(event)) {

@@ -31,9 +31,9 @@ export type EventSource = z.infer<typeof EventSourceSchema>;
 
 /** The event types each source can start a trigger on, exactly. */
 export const EVENT_TYPES = {
-  github: ["pull_request.opened", "pull_request.ready_for_review", "issues.opened", "deployment_status.success", "deployment_status.failure", "workflow_run.completed"],
+  github: ["pull_request.opened", "pull_request.ready_for_review", "issues.opened", "issues.labeled", "issues.assigned", "deployment_status.success", "deployment_status.failure", "workflow_run.completed"],
   linear: ["issue.created"],
-  jira: ["issue.created"],
+  jira: ["issue.created", "issue.labeled", "issue.assigned"],
   pagerduty: ["incident.triggered"],
   sentry: ["issue.created", "alert.triggered"],
   datadog: ["monitor.triggered"],
@@ -55,11 +55,16 @@ export const EVENT_FILTER_KEYS: Readonly<Record<string, readonly string[]>> = {
   "github:pull_request.opened": PULL_REQUEST_FILTERS,
   "github:pull_request.ready_for_review": PULL_REQUEST_FILTERS,
   "github:issues.opened": ["label", "authorAssociation"],
+  // Meta repo lane F: an issue labeled or assigned asks for work. `label` is the label that was ADDED (not every label on the issue); `assignee` is who it was assigned to.
+  "github:issues.labeled": ["label"],
+  "github:issues.assigned": ["assignee"],
   "github:deployment_status.success": ["environment"],
   "github:deployment_status.failure": ["environment"],
   "github:workflow_run.completed": ["workflow", "conclusion", "branch"],
   "linear:issue.created": ISSUE_FILTERS,
   "jira:issue.created": ISSUE_FILTERS,
+  "jira:issue.labeled": ["label"],
+  "jira:issue.assigned": ["assignee"],
   "pagerduty:incident.triggered": ["urgency", "service"],
   "sentry:issue.created": ERROR_FILTERS,
   "sentry:alert.triggered": ERROR_FILTERS,
@@ -161,4 +166,20 @@ export function triggerSpecWidens(before: Spec, after: Spec): boolean {
     return triggerScheduleRate(after) > triggerScheduleRate(before) || (before.missed === "skip" && after.missed === "run_once");
   }
   return false;
+}
+
+// ---- meta repo lane F: events that ask Rovara Code for work
+
+/** The event types that ask for work on a ticket: a label put on it, or an assignment. Only Rovara Code's built-in suggestions use them, and they start work through the intake engine, not as a run. */
+export const INTAKE_EVENT_TYPES = { github: ["issues.labeled", "issues.assigned"], jira: ["issue.labeled", "issue.assigned"] } as const;
+
+/** Whether a spec is one of those. */
+export function isIntakeEventSpec(spec: { kind: string; source?: string; type?: string }): boolean {
+  if (spec.kind !== "event" || spec.source === undefined || spec.type === undefined || !Object.hasOwn(INTAKE_EVENT_TYPES, spec.source)) return false;
+  return (INTAKE_EVENT_TYPES[spec.source as keyof typeof INTAKE_EVENT_TYPES] as readonly string[]).includes(spec.type);
+}
+
+/** The filter key that must name what asks for work, for a spec that is an intake event (a trigger without it would start on any label or any assignment). */
+export function intakeEventRequiredFilter(spec: { type: string }): "label" | "assignee" {
+  return spec.type.endsWith(".assigned") ? "assignee" : "label";
 }

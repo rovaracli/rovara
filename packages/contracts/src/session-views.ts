@@ -68,7 +68,7 @@ export const SessionViewSchema = z
     // `mayMerge`: set (true) only where the level alone would hide Merge from someone the server lets press it: a task's effective project maintainer or an org admin who reads it at `view`.
     you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length), mayMerge: z.literal(true).optional() }).strict(),
     link: LinkSchema,
-    bindings: z.array(z.object({ kind: z.enum(["slack_thread", "linear_issue"]), url: LinkSchema }).strict()).max(2),
+    bindings: z.array(z.object({ kind: z.enum(["slack_thread", "linear_issue", "tracker_item"]), url: LinkSchema }).strict()).max(3),
     legs: z.array(SessionLegSchema).max(SESSION_LEGS_MAX),
     retryOf: SessionIdSchema.optional(),
     /** Task 10b: the parts of the work a comment can be pinned to (a paragraph of the plan, a step, a changed file) with the revision of each now. Absent when there are none. */

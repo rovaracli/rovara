@@ -419,7 +419,7 @@ describe("the built-in agents' triggers", () => {
     expect((await v.agentCall(PRIYA, "PUT", path, { enabled: true })).status).toBe(403);
     expect((await v.agentCall(ARJUN, "PUT", path, { enabled: true })).status).toBe(404);
     expect((await v.agentCall(MAX, "PUT", "/v1/app/projects/web/builtin-triggers/code-reviewer/7", { enabled: true })).status).toBe(404);
-    expect((await v.agentCall(MAX, "PUT", "/v1/app/projects/web/builtin-triggers/rovara-code/0", { enabled: true })).status).toBe(404);
+    expect((await v.agentCall(MAX, "PUT", "/v1/app/projects/web/builtin-triggers/rovara-code/4", { enabled: true })).status).toBe(404);
     expect((await v.agentCall(MAX, "PUT", path, { enabled: true, filter: { authorAssociation: ["OWNER", "MEMBER", "COLLABORATOR", "NONE"] } })).status).toBe(400);
     expect((await v.agentCall(MAX, "PUT", path, { enabled: true, filter: { label: ["x"] } })).status).toBe(400);
     const narrowed = await v.agentCall(MAX, "PUT", path, { enabled: true, filter: { authorAssociation: ["OWNER"] } });

@@ -526,6 +526,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     if (conflict !== undefined) return refused(await limitError(deps, caller, conflict, limits));
     // The Linear issue already follows a session: the binding's own items refused the start, and nothing else was written.
     if (codeBinding?.kind === "linear_issue" && await surfaceIsBound(deps, codeBinding)) throw agentXError("CONFIG_INVALID", "This issue already follows another session.");
+    // Meta repo lane F: the same for a ticket of any other tracker (one session per ticket, however it was asked for).
+    if (codeBinding?.kind === "tracker_item" && await surfaceIsBound(deps, codeBinding)) throw agentXError("CONFIG_INVALID", "This ticket already follows another session.");
     throw agentXError("WORKSPACE_BUSY", "AgentX could not start the task just now; try again with the same request_id");
   }
   return {

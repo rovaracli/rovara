@@ -117,6 +117,8 @@ export * from "./plan-one-screen.js";
 export * from "./test-environment.js";
 // K1 C5b: what the agent loaded (browser-safe readers).
 export * from "./knowledge-skills.js";
+// Meta repo lane F: task intake (browser-safe).
+export * from "./intake.js";
 export * from "./loaded-knowledge.js";
 
 // Meta repo lane B: the setup agent's proposal, its review rows and the per-item apply, and the contracts they cite (provenance, the meta project body).

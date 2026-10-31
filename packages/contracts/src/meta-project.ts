@@ -14,6 +14,7 @@ import { canonicalJson } from "./canonical-json.js";
 import { AgentXNameSchema } from "./names.js";
 import { RelativeWorkspacePathSchema } from "./project.js";
 import { GitBranchNameSchema } from "./git-branch.js";
+import { IntakeChannelRefSchema } from "./intake.js";
 
 /** The config file's places, in the order they are tried. The first that exists is the file. */
 export const META_CONFIG_FILE_PATHS = [".rovara/project.yaml", ".rovara/project.yml", ".rovara/project.json"] as const;
@@ -148,8 +149,8 @@ export const MetaProjectConfigSchema = z.object({
   /** Lane D's `SpecTarget` replaces this schema. */
   specTarget: OpaqueSectionSchema.optional(),
   sources: z.array(MetaConfigSourceSchema).max(META_CONFIG_MAX_SOURCES).optional(),
-  /** Lane F's `IntakeChannelRef` replaces this schema. */
-  intake: z.array(OpaqueSectionSchema).max(META_CONFIG_MAX_INTAKE).optional(),
+  /** Meta repo lane F: the places work is asked for. Like everything in this file it is never applied directly; a maintainer approves turning an intake source on. */
+  intake: z.array(IntakeChannelRefSchema).max(META_CONFIG_MAX_INTAKE).optional(),
 }).strict().superRefine((config, context) => {
   const names = new Set<string>();
   for (const [index, repository] of (config.repositories ?? []).entries()) {

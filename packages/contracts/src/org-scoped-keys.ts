@@ -735,18 +735,20 @@ export function endedSessionWorkKey(day: string, orgId: OrgId, sessionId: Sessio
 export const SESSION_SWEEP_CURSOR_KEY: OrgKey = { pk: "SESSION_SWEEP_CURSOR", sk: "META" };
 
 /**
- * A session's own record of an outside place it follows (`BINDING#<kind>`: `slack_thread` or `linear_issue`), in a partition of its own, not the session's. The Slack notifier writes it, and
+ * A session's own record of an outside place it follows (`BINDING#<kind>`: `slack_thread`, `linear_issue` or `tracker_item`), in a partition of its own, not the session's. The Slack notifier writes it, and
  * an IAM grant can limit a writer by partition key only, so keeping it out of the session partition keeps that role away from the session's META, shares and everything else in it.
  */
 export function sessionBindingKey(orgId: OrgId, sessionId: SessionId, kind: SessionBinding["kind"]): OrgKey {
   return { pk: orgScoped(orgId, `SESSION_BINDING#${keyPart(sessionId, "a session id")}`), sk: `BINDING#${kind}` };
 }
 
-/** The item that binds one outside surface (a Slack thread or a Linear issue) to one session: one binding per surface per org. */
+/** The item that binds one outside surface (a Slack thread, a Linear issue or a tracker ticket) to one session: one binding per surface per org. */
 export function sessionSurfaceKey(orgId: OrgId, binding: SessionBinding): OrgKey {
   const sk = binding.kind === "slack_thread"
     ? `SLACK#${keyPart(binding.teamId, "a Slack team")}#${keyPart(binding.channelId, "a Slack channel")}#${keyPart(binding.threadTs, "a thread")}`
-    : `LINEAR#${keyPart(binding.issueId, "an issue id")}`;
+    : binding.kind === "linear_issue"
+      ? `LINEAR#${keyPart(binding.issueId, "an issue id")}`
+      : `TRACKER#${keyPart(binding.system, "a tracker system")}#${keyPart(binding.id, "a ticket id")}`;
   return { pk: orgScoped(orgId, "SESSION_SURFACE"), sk };
 }
 
@@ -869,4 +871,55 @@ export function reviewNudgeLedgerKey(taskId: string, repositoryId: string, numbe
 /** One milestone of a task: the `n`th of its kind (`n` from 0; six digits keep them in order). */
 export function codeMilestoneKey(taskId: string, kind: string, n: number): { pk: string; sk: string } {
   return { pk: `DEVTASK#${keyPart(taskId, "a task id")}`, sk: `CODE_MILESTONE#${keyPart(kind, "a milestone kind")}#${paddedCounter(n, "a milestone number")}` };
+}
+
+// ---- meta repo lane F: task intake
+
+/**
+ * The id of one ticket in its project's intake partition: the first 32 hex characters of the SHA-256 of `<system> NUL <id>`. The same ticket is always the same id, which is the
+ * dedupe by `externalRef`; the id is what a route names, so a ticket's own text never goes into a path.
+ */
+export function intakeItemIdOf(system: string, id: string): string {
+  return createHash("sha256").update(`${keyPart(system, "a tracker system")}\0${keyPart(id, "a ticket id")}`).digest("hex").slice(0, 32);
+}
+
+/**
+ * One ticket an intake channel handed over, in its project's partition of the org. It says whether the ticket waits for a member, is starting or has started a session. Listing a
+ * project's waiting items is one query on the partition.
+ */
+export function intakeItemKey(orgId: OrgId, project: string, itemId: string): OrgKey {
+  if (!/^[a-f0-9]{32}$/u.test(itemId)) throw new Error("an intake item id is 32 hex characters");
+  return { pk: orgScoped(orgId, `INTAKE_ITEM#${keyPart(project, "a project name")}`), sk: itemId };
+}
+
+/**
+ * One intake source (a place work is asked for, turned on by a maintainer's approval), in a global partition with the org and project in the sort key, so the poll finds every due
+ * source with one query (the same shape as the open-session list). A project's own sources are the ones whose sort key begins with `<org>#<project>#`.
+ */
+export function intakeSourceKey(orgId: OrgId, project: string, sourceId: string): OrgKey {
+  return { pk: "INTAKE_SOURCES", sk: `${orgId}#${keyPart(project, "a project name")}#${keyPart(sourceId, "a source id")}` };
+}
+
+/** What the poll counts a source's reads in, per hour (`hour` is `YYYY-MM-DDTHH`): the cap on reads an hour is a conditional count on this item. */
+export function intakeCallsKey(orgId: OrgId, sourceId: string, hour: string): OrgKey {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}$/u.test(hour)) throw new Error("an hour is YYYY-MM-DDTHH");
+  return { pk: orgScoped(orgId, `INTAKE_CALLS#${keyPart(sourceId, "a source id")}`), sk: hour };
+}
+
+/**
+ * A notice to one maintainer that an intake source keeps failing (the poll could not read it for an hour), in the maintainer's own partition of the org like a trigger's notice
+ * (`triggerNoticeKey`): fixed words and ids only. One per source and maintainer per notice window.
+ */
+export function intakeNoticeKey(orgId: OrgId, developerId: string, at: string, sourceId: string): OrgKey {
+  return { pk: orgScoped(orgId, `INTAKE_NOTICES#${keyPart(developerId, "a developer id")}`), sk: `${canonicalInstant(at)}#${keyPart(sourceId, "a source id")}` };
+}
+
+/**
+ * A ticket's label event that intake has taken in (one item per event), so a webhook that is delivered again, or replayed, is the same event and starts nothing more. `eventId` is the
+ * event's own key (the label added, the change, the time); it is hashed here, so nothing a person typed is a key.
+ */
+export function intakeEventKey(orgId: OrgId, project: string, itemId: string, eventId: string): OrgKey {
+  if (!/^[a-f0-9]{32}$/u.test(itemId)) throw new Error("an intake item id is 32 hex characters");
+  if (eventId.length === 0) throw new Error("an event id can't be empty");
+  return { pk: orgScoped(orgId, `INTAKE_EVENT#${keyPart(project, "a project name")}`), sk: `${itemId}#${createHash("sha256").update(eventId, "utf8").digest("hex").slice(0, 32)}` };
 }

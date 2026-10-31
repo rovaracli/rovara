@@ -17,7 +17,7 @@ import {
 import { failedIndexes, isTransactionConflict, putNew, type Item, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { AgentSessionStore } from "./store.js";
 
-const NOUN = { slack_thread: "thread", linear_issue: "issue" } as const;
+const NOUN = { slack_thread: "thread", linear_issue: "issue", tracker_item: "ticket" } as const;
 const BUSY = "This can't be saved right now. Try again.";
 const ATTEMPTS = 3;
 

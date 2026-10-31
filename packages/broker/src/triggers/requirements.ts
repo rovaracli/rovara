@@ -4,9 +4,12 @@
 import {
   AgentXError,
   BUILTIN_TRIGGER_SUGGESTIONS,
+  ROVARA_CODE_AGENT_ID,
   agentXError,
   chainBudgetRequiredMessage,
+  intakeEventRequiredFilter,
   isBuiltinAgentId,
+  isIntakeEventSpec,
   projectAllows,
   scopeKey,
   type AgentId,
@@ -166,6 +169,15 @@ function allows(specs: ReadonlyArray<{ kind: string; source?: string; type?: str
   return specs.some((spec) => spec.kind === wanted.kind && (wanted.kind !== "event" || (spec.source === wanted.source && spec.type === wanted.type)));
 }
 
+/** What an intake trigger needs: its filter names what asks for work. */
+function intakeFilterProblems(trigger: TriggerRecord): TriggerProblem[] {
+  const { spec } = trigger;
+  if (spec.kind !== "event") return [];
+  const key = intakeEventRequiredFilter(spec);
+  if ((spec.filter?.[key] ?? []).length > 0) return [];
+  return [{ path: `spec.filter.${key}`, message: key === "label" ? "name the label that asks Rovara Code for work, so no other label does" : "name who an issue is assigned to when it asks Rovara Code for work, so no other assignment does" }];
+}
+
 /** What an agent needs to be started by a trigger: it allows this way, has a budget, and resolves for an autonomous run on the project. */
 async function agentProblems(deps: Deps, trigger: TriggerRecord): Promise<TriggerProblem[]> {
   const { orgId } = trigger;
@@ -189,6 +201,9 @@ async function agentProblems(deps: Deps, trigger: TriggerRecord): Promise<Trigge
   const name = record?.name ?? deps.store.builtinName(agentId);
   const specs = recipe === undefined ? BUILTIN_TRIGGER_SUGGESTIONS[agentId as keyof typeof BUILTIN_TRIGGER_SUGGESTIONS] : recipe.triggers;
   if (!allows(specs, trigger.spec)) return [{ path: "spec", message: `${name} can't be started by ${KIND_WORDS[trigger.spec.kind]}; ask its owner to allow it` }];
+  // Meta repo lane F: Rovara Code asked for by a label or an assignment on an issue. It is not an agent's autonomous run (the person who did it starts it, and pays), so the agent needs no
+  // budget of its own. What it needs is that the trigger names the label (or the assignee) that asks: without it, any label or any assignment would.
+  if (agentId === ROVARA_CODE_AGENT_ID && isIntakeEventSpec(trigger.spec)) return intakeFilterProblems(trigger);
   // The agent pays with no person watching: its own monthly budget must exist (the guardrails' ceiling applies to it).
   const scope = { kind: "agent" as const, agentId };
   const limit = (await effectiveLimits(deps, { orgId, month: monthOf(deps.now()), scopes: [scope] })).get(scopeKey(scope));

@@ -11,7 +11,14 @@ const MEMBERS_ONLY = ["OWNER", "MEMBER", "COLLABORATOR"];
 
 // A suggestion's place in its list is part of its identity (a project's trigger for it is keyed by the index), so a list only ever grows at the end.
 export const BUILTIN_TRIGGER_SUGGESTIONS: Record<BuiltinAgentId, ReadonlyArray<BuiltinTriggerSpec>> = {
-  "rovara-code": [],
+  // Meta repo lane F: a label or an assignment on a Jira or GitHub issue asks Rovara Code for work. A trigger on one MUST name the label (or the assignee) that asks (`triggerProblems`);
+  // who may start work is decided by the intake engine from the person who did it, never by the label.
+  "rovara-code": [
+    { kind: "event", source: "github", type: "issues.labeled" },
+    { kind: "event", source: "github", type: "issues.assigned" },
+    { kind: "event", source: "jira", type: "issue.labeled" },
+    { kind: "event", source: "jira", type: "issue.assigned" },
+  ],
   "ticket-triage": [
     { kind: "event", source: "linear", type: "issue.created" },
     { kind: "event", source: "jira", type: "issue.created" },

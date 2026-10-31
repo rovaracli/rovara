@@ -1045,6 +1045,22 @@ export class ControlPlaneStack extends Stack {
         },
       });
     }
+    // Meta repo lane F (F2): every minute the intake poll reads the sources that are due (a team's own tracker has no webhook of ours). Each source has its own interval (2 minutes by default) and
+    // its own cap of reads an hour, kept by the broker; this tick only wakes it. No retries: the next minute is the retry, and a pile of late ticks would only poll twice. Named environments only,
+    // through the same role as the other recovery schedules, so it needs no new grant.
+    if (naming.env !== undefined) {
+      new scheduler.CfnSchedule(this, "IntakePollSchedule", {
+        flexibleTimeWindow: { mode: "OFF" },
+        scheduleExpression: "rate(1 minute)",
+        state: "ENABLED",
+        target: {
+          arn: broker.functionArn,
+          roleArn: githubRecoveryRole.roleArn,
+          input: JSON.stringify({ source: "agentx.intake-poll" }),
+          retryPolicy: { maximumRetryAttempts: 0, maximumEventAgeInSeconds: 60 },
+        },
+      });
+    }
     // Plan 4 Task 26: schedule triggers. Each trigger's schedule lives in a group of its own and invokes the broker through a role of its own. EventBridge Scheduler sets
     // aws:SourceArn to the schedule GROUP's ARN, not the schedule's, so that is what the role's trust names (a `schedule/...` pattern would never match, and a schedule of any
     // other group is refused). The role can invoke the broker function and write the dead-letter queue, nothing else. The queue is encrypted with SQS-managed keys, so no KMS
