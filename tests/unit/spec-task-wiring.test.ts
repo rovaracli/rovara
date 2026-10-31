@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import type { SpecFile, SpecTarget, WorkflowSnapshot } from "@agentx/contracts";
-import { SpecTargetSchema } from "@agentx/contracts";
+import { SpecTargetSchema, orgRemovedKey } from "@agentx/contracts";
 import { specEndEnvironmentOf } from "../../packages/broker/src/aws/broker/spec-wiring.js";
 import { specAfterPlanApproval, specOwnerChoice, specPublicationGate, specReviewGate } from "../../packages/broker/src/aws/developer-tasks/spec-wiring.js";
 import type { DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks/types.js";
@@ -40,7 +40,7 @@ function workflow(approved: "owner" | "agentx" | "none" = "owner"): WorkflowSnap
 
 async function setup(options: { specTarget?: SpecTarget | undefined; withMeta?: boolean; approved?: "owner" | "agentx" | "none"; knowledgeCommit?: string | undefined; readMetaFile?: DeveloperTaskRouteDependencies["readMetaFile"] } = {}) {
   const db = new FakeDynamoDb();
-  const task = { pk: `DEVTASK#${TASK}`, sk: "META", taskId: TASK, workspaceId: WORKSPACE, project: "demo", title: "Reset password", startingRevision: 3, orgId: "org-1", conversationId: randomUUID(),
+  const task = { pk: `DEVTASK#${TASK}`, sk: "META", taskId: TASK, workspaceId: WORKSPACE, project: "demo", title: "Reset password", developerId: "dev-1", developerName: "Maya Chen", startingRevision: 3, orgId: "org-1", conversationId: randomUUID(),
     ...(options.knowledgeCommit === undefined && "knowledgeCommit" in options ? {} : { knowledgeCommit: options.knowledgeCommit ?? BASE }), workflow: workflow(options.approved), preparedBase: [{ repositoryId: "web", baseCommitSha: "1".repeat(40) }] } as unknown as DeveloperTaskRecord;
   await db.send(new PutCommand({ TableName: "t", Item: task }));
   const logs: Array<Record<string, unknown>> = [];
@@ -118,6 +118,14 @@ describe("the code pull request", () => {
     const [, , request, , options] = t.startedWrites[0] as [unknown, unknown, { prompt: string }, unknown, { workflowMode: string; specWrite: { planDigest: string } }];
     expect(request.prompt).toContain(PLAN_TEXT);
     expect(options).toMatchObject({ workflowMode: "SPEC_WRITE", specWrite: { format: "kiro", kind: "feature", planDigest: PLAN_DIGEST } });
+  });
+  it("starts no spec write for a task whose creator has been removed from the organization (ruling R60: every task launch checks the creator first)", async () => {
+    const t = await setup();
+    await specAfterPlanApproval(t.deps, TASK);
+    await t.db.send(new PutCommand({ TableName: "t", Item: { ...orgRemovedKey("org-1" as never, "dev-1"), removedAt: NOW } }));
+    const gate = await specPublicationGate(t.deps, t.task, t.task.workflow!);
+    expect(gate).toMatchObject({ proceed: false });
+    expect(t.startedWrites).toHaveLength(0);
   });
   it("fails the write for good, with Retry and Continue, when the workspace is closed or never got ready (it does not wait as busy)", async () => {
     for (const status of ["CLOSED", "PREPARATION_FAILED"]) {

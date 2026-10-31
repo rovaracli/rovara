@@ -212,6 +212,8 @@ export async function queueWorkflowReview(
   /** Meta repo lane D (D3): the spec's requirements for the code review to walk. A review that was given them is never sent to a worker that cannot read them. */
   reviewSpec?: SpecReviewInput,
 ): Promise<{ operation: Operation; duplicate: boolean }> {
+  // Ruling R60 first: the spec gate below can start a spec write, which is a task launch too, and a removed creator's task gets the removal's words, not a hold.
+  await creatorGuard(deps, task);
   // Meta repo lane D (D3): every start of the reviews, an owner's retry included, is given the spec's requirements when the task has a published spec; the review of a task whose spec is not ready does not start.
   let specInput = reviewSpec;
   if (specInput === undefined) {
@@ -233,7 +235,6 @@ export async function queueWorkflowReview(
   const prompt = `Perform the required read-only ${asked} for the task. The current verified candidate digest is ${candidateDigest}. Do not edit files. Reviewer findings must be concise and refer to code evidence. The owner retry note is carried separately as untrusted reviewer context.`;
   const reviewPlan = await workflowReviewPlanOption(deps, workflow);
   const reviewFeedback = await workflowReviewFeedbackOption(deps, task, workflow);
-  await creatorGuard(deps, task);
   return deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt }, (operation) => [
     { Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId),

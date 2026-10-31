@@ -17,7 +17,7 @@ import type { SpecGate, SpecState } from "../../spec/state.js";
 import type { TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
-import { get, iso, taskBaseOption } from "./common.js";
+import { creatorGuard, get, iso, taskBaseOption } from "./common.js";
 import { accessFence, authorizeTaskAction, systemTaskAccess } from "./access.js";
 import { approvedCodingPlan } from "./workflow-inputs.js";
 
@@ -64,6 +64,8 @@ function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecor
         TableName: deps.tableName, ConditionExpression: "attribute_not_exists(pk)",
         Item: { pk: `WORKSPACE#${task.workspaceId}`, sk: `CONVERSATION#${conversationId}`, entityType: "CONVERSATION", id: conversationId, workspaceId: task.workspaceId, createdAt: receivedAt, updatedAt: receivedAt },
       })).catch((error: unknown) => { if (!isConditional(error)) throw error; });
+      // Ruling R60: the spec write is a task launch, so the owner is read as a member again here, at the launch itself, whichever path (publication, review, an owner's Retry) reached the gate.
+      await creatorGuard(deps, task);
       try {
         await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
           requestId: workflowRequestId("agentx-spec-write", task.taskId, Number(attemptKey)), conversationId, prompt: request.prompt,
