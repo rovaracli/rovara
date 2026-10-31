@@ -114,20 +114,29 @@ function requestOf(record: Pick<IntakeItemRecord, "orgId" | "project" | "system"
 const bindingOf = (record: Pick<IntakeItemRecord, "system" | "id" | "url">): Extract<SessionBinding, { kind: "tracker_item" }> => ({ kind: "tracker_item", system: record.system, id: record.id, url: record.url });
 
 /**
- * Starts the ticket that this caller already holds (`starting`) as `developerId`. A start that is refused leaves it waiting with the refusal's code; a start that finds the ticket already
- * has a session records that session; a fault that may pass gives the item back and is thrown.
+ * Starts the ticket that this caller already holds (`starting`, under `developerId`'s lease) as `developerId`. Everything it writes to the item is conditioned on that lease, so a start whose
+ * lease was taken over changes nothing. A start that is refused leaves the ticket waiting with the refusal's code; a start that finds the ticket already has a session records that
+ * session; a start that worked is a start even if the item can no longer be marked; a fault that may pass gives the item back and is thrown. `admit` is asked just before the work
+ * would start (never for a ticket that waits): when it says no, the ticket waits with `RATE_LIMITED`, for a member to press Start.
  */
-async function startHeld(ports: IntakePorts, record: IntakeItemRecord, input: CodeIntentRequest["input"], developerId: string, created: boolean): Promise<IntakeOutcome> {
+async function startHeld(ports: IntakePorts, record: IntakeItemRecord, input: CodeIntentRequest["input"], developerId: string, created: boolean, admit?: IngestContext["admit"]): Promise<IntakeOutcome> {
   const { table } = ports;
   const { orgId, project, itemId } = record;
   const existing = await ports.sessionOfTicket(orgId, bindingOf(record));
   if (existing !== undefined) {
-    await markIntakeStarted(table, orgId, project, itemId, { sessionId: existing.sessionId, requester: record.requester });
+    await markIntakeStarted(table, orgId, project, itemId, { holder: developerId, sessionId: existing.sessionId, requester: record.requester });
     return { outcome: "duplicate", state: "started" };
+  }
+  if (admit !== undefined && !await admit()) {
+    await giveBackIntakeItem(table, orgId, project, itemId, developerId, "start_refused", "RATE_LIMITED");
+    ports.log("intake.start_not_admitted", { orgId, project, system: record.system });
+    return { outcome: "waiting", reason: "start_refused" };
   }
   try {
     const started = await ports.start(orgId, developerId, requestOf(record, input, developerId));
-    await markIntakeStarted(table, orgId, project, itemId, { taskId: started.task.taskId, sessionId: started.sessionId, requester: record.requester });
+    if (!await markIntakeStarted(table, orgId, project, itemId, { holder: developerId, taskId: started.task.taskId, sessionId: started.sessionId, requester: record.requester })) {
+      ports.log("intake.mark_not_holder", { orgId, project, system: record.system });
+    }
     ports.log("intake.started", { orgId, project, system: record.system, channel: record.channel });
     return { outcome: "started", taskId: started.task.taskId, ...(started.sessionId === undefined ? {} : { sessionId: started.sessionId }) };
   } catch (error) {
@@ -136,16 +145,16 @@ async function startHeld(ports: IntakePorts, record: IntakeItemRecord, input: Co
       // already has a session" is the ticket being started by someone else first.
       const raced = await ports.sessionOfTicket(orgId, bindingOf(record)).catch(() => undefined);
       if (raced !== undefined) {
-        await markIntakeStarted(table, orgId, project, itemId, { sessionId: raced.sessionId, requester: record.requester });
+        await markIntakeStarted(table, orgId, project, itemId, { holder: developerId, sessionId: raced.sessionId, requester: record.requester });
         return { outcome: "duplicate", state: "started" };
       }
-      await giveBackIntakeItem(table, orgId, project, itemId, "start_refused", errorCode(error));
+      await giveBackIntakeItem(table, orgId, project, itemId, developerId, "start_refused", errorCode(error));
       ports.log("intake.start_refused", { orgId, project, system: record.system, code: errorCode(error) });
       return { outcome: "waiting", reason: "start_refused" };
     }
     // A fault that may pass: the item is given back (or, if this call created it just to start it, forgotten), and the poll's next tick or the webhook's retry does it again.
-    if (created) await releaseIntakeItem(table, orgId, project, itemId);
-    else await giveBackIntakeItem(table, orgId, project, itemId, record.reason ?? "outsider");
+    if (created) await releaseIntakeItem(table, orgId, project, itemId, developerId);
+    else await giveBackIntakeItem(table, orgId, project, itemId, developerId, record.reason ?? "outsider");
     ports.log("intake.start_failed", { orgId, project, system: record.system, error: errorCode(error) });
     throw error;
   }
@@ -154,6 +163,8 @@ async function startHeld(ports: IntakePorts, record: IntakeItemRecord, input: Co
 export interface IngestContext {
   /** How many items the project already has waiting (computed once for a batch; the engine keeps it up to date as it stores more). */
   waiting?: { count: number };
+  /** Asked just before work would start (a member's act, or a member pressing Start from a ticket's event): false means "not now", and the ticket waits instead of being dropped. Dispatch counts its allowances here. */
+  admit?: () => Promise<boolean>;
 }
 
 /**
@@ -181,17 +192,17 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
   if (known !== undefined) {
     // The ticket waits (or a start of it was cut short). A member's act now starts it; anything else leaves it as it was, waiting where a maintainer can see it.
     if (!mayStartNow) {
-      if (known.state === "starting") await giveBackIntakeItem(ports.table, orgId, project, itemId, known.reason ?? resolved.reason ?? "outsider");
+      if (known.state === "starting" && known.startedBy !== undefined) await giveBackIntakeItem(ports.table, orgId, project, itemId, known.startedBy, known.reason ?? resolved.reason ?? "outsider");
       return { outcome: "duplicate", state: "waiting" };
     }
     if (!await claimIntakeStart(ports.table, orgId, project, itemId, resolved.developerId!)) return { outcome: "duplicate", state: "starting" };
-    return startHeld(ports, { ...known, ...base, state: "starting" }, input, resolved.developerId!, false);
+    return startHeld(ports, { ...known, ...base, state: "starting" }, input, resolved.developerId!, false, context.admit);
   }
 
   if (mayStartNow) {
-    const claimed = await claimIntakeItem(ports.table, { ...base, state: "starting", startedBy: resolved.developerId! });
+    const claimed = await claimIntakeItem(ports.table, { ...base, state: "starting", startedBy: resolved.developerId!, body: prepareTicketBody(candidate.body, WAITING_BODY_MAX_BYTES) });
     if (claimed.result !== "created") return { outcome: "duplicate", state: claimed.result === "exists" ? claimed.record.state : "waiting" };
-    return startHeld(ports, { ...base, state: "starting", since: new Date(ports.table.now()).toISOString(), updatedAt: new Date(ports.table.now()).toISOString() }, input, resolved.developerId!, true);
+    return startHeld(ports, { ...base, state: "starting", since: new Date(ports.table.now()).toISOString(), updatedAt: new Date(ports.table.now()).toISOString() }, input, resolved.developerId!, true, context.admit);
   }
 
   // Waits for a member. A project holds a bounded number of waiting tickets, so a flood of outsiders' tickets costs a bounded amount.
@@ -208,20 +219,35 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
   return { outcome: "waiting", reason: resolved.reason! };
 }
 
-/** Hands a batch of tickets to `ingestIntake`, counting the project's waiting items once. A fault that may pass stops the batch (the rest are handed over again by the next poll). */
-export async function ingestIntakeBatch(ports: IntakePorts, candidates: readonly IntakeCandidate[]): Promise<IntakeOutcome[]> {
+/**
+ * Hands a batch of tickets to `ingestIntake`, counting the project's waiting items once. It stops at a fault that may pass (answered as `fault`; the rest are handed over again by the next
+ * poll) and at `deadline` (epoch ms on the table's clock; answered as `stoppedEarly`), so a batch never runs past the time its caller has.
+ */
+export async function ingestIntakeBatchWithin(ports: IntakePorts, candidates: readonly IntakeCandidate[], options: { deadline?: number } = {}): Promise<{ outcomes: IntakeOutcome[]; fault?: unknown; stoppedEarly: boolean }> {
   const counts = new Map<string, { count: number }>();
   const outcomes: IntakeOutcome[] = [];
   for (const candidate of candidates) {
-    const key = `${candidate.orgId}\0${candidate.project}`;
-    let waiting = counts.get(key);
-    if (waiting === undefined) {
-      waiting = { count: (await listWaitingIntakeItems(ports.table, candidate.orgId, candidate.project)).length };
-      counts.set(key, waiting);
+    if (options.deadline !== undefined && ports.table.now() >= options.deadline) return { outcomes, stoppedEarly: true };
+    try {
+      const key = `${candidate.orgId}\0${candidate.project}`;
+      let waiting = counts.get(key);
+      if (waiting === undefined) {
+        waiting = { count: (await listWaitingIntakeItems(ports.table, candidate.orgId, candidate.project)).length };
+        counts.set(key, waiting);
+      }
+      outcomes.push(await ingestIntake(ports, candidate, { waiting }));
+    } catch (fault) {
+      return { outcomes, fault, stoppedEarly: false };
     }
-    outcomes.push(await ingestIntake(ports, candidate, { waiting }));
   }
-  return outcomes;
+  return { outcomes, stoppedEarly: false };
+}
+
+/** `ingestIntakeBatchWithin` without a deadline, throwing the fault that stopped it. */
+export async function ingestIntakeBatch(ports: IntakePorts, candidates: readonly IntakeCandidate[]): Promise<IntakeOutcome[]> {
+  const done = await ingestIntakeBatchWithin(ports, candidates);
+  if (done.fault !== undefined) throw done.fault instanceof Error ? done.fault : new Error("intake fault");
+  return done.outcomes;
 }
 
 /**

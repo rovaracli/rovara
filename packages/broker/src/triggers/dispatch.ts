@@ -370,21 +370,26 @@ async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcom
   }
   // The subject this trigger just started a run for: what that run did to it may be what this event is, so it is not started again at once. No allowance is used.
   if (await recentlyStarted(work, trigger)) return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "recent_subject" }) };
-  // 4 and 5. The trigger's allowance for the hour (never above the platform's), then the org's for the day.
-  const now = new Date(deps.now()).toISOString();
-  const allowed = Number.isInteger(trigger.maxRunsPerHour) ? Math.min(trigger.maxRunsPerHour, TRIGGER_MAX_RUNS_PER_HOUR) : 0;
-  if (!await countOne(deps, triggerRateKey(orgId, trigger.triggerId, now.slice(0, 13)), allowed, 2 * HOUR_SECONDS)) {
-    return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "rate_limited" }) };
-  }
-  if (!await countOne(deps, orgAutonomousKey(orgId, now.slice(0, 10)), ORG_MAX_AUTONOMOUS_RUNS_PER_DAY, 2 * DAY_SECONDS)) {
-    return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "org_daily_limit" }) };
+  // 4 and 5. The trigger's allowance for the hour (never above the platform's), then the org's for the day. An intake trigger (Rovara Code asked for by a label) counts them only when a member's
+  // start is about to start work (`admit`, below): an outsider's label that only waits, or a repeat, must not use the allowance other agents' triggers share, and the work is the member's own.
+  const intakeTrigger = isIntakeTrigger(trigger);
+  const allowance = async (): Promise<"rate_limited" | "org_daily_limit" | undefined> => {
+    const now = new Date(deps.now()).toISOString();
+    const allowed = Number.isInteger(trigger.maxRunsPerHour) ? Math.min(trigger.maxRunsPerHour, TRIGGER_MAX_RUNS_PER_HOUR) : 0;
+    if (!await countOne(deps, triggerRateKey(orgId, trigger.triggerId, now.slice(0, 13)), allowed, 2 * HOUR_SECONDS)) return "rate_limited";
+    if (!await countOne(deps, orgAutonomousKey(orgId, now.slice(0, 10)), ORG_MAX_AUTONOMOUS_RUNS_PER_DAY, 2 * DAY_SECONDS)) return "org_daily_limit";
+    return undefined;
+  };
+  if (!intakeTrigger) {
+    const used = await allowance();
+    if (used !== undefined) return { outcome: await settle(work, trigger, { outcome: "skipped", reason: used }) };
   }
   // 6. The start. A refusal is a recorded outcome; a fault that may pass is the event's to be sent again.
   let started: { runId?: string; taskId?: string };
   try {
     if (isIntakeTrigger(trigger)) {
       // Rovara Code asked for by a label or an assignment: the intake engine decides from who did it (a member starts it, anyone else makes it wait).
-      const result = await startIntakeFor(deps.intake, orgId, event);
+      const result = await startIntakeFor(deps.intake, orgId, event, async () => await allowance() === undefined);
       if (result.outcome !== "started") return { outcome: await settle(work, trigger, result) };
       started = { taskId: result.taskId };
     } else {

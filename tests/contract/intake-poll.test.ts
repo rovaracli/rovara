@@ -6,7 +6,7 @@ import type { IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import { listWaitingIntakeItems } from "../../packages/broker/src/intake/store.js";
 import { listIntakeSources, replaceIntakeSources } from "../../packages/broker/src/intake/sources.js";
 import {
-  INTAKE_BACKOFF_MAX_MS, INTAKE_NOTICE_AFTER_MS, INTAKE_NOTICE_EVERY_MS, pollIntakeSource, runIntakePoll, type IntakeNotice, type IntakePollDependencies, type IntakeSearch, type IntakeSearchItem,
+  INTAKE_BACKOFF_MAX_MS, INTAKE_NOTICE_AFTER_MS, INTAKE_TICK_BUDGET_MS, INTAKE_NOTICE_EVERY_MS, pollIntakeSource, runIntakePoll, type IntakeNotice, type IntakePollDependencies, type IntakeSearch, type IntakeSearchItem,
 } from "../../packages/broker/src/triggers/poll-intake.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
@@ -343,6 +343,66 @@ describe("the maintainers' notice", () => {
     w.state.search = async () => { throw new Error("down again"); };
     await failFor(w, 30);
     expect(w.notices).toEqual([]);
+  });
+});
+
+describe("how long one tick takes (review I3)", () => {
+  it("has a budget well inside the broker function's 30 second timeout", () => {
+    expect(INTAKE_TICK_BUDGET_MS).toBeLessThanOrEqual(15_000);
+  });
+
+  it("stops handing tickets over when the budget runs out inside one source's batch, and the rest are seen next tick", async () => {
+    const w = world();
+    await w.addSource();
+    const base = w.ports.start.bind(w.ports);
+    // Each start takes a second.
+    w.ports.start = async (...args) => { w.clock.now += 1_000; return base(...args); };
+    w.state.search = async () => Array.from({ length: 30 }, (_, index) => item(`T-${String(index)}`, { actor: { kind: "person", accountId: "u-member" } }));
+    const first = await runIntakePoll(w.deps, { budgetMs: 4_000 });
+    expect(first.started).toBeGreaterThanOrEqual(3);
+    expect(first.started).toBeLessThan(10);
+    const startedFirst = w.started.length;
+    // The source is still healthy (not failing), and the next tick goes on with the rest.
+    expect((await w.record()).failures).toBe(0);
+    w.clock.now += 2 * MINUTE;
+    await runIntakePoll(w.deps, { budgetMs: 4_000 });
+    expect(w.started.length).toBeGreaterThan(startedFirst);
+    expect(new Set(w.started).size).toBe(w.started.length);
+  });
+});
+
+describe("a fault in a start is not a fault of the source (review M4)", () => {
+  it("keeps the source healthy, stops the batch, tells nobody the tracker is unreadable, and starts the rest next tick", async () => {
+    const w = world();
+    await w.addSource();
+    w.state.search = async () => [item("T-1", { actor: { kind: "person", accountId: "u-member" } }), item("T-2", { actor: { kind: "person", accountId: "u-member" } })];
+    const base = w.ports.start.bind(w.ports);
+    let fail = true;
+    w.ports.start = async (...args) => { if (fail) { fail = false; throw new Error("start service away"); } return base(...args); };
+    const report = await runIntakePoll(w.deps);
+    expect(report.failed).toBe(0);
+    expect((await w.record()).failures).toBe(0);
+    w.clock.now += 2 * MINUTE;
+    await runIntakePoll(w.deps);
+    expect(w.started.sort()).toEqual([`${MEMBER}:T-1`, `${MEMBER}:T-2`]);
+  });
+
+  it("clears the notice mark when the source recovers, so a new failure within a day is told (review M5)", async () => {
+    const w = world();
+    await w.addSource();
+    w.state.search = async () => { throw new Error("down"); };
+    const end = w.clock.now + 130 * MINUTE;
+    while (w.clock.now <= end) { await runIntakePoll(w.deps); w.clock.now = Math.max((await w.record()).nextPollAt, w.clock.now + MINUTE); }
+    expect(w.notices).toHaveLength(1);
+    w.state.search = async () => [];
+    await runIntakePoll(w.deps);
+    w.clock.now = (await w.record()).nextPollAt;
+    await runIntakePoll(w.deps);
+    expect((await w.record()).noticedAt).toBeUndefined();
+    w.state.search = async () => { throw new Error("down again"); };
+    const end2 = w.clock.now + 130 * MINUTE;
+    while (w.clock.now <= end2) { await runIntakePoll(w.deps); w.clock.now = Math.max((await w.record()).nextPollAt, w.clock.now + MINUTE); }
+    expect(w.notices).toHaveLength(2);
   });
 });
 

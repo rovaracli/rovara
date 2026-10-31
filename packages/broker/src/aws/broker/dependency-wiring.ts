@@ -546,7 +546,7 @@ export function eventDispatchOf(dependencies: AwsBrokerDependencies, tasks: Deve
   return chainDependencies === undefined ? undefined : (orgId, event, context) => dispatchTriggerEvent({
     ...chainDependencies, ...(githubApp.appSlug === undefined ? {} : { githubAppSlug: () => githubApp.appSlug!() }),
     // Meta repo lane F: a label or an assignment on an issue asks Rovara Code for work through the intake engine.
-    ...(intake === undefined ? {} : { intake: { ingest: (candidate) => ingestIntake(intake, candidate) } }),
+    ...(intake === undefined ? {} : { intake: { ingest: (candidate, options) => ingestIntake(intake, candidate, options?.admit === undefined ? {} : { admit: options.admit }) } }),
   }, orgId, event, context);
 }
 

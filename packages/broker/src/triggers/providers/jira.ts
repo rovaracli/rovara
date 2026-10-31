@@ -106,7 +106,14 @@ function normalizeUpdated(body: unknown, hook: HookRecord, tenant: { siteHost: s
     kind: "issue", id: key ?? id, title: titleOf(issue.fields?.summary, key ?? id), ...(key === undefined ? {} : { url: `https://${tenant.siteHost}/browse/${key}` }),
     ...(typeof description === "string" && description !== "" ? { body: description.slice(0, TRIGGER_SUBJECT_BODY_MAX) } : {}),
   };
-  const actor: TriggerEvent["actor"] = accountId === undefined ? { kind: "unknown" } : { kind: "external", id: accountId, accountId, ...(parsed.data.user?.accountType === "app" ? { bot: true as const } : {}) };
+  // Who did it, as Jira says. Only a person (`atlassian`) can ever be matched to a member, and not by this body alone (the hook's secret is known to whoever made the hook): intake decides.
+  // An automation (`app`) is marked one. A service-desk `customer`, or an account type this body doesn't say, is NOT a person: its id is kept only for the loop guard, and no account id is
+  // carried, so nothing can resolve it to a member.
+  const accountType = parsed.data.user?.accountType;
+  const actor: TriggerEvent["actor"] = accountId === undefined ? { kind: "unknown" }
+    : accountType === "atlassian" ? { kind: "external", id: accountId, accountId }
+      : accountType === "app" ? { kind: "external", id: accountId, accountId, bot: true as const }
+        : { kind: "unknown", id: accountId };
   const events: TriggerEvent[] = [];
   for (const item of changelog.items) {
     const field = textOf(item, "field", 100);

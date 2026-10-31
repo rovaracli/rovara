@@ -3,6 +3,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { INTAKE_TICK_BUDGET_MS } from "../../packages/broker/src/triggers/poll-intake.js";
 import { isIntakePollEvent } from "../../packages/broker/src/aws/broker/sweeps-and-readiness.js";
 
 type Schedule = { Type: string; Properties: { ScheduleExpression: string; State: string; FlexibleTimeWindow: unknown; Target: { Arn: unknown; RoleArn: unknown; Input: string; RetryPolicy: unknown } } };
@@ -23,6 +24,16 @@ describe("the intake poll schedule", () => {
     const recovery = found.find(([id]) => id.startsWith("WorkflowMergeRecoverySchedule"))![1];
     expect(schedule.Properties.Target.Arn).toStrictEqual(recovery.Properties.Target.Arn);
     expect(schedule.Properties.Target.RoleArn).toStrictEqual(recovery.Properties.Target.RoleArn);
+  }, 120_000);
+
+  it("has a tick budget inside the broker function's timeout (a tick that ran past it would be cut off mid-batch)", () => {
+    const stack = buildAgentXApp({ agentxEnv: "staging" }).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane");
+    const resources = Template.fromStack(stack!).toJSON().Resources as Record<string, { Type: string; Properties: Record<string, unknown> }>;
+    const poll = Object.entries(resources).find(([id, resource]) => id.startsWith("IntakePollSchedule") && resource.Type === "AWS::Scheduler::Schedule")![1];
+    const arn = (poll.Properties["Target"] as { Arn: { "Fn::GetAtt": [string, string] } }).Arn["Fn::GetAtt"][0];
+    const timeout = resources[arn]!.Properties["Timeout"] as number;
+    expect(timeout).toBeGreaterThan(0);
+    expect(INTAKE_TICK_BUDGET_MS).toBeLessThan(timeout * 1000 / 2 + 1);
   }, 120_000);
 
   it("is not in the legacy template", () => {

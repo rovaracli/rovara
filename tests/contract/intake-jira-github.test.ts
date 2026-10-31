@@ -4,7 +4,7 @@
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HookRecord, OrgId, TriggerEvent } from "@agentx/contracts";
-import { githubInstallationKey, githubRepoProjectKey, orgGithubInstallationKey, orgProjectCatalogKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
+import { githubInstallationKey, githubRepoProjectKey, orgAutonomousKey, orgGithubInstallationKey, orgProjectCatalogKey, projectRevisionKey, triggerRateKey } from "../../packages/contracts/src/index.js";
 import { jiraProvider } from "../../packages/broker/src/triggers/providers/jira.js";
 import { githubTriggerEvents, type GithubTriggerDependencies } from "../../packages/broker/src/triggers/github-events.js";
 import { dispatchTriggerEvent } from "../../packages/broker/src/triggers/dispatch.js";
@@ -80,6 +80,22 @@ describe("Jira: a label added or an assignment is an event", () => {
     const [bot] = eventsOf(jiraUpdate({ accountType: "app", description: { type: "doc", content: [] } }));
     expect(bot!.actor).toMatchObject({ kind: "external", bot: true });
     expect(bot!.subject.body).toBeUndefined();
+  });
+
+  it("never takes a Jira service-desk customer for a person who could be a member: no account id is carried (only the name, for the loop guard)", () => {
+    const [customer] = eventsOf(jiraUpdate({ accountType: "customer" }));
+    expect(customer!.actor).toEqual({ kind: "unknown", id: "acct-dana" });
+  });
+
+  it("keeps an app's account id (for the loop guard) and marks it an automation; a person (atlassian) keeps their id", () => {
+    expect(eventsOf(jiraUpdate({ accountType: "app" }))[0]!.actor).toEqual({ kind: "external", id: "acct-dana", accountId: "acct-dana", bot: true });
+    expect(eventsOf(jiraUpdate({ accountType: "atlassian" }))[0]!.actor).toEqual({ kind: "external", id: "acct-dana", accountId: "acct-dana" });
+  });
+
+  it("treats a Jira update with no known account type as unknown, not as a person", () => {
+    const body = jiraUpdate();
+    delete (body["user"] as Record<string, unknown>)["accountType"];
+    expect(eventsOf(body)[0]!.actor).toEqual({ kind: "unknown", id: "acct-dana" });
   });
 
   it("keys a change by the changelog's id, and by the time when there is none", () => {
@@ -187,6 +203,16 @@ describe("GitHub: a label added or an assignment on an issue is an event", () =>
     expect(own!.actor).toMatchObject({ kind: "rovara" });
   });
 
+  it("takes a sender that is an Organization or a Mannequin for an automation, not a person", async () => {
+    const w = githubWorld();
+    for (const type of ["Organization", "Mannequin"]) {
+      const [event] = await w.events(issuePayload({ sender: { login: "someone", type, id: 5 } }));
+      expect(event!.actor).toEqual({ kind: "external", id: "someone", accountId: "5", bot: true });
+    }
+    const [user] = await w.events(issuePayload({ sender: { login: "maya", type: "User", id: 5 } }));
+    expect(user!.actor).toEqual({ kind: "external", id: "maya", accountId: "5" });
+  });
+
   it("makes an issues.assigned event for who it was assigned to", async () => {
     const w = githubWorld();
     const [event] = await w.events(issuePayload({ action: "assigned", assignee: "Rovara-Bot" }));
@@ -245,7 +271,7 @@ function dispatchWorld(options: { members?: Record<string, string> } = {}) {
     start: async (_org, developerId, request) => { started.push({ developerId, source: request.source, binding: request.binding }); return { task: { taskId: `task-${String(started.length)}` }, sessionId: "ses_aaaaaaaaaaaaaaaaaaaa" }; },
     sessionOfTicket: async () => undefined,
   };
-  const intake = { ingest: async (candidate: IntakeCandidate): Promise<IntakeOutcome> => { ingested.push(candidate); return ingestIntake(ports, candidate); } };
+  const intake = { ingest: async (candidate: IntakeCandidate, options?: { admit?: () => Promise<boolean> }): Promise<IntakeOutcome> => { ingested.push(candidate); return ingestIntake(ports, candidate, options?.admit === undefined ? {} : { admit: options.admit }); } };
   const dispatch = (event: TriggerEvent, withIntake = true) => dispatchTriggerEvent({ ...v.routeDeps, ...(withIntake ? { intake } : {}) }, ORG_A, event);
   const trigger = (over: Record<string, unknown> = {}) => v.seed({ target: CODE, spec: SPEC, createdBy: DANA, ...over });
   return { v, started, ingested, ports, dispatch, trigger };
@@ -355,6 +381,29 @@ describe("a Rovara Code trigger on a label", () => {
     expect(w.ingested).toEqual([]);
   });
 
+  it("never starts work for a Jira customer or app even when a resolver would map every account to a member", async () => {
+    const w = dispatchWorld();
+    const jira = await w.v.seed({ target: CODE, spec: { kind: "event", source: "jira", type: "issue.labeled", filter: { label: ["rovara"] } }, createdBy: DANA, hookId: `hk_${"a".repeat(26)}` } as never);
+    w.v.hook("jira", jira.hookId);
+    w.v.connection("jira", "acct-rovara");
+    w.ports.memberOfAccount = async () => MEMBER;
+    for (const [n, accountType] of ["customer", "app", "atlassian"].entries()) {
+      const [event] = eventsOf(jiraUpdate({ accountType, items: [{ field: "labels", fromString: "", toString: "rovara" }], changeId: String(n) }));
+      const [outcome] = await w.dispatch({ ...event!, hookId: jira.hookId! });
+      expect(outcome!.outcome === "started", accountType).toBe(accountType === "atlassian");
+    }
+    expect(w.started).toHaveLength(1);
+  });
+
+  it("shows the Jira ticket's reporter, not an opaque account id, as who asked", () => {
+    const candidate = intakeCandidateOf(ORG_A, {
+      source: "jira", type: "issue.labeled", eventKey: "k", occurredAt: new Date(NOW).toISOString(), project: "web", hookId: `hk_${"1".repeat(26)}`,
+      subject: { kind: "issue", id: "PAY-12", title: "Refunds fail", url: "https://acme.atlassian.net/browse/PAY-12" }, fields: { label: ["rovara"] }, actor: { kind: "external", id: "5b10ac8d82e05b22cc7d4ef5", accountId: "5b10ac8d82e05b22cc7d4ef5" },
+    });
+    expect(candidate!.actor).toEqual({ kind: "person", accountId: "5b10ac8d82e05b22cc7d4ef5" });
+    expect(candidate!.actor).not.toHaveProperty("display");
+  });
+
   it("turns a Jira event into a Jira ticket, bound by its key", () => {
     const candidate = intakeCandidateOf(ORG_A, {
       source: "jira", type: "issue.labeled", eventKey: "k", occurredAt: new Date(NOW).toISOString(), project: "web", hookId: `hk_${"1".repeat(26)}`,
@@ -374,6 +423,66 @@ describe("a Rovara Code trigger on a label", () => {
     });
     expect(outcome).toMatchObject({ outcome: "skipped", reason: "intake_outsider" });
     expect(w.started).toEqual([]);
+  });
+});
+
+describe("the allowances (review I2): only a start that really starts work uses one", () => {
+  const ticketEvent = (n: number, over: Partial<TriggerEvent> = {}): TriggerEvent => ({
+    ...LABELED, eventKey: `gh:issue:101:${String(n)}:labeled:rovara:${stamp}`, subject: { ...LABELED.subject, id: `acme/web/${String(n)}`, url: `https://github.com/Acme/Web/issues/${String(n)}` }, ...over,
+  });
+  const hourKey = (w: ReturnType<typeof dispatchWorld>, triggerId: string) => triggerRateKey(ORG_A, triggerId, new Date(w.v.clock.now).toISOString().slice(0, 13));
+  const dayKey = (w: ReturnType<typeof dispatchWorld>) => orgAutonomousKey(ORG_A, new Date(w.v.clock.now).toISOString().slice(0, 10));
+  const outsider = { kind: "external" as const, id: "eve", accountId: "999" };
+
+  it("uses neither the trigger's hour nor the org's day for tickets that only wait (a flood of outsiders' labels)", async () => {
+    const w = dispatchWorld();
+    const trigger = await w.trigger({ maxRunsPerHour: 2 });
+    for (let n = 1; n <= 10; n += 1) expect((await w.dispatch(ticketEvent(n, { actor: outsider })))[0]).toMatchObject({ outcome: "skipped", reason: "intake_outsider" });
+    expect(w.v.db.get(hourKey(w, trigger.triggerId))).toBeUndefined();
+    expect(w.v.db.get(dayKey(w))).toBeUndefined();
+    expect(await listWaitingIntakeItems(w.ports.table, ORG_A, "web")).toHaveLength(10);
+  });
+
+  it("leaves other agents' triggers their allowance after such a flood", async () => {
+    const w = dispatchWorld();
+    await w.trigger({ maxRunsPerHour: 1 });
+    for (let n = 1; n <= 10; n += 1) await w.dispatch(ticketEvent(n, { actor: outsider }));
+    const chain = await w.v.budgetedChain({ start: "look", steps: [{ kind: "agent", id: "look", name: "Look", agent: { agentId: "root-cause-analyst", version: "current" }, next: { kind: "end" } }], limits: { maxRunUsd: 5 } });
+    await w.v.seed({ target: { kind: "chain", chainId: chain.chainId }, spec: { kind: "event", source: "github", type: "pull_request.opened" }, createdBy: DANA });
+    const [outcome] = await w.dispatch({
+      source: "github", type: "pull_request.opened", eventKey: "gh:pr:1", occurredAt: new Date(NOW - 60_000).toISOString(), project: "web",
+      subject: { kind: "pull_request", id: "1", title: "x", url: "https://github.com/Acme/Web/pull/1" }, fields: { baseBranch: ["main"], label: [], authorAssociation: ["MEMBER"] }, actor: { kind: "external", id: "maya" },
+    });
+    expect(outcome).toMatchObject({ outcome: "started" });
+  });
+
+  it("counts one run of each when a member's label really starts work", async () => {
+    const w = dispatchWorld();
+    const trigger = await w.trigger({ maxRunsPerHour: 5 });
+    await w.dispatch(ticketEvent(1));
+    expect(w.v.db.get(hourKey(w, trigger.triggerId))).toMatchObject({ count: 1 });
+    expect(w.v.db.get(dayKey(w))).toMatchObject({ count: 1 });
+  });
+
+  it("makes a member's label wait, not vanish, when the trigger's hour is used up", async () => {
+    const w = dispatchWorld();
+    await w.trigger({ maxRunsPerHour: 1 });
+    expect((await w.dispatch(ticketEvent(1)))[0]).toMatchObject({ outcome: "started" });
+    const [second] = await w.dispatch(ticketEvent(2));
+    expect(second).toMatchObject({ outcome: "skipped", reason: "intake_start_refused" });
+    expect(w.started).toHaveLength(1);
+    const waiting = await listWaitingIntakeItems(w.ports.table, ORG_A, "web");
+    expect(waiting).toHaveLength(1);
+    expect(waiting[0]).toMatchObject({ id: "acme/web/2", reason: "start_refused", lastRefusal: "RATE_LIMITED" });
+  });
+
+  it("makes a member's label wait when the org's day is used up", async () => {
+    const w = dispatchWorld();
+    await w.trigger();
+    w.v.db.set({ ...dayKey(w), count: 500 });
+    expect((await w.dispatch(ticketEvent(1)))[0]).toMatchObject({ outcome: "skipped", reason: "intake_start_refused" });
+    expect(w.started).toEqual([]);
+    expect(await listWaitingIntakeItems(w.ports.table, ORG_A, "web")).toHaveLength(1);
   });
 });
 

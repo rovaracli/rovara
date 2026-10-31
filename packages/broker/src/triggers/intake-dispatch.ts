@@ -11,7 +11,8 @@ import type { TriggerRecord } from "./store.js";
 
 /** What dispatch needs of the intake engine: hand it one ticket that asks for work. */
 export interface IntakeDispatch {
-  ingest(candidate: IntakeCandidate): Promise<IntakeOutcome>;
+  /** `admit` is asked just before work would start for a member's act; false makes the ticket wait (it is never dropped). */
+  ingest(candidate: IntakeCandidate, options?: { admit?: () => Promise<boolean> }): Promise<IntakeOutcome>;
 }
 
 /** What dispatch records for an intake event, in its own words (a code, never the ticket's words). */
@@ -40,7 +41,7 @@ export function intakeCandidateOf(orgId: OrgId, event: TriggerEvent): IntakeCand
     externalRef: { system: mapped.system, id: event.subject.id, url: event.subject.url },
     title: event.subject.title, body: event.subject.body, occurredAt: event.occurredAt,
     actor: actor.kind === "rovara" ? { kind: "rovara" }
-      : actor.kind === "external" ? { kind: actor.bot === true ? "bot" : "person", ...(actor.accountId === undefined ? {} : { accountId: actor.accountId }), ...(actor.id === undefined ? {} : { display: actor.id }) }
+      : actor.kind === "external" ? { kind: actor.bot === true ? "bot" : "person", ...(actor.accountId === undefined ? {} : { accountId: actor.accountId }), ...(actor.id === undefined || event.source !== "github" ? {} : { display: actor.id }) }
         : { kind: "unknown" },
   };
 }
@@ -56,10 +57,10 @@ export function dispatchResultOf(outcome: IntakeOutcome): IntakeDispatchResult {
 }
 
 /** Starts Rovara Code for the event through the engine. Throws what the engine throws (a fault that may pass: the vendor sends the event again, and the ticket is one item). */
-export async function startIntakeFor(intake: IntakeDispatch | undefined, orgId: OrgId, event: TriggerEvent): Promise<IntakeDispatchResult> {
+export async function startIntakeFor(intake: IntakeDispatch | undefined, orgId: OrgId, event: TriggerEvent, admit?: () => Promise<boolean>): Promise<IntakeDispatchResult> {
   // Without the engine nothing starts (fail closed): the trigger is on, the event is recorded as failed.
   if (intake === undefined) return { outcome: "failed", reason: "intake_unavailable" };
   const candidate = intakeCandidateOf(orgId, event);
   if (candidate === undefined) return { outcome: "skipped", reason: "intake_not_a_ticket" };
-  return dispatchResultOf(await intake.ingest(candidate));
+  return dispatchResultOf(await intake.ingest(candidate, admit === undefined ? {} : { admit }));
 }

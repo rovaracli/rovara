@@ -25,7 +25,7 @@ import {
   intakeSystemOf,
   type OrgId,
 } from "@agentx/contracts";
-import { ingestIntakeBatch, type IntakeActor, type IntakeCandidate, type IntakeOutcome, type IntakePorts } from "../intake/engine.js";
+import { ingestIntakeBatchWithin, type IntakeActor, type IntakeCandidate, type IntakeOutcome, type IntakePorts } from "../intake/engine.js";
 import { listAllIntakeSources, type IntakeSourceRecord } from "../intake/sources.js";
 
 // ---- the adapters
@@ -67,9 +67,9 @@ export const INTAKE_BACKOFF_MAX_MS = 60 * MINUTE;
 /** How long a source must have been failing before its maintainers are told, and how long before they are told again. */
 export const INTAKE_NOTICE_AFTER_MS = 60 * MINUTE;
 export const INTAKE_NOTICE_EVERY_MS = 24 * 60 * MINUTE;
-/** The most sources one tick polls, and the most time one tick takes. */
+/** The most sources one tick polls, and the most time one tick takes: well inside the broker function's 30 second timeout, checked between sources and between the tickets of a batch. */
 export const INTAKE_SOURCES_PER_TICK = 20;
-export const INTAKE_TICK_BUDGET_MS = 40_000;
+export const INTAKE_TICK_BUDGET_MS = 15_000;
 
 /** What the poll tells a source's maintainers. Fixed words are the notifier's; this carries ids and a code only. */
 export interface IntakeNotice {
@@ -196,9 +196,9 @@ async function recordSuccess(ports: IntakePorts, record: IntakeSourceRecord): Pr
   await table.documentClient.send(new UpdateCommand({
     TableName: table.tableName,
     Key: intakeSourceKey(record.orgId, record.project, record.sourceId),
-    UpdateExpression: "SET #failures = :zero REMOVE #since, #error",
+    UpdateExpression: "SET #failures = :zero REMOVE #since, #error, #noticed",
     ConditionExpression: "attribute_exists(pk)",
-    ExpressionAttributeNames: { "#failures": "failures", "#since": "failingSince", "#error": "lastError" },
+    ExpressionAttributeNames: { "#failures": "failures", "#since": "failingSince", "#error": "lastError", "#noticed": "noticedAt" },
     ExpressionAttributeValues: { ":zero": 0 },
   })).catch((error: unknown) => { if (!isConditional(error)) throw error; });
 }
@@ -248,7 +248,7 @@ async function recordFailure(deps: IntakePollDependencies, record: IntakeSourceR
 }
 
 /** One source, one tick. Never throws for a failing source (that is recorded); throws only if the source's own record can't be written. */
-export async function pollIntakeSource(deps: IntakePollDependencies, record: IntakeSourceRecord): Promise<SourceOutcome> {
+export async function pollIntakeSource(deps: IntakePollDependencies, record: IntakeSourceRecord, options: { deadline?: number } = {}): Promise<SourceOutcome> {
   const { ports } = deps;
   const now = ports.table.now();
   if (!intakeSourceIsPolled(record.ref)) return { outcome: "not_polled" };
@@ -261,19 +261,22 @@ export async function pollIntakeSource(deps: IntakePollDependencies, record: Int
     ports.log("intake_poll.call_cap", { orgId: record.orgId, project: record.project, system });
     return { outcome: "call_cap" };
   }
-  let result: { outcomes: IntakeOutcome[]; dropped: number };
+  let result: { outcomes: IntakeOutcome[]; dropped: number; fault?: unknown };
   try {
     const search = (deps.searchFor ?? intakeSearchFor)(system);
     if (search === undefined) throw agentXError("NOT_FOUND", "no search for this tracker");
     const items = await readWithin(deps.searchTimeoutMs ?? INTAKE_SEARCH_TIMEOUT_MS, (signal) => search({ orgId: record.orgId, project: record.project, source: record, signal, limit: INTAKE_MAX_ITEMS_PER_POLL }));
     if (!Array.isArray(items)) throw new Error("not a list");
     const read = candidatesOf(record, items);
-    result = { outcomes: await ingestIntakeBatch(ports, read.candidates), dropped: read.dropped };
+    // A fault in a START (the start service away) is not a fault of the source: the read worked, the batch stops, and the tickets not yet handed over are seen again next tick.
+    const done = await ingestIntakeBatchWithin(ports, read.candidates, options.deadline === undefined ? {} : { deadline: options.deadline });
+    result = { outcomes: done.outcomes, dropped: read.dropped, ...(done.fault === undefined ? {} : { fault: done.fault }) };
   } catch (error) {
     const code = failureCode(error);
     ports.log("intake_poll.failed", { orgId: record.orgId, project: record.project, system, code });
     return { outcome: "failed", code, noticed: await recordFailure(deps, record, now, intervalMs, code) };
   }
+  if (result.fault !== undefined) ports.log("intake_poll.start_fault", { orgId: record.orgId, project: record.project, system, code: failureCode(result.fault) });
   await recordSuccess(ports, record);
   const count = (kind: IntakeOutcome["outcome"]) => result.outcomes.filter((entry) => entry.outcome === kind).length;
   return { outcome: "polled", started: count("started"), waiting: count("waiting"), duplicates: count("duplicate"), skipped: count("skipped") + result.dropped };
@@ -296,7 +299,7 @@ export async function runIntakePoll(deps: IntakePollDependencies, options: { max
     if (report.polled + report.failed >= max || ports.table.now() - started >= (options.budgetMs ?? INTAKE_TICK_BUDGET_MS)) { skip("tick_full"); continue; }
     let result: SourceOutcome;
     try {
-      result = await pollIntakeSource(deps, record);
+      result = await pollIntakeSource(deps, record, { deadline: started + (options.budgetMs ?? INTAKE_TICK_BUDGET_MS) });
     } catch (error) {
       // The source's own record could not be written; the others go on, and this one is due again at its next tick.
       ports.log("intake_poll.source_unavailable", { orgId: record.orgId, project: record.project, error: failureCode(error) });

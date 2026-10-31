@@ -8,7 +8,7 @@
 // `starting` carries a lease: a start that died half way is taken over once its lease ran out, and the start itself is idempotent (its request id is fixed per ticket and member).
 // The title is a person's words; it is kept only inert and cut, and read back as text.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, intakeItemKey, type IntakeStanding, type IntakeTrackerChannel, type IntakeWaitReason, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, INTAKE_MAX_WAITING_PER_PROJECT, intakeItemKey, type IntakeStanding, type IntakeTrackerChannel, type IntakeWaitReason, type OrgId } from "@agentx/contracts";
 
 export interface IntakeTable {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -54,8 +54,8 @@ export const INTAKE_START_LEASE_MS = 120_000;
 export const INTAKE_WAITING_KEPT_DAYS = 30;
 /** A started item is kept this long, far past any poll's memory, so a ticket that still carries its label is not started a second time. */
 export const INTAKE_STARTED_KEPT_DAYS = 400;
-/** The most waiting items a project holds; more are not stored (a maintainer is told once). It bounds what a flood of outsiders' tickets can cost. */
-export const INTAKE_MAX_WAITING_PER_PROJECT = 200;
+/** The most waiting items a project holds (`INTAKE_MAX_WAITING_PER_PROJECT`); more are not stored (a maintainer is told once). It bounds what a flood of outsiders' tickets can cost. */
+export { INTAKE_MAX_WAITING_PER_PROJECT };
 
 const DAY_SECONDS = 86_400;
 const isConditional = (error: unknown): boolean => error instanceof Error && error.name === "ConditionalCheckFailedException";
@@ -96,7 +96,7 @@ export async function claimIntakeItem(table: IntakeTable, input: NewIntakeItem):
     orgId: input.orgId, project: input.project, itemId: input.itemId, channel: input.channel, system: input.system, id: input.id, url: input.url, title: input.title, requester: input.requester,
     ...(input.writer === undefined ? {} : { writer: input.writer }),
     state: input.state, since: at, updatedAt: at,
-    ...(input.state === "waiting" && input.body !== undefined && input.body !== "" ? { body: input.body } : {}),
+    ...(input.body !== undefined && input.body !== "" ? { body: input.body } : {}),
     ...(input.reason === undefined ? {} : { reason: input.reason }),
     ...(input.state === "starting" ? { leaseUntil: table.now() + INTAKE_START_LEASE_MS, ...(input.startedBy === undefined ? {} : { startedBy: input.startedBy }) } : {}),
   };
@@ -139,34 +139,41 @@ export async function claimIntakeStart(table: IntakeTable, orgId: OrgId, project
 }
 
 /**
- * The start made a session: `started`, with where it went. Only the start that holds the item can say so. The ticket's words (title, body, writer) and the requester's name are removed: a started ticket is kept for
+ * The start made a session: `started`, with where it went. Only the start that holds the item (`holder` is the member whose lease it is) can say so; for any other the answer is false and nothing changes. The ticket's words (title, body, writer) and the requester's name are removed: a started ticket is kept for
  * a year only to remember that it was started, as ids and a state.
  */
-export async function markIntakeStarted(table: IntakeTable, orgId: OrgId, project: string, itemId: string, started: { taskId?: string | undefined; sessionId?: string | undefined; requester: IntakeItemRecord["requester"] }): Promise<void> {
+export async function markIntakeStarted(table: IntakeTable, orgId: OrgId, project: string, itemId: string, started: { holder: string; taskId?: string | undefined; sessionId?: string | undefined; requester: IntakeItemRecord["requester"] }): Promise<boolean> {
+  try {
   await table.documentClient.send(new UpdateCommand({
     TableName: table.tableName,
     Key: intakeItemKey(orgId, project, itemId),
     UpdateExpression: `SET #state = :started, #updated = :at, #requester = :requester${started.taskId === undefined ? "" : ", taskId = :task"}${started.sessionId === undefined ? "" : ", sessionId = :session"} REMOVE #lease, #reason, #refusal, #body, #title, #writer`,
-    ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #project = :project AND #state = :starting",
-    ExpressionAttributeNames: { "#project": "project", "#state": "state", "#updated": "updatedAt", "#lease": "leaseUntil", "#reason": "reason", "#refusal": "lastRefusal", "#body": "body", "#title": "title", "#writer": "writer", "#requester": "requester" },
+    ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #project = :project AND #state = :starting AND #by = :me",
+    ExpressionAttributeNames: { "#project": "project", "#state": "state", "#by": "startedBy", "#updated": "updatedAt", "#lease": "leaseUntil", "#reason": "reason", "#refusal": "lastRefusal", "#body": "body", "#title": "title", "#writer": "writer", "#requester": "requester" },
     ExpressionAttributeValues: {
-      ":started": "started", ":starting": "starting", ":at": iso(table), ":org": orgId, ":project": project, ":requester": { ...started.requester, display: "" },
+      ":started": "started", ":starting": "starting", ":at": iso(table), ":org": orgId, ":project": project, ":me": started.holder, ":requester": { ...started.requester, display: "" },
       ...(started.taskId === undefined ? {} : { ":task": started.taskId }), ...(started.sessionId === undefined ? {} : { ":session": started.sessionId }),
     },
   }));
+    return true;
+  } catch (error) {
+    // Not the holder any more (the lease was taken over, or the item is gone): the start that was made stands, and the item is the new holder's to finish.
+    if (isConditional(error)) return false;
+    throw error;
+  }
 }
 
-/** A start that was refused or could not be made: the item waits again (with the reason, and the refusal's code if there was one), so a member can try again. */
-export async function giveBackIntakeItem(table: IntakeTable, orgId: OrgId, project: string, itemId: string, reason: IntakeWaitReason, refusal?: string): Promise<void> {
+/** A start that was refused or could not be made: the item waits again (only for the holder of its lease: a start whose lease was taken over changes nothing) (with the reason, and the refusal's code if there was one), so a member can try again. */
+export async function giveBackIntakeItem(table: IntakeTable, orgId: OrgId, project: string, itemId: string, holder: string, reason: IntakeWaitReason, refusal?: string): Promise<void> {
   try {
     await table.documentClient.send(new UpdateCommand({
       TableName: table.tableName,
       Key: intakeItemKey(orgId, project, itemId),
       UpdateExpression: `SET #state = :waiting, #reason = :reason, #updated = :at, #expires = :expires${refusal === undefined ? "" : ", #refusal = :refusal"} REMOVE #lease, #by`,
-      ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #project = :project AND #state = :starting",
+      ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #project = :project AND #state = :starting AND #by = :me",
       ExpressionAttributeNames: { "#project": "project", "#state": "state", "#reason": "reason", "#updated": "updatedAt", "#lease": "leaseUntil", "#by": "startedBy", "#expires": INDEX_EXPIRY_ATTRIBUTE, ...(refusal === undefined ? {} : { "#refusal": "lastRefusal" }) },
       ExpressionAttributeValues: {
-        ":waiting": "waiting", ":starting": "starting", ":reason": reason, ":at": iso(table), ":org": orgId, ":project": project, ":expires": expiryAfter(table, INTAKE_WAITING_KEPT_DAYS),
+        ":waiting": "waiting", ":starting": "starting", ":me": holder, ":reason": reason, ":at": iso(table), ":org": orgId, ":project": project, ":expires": expiryAfter(table, INTAKE_WAITING_KEPT_DAYS),
         ...(refusal === undefined ? {} : { ":refusal": refusal }),
       },
     }));
@@ -177,14 +184,14 @@ export async function giveBackIntakeItem(table: IntakeTable, orgId: OrgId, proje
 }
 
 /** Forgets an item that was created only to be started and never was (the start could not be made at all), so the next hand-over begins afresh. */
-export async function releaseIntakeItem(table: IntakeTable, orgId: OrgId, project: string, itemId: string): Promise<void> {
+export async function releaseIntakeItem(table: IntakeTable, orgId: OrgId, project: string, itemId: string, holder: string): Promise<void> {
   try {
     await table.documentClient.send(new DeleteCommand({
       TableName: table.tableName,
       Key: intakeItemKey(orgId, project, itemId),
-      ConditionExpression: "orgId = :org AND #project = :project AND #state = :starting",
-      ExpressionAttributeNames: { "#project": "project", "#state": "state" },
-      ExpressionAttributeValues: { ":org": orgId, ":project": project, ":starting": "starting" },
+      ConditionExpression: "orgId = :org AND #project = :project AND #state = :starting AND #by = :me",
+      ExpressionAttributeNames: { "#project": "project", "#state": "state", "#by": "startedBy" },
+      ExpressionAttributeValues: { ":org": orgId, ":project": project, ":starting": "starting", ":me": holder },
     }));
   } catch (error) {
     if (!isConditional(error)) throw error;

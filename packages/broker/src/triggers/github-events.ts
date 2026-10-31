@@ -260,8 +260,8 @@ async function actorOf(deps: Pick<GithubTriggerDependencies, "githubAppSlug">, i
   if (own !== undefined) return { kind: "rovara", id: own.login };
   const sender = involved[0];
   if (sender === undefined) return { kind: "unknown" };
-  // An event that asks for work also says who the sender is to GitHub (their account id: what a linked member is found by) and whether it is an automation of someone else's.
-  return { kind: "external", id: sender.login, ...(intake && sender.id !== undefined ? { accountId: String(sender.id) } : {}), ...(intake && sender.type === "Bot" ? { bot: true as const } : {}) };
+  // An event that asks for work also says who the sender is to GitHub (their account id: what a linked member is found by) and whether it is an automation (any account that is not a plain `User`: a Bot, an Organization, a Mannequin) of someone else's.
+  return { kind: "external", id: sender.login, ...(intake && sender.id !== undefined ? { accountId: String(sender.id) } : {}), ...(intake && sender.type !== undefined && sender.type !== "User" ? { bot: true as const } : {}) };
 }
 
 /** Who the API is to be asked about, when the payload names the author and the repository's account in a form that is safe to put in a path. */

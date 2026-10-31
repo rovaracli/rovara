@@ -49,7 +49,7 @@ export async function routeIntakeRequest(deps: IntakeRouteDependencies, caller: 
     const { sources } = parsed(PutSourcesBodySchema, body);
     if (new Set(sources.map(intakeSourceIdOf)).size !== sources.length) throw agentXError("CONFIG_INVALID", "sources: the same place is named twice");
     const saved = await replaceIntakeSources(table, { orgId: caller.orgId, project: name, refs: sources, setBy: caller.developerId });
-    return new StatusReply(200, { sources: saved.map((record) => ({ sourceId: record.sourceId, ...record.ref })) });
+    return new StatusReply(200, { sources: saved.map((record) => ({ sourceId: record.sourceId, ref: record.ref, failing: record.failures > 0 })) });
   }
   if (!projectAllows(role, "start_tasks")) throw agentXError("FORBIDDEN", `You can view ${name} but not start tasks in it.`);
   if (match[3] !== undefined) {
@@ -65,5 +65,5 @@ export async function routeIntakeRequest(deps: IntakeRouteDependencies, caller: 
   if (method !== "GET") throw agentXError("NOT_FOUND", "no such route");
   const waiting = (await listWaitingIntakeItems(table, caller.orgId, name)).filter((record) => WAITING_ITEM_CHANNELS.has(record.channel));
   const sources = await listIntakeSources(table, caller.orgId, name);
-  return new StatusReply(200, { items: waiting.map(viewOf), sources: sources.map((record) => ({ sourceId: record.sourceId, ...record.ref, failing: record.failures > 0 })) });
+  return new StatusReply(200, { items: waiting.map(viewOf), sources: sources.map((record) => ({ sourceId: record.sourceId, ref: record.ref, failing: record.failures > 0 })) });
 }

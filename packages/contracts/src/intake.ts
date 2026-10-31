@@ -158,9 +158,19 @@ export const IntakeWaitingItemSchema = z.object({
 }).strict();
 export type IntakeWaitingItem = z.infer<typeof IntakeWaitingItemSchema>;
 
-export const IntakeWaitingListSchema = z.object({ items: z.array(IntakeWaitingItemSchema).max(100) }).strict();
+/** The most waiting tickets a project holds (more are not stored, and the list never holds more). */
+export const INTAKE_MAX_WAITING_PER_PROJECT = 200;
+
+/** One source as a maintainer sees it: its id, the settings it was given, and whether the poll is failing on it now. */
+export const IntakeSourceViewSchema = z.object({ sourceId: z.string().regex(/^[a-f0-9]{24}$/), ref: IntakeChannelRefSchema, failing: z.boolean() }).strict();
+export type IntakeSourceView = z.infer<typeof IntakeSourceViewSchema>;
+
+export const IntakeWaitingListSchema = z.object({ items: z.array(IntakeWaitingItemSchema).max(INTAKE_MAX_WAITING_PER_PROJECT), sources: z.array(IntakeSourceViewSchema).max(16) }).strict();
 export type IntakeWaitingList = z.infer<typeof IntakeWaitingListSchema>;
 
-/** `POST /v1/app/projects/{project}/intake/{itemId}/start`: a member says "Start". The request id makes a repeat the same start. */
+/**
+ * `POST /v1/app/projects/{project}/intake/{itemId}/start`: a member says "Start". The body only has to be a request (a UUID, as every start sends); a repeat is made the same start by the
+ * SERVER's id for that ticket and member (`intakeRequestId`), not by this one, so a client that retries with a new id still cannot start a ticket twice.
+ */
 export const IntakeStartBodySchema = z.object({ requestId: z.string().uuid() }).strict();
 export type IntakeStartBody = z.infer<typeof IntakeStartBodySchema>;
