@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { Citation, WorkflowReviewFinding } from "@agentx/contracts";
 import {
   claimCitations, downgradeSourceOnlyFindings, dynamoCitationStore, fetchLiveFacts, recheckCitations, replayCitation, sourceCritiquePoints, type ReplayDependencies, type StoredCitation,
 } from "../../../packages/broker/src/context-sources/citations.js";
-import { buildClaimSources } from "../../../packages/broker/src/context-sources/plan-sources.js";
+import { buildClaimSources, clearLiveFactsCache } from "../../../packages/broker/src/context-sources/plan-sources.js";
 import { dynamoResultStore } from "../../../packages/broker/src/context-sources/quotes.js";
 import { renderPlanDocument } from "../../../packages/broker/src/aws/plan-page/render-plan.js";
 import { resultDigest } from "../../../packages/broker/src/context-sources/present.js";
@@ -143,7 +143,8 @@ describe("reviews", () => {
 });
 
 describe("the plan page", () => {
-  async function page(options: { viewer: string; member?: boolean; liveFails?: boolean }) {
+  beforeEach(() => { clearLiveFactsCache(); });
+  async function page(options: { viewer: string; member?: boolean; liveFails?: boolean; opens?: { count: number }; clock?: () => number }) {
     const table = new FakeDynamoDb();
     const citations = dynamoCitationStore({ documentClient: table, tableName: "state", now: () => NOW });
     const results = dynamoResultStore({ documentClient: table, tableName: "state", now: () => NOW });
@@ -153,7 +154,8 @@ describe("the plan page", () => {
     const sources = [source({ quotes: "project_members", liveFacts: ["status"] })];
     const map = await buildClaimSources({
       citations, results, quotes: { isProjectMember: async () => options.member !== false },
-      replay: { now: () => NOW, sources: async () => sources, servers: { open: async () => {
+      replay: { now: options.clock ?? (() => NOW), sources: async () => sources, servers: { open: async () => {
+        if (options.opens) options.opens.count += 1;
         if (options.liveFails === true) throw new Error("down");
         return { hosts: ["sim.example.com"], tools: [SEARCH_TOOL, GET_TOOL], close: async () => undefined, call: async () => ({ content: [{ type: "text", text: "x" }], structuredContent: { key: "P123456", status: "Open" } }) };
       } } },
@@ -174,6 +176,23 @@ describe("the plan page", () => {
     const html = await page({ viewer: "stranger", member: false });
     expect(html).toContain("Login");
     expect(html).not.toContain("SECRET TICKET BODY");
+  });
+  it("review M7: asks the source for live facts only for someone who may see the item, and not again within a minute", async () => {
+    clearLiveFactsCache();
+    const stranger = { count: 0 };
+    const html = await page({ viewer: "stranger", member: false, opens: stranger });
+    expect(stranger.count).toBe(0);
+    expect(html).not.toContain("status: Open");
+    let clock = NOW;
+    const member = { count: 0 };
+    await page({ viewer: "dev1", opens: member, clock: () => clock });
+    const first = member.count;
+    expect(first).toBeGreaterThan(0);
+    await page({ viewer: "dev1", opens: member, clock: () => clock });
+    expect(member.count).toBe(first);
+    clock = NOW + 61_000;
+    await page({ viewer: "dev1", opens: member, clock: () => clock });
+    expect(member.count).toBeGreaterThan(first);
   });
   it("says the status is unavailable rather than showing an old one", async () => {
     const html = await page({ viewer: "dev1", liveFails: true });

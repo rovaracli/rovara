@@ -32,8 +32,12 @@ export interface McpHostProps {
   orgId: string;
   /** The ranges the host may reach over HTTPS: the VPC's endpoints, the customer's package registry. Never the whole internet. */
   privateEgressCidrs: readonly string[];
-  /** An ACM certificate for the load balancer's HTTPS listener. Without one the listener is plain HTTP inside the VPC (the broker's token still protects it). */
-  certificateArn?: string;
+  /**
+   * An ACM certificate for the load balancer's HTTPS listener. Required (review I6): the broker's bearer token never crosses the network in the clear, and the broker refuses
+   * an http:// address for the host. The hop from the load balancer to the task stays inside the two security groups; mTLS between broker and host is the target and is listed
+   * as deferred. Rotating the token: replace the secret's value and restart the task; the broker reads it afresh on its next cold start.
+   */
+  certificateArn: string;
   /** The registry the host installs approved packages from (an internal mirror, in an install with no internet). */
   npmRegistry?: string;
 }
@@ -52,6 +56,7 @@ export class McpHost extends Construct {
 
   constructor(scope: Construct, id: string, props: McpHostProps) {
     super(scope, id);
+    if (props.certificateArn === undefined || props.certificateArn === "") throw new Error("the MCP host needs a certificate for its HTTPS listener: there is no plain-HTTP mode");
     const stack = Stack.of(this);
     const vpc = ec2.Vpc.fromVpcAttributes(this, "Vpc", { vpcId: props.vpcId, availabilityZones: props.availabilityZones, privateSubnetIds: props.subnetIds });
     const subnets = { subnets: props.subnetIds.map((subnetId, index) => ec2.Subnet.fromSubnetId(this, `Subnet${index}`, subnetId)) };
@@ -59,7 +64,7 @@ export class McpHost extends Construct {
     // Clients -> load balancer -> service. Nothing else reaches either.
     this.loadBalancerSecurityGroup = new ec2.SecurityGroup(this, "LoadBalancerSecurityGroup", { vpc, description: "MCP host load balancer: the broker only", allowAllOutbound: false });
     this.serviceSecurityGroup = new ec2.SecurityGroup(this, "ServiceSecurityGroup", { vpc, description: "MCP host tasks: the load balancer only", allowAllOutbound: false });
-    const listenerPort = props.certificateArn === undefined ? MCP_HOST_PORT : 443;
+    const listenerPort = 443;
     props.clientSecurityGroupIds.forEach((clientGroup, index) => {
       this.loadBalancerSecurityGroup.addIngressRule(ec2.Peer.securityGroupId(clientGroup), ec2.Port.tcp(listenerPort), `MCP host from registered client ${index}`);
       // The client's own group must allow the port out; a separate rule here so the client's stack needs no reference to this one.
@@ -95,10 +100,16 @@ export class McpHost extends Construct {
     const task = new ecs.FargateTaskDefinition(this, "Task", { cpu: 512, memoryLimitMiB: 1024, taskRole: this.taskRole, runtimePlatform: { cpuArchitecture: ecs.CpuArchitecture.ARM64, operatingSystemFamily: ecs.OperatingSystemFamily.LINUX } });
     // A read-only root file system; hosted servers get a scratch folder at /tmp (their private homes are made inside it).
     task.addVolume({ name: "scratch" });
+    const hardened = new ecs.LinuxParameters(this, "Hardened", { initProcessEnabled: true });
+    hardened.dropCapabilities(ecs.Capability.NET_RAW, ecs.Capability.MKNOD, ecs.Capability.AUDIT_WRITE, ecs.Capability.SETFCAP, ecs.Capability.SETPCAP, ecs.Capability.FSETID, ecs.Capability.SYS_CHROOT, ecs.Capability.DAC_OVERRIDE, ecs.Capability.FOWNER, ecs.Capability.NET_BIND_SERVICE);
     const container = task.addContainer("McpHost", {
       image: props.image,
       command: ["node", "packages/broker/dist/mcp-host/main.js"],
       readonlyRootFilesystem: true,
+      // Root, so that the host can start each hosted server under its own uid (review I4); with the capabilities it does not need taken away. It listens on a high port and
+      // runs no shell for people. Fargate allows dropping capabilities (it allows adding only SYS_PTRACE), so CHOWN, SETUID, SETGID and KILL are kept and the rest of the defaults go.
+      user: "0",
+      linuxParameters: hardened,
       logging: ecs.LogDrivers.awsLogs({ logGroup, streamPrefix: "mcp-host" }),
       environment: { ROVARA_ORG_ID: props.orgId, STATE_TABLE_NAME: props.stateTableName, PORT: String(MCP_HOST_PORT), ...(props.npmRegistry === undefined ? {} : { npm_config_registry: props.npmRegistry }) },
       secrets: { MCP_HOST_TOKEN: ecs.Secret.fromSecretsManager(this.tokenSecret as unknown as secretsmanager.ISecret) },
@@ -112,12 +123,10 @@ export class McpHost extends Construct {
       minHealthyPercent: 100, circuitBreaker: { rollback: true },
     });
     const loadBalancer = new elbv2.ApplicationLoadBalancer(this, "LoadBalancer", { vpc, internetFacing: false, vpcSubnets: subnets, securityGroup: this.loadBalancerSecurityGroup, idleTimeout: Duration.seconds(120) });
-    const listener = loadBalancer.addListener("Listener", props.certificateArn === undefined
-      ? { port: MCP_HOST_PORT, protocol: elbv2.ApplicationProtocol.HTTP, open: false }
-      : { port: 443, protocol: elbv2.ApplicationProtocol.HTTPS, certificates: [elbv2.ListenerCertificate.fromArn(props.certificateArn)], open: false });
+    const listener = loadBalancer.addListener("Listener", { port: 443, protocol: elbv2.ApplicationProtocol.HTTPS, certificates: [elbv2.ListenerCertificate.fromArn(props.certificateArn)], open: false });
     listener.addTargets("Target", { port: MCP_HOST_PORT, protocol: elbv2.ApplicationProtocol.HTTP, targets: [service], healthCheck: { path: "/healthz", healthyHttpCodes: "200" }, deregistrationDelay: Duration.seconds(30) });
 
-    this.url = `${props.certificateArn === undefined ? "http" : "https"}://${loadBalancer.loadBalancerDnsName}${props.certificateArn === undefined ? `:${MCP_HOST_PORT}` : ""}`;
+    this.url = `https://${loadBalancer.loadBalancerDnsName}`;
     new CfnOutput(this, "McpHostUrl", { value: this.url, description: "The MCP host's private URL: the broker's MCP_HOST_URL" });
   }
 }

@@ -15,11 +15,11 @@ const STDIO = { kind: "stdio" as const, spec: { registry: "npm" as const, name: 
 
 function world(over: { edition?: "enterprise" | "public"; tools?: DiscoveredTool[]; fails?: McpProbeError | Error; secondAdmin?: boolean } = {}) {
   const table = new FakeDynamoDb();
-  const state = { tools: over.tools ?? [SEARCH_TOOL, GET_TOOL], fails: over.fails, tokens: [] as Array<string | undefined>, httpProbes: 0 };
+  const state = { tools: over.tools ?? [SEARCH_TOOL, GET_TOOL], integrity: `sha512-${"A".repeat(86)}==`, fails: over.fails, tokens: [] as Array<string | undefined>, httpProbes: 0 };
   let counter = 0;
   const prober: McpProber = {
     http: async (_address, token) => { state.httpProbes += 1; state.tokens.push(token); if (state.fails) throw state.fails; return state.tools; },
-    stdio: async () => { if (state.fails) throw state.fails; return state.tools; },
+    stdio: async () => { if (state.fails) throw state.fails; return { tools: state.tools, integrity: state.integrity }; },
   };
   const audit: string[] = [];
   const deps: McpServerDependencies = {
@@ -226,8 +226,30 @@ describe("review I2: tests of an address are rate limited", () => {
     const limit = probeLimiter({ max: 10, windowMs: 600_000, now: () => clock });
     for (let i = 0; i < 10; i += 1) expect(limit(ORG)).toBe(true);
     expect(limit(ORG)).toBe(false);
-    expect(limit("org_bbbbbbbbbbbbbbbbbbbb" as never)).toBe(true);
+    expect(limit("org_bbbbbbbbbbbbbbbbbbbb")).toBe(true);
     clock = 600_001;
     expect(limit(ORG)).toBe(true);
+  });
+});
+
+describe("review I3: a stdio package is pinned by its tarball's integrity", () => {
+  it("stores the integrity the host computed, shows it, and refuses an approval when the tarball is no longer that one", async () => {
+    const { deps, state } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO });
+    expect(entry.transport).toMatchObject({ kind: "stdio", spec: { integrity: state.integrity } });
+    state.integrity = `sha512-${"B".repeat(86)}==`;
+    await expect(approveMcpServer(deps, admin(), entry.serverId)).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect((await deps.store.get(ORG, entry.serverId))!.status).toBe("awaiting_approval");
+    state.integrity = (entry.transport as { spec: { integrity: string } }).spec.integrity;
+    expect((await approveMcpServer(deps, admin(), entry.serverId)).status).toBe("approved");
+  });
+  it("accepts an integrity the admin typed, and the stored entry always has one", async () => {
+    const { McpServerEntrySchema, McpStdioSpecSchema, McpStdioProposalSchema } = await import("@agentx/contracts");
+    const { deps, state } = world();
+    const typed = { ...STDIO, spec: { ...STDIO.spec, integrity: state.integrity } };
+    expect((await proposeMcpServer(deps, admin(), { label: "Wiki", transport: typed })).transport).toEqual(typed);
+    expect(McpStdioProposalSchema.safeParse(STDIO.spec).success).toBe(true);
+    expect(McpStdioSpecSchema.safeParse(STDIO.spec).success).toBe(false);
+    expect(McpServerEntrySchema.safeParse({ serverId: "mcpabc123456", label: "x", status: "approved", transport: STDIO, probe: { at: "t", toolsHash: "a".repeat(64), tools: [] }, requestedBy: "d", requestedAt: "t" }).success).toBe(false);
   });
 });

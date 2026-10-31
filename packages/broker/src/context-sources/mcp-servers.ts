@@ -9,8 +9,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  MCP_PROBE_FAILURES, McpServerEntrySchema, McpServerTransportSchema, agentXError, canonicalJson, editionPolicy, orgScoped, requireFeature,
-  type Edition, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type OrgId,
+  MCP_PROBE_FAILURES, McpServerEntrySchema, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, orgScoped, requireFeature,
+  type Edition, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type McpStdioProposal, type OrgId,
 } from "@agentx/contracts";
 import { parsePrivateTarget, type AllowedTarget } from "../connections/private-endpoints.js";
 import { inertSentence } from "./present.js";
@@ -29,8 +29,8 @@ export class McpProbeError extends Error {
 export interface McpProber {
   /** Connects to the address (checked and pinned by the caller's guard) and lists its tools. `token` is the auth connection's, if the entry has one. */
   http(address: string, token: string | undefined): Promise<DiscoveredTool[]>;
-  /** Asks the MCP host to start the package for a moment and list its tools. */
-  stdio(spec: Extract<McpServerTransport, { kind: "stdio" }>["spec"]): Promise<DiscoveredTool[]>;
+  /** Asks the MCP host to install the package for a moment and list its tools. `integrity` is the tarball's, computed by the host from the bytes it installed. */
+  stdio(spec: McpStdioProposal): Promise<{ tools: DiscoveredTool[]; integrity: string }>;
 }
 
 export interface McpServerStore {
@@ -183,30 +183,31 @@ export function probeLimiter(options: { max: number; windowMs: number; now: () =
   };
 }
 
-async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerTransport, authConnectionId: string | undefined): Promise<McpServerProbe> {
+async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerTransport | { kind: "stdio"; spec: McpStdioProposal }, authConnectionId: string | undefined): Promise<{ probe: McpServerProbe; integrity?: string }> {
   if (deps.probeAllowed !== undefined && !deps.probeAllowed(orgId)) throw agentXError("TOO_MANY_REQUESTS", "Too many server tests just now. Wait a few minutes and try again.");
   let tools: DiscoveredTool[];
+  let integrity: string | undefined;
   try {
     if (transport.kind === "http") {
       let token: string | undefined;
       if (authConnectionId !== undefined) token = await deps.authToken(orgId, authConnectionId).catch(() => undefined);
       tools = await deps.prober.http(transport.address, token);
     } else {
-      tools = await deps.prober.stdio(transport.spec);
+      ({ tools, integrity } = await deps.prober.stdio(transport.spec));
     }
   } catch (error) {
     // Only a fixed sentence is shown: a server's own error can hold addresses, banners and paths.
     const code = error instanceof McpProbeError ? error.code : "unreachable";
     throw agentXError("CONFIG_INVALID", MCP_PROBE_FAILURES[code]);
   }
-  return summariseProbe(tools, deps.now());
+  return { probe: summariseProbe(tools, deps.now()), ...(integrity === undefined ? {} : { integrity }) };
 }
 
 export async function proposeMcpServer(deps: McpServerDependencies, actor: McpServerActor, body: { label: unknown; transport: unknown; authConnectionId?: string | undefined }): Promise<McpServerEntry> {
   guard(deps, actor);
   const label = typeof body.label === "string" ? inertSentence(body.label, 60) : "";
   if (label === "") throw agentXError("CONFIG_INVALID", "label: give the server a short name");
-  const transport = McpServerTransportSchema.safeParse(body.transport);
+  const transport = McpServerProposalTransportSchema.safeParse(body.transport);
   if (!transport.success) throw agentXError("CONFIG_INVALID", transport.error.issues[0]?.message ?? "transport: is not valid");
   if (transport.data.kind === "http") {
     const target = parsePrivateTarget(transport.data.address);
@@ -223,10 +224,12 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
     throw agentXError("CONFIG_INVALID", "authConnectionId: that must be a read-only MCP connection made for this same server address");
   }
   const shown = await probe(deps, actor.orgId, transport.data, body.authConnectionId);
+  // A stdio package is pinned by its tarball's integrity: the one the admin gave (the host refused anything else), or the one the host computed, which the admin sees now.
+  const stored: McpServerTransport = transport.data.kind === "http" ? transport.data : { kind: "stdio", spec: { ...transport.data.spec, integrity: shown.integrity! } };
   const entry: McpServerEntry = McpServerEntrySchema.parse({
     serverId: `mcp${(deps.newId ?? (() => randomBytes(8).toString("hex")))().replace(/[^a-z0-9]/gu, "").slice(0, 16)}`,
-    label, status: "awaiting_approval", transport: transport.data, ...(body.authConnectionId === undefined ? {} : { authConnectionId: body.authConnectionId }),
-    probe: shown, requestedBy: actor.developerId, requestedAt: new Date(deps.now()).toISOString(),
+    label, status: "awaiting_approval", transport: stored, ...(body.authConnectionId === undefined ? {} : { authConnectionId: body.authConnectionId }),
+    probe: shown.probe, requestedBy: actor.developerId, requestedAt: new Date(deps.now()).toISOString(),
   });
   if (!await deps.store.create(actor.orgId, entry)) throw agentXError("IDEMPOTENCY_CONFLICT", "that server id is taken; try again");
   await told(deps, { action: "mcp_server.added", actor, serverId: entry.serverId, label: entry.label });
@@ -243,7 +246,9 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
   if (entry === undefined || entry.status !== "awaiting_approval") throw agentXError("NOT_FOUND", "no MCP server is waiting for approval with that id");
   if (deps.secondAdminToApprove === true && entry.requestedBy === actor.developerId) throw agentXError("FORBIDDEN", "A second admin must approve this server.");
   const again = await probe(deps, actor.orgId, entry.transport, entry.authConnectionId);
-  if (again.toolsHash !== entry.probe.toolsHash) throw agentXError("CHANGE_STALE", "The server's tools are not the ones you were shown. Add it again to look at what it offers now.");
+  // The host installed the tarball again and checked it against the pinned integrity; a different tarball never gets here, and the tools must be the ones that were shown.
+  if (entry.transport.kind === "stdio" && again.integrity !== entry.transport.spec.integrity) throw agentXError("CHANGE_STALE", "The package is not the one you were shown. Add it again to look at it now.");
+  if (again.probe.toolsHash !== entry.probe.toolsHash) throw agentXError("CHANGE_STALE", "The server's tools are not the ones you were shown. Add it again to look at what it offers now.");
   const at = new Date(deps.now()).toISOString();
   if (await deps.store.decide({ orgId: actor.orgId, serverId, from: "awaiting_approval", to: "approved", by: actor.developerId, at, toolsHash: entry.probe.toolsHash }) === "stale") {
     throw agentXError("CHANGE_STALE", "That server was already decided. Reload the list.");

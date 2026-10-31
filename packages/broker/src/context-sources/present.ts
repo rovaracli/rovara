@@ -7,6 +7,11 @@ import { stripHiddenCharacters, type ContextSource, type ContextSourceTool, type
 
 const NAME_LIMIT = 64;
 
+/** Any `<source-result` or `</source-result`, however spaced, loses its angle bracket, so a result cannot close its frame or open a forged, "trusted" one (review M1). */
+export function neutralizeFrameTags(text: string): string {
+  return text.replace(/<(\s*\/?\s*source-result)/giu, "&lt;$1");
+}
+
 /** `src_<sourceId>_<tool>`, within the provider's 64 characters; a longer tool name is cut and given a short hash so two long names stay different. */
 export function presentedToolName(sourceId: string, upstreamName: string): string {
   const prefix = `src_${sourceId}_`;
@@ -79,7 +84,7 @@ const attribute = (value: string): string => inertSentence(value, 120).replace(/
  * stripped of hidden characters and cut to `maxBytes`; a `</source-result` inside it is broken so the text cannot close its own frame.
  */
 export function frameResult(input: { source: ContextSource; itemRef: string; fetchedAt: string; text: string; maxBytes: number; standing: string }): { text: string; truncated: boolean; bytes: number } {
-  let body = stripHiddenCharacters(input.text).text.replace(/<\/\s*source-result/giu, "<\\/source-result");
+  let body = neutralizeFrameTags(stripHiddenCharacters(input.text).text);
   let truncated = false;
   if (Buffer.byteLength(body, "utf8") > input.maxBytes) {
     // Cut on a character boundary.

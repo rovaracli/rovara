@@ -239,18 +239,21 @@ export async function confirmSourceChange(deps: SettingsDependencies, actor: Set
   requireAdmin(actor);
   const change = await deps.store.getChange(actor.orgId, project, changeId);
   if (change === undefined || change.status !== "pending") throw agentXError("NOT_FOUND", "no pending change has that id");
-  if (change.secondAdminReasons.length > 0 && change.proposedBy === actor.developerId) {
-    throw agentXError("FORBIDDEN", `A second admin must confirm this change: ${change.secondAdminReasons.join("; ")}.`);
-  }
   const document = await deps.store.readDocument(actor.orgId, project);
   if (document.revision !== change.baseRevision) throw agentXError("CHANGE_STALE", "The project's sources changed since this was proposed. Propose it again.");
   let sources: ContextSource[];
+  let reasons = change.secondAdminReasons;
   if (change.kind === "remove") {
     sources = document.sources.filter((source) => source.sourceId !== change.sourceId);
   } else {
     const checked = await validateContextSource(deps.env, actor.orgId, change.source);
     if (checked.problems.length > 0 || checked.source === undefined) throw agentXError("CONFIG_INVALID", checked.problems.slice(0, 5).join("; "));
     sources = [...document.sources.filter((source) => source.sourceId !== change.sourceId), checked.source];
+    // What needs a second admin is decided by the rules as they are now, not as they were when it was proposed (review M8).
+    reasons = [...new Set([...change.secondAdminReasons, ...checked.secondAdminReasons])];
+  }
+  if (reasons.length > 0 && change.proposedBy === actor.developerId) {
+    throw agentXError("FORBIDDEN", `A second admin must confirm this change: ${reasons.join("; ")}.`);
   }
   const next = ContextSourcesDocumentSchema.parse({ revision: document.revision + 1, sources });
   const at = new Date(deps.now()).toISOString();

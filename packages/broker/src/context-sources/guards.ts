@@ -60,6 +60,11 @@ const CODE_SIGNS: readonly RegExp[] = [
   /\breturn\b[^\n]*[;)]/u,
 ];
 
+/** A long unbroken run of base64 or URL-safe base64 characters: encoded code or data. */
+const ENCODED_RUN = /[A-Za-z0-9+/_-]{60,}={0,2}/u;
+/** A host name followed by a path, a query or a fragment, with no scheme: `evil.example.com/collect?d=…`. */
+const BARE_HOST = /(?:^|[\s"'(=,;<>])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})(?::\d{1,5})?(?=[/?#])/giu;
+
 /** Whether text looks like code: more than three lines, a fenced block, or at least two different marks of code. */
 export function looksLikeCode(text: string): boolean {
   if (text.split("\n").length > 3 || text.includes("```")) return true;
@@ -93,7 +98,10 @@ export function checkArguments(input: { args: unknown; inputSchema: Record<strin
       const host = hostOfAddress(value.trim());
       if (host === undefined || !hosts.has(host)) { refusal = "address_off_host"; return; }
     }
+    // A host written without a scheme is an address as much as one with it (review M2).
+    for (const match of value.matchAll(BARE_HOST)) if (!hosts.has(match[1]!.toLowerCase())) { refusal = "address_off_host"; return; }
     if (redactText(value) !== value) { refusal = "carries_secret"; return; }
+    if (!input.sendCodeSnippets && ENCODED_RUN.test(value)) { refusal = "looks_like_code"; return; }
     if (!input.sendCodeSnippets && looksLikeCode(value)) refusal = "looks_like_code";
   };
   visit(input.args, 0, undefined);

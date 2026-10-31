@@ -9,6 +9,8 @@ type Resource = { Type: string; Properties: Record<string, unknown> };
 /** A value inside parsed template JSON, by path. */
 const at = (value: unknown, ...path: Array<string | number>): unknown => path.reduce<unknown>((current, key) => (current !== null && typeof current === "object" ? (current as Record<string | number, unknown>)[key] : undefined), value);
 
+const CERTIFICATE = "arn:aws:acm:us-east-1:111111111111:certificate/abc";
+
 function synth(over: { certificateArn?: string; cidrs?: string[] } = {}) {
   const app = new App();
   const stack = new Stack(app, "Test", { env: { account: "111111111111", region: "us-east-1" } });
@@ -16,7 +18,7 @@ function synth(over: { certificateArn?: string; cidrs?: string[] } = {}) {
     vpcId: "vpc-0123456789abcdef0", availabilityZones: ["us-east-1a", "us-east-1b"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"],
     image: ecs.ContainerImage.fromRegistry("111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara-broker:1"), clientSecurityGroupIds: ["sg-0123456789abcdef0"],
     stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/state", stateTableName: "state", orgId: "org_aaaaaaaaaaaaaaaaaaaa",
-    privateEgressCidrs: over.cidrs ?? ["10.0.0.0/16"], ...(over.certificateArn === undefined ? {} : { certificateArn: over.certificateArn }),
+    privateEgressCidrs: over.cidrs ?? ["10.0.0.0/16"], certificateArn: over.certificateArn ?? CERTIFICATE,
   });
   const json = Template.fromStack(stack).toJSON() as { Resources: Record<string, Resource> };
   const of = (type: string): Array<Record<string, unknown>> => Object.entries(json.Resources).filter(([, resource]) => resource.Type === type).map(([id, resource]) => ({ id, ...resource.Properties }));
@@ -69,12 +71,20 @@ describe("the MCP host", () => {
     expect(statements.flatMap((statement) => (Array.isArray(statement.Action) ? statement.Action : [statement.Action]) as string[]).filter((action) => !action.startsWith("dynamodb:")).sort())
       .toEqual(["logs:CreateLogStream", "logs:PutLogEvents", "secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]);
   });
-  it("serves HTTPS when it is given a certificate, and plain HTTP inside the VPC when it is not", () => {
-    const plain = synth();
-    expect(plain.of("AWS::ElasticLoadBalancingV2::Listener")[0]!.Protocol).toBe("HTTP");
-    expect(plain.host.url).toMatch(/^http:\/\//u);
-    const secure = synth({ certificateArn: "arn:aws:acm:us-east-1:111111111111:certificate/abc" });
-    expect(secure.of("AWS::ElasticLoadBalancingV2::Listener")[0]!.Protocol).toBe("HTTPS");
-    expect(secure.host.url).toMatch(/^https:\/\//u);
+  it("serves HTTPS only: there is no plain-HTTP mode and no start without a certificate", () => {
+    const { of, host } = synth();
+    expect(of("AWS::ElasticLoadBalancingV2::Listener").map((listener) => [listener.Protocol, listener.Port])).toEqual([["HTTPS", 443]]);
+    expect(host.url).toMatch(/^https:\/\//u);
+    expect(() => synth({ certificateArn: "" })).toThrow(/certificate/u);
+    expect(() => new McpHost(new Stack(new App(), "NoCert"), "H", { vpcId: "vpc-0123456789abcdef0", availabilityZones: ["us-east-1a"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa"], image: ecs.ContainerImage.fromRegistry("x"), clientSecurityGroupIds: [], stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/s", stateTableName: "s", orgId: "org_aaaaaaaaaaaaaaaaaaaa", privateEgressCidrs: ["10.0.0.0/16"] } as never)).toThrow(/certificate/u);
+  });
+  it("starts as root only to give each hosted server its own uid, and drops the capabilities it does not need", () => {
+    const { of } = synth();
+    const container = (of("AWS::ECS::TaskDefinition")[0]!.ContainerDefinitions as Array<Record<string, unknown>>)[0]!;
+    expect(container.User).toBe("0");
+    const dropped = at(container, "LinuxParameters", "Capabilities", "Drop") as string[];
+    expect(dropped).toEqual(expect.arrayContaining(["NET_RAW", "MKNOD", "SETFCAP", "SETPCAP", "DAC_OVERRIDE", "SYS_CHROOT"]));
+    expect(at(container, "LinuxParameters", "Capabilities", "Add")).toBeUndefined();
+    expect(dropped).not.toEqual(expect.arrayContaining(["SETUID", "SETGID", "CHOWN", "KILL"]));
   });
 });

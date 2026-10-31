@@ -121,3 +121,20 @@ describe("the citations of a task, as a viewer sees them", () => {
     expect(views[0]).not.toHaveProperty("quote");
   });
 });
+
+describe("review M6: the result store", () => {
+  it("does not serve an item past its expiry, even while the table has not deleted it yet", async () => {
+    const table = new FakeDynamoDb();
+    let clock = NOW;
+    const store = dynamoResultStore({ documentClient: table, tableName: "state", now: () => clock });
+    await store.keep(keepInput());
+    expect(await store.list(ORG, "task1")).toHaveLength(1);
+    clock = NOW + (RESULT_RETENTION_SECONDS + 1) * 1_000;
+    expect(await store.list(ORG, "task1")).toEqual([]);
+  });
+  it("strips hidden characters from what it keeps, so a quote shown to a person holds none", async () => {
+    const store = dynamoResultStore({ documentClient: new FakeDynamoDb(), tableName: "state", now: () => NOW });
+    await store.keep(keepInput({ text: "visible\u202E\u200B text\u{E0041}" }));
+    expect((await store.list(ORG, "task1"))[0]!.text).toBe("visible text");
+  });
+});

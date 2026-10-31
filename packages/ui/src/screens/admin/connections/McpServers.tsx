@@ -36,6 +36,7 @@ export function McpServers() {
   {waiting ? <div role="group" aria-label="Tested server">
    <h3>Rovara tested <VisibleText text={waiting.label} /></h3>
    <p>It answered, and it offers these tools. Allow it only if this is the server you meant.</p>
+   {waiting.transport.kind === "stdio" && <p>Package fingerprint (the tarball Rovara installed): <code><VisibleText text={waiting.transport.spec.integrity} /></code>. From now on Rovara installs only a package with this fingerprint.</p>}
    <Offers server={waiting} />
    <Button variant="primary" busy={busy} onClick={() => { void run(async () => { await api.approveServer(waiting.serverId);setWaiting(undefined);setLabel("");setAddress("");setName("");setVersion("");setArgs(""); }); }}>Allow this server</Button>
    <Button busy={busy} onClick={() => { void run(async () => { await api.removeServer(waiting.serverId);setWaiting(undefined); }); }}>Cancel</Button>
@@ -46,8 +47,8 @@ export function McpServers() {
     <label><input type="radio" name="mcp-kind" checked={kind === "http"} onChange={() => setKind("http")} /> It has an address</label>{" "}
     <label><input type="radio" name="mcp-kind" checked={kind === "stdio"} onChange={() => setKind("stdio")} /> Rovara runs a package for it</label>
    </fieldset>
-   {kind === "http" ? <TextField label="Address" hint="Starts with https:// and uses the server's host name, for example https://sim.corp.example/mcp" maxLength={2048} value={address} onChange={event => setAddress(event.target.value)} required />
-    : <><TextField label="Package" hint="An npm package name, for example @acme/sim-mcp" maxLength={120} value={name} onChange={event => setName(event.target.value)} required /><TextField label="Exact version" hint="For example 1.4.2. A range or a tag such as latest is not accepted." maxLength={50} value={version} onChange={event => setVersion(event.target.value)} required /><TextField label="Arguments" hint="Optional, separated by spaces" maxLength={200} value={args} onChange={event => setArgs(event.target.value)} /></>}
+   {kind === "http" ? <TextField label="Address" hint="Starts with https:// and uses the server's host name, in the form https://<host name>/<path>" maxLength={2048} value={address} onChange={event => setAddress(event.target.value)} required />
+    : <><TextField label="Package" hint="An npm package name, for example @example/tracker-mcp" maxLength={120} value={name} onChange={event => setName(event.target.value)} required /><TextField label="Exact version" hint="For example 1.4.2. A range or a tag such as latest is not accepted." maxLength={50} value={version} onChange={event => setVersion(event.target.value)} required /><TextField label="Arguments" hint="Optional, separated by spaces" maxLength={200} value={args} onChange={event => setArgs(event.target.value)} /></>}
    <Button type="submit" variant="primary" busy={busy}>Test it</Button>
   </form>}
   <h3>Your servers</h3>

@@ -83,13 +83,13 @@ describe("a registered http server", () => {
 });
 
 describe("a registered stdio server", () => {
-  const stdio = (): McpServerEntry => ({ ...http(), transport: { kind: "stdio", spec: { registry: "npm", name: "pkg", version: "1.0.0", args: [] } } });
+  const stdio = (): McpServerEntry => ({ ...http(), transport: { kind: "stdio", spec: { registry: "npm", name: "pkg", version: "1.0.0", args: [], integrity: `sha512-${"A".repeat(86)}==` } } });
   it("is reached through the MCP host with the host's token, and no address is on its site", async () => {
-    const w = world({ entries: [stdio()], mcpHost: { url: "http://mcp-host.internal:8080/", token: "h".repeat(40) } });
+    const w = world({ entries: [stdio()], mcpHost: { url: "https://mcp-host.internal:8080/", token: "h".repeat(40) } });
     await w.seed();
     const session = await w.port.open(ORG, { kind: "registered_server", serverId: "mcpsim000001" }, signal(), ["x"]);
     expect(w.connects[0]).toMatchObject({ token: "h".repeat(40) });
-    expect(String((w.connects[0]!.endpoint as URL).href)).toBe("http://mcp-host.internal:8080/servers/mcpsim000001/mcp");
+    expect(String((w.connects[0]!.endpoint as URL).href)).toBe("https://mcp-host.internal:8080/servers/mcpsim000001/mcp");
     expect(session.hosts).toEqual([]);
     expect(w.guards).toEqual([]);
   });
@@ -159,7 +159,25 @@ describe("review I2: the default private guard uses the install's ranges", () =>
     const table = new FakeDynamoDb();
     const store = dynamoMcpServerStore({ documentClient: table, tableName: "state" });
     await store.create(ORG, http());
-    const port = gatewayServerPort({ edition: "enterprise", connections: connection(), servers: store, connect: (async () => { throw new Error("must not connect"); }) as never });
+    const port = gatewayServerPort({ edition: "enterprise", connections: connection(), servers: store, connect: (async () => { throw new Error("must not connect"); }) });
     await expect(port.open(ORG, { kind: "registered_server", serverId: "mcpsim000001" }, signal(), ["x"])).rejects.toBeDefined();
+  });
+});
+
+describe("review I6: the MCP host is reached over https", () => {
+  const stdioEntry = (): McpServerEntry => ({ ...http(), transport: { kind: "stdio", spec: { registry: "npm", name: "pkg", version: "1.0.0", args: [], integrity: `sha512-${"A".repeat(86)}==` } } });
+  it("refuses an http:// host address, except this machine's own loopback", async () => {
+    const { assertSecureHostUrl } = await import("../../../packages/broker/src/context-sources/server-port.js");
+    expect(() => assertSecureHostUrl("http://mcp-host.internal:8080")).toThrow(/https/u);
+    expect(() => assertSecureHostUrl("http://10.0.0.5:8080")).toThrow(/https/u);
+    expect(() => assertSecureHostUrl("not a url")).toThrow();
+    expect(assertSecureHostUrl("https://mcp-host.internal").protocol).toBe("https:");
+    expect(assertSecureHostUrl("http://127.0.0.1:9999").hostname).toBe("127.0.0.1");
+  });
+  it("never sends the host's token to an http:// address", async () => {
+    const w = world({ entries: [stdioEntry()], mcpHost: { url: "http://mcp-host.internal:8080/", token: "h".repeat(40) } });
+    await w.seed();
+    await expect(w.port.open(ORG, { kind: "registered_server", serverId: "mcpsim000001" }, signal(), ["x"])).rejects.toBeDefined();
+    expect(w.connects).toEqual([]);
   });
 });

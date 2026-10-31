@@ -81,7 +81,7 @@ export function ContextSources({ project }: { project: string }) {
     </div>)}
    </fieldset>}
    <TextField label="Name" maxLength={60} value={label} onChange={event => setLabel(event.target.value)} />
-   <TextField label="Short id" hint="Lower-case letters and digits, 2 to 16 characters, for example sim" maxLength={16} value={sourceId} onChange={event => setSourceId(event.target.value)} />
+   <TextField label="Short id" hint="Lower-case letters and digits, 2 to 16 characters, for example tracker" maxLength={16} value={sourceId} onChange={event => setSourceId(event.target.value)} />
    <fieldset><legend>Where it may be used</legend>{STAGES.map(([value, word]) => <label key={value}><input type="checkbox" checked={stages.includes(value)} onChange={event => setStages(current => event.target.checked ? [...current, value] : current.filter(entry => entry !== value))} /> {word}</label>)}<p>Build is not offered. Rovara never reads these sources while it writes code.</p></fieldset>
    <label htmlFor="source-quotes">Who may see quotes</label>
    <select id="source-quotes" className="rv-input" value={quotes} onChange={event => setQuotes(event.target.value as "citations_only" | "project_members")}>{QUOTES.map(([value, word]) => <option key={value} value={value}>{word}</option>)}</select>

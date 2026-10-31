@@ -12,7 +12,7 @@
 // expiry, because a 16 KiB-per-result, task-lifetime store needs no new bucket. The `ResultStore` port is the seam if a bucket is wanted later.
 import { createHash } from "node:crypto";
 import { DeleteCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, isQuoteForbiddenSystem, orgScoped, type Citation, type ContextSource, type OrgId, type QuoteVisibility } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, isQuoteForbiddenSystem, stripHiddenCharacters, orgScoped, type Citation, type ContextSource, type OrgId, type QuoteVisibility } from "@agentx/contracts";
 import { registerTaskEndHandler } from "../agents/task-end.js";
 import type { ResultKeeper } from "./routes.js";
 
@@ -43,7 +43,7 @@ const partition = (orgId: OrgId, taskId: string): string => orgScoped(orgId, `CT
 const sortKey = (sourceId: string, itemRef: string, digest: string): string => `RES#${sourceId}#${createHash("sha256").update(itemRef).digest("hex").slice(0, 16)}#${digest.slice(0, 12)}`;
 
 export function dynamoResultStore(deps: { documentClient: DocumentClient; tableName: string; now: () => number }): ResultStore {
-  const list = async (orgId: OrgId, taskId: string): Promise<Array<KeptResult & { sk: string }>> => {
+  const list = async (orgId: OrgId, taskId: string, includeExpired = false): Promise<Array<KeptResult & { sk: string }>> => {
     const items: Array<KeptResult & { sk: string }> = [];
     let cursor: Record<string, unknown> | undefined;
     // A task keeps at most a few hundred items (the stage allowance bounds it), so a handful of pages is the bound.
@@ -53,6 +53,9 @@ export function dynamoResultStore(deps: { documentClient: DocumentClient; tableN
         ExpressionAttributeValues: { ":pk": partition(orgId, taskId), ":prefix": "RES#" }, ...(cursor === undefined ? {} : { ExclusiveStartKey: cursor }),
       }))) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
       for (const item of found.Items ?? []) {
+        // The table deletes an expired item some time after its expiry; until then it is still not served.
+        const expires = item[INDEX_EXPIRY_ATTRIBUTE];
+        if (!includeExpired && typeof expires === "number" && expires * 1_000 <= deps.now()) continue;
         if (typeof item.sourceId === "string" && typeof item.itemRef === "string" && typeof item.text === "string" && typeof item.sk === "string") {
           items.push({ sk: item.sk, sourceId: item.sourceId, itemRef: item.itemRef, digest: String(item.digest), text: item.text, retention: item.retention === "live_only" ? "live_only" : "team_record", fetchedAt: String(item.fetchedAt), operationId: String(item.operationId) });
         }
@@ -66,7 +69,7 @@ export function dynamoResultStore(deps: { documentClient: DocumentClient; tableN
     async keep(input) {
       // Nothing is kept that nobody may read: a source that shows no quotes, or a system whose terms forbid keeping its text, whatever the source's setting says.
       if (input.quotes === "citations_only" || isQuoteForbiddenSystem(input.system)) return;
-      const text = input.text.slice(0, KEPT_MAX_CHARS);
+      const text = stripHiddenCharacters(input.text).text.slice(0, KEPT_MAX_CHARS);
       await deps.documentClient.send(new PutCommand({
         TableName: deps.tableName,
         Item: {
@@ -81,7 +84,7 @@ export function dynamoResultStore(deps: { documentClient: DocumentClient; tableN
     },
     async deleteForTask(orgId, taskId, options) {
       let deleted = 0;
-      for (const item of await list(orgId, taskId)) {
+      for (const item of await list(orgId, taskId, true)) {
         if (options.onlyLiveOnly && item.retention !== "live_only") continue;
         await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: partition(orgId, taskId), sk: item.sk } }));
         deleted += 1;

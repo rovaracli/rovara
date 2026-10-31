@@ -40,12 +40,25 @@ export const McpStdioSpecSchema = z.object({
   registry: z.literal("npm"),
   name: z.string().regex(NPM_NAME),
   version: z.string().regex(EXACT_VERSION),
-  /** The `dist.integrity` the registry publishes for that version (`sha512-…`); the host refuses a package that does not match. */
-  integrity: z.string().regex(/^sha512-[A-Za-z0-9+/=]{20,200}$/).optional(),
+  /**
+   * The integrity (`sha512-…`) of the package's TARBALL, which the host computes from the bytes it downloads and the admin sees before approving. It is required in a stored
+   * entry: the host installs only a tarball that hashes to it, so a registry that serves different bytes later is refused.
+   */
+  integrity: z.string().regex(/^sha512-[A-Za-z0-9+/=]{20,200}$/),
   /** Arguments after the package's own command. No shell is used; each is one plain word. */
   args: z.array(z.string().regex(ARGUMENT).refine((value) => !value.split("/").includes(".."), "no ..")).max(8),
 }).strict();
 export type McpStdioSpec = z.infer<typeof McpStdioSpecSchema>;
+
+/** What an admin types: the integrity is optional here (the host computes it and shows it); if they give one, the host's must equal it. */
+export const McpStdioProposalSchema = McpStdioSpecSchema.extend({ integrity: McpStdioSpecSchema.shape.integrity.optional() }).strict();
+export type McpStdioProposal = z.infer<typeof McpStdioProposalSchema>;
+
+export const McpServerProposalTransportSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("http"), address: McpHttpAddressSchema }).strict(),
+  z.object({ kind: z.literal("stdio"), spec: McpStdioProposalSchema }).strict(),
+]);
+export type McpServerProposalTransport = z.infer<typeof McpServerProposalTransportSchema>;
 
 export const McpServerTransportSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("http"), address: McpHttpAddressSchema }).strict(),

@@ -163,3 +163,15 @@ describe("the pending change", () => {
     expect(CONNECTION).toBeTruthy();
   });
 });
+
+describe("review M8: second-admin reasons are those of now", () => {
+  it("makes the proposer unable to confirm a change that needs a second admin under today's rules, though it did not when proposed", async () => {
+    const env = environment();
+    const { deps } = world(env);
+    const change = await proposeSourceChange(deps, admin("dev1"), "proj", { kind: "set", source: source({ sendCodeSnippets: true }) });
+    expect(change.secondAdminReasons).toEqual([]);
+    env.edition = "public";
+    await expect(confirmSourceChange(deps, admin("dev1"), "proj", change.changeId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect((await confirmSourceChange(deps, admin("dev2"), "proj", change.changeId)).sources).toHaveLength(1);
+  });
+});

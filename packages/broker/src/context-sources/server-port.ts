@@ -19,6 +19,17 @@ export interface ConnectionLookup {
   token(orgId: OrgId, connectionId: string): Promise<string | undefined>;
 }
 
+/**
+ * Review I6: the host's bearer token travels only over TLS. An http:// host address is refused, except on this machine's own loopback (a test host never leaves it).
+ */
+export function assertSecureHostUrl(value: string): URL {
+  let url: URL;
+  try { url = new URL(value); } catch { throw agentXError("CONFIG_INVALID", "the MCP host address is not a web address"); }
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) throw agentXError("CONFIG_INVALID", "the MCP host must be reached over https");
+  return url;
+}
+
 export interface McpHostEndpoint {
   /** The private URL of the MCP host service (https when the install gave it a certificate). */
   url: string;
@@ -74,7 +85,7 @@ async function targetOf(deps: ServerPortDependencies, orgId: OrgId, server: Cont
   if (deps.mcpHost === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the MCP host is not set up in this install");
   // The host address is the operator's, not a person's: it is not an SSRF input and is called with the host's own token. A stdio server has no site of its own, so
   // no address argument is ever on its host.
-  return { endpoint: new URL(`${deps.mcpHost.url.replace(/\/$/u, "")}/servers/${server.serverId}/mcp`), token: deps.mcpHost.token, auth: undefined, fetchImplementation: fetch, hosts: [] };
+  return { endpoint: new URL(`${assertSecureHostUrl(deps.mcpHost.url).href.replace(/\/$/u, "")}/servers/${server.serverId}/mcp`), token: deps.mcpHost.token, auth: undefined, fetchImplementation: fetch, hosts: [] };
 }
 
 const toDiscovered = (tools: McpConnection["tools"]): DiscoveredTool[] => tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema, annotations: tool.annotations }));
@@ -135,7 +146,7 @@ export function sourceEnvironment(deps: ServerPortDependencies & { port: Context
 
 export interface HostProbeClient {
   /** Asks the MCP host to start a package for a moment and list its tools. Throws McpProbeError. */
-  probe(spec: Parameters<McpProber["stdio"]>[0]): Promise<DiscoveredTool[]>;
+  probe(spec: Parameters<McpProber["stdio"]>[0]): Promise<{ tools: DiscoveredTool[]; integrity: string }>;
 }
 
 /** Maps what went wrong while testing an address to one of the fixed codes. The error's own text is never kept. */
@@ -178,6 +189,7 @@ export function gatewayProber(deps: { host?: HostProbeClient | undefined; privat
 export function hostProbeClient(host: McpHostEndpoint, fetchImplementation: typeof fetch = fetch): HostProbeClient {
   return {
     async probe(spec) {
+      assertSecureHostUrl(host.url);
       let response: Response;
       try {
         response = await fetchImplementation(`${host.url.replace(/\/$/u, "")}/probe`, {
@@ -188,10 +200,11 @@ export function hostProbeClient(host: McpHostEndpoint, fetchImplementation: type
       }
       if (!response.ok) throw new McpProbeError(response.status === 401 ? "host_unavailable" : "host_refused");
       const body = await response.json().catch(() => undefined) as { tools?: unknown; error?: unknown } | undefined;
-      if (body === undefined || !Array.isArray(body.tools)) throw new McpProbeError("host_refused");
-      return (body.tools as Array<{ name?: unknown; description?: unknown; inputSchema?: unknown; annotations?: unknown }>)
+      if (body === undefined || !Array.isArray(body.tools) || typeof (body as { integrity?: unknown }).integrity !== "string") throw new McpProbeError("host_refused");
+      const tools = (body.tools as Array<{ name?: unknown; description?: unknown; inputSchema?: unknown; annotations?: unknown }>)
         .filter((tool): tool is { name: string; description?: string; inputSchema: Record<string, unknown>; annotations?: DiscoveredTool["annotations"] } => typeof tool.name === "string" && typeof tool.inputSchema === "object" && tool.inputSchema !== null)
         .slice(0, 200).map((tool) => ({ name: tool.name, description: typeof tool.description === "string" ? tool.description : undefined, inputSchema: tool.inputSchema, annotations: tool.annotations }));
+      return { tools, integrity: (body as { integrity: string }).integrity };
     },
   };
 }

@@ -13,8 +13,12 @@ import { NOW, ORG } from "../unit/context-sources/fixtures.js";
 
 const FIXTURE = join(import.meta.dirname, "..", "support", "stdio-mcp-fixture.mjs");
 const TOKEN = "t".repeat(40);
-const spec: McpStdioSpec = { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [] };
-const launcher = (verify?: HostLauncher["verify"]): HostLauncher => ({ command: () => ({ command: process.execPath, args: [FIXTURE] }), ...(verify === undefined ? {} : { verify }) });
+const INTEGRITY = `sha512-${"A".repeat(86)}==`;
+const spec: McpStdioSpec = { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [], integrity: INTEGRITY };
+/** Runs the fixture in place of an installed package; like the real launcher it refuses a package whose tarball is not the pinned one. */
+const launcher = (actual = INTEGRITY, counter?: { prepared: number }): HostLauncher => ({
+  prepare: async (wanted) => { if (counter) counter.prepared += 1; if (wanted.integrity !== undefined && wanted.integrity !== actual) throw new Error("integrity mismatch"); return { command: process.execPath, args: [FIXTURE], integrity: actual }; },
+});
 
 const open: Array<{ server: Server; close: () => Promise<void> }> = [];
 afterEach(async () => { await Promise.all(open.splice(0).map(async (entry) => { await entry.close(); await new Promise((resolve) => entry.server.close(resolve)); })); });
@@ -23,7 +27,7 @@ async function startHost(options: { approved?: string[]; launcher?: HostLauncher
   process.env.MCP_HOST_SECRET_FOR_TEST = "must-not-reach-a-hosted-server";
   const approved = new Set(options.approved ?? ["mcpsim000001"]);
   const host = createMcpHost({
-    token: TOKEN, launcher: options.launcher ?? launcher(), registry: { approvedStdio: async (id) => (approved.has(id) ? spec : undefined) },
+    token: TOKEN, isolation: "none", launcher: options.launcher ?? launcher(), registry: { approvedStdio: async (id) => (approved.has(id) ? spec : undefined) },
     ...(options.max === undefined ? {} : { maxProcesses: options.max }), ...(options.idleMs === undefined ? {} : { idleMs: options.idleMs }), probeTimeoutMs: 20_000,
   });
   const server = createServer((req, res) => { void host.handle(req, res); });
@@ -100,7 +104,7 @@ describe("the MCP host", () => {
   }, 60_000);
 
   it("fails closed when the registry cannot be read", async () => {
-    const host = createMcpHost({ token: TOKEN, launcher: launcher(), registry: { approvedStdio: async () => { throw new Error("table down"); } } });
+    const host = createMcpHost({ token: TOKEN, isolation: "none", launcher: launcher(), registry: { approvedStdio: async () => { throw new Error("table down"); } } });
     const server = createServer((req, res) => { void host.handle(req, res); });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     open.push({ server, close: () => host.close() });
@@ -121,14 +125,20 @@ describe("the MCP host", () => {
   it("probes a package for the admin before it is approved, and shows its tools", async () => {
     const { url } = await startHost({ approved: [] });
     const prober = gatewayProber({ host: hostProbeClient({ url, token: TOKEN }) });
-    const tools = await prober.stdio(spec);
-    expect(tools.map((tool) => tool.name).sort()).toEqual(["echo", "env_keys"]);
+    const probed = await prober.stdio(spec);
+    expect(probed.tools.map((tool) => tool.name).sort()).toEqual(["echo", "env_keys"]);
+    // the fingerprint shown to the admin is the one the host computed from what it installed
+    expect(probed.integrity).toBe(INTEGRITY);
+    // with no integrity typed, the host's own is returned, to be shown and pinned
+    expect((await prober.stdio({ ...spec, integrity: undefined })).integrity).toBe(INTEGRITY);
   }, 60_000);
 
-  it("refuses to probe a package whose integrity does not match, and says only that the host refused", async () => {
-    const { url } = await startHost({ approved: [], launcher: launcher(async () => false) });
+  it("refuses to probe or serve a package whose tarball is not the pinned one, and says only that the host refused", async () => {
+    const { url } = await startHost({ approved: ["mcpsim000001"], launcher: launcher(`sha512-${"B".repeat(86)}==`) });
     const prober = gatewayProber({ host: hostProbeClient({ url, token: TOKEN }) });
-    await expect(prober.stdio({ ...spec, integrity: `sha512-${"A".repeat(40)}` })).rejects.toMatchObject({ code: "host_refused" });
+    await expect(prober.stdio(spec)).rejects.toMatchObject({ code: "host_refused" });
+    const port = await portFor(url, [entry("mcpsim000001")]);
+    await expect(port.open(ORG, stdioServer("mcpsim000001"), AbortSignal.timeout(20_000), ["echo"])).rejects.toBeDefined();
   }, 30_000);
 
   it("says the host is unavailable when there is none, or its token is wrong", async () => {
@@ -142,4 +152,107 @@ describe("the MCP host", () => {
     const port = await portFor(url, [entry("mcpsim000001")], "public");
     await expect(port.open(ORG, stdioServer("mcpsim000001"), AbortSignal.timeout(5_000), ["echo"])).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
+});
+
+describe("review I5: one process per server, however many first requests arrive together", () => {
+  it("starts one, tracks one, and stops it", async () => {
+    const counter = { prepared: 0 };
+    const { host, url } = await startHost({ launcher: launcher(INTEGRITY, counter), max: 1 });
+    const port = await portFor(url, [entry("mcpsim000001")]);
+    const lists = await Promise.all([1, 2, 3, 4].map(() => port.listAll!(ORG, stdioServer("mcpsim000001"), AbortSignal.timeout(20_000))));
+    expect(lists.every((tools) => tools.length === 2)).toBe(true);
+    expect(host.spawned()).toBe(1);
+    expect(host.running()).toBe(1);
+    // the package was installed once for all of them
+    expect(counter.prepared).toBe(1);
+  }, 60_000);
+  it("never leaves a child behind when the host is closed while one is still starting", async () => {
+    const { host, url } = await startHost();
+    const port = await portFor(url, [entry("mcpsim000001")]);
+    const pending = port.listAll!(ORG, stdioServer("mcpsim000001"), AbortSignal.timeout(20_000)).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await host.close();
+    await pending;
+    expect(host.running()).toBe(0);
+  }, 60_000);
+  it("does not install the package again when a server restarts", async () => {
+    const counter = { prepared: 0 };
+    const { url, host } = await startHost({ launcher: launcher(INTEGRITY, counter), idleMs: 1_000 });
+    const port = await portFor(url, [entry("mcpsim000001")]);
+    for (let round = 0; round < 2; round += 1) {
+      const session = await port.open(ORG, stdioServer("mcpsim000001"), AbortSignal.timeout(20_000), ["echo"]);
+      await session.close();
+      if (round === 0) await new Promise((resolve) => setTimeout(resolve, 2_500));
+    }
+    expect(host.spawned()).toBe(2);
+    expect(counter.prepared).toBe(1);
+  }, 60_000);
+});
+
+describe("review I4: hosted servers run under their own uid", () => {
+  /** A host that believes it is root and records how each child was started; the child itself runs as the test's own user, with the uid dropped from the options. */
+  async function isolatedHost(options: { uid?: number; max?: number } = {}) {
+    const spawned: Array<{ command: string; args: string[]; uid?: number; gid?: number; env: Record<string, string>; cwd: string; shell?: boolean }> = [];
+    const owned: Array<{ path: string; uid: number; gid: number }> = [];
+    const { spawn } = await import("node:child_process");
+    process.env.MCP_HOST_SECRET_FOR_TEST = "must-not-reach-a-hosted-server";
+    const host = createMcpHost({
+      token: TOKEN, launcher: launcher(), registry: { approvedStdio: async () => spec }, isolation: { firstUid: 20_000, count: 2, gid: 20_000 }, probeTimeoutMs: 20_000, ...(options.max === undefined ? {} : { maxProcesses: options.max }),
+      internals: {
+        getuid: () => options.uid ?? 0,
+        chown: async (path, uid, gid) => { owned.push({ path, uid, gid }); },
+        spawn: ((command: string, args: string[], spawnOptions: Record<string, unknown>) => {
+          spawned.push({ command, args, ...(spawnOptions as object) } as never);
+          const { uid: _uid, gid: _gid, ...rest } = spawnOptions;
+          void _uid; void _gid;
+          return spawn(command, args, rest as never);
+        }) as never,
+      },
+    });
+    const server = createServer((req, res) => { void host.handle(req, res); });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    open.push({ server, close: () => host.close() });
+    return { host, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, spawned, owned };
+  }
+
+  it("starts each server under a different uid of the pool, in a home it owns, with the limits and a scrubbed environment", async () => {
+    const { url, spawned, owned } = await isolatedHost();
+    const port = await portFor(url, [entry("mcpone0000001"), entry("mcptwo0000001")]);
+    const a = await port.open(ORG, stdioServer("mcpone0000001"), AbortSignal.timeout(20_000), ["env_keys"]);
+    const b = await port.open(ORG, stdioServer("mcptwo0000001"), AbortSignal.timeout(20_000), ["env_keys"]);
+    try {
+      expect(spawned.map((call) => call.uid).sort()).toEqual([20_000, 20_001]);
+      expect(spawned.every((call) => call.gid === 20_000 && call.shell === false)).toBe(true);
+      expect(owned.map((entryOwned) => entryOwned.uid).sort()).toEqual([20_000, 20_001]);
+      for (const call of spawned) {
+        expect(call.command).toBe("/bin/sh");
+        expect(call.args[1]).toContain("ulimit -n 256");
+        expect(call.cwd).toBe(call.env.HOME);
+        expect(Object.keys(call.env)).not.toContain("MCP_HOST_SECRET_FOR_TEST");
+        expect(owned.some((entryOwned) => entryOwned.path === call.cwd)).toBe(true);
+      }
+      const { statSync } = await import("node:fs");
+      expect(statSync(spawned[0]!.cwd).mode & 0o777).toBe(0o700);
+    } finally {
+      await a.close(); await b.close();
+    }
+  }, 60_000);
+
+  it("gives a uid back when its server stops, so the pool does not run dry", async () => {
+    const { url, spawned } = await isolatedHost({ max: 1 });
+    const port = await portFor(url, [entry("mcpone0000001"), entry("mcptwo0000001"), entry("mcpthr0000001")]);
+    for (const id of ["mcpone0000001", "mcptwo0000001", "mcpthr0000001"]) {
+      const session = await port.open(ORG, stdioServer(id), AbortSignal.timeout(20_000), ["echo"]);
+      await session.close();
+    }
+    expect(spawned.length).toBe(3);
+    expect(spawned.every((call) => call.uid !== undefined && call.uid >= 20_000 && call.uid <= 20_001)).toBe(true);
+  }, 60_000);
+
+  it("refuses to start a server at all when it cannot change uid", async () => {
+    const { url, spawned } = await isolatedHost({ uid: 1000 });
+    const port = await portFor(url, [entry("mcpone0000001")]);
+    await expect(port.open(ORG, stdioServer("mcpone0000001"), AbortSignal.timeout(20_000), ["echo"])).rejects.toBeDefined();
+    expect(spawned).toEqual([]);
+  }, 30_000);
 });

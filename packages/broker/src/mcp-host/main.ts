@@ -4,7 +4,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createServer } from "node:http";
 import { OrgIdSchema } from "@agentx/contracts";
-import { createMcpHost, npxLauncher, type HostRegistry } from "@agentx/gateway";
+import { createMcpHost, npmLauncher, type HostRegistry } from "@agentx/gateway";
 import { dynamoMcpServerStore } from "../context-sources/mcp-servers.js";
 
 function required(name: string): string {
@@ -26,10 +26,17 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
 
 export function start(): void {
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+  const token = required("MCP_HOST_TOKEN");
+  // The token is held in this process only. Hosted servers run under other uids (review I4) and so cannot read this process's memory or /proc entries, and the variable is
+  // removed from the environment this process hands on. (A same-uid process could still read the initial environment from /proc, which is why they never share the uid.)
+  delete process.env.MCP_HOST_TOKEN;
+  // Without the ability to change uid the host would run servers beside its own secrets; it refuses to start rather than do that.
+  if (process.getuid?.() !== 0 && process.env.MCP_HOST_ALLOW_SAME_UID !== "1") throw new Error("the MCP host must start as root so that it can run each server under its own uid");
   const host = createMcpHost({
-    token: required("MCP_HOST_TOKEN"),
+    token,
+    isolation: process.env.MCP_HOST_ALLOW_SAME_UID === "1" ? "none" : { firstUid: 20_000, count: 32, gid: 20_000 },
     registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: required("STATE_TABLE_NAME") }), required("ROVARA_ORG_ID")),
-    launcher: npxLauncher(),
+    launcher: npmLauncher(),
     log: (event, fields) => console.log(JSON.stringify({ component: "mcp-host", event, ...fields })),
   });
   const server = createServer((req, res) => { void host.handle(req, res); });

@@ -84,6 +84,34 @@ describe("a stage with sources", () => {
   });
 });
 
+describe("review I7: a Build session that reopens a conversation whose stage died before it stubbed", () => {
+  it("stubs the transcript first, so Build never reads a source's text", async () => {
+    const world = await session("PLAN", [
+      fauxAssistantMessage([fauxToolCall("src_sim_search_tickets", { query: "x" }, { id: "t1" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("Plan."),
+    ]);
+    const first = await createWorkspacePiSession({ rootPath: world.rootPath, model: FAUX_MODEL, workflowMode: "PLAN", localFileTools: true, contextTools: world.contextTools }, world.adapter);
+    const sessionFile = first.sessionFile;
+    try { await first.prompt("go"); } finally { first.dispose(); }
+    // The worker was killed before the stub was written: put the raw text back in the file.
+    const { readFile, writeFile } = await import("node:fs/promises");
+    const stubbed = await readFile(sessionFile, "utf8");
+    expect(stubbed).not.toContain(SECRET);
+    await writeFile(sessionFile, stubbed.replace("[SIM P123456 · 0.0 KB · see Sources]", FRAMED.replace(/"/gu, '\\"').replace(/\n/gu, "\\n")));
+    expect(await readFile(sessionFile, "utf8")).toContain(SECRET);
+    const { openRegisteredWorkspacePiSession } = await import("../../packages/worker/src/pi-session.js");
+    const { modelRuntime, faux } = await fauxModelRuntime();
+    const seen: string[] = [];
+    faux.setResponses([(context) => { seen.push(JSON.stringify(context.messages)); return fauxAssistantMessage("Built."); }]);
+    const adapter = createDefaultPiSessionAdapter({ modelRuntime: async () => ({ runtime: modelRuntime, model: FAUX_MODEL }) });
+    const build = await openRegisteredWorkspacePiSession({ rootPath: world.rootPath, model: FAUX_MODEL, workflowMode: "IMPLEMENT", conversationId: "conv", sessionFile, localFileTools: true }, adapter);
+    try { await build.prompt("build"); } finally { build.dispose(); }
+    expect(seen[0]).not.toContain(SECRET);
+    expect(seen[0]).toContain("see Sources");
+    expect(await readFile(sessionFile, "utf8")).not.toContain(SECRET);
+  }, 60_000);
+});
+
 describe("Build", () => {
   it("never gets the source tools", async () => {
     const world = await session("IMPLEMENT", [fauxAssistantMessage("Built.")]);
