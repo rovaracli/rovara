@@ -21,7 +21,7 @@ import { startFixtureRegistry, type FixtureRegistry } from "../support/fixture-n
 import { NOW, ORG } from "../unit/context-sources/fixtures.js";
 
 const FIXTURE = join(import.meta.dirname, "..", "support", "stdio-mcp-fixture.mjs");
-const TOKEN = "t".repeat(40);
+const TOKEN = "t".repeat(48);
 const NAME = "@acme/sim-mcp";
 const proposal: McpStdioProposal = { registry: "npm", name: NAME, version: "1.4.2", args: [], destinations: [], secretEnv: ["JIRA_TOKEN"], size: { cpu: 256, memoryMiB: 512 } };
 
