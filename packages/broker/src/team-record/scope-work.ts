@@ -148,7 +148,8 @@ async function rewriteAudience(table: TeamRecordTable, key: { pk: string; sk: st
 
 async function eachInScope(dependencies: WorkDependencies, orgId: OrgId, scope: string, budget: WorkBudget, visit: (item: Item, key: { pk: string; sk: string }) => Promise<boolean>): Promise<WorkResult> {
   const expired = clock(dependencies).deadline(budget);
-  const found = await byScope(dependencies.table, orgId, scope, budget.maxItems);
+  // An audience or a member list belongs to ONE place: not the places under it.
+  const found = await byScope(dependencies.table, orgId, scope, budget.maxItems, { exact: true });
   let changed = 0;
   let complete = !found.truncated;
   for (const item of found.items) {

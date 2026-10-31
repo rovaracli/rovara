@@ -185,7 +185,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
     ...(draft.actor === undefined ? [] : [draft.actor.trust]),
     ...(draft.pieceTrusts ?? []),
     // Quoted or forwarded words, or attachments, keep their own author's trust; the tap says whose when it knows, otherwise they are an outsider's.
-    ...(quoted ? (draft.quotedTrusts ?? ["outsider" as const]) : []),
+    ...(quoted ? (draft.quotedTrusts !== undefined && draft.quotedTrusts.length > 0 ? draft.quotedTrusts : ["outsider" as const]) : []),
     ...(draft.actor === undefined && draft.source !== "rovara" && draft.text !== undefined ? ["system" as const] : []),
   );
   // A late edit by someone else never raises what an item was: the lowest trust any version had is kept (the ingest lane's `RecordHistoryPort`).
@@ -259,9 +259,10 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   const moved = await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt, trust, row: recordEventKey(orgId, project, occurredAt, id), indexExpiresAt: plan.indexExpiresAt });
   if (moved.status === "stale") return { status: "duplicate" };
 
-  // 7. The idempotent write; then the older version it replaces (text, vector and notes) is hidden and queued for removal.
+  // 7. The idempotent write; then the older version it replaces (text, vector and notes) is hidden and queued for removal. If this version's row was already there
+  // (a redelivery of a version that is now the head again), nothing is replaced: there is nothing newer to make way for.
   const result = await putRecordEvent(deps.table, event);
-  const owed = moved.status === "advanced" ? (moved.previous === undefined ? undefined : [moved.previous.row, moved.previous.supersedes?.row]) : moved.owed === undefined ? undefined : [moved.owed.row];
+  const owed = moved.status === "advanced" ? (moved.previous === undefined || result === "duplicate" ? undefined : [moved.previous.row, moved.previous.supersedes?.row]) : moved.owed === undefined ? undefined : [moved.owed.row];
   if (owed !== undefined) {
     await supersedeItem({ table: deps.table, now }, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, rows: owed.flatMap((row) => (row === undefined || row.sk === recordEventKey(orgId, project, occurredAt, id).sk ? [] : [row])) });
   }

@@ -889,7 +889,7 @@ export function recordTextDueIndexValue(orgId: OrgId): string {
 /** GSI4 finds rows by the source identity of their actor (a person with no developer id). */
 export const TEAM_RECORD_GSI4 = { index: "gsi4", partition: "gsi4pk" } as const;
 /** GSI3 finds rows by their scope (a Slack channel, a repository): a deleted channel, a membership change, a channel that turned private. */
-export const TEAM_RECORD_GSI3 = { index: "gsi3", partition: "gsi3pk" } as const;
+export const TEAM_RECORD_GSI3 = { index: "gsi3", partition: "gsi3pk", sort: "gsi3sk" } as const;
 
 const TEAM_RECORD_COUNTER_WIDTH = 12;
 const teamRecordCounter = (value: number, what: string): string => {
@@ -991,10 +991,18 @@ export function erasedPersonKey(orgId: OrgId, who: { developerId: string } | { a
 export function workspaceVectorBucketKey(orgId: OrgId): OrgKey {
   return { pk: teamRecordPk(orgId), sk: "VECBUCKET" };
 }
-/** The GSI3 partition value of every row of one scope (`slack:T1/C9`, `github:repo/123`; a scope is already prefixed with its source). */
+/** The top of a place: `slack:T1/C9` -> `slack:T1`; a place with no `/` is its own top. */
+export function scopeRoot(scope: string): string {
+  const at = scope.indexOf("/");
+  return at <= 0 ? scope : scope.slice(0, at);
+}
+/**
+ * The GSI3 partition value of every row under one top place (`slack:T1`, `github:repo`; a scope is already prefixed with its source). The sort value is the row's own
+ * place, so one query finds a place AND every place under it (a tombstone of `slack:T1` reaches `slack:T1/C9`).
+ */
 export function recordScopeIndexValue(orgId: OrgId, scope: string): string {
   if (scope.length === 0) throw new Error("a scope can't be empty");
-  return `WS#${OrgIdSchema.parse(orgId)}#SCOPE#${createHash("sha256").update(scope).digest("hex")}`;
+  return `WS#${OrgIdSchema.parse(orgId)}#SCOPE#${createHash("sha256").update(scopeRoot(scope)).digest("hex")}`;
 }
 /** The GSI2 partition value of every row a person's actions made (person erase). */
 export function recordActorIndexValue(orgId: OrgId, developerId: string): string {

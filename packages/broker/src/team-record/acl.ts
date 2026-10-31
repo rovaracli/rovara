@@ -3,7 +3,7 @@
 // snapshot, a missing or failing live check and a row that does not parse all read as "not visible". The check runs in the broker on every hit; a vector or
 // query filter upstream is only a coarse cut.
 import { MAINTAINERS_GROUP, type AclSnapshot, type Audience, type RecordTombstone } from "@agentx/contracts";
-import { teamRecordSourceHash } from "@agentx/contracts";
+import { scopeAndAncestors, teamRecordSourceHash } from "@agentx/contracts";
 import type { LiveAclCheck, PendingHides, ReadAudience, RecordCaller } from "./types.js";
 
 /** How long a live re-check answer is reused, per caller and scope (design 4.4.2). */
@@ -92,8 +92,9 @@ export interface FilterResult<T> {
 /** Whether queued, unfinished work hides the row: its place, one of its places, its source item, or a source item its fact was distilled from. */
 export function hiddenByPending(row: Visible, pending: PendingHides | undefined): boolean {
   if (pending === undefined) return false;
+  // A place that is being deleted or changed covers every place under it (`slack:T1` covers `slack:T1/C9`).
   const places = [row.scope, ...(row.scopes ?? []), ...(row.audience.kind === "restricted" ? [row.audience.acl.scope] : [])];
-  if (places.some((place) => place !== undefined && pending.scopes.has(place))) return true;
+  if (places.some((place) => place !== undefined && scopeAndAncestors(place).some((above) => pending.scopes.has(above)))) return true;
   if (row.sourceRef !== undefined && pending.sourceHashes.has(teamRecordSourceHash(row.sourceRef.system, row.sourceRef.id))) return true;
   // A fact names its sources as `system:sourceId`, and a system may hold a colon (a host with a port, `mcp:x`), so every split point is tried: hiding too much is safe.
   for (const ref of row.derivedFrom ?? []) {

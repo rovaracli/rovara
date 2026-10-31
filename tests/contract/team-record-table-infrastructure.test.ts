@@ -35,7 +35,7 @@ describe("TeamRecord table", () => {
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({ IndexName: "gsi1", KeySchema: [{ AttributeName: "gsi1pk", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" } }),
         Match.objectLike({ IndexName: "gsi2", KeySchema: [{ AttributeName: "gsi2pk", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" } }),
-        Match.objectLike({ IndexName: "gsi3", KeySchema: [{ AttributeName: "gsi3pk", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" } }),
+        Match.objectLike({ IndexName: "gsi3", KeySchema: [{ AttributeName: "gsi3pk", KeyType: "HASH" }, { AttributeName: "gsi3sk", KeyType: "RANGE" }], Projection: { ProjectionType: "ALL" } }),
         Match.objectLike({ IndexName: "gsi4", KeySchema: [{ AttributeName: "gsi4pk", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" } }),
         Match.objectLike({ IndexName: "gsi5", KeySchema: [{ AttributeName: "gsi5pk", KeyType: "HASH" }, { AttributeName: "textDueAt", KeyType: "RANGE" }], Projection: { ProjectionType: "ALL" } }),
       ]),

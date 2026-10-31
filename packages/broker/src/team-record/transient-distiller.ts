@@ -10,6 +10,8 @@ import type { TransientDistillerPort } from "./sources/ports.js";
 import { distillBundle, type DistillDeps, type DistillItem } from "./distill.js";
 import { admitTransient, type IngestDependencies } from "./ingest.js";
 import { splitQuotedSpans } from "./quotes.js";
+import { trustRank } from "./taint.js";
+import type { TrustClass } from "./shared-types.js";
 import { supersedeItem } from "./scope-work.js";
 import { putDerivationLinks, putRecordFact } from "./store.js";
 
@@ -35,7 +37,12 @@ export function createTransientDistiller(deps: TransientDistillerDependencies): 
         await supersedeItem({ table: deps.ingest.table, ...(deps.ingest.now === undefined ? {} : { now: deps.ingest.now }) }, item.orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: item.supersedes.version, rows: item.supersedes.rows });
       }
       const itemId = derivedItemId(draft.sourceRef.system, draft.sourceRef.id);
-      const spans = splitQuotedSpans({ text: item.text, trust: item.baseTrust, ...(draft.hasAttachments === true ? { attachments: [{ text: "(attachment)" }] } : {}) });
+      const found = splitQuotedSpans({ text: item.text, trust: item.baseTrust, ...(draft.hasAttachments === true ? { attachments: [{ text: "(attachment)" }] } : {}) });
+      // The core's reading of the row (its quote and forward check, the tap's piece trusts, the item's history) can be lower than the splitter's: its detectors are broader (a
+      // "Fwd:" on a later line, "forwarded from" mid-line). When it is lower than every span, it is the ceiling for all of them, so what the core calls someone else's words
+      // never reaches the model as the member's own. A message the splitter already split (a quote, an attachment) keeps its own words, as they are separate spans.
+      const lowestSpan = found.reduce<TrustClass>((lowest, span) => (trustRank(span.trust) < trustRank(lowest) ? span.trust : lowest), item.baseTrust);
+      const spans = trustRank(item.trust) < trustRank(lowestSpan) ? found.map((span) => ({ ...span, trust: item.trust })) : found;
       const distillItem: DistillItem = { id: itemId, trust: item.baseTrust, audience: item.audience, links: item.links, spans };
       const outcome = await distillBundle(deps.distill, { workspaceId: item.orgId, ...(item.project === undefined ? {} : { project: item.project }), retention: "B", items: [distillItem] });
       if (outcome.facts.length === 0) return { accepted: outcome.failed === undefined || outcome.failed === "no_input" };

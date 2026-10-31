@@ -7,7 +7,7 @@ import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
 import { DEFAULT_WORK_BUDGET, changeScopePrincipals, queueScopeWork, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
 import { closeScope, getItemHead } from "./item-head.js";
-import { getSourceConfigByScope, putScopeWork } from "./store.js";
+import { childScopes, getSourceConfigByScope, putScopeWork } from "./store.js";
 import type { IngestOutcome, RecordDraft, TombstoneCause } from "./types.js";
 
 export interface RecordSink {
@@ -16,6 +16,8 @@ export interface RecordSink {
   changePrincipals(input: { workspaceId: string; scope: string; add?: readonly string[]; remove?: readonly string[]; at: string }): Promise<void>;
   replaceScopeAudience(input: { workspaceId: string; scope: string; audience: Audience; at: string }): Promise<void>;
 }
+
+const CHILD_SCOPES_MAX = 2_000;
 
 export interface SinkOptions {
   budget?: WorkBudget;
@@ -34,7 +36,12 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
     async tombstone(input) {
       const orgId = orgOf(input.workspaceId);
       // The lake first: a deleted place is queued for the lake before any hot row is touched, so a crash cannot lose it.
-      if (input.scope !== undefined) await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(input.scope) }]);
+      if (input.scope !== undefined) {
+        // A place above others covers them: the lake rows carry the CHILD place's hash, so every child with rows or a source row gets its own target, too.
+        const below = await childScopes(deps.table, orgId, input.scope, CHILD_SCOPES_MAX);
+        if (below.truncated) throw new Error("too many places under that place to list at once");
+        await lake.enqueue(orgId, [input.scope, ...below.scopes.slice(0, CHILD_SCOPES_MAX)].map((place) => ({ kind: "scope" as const, hash: recordScopeHash(place) })));
+      }
       // A deleted or excluded place stays closed (and so does every place under it): a late message or a backfill is refused. Written first, so a crash cannot reopen it.
       if (input.scope !== undefined && (input.cause === "source_deleted" || input.cause === "excluded")) await closeScope(deps.table, orgId, input.scope, input.cause, new Date((deps.now ?? Date.now)()).toISOString());
       // Chunks of at most 500 source items, each named in the queue BEFORE it is hidden: reads hide what a queue item names, so a crash or a spent budget in the

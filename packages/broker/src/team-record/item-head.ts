@@ -46,6 +46,13 @@ export type AdvanceOutcome =
   | { status: "same"; head: ItemHead; owed?: { row?: { pk: string; sk: string } } }
   | { status: "advanced"; lowestTrust: TrustClass; previous: ItemHead | undefined };
 
+/**
+ * Whether a version is newer than the head: a later version time, or (equal times) a greater version string. The tie-break is by the version itself, never by arrival,
+ * so a redelivery of the lower one is stale in every order and the same version wins everywhere.
+ */
+export const isNewer = (input: { versionAt: string; version: string }, head: { versionAt: string; version: string }): boolean =>
+  input.versionAt > head.versionAt || (input.versionAt === head.versionAt && input.version > head.version);
+
 export const versionTimeOf = (draft: { sourceRef: { versionAt?: string | undefined }; occurredAt: string }): string => new Date(draft.sourceRef.versionAt ?? draft.occurredAt).toISOString();
 
 /**
@@ -55,8 +62,8 @@ export const versionTimeOf = (draft: { sourceRef: { versionAt?: string | undefin
 export async function advanceItemHead(table: TeamRecordTable, orgId: OrgId, input: { system: string; sourceId: string; version: string; versionAt: string; trust: TrustClass; row?: { pk: string; sk: string }; indexExpiresAt: number }): Promise<AdvanceOutcome> {
   const key = recordItemHeadKey(orgId, input.system, input.sourceId);
   const existing = await getItemHead(table, orgId, input.system, input.sourceId);
-  if (existing !== undefined && input.versionAt < existing.versionAt) {
-    // A late older version: it cannot replace anything, but what its author was is part of the item's history.
+  if (existing !== undefined && !isNewer(input, existing) && !(input.versionAt === existing.versionAt && input.version === existing.version)) {
+    // A late older version: it cannot replace anything, but what its author was is part of the item's history, and it lowers the trust of the newer row already stored.
     const lower = minTrust(existing.lowestTrust, input.trust);
     if (lower !== existing.lowestTrust) {
       const aliases = new Aliases();
@@ -64,6 +71,13 @@ export async function advanceItemHead(table: TeamRecordTable, orgId: OrgId, inpu
         TableName: table.tableName, Key: key, UpdateExpression: `SET ${aliases.name("lowestTrust")} = ${aliases.value(lower)}`,
         ConditionExpression: `attribute_exists(${aliases.name("pk")})`, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
       })).catch((error: unknown) => { if (errorName(error) !== "ConditionalCheckFailedException") throw error; });
+      if (existing.row !== undefined) {
+        const rowAliases = new Aliases();
+        await table.documentClient.send(new UpdateCommand({
+          TableName: table.tableName, Key: existing.row, UpdateExpression: `SET ${rowAliases.name("trust")} = ${rowAliases.value(lower)}`,
+          ConditionExpression: `attribute_exists(${rowAliases.name("pk")}) AND attribute_not_exists(${rowAliases.name("tombstone")})`, ExpressionAttributeNames: rowAliases.names, ExpressionAttributeValues: rowAliases.values,
+        })).catch((error: unknown) => { if (errorName(error) !== "ConditionalCheckFailedException") throw error; });
+      }
     }
     return { status: "stale" };
   }
@@ -82,7 +96,8 @@ export async function advanceItemHead(table: TeamRecordTable, orgId: OrgId, inpu
         indexExpiresAt: input.indexExpiresAt + HEAD_GRACE_DAYS * DAY_SECONDS,
       },
       // Only an item that has no head, or whose head is the one we read (or older), may be replaced: a newer version that landed meanwhile wins.
-      ConditionExpression: existing === undefined ? `attribute_not_exists(${aliases.name("pk")})` : `${aliases.name("versionAt")} <= ${aliases.value(input.versionAt)} AND ${aliases.name("version")} = ${aliases.value(existing.version)}`,
+      ConditionExpression: existing === undefined ? `attribute_not_exists(${aliases.name("pk")})`
+        : `(${aliases.name("versionAt")} < ${aliases.value(input.versionAt)} OR (${aliases.name("versionAt")} = ${aliases.value(input.versionAt)} AND ${aliases.name("version")} < ${aliases.value(input.version)})) AND ${aliases.name("version")} = ${aliases.value(existing.version)}`,
       ExpressionAttributeNames: aliases.names,
       ...(Object.keys(aliases.values).length === 0 ? {} : { ExpressionAttributeValues: aliases.values }),
     }));

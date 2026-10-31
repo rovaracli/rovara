@@ -40,7 +40,7 @@ import { reopenScope } from "./item-head.js";
 import { retentionRefusal } from "./retention.js";
 import type { Edition, PendingHides, TeamRecordTable } from "./types.js";
 
-const KEY_ATTRIBUTES = ["pk", "sk", "entityType", TEAM_RECORD_GSI1.partition, TEAM_RECORD_GSI2.partition, TEAM_RECORD_GSI3.partition, TEAM_RECORD_GSI4.partition, TEAM_RECORD_GSI5.partition, TEAM_RECORD_GSI5.sort, "rowScope", "rowScopes", "sourceHash", "archivedAt"] as const;
+const KEY_ATTRIBUTES = ["pk", "sk", "entityType", TEAM_RECORD_GSI1.partition, TEAM_RECORD_GSI2.partition, TEAM_RECORD_GSI3.partition, TEAM_RECORD_GSI3.sort, TEAM_RECORD_GSI4.partition, TEAM_RECORD_GSI5.partition, TEAM_RECORD_GSI5.sort, "rowScope", "rowScopes", "sourceHash", "archivedAt"] as const;
 const dropKeys = (item: Item): Item => Object.fromEntries(Object.entries(item).filter(([name]) => !(KEY_ATTRIBUTES as readonly string[]).includes(name)));
 
 /** A record row as stored. */
@@ -66,6 +66,7 @@ export function eventItem(event: RecordEvent): Item {
     [TEAM_RECORD_GSI1.partition]: recordSourceIndexValue(event.workspaceId, event.sourceRef.system, event.sourceRef.id),
     [TEAM_RECORD_GSI2.partition]: event.actor?.developerId === undefined ? undefined : recordActorIndexValue(event.workspaceId, event.actor.developerId),
     [TEAM_RECORD_GSI3.partition]: recordScopeIndexValue(event.workspaceId, event.scope),
+    [TEAM_RECORD_GSI3.sort]: event.scope,
     // The source identity is ALWAYS indexed, beside the developer id: an erase that names only "Slack user U7" must reach what that person wrote while mapped to a developer.
     [TEAM_RECORD_GSI4.partition]: event.actor === undefined ? undefined : recordActorSourceIndexValue(event.workspaceId, event.sourceRef.system, event.actor.sourceId),
     // Sparse: only a row that still holds raw text with an expiry is in the text-due index.
@@ -148,7 +149,31 @@ export async function queryIndex(table: TeamRecordTable, index: typeof TEAM_RECO
 export const bySource = (table: TeamRecordTable, orgId: OrgId, system: string, sourceId: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI1, recordSourceIndexValue(orgId, system, sourceId), maxItems);
 export const byActor = (table: TeamRecordTable, orgId: OrgId, developerId: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI2, recordActorIndexValue(orgId, developerId), maxItems);
 export const byActorSource = (table: TeamRecordTable, orgId: OrgId, system: string, actorSourceId: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI4, recordActorSourceIndexValue(orgId, system, actorSourceId), maxItems);
-export const byScope = (table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI3, recordScopeIndexValue(orgId, scope), maxItems);
+/**
+ * Every item of a place and, unless `exact`, of every place under it (`slack:T1` -> `slack:T1/C9`): rows, derivation links and source rows. The sort value is the place itself,
+ * so a sibling that only starts the same (`slack:T1/C90` for `slack:T1/C9`) is never matched.
+ */
+export async function byScope(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number, options: { exact?: boolean } = {}): Promise<{ items: Item[]; truncated: boolean }> {
+  const value = recordScopeIndexValue(orgId, scope);
+  const range = (low: string, high: string) => queryAll(table, {
+    IndexName: TEAM_RECORD_GSI3.index, KeyConditionExpression: `${TEAM_RECORD_GSI3.partition} = :v AND ${TEAM_RECORD_GSI3.sort} BETWEEN :low AND :high`, ExpressionAttributeValues: { ":v": value, ":low": low, ":high": high },
+  }, maxItems);
+  const own = await range(scope, scope);
+  if (options.exact === true) return own;
+  const below = await range(`${scope}/`, `${scope}/\uffff`);
+  return { items: [...own.items, ...below.items], truncated: own.truncated || below.truncated };
+}
+
+/** The distinct places under a place (not itself), from the rows, links and source rows stored there. Bounded. */
+export async function childScopes(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number): Promise<{ scopes: string[]; truncated: boolean }> {
+  const found = await byScope(table, orgId, scope, maxItems);
+  const scopes = new Set<string>();
+  for (const item of found.items) {
+    const place = item[TEAM_RECORD_GSI3.sort];
+    if (typeof place === "string" && place !== scope) scopes.add(place);
+  }
+  return { scopes: [...scopes], truncated: found.truncated };
+}
 
 /** Every item of one sort-key kind in one project partition (`FACT#`, `SOURCE#`, `LESSON#`...). Bounded. */
 export async function queryPrefix(table: TeamRecordTable, orgId: OrgId, project: string | undefined, prefix: string, maxItems: number, options: { newestFirst?: boolean } = {}): Promise<{ items: Item[]; truncated: boolean }> {
@@ -235,6 +260,7 @@ export async function putDerivationLinks(table: TeamRecordTable, input: { orgId:
         [TEAM_RECORD_GSI1.partition]: recordSourceIndexValue(input.orgId, source.system, source.sourceId),
         [TEAM_RECORD_GSI2.partition]: source.actor?.developerId === undefined ? undefined : recordActorIndexValue(input.orgId, source.actor.developerId),
         [TEAM_RECORD_GSI3.partition]: source.scope === undefined ? undefined : recordScopeIndexValue(input.orgId, source.scope),
+        [TEAM_RECORD_GSI3.sort]: source.scope,
         [TEAM_RECORD_GSI4.partition]: source.actor?.sourceId === undefined ? undefined : recordActorSourceIndexValue(input.orgId, source.system, source.actor.sourceId),
       }),
     }));
@@ -276,6 +302,9 @@ export async function putSourceConfig(table: TeamRecordTable, config: SourceConf
       entityType: "TEAM_RECORD_SOURCE",
       ...parsed.data,
       [TEAM_RECORD_GSI1.partition]: recordSourceConfigIndexValue(parsed.data.workspaceId, parsed.data.source, parsed.data.scope),
+      // The place is indexed too, so a tombstone of a place above it finds the places that have a source row even when nothing is stored under them yet.
+      [TEAM_RECORD_GSI3.partition]: recordScopeIndexValue(parsed.data.workspaceId, parsed.data.scope),
+      [TEAM_RECORD_GSI3.sort]: parsed.data.scope,
     }),
   }));
   return { status: "saved" };

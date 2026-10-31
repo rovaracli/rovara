@@ -36,9 +36,15 @@ export class TeamRecordTable extends Construct {
       deletionProtection: true,
       removalPolicy: RemovalPolicy.RETAIN,
     });
-    for (const index of [TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4]) {
-      this.table.addGlobalSecondaryIndex({ indexName: index.index, partitionKey: { name: index.partition, type: dynamodb.AttributeType.STRING }, projectionType: dynamodb.ProjectionType.ALL });
-    }
+    const plain = (index: { index: string; partition: string }) => this.table.addGlobalSecondaryIndex({ indexName: index.index, partitionKey: { name: index.partition, type: dynamodb.AttributeType.STRING }, projectionType: dynamodb.ProjectionType.ALL });
+    plain(TEAM_RECORD_GSI1);
+    plain(TEAM_RECORD_GSI2);
+    // GSI3: by place. The sort value is the place itself, so one query finds a place and every place under it.
+    this.table.addGlobalSecondaryIndex({
+      indexName: TEAM_RECORD_GSI3.index, partitionKey: { name: TEAM_RECORD_GSI3.partition, type: dynamodb.AttributeType.STRING },
+      sortKey: { name: TEAM_RECORD_GSI3.sort, type: dynamodb.AttributeType.STRING }, projectionType: dynamodb.ProjectionType.ALL,
+    });
+    plain(TEAM_RECORD_GSI4);
     // Sparse: only rows that still hold raw text with an expiry; sorted by that expiry, so the text-expiry job reads exactly the due rows.
     this.table.addGlobalSecondaryIndex({
       indexName: TEAM_RECORD_GSI5.index, partitionKey: { name: TEAM_RECORD_GSI5.partition, type: dynamodb.AttributeType.STRING },
