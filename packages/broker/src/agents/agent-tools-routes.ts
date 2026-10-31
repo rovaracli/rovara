@@ -330,6 +330,7 @@ const GITHUB_DISCOVERY_PERMISSIONS = { issues: "read", pull_requests: "read", co
 /**
  * The installation a repository's record pins, read from its host record (task P7; the old top-level `installationId` reads as before). Only a GitHub host has one: a record on
  * another code host pins nothing here, and its repository is not one this GitHub connector reaches (the connector is GitHub's, outside the code-host port).
+ * Latent asymmetry: other control-plane checks still read the top-level field alone (see project-working-branch-host.ts); no record that exists differs.
  */
 const pinOf = (repository: Pick<RepositoryDefinition, "host" | "installationId" | "githubRepositoryId">): AgentTokenOptions => {
   const host = repositoryHostOf(repository);

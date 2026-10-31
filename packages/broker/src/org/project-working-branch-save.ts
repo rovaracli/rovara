@@ -10,7 +10,7 @@ import { auditOccurrence, auditProjectWorkingBranchChanged } from "../audit/even
 import { auditPending, type TransactItem } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { takeRateAt } from "../developer/page-comments.js";
-import { githubPinsOf } from "./project-working-branch-host.js";
+import { githubPinsOf, tryGithubPinsOf } from "./project-working-branch-host.js";
 import { readProjectWorkingBranchPreview, type WorkingBranchReviewDependencies } from "./project-working-branch.js";
 import { readProjectLifecycleRecord as read, readProjectLifecycleAuthority as authority, readProjectLifecycleState as projectState, validateProjectLifecycleIdentifiers as identifiers } from "./reviewed-project-archive.js";
 type Session = Required<Pick<WorkingBranchReviewDependencies, "checkRepository" | "resolveBranch">> & { finish(): Promise<void> };
@@ -72,7 +72,7 @@ export async function commitReviewedProjectWorkingBranch(deps:WorkingBranchSaveD
   if(registered.runtimeBinding===undefined||registered.runtimeBinding===null||typeof registered.runtimeBinding!=="object")throw unavailable();
   if(binding?.orgId!==scope.orgId||binding.status!=="active")throw disconnected();
   const selections=selectionsSchema.safeParse(registered.workingBranchSelections===undefined?{}:registered.workingBranchSelections);if(!selections.success)throw unavailable();
-  for(const [registeredName,selection] of Object.entries(selections.data)){const repo=state.definition.repositories.find(value=>value.name===registeredName);if(repo===undefined)throw unavailable();const own=githubPinsOf(repo);if(own.installationId!==selection.installationId||own.githubRepositoryId!==selection.repositoryId)throw unavailable();}
+  for(const [registeredName,selection] of Object.entries(selections.data)){const repo=state.definition.repositories.find(value=>value.name===registeredName);if(repo===undefined)throw unavailable();const own=tryGithubPinsOf(repo);if(own===undefined||own.installationId!==selection.installationId||own.githubRepositoryId!==selection.repositoryId)throw unavailable();}
   await admit(deps,scope);
   const factory=deps.workingBranchSession;if(factory===undefined)throw unavailable();let session:Session;
   try{session=factory();}catch{throw unavailable();}

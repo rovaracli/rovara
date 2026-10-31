@@ -877,6 +877,33 @@ describe("on the fake code host (P5b)", () => {
     expect(await sendFeedbackReplies(deps, task)).toBe(0);
   });
 
+  it("every reply spends the pass's request allowance, on the fake host and through the GitHub adapter's provider call", async () => {
+    const { model, host, crId } = fakeHost();
+    const first = model.addReviewComment(crId, "maya", "please rename", "src/a.ts", 1);
+    const second = model.addReviewComment(crId, "maya", "and this", "src/a.ts", 2);
+    const seed = (db: FakeDynamoDb) => {
+      const [put] = feedbackReplyItems({ tableName: "state", orgId: TEST_ORG, workflow: decidedRound(), repositoryId: "payments", number: Number(crId), head: SHA, now: at }) as Array<{ Put: { Item: Record<string, unknown> } }>;
+      db.set({ ...put!.Put.Item, commentIds: [first.id, second.id] });
+    };
+    const task = { taskId: TASK_ID, orgId: TEST_ORG, project: "payments", startingRevision: 1 };
+    const spent: number[] = [];
+    const budget = { signal: new AbortController().signal, beforeRequest: () => { spent.push(1); } };
+    const db = new FakeDynamoDb();
+    seed(db);
+    const deps = { documentClient: db, tableName: "state", now: () => Date.parse(at), scope: (orgId: string) => ({ orgId }) as never, repository: async () => ({ url: URL, codeHost: host }) };
+    expect(await sendFeedbackReplies(deps, task, budget)).toBe(2);
+    expect(spent).toHaveLength(2);
+    // Through the GitHub adapter the same budget reaches the provider's call.
+    const seen: unknown[] = [];
+    const provider = { replyToReviewThread: async (...args: unknown[]) => { seen.push(args[5]); return "replied" as const; } };
+    const githubDb = new FakeDynamoDb();
+    seed(githubDb);
+    const githubDeps = { ...deps, documentClient: githubDb, repository: async () => ({ url: URL, codeHost: githubCodeHost(provider as never, { credentialRef: "github" }) }) };
+    // The ids in the stored item are the fake model's; the adapter takes digits only.
+    expect(await sendFeedbackReplies(githubDeps, task, budget)).toBe(2);
+    expect(seen).toEqual([budget, budget]);
+  });
+
   it("holds only while every writer of the round is still a person who can write on the host (read live), and a bot account never counts", async () => {
     const { model, host } = fakeHost();
     model.setAccount("maya", "write");

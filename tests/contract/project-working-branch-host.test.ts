@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentXError, StoredProjectDefinitionSchema, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey } from "@agentx/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
-import { githubPinsOf } from "../../packages/broker/src/org/project-working-branch-host.js";
+import { githubPinsOf, tryGithubPinsOf } from "../../packages/broker/src/org/project-working-branch-host.js";
 import { readProjectWorkingBranchContext } from "../../packages/broker/src/org/project-working-branch-context.js";
 import { readProjectWorkingBranchPage } from "../../packages/broker/src/org/project-working-branch-list.js";
 import { readProjectWorkingBranchPreview } from "../../packages/broker/src/org/project-working-branch.js";
@@ -42,6 +42,11 @@ describe("the pins of a repository, from its host record", () => {
     expect(githubPinsOf(legacy)).toEqual({ installationId: 11, githubRepositoryId: 22 });
     expect(githubPinsOf(hostOnly)).toEqual({ installationId: 11, githubRepositoryId: 22 });
     expect(githubPinsOf({ ...web, installationId: undefined })).toEqual({ installationId: undefined, githubRepositoryId: undefined });
+  });
+
+  it("tryGithubPinsOf answers undefined for another host (the save check reads that as a mismatch, not as an invalid request) and the pins for GitHub", () => {
+    expect(tryGithubPinsOf(elsewhere)).toBeUndefined();
+    expect(tryGithubPinsOf(hostOnly)).toEqual({ installationId: 11, githubRepositoryId: 22 });
   });
 
   it("refuses a repository on another code host with a fixed sentence that does not echo the kind", () => {

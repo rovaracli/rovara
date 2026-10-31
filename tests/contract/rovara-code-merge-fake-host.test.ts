@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { orgMemberKey, MERGE_NOT_READY_MESSAGES as M } from "../../packages/contracts/src/index.js";
 import { pressMerge } from "../../packages/broker/src/rovara-code/merge.js";
-import { approvalReviewsOf } from "../../packages/broker/src/rovara-code/host-port.js";
+import { approvalReviewsOf, changedPathsOf } from "../../packages/broker/src/rovara-code/host-port.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
 import { PRIYA, ARJUN, MAX, ORG_A } from "../support/agent-session-world.js";
@@ -120,6 +120,41 @@ describe("merging on the fake code host", () => {
     expect((await webPress(w)).status).toBe(200);
     expect(model.getChangeRequest(crId).state).toBe("merged");
     expect(MAX).toBeDefined();
+  });
+
+  it("never asks a host for code owners when its capabilities say it has none, even if the method is there", async () => {
+    let asked = 0;
+    const { w, model, crId } = await fakeWorld({
+      codeOwners: "/src/ @max-gh\n",
+      host: (m) => {
+        const host = new FakeCodeHost(m);
+        Object.defineProperty(host, "capabilities", { value: { ...host.capabilities, codeOwners: false } });
+        const original = host.codeOwners.bind(host);
+        host.codeOwners = async (...args) => { asked += 1; return original(...args); };
+        return host;
+      },
+    });
+    // With the capability on, Arjun's approval would not satisfy /src/ (see the code-owner test); with it off nothing is asked and the merge goes through.
+    expect((await webPress(w)).status).toBe(200);
+    expect(asked).toBe(0);
+    expect(model.getChangeRequest(crId).state).toBe("merged");
+  });
+
+  it("a rename out of a code-owned path still needs its owner: the old path counts as changed", async () => {
+    const { w, model, crId } = await fakeWorld({
+      codeOwners: "/secure/ @max-gh\n",
+      host: (m) => {
+        const host = new FakeCodeHost(m);
+        host.changedFiles = async () => ({ files: [{ path: "src/limit.ts", previousPath: "secure/limit.ts", status: "renamed", additions: 0, deletions: 0 }] });
+        return host;
+      },
+    });
+    expect(await codeOf(webPress(w))).toEqual({ code: "MERGE_NOT_READY", message: M.needsCodeOwner("@max-gh") });
+    expect(model.getChangeRequest(crId).state).toBe("open");
+    // The paths the check sees are both names.
+    const host = new FakeCodeHost(model);
+    host.changedFiles = async () => ({ files: [{ path: "src/limit.ts", previousPath: "secure/limit.ts", status: "renamed", additions: 0, deletions: 0 }] });
+    expect(await changedPathsOf(host, { repository: { url: URL }, id: crId, url: "" }, { orgId: ORG_A })).toEqual({ paths: ["src/limit.ts", "secure/limit.ts"], complete: true });
   });
 
   it("never merges on a host that does not offer merge: it is found before any claim is made", async () => {
