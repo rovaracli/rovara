@@ -4,8 +4,9 @@ import { App, Stack, aws_ecs as ecs } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { McpHost } from "../../infra/lib/mcp-host.js";
-import { PRIVATE_MCP_CONTEXT_KEYS, mcpHostPropsFromInstall, parsePrivateMcpContext, privateMcpBrokerEnvironment } from "../../infra/lib/private-mcp.js";
+import { BROKER_ENVIRONMENT_KEYS, PRIVATE_MCP_CONTEXT_KEYS, checkedBrokerEnvironment, mcpHostPropsFromInstall, parsePrivateMcpContext, privateMcpBrokerEnvironment } from "../../infra/lib/private-mcp.js";
 
 const context = (values: Record<string, unknown>) => (key: string): unknown => values[key];
 const KEYS = PRIVATE_MCP_CONTEXT_KEYS;
@@ -115,5 +116,21 @@ describe("the app, built as `rovara deploy` builds it", () => {
     expect(() => buildAgentXApp({ ...ENTERPRISE, [KEYS.certificateArn]: "nope" })).toThrow(new RegExp(KEYS.certificateArn, "u"));
     expect(() => buildAgentXApp({ agentxEnv: "staging", agentxCloud: true, [KEYS.cidrs]: "10.1.0.0/16" })).toThrow(/Enterprise/u);
     expect(() => buildAgentXApp({ agentxEnv: "staging", [KEYS.certificateArn]: CERT })).toThrow(/Enterprise/u);
+  });
+});
+
+describe("the broker's added environment (fix round)", () => {
+  it("accepts only the private MCP variables and refuses any other name, a reserved one above all", () => {
+    expect([...BROKER_ENVIRONMENT_KEYS]).toEqual(["ROVARA_PRIVATE_MCP_CIDRS", "ROVARA_VPC_CIDRS"]);
+    expect(checkedBrokerEnvironment({ ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" })).toEqual({ ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" });
+    expect(checkedBrokerEnvironment(undefined)).toEqual({});
+    for (const name of ["CALLBACK_SIGNING_KEY", "STATE_TABLE_NAME", "OIDC_ISSUER", "ROVARA_EDITION", "ROVARA_STDIO_MCP_SERVERS", "MCP_HOST_URL"]) {
+      expect(() => checkedBrokerEnvironment({ [name]: "x" }), name).toThrow(/not one an install setting may add/u);
+    }
+  });
+  it("stops the control plane from being built with a reserved variable, and never overwrites the signing key", () => {
+    const build = (brokerEnvironment: Record<string, string>) => new ControlPlaneStack(new App(), "ControlPlane", { brokerEnvironment });
+    expect(() => build({ CALLBACK_SIGNING_KEY: "attacker-chosen" })).toThrow(/CALLBACK_SIGNING_KEY/u);
+    expect(() => build({ ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16" })).not.toThrow();
   });
 });

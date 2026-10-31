@@ -128,3 +128,15 @@ export function mcpHostPropsFromInstall(install: PrivateMcpInstall): { certifica
   if (hostedZoneId === undefined) throw new Error(`the MCP host needs the Route 53 zone for its DNS name: set ${KEYS.hostedZoneId}`);
   return { certificateArn, hostName, hostedZoneId };
 }
+
+/** The only variables an install's settings may add to the broker's environment. Anything else (a reserved variable such as the callback signing key) is refused, never overwritten. */
+export const BROKER_ENVIRONMENT_KEYS = ["ROVARA_PRIVATE_MCP_CIDRS", "ROVARA_VPC_CIDRS"] as const;
+
+/** `environment`, if every name is on the list above; otherwise the first other name stops synth. */
+export function checkedBrokerEnvironment(environment: Readonly<Record<string, string>> | undefined): Record<string, string> {
+  const allowed: readonly string[] = BROKER_ENVIRONMENT_KEYS;
+  for (const name of Object.keys(environment ?? {})) {
+    if (!allowed.includes(name)) throw new Error(`the broker's environment variable ${JSON.stringify(name)} is not one an install setting may add (allowed: ${BROKER_ENVIRONMENT_KEYS.join(", ")})`);
+  }
+  return { ...environment };
+}

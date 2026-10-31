@@ -1,5 +1,6 @@
 import { WebApp } from "./web-app.js";
 import { connectorSecretsPolicyStatements, connectorSecretsTrustPolicy } from "./connector-secrets-policy.js";
+import { checkedBrokerEnvironment } from "./private-mcp.js";
 import { grantProviderKeySecrets } from "./model-keys.js";
 import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
@@ -222,7 +223,8 @@ export class ControlPlaneStack extends Stack {
       GITHUB_APP_ID: githubAppId.valueAsString,
       GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
     });
-    for (const [name, value] of Object.entries(props?.brokerEnvironment ?? {})) broker.addEnvironment(name, value);
+    // Only the install's private MCP settings may be added here; any other name (a reserved variable) stops synth instead of being overwritten.
+    for (const [name, value] of Object.entries(checkedBrokerEnvironment(props?.brokerEnvironment))) broker.addEnvironment(name, value);
     if (naming.env !== undefined) {
       BrokerNames.of(broker).add("stateTable", state.tableName);
       BrokerNames.of(broker).add("artifactBucket", artifacts.bucketName);
