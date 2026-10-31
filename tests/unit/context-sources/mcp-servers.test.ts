@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { MCP_PROBE_FAILURES, orgScoped } from "@agentx/contracts";
 import { type McpServerSecrets, McpProbeError, STDIO_OFF_MESSAGE, stdioAvailable, allowedTargets, approveMcpServer, disableMcpServer, clearOrgMcpServers, dynamoMcpServerStore, listMcpServers, probeLimiter, proposeMcpServer, removeMcpServer, summariseProbe, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { routeMcpServers } from "../../../packages/broker/src/context-sources/mcp-server-routes.js";
@@ -15,11 +16,11 @@ const STDIO = { kind: "stdio" as const, spec: { registry: "npm" as const, name: 
 
 function world(over: { edition?: "enterprise" | "public"; tools?: DiscoveredTool[]; fails?: McpProbeError | Error; secondAdmin?: boolean; stdio?: boolean } = {}) {
   const table = new FakeDynamoDb();
-  const state = { tools: over.tools ?? [SEARCH_TOOL, GET_TOOL], integrity: `sha512-${"A".repeat(86)}==`, fails: over.fails, tokens: [] as Array<string | undefined>, httpProbes: 0 };
+  const state = { tools: over.tools ?? [SEARCH_TOOL, GET_TOOL], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64) as string | undefined, bundleHash: "2".repeat(64) as string | undefined, fails: over.fails, tokens: [] as Array<string | undefined>, httpProbes: 0 };
   let counter = 0;
   const prober: McpProber = {
     http: async (_address, token) => { state.httpProbes += 1; state.tokens.push(token); if (state.fails) throw state.fails; return state.tools; },
-    stdio: async () => { if (state.fails) throw state.fails; return { tools: state.tools, integrity: state.integrity }; },
+    stdio: async () => { if (state.fails) throw state.fails; return { tools: state.tools, integrity: state.integrity, lockfileHash: state.lockfileHash, bundleHash: state.bundleHash }; },
   };
   const audit: string[] = [];
   const vault = new Map<string, string>();
@@ -374,7 +375,7 @@ describe("review I3: a stdio package is pinned by its tarball's integrity", () =
     const { McpServerEntrySchema, McpStdioSpecSchema, McpStdioProposalSchema } = await import("@agentx/contracts");
     const { deps, state } = world();
     const typed = { ...STDIO, spec: { ...STDIO.spec, integrity: state.integrity } };
-    expect((await proposeMcpServer(deps, admin(), { label: "Wiki", transport: typed })).transport).toEqual(typed);
+    expect((await proposeMcpServer(deps, admin(), { label: "Wiki", transport: typed })).transport).toMatchObject(typed);
     expect(McpStdioProposalSchema.safeParse(STDIO.spec).success).toBe(true);
     expect(McpStdioSpecSchema.safeParse(STDIO.spec).success).toBe(false);
     expect(McpServerEntrySchema.safeParse({ serverId: "mcpabc123456", label: "x", status: "approved", transport: STDIO, probe: { at: "t", toolsHash: "a".repeat(64), tools: [] }, requestedBy: "d", requestedAt: "t" }).success).toBe(false);
@@ -411,5 +412,55 @@ describe("package-run servers are off unless the install switches them on", () =
     expect(listed).toMatchObject({ stdioAvailable: false });
     const on = world();
     expect(await routeMcpServers(on.deps, { orgId: ORG, developerId: "dev1", orgRole: "admin" } as never, { method: "GET", path: "/v1/app/org/mcp-servers", headers: {}, requestId: "r" }, new URL("https://x/v1/app/org/mcp-servers"))).toMatchObject({ stdioAvailable: true });
+  });
+});
+
+describe("T1: the approval of a package-run server binds the install (lockfile and bundle hashes)", () => {
+  const legacyRow = (serverId: string, status: string) => ({
+    pk: orgScoped(ORG, "MCPSRV"), sk: `SRV#${serverId}`, serverId, label: "Old", status, transport: { kind: "stdio", spec: { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [], integrity: `sha512-${"A".repeat(86)}==` } },
+    probe: summariseProbe([SEARCH_TOOL], NOW), requestedBy: "dev1", requestedAt: "2026-11-01T10:00:00Z",
+  });
+  it("stores both hashes from the install, and the hashes an admin typed are not accepted", async () => {
+    const { deps, state } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO });
+    expect(entry.transport).toMatchObject({ kind: "stdio", spec: { lockfileHash: state.lockfileHash, bundleHash: state.bundleHash, destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } } });
+    await expect(proposeMcpServer(deps, admin(), { label: "Wiki2", transport: { ...STDIO, spec: { ...STDIO.spec, bundleHash: "3".repeat(64) } } })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+  it("stores nothing, and says the host refused, when the install did not report both hashes", async () => {
+    for (const missing of ["lockfileHash", "bundleHash"] as const) {
+      const { deps, state } = world();
+      state[missing] = undefined;
+      await expect(proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO })).rejects.toThrow(MCP_PROBE_FAILURES.host_refused);
+      expect(await deps.store.list(ORG)).toEqual([]);
+    }
+  });
+  it("refuses the approval when the bundle or the lockfile moved since it was shown, even with the same tools and tarball", async () => {
+    for (const moved of ["lockfileHash", "bundleHash"] as const) {
+      const { deps, state } = world();
+      const entry = await proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO });
+      const shown = state[moved];
+      state[moved] = "9".repeat(64);
+      await expect(approveMcpServer(deps, admin(), entry.serverId), moved).rejects.toMatchObject({ code: "CHANGE_STALE" });
+      expect((await deps.store.get(ORG, entry.serverId))!.status).toBe("awaiting_approval");
+      state[moved] = shown;
+      expect((await approveMcpServer(deps, admin(), entry.serverId)).status).toBe("approved");
+    }
+  });
+  it("reads an entry stored before the hashes as needs_reapproval: not approvable, not allowed, can still be turned off and removed", async () => {
+    const { deps } = world();
+    const fake = new FakeDynamoDb();
+    const store = dynamoMcpServerStore({ documentClient: fake, tableName: "state" });
+    const own = { ...deps, store };
+    await fake.send(new PutCommand({ TableName: "state", Item: legacyRow("mcplegacya1", "approved") }));
+    await fake.send(new PutCommand({ TableName: "state", Item: legacyRow("mcplegacyb1", "awaiting_approval") }));
+    const listed = await listMcpServers(own, admin());
+    expect(listed.map((item) => item.status).sort()).toEqual(["needs_reapproval", "needs_reapproval"]);
+    await expect(approveMcpServer(own, admin(), "mcplegacya1")).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    await expect(approveMcpServer(own, admin(), "mcplegacyb1")).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(await allowedTargets(store, ORG, ["10.0.0.0/8"])).toEqual([]);
+    await disableMcpServer(own, admin(), "mcplegacya1");
+    expect((await store.get(ORG, "mcplegacya1"))!.status).toBe("disabled");
+    await removeMcpServer(own, admin(), "mcplegacya1");
+    expect(await store.get(ORG, "mcplegacya1")).toBeUndefined();
   });
 });
