@@ -7,6 +7,7 @@ import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/li
 import { LEARNING_MODE_DEFAULT, learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
 import { errorName, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
+import { clampedSettings } from "./clamp-auto.js";
 import { TIER0_APPROVAL_DEFAULT, type LearningSettings, type LearningSettingsReader } from "./policy.js";
 import type { Tier0Change, Tier0ChangeStore, Tier0Level, Tier0Scope, Tier0SettingsStore } from "./tier0-setting.js";
 
@@ -93,13 +94,14 @@ export class DynamoTier0Settings implements Tier0SettingsStore, Tier0ChangeStore
  * company floor. A mode that is stored but not valid is passed on as it is, so `resolveLearning` turns it into Off; an absent project mode is the record core's default (Suggest).
  * Any read that fails throws, and `resolveLearning` then fails closed.
  */
-export function dynamoLearningSettings(table: TeamRecordTable, settings: Tier0SettingsStore): LearningSettingsReader {
+export function dynamoLearningSettings(table: TeamRecordTable, settings: Tier0SettingsStore, autoApplyEnabled: () => boolean): LearningSettingsReader {
   const mode = async (key: { pk: string; sk: string }): Promise<{ present: false } | { present: true; value: Mode }> => {
     const item = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item }).Item;
     if (item === undefined) return { present: false };
     return { present: true, value: (typeof item.mode === "string" ? MODE_NAMES[item.mode] ?? (item.mode as never) : ("invalid" as never)) };
   };
-  return {
+  // Clamped: while automatic go-live is off, a stored "auto" is read as "one" (clamp-auto.ts).
+  return clampedSettings({
     async read(workspaceId, project) {
       const org = workspaceId;
       const [own, lock, tier0, floor] = await Promise.all([
@@ -113,5 +115,5 @@ export function dynamoLearningSettings(table: TeamRecordTable, settings: Tier0Se
         ...(floor === undefined ? {} : { companyApproval: { tier0: floor } }),
       };
     },
-  };
+  }, autoApplyEnabled);
 }
