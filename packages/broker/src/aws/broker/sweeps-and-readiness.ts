@@ -89,6 +89,11 @@ export function isChainScheduleEvent(event: unknown): event is { source: typeof 
   return event !== null && typeof event === "object" && !("requestContext" in event) && (event as { source?: unknown }).source === CHAIN_SCHEDULE_SOURCE;
 }
 
+/** Meta repo lane F (F2): the scheduler's every-minute tick of the intake poll. */
+export function isIntakePollEvent(event: unknown): event is { source: "agentx.intake-poll" } {
+  return event !== null && typeof event === "object" && !("requestContext" in event) && (event as { source?: unknown }).source === "agentx.intake-poll";
+}
+
 export function isChainSweepEvent(event: unknown): event is { source: "agentx.chain-sweep" } {
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.chain-sweep";
 }

@@ -905,3 +905,11 @@ export function intakeCallsKey(orgId: OrgId, sourceId: string, hour: string): Or
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}$/u.test(hour)) throw new Error("an hour is YYYY-MM-DDTHH");
   return { pk: orgScoped(orgId, `INTAKE_CALLS#${keyPart(sourceId, "a source id")}`), sk: hour };
 }
+
+/**
+ * A notice to one maintainer that an intake source keeps failing (the poll could not read it for an hour), in the maintainer's own partition of the org like a trigger's notice
+ * (`triggerNoticeKey`): fixed words and ids only. One per source and maintainer per notice window.
+ */
+export function intakeNoticeKey(orgId: OrgId, developerId: string, at: string, sourceId: string): OrgKey {
+  return { pk: orgScoped(orgId, `INTAKE_NOTICES#${keyPart(developerId, "a developer id")}`), sk: `${canonicalInstant(at)}#${keyPart(sourceId, "a source id")}` };
+}

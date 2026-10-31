@@ -40,6 +40,11 @@ import type { AgentRouteDependencies } from "../../agents/routes.js";
 import { ChainStore } from "../../chains/store.js";
 import { TriggerStore } from "../../triggers/store.js";
 import { dispatchTriggerEvent, type TriggerDispatchContext } from "../../triggers/dispatch.js";
+import type { IntakePorts } from "../../intake/engine.js";
+import { writeIntakeNotice } from "../../intake/notices.js";
+import { intakePortsOf } from "../../intake/wiring.js";
+import { listProjectMembers } from "../../org/project-members.js";
+import type { IntakePollDependencies } from "../../triggers/poll-intake.js";
 import { chainTriggerHooksFor, triggerHooksFor } from "../../triggers/lifecycle.js";
 import { registerChainRunner } from "../../chains/index.js";
 import { chainRunPortsFor, chainRunSpendReader, type ChainRunnerDependencies } from "../../chains/runner.js";
@@ -50,6 +55,7 @@ import { startAgentRun, type AgentRunStarter } from "../../agents/runs.js";
 import { servableModels } from "../../model-sources/routing.js";
 import { mintConfirmUrl, requireDecideSession } from "../../developer/decide-session.js";
 import { agentRunStarterOf, codeIntentDependenciesOf, projectMembersOf, type DeveloperCaller, type DeveloperRouteDependencies } from "../developer-routes.js";
+import { projectMembersDepsOf } from "../developer-routes/project-list.js";
 import type { DeveloperTaskActions } from "../developer-task-actions.js";
 import { preflightConnectors, registrationWarnings } from "../registration-preflight.js";
 import { TurnRecordExport, dynamoTurnRecordSource, workspaceProjectReader } from "../turns.js";
@@ -539,6 +545,34 @@ export function eventDispatchOf(dependencies: AwsBrokerDependencies, tasks: Deve
   return chainDependencies === undefined ? undefined : (orgId, event, context) => dispatchTriggerEvent({
     ...chainDependencies, ...(githubApp.appSlug === undefined ? {} : { githubAppSlug: () => githubApp.appSlug!() }),
   }, orgId, event, context);
+}
+
+/**
+ * Meta repo lane F: the intake engine's ports from the broker's own dependencies (who a tracker account is, the role on the project, the start as that member). Undefined where developer
+ * sign-in or agents are not set up (a start needs them).
+ */
+export function intakePortsFrom(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): IntakePorts | undefined {
+  const routeDependencies = startRouteDependencies(dependencies, tasks, agents);
+  const starter = routeDependencies === undefined ? undefined : agentRunStarterOf(routeDependencies);
+  if (routeDependencies === undefined || starter === undefined) return undefined;
+  return intakePortsOf({
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, starter,
+    intentDependenciesFor: (caller) => codeIntentDependenciesOf(routeDependencies, caller),
+  });
+}
+
+/** Meta repo lane F (F2): what one tick of the intake poll works with: the engine's ports, and the notice to a project's maintainers. Undefined where intake is not set up. */
+export function intakePollDependenciesFrom(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, agents: AgentRouteDependencies | undefined): IntakePollDependencies | undefined {
+  const ports = intakePortsFrom(dependencies, tasks, agents);
+  const routeDependencies = startRouteDependencies(dependencies, tasks, agents);
+  if (ports === undefined || routeDependencies === undefined) return undefined;
+  return {
+    ports,
+    notify: async (notice) => {
+      const people = await listProjectMembers(projectMembersDepsOf(routeDependencies), notice.orgId, notice.project);
+      await writeIntakeNotice(ports.table, people.filter((person) => person.role === "maintainer").map((person) => person.developerId), notice);
+    },
+  };
 }
 
 /** What the chain runner and its sweep work with: the agent routes' dependencies with the chain store and Plan 3's run starter. Undefined where agents, chains or developer sign-in are not set up. */

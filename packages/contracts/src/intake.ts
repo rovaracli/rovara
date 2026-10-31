@@ -99,7 +99,7 @@ const LabelSchema = z.string().trim().min(1).max(100).refine(NoControls, "must n
 /**
  * One place a project's work is asked for. `when` says what asks: a label someone puts on a ticket, or the ticket being assigned to Rovara's own account on that tracker.
  * It is only a routing hint: whether work STARTS depends on who did it (a member), never on the label. `connection` names an org connection (a name or id, never an address
- * or a secret) that a poll reads through. A channel with no `poll` is only listened to (webhooks).
+ * or a secret) that a poll reads through. A tracker is always read on a timer; Jira and GitHub Issues are listened to (webhooks) unless `poll` is named (see `intakeSourceIsPolled`).
  */
 export const IntakeChannelRefSchema = z.object({
   channel: z.enum(INTAKE_TRACKER_CHANNELS),
@@ -116,6 +116,12 @@ export const IntakeChannelRefSchema = z.object({
   if (ref.channel === "github_issue" && ref.system !== undefined && ref.system !== INTAKE_GITHUB_SYSTEM) context.addIssue({ code: "custom", path: ["system"], message: "a GitHub Issues channel is the system github" });
 });
 export type IntakeChannelRef = z.infer<typeof IntakeChannelRefSchema>;
+
+/**
+ * Whether a source is read on a timer. A `tracker` (a team's own, which has no webhook of ours) always is; Jira and GitHub Issues are listened to for their events unless the source
+ * names `poll`, which reads them on a timer as well (an install that cannot receive webhooks).
+ */
+export const intakeSourceIsPolled = (ref: Pick<IntakeChannelRef, "channel" | "poll">): boolean => ref.channel === "tracker" || ref.poll !== undefined;
 
 /** The system a channel reads, with the built-in channels' fixed names filled in. */
 export function intakeSystemOf(ref: Pick<IntakeChannelRef, "channel" | "system">): string {
