@@ -57,7 +57,7 @@ function escapeUnescaped(text: string): string {
   return text
     .replaceAll("@", "@\u200D")
     .replaceAll("://", ":\u200D//\u200D")
-    .replace(/\bwww\./giu, (match) => `${match.slice(0, 3)}\u200D.`)
+    .replace(/www\./giu, (match) => `${match.slice(0, 3)}\u200D.`)
     .replace(/#(?=\d)/gu, "#\u200D")
     .replace(MARKDOWN_ACTIVE, (character) => `\\${character}`);
 }
@@ -96,6 +96,11 @@ export function nextFenceState(open: { char: "`" | "~"; length: number } | undef
   if (fence === undefined) return open;
   if (open === undefined) return { char: fence.char, length: fence.length };
   return fence.char === open.char && fence.length >= open.length && fence.rest.trim() === "" ? undefined : open;
+}
+
+/** A line of only `-` or `=` under a paragraph makes a setext heading: its first mark is escaped (the escape is read back and written again on a second pass, so the text is stable). */
+function noSetext(line: string): string {
+  return /^\s*[-=]+\s*$/u.test(line) ? line.replace(/[-=]/u, (mark) => `\\${mark}`) : line;
 }
 
 /**
@@ -139,7 +144,7 @@ export function specMarkdown(text: string, max: number = SPEC_DESIGN_MAX): strin
     const ourInner = ours?.[1];
     if (heading !== null) blocks.push([`**${inertSpecText((heading[1] ?? "").replace(/\s*#+\s*$/u, "").trim())}**`]);
     else if (ourInner !== undefined && inertSpecText(ourInner).replaceAll("\u200D", "") === ourInner) blocks.push([`**${inertSpecText(ourInner)}**`]);
-    else blocks.push([inertSpecText(trimmed)]);
+    else blocks.push([noSetext(inertSpecText(trimmed))]);
   }
   while (blocks.length > 0 && blocks[0]!.length === 1 && blocks[0]![0] === "") blocks.shift();
   while (blocks.length > 0 && blocks[blocks.length - 1]!.length === 1 && blocks[blocks.length - 1]![0] === "") blocks.pop();
@@ -153,7 +158,8 @@ export function specMarkdown(text: string, max: number = SPEC_DESIGN_MAX): strin
     kept.push(...block);
     size += length;
   }
-  return cut ? `${kept.join("\n").trimEnd()}\n…` : kept.join("\n");
+  const head = kept.join("\n").trimEnd();
+  return cut ? (head === "" ? "…" : `${head}\n…`) : kept.join("\n");
 }
 const HIDDEN_BUT_NEWLINE = /(?![\n\t])[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Cs}\p{Default_Ignorable_Code_Point}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/gu;
 

@@ -225,3 +225,48 @@ describe("N7: the owner's other writes are fenced too", () => {
     vi.doUnmock("../../packages/broker/src/aws/developer-tasks/access.js");
   });
 });
+
+describe("N8: every GFM extended-autolink trigger is broken, whatever comes before it", () => {
+  const prefixes = ["", "_", "*", "~", "(", "9", "x", "-", ".", "é", "\u6F22", "\"", "'", "\u00A0", "_ ", "[", "]"];
+  const triggers = ["www.evil.example/x", "http://evil.example/x", "https://evil.example/x", "ftp://evil.example/x", "mailto:a@evil.example", "xmpp:a@evil.example/x", "x@y.z", "WWW.EVIL.EXAMPLE", "wwww.evil.example"];
+  const live = (html: string): boolean => /<a\b/iu.test(html);
+  for (const prefix of prefixes) {
+    for (const trigger of triggers) {
+      it(`${JSON.stringify(prefix)} then ${trigger}: no link in specMarkdown, specLine or inertSpecText (GFM)`, () => {
+        const text = `${prefix}${trigger}`;
+        for (const out of [specMarkdown(text), `- ${specLine(text)}`, `${specLine(text)}`, inertSpecText(text), `| ${inertSpecText(text)} |\n|---|`]) expect(gfmRender(out), out).not.toMatch(/<a\b/iu);
+        expect(live(gfmRender(specMarkdown(`line one\n${text}\nline three`)))).toBe(false);
+        expect(specMarkdown(specMarkdown(text))).toBe(specMarkdown(text));
+      });
+    }
+  }
+});
+
+describe("N9: no setext heading can form from model text", () => {
+  it.each(["text\n---", "text\n===", "text\n-", "text\n =", "text\n   ---   ", "text\r---", "a\n--\nb", "a\n==\nb"])("%j", (text) => {
+    const out = specMarkdown(text);
+    expect(gfmRender(out), out).not.toMatch(/<h[12]\b/u);
+    expect(plainRender(out), out).not.toMatch(/<h[12]\b/u);
+    expect(specMarkdown(out)).toBe(out);
+  });
+  it("keeps the words and still shows the line", () => {
+    expect(specMarkdown("text\n---")).toContain("text");
+  });
+});
+
+describe("N10: a cut design gives the same text on a second pass", () => {
+  it("when one block alone is over the bound", () => {
+    const out = specMarkdown(`\`\`\`\n${"x".repeat(200)}\n\`\`\``, 100);
+    expect(specMarkdown(out, 100)).toBe(out);
+  });
+  it("for every length near the bound, with many small blocks", () => {
+    for (let n = 1; n < 60; n += 1) {
+      const text = Array.from({ length: n }, (_, i) => `line ${i} ${"y".repeat(i % 7)}`).join("\n\n");
+      for (const max of [50, 97, 120, 333]) {
+        const out = specMarkdown(text, max);
+        expect(specMarkdown(out, max), `${n}/${max}`).toBe(out);
+        expect(Array.from(out).length).toBeLessThanOrEqual(max);
+      }
+    }
+  });
+});
