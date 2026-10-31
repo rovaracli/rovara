@@ -65,6 +65,46 @@ describe("planted text cannot flip the state", () => {
   });
 });
 
+describe("fix round 1: planted words that used to count as code", () => {
+  const WORD = /planted/u;
+  const none = (path: string, text: string): void => {
+    const found = lexIdentifiers(path, text, 1, text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
+    expect(found === undefined || found.every((t) => !WORD.test(t)), JSON.stringify(found)).toBe(true);
+  };
+  it("a C/C++ line comment ends in a backslash and continues on the next line", () => {
+    none("a.c", "int x; // note \\\nplantedC continued\nint y;\n");
+    expect(lexIdentifiers("a.c", "int x; // note \\\nplantedC continued\nint y;\n", 3, 3)).toEqual(["int", "y"]);
+    expect(lexIdentifiers("a.cpp", "// ok\nint after;\n", 2, 2)).toEqual(["int", "after"]);
+  });
+  it("SQL block comments nest, in both forms", () => {
+    none("a.sql", "/* outer /* inner */ plantedPg */ SELECT 1;\n");
+    expect(lexIdentifiers("a.sql", "/* outer /* inner */ plantedPg */ SELECT 1;\n", 1, 1)).toEqual(["SELECT"]);
+  });
+  it("SQL dollar quoting is not lexed, a $1 parameter still is", () => {
+    expect(lexIdentifiers("a.sql", "SELECT $$ plantedDollar words $$;\n", 1, 1)).toBeUndefined();
+    expect(lexIdentifiers("a.sql", "SELECT $tag$ plantedTag $tag$;\n", 1, 1)).toBeUndefined();
+    expect(lexIdentifiers("a.sql", "SELECT a FROM t WHERE b = $1;\n", 1, 1)).toEqual(["SELECT", "a", "FROM", "t", "WHERE", "b"]);
+  });
+  it("a # starts a comment in SQL (MySQL)", () => {
+    none("a.sql", "# plantedHash\nSELECT 1;\n");
+    expect(lexIdentifiers("a.sql", "# plantedHash\nSELECT 1;\n", 2, 2)).toEqual(["SELECT"]);
+  });
+  it("a Java file with a unicode escape is not lexed (they act everywhere, in comments too)", () => {
+    expect(lexIdentifiers("A.java", "\\u0022 plantedJava \";\nint x;\n", 1, 2)).toBeUndefined();
+    expect(lexIdentifiers("A.java", "// \\u000a plantedNl\nint x;\n", 1, 2)).toBeUndefined();
+    expect(lexIdentifiers("A.java", "int x; // no escape\n", 1, 1)).toEqual(["int", "x"]);
+  });
+  it("a / after ) that could close a regex on its line is a failure; a division with no second slash, and a statement start, are not", () => {
+    expect(lexIdentifiers("a.js", "if (x) /plantedRegex/.test(y);\n", 1, 1)).toBeUndefined();
+    expect(lexIdentifiers("a.js", "const r = (a) / b / c;\n", 1, 1)).toBeUndefined();
+    expect(lexIdentifiers("a.js", "const r = (a) / b;\n", 1, 1)).toEqual(["const", "r", "a", "b"]);
+    expect(lexIdentifiers("a.js", "const r = (a) // c\n", 1, 1)).toEqual(["const", "r", "a"]);
+  });
+  it("Python nested format specs do not leak the string's words", () => {
+    none("a.py", "x = 1  # plantedPy\ns = '''doc plantedDoc'''\ny = f\"{a!r:>{w}} plantedF\"\n");
+  });
+});
+
 describe("Python", () => {
   it("drops # comments, docstrings (triple quotes of both kinds) and f-strings whole", () => {
     const text = ['def f(x):', '    """Docstring with hidden_doc', '    more_hidden"""', "    y = f\"{x} hidden_f\"  # trailing_comment", "    z = '''a", "b'''", "    return real_name"].join("\n");
@@ -87,9 +127,8 @@ describe("other languages", () => {
     const text = ['<!-- hidden_comment', "still -->", '<div class="hidden_class" data-id=hidden_unq>', "prose words here", "</div>"].join("\n");
     expect(ids("a.html", text)).toEqual(["div", "class", "data", "id", "div"]);
   });
-  it("Shell: # comments at word start, quotes, nested $() in double quotes and heredocs", () => {
-    const text = ["echo $# real", "x=1 # tail_comment", 'y="a $(echo "hidden_nested") b"', "cat <<EOF", "hidden_here $VAR", "EOF", "cat <<-'END'", "hidden_two", "END", "done_now"].join("\n");
-    expect(ids("run.sh", text)).toEqual(["echo", "real", "x", "y", "cat", "cat", "done_now"]);
+  it("Shell is not lexed at all: a bare word is code there, so nothing in a script is verified", () => {
+    for (const path of ["run.sh", "run.bash", "run.zsh"]) expect(lexIdentifiers(path, "echo plantedShell words\n", 1, 1)).toBeUndefined();
   });
   it("SQL: -- comments, block comments and single-quoted strings with doubled quotes", () => {
     expect(ids("q.sql", ["select a, 'it''s hidden' from t -- gone", "/* hidden_b */ where c = 1;"].join("\n"))).toEqual(["select", "a", "from", "t", "where", "c"]);

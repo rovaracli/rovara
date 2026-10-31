@@ -27,6 +27,12 @@ interface Cfg {
   /** `$` is an identifier character. */
   dollar?: boolean;
   rustRaw?: boolean; lua?: boolean; cppRaw?: boolean; rustChars?: boolean;
+  /** A line comment ends with its line unless the line ends in a backslash (C and C++). */
+  continuation?: boolean;
+  /** Unicode escapes are processed everywhere in the source (Java): a file that has one is not lexed. */
+  unicodeEscapes?: boolean;
+  /** `$tag$ ... $tag$` quoting (PostgreSQL) is not lexed. */
+  noDollarQuotes?: boolean;
 }
 
 const slashes = (nest: boolean): BlockCfg[] => [{ open: "/*", close: "*/", nest }];
@@ -38,11 +44,11 @@ const JS: Cfg = {
   ],
 };
 const JAVA: Cfg = {
-  line: ["//"], block: slashes(false),
+  line: ["//"], block: slashes(false), unicodeEscapes: true,
   strings: [{ open: '"""', close: '"""', escape: true, multiline: true }, { open: '"', close: '"', escape: true, multiline: false }, { open: "'", close: "'", escape: true, multiline: false }],
 };
 const C: Cfg = {
-  line: ["//"], block: slashes(false), cppRaw: true,
+  line: ["//"], block: slashes(false), cppRaw: true, continuation: true,
   strings: [{ open: '"', close: '"', escape: true, multiline: false }, { open: "'", close: "'", escape: true, multiline: false }],
 };
 const GO: Cfg = {
@@ -68,12 +74,13 @@ const TOML: Cfg = {
   ],
 };
 const LUA: Cfg = { line: ["--"], block: [], lua: true, strings: [{ open: '"', close: '"', escape: true, multiline: false }, { open: "'", close: "'", escape: true, multiline: false }] };
+// `#` starts a comment in MySQL; in PostgreSQL it is an operator, and dropping what follows only loses tokens. Block comments nest (PostgreSQL).
 const SQL: Cfg = {
-  line: ["--"], block: slashes(false),
+  line: ["--", "#"], block: slashes(true), noDollarQuotes: true,
   strings: [{ open: "'", close: "'", escape: false, multiline: true, doubled: true }, { open: '"', close: '"', escape: false, multiline: true, doubled: true }, { open: "`", close: "`", escape: false, multiline: true, doubled: true }],
 };
 
-type Kind = { kind: "cfg"; cfg: Cfg } | { kind: "markup" } | { kind: "shell" };
+type Kind = { kind: "cfg"; cfg: Cfg } | { kind: "markup" };
 const BY_EXTENSION: Record<string, Kind> = {};
 const register = (extensions: string[], kind: Kind): void => { for (const e of extensions) BY_EXTENSION[e] = kind; };
 register(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"], { kind: "cfg", cfg: JS });
@@ -86,7 +93,7 @@ register(["toml"], { kind: "cfg", cfg: TOML });
 register(["lua"], { kind: "cfg", cfg: LUA });
 register(["sql"], { kind: "cfg", cfg: SQL });
 register(["html", "htm", "xml", "svg", "xhtml"], { kind: "markup" });
-register(["sh", "bash", "zsh"], { kind: "shell" });
+// Shell is not lexed at all: a bare word is code there, so any text in a script would count as an identifier. It is not verified (the lesson stays with a person).
 
 const extensionOf = (path: string): string | undefined => {
   const name = path.split("/").at(-1) ?? "";
@@ -171,9 +178,22 @@ function skipBlockComment(sc: Scanner, block: BlockCfg): void {
   }
 }
 
-function skipToLineEnd(sc: Scanner): void { while (sc.i < sc.s.length && sc.s[sc.i] !== "\n") sc.i += 1; }
+function skipToLineEnd(sc: Scanner, continuation = false): void {
+  while (sc.i < sc.s.length && sc.s[sc.i] !== "\n") {
+    // A backslash right before the newline continues the comment on the next line.
+    if (continuation && sc.s[sc.i] === "\\" && sc.s[sc.i + 1] === "\n") sc.i += 1;
+    sc.i += 1;
+  }
+}
 
 /** A regular expression literal at `sc.i` (which holds `/`): skipped with its flags, or left alone when this line is not one. */
+function regexCouldClose(sc: Scanner): boolean {
+  const saved = sc.i;
+  const closes = trySkipRegex(sc);
+  sc.i = saved;
+  return closes;
+}
+
 function trySkipRegex(sc: Scanner): boolean {
   const s = sc.s;
   let j = sc.i + 1;
@@ -198,10 +218,14 @@ function lexCfg(sc: Scanner, cfg: Cfg): void {
   const dollar = cfg.dollar === true;
   // For the JavaScript regex rule: whether a `/` here would be a division.
   let operand = false;
+  let lastWasParen = false;
   while (sc.i < s.length) {
     sc.tick();
     const ch = s[sc.i]!;
     if (isSpace(ch)) { sc.i += 1; continue; }
+    const wasParen = lastWasParen;
+    lastWasParen = false;
+    if (cfg.noDollarQuotes === true && ch === "$" && /^\$[A-Za-z_\u0080-\uffff]*\$/u.test(s.slice(sc.i, sc.i + 80))) fail("dollar quoting");
     // Comments.
     if (cfg.lua === true && sc.startsWith("--")) {
       const long = /^--\[(=*)\[/u.exec(s.slice(sc.i, sc.i + 40));
@@ -214,7 +238,7 @@ function lexCfg(sc: Scanner, cfg: Cfg): void {
       continue;
     }
     const lineComment = cfg.line.find((x) => sc.startsWith(x));
-    if (lineComment !== undefined) { skipToLineEnd(sc); continue; }
+    if (lineComment !== undefined) { skipToLineEnd(sc, cfg.continuation === true); continue; }
     const block = cfg.block.find((x) => sc.startsWith(x.open));
     if (block !== undefined) { skipBlockComment(sc, block); continue; }
     // Lua long strings.
@@ -275,6 +299,9 @@ function lexCfg(sc: Scanner, cfg: Cfg): void {
       continue;
     }
     if (cfg.regex === true && ch === "/" && !operand && trySkipRegex(sc)) { operand = true; continue; }
+    // After `)` a `/` is a division (`(a) / b`) or the start of a regex (`if (x) /re/.test(y)`); the lexer cannot tell, so a `/` there that could close a regex on its line is a failure.
+    if (cfg.regex === true && ch === "/" && wasParen && s[sc.i + 1] !== "/" && s[sc.i + 1] !== "*" && regexCouldClose(sc)) fail("division or regex");
+    lastWasParen = ch === ")";
     operand = ch === ")" || ch === "]";
     sc.i += 1;
   }
@@ -349,136 +376,6 @@ function lexMarkup(sc: Scanner): void {
   }
 }
 
-// ---- shell: # comments at the start of a word, quotes (a double quote holds $( ) and ${ } that nest), ANSI-C quotes and here-documents.
-function skipShellDouble(sc: Scanner): void {
-  const s = sc.s;
-  sc.i += 1;
-  for (;;) {
-    sc.tick();
-    if (sc.i >= s.length) fail("string not closed");
-    const ch = s[sc.i]!;
-    if (ch === "\\") { sc.i += 2; continue; }
-    if (ch === '"') { sc.i += 1; return; }
-    if (ch === "$" && (s[sc.i + 1] === "(" || s[sc.i + 1] === "{")) { skipShellGroup(sc); continue; }
-    if (ch === "`") { skipBacktick(sc); continue; }
-    sc.i += 1;
-  }
-}
-function skipBacktick(sc: Scanner): void {
-  sc.i += 1;
-  for (;;) {
-    if (sc.i >= sc.s.length) fail("backtick not closed");
-    const ch = sc.s[sc.i]!;
-    if (ch === "\\") { sc.i += 2; continue; }
-    sc.i += 1;
-    if (ch === "`") return;
-  }
-}
-function skipShellGroup(sc: Scanner): void {
-  const s = sc.s;
-  const open = s[sc.i + 1]!;
-  const close = open === "(" ? ")" : "}";
-  sc.i += 2;
-  let depth = 1;
-  while (depth > 0) {
-    sc.tick();
-    if (sc.i >= s.length) fail("group not closed");
-    const ch = s[sc.i]!;
-    if (ch === "\\") { sc.i += 2; continue; }
-    if (ch === '"') { skipShellDouble(sc); continue; }
-    if (ch === "'") { const end = s.indexOf("'", sc.i + 1); if (end === -1) fail("quote not closed"); sc.i = end + 1; continue; }
-    if (ch === "`") { skipBacktick(sc); continue; }
-    if (ch === open) depth += 1;
-    else if (ch === close) depth -= 1;
-    sc.i += 1;
-  }
-}
-
-function lexShell(sc: Scanner): void {
-  const s = sc.s;
-  const heredocs: Array<{ word: string; strip: boolean }> = [];
-  while (sc.i < s.length) {
-    sc.tick();
-    const ch = s[sc.i]!;
-    if (ch === "\n") {
-      sc.i += 1;
-      // The bodies of the here-documents opened on the line just ended are dropped, up to their delimiter line.
-      for (const doc of heredocs.splice(0)) {
-        for (;;) {
-          if (sc.i >= s.length) fail("here-document not closed");
-          let end = s.indexOf("\n", sc.i);
-          if (end === -1) end = s.length;
-          const lineText = s.slice(sc.i, end);
-          sc.i = Math.min(s.length, end + 1);
-          if ((doc.strip ? lineText.replace(/^\t+/u, "") : lineText) === doc.word) break;
-          if (end >= s.length) fail("here-document not closed");
-        }
-      }
-      continue;
-    }
-    if (isSpace(ch)) { sc.i += 1; continue; }
-    if (ch === "#") {
-      const before = sc.i === 0 ? " " : s[sc.i - 1]!;
-      if (isSpace(before) || ";&|()".includes(before)) { skipToLineEnd(sc); continue; }
-      sc.i += 1;
-      continue;
-    }
-    if (ch === "\\") { sc.i += 2; continue; }
-    if (ch === "'") { const end = s.indexOf("'", sc.i + 1); if (end === -1) fail("quote not closed"); sc.i = end + 1; continue; }
-    if (ch === '"') { skipShellDouble(sc); continue; }
-    if (ch === "`") { skipBacktick(sc); continue; }
-    if (ch === "$") {
-      const next = s[sc.i + 1];
-      if (next === "'") {
-        sc.i += 2;
-        for (;;) {
-          if (sc.i >= s.length) fail("quote not closed");
-          const c = s[sc.i]!;
-          if (c === "\\") { sc.i += 2; continue; }
-          sc.i += 1;
-          if (c === "'") break;
-        }
-        continue;
-      }
-      // `$#`, `$?`, `$$`, `$@`, `$1` and the like are parameters, not a comment or a word.
-      if (next !== undefined && "#?!$@*-0123456789".includes(next)) { sc.i += 2; continue; }
-      sc.i += 1;
-      continue;
-    }
-    if (ch === "<" && s[sc.i + 1] === "<" && s[sc.i + 2] !== "<") {
-      let j = sc.i + 2;
-      let strip = false;
-      if (s[j] === "-" || s[j] === "~") { strip = true; j += 1; }
-      while (s[j] === " " || s[j] === "\t") j += 1;
-      const quote = s[j] === "'" || s[j] === '"' ? s[j]! : undefined;
-      if (quote !== undefined) j += 1;
-      else if (s[j] === "\\") j += 1;
-      const at = j;
-      while (j < s.length && /[A-Za-z0-9_.-]/u.test(s[j]!)) j += 1;
-      const word = s.slice(at, j);
-      if (word === "") fail("here-document without a delimiter");
-      if (quote !== undefined) { if (s[j] !== quote) fail("here-document delimiter not closed"); j += 1; }
-      heredocs.push({ word, strip });
-      sc.i = j;
-      continue;
-    }
-    if (isDigit(ch)) {
-      sc.i += 1;
-      while (sc.i < s.length && isIdPart(s[sc.i]!, false)) sc.i += 1;
-      continue;
-    }
-    if (isIdStart(ch, false)) {
-      const at = sc.i;
-      sc.i += 1;
-      while (sc.i < s.length && isIdPart(s[sc.i]!, false)) sc.i += 1;
-      sc.tokens.push({ at, text: s.slice(at, sc.i) });
-      continue;
-    }
-    sc.i += 1;
-  }
-  if (heredocs.length > 0) fail("here-document not closed");
-}
-
 /**
  * Identifier tokens of lines `startLine..endLine` (1-based, inclusive) of `text`, in code only. `undefined` when the file cannot be lexed with certainty (see the head of this file).
  * The same token may appear twice; callers that want a set make one.
@@ -488,6 +385,7 @@ export function lexIdentifiers(path: string, text: string, startLine: number, en
   const extension = extensionOf(path);
   const kind = extension === undefined ? undefined : BY_EXTENSION[extension];
   if (kind === undefined || text.length > LEX_MAX_BYTES || Buffer.byteLength(text, "utf8") > LEX_MAX_BYTES) return undefined;
+  if (kind.kind === "cfg" && kind.cfg.unicodeEscapes === true && /\\u+[0-9a-fA-F]{4}/u.test(text)) return undefined;
   const source = text.replace(/\r\n?/gu, "\n");
   const lineStarts = [0];
   for (let i = source.indexOf("\n"); i !== -1; i = source.indexOf("\n", i + 1)) lineStarts.push(i + 1);
@@ -498,8 +396,7 @@ export function lexIdentifiers(path: string, text: string, startLine: number, en
   const sc = new Scanner(source, clock() + LEX_BUDGET_MS, clock);
   try {
     if (kind.kind === "cfg") lexCfg(sc, kind.cfg);
-    else if (kind.kind === "markup") lexMarkup(sc);
-    else lexShell(sc);
+    else lexMarkup(sc);
   } catch (error) {
     if (error instanceof LexFailure) return undefined;
     return undefined;
