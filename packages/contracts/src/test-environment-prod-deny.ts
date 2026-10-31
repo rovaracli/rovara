@@ -26,7 +26,7 @@ export function prodDenyMatchesHost(deny: TestEnvProdDeny, host: string): boolea
   const name = host.trim().toLowerCase().replace(/\.$/u, "");
   if (name === "" || !/^[a-z0-9.-]+$/u.test(name)) return true;
   return deny.hosts.some((entry) => {
-    const pattern = entry.trim().toLowerCase();
+    const pattern = entry.trim().toLowerCase().replace(/\.$/u, "");
     if (pattern.startsWith("*.")) return name.endsWith(pattern.slice(1)) && name.length > pattern.length - 1;
     return name === pattern;
   });
@@ -58,8 +58,8 @@ function hostOfUrl(url: string): string {
 }
 
 /** Every address, ARN and account the environment would reach for real, with the field it is in. The sandbox's own mocks and local seeds are not here. */
-function reachedRemotes(env: TestEnvironmentBody): Array<{ field: string; host?: string; arn?: string }> {
-  const remotes: Array<{ field: string; host?: string; arn?: string }> = [];
+function reachedRemotes(env: TestEnvironmentBody): Array<{ field: string; host?: string; arn?: string; pool?: string }> {
+  const remotes: Array<{ field: string; host?: string; arn?: string; pool?: string }> = [];
   env.services.forEach((service, index) => {
     const preprod = service.preprod;
     if (preprod === undefined) return;
@@ -74,6 +74,10 @@ function reachedRemotes(env: TestEnvironmentBody): Array<{ field: string; host?:
     if (account.provisioner === "http_hook") {
       remotes.push({ field: `${base}.createUrl`, host: hostOfUrl(account.createUrl) }, { field: `${base}.deleteUrl`, host: hostOfUrl(account.deleteUrl) });
     }
+  });
+  env.accounts.forEach((account, index) => {
+    // A pool id carries no account, so a pool is production when the deny list names its resource (`...:userpool/<id>`) in an ARN prefix.
+    if (account.provisioner === "cognito_test_pool") remotes.push({ field: `accounts[${String(index)}].userPoolId`, arn: `arn:aws:cognito-idp:${account.region}::userpool/${account.userPoolId}`, pool: account.userPoolId });
   });
   if (env.preview !== undefined) remotes.push({ field: "preview.deployRoleArn", arn: env.preview.deployRoleArn });
   if (env.shared !== undefined) remotes.push({ field: "shared.baseUrl", host: hostOfUrl(env.shared.baseUrl) });
@@ -93,34 +97,15 @@ export function testEnvProdDenyViolations(env: TestEnvironmentBody, alsoDeny?: T
   const found: TestEnvProdDenyViolation[] = [];
   for (const remote of remotes) {
     if (remote.host !== undefined && lists.some((deny) => prodDenyMatchesHost(deny, remote.host as string))) found.push({ kind: "prod_host", field: remote.field });
+    if (remote.pool !== undefined) {
+      const pool = remote.pool;
+      if (lists.some((deny) => deny.arnPrefixes.some((prefix) => prefix.includes(`userpool/${pool}`) || prefix.endsWith(`:userpool/`) || prefix.endsWith(`:userpool/*`)))) found.push({ kind: "prod_arn", field: remote.field });
+      continue;
+    }
     if (remote.arn !== undefined) {
       const kind = lists.map((deny) => prodDenyMatchesArn(deny, remote.arn as string)).find((match) => match !== undefined);
       if (kind !== undefined) found.push({ kind, field: remote.field });
     }
   }
   return found;
-}
-
-/** A change that weakens what the environment guards, beyond the contract's own less-safe fields. Each needs a second person, like any less-safe change. */
-export type TestEnvWeakening = "preprod_target_changed" | "shared_target_changed" | "prod_deny_reduced" | "account_target_changed";
-
-/**
- * What `next` weakens against the approved environment before it: a pre-prod target moved to another address, endpoint or role; a shared environment moved; a test-account hook or role moved; or an entry removed from
- * the production deny list. Compared by service name, so renaming a service is a new target. Pure. A first proposal has no earlier target to have moved.
- */
-export function testEnvWeakeningChanges(previous: TestEnvironmentBody | undefined, next: TestEnvironmentBody): TestEnvWeakening[] {
-  if (previous === undefined) return [];
-  const found = new Set<TestEnvWeakening>();
-  const targetOf = (env: TestEnvironmentBody, name: string) => JSON.stringify(env.services.find((service) => service.name === name)?.preprod ?? null);
-  for (const service of next.services) {
-    if (service.preprod !== undefined && targetOf(previous, service.name) !== targetOf(next, service.name)) found.add("preprod_target_changed");
-  }
-  if (next.shared !== undefined && JSON.stringify(previous.shared ?? null) !== JSON.stringify(next.shared)) found.add("shared_target_changed");
-  const accountTarget = (env: TestEnvironmentBody, profileId: string) => JSON.stringify(env.accounts.find((account) => account.profileId === profileId) ?? null);
-  for (const account of next.accounts) {
-    if ((account.provisioner === "cognito_test_pool" || account.provisioner === "http_hook") && accountTarget(previous, account.profileId) !== accountTarget(next, account.profileId)) found.add("account_target_changed");
-  }
-  const removed = (before: readonly string[], after: readonly string[]) => before.some((entry) => !after.includes(entry));
-  if (removed(previous.prodDeny.accountIds, next.prodDeny.accountIds) || removed(previous.prodDeny.hosts, next.prodDeny.hosts) || removed(previous.prodDeny.arnPrefixes, next.prodDeny.arnPrefixes)) found.add("prod_deny_reduced");
-  return [...found].sort();
 }

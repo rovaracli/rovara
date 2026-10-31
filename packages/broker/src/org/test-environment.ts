@@ -16,7 +16,6 @@ import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   INDEX_EXPIRY_ATTRIBUTE,
-  TEST_ENV_LESS_SAFE_FIELDS,
   TestEnvProveReportSchema,
   TestEnvironmentBodySchema,
   TestEnvironmentSchema,
@@ -29,13 +28,10 @@ import {
   testEnvIsProved,
   testEnvLessSafeChanges,
   testEnvProdDenyViolations,
-  testEnvWeakeningChanges,
   type DecisionRisk,
   type OrgId,
   type ProjectRole,
   type TestEnvLessSafeField,
-  type TestEnvProveReport,
-  type TestEnvWeakening,
   type TestEnvironment,
   type TestEnvironmentBody,
 } from "@agentx/contracts";
@@ -96,13 +92,11 @@ function refuseProduction(body: TestEnvironmentBody, previous?: TestEnvironmentB
   if (found !== undefined) throw invalid(`${found.field} ${PROD_WORDS[found.kind] ?? "names production"}`);
 }
 
-/** The less-safe fields the contract names, plus the weakening changes this module adds (a moved target, a shortened deny list): all need a second person. */
-export type TestEnvChangeFlag = TestEnvLessSafeField | TestEnvWeakening;
+/** The contract's less-safe fields (pre-prod, shared, preview, video, traces, schema-synth, a raised budget, a moved target, a shortened deny list): any of them needs a second person. */
+export type TestEnvChangeFlag = TestEnvLessSafeField;
 
-const changeFlags = (previous: TestEnvironmentBody | undefined, next: TestEnvironmentBody): TestEnvChangeFlag[] => [...new Set<TestEnvChangeFlag>([...testEnvLessSafeChanges(previous, next), ...testEnvWeakeningChanges(previous, next)])];
+const changeFlags = (previous: TestEnvironmentBody | undefined, next: TestEnvironmentBody): TestEnvChangeFlag[] => testEnvLessSafeChanges(previous, next);
 
-/** A Prove run counts only if no step failed AND at least one step really ran and passed: a report with every step skipped proves nothing. */
-const isProved = (report: TestEnvProveReport | undefined, digest: string): boolean => testEnvIsProved(report, digest) && report!.steps.some((step) => step.status === "passed");
 
 export interface ProposedTestEnvironment { digest: string; risk: DecisionRisk; lessSafe: TestEnvChangeFlag[] }
 
@@ -133,8 +127,7 @@ export async function proposeTestEnvironment(
     }],
   }));
   const lessSafe = changeFlags(previous?.environment, body);
-  const weakened = lessSafe.some((flag) => !(TEST_ENV_LESS_SAFE_FIELDS as readonly string[]).includes(flag));
-  return { digest, risk: weakened ? "high" : testEnvApprovalRisk(body), lessSafe };
+  return { digest, risk: lessSafe.length > 0 ? "high" : testEnvApprovalRisk(body), lessSafe };
 }
 
 /** Reads a stored proposal's body, checking that it still hashes to its own key. Undefined when there is none or it has expired. */
@@ -168,7 +161,7 @@ export async function recordTestEnvProveReport(deps: TestEnvDeps, input: { orgId
     if (error instanceof Error && error.name === "TransactionCanceledException") throw stale("there is no such proposal to prove; propose the environment again");
     throw error;
   }
-  return { proved: isProved(report.data, digest) };
+  return { proved: testEnvIsProved(report.data, digest) };
 }
 
 /** The newest approved environment, or the one at `revision`. Undefined when the project has none. A stored item that does not read back as what was approved throws: a damaged approval is never read as "none". */
@@ -221,7 +214,7 @@ export async function approveTestEnvironment(
   if (body === undefined) throw stale("this proposal is gone or has expired; propose the environment again");
   const proveItem = await read(deps, proveKey(input.orgId, input.project, input.digest));
   const prove = proveItem === undefined ? undefined : TestEnvProveReportSchema.safeParse(proveItem.report);
-  if (!isProved(prove?.success === true ? prove.data : undefined, input.digest)) throw invalid("prove this environment (boot, smoke test and a full run) before approving it");
+  if (!testEnvIsProved(prove?.success === true ? prove.data : undefined, input.digest)) throw invalid("prove this environment (boot, smoke test and a full run) before approving it");
   refuseProduction(body, current?.environment);
   if ((current?.revision ?? 0) !== input.expectedRevision) throw stale("someone changed the test environment; reload and review again");
 

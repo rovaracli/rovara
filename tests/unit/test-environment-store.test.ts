@@ -25,8 +25,13 @@ const sandbox = (over: Record<string, unknown> = {}): TestEnvironmentBody => Tes
 const withPreprod = (arn = "arn:aws:sagemaker:us-west-2:222233334444:endpoint/partner-scorer") => sandbox({
   services: [{ name: "partner-scorer", kind: "sagemaker_runtime", match: { endpointName: "partner-scorer" }, mode: "preprod", preprod: { endpointArn: arn, roleArn: "arn:aws:iam::222233334444:role/rovara-invoke", region: "us-west-2" } }],
 });
+/** A body that has NOT been through the schema: the schema itself now refuses a production target, and the store must still refuse one handed to it unparsed or with the deny list shortened in the same change. */
+const unchecked = (arn: string, prodDeny: TestEnvironmentBody["prodDeny"]): unknown => {
+  const base = withPreprod();
+  return { ...base, prodDeny, services: [{ ...base.services[0], preprod: { ...base.services[0]!.preprod, endpointArn: arn } }] };
+};
 const proved = (digest: string, over: Record<string, unknown> = {}) => ({
-  schemaVersion: 1, proposalDigest: digest, steps: [{ step: "setup", status: "passed", durationMs: 5 }, { step: "smoke", status: "passed", durationMs: 9 }], services: [{ name: "partner-scorer", modeUsed: "mocked" }], finishedAt: "2026-10-30T10:00:00.000Z", ...over,
+  schemaVersion: 1, proposalDigest: digest, steps: [{ step: "setup", status: "passed", durationMs: 5 }, { step: "boot", status: "passed", durationMs: 7 }, { step: "smoke", status: "passed", durationMs: 9 }], services: [{ name: "partner-scorer", modeUsed: "mocked" }], finishedAt: "2026-10-30T10:00:00.000Z", ...over,
 });
 
 function harness(startMs = Date.UTC(2026, 9, 30, 10, 0, 0)) {
@@ -137,9 +142,10 @@ describe("production is refused", () => {
   it("names a production resource: refused when proposed and again at approval, by field and fixed words only", async () => {
     const h = harness();
     const prodArn = "arn:aws:sagemaker:us-east-1:111122223333:endpoint/partner-scorer";
-    const error = await proposeTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: withPreprod(prodArn) }).catch((caught: unknown) => (caught instanceof Error ? caught.message : "not an error"));
-    expect(error).toContain("services[0].preprod.endpointArn names a production resource");
+    const error = await proposeTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: unchecked(prodArn, sandbox().prodDeny) }).catch((caught: unknown) => (caught instanceof Error ? caught.message : "not an error"));
+    expect(error).toContain("production deny list");
     expect(error).not.toContain("111122223333");
+    expect(() => withPreprod(prodArn)).toThrow(/production deny list/);
   });
   it("reaches a real service with no production list at all: list production first", async () => {
     const h = harness();
@@ -150,14 +156,19 @@ describe("production is refused", () => {
     await expect(proposeTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: { ...sandbox(), prodDeny: { accountIds: [], hosts: [], arnPrefixes: [] } } })).resolves.toBeDefined();
   });
   it("matches hosts and accounts the way a company writes them", () => {
-    const shared = TestEnvironmentBodySchema.parse({ ...sandbox(), tier: "shared", shared: { baseUrl: "https://api.PROD.example.com", leaseScope: "env", dataNamespace: "task_prefix" } });
+    const shared = { ...sandbox(), tier: "shared", shared: { baseUrl: "https://api.PROD.example.com", leaseScope: "env", dataNamespace: "task_prefix" } } as TestEnvironmentBody;
     expect(testEnvProdDenyViolations(shared)).toEqual([{ kind: "prod_host", field: "shared.baseUrl" }]);
     const bare = TestEnvironmentBodySchema.parse({ ...sandbox(), tier: "shared", shared: { baseUrl: "https://prod.example.com", leaseScope: "env", dataNamespace: "task_prefix" } });
     // `*.prod.example.com` does not cover the bare domain: list both to cover both.
     expect(testEnvProdDenyViolations(bare)).toEqual([]);
     const roleInProdAccount = withPreprod("arn:aws:sagemaker:us-west-2:222233334444:endpoint/x");
-    const asProd = TestEnvironmentBodySchema.parse({ ...roleInProdAccount, services: [{ ...roleInProdAccount.services[0], preprod: { ...roleInProdAccount.services[0]!.preprod, roleArn: "arn:aws:iam::111122223333:role/invoke" } }] });
+    const asProd = { ...roleInProdAccount, services: [{ ...roleInProdAccount.services[0]!, preprod: { ...roleInProdAccount.services[0]!.preprod!, roleArn: "arn:aws:iam::111122223333:role/invoke" } }] } as TestEnvironmentBody;
     expect(testEnvProdDenyViolations(asProd)).toEqual([{ kind: "prod_account", field: "services[0].preprod.roleArn" }]);
+    // Trailing dots in a host or a listed pattern do not hide production, and a Cognito pool the deny list names is production.
+    const dotted = { ...bare, shared: { ...bare.shared!, baseUrl: "https://api.prod.example.com./x" } } as TestEnvironmentBody;
+    expect(testEnvProdDenyViolations(dotted)).toEqual([{ kind: "prod_host", field: "shared.baseUrl" }]);
+    const pool = { ...sandbox(), prodDeny: { accountIds: [], hosts: [], arnPrefixes: ["arn:aws:cognito-idp:us-east-1:111122223333:userpool/us-east-1_ProdPool1"] }, accounts: [{ profileId: "buyer", provisioner: "cognito_test_pool", userPoolId: "us-east-1_ProdPool1", region: "us-east-1", roleArn: "arn:aws:iam::222233334444:role/pool" }] } as TestEnvironmentBody;
+    expect(testEnvProdDenyViolations(pool)).toEqual([{ kind: "prod_arn", field: "accounts[0].userPoolId" }]);
   });
 });
 
@@ -236,7 +247,8 @@ describe("weakening changes (Opus review of the contracts)", () => {
     const h = harness();
     const first = await h.proposeAndProve(withPreprod());
     await h.approve(first.digest, second(h));
-    const sneaky = { ...withPreprod("arn:aws:sagemaker:us-east-1:111122223333:endpoint/partner-scorer"), prodDeny: { accountIds: [], hosts: ["x.example.com"], arnPrefixes: [] } };
+    // The schema alone would accept this (the shortened list no longer names the account); the approved list still does.
+    const sneaky = unchecked("arn:aws:sagemaker:us-east-1:111122223333:endpoint/partner-scorer", { accountIds: [], hosts: ["x.example.com"], arnPrefixes: [] });
     await expect(proposeTestEnvironment(h.deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: sneaky })).rejects.toThrow(/production/);
   });
   it("a Prove run with every step skipped proves nothing", async () => {
