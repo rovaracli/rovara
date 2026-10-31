@@ -34,7 +34,17 @@ describe("T5 runner Dockerfile", () => {
     expect(dockerfile).toContain('test -z "$(find "$root" -xdev -perm /6000)"');
     expect(dockerfile).toMatch(/for banned in git sh bash dash busybox apt apt-get dpkg curl wget/u);
     expect(dockerfile).toContain('chroot "$root" /usr/local/bin/node --version');
-    expect(dockerfile).toContain("chroot \"$root\" /usr/bin/setpriv --no-new-privs --inh-caps=-all --bounding-set=-all -- /usr/bin/prlimit");
+    expect(dockerfile).toContain("chroot \"$root\" /usr/bin/setpriv --no-new-privs --inh-caps=-all -- /usr/bin/prlimit");
+  });
+  it("copies every library under the exact path the loader asks for, dereferenced (a soname such as libstdc++.so.6 is a link in Debian)", () => {
+    expect(dockerfile).toContain('add() { mkdir -p "$root$(dirname "$1")"; cp -L "$1" "$root$1"; }');
+    expect(dockerfile).not.toContain("readlink -f");
+    expect(dockerfile).toContain('for library in $(ldd "$program" | awk');
+  });
+  it("does not ask setpriv to drop the bounding set (that needs CAP_SETPCAP, which an unprivileged task does not have)", async () => {
+    expect(dockerfile).not.toContain("bounding-set");
+    expect(await readFile("environments/mcp-runner/check-image.sh", "utf8")).not.toContain("--bounding-set");
+    expect(await readFile("packages/gateway/src/mcp-runner/confine.ts", "utf8")).not.toMatch(/"--bounding-set/u);
   });
   it("strips setuid and setgid bits as it assembles", () => {
     expect(dockerfile).toContain("-perm /6000 -exec chmod ug-s {} +");
@@ -149,7 +159,7 @@ describe("T5 check-image.sh", () => {
   const MUST_HAVE = ["usr/local/bin/node", "usr/bin/setpriv", "usr/bin/prlimit", "opt/mcp-runner/serve.mjs", "opt/mcp-runner/fetch.mjs", "opt/mcp-runner/install.mjs", "etc/ssl/certs/ca-certificates.crt", "usr/local/lib/node_modules/npm/bin/npm-cli.js"];
 
   /** A fake docker whose `export` is a tar of `root`. */
-  async function fakeDocker(root: string, user = "10003:10003", cmd = '["/usr/local/bin/node"]', runOk = true): Promise<string> {
+  async function fakeDocker(root: string, user = "10003:10003", cmd = '["/usr/local/bin/node"]', runOk = true, capbnd = "0000000000000000"): Promise<string> {
     const bin = join(root, "..", `fakebin-${Math.random().toString(36).slice(2)}`);
     await mkdir(bin, { recursive: true });
     await writeFile(join(bin, "docker"), `#!/bin/sh
@@ -157,7 +167,7 @@ case "$1" in
   create) echo fakecid ;;
   export) tar -cf - -C ${JSON.stringify(root)} . ;;
   inspect) case "$*" in *Config.User*) echo ${JSON.stringify(user)} ;; *Config.Cmd*) echo '${cmd}' ;; esac ;;
-  run) ${runOk ? "exit 0" : "exit 1"} ;;
+  run) case "$*" in *CapBnd*) echo ${JSON.stringify(capbnd)} ;; esac; ${runOk ? "exit 0" : "exit 1"} ;;
   rm) exit 0 ;;
 esac
 `);
@@ -214,6 +224,13 @@ esac
     const root = await image(MUST_HAVE);
     for (const user of ["", "root", "0", "10003", "10001:10001"]) expect((await check(await fakeDocker(root, user))).code, user).toBe(1);
     expect((await check(await fakeDocker(root, "10003:10003", "null"))).code).toBe(1);
+  });
+  it("fails when the bounding set is not empty with every capability dropped, and says what it read", async () => {
+    const root = await image(MUST_HAVE);
+    const result = await check(await fakeDocker(root, "10003:10003", '["x"]', true, "000001ffffffffff"));
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("CapBnd is '000001ffffffffff'");
+    expect((await check(await fakeDocker(root, "10003:10003", '["x"]', true, "0000000000000000"))).stdout).toContain("ok    CapBnd is 0");
   });
   it("fails when the image does not run the way ECS runs it, and can skip that step on a machine that cannot run containers", async () => {
     const root = await image(MUST_HAVE);

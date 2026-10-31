@@ -2,7 +2,8 @@
 #
 # It has no shell, no package manager and no `git`, and not one setuid or setgid file. It holds node (and npm, which only the install task runs), `setpriv` and `prlimit` (the bridge
 # starts a server through them), the CA bundle, and three bundled programs. It is assembled from nothing (`FROM scratch`) out of the pinned node image: only the files named below
-# and the shared libraries they need are copied, so what is not named is not there. The build proves it: it runs each program inside the assembled root, and fails if a setuid or
+# and the shared libraries they need are copied (each under the exact path the loader asks for, as a real file: `cp -L` of every path `ldd` prints, so a soname such as
+# libstdc++.so.6 is there even though Debian makes it a link), so what is not named is not there. The build proves it: it runs each program inside the assembled root, and fails if a setuid or
 # setgid file, a shell or `git` is present.
 #
 # Users (no root anywhere in a runner task; the controller image is T6):
@@ -56,13 +57,10 @@ RUN set -eu; \
     mkdir -p "$root/usr/bin" "$root/usr/local/bin" "$root/usr/local/lib/node_modules" "$root/usr/lib" "$root/etc/ssl/certs" "$root/opt/mcp-runner"; \
     ln -s usr/lib "$root/lib"; ln -s usr/bin "$root/bin"; ln -s usr/bin "$root/sbin"; \
     [ -d /usr/lib64 ] && { mkdir -p "$root/usr/lib64"; ln -s usr/lib64 "$root/lib64"; } || true; \
-    add() { real="$(readlink -f "$1")"; mkdir -p "$root$(dirname "$real")"; cp -p "$real" "$root$real"; }; \
+    add() { mkdir -p "$root$(dirname "$1")"; cp -L "$1" "$root$1"; }; \
     for program in /usr/local/bin/node /usr/bin/setpriv /usr/bin/prlimit; do \
       add "$program"; \
       for library in $(ldd "$program" | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i }'); do add "$library"; done; \
-    done; \
-    for loader in /lib/ld-linux-*.so.* /lib64/ld-linux-*.so.*; do \
-      [ -e "$loader" ] || continue; mkdir -p "$root$(dirname "$loader")"; [ -e "$root$loader" ] || cp -a "$loader" "$root$loader"; \
     done; \
     cp -a /usr/local/lib/node_modules/npm "$root/usr/local/lib/node_modules/npm"; \
     cp -p /etc/ssl/certs/ca-certificates.crt "$root/etc/ssl/certs/ca-certificates.crt"; \
@@ -79,7 +77,7 @@ RUN set -eu; \
     test -z "$(find "$root" -xdev -perm /6000)"; \
     for banned in git sh bash dash busybox apt apt-get dpkg curl wget; do test -z "$(find "$root" -xdev \( -type f -o -type l \) -name "$banned")"; done; \
     chroot "$root" /usr/local/bin/node --version; \
-    chroot "$root" /usr/bin/setpriv --no-new-privs --inh-caps=-all --bounding-set=-all -- /usr/bin/prlimit --nofile=1024 --nproc=256 --fsize=536870912 --core=0 -- /usr/local/bin/node --version; \
+    chroot "$root" /usr/bin/setpriv --no-new-privs --inh-caps=-all -- /usr/bin/prlimit --nofile=1024 --nproc=256 --fsize=536870912 --core=0 -- /usr/local/bin/node --version; \
     chroot "$root" /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js --version
 
 FROM scratch

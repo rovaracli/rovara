@@ -104,7 +104,7 @@ describe("T4 serve-main: starting", () => {
 
     const lines = (await readFile(log, "utf8")).trim().split("\n");
     expect(lines).toEqual([
-      `setpriv --no-new-privs --inh-caps=-all --bounding-set=-all -- ${prlimit} --nofile=1024 --nproc=256 --fsize=536870912 --core=0 -- ${process.execPath} ${join(dir, "tree", "bin", "server.mjs")} --read-only`,
+      `setpriv --no-new-privs --inh-caps=-all -- ${prlimit} --nofile=1024 --nproc=256 --fsize=536870912 --core=0 -- ${process.execPath} ${join(dir, "tree", "bin", "server.mjs")} --read-only`,
       `prlimit --nofile=1024 --nproc=256 --fsize=536870912 --core=0 -- ${process.execPath} ${join(dir, "tree", "bin", "server.mjs")} --read-only`,
     ]);
     // the token is gone from the environment, and so are the secret values

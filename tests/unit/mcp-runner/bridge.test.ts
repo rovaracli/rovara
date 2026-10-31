@@ -260,7 +260,7 @@ describe("T4 confinement command line", () => {
   it("is setpriv with no new privileges and no capabilities, then prlimit with the limits, then node, the program and its arguments", () => {
     expect(confinedCommand(tools, "/bundle/tree/bin/run.js", ["--read-only", "a=b"])).toEqual({
       file: "/usr/bin/setpriv",
-      args: ["--no-new-privs", "--inh-caps=-all", "--bounding-set=-all", "--", "/usr/bin/prlimit", "--nofile=1024", "--nproc=256", "--fsize=536870912", "--core=0", "--", "/usr/local/bin/node", "/bundle/tree/bin/run.js", "--read-only", "a=b"],
+      args: ["--no-new-privs", "--inh-caps=-all", "--", "/usr/bin/prlimit", "--nofile=1024", "--nproc=256", "--fsize=536870912", "--core=0", "--", "/usr/local/bin/node", "/bundle/tree/bin/run.js", "--read-only", "a=b"],
     });
   });
   it("passes an argument with shell characters as one plain word (there is no shell to read it)", () => {

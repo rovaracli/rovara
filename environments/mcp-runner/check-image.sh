@@ -8,7 +8,7 @@
 #   2. no `git`, no shell, no package manager, no downloader;
 #   3. the programs that must be there are: node, setpriv, prlimit, the three bundles, the CA file, npm;
 #   4. the image's user is 10003:10003, and it has a command;
-#   5. the image runs the way ECS runs it: read-only root, all capabilities dropped, a non-root user, and node works.
+#   5. the image runs the way ECS runs it: read-only root, all capabilities dropped, a non-root user: node works, CapBnd is 0, and setpriv (as that unprivileged user) and prlimit start node.
 # Step 5 needs a container runtime. `CHECK_IMAGE_SKIP_RUN=1` skips it (a machine that can export but not run).
 set -eu
 
@@ -51,7 +51,10 @@ command_line="$("$docker_bin" inspect -f '{{json .Config.Cmd}}' "$image")"
 # 5. As ECS runs it.
 if [ "${CHECK_IMAGE_SKIP_RUN:-0}" != "1" ]; then
   if "$docker_bin" run --rm --read-only --cap-drop ALL --user 10003:10003 --network none --entrypoint /usr/local/bin/node "$image" --version >/dev/null; then ok "node runs read-only, non-root, with no capabilities"; else bad "node does not run read-only, non-root, with no capabilities"; fi
-  if "$docker_bin" run --rm --read-only --cap-drop ALL --user 10003:10003 --network none --entrypoint /usr/bin/setpriv "$image" --no-new-privs --inh-caps=-all --bounding-set=-all -- /usr/bin/prlimit --nofile=1024 --nproc=256 --fsize=536870912 --core=0 -- /usr/local/bin/node --version >/dev/null; then ok "setpriv and prlimit start node"; else bad "setpriv and prlimit do not start node"; fi
+  # With every capability dropped the bounding set is empty already; setpriv is NOT asked to drop it (that needs CAP_SETPCAP).
+  capbnd="$("$docker_bin" run --rm --read-only --cap-drop ALL --user 10003:10003 --network none --entrypoint /usr/local/bin/node "$image" -e "console.log(require('fs').readFileSync('/proc/self/status', 'utf8').match(/CapBnd:\\s*([0-9a-f]+)/)[1])" 2>/dev/null || echo unreadable)"
+  [ "$capbnd" = "0000000000000000" ] && ok "CapBnd is 0 with all capabilities dropped" || bad "CapBnd is '$capbnd', not 0000000000000000"
+  if "$docker_bin" run --rm --read-only --cap-drop ALL --user 10003:10003 --network none --entrypoint /usr/bin/setpriv "$image" --no-new-privs --inh-caps=-all -- /usr/bin/prlimit --nofile=1024 --nproc=256 --fsize=536870912 --core=0 -- /usr/local/bin/node --version >/dev/null; then ok "setpriv and prlimit start node"; else bad "setpriv and prlimit do not start node"; fi
 fi
 
 exit "$failed"
