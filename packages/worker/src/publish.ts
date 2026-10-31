@@ -6,6 +6,7 @@ import {
   AgentXError,
   WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE,
   agentXError,
+  commitSubject,
   withAttributionTrailers,
   type ActingAttribution,
   type CheckEntry,
@@ -362,7 +363,7 @@ export async function prepareCandidatePublicationCommit(input: {
   if (workspaceTree === preparedTree) throw agentXError("CONFIG_INVALID", "repository has no changes to publish");
   const commit = (await input.git([
     "-c", `user.name=${AGENTX_GIT_NAME}`, "-c", `user.email=${AGENTX_GIT_EMAIL}`,
-    "commit-tree", workspaceTree, "-p", input.preparationCommit, "-m", withAttributionTrailers(`AgentX: ${input.title}`, input.attribution),
+    "commit-tree", workspaceTree, "-p", input.preparationCommit, "-m", withAttributionTrailers(`AgentX: ${commitSubject(input.title)}`, input.attribution),
   ])).trim();
   await input.git(["checkout", "--force", "-B", input.headBranch, commit]);
   return commit;
@@ -507,7 +508,7 @@ async function prepareCleanPublicationCommit(input: {
     "-p",
     baseCommit,
     "-m",
-    withAttributionTrailers(`AgentX: ${input.title}`, input.attribution),
+    withAttributionTrailers(`AgentX: ${commitSubject(input.title)}`, input.attribution),
   ])).trim();
   await input.git(["checkout", "--force", "-B", input.headBranch, commit]);
   return commit;

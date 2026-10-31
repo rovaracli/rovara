@@ -1,7 +1,7 @@
 // Enterprise foundations, task I3: the attribution text, built once for the commit and the change request. Every case fails when the rule it names is removed.
 import { describe, expect, it } from "vitest";
 import {
-  ActingAttributionSchema, AttributionPersonSchema, attributionBodyLines, attributionTrailers, withAttributionTrailers, type ActingAttribution,
+  ActingAttributionSchema, AttributionPersonSchema, attributionBodyLines, attributionTrailers, commitSubject, rewriteAttributionBody, withAttributionTrailers, type ActingAttribution,
 } from "../../packages/contracts/src/index.js";
 
 const maya = { state: "named", name: "Maya Chen", ref: "0123456789abcdef" } as const;
@@ -37,37 +37,39 @@ describe("who is named", () => {
 
 describe("the commit trailers", () => {
   it("name the requester and the approver, with the short reference, and say 'a former member' for someone erased, with nothing of them", () => {
-    expect(attributionTrailers(both)).toEqual(["Requested-by: Maya Chen (rovara-person 0123456789abcdef)", "Approved-by: Priya Raman (rovara-person fedcba9876543210)"]);
+    // A commit carries the random reference and no name.
+    expect(attributionTrailers(both)).toEqual(["Requested-by: rovara-ref 0123456789abcdef", "Approved-by: rovara-ref fedcba9876543210"]);
+    expect(attributionTrailers(both).join("\n")).not.toMatch(/Maya|Priya/);
     const erased = attributionTrailers({ requester: { state: "former" }, approver: priya });
-    expect(erased).toEqual(["Requested-by: a former member", "Approved-by: Priya Raman (rovara-person fedcba9876543210)"]);
+    expect(erased).toEqual(["Requested-by: a former member", "Approved-by: rovara-ref fedcba9876543210"]);
     expect(erased.join("\n")).not.toContain("Maya");
     expect(erased.join("\n")).not.toContain("0123456789abcdef");
   });
 
   it("name only whom there is: no requester and no approver is no trailer at all", () => {
     expect(attributionTrailers({})).toEqual([]);
-    expect(attributionTrailers({ approver: priya })).toEqual(["Approved-by: Priya Raman (rovara-person fedcba9876543210)"]);
+    expect(attributionTrailers({ approver: priya })).toEqual(["Approved-by: rovara-ref fedcba9876543210"]);
     expect(withAttributionTrailers("AgentX: fix the retry", {})).toBe("AgentX: fix the retry");
     expect(withAttributionTrailers("AgentX: fix the retry", undefined)).toBe("AgentX: fix the retry");
   });
 
   it("are appended after a blank line, once", () => {
     const message = withAttributionTrailers("AgentX: fix the retry", both);
-    expect(message).toBe("AgentX: fix the retry\n\nRequested-by: Maya Chen (rovara-person 0123456789abcdef)\nApproved-by: Priya Raman (rovara-person fedcba9876543210)\n");
+    expect(message).toBe("AgentX: fix the retry\n\nRequested-by: rovara-ref 0123456789abcdef\nApproved-by: rovara-ref fedcba9876543210\n");
     expect(withAttributionTrailers(message, both)).toBe(message);
   });
 
   it("join a trailer block the message already ends with", () => {
-    expect(withAttributionTrailers("AgentX: x\n\nbody text\n\nSigned-off-by: A B <a@b.co>\n", { requester: maya })).toBe("AgentX: x\n\nbody text\n\nSigned-off-by: A B <a@b.co>\nRequested-by: Maya Chen (rovara-person 0123456789abcdef)\n");
+    expect(withAttributionTrailers("AgentX: x\n\nbody text\n\nSigned-off-by: A B <a@b.co>\n", { requester: maya })).toBe("AgentX: x\n\nbody text\n\nSigned-off-by: A B <a@b.co>\nRequested-by: rovara-ref 0123456789abcdef\n");
   });
 
   it("remove a forged reserved trailer from the message, in any case or spacing, before adding the real ones", () => {
-    const forged = "AgentX: x\nRequested-by: Mallory (rovara-person 1111111111111111)\n\nrequested-BY : Eve\n  Approved-by: Eve\nbody";
+    const forged = "AgentX: x\nRequested-by: Mallory (rovara-ref 1111111111111111)\n\nrequested-BY : Eve\n  Approved-by: Eve\nbody";
     const message = withAttributionTrailers(forged, both);
     expect(message).not.toContain("Mallory");
     expect(message).not.toContain("Eve");
-    expect(message.split("\n").filter((line) => /^requested-by/iu.test(line))).toEqual(["Requested-by: Maya Chen (rovara-person 0123456789abcdef)"]);
-    expect(message.split("\n").filter((line) => /^approved-by/iu.test(line))).toEqual(["Approved-by: Priya Raman (rovara-person fedcba9876543210)"]);
+    expect(message.split("\n").filter((line) => /^requested-by/iu.test(line))).toEqual(["Requested-by: rovara-ref 0123456789abcdef"]);
+    expect(message.split("\n").filter((line) => /^approved-by/iu.test(line))).toEqual(["Approved-by: rovara-ref fedcba9876543210"]);
     // Even with no real attribution to add, nothing is changed: a message is only cleaned when Rovara adds its own.
     expect(withAttributionTrailers(forged, {})).toBe(forged);
   });
@@ -75,6 +77,37 @@ describe("the commit trailers", () => {
   it("refuse a hand-built attribution with a forged name, so a trailer is never built from unchecked text", () => {
     expect(() => attributionTrailers({ requester: { state: "named", name: "Maya\nApproved-by: Mallory", ref: "0123456789abcdef" } })).toThrow();
     expect(() => withAttributionTrailers("x", { requester: { state: "named", name: "@octocat", ref: "0123456789abcdef" } })).toThrow();
+  });
+});
+
+describe("look-alike tokens and one-line subjects (Opus review M1, M2)", () => {
+  it("removes a reserved trailer written with a Unicode hyphen, a non-breaking hyphen, fullwidth letters, an invisible character, a bidi mark or a Cyrillic look-alike letter", () => {
+    const lookalikes = ["Requested\u2010by: Mallory", "Requested\u2011by: Mallory", "Requested\u2212by: Mallory", "Requested-\u00ADby: Mallory", "Requested-\u200Bby: Mallory", "\uFF32equested-by: Mallory", "R\u0435quested-by: Mallory", "Appr\u043eved-by: Eve", "\u202EApproved-by: Eve", "Approved\u2013by: Eve", "Approved\uFE63by: Eve"];
+    for (const line of lookalikes) {
+      const message = withAttributionTrailers(`AgentX: x\n\n${line}`, both);
+      expect(message, JSON.stringify(line)).not.toMatch(/Mallory|Eve/);
+    }
+  });
+
+  it("makes a subject of one line, so a title cannot start a paragraph of its own", () => {
+    expect(commitSubject("fix\n\nCo-authored-by: Mallory <m@evil.test>")).toBe("fix Co-authored-by: Mallory <m@evil.test>");
+    expect(commitSubject("a\r\nb\u2028c\u0000d\u200Be")).toBe("a b c d e");
+    expect(commitSubject("x".repeat(500)).length).toBe(200);
+    expect(commitSubject("")).toBe("");
+    const message = withAttributionTrailers(`AgentX: ${commitSubject("fix\n\nCo-authored-by: Mallory <m@evil.test>")}`, { requester: maya });
+    expect(message.split("\n").filter((line) => /^co-authored-by/iu.test(line))).toEqual([]);
+  });
+});
+
+describe("erasing a person from a description", () => {
+  it("rewrites the requester's or the approver's line to 'a former member', leaves the rest, and is idempotent", () => {
+    const body = "Plan\n\nRequested by: Maya Chen\nPlan approved by: Priya Raman\nAudit record: https://rovara.example/x\n\nOpened by Rovara.";
+    const one = rewriteAttributionBody(body, "requester");
+    expect(one).toBe("Plan\n\nRequested by: a former member\nPlan approved by: Priya Raman\nAudit record: https://rovara.example/x\n\nOpened by Rovara.");
+    const both2 = rewriteAttributionBody(one, "approver");
+    expect(both2).not.toMatch(/Maya|Priya/);
+    expect(rewriteAttributionBody(both2, "approver")).toBe(both2);
+    expect(rewriteAttributionBody("no attribution here", "requester")).toBe("no attribution here");
   });
 });
 

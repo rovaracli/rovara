@@ -45,8 +45,8 @@ async function publish(title: string, withAttribution: ActingAttribution | undef
 describe("the checked-tree publication's commit", () => {
   it("carries Requested-by and Approved-by trailers git itself reads as trailers", async () => {
     const { message, trailers } = await publish("add a retry flag", attribution);
-    expect(message.startsWith("AgentX: add a retry flag\n\nRequested-by: Maya Chen (rovara-person 0123456789abcdef)\nApproved-by: a former member")).toBe(true);
-    expect(trailers.trim().split("\n")).toEqual(["Requested-by: Maya Chen (rovara-person 0123456789abcdef)", "Approved-by: a former member"]);
+    expect(message.startsWith("AgentX: add a retry flag\n\nRequested-by: rovara-ref 0123456789abcdef\nApproved-by: a former member")).toBe(true);
+    expect(trailers.trim().split("\n")).toEqual(["Requested-by: rovara-ref 0123456789abcdef", "Approved-by: a former member"]);
   });
 
   it("is the same commit message as before when there is no attribution", async () => {
@@ -54,10 +54,19 @@ describe("the checked-tree publication's commit", () => {
     expect(message.trim()).toBe("AgentX: add a retry flag");
   });
 
-  it("does not let a title pose as the requester", async () => {
-    const { trailers, message } = await publish("x\nRequested-by: Mallory (rovara-person 1111111111111111)", attribution);
-    expect(message).not.toContain("Mallory");
-    expect(trailers.trim().split("\n")[0]).toBe("Requested-by: Maya Chen (rovara-person 0123456789abcdef)");
+  it("does not let a title pose as the requester, or add a trailer of its own", async () => {
+    const { trailers, message } = await publish("x\nRequested-by: Mallory (rovara-ref 1111111111111111)", attribution);
+    expect(trailers.trim().split("\n")[0]).toBe("Requested-by: rovara-ref 0123456789abcdef");
+    expect(message.split("\n")[0]).toContain("Mallory");
+    expect(message.split("\n").filter((line) => /^requested-by/iu.test(line))).toEqual(["Requested-by: rovara-ref 0123456789abcdef"]);
+    const injected = await publish("fix bug\n\nCo-authored-by: Mallory <m@evil.test>", attribution);
+    expect(injected.trailers).not.toContain("Mallory");
+    expect(injected.message.split("\n")[0]).toBe("AgentX: fix bug Co-authored-by: Mallory <m@evil.test>");
+  });
+
+  it("makes the subject one line even when there is no attribution", async () => {
+    const { message } = await publish("fix bug\n\nCo-authored-by: Mallory <m@evil.test>", undefined);
+    expect(message.trim().split("\n")).toEqual(["AgentX: fix bug Co-authored-by: Mallory <m@evil.test>"]);
   });
 });
 
