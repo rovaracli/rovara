@@ -162,9 +162,9 @@ export type E2ELimits = z.infer<typeof E2ELimitsSchema>;
 
 /**
  * `screenshotMode` (proof and evidence B1) is absent unless a strip is asked for: "all" adds a screenshot at the end of each step of every case (a passing case's strip, at most six frames), "failed" is the
- * default of one screenshot of each failed case. It is optional so a policy written before it, and its digest, read exactly as before.
+ * default of one screenshot of each failed case. `apiSamples` (B2) records a redacted request/response sample of each API step. Both are optional so a policy written before it, and its digest, read exactly as before.
  */
-export const E2ECapturePolicySchema = z.object({ screenshots: z.boolean(), traces: z.boolean(), video: z.boolean(), downloads: z.boolean(), screenshotMode: z.enum(["failed", "all"]).optional() }).strict();
+export const E2ECapturePolicySchema = z.object({ screenshots: z.boolean(), traces: z.boolean(), video: z.boolean(), downloads: z.boolean(), screenshotMode: z.enum(["failed", "all"]).optional(), apiSamples: z.boolean().optional() }).strict();
 
 export type E2ECapturePolicy = z.infer<typeof E2ECapturePolicySchema>;
 

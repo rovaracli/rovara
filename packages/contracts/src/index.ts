@@ -179,6 +179,7 @@ export * from "./test-proof.js";
 
 // Proof and evidence (W4/W5): the evidence pack, decision cards, the test environment and service mocks.
 export * from "./evidence.js";
+export * from "./api-samples.js";
 
 // Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
 export * from "./org-slack-workspace-evidence.js";

@@ -314,7 +314,9 @@ export function createE2EApplicationCliHost(input: { launchContext: E2EApplicati
   if (launchContext.selectedTarget.kind === "api") {
     if (declaration.target.app !== null) throw new Error("API declaration must keep the compiler's app:null target");
     if (!isPinnedRovaraHttpEngine(declaration.target.engine)) throw new Error("API declaration must name Rovara's pinned HTTP engine");
+    const samples = fileLedger.capture.enabled("api-sample");
     const ports: E2EApiRuntimePorts = Object.freeze({ ...shared, request: store.request,
+      ...(samples ? { samples: { record: (item: { caseId: string; kind: "api-sample"; bytes: Uint8Array; step: number }) => fileLedger.capture.record(item) } } : {}),
       readApprovedJsonSchema: async () => { throw new Error("no JSON schema assets are installed in this executor"); },
       readApprovedStateProbe: async (request: { caseId: string; assertionIndex: number; probeId: string }) => {
         const installed = installedE2EApplicationStateProbeAsset(request.probeId);

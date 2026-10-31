@@ -132,10 +132,10 @@ const MAX_ARTIFACTS_FILE_BYTES = 512 * 1024;
 const MAX_CAPTURE_ENTRIES = 1024;
 /** A little more than the executor's own budget, so a listing the executor kept within 6 MiB is read whole. */
 const MAX_CAPTURE_READ_BYTES = 7 * 1024 * 1024;
-const captureEntrySchema = z.object({ caseId: z.string().min(1).max(160), kind: z.literal("screenshot"), sha256: z.string().regex(/^[a-f0-9]{64}$/),
+const captureEntrySchema = z.object({ caseId: z.string().min(1).max(160), kind: z.enum(["screenshot", "api-sample"]), sha256: z.string().regex(/^[a-f0-9]{64}$/),
   bytes: z.number().int().nonnegative(), omitted: z.enum(["budget", "credential-match"]).optional(), step: z.number().int().min(0).max(9999).optional() }).strict();
 const artifactsFileSchema = z.object({ schemaVersion: z.literal("e2e-executor-artifacts/v1"), artifacts: z.array(captureEntrySchema).max(MAX_CAPTURE_ENTRIES) }).strict();
-const CAPTURE_FILE = /^case-\d{1,4}(?:-step-\d{1,4})?-screenshot\.jpg$/;
+const CAPTURE_FILE = /^case-\d{1,4}(?:(?:-step-\d{1,4})?-screenshot\.jpg|-api-\d{1,4}\.json)$/;
 
 /**
  * The executor's log head and its captures, read best effort from its out directory. A capture file that carries a credential (by the host's own predicate, which also
@@ -152,11 +152,11 @@ async function readExecutorEvidence(outDir: string, containsCredential: (bytes: 
     const listing = artifactsFileSchema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readRegular(outDir, CAPTURE_ARTIFACTS_FILE, { total: 0 }, MAX_ARTIFACTS_FILE_BYTES))));
     // Every capture file the directory holds, read once within a bound; a listing is matched to a file by kind and digest, not by trusting a name.
     const budget = { total: 0 };
-    const loaded: Array<{ name: string; kind: "screenshot"; sha256: string; bytes: Uint8Array }> = [];
+    const loaded: Array<{ name: string; kind: "screenshot" | "api-sample"; sha256: string; bytes: Uint8Array }> = [];
     for (const name of (await readdir(join(outDir, CAPTURE_DIR))).sort()) {
       const match = CAPTURE_FILE.exec(name);
       if (!match) continue;
-      const kind = "screenshot" as const;
+      const kind = name.endsWith(".json") ? "api-sample" as const : "screenshot" as const;
       try {
         const bytes = await readRegular(outDir, `${CAPTURE_DIR}/${name}`, budget, CAPTURE_SCREENSHOT_MAX_BYTES, MAX_CAPTURE_READ_BYTES);
         loaded.push({ name, kind, sha256: sha(bytes), bytes });
