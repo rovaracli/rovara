@@ -310,6 +310,9 @@ export class ControlPlaneStack extends Stack {
       // The ARN is not passed: the role has a fixed name, so the broker builds it from AGENTX_ENV in the environment's role path, and only where this flag is set (the same condition as the grant above), so its
       // environment stays under Lambda's 4 KB.
       broker.addEnvironment("AGENTX_CLOUD", "true");
+      // The web app's company admin console (Settings: models, people, budgets, health, how we work) is shown only where the broker lists "admin" in
+      // WEB_FEATURES (app-nav/nav.ts; owners and admins only). The other names (usage, chains, describe) are placeholder pages and stay off.
+      broker.addEnvironment("WEB_FEATURES", "admin");
     }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
