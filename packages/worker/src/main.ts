@@ -18,6 +18,7 @@ import { createDefaultPiSessionAdapter } from "./pi-session.js";
 import { chatGptTokenSource } from "./chatgpt-token.js";
 import { lazyModelProxy, modelAccessSource } from "./model-access.js";
 import { agentSkillsSource } from "./agent-step.js";
+import { brokerContextCall, contextToolsCatalogSource } from "./context-sources/bridge.js";
 import { createDefaultProjectSetupExecutor, createReadinessGatedProjectSetupRuntime } from "./project-setup-executor.js";
 import { postProjectSetupTerminalResult } from "./project-setup-callback.js";
 import { postWorkerTerminalResult } from "./terminal-callback.js";
@@ -122,6 +123,11 @@ const state = createWorkerServerState(
           agentSkills: agentSkillsSource({ controlPlaneUrl, capability: invocation.callbackCapability }),
           // An agent step's connector tools, through the same control plane with the same capability.
           agentRun: { brokerUrl: controlPlaneUrl },
+          // Lane E: the project's MCP context sources for an Understand, Plan, Plan-check or Review stage, through the same control plane with the same capability.
+          contextSources: {
+            catalog: contextToolsCatalogSource({ brokerUrl: controlPlaneUrl, capability: invocation.callbackCapability, onDiagnostic: (message) => console.log(JSON.stringify({ component: "worker", event: "context_sources", message })) }),
+            call: brokerContextCall({ brokerUrl: controlPlaneUrl, capability: invocation.callbackCapability }),
+          },
           ...(invocation.payload.workflowE2EAdmission === undefined ? {} : {
             workflowE2EEvidenceRoot: requiredEnvironment("CONTAINED_FOUNDATION_EVIDENCE_DIR"),
             workflowE2ERuntimeRoot: process.cwd(),

@@ -3,7 +3,7 @@ import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupDraftAnswer, setupDraftInstructions, setupDraftRetryPrompt } from "./setup-draft.js";
-import type { BashOperations } from "@earendil-works/pi-coding-agent";
+import type { BashOperations, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
 import { PLAN_CRITIQUE_ARTIFACT, settlePlanCritique } from "./plan-critic.js";
@@ -69,6 +69,9 @@ import { capturePartTree, checkoutIntegratedTree, clearPartsFolder, createPartWo
 import { executeWorkflowE2EChecks, workflowE2EAdmissionIsApplication } from "./workflow-e2e-checks.js";
 import type { WorkflowE2EApplicationRuntime } from "./workflow-e2e-application-checks.js";
 import { READ_ONLY_STEP_MODES, STOPS_PROGRAMS_FIRST_MODES, stopProgramsBeforeReading, type StopBeforeReadingOptions } from "./stop-before-reading.js";
+import { createContextTools, type ContextBridgeCall } from "./context-sources/bridge.js";
+import { contextSourcesNote } from "./context-sources/frame.js";
+import { isContextSourceStage, type ContextToolCatalog } from "@agentx/contracts";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 
 export interface TaskInvocationResult {
@@ -148,6 +151,11 @@ export interface TaskInvocationDependencies {
   docker?: DockerCli;
   /** This operation's skills snapshot from the control plane (agent-step.ts); asked only when the step names skills. */
   agentSkills?: () => Promise<readonly AgentSkillFile[]>;
+  /**
+   * Lane E: where an Understand, Plan, Plan-check or Review stage reaches the project's MCP context sources, through the broker with the invocation's own capability.
+   * Asked only when the invocation says the stage has sources (`contextSources`). Without it such a stage does not run (it would run without the team's sources, silently).
+   */
+  contextSources?: { catalog: () => Promise<ContextToolCatalog | undefined>; call: ContextBridgeCall };
   /**
    * Where an agent step (Task 23) reaches the broker's connector tools, with the invocation's own capability. Without it the
    * worker cannot run an agent step. Tests supply fakes for the catalogs and the call.
@@ -668,6 +676,18 @@ async function runTask(
 
   // The agent's shell: the devcontainer's or the sandbox's, or the local one when it was chosen.
   const agentShell = bashOperations ?? (localShell ? localBashOperations({ explicit: true }) : undefined);
+  // Lane E: the project's context sources, in the stages that may read them only. Build never gets them, whatever the invocation says.
+  let sourceSession: { contextTools: ToolDefinition[]; contextNote: string } | undefined;
+  if (invocation.payload.contextSources === true && isContextSourceStage(payloadMode)) {
+    if (dependencies.contextSources === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot reach this project's context sources");
+    const catalog = await dependencies.contextSources.catalog();
+    if (catalog !== undefined && (catalog.tools.length > 0 || catalog.searchTeamKnowledge)) {
+      sourceSession = {
+        contextTools: createContextTools(catalog, dependencies.contextSources.call, { workspaceId: invocation.workspaceId, conversationId, operationId: invocation.operationId }),
+        contextNote: contextSourcesNote(catalog),
+      };
+    }
+  }
   let session: PiSessionHandle;
   if (registered) {
     session = await openRegisteredWorkspacePiSession(
@@ -684,6 +704,7 @@ async function runTask(
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
         ...stepSession,
+        ...(sourceSession === undefined ? {} : sourceSession),
       },
       dependencies.piAdapter,
     );
@@ -697,6 +718,7 @@ async function runTask(
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
         ...stepSession,
+        ...(sourceSession === undefined ? {} : sourceSession),
       },
       dependencies.piAdapter,
     );

@@ -409,6 +409,21 @@ describe("ec2-ebs delivery", () => {
       log.mockRestore();
     });
 
+    it("never sends a stage with MCP context sources to a worker that does not list task.contextSources.v1: it is refused, not run without the team's sources, and the field is not dropped (lane E)", async () => {
+      const record = taskRecord({ workflowMode: "PLAN", contextSources: true });
+      const base = ["task.workflowMode"];
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.contextSources.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).contextSources).toBe(true);
+      // A stage of a project with no sources is delivered to either.
+      const plain = taskRecord({ workflowMode: "PLAN" });
+      const either = delivery({ workerFeatures: async () => base });
+      expect(await either.deliver(plain, plain.invocation)).toBe("DELIVERED");
+    });
+
     it("never sends a fix to an open pull request to a worker that does not list task.workflowFix: it is refused, not run as a first build, and the field is not dropped (Plan 6 Task 15)", async () => {
       const record = taskRecord({ workflowMode: "IMPLEMENT", workflowFix: { source: "ci" } });
       const base = ["task.workflowMode"];

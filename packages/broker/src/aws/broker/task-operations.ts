@@ -459,6 +459,8 @@ export async function taskOperationParts(
   const askGroundingSource = input.workflowMode === "PLAN" && codingPlan && input.legacyTask !== true && offersApplicationE2EPlan(e2ePlanningContext) && projectE2EBaselineWanted(settings);
   if (askGroundingSource) operation.groundingSourceAsked = true;
   const askBaselineSource = input.workflowE2EBaselineSource === true || (input.workflowMode === "IMPLEMENT" && await baselineSourceStillRequested(dependencies, workspace.id));
+  // Lane E: the project's MCP context sources, in the four stages that may read them and never in Build (stageHasContextSources).
+  const contextToolsOn = await stageHasContextSources({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, contextSourcesConfigured: dependencies.contextSources !== undefined }, orgId, workspace.projectName, input.workflowMode);
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "task",
@@ -476,8 +478,7 @@ export async function taskOperationParts(
       agentSkills: (applied?.agentStep?.skills?.length ?? 0) > 0,
       // The connector tools of an agent step whose recipe grants some (Task 19); the broker serves only the granted ones.
       agentTools: givesAgentTools(applied),
-      // Lane E: the project's MCP context sources, in the four stages that may read them and never in Build (stageHasContextSources).
-      contextTools: await stageHasContextSources({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, contextSourcesConfigured: dependencies.contextSources !== undefined }, orgId, workspace.projectName, input.workflowMode),
+      contextTools: contextToolsOn,
     }),
     payload: {
       conversationId: input.conversationId,
@@ -505,6 +506,8 @@ export async function taskOperationParts(
       ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
       // Plan 6 Task 15: the run fixes a pull request that is already open; a worker without "task.workflowFix" is refused the run at delivery, never sent it without the field.
       ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
+      // Lane E: a worker without "task.contextSources.v1" is refused the stage at delivery, never sent it without the field.
+      ...(contextToolsOn ? { contextSources: true as const } : {}),
       // Task 26 (review I1): when a route was chosen the worker is told the model it was chosen for, never left to its install setting, which the key may not allow.
       ...(payloadModel === undefined ? {} : { model: payloadModel }),
       ...(applied?.modelPolicy===undefined?{}:{modelPolicy:applied.modelPolicy}),
