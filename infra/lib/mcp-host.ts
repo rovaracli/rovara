@@ -65,6 +65,8 @@ export class McpHost extends Construct {
   constructor(scope: Construct, id: string, props: McpHostProps) {
     super(scope, id);
     if (props.certificateArn === undefined || props.certificateArn === "") throw new Error("the MCP host needs a certificate for its HTTPS listener: there is no plain-HTTP mode");
+    // An ACM certificate (the ARN comes from the install's configuration, rovaraMcpHostCertificateArn); a literal or another service's ARN would fail at deploy, so it fails here.
+    if (!/^arn:aws(?:-[a-z]+)*:acm:[a-z]{2}(?:-[a-z]+)+-\d:\d{12}:certificate\/[0-9A-Za-z-]+$/u.test(props.certificateArn)) throw new Error("the MCP host's certificate must be an ACM certificate ARN (rovaraMcpHostCertificateArn)");
     if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/u.test(props.hostName ?? "") || /(?:^|\.)(?:amazonaws\.com|elb\.amazonaws\.com)$/u.test(props.hostName)) {
       throw new Error("the MCP host needs a DNS name of its own that the certificate is for (not the load balancer's amazonaws.com name)");
     }

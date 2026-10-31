@@ -86,6 +86,8 @@ export interface ControlPlaneStackProps extends StackProps {
   reservedConcurrency?: boolean;
   /** Enterprise installs: the ranges the model proxy and the model access function may reach over HTTPS (never the whole internet). Absent: as before. */
   privateEgressCidrs?: readonly string[];
+  /** Extra environment variables for the broker, from the install's own settings (the private MCP ranges, `privateMcpBrokerEnvironment`). Absent: none. */
+  brokerEnvironment?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -220,6 +222,7 @@ export class ControlPlaneStack extends Stack {
       GITHUB_APP_ID: githubAppId.valueAsString,
       GITHUB_APP_PRIVATE_KEY_SECRET_ARN: githubAppPrivateKeySecretArn.valueAsString,
     });
+    for (const [name, value] of Object.entries(props?.brokerEnvironment ?? {})) broker.addEnvironment(name, value);
     if (naming.env !== undefined) {
       BrokerNames.of(broker).add("stateTable", state.tableName);
       BrokerNames.of(broker).add("artifactBucket", artifacts.bucketName);
