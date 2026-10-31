@@ -19,15 +19,16 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { workspaceFixture, workspaceWorkflow } from "./support/workspace-fixture.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111";
-const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, taskId: TASK, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", openPath: "/app/sessions/ses_" + "a".repeat(20), ...extra });
+const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, taskId: TASK, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", contentVersion: "v1", openPath: "/app/sessions/ses_" + "a".repeat(20), ...extra });
 const lowItem: DecisionItem = { ...base("plan1"), kind: "approve_plan", path: "quick", files: ["src/retry.ts"], claims: 2, untestedClaims: 0 };
 const mediumItem: DecisionItem = { ...base("dep1", { taskId: undefined }), kind: "approve_dependency", packages: 2, newInstallScripts: false };
 const highItem: DecisionItem = { ...base("set1", { taskId: undefined }), kind: "approve_setting", settingLabel: "Allow video", secondPerson: true };
-const viewOf = (items: DecisionItem[]) => { const p = projectDecisionCards(items); return DecisionCardsViewSchema.parse({ cards: p.cards, total: p.cards.length, tabs: p.tabs }); };
+const viewOf = (items: DecisionItem[]) => { const p = projectDecisionCards(items); return DecisionCardsViewSchema.parse({ cards: p.cards, total: p.cards.length, tabs: p.tabs, details: p.details, digests: p.digests, dropped: p.dropped }); };
 
-function setupHome(items: DecisionItem[]) {
+function setupHome(items: DecisionItem[], respond?: (request: { method: string; path: string }) => { status: number; body: unknown } | undefined) {
  let view = viewOf(items);
  const f = fakeHost(async request => {
+  const custom = respond?.(request);if (custom) return custom;
   if (request.path === "/v1/app/decisions") return { status: 200, body: view };
   if (request.path === "/v1/app/home") return { status: 200, body: { cards: [], total: 0 } };
   if (request.method === "POST" && request.path.endsWith("/evidence-opened")) return { status: 200, body: { cardId: "approve_dependency:dep1", opened: true, recorded: true } };
@@ -36,7 +37,7 @@ function setupHome(items: DecisionItem[]) {
  });
  const query = createQueryClient();
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
- return { ...f, ...ui, query, set(next: DecisionItem[]) { view = viewOf(next); } };
+ return { ...f, ...ui, query, set(next: DecisionItem[]) { view = viewOf(next); }, view: () => view };
 }
 const posts = (f: ReturnType<typeof setupHome>) => f.request.mock.calls.map(([r]) => r).filter(r => r.method === "POST");
 
@@ -51,14 +52,14 @@ it("shows a low card with one-tap Approve that posts once to the card's own rout
 it("keeps Approve disabled on a medium card until the evidence panel was opened and recorded", async () => {
  const f = setupHome([mediumItem]);
  const approve = await screen.findByRole("button", { name: "Approve" });
- expect(approve.disabled).toBe(true);
+ expect(approve.hasAttribute("disabled")).toBe(true);
  fireEvent.click(approve);
  expect(posts(f)).toHaveLength(0);
  const summary = screen.getByText("Open the evidence to approve");
  (summary.closest("details") as HTMLDetailsElement).open = true;
  fireEvent(summary.closest("details")!, new Event("toggle"));
  await waitFor(() => expect(posts(f).map(r => r.path)).toEqual(["/v1/app/decisions/approve_dependency/dep1/evidence-opened"]));
- await waitFor(() => expect((screen.getByRole("button", { name: "Approve" })).disabled).toBe(false));
+ await waitFor(() => expect(screen.getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(false));
  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
  await waitFor(() => expect(posts(f)).toHaveLength(2));
  expect(posts(f)[1]!.path).toBe("/v1/app/decisions/approve_dependency/dep1/approve");
@@ -68,7 +69,8 @@ it("gives a high card no Approve at all, only Open to decide", async () => {
  await screen.findByRole("heading", { name: "Retry failed payments" });
  expect(screen.queryByRole("button", { name: /^Approve/ })).toBeNull();
  expect(screen.getByRole("link", { name: "Open to decide" }).getAttribute("href")).toBe("/app/sessions/ses_" + "a".repeat(20));
- expect(screen.getByText(/after you sign in again/)).toBeTruthy();
+ expect(screen.getByText("This decision is made on its own page.")).toBeTruthy();
+ expect(screen.queryByText(/sign in again/)).toBeNull();
  expect(posts(f)).toHaveLength(0);
 });
 it("lists high first and offers no bulk control", async () => {
@@ -130,6 +132,128 @@ it("has no accessibility violations", async () => {
  const f = setupHome([lowItem, mediumItem, highItem]);
  await screen.findByRole("heading", { name: "Needs you" });
  await expectNoAxeViolations(f.container);
+});
+
+it("I1: evidence-opened and approve send back the digest the card was shown with", async () => {
+ const f = setupHome([mediumItem]);
+ const digest = f.view().digests["approve_dependency:dep1"]!;
+ const summary = await screen.findByText("Open the evidence to approve");
+ (summary.closest("details") as HTMLDetailsElement).open = true;
+ fireEvent(summary.closest("details")!, new Event("toggle"));
+ await waitFor(() => expect(screen.getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(false));
+ fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+ await waitFor(() => expect(posts(f)).toHaveLength(2));
+ expect(posts(f).map(r => (r.body as { shownDigest: string }).shownDigest)).toEqual([digest, digest]);
+});
+it("I4: the medium panel shows evidence that is not on the front", async () => {
+ setupHome([{ ...mediumItem, details: [{ title: "Packages", lines: ["left-pad 1.3.0", "is-odd 3.0.1"] }] }]);
+ await screen.findByText("Open the evidence to approve");
+ const front = screen.getByRole("article").querySelector(".rv-decision-evidence")!.textContent;
+ expect(front).not.toContain("left-pad");
+ expect(screen.getByText("left-pad 1.3.0")).toBeTruthy();
+ expect(screen.getByRole("region", { name: "Why this needs a look", hidden: true }) ).toBeTruthy();
+});
+it("I3: on a stale answer the card forgets what was opened, loads the cards again and shows the new version needing a new opening", async () => {
+ let stale = false;
+ const f = setupHome([mediumItem], request => {
+  if (stale && request.method === "POST" && request.path.endsWith("/approve")) { stale = false;return { status: 409, body: { error: { code: "CHANGE_STALE", message: "This changed since you loaded it. Reload to see the current version." } } }; }
+  return undefined;
+ });
+ const open = async () => { const summary = await screen.findByText("Open the evidence to approve");(summary.closest("details") as HTMLDetailsElement).open = true;fireEvent(summary.closest("details")!, new Event("toggle")); };
+ await open();
+ await waitFor(() => expect(screen.getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(false));
+ // The item changes on the server; the approve is refused as stale.
+ f.set([{ ...mediumItem, contentVersion: "v2" }]);
+ const digestNow = f.view().digests["approve_dependency:dep1"];
+ stale = true;
+ const getsBefore = f.request.mock.calls.filter(([r]) => r.path === "/v1/app/decisions").length;
+ fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+ await screen.findByRole("alert");
+ await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.path === "/v1/app/decisions").length).toBeGreaterThan(getsBefore));
+ // Approve is disabled again until the new version is opened.
+ await waitFor(() => expect(screen.getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(true));
+ const opensBefore = posts(f).filter(r => r.path.endsWith("/evidence-opened")).length;
+ const details = screen.getByText("Open the evidence to approve").closest("details") as HTMLDetailsElement;
+ details.open = false;fireEvent(details, new Event("toggle"));
+ await open();
+ await waitFor(() => expect(posts(f).filter(r => r.path.endsWith("/evidence-opened")).length).toBe(opensBefore + 1));
+ expect((posts(f).at(-1)!.body as { shownDigest: string }).shownDigest).toBe(digestNow);
+ await waitFor(() => expect(screen.getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(false));
+});
+it("I3: a card whose digest changes on a refetch must be opened again even without an error", async () => {
+ const f = setupHome([mediumItem]);
+ const summary = await screen.findByText("Open the evidence to approve");
+ (summary.closest("details") as HTMLDetailsElement).open = true;
+ fireEvent(summary.closest("details")!, new Event("toggle"));
+ await waitFor(() => expect(screen.getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(false));
+ f.set([{ ...mediumItem, contentVersion: "v2" }]);
+ await f.query.invalidateQueries({ queryKey: ["decisions"] });
+ await waitFor(() => expect(screen.getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(true));
+});
+it("I7: a 202 needs-confirmation answer is not shown as done: the card says nothing is decided and offers the confirmation page", async () => {
+ const url = "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa";
+ const f = setupHome([lowItem], request => request.method === "POST" && request.path.endsWith("/approve") ? { status: 202, body: { cardId: "approve_plan:plan1", outcome: "needs_confirmation", confirmUrl: url } } : undefined);
+ await screen.findByRole("heading", { name: "Retry failed payments" });
+ fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+ await screen.findByText(/Nothing is decided yet/);
+ fireEvent.click(screen.getByRole("button", { name: "Confirm on the next page" }));
+ expect(f.host.openExternal).toHaveBeenCalledWith(url);
+});
+it("Q7: a high card that (wrongly) carries an approve action shows no Approve and cannot post one, because the client reader drops the card's refinements", async () => {
+ const view = viewOf([highItem]);
+ const wrong = { ...view, cards: view.cards.map(c => ({ ...c, actions: [{ kind: "approve", label: "Approve", href: "/v1/app/decisions/approve_setting/set1/approve", method: "POST" }, ...c.actions] })) };
+ // The strict schema refuses this card (the server could never send it) ...
+ expect(DecisionCardsViewSchema.safeParse(wrong).success).toBe(false);
+ // ... but the reader the client uses accepts it, so the client's own guard is what stops the control.
+ const f = fakeHost(async request => request.path === "/v1/app/decisions" ? { status: 200, body: wrong } : request.path === "/v1/app/home" ? { status: 200, body: { cards: [], total: 0 } } : { status: 200, body: {} });
+ const query = createQueryClient();
+ renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+ await screen.findByRole("heading", { name: "Retry failed payments" });
+ expect(screen.queryByRole("button", { name: /^Approve/ })).toBeNull();
+ expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);
+});
+it("Q7: the client's api refuses to post an approve for a high card, whatever its actions say", async () => {
+ const { createDecisionsApi, readDecisions, mayApproveHere } = await import("../../packages/ui/src/api/decisions.js");
+ const { DecisionCardsViewReaderSchema } = await import("@agentx/contracts/web");
+ const view = viewOf([highItem]);
+ const wrong = DecisionCardsViewReaderSchema.parse({ ...view, cards: view.cards.map(c => ({ ...c, actions: [{ kind: "approve", label: "Approve", href: "/v1/app/decisions/approve_setting/set1/approve", method: "POST" }, ...c.actions] })) });
+ const [decision] = readDecisions(wrong);
+ expect(mayApproveHere(decision!.card)).toBe(false);
+ const f = fakeHost(async () => ({ status: 200, body: {} }));
+ await expect(createDecisionsApi(f.host).approve(decision!, undefined)).rejects.toMatchObject({ code: "FORBIDDEN" });
+ expect(f.request).not.toHaveBeenCalled();
+});
+it("I3: a stale answer clears what was opened even when the refetched card has the same digest", async () => {
+ let stale = false;
+ const f = setupHome([mediumItem], request => stale && request.method === "POST" && request.path.endsWith("/approve") ? ((stale = false), { status: 409, body: { error: { code: "CHANGE_STALE", message: "Reload." } } }) : undefined);
+ const summary = await screen.findByText("Open the evidence to approve");
+ (summary.closest("details") as HTMLDetailsElement).open = true;
+ fireEvent(summary.closest("details")!, new Event("toggle"));
+ await waitFor(() => expect(screen.getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(false));
+ stale = true;
+ fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+ await screen.findByRole("alert");
+ await waitFor(() => expect(screen.getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(true));
+ expect(posts(f).filter(r => r.path.endsWith("/approve"))).toHaveLength(1);
+});
+it("a card with no valid digest is not shown (a server that cannot say what it shows)", async () => {
+ const view = viewOf([lowItem]);
+ const f = fakeHost(async request => request.path === "/v1/app/decisions" ? { status: 200, body: { ...view, digests: {} } } : { status: 200, body: { cards: [], total: 0 } });
+ const query = createQueryClient();
+ renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+ await screen.findByRole("heading", { name: "Nothing needs you right now" });
+});
+it("a high card says 'sign in again' only when it opens the confirmation page", async () => {
+ setupHome([{ ...highItem, confirmPath: "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }]);
+ await screen.findByText(/after you sign in again/);
+ expect(screen.getByRole("button", { name: "Open to decide" })).toBeTruthy();
+});
+it("the design tab's Approve waits for the requirements", async () => {
+ const f = setupHome([{ ...base("req1"), kind: "approve_requirements", claims: 3 }, { ...base("des1"), kind: "approve_design", files: [] }]);
+ await screen.findByRole("tab", { name: "Design" });
+ fireEvent.mouseDown(screen.getByRole("tab", { name: "Design" }), { button: 0 });fireEvent.click(screen.getByRole("tab", { name: "Design" }));
+ await waitFor(() => expect(screen.getByRole("button", { name: "Approve design" }).hasAttribute("disabled")).toBe(true));
+ expect(posts(f)).toHaveLength(0);
 });
 
 // ---- the task page: decision card, Evidence tab, one-screen plan

@@ -1,13 +1,18 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { DecisionAnsweredSchema, DecisionCardsViewReaderSchema, DecisionEvidenceOpenedAnswerSchema, DecisionTabsSchema, type DecisionRejectReason, type DecisionTab, type DecisionTabId } from "@agentx/contracts/web";
+import {
+ DecisionCardsViewReaderSchema, DecisionDetailGroupsSchema, DecisionDigestSchema, DecisionEvidenceOpenedAnswerSchema, DecisionOutcomeSchema, DecisionTabsSchema,
+ type DecisionDetailGroup, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
+} from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
+import { isConfirmUrl } from "../text/links.js";
 
 type View = ReturnType<typeof DecisionCardsViewReaderSchema.parse>;
 export type ReadDecisionCard = View["cards"][number];
-export interface ReadDecision { card: ReadDecisionCard; tabs: DecisionTab[] | undefined }
+/** A card with what the server shows beside it: its tabs, its evidence detail and the digest of what is shown (sent back with every open and approve). A card with no valid digest is not shown. */
+export interface ReadDecision { card: ReadDecisionCard; tabs: DecisionTab[] | undefined; details: DecisionDetailGroup[]; digest: string }
 
 /** The card's own action of a kind, only when its address is exactly the card route this app knows: a client never follows an address a card made up. */
 export function decisionActionPath(card: ReadDecisionCard, kind: "approve" | "reject"): string | undefined {
@@ -26,27 +31,43 @@ export function decisionOpenTarget(card: ReadDecisionCard, origin: string): { ki
  return action.href.startsWith("/v1/app/approve/") ? { kind: "external", href: origin + action.href } : undefined;
 }
 
+/**
+ * The client's own guard, because the reader drops the card schema's refinements: a card whose risk is high never gets an approve control here, whatever its actions say. The server also refuses
+ * (404); this is so the screen cannot even offer it.
+ */
+export function mayApproveHere(card: ReadDecisionCard): boolean {
+ return card.risk !== "high" && card.actions.some(action => action.kind === "approve");
+}
+
 export function readDecisions(view: View): ReadDecision[] {
- return view.cards.map(card => {
-  const tabs = DecisionTabsSchema.safeParse(view.tabs?.[card.id]);
-  return { card, tabs: tabs.success ? tabs.data : undefined };
+ return view.cards.flatMap(card => {
+  const digest = DecisionDigestSchema.safeParse(view.digests?.[card.id]);
+  if (!digest.success) return [];
+  const tabs = DecisionTabsSchema.safeParse(view.tabs?.[card.id]), details = DecisionDetailGroupsSchema.safeParse(view.details?.[card.id]);
+  return [{ card, tabs: tabs.success ? tabs.data : undefined, details: details.success ? details.data : [], digest: digest.data }];
  });
 }
+
+/** What an approve or a reject came to: decided, or waiting on the confirmation page (nothing was decided). */
+export type DecisionResult = { kind: "decided"; outcome: "approved" | "rejected" } | { kind: "needs_confirmation"; confirmUrl: string | undefined };
 
 export function createDecisionsApi(host: AppHost) {
  const api = createApiClient(host);
  const done = <T,>(result: { kind: string; value?: T }): T => { if (result.kind !== "done" || result.value === undefined) throw new ApiError(409, "PENDING", "This isn't finished. Open the decision to continue."); return result.value; };
+ const resultOf = (value: ReturnType<typeof DecisionOutcomeSchema.parse>): DecisionResult => value.outcome === "needs_confirmation"
+  ? { kind: "needs_confirmation", confirmUrl: isConfirmUrl(value.confirmUrl, host.origin) ? value.confirmUrl : undefined }
+  : { kind: "decided", outcome: value.outcome };
  return {
-  async evidenceOpened(card: ReadDecisionCard, tab?: DecisionTabId) { return done(await api.send("POST", evidencePath(card, tab), { requestId: crypto.randomUUID() }, DecisionEvidenceOpenedAnswerSchema)); },
-  async approve(card: ReadDecisionCard, tab?: DecisionTabId) {
-   const path = decisionActionPath(card, "approve");
+  async evidenceOpened(decision: ReadDecision, tab?: DecisionTabId) { return done(await api.send("POST", evidencePath(decision.card, tab), { requestId: crypto.randomUUID(), shownDigest: decision.digest }, DecisionEvidenceOpenedAnswerSchema)); },
+  async approve(decision: ReadDecision, tab?: DecisionTabId): Promise<DecisionResult> {
+   const path = mayApproveHere(decision.card) ? decisionActionPath(decision.card, "approve") : undefined;
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
-   return done(await api.send("POST", path, { requestId: crypto.randomUUID(), ...(tab === undefined ? {} : { tab }) }, DecisionAnsweredSchema, { retry: "never" }));
+   return resultOf(done(await api.send("POST", path, { requestId: crypto.randomUUID(), shownDigest: decision.digest, ...(tab === undefined ? {} : { tab }) }, DecisionOutcomeSchema, { retry: "never" })));
   },
-  async reject(card: ReadDecisionCard, reason: DecisionRejectReason) {
-   const path = decisionActionPath(card, "reject");
+  async reject(decision: ReadDecision, reason: DecisionRejectReason): Promise<DecisionResult> {
+   const path = decision.card.risk === "high" ? undefined : decisionActionPath(decision.card, "reject");
    if (path === undefined) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
-   return done(await api.send("POST", path, { requestId: crypto.randomUUID(), reason }, DecisionAnsweredSchema, { retry: "never" }));
+   return resultOf(done(await api.send("POST", path, { requestId: crypto.randomUUID(), reason }, DecisionOutcomeSchema, { retry: "never" })));
   },
  };
 }

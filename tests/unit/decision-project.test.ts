@@ -6,7 +6,7 @@ import { isInfraPath, riskTierOf } from "../../packages/broker/src/decisions/ris
 import { isSafeRelativePath } from "../../packages/broker/src/decisions/text.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111";
-const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, taskId: TASK, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, ...extra });
+const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, taskId: TASK, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", contentVersion: "v1", openPath: `/app/sessions/ses_${"a".repeat(20)}`, ...extra });
 const proof = { proven: 3, passed: 1, failed: 0, notTested: 0 };
 
 const ITEMS: Record<DecisionKind, DecisionItem> = {
@@ -237,5 +237,64 @@ describe("text and order", () => {
     const first = projectDecisionCards(items).cards.map((card) => card.id);
     expect(first).toEqual(["approve_setting:set1", "approve_dependency:dep1", "merge:pr1", "approve_plan:plan1"]);
     expect(projectDecisionCards([...items].reverse()).cards.map((card) => card.id)).toEqual(first);
+  });
+});
+
+describe("the digest of what is shown (I1, I2)", () => {
+  const digestOf = (item: DecisionItem) => projectDecisionCards([item]).digests[`${item.kind}:${item.subjectId}`];
+  it("is a sha-256 for every card and the same for the same items", () => {
+    expect(digestOf(ITEMS.approve_dependency)).toMatch(/^[a-f0-9]{64}$/u);
+    expect(digestOf(ITEMS.approve_dependency)).toBe(digestOf({ ...ITEMS.approve_dependency }));
+  });
+  it("changes when the content version changes though the title, counts and evidence chips do not", () => {
+    const a = digestOf({ ...ITEMS.approve_dependency, contentVersion: "v1" });
+    const b = digestOf({ ...ITEMS.approve_dependency, contentVersion: "v2" });
+    expect(a).not.toBe(b);
+    expect(cardOf({ ...ITEMS.approve_dependency, contentVersion: "v1" })).toEqual(cardOf({ ...ITEMS.approve_dependency, contentVersion: "v2" }));
+  });
+  it("changes when the evidence detail changes, and drops an item with no usable content version", () => {
+    expect(digestOf({ ...ITEMS.approve_dependency, details: [{ title: "Packages", lines: ["left-pad"] }] })).not.toBe(digestOf({ ...ITEMS.approve_dependency, details: [{ title: "Packages", lines: ["right-pad"] }] }));
+    expect(cardOfItem({ ...ITEMS.approve_dependency, contentVersion: "" })).toBeUndefined();
+    expect(cardOfItem({ ...ITEMS.approve_dependency, contentVersion: "v‮1" })).toBeUndefined();
+  });
+  it("covers both documents of a Full pair", () => {
+    const pair = (design: string) => projectDecisionCards([ITEMS.approve_requirements, { ...(ITEMS.approve_design), contentVersion: design }]);
+    const first = pair("d1"), second = pair("d2");
+    const id = first.cards[0]!.id;
+    expect(first.digests[id]).not.toBe(second.digests[id]);
+  });
+});
+
+describe("the evidence detail a medium card shows (I4)", () => {
+  it("carries names the front does not: a plan's files, a merge's risk reasons, the item's own groups, and always why it needs a look", () => {
+    const plan = projectDecisionCards([{ ...(ITEMS.approve_plan), files: ["src/auth/login.ts", "src/retry.ts"], details: [{ title: "Not tested", lines: ["R3 timeout falls back"] }] } as DecisionItem]);
+    const groups = plan.details["approve_plan:plan1"]!;
+    expect(groups.map((group) => group.title)).toEqual(["Files that change", "Not tested", "Why this needs a look"]);
+    expect(groups[0]!.lines).toEqual(["src/auth/login.ts", "src/retry.ts"]);
+    const merge = projectDecisionCards([{ ...(ITEMS.merge), prRisk: "medium", prReasons: ["Changes dependencies or build files: package.json."] } as DecisionItem]);
+    expect(merge.details["merge:pr1"]![0]).toMatchObject({ title: "Why the pull request has this risk", lines: ["Changes dependencies or build files: package.json."] });
+  });
+  it("keeps each tab's detail on its tab", () => {
+    const projection = projectDecisionCards([ITEMS.approve_requirements, { ...(ITEMS.approve_design), files: ["src/a.ts"] } as DecisionItem]);
+    const groups = projection.details[projection.cards[0]!.id]!;
+    expect(new Set(groups.map((group) => group.tab))).toEqual(new Set(["requirements", "design"]));
+  });
+});
+
+describe("a high card opens the confirmation page (I5)", () => {
+  const confirm = "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa";
+  it("uses the item's confirmation page for 'Open to decide' and lists a high card without one as unconfirmed", () => {
+    const withPage = projectDecisionCards([{ ...(ITEMS.approve_setting), confirmPath: confirm }]);
+    expect(withPage.cards[0]!.actions).toEqual([{ kind: "open", label: "Open to decide", href: confirm, method: "GET" }]);
+    expect(withPage.unconfirmed).toEqual([]);
+    const without = projectDecisionCards([ITEMS.approve_setting]);
+    expect(without.unconfirmed).toEqual(["approve_setting:set1"]);
+  });
+  it("refuses a confirmation path that is not a confirmation page", () => {
+    expect(cardOfItem({ ...(ITEMS.approve_setting), confirmPath: "/app/sessions/ses_x" })).toBeUndefined();
+  });
+  it("a spend above the admin amount needs a second person", () => {
+    expect(cardOf({ ...(ITEMS.approve_spend), amountUsd: 250 } as DecisionItem).friction.secondPerson).toBe(true);
+    expect(cardOf({ ...(ITEMS.approve_spend), amountUsd: 50 } as DecisionItem).friction.secondPerson).toBe(false);
   });
 });

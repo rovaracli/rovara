@@ -48,4 +48,13 @@ describe("dynamoDecisionStore", () => {
     expect(rows[0]).toMatchObject({ outcome: "approved", entityType: "DECISION_RECORD" });
     expect(typeof rows[0]?.["indexExpiresAt"]).toBe("number");
   });
+  it("finds a decision by request id for the same person only", async () => {
+    const table = fakeTable();
+    const store = dynamoDecisionStore({ documentClient: table.documentClient, tableName: "t", now: () => 1_000_000 });
+    const record = { ...who, cardId: "approve_design:d", kind: "approve_design" as const, risk: "low" as const, outcome: "approved" as const, tab: "design" as const, requestId: "r9", createdAt: "2026-10-30T10:00:00.000Z", decidedAt: "2026-10-30T10:01:00.000Z" };
+    await store.recordDecision(record);
+    expect(await store.findDecision(who, "r9")).toMatchObject({ cardId: "approve_design:d", kind: "approve_design", outcome: "approved", tab: "design" });
+    expect(await store.findDecision({ orgId: "org1", developerId: "dev2" }, "r9")).toBeUndefined();
+    expect(await store.findDecision(who, "nope")).toBeUndefined();
+  });
 });

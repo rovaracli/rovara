@@ -9,9 +9,10 @@ export function useDecisionActions() {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createDecisionsApi(host), [host]);
  const refresh = async () => { await Promise.all([query.invalidateQueries({ queryKey: ["decisions"] }), query.invalidateQueries({ queryKey: ["home"] })]); };
  return (decision: ReadDecision) => ({
-  onOpenEvidence: async (tab?: Parameters<typeof api.evidenceOpened>[1]) => { await api.evidenceOpened(decision.card, tab); },
-  onApprove: async (tab?: Parameters<typeof api.approve>[1]) => { await api.approve(decision.card, tab);await refresh(); },
-  onReject: async (reason: Parameters<typeof api.reject>[1]) => { await api.reject(decision.card, reason);await refresh(); },
+  onOpenEvidence: async (tab?: Parameters<typeof api.evidenceOpened>[1]) => { await api.evidenceOpened(decision, tab); },
+  onApprove: async (tab?: Parameters<typeof api.approve>[1]) => { const result = await api.approve(decision, tab);await refresh();return result; },
+  onReject: async (reason: Parameters<typeof api.reject>[1]) => { const result = await api.reject(decision, reason);await refresh();return result; },
+  onStale: () => { void query.invalidateQueries({ queryKey: ["decisions"] }); },
  });
 }
 
