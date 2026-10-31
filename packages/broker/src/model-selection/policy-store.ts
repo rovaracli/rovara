@@ -1,6 +1,6 @@
 import type {TransactItem} from "../agents/table-writes.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { ModelSelectionPolicyResponseSchema, agentXError, orgSettingsKey, modelSourcesKey, agentGuardrailsKey, type ModelSelectionPolicyResponse, type OrgId } from "@agentx/contracts";
+import { ModelSelectionPolicyResponseSchema, agentXError, orgSettingsKey, modelSourcesKey, agentGuardrailsKey, type ModelSelectionPolicyResponse, type OrgId, type StageId } from "@agentx/contracts";
 export interface ModelPolicyReader {tableName:string;documentClient:{send(command:unknown):Promise<unknown>}}
 export const modelSelectionPolicyKey=(orgId:OrgId)=>orgSettingsKey(orgId,"MODEL_SELECTION_POLICY");
 /** No row is a virtual default. A row that cannot be trusted never becomes the default. No write on GET. */
@@ -30,3 +30,14 @@ export async function inactiveModelSourcesRevision(deps:Partial<ModelPolicyReade
  if(!Number.isSafeInteger(row.revision)||Number(row.revision)<0)throw agentXError("RUNTIME_UNAVAILABLE","The model source revision could not be verified.");
  return Number(row.revision);
 }
+
+/** Explicit company stage choices or stored source order activate governed legacy key routing. */
+export async function readCompanyStagePolicy(deps:ModelPolicyReader,orgId:OrgId,stage:StageId,pinned?:Pick<ModelSelectionPolicyResponse,"stepOverrides">) {
+ const policy=pinned??await readModelSelectionPolicy(deps,orgId);
+ let source:Record<string,unknown>|undefined;
+ try{source=(await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key:modelSourcesKey(orgId),ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;}catch{throw agentXError("RUNTIME_UNAVAILABLE","The model source policy could not be read.");}
+ if(source?.order!==undefined&&(!Array.isArray(source.order)||!source.order.every((id:unknown)=>typeof id==="string")))throw agentXError("RUNTIME_UNAVAILABLE","The model source policy could not be verified.");
+ const sourceOrder=source?.order,model=policy.stepOverrides[stage]?.model;
+ return {applies:model!==undefined||sourceOrder!==undefined,model,sourceOrder};
+}
+export async function hasCompanyStagePolicy(deps:ModelPolicyReader,orgId:OrgId,stage:StageId,pinned?:Pick<ModelSelectionPolicyResponse,"stepOverrides">):Promise<boolean> {return (await readCompanyStagePolicy(deps,orgId,stage,pinned)).applies;}

@@ -1,8 +1,9 @@
-import {joinTurnAdmissionChecks} from "../model-selection/turn-admission.js";
+import {readCompanyStagePolicy} from "../model-selection/policy-store.js";
+import {boundedTurnAdmission,TurnAdmissionLimitError} from "../model-selection/turn-admission.js";
 import { readServiceStatusEvidence } from "./service-status-runtime.js";
 import {readTurnActorChecks} from "../model-selection/turn-authority.js";
 import {authorizeTurnModelFallback} from "../model-selection/turn-fallback.js";
-import {turnStagesForMode,prepareTurnModelPolicy} from "../model-selection/turn-policy.js";
+import {turnStagesForMode,prepareTurnModelPolicy,parseTurnModelPin} from "../model-selection/turn-policy.js";
 import {ProcessModelRefusal,processModelRefusalBody} from "../model-selection/process-refusal.js";
 import {ModelIdentifierSchema} from "@agentx/contracts";
 import {writeProjectModelSelection} from "../model-selection/selection-write.js";
@@ -6625,7 +6626,7 @@ async function taskOperationParts(
   const fallback=turnPolicy!==undefined||applied?.modelDecision?.fallback===undefined?undefined:await prepareTaskModelFallback({...dependencies,now:Date.now},{orgId,taskId:task!.taskId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:applied.modelCompanyRevision!,decision:applied.modelDecision});
   if(fallback?.replayed===true)throw agentXError("IDEMPOTENCY_CONFLICT","The fallback operation has already been recorded.");
   const modelChecks=turnPolicy===undefined?undefined:[...turnPolicy.checks,...(turnAudit?.items??[])];
-  if(modelChecks!==undefined&&modelChecks.length>25)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority exceeds its admission limit.");
+  if(modelChecks!==undefined&&modelChecks.length>25)throw new TurnAdmissionLimitError(modelChecks.length,25);
   return { operation, outbox: outboxRecord(workspace, invocation), fence,...(modelChecks===undefined?{}:{modelChecks}),...(turnAudit===undefined?{}:{turnAudit}),...(fallback===undefined?{}:{fallback}) };
 }
 
@@ -7254,7 +7255,14 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
   // before routing has none, and is keyed as it was.
   const merges = dependencies.developer === undefined ? undefined : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
   const resolveMember = (developerId: string): Promise<string> => (merges === undefined ? Promise.resolve(developerId) : followMerges(merges, developerId));
-  const routing = routingOf(dependencies,operation.modelPolicy!==undefined);
+  const pinnedCompany=operation.orgId===undefined||operation.modelPolicy===undefined?undefined:operation.modelTurnPin!==undefined
+    ?parseTurnModelPin(operation.modelTurnPin,operation.orgId,(await requireWorkspace(dependencies,operation.workspaceId)).projectName).pin.policy
+    :operation.modelTaskId===undefined?undefined:(await readTaskRecipe(dependencies,operation.modelTaskId,operation.orgId))?.modelPolicyPin?.policy;
+  if(operation.orgId!==undefined&&operation.modelPolicy!==undefined&&(pinnedCompany===undefined||pinnedCompany.revision!==operation.modelPolicy.companyRevision))throw agentXError("MODEL_NOT_ALLOWED","The task's pinned model authority could not be verified.");
+  const companyPolicy=operation.orgId===undefined||operation.modelPolicy===undefined?undefined:await readCompanyStagePolicy(dependencies,operation.orgId,operation.modelPolicy.stage,pinnedCompany);
+  const companyGoverned=companyPolicy?.applies===true;
+  const routing = routingOf(dependencies,companyGoverned);
+  if(companyGoverned&&operation.chatgptDeveloperId!==undefined&&operation.modelPolicy!==undefined&&((companyPolicy.sourceOrder!==undefined&&!companyPolicy.sourceOrder.includes("personal-chatgpt"))||(companyPolicy.model!==undefined&&(operation.model===undefined||canonicalModelName(companyPolicy.model)!==canonicalModelName(operation.model)))))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/models/sources");
   const route = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
     : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {
@@ -7522,14 +7530,6 @@ async function workspaceTaskOwner(dependencies: AwsBrokerDependencies, workspace
 async function gatedTaskWorkspace(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<boolean> {
   const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
   return pointer !== undefined && (await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)))?.workflow !== undefined;
-}
-
-/** Authority additions are bounded to 25 in taskOperationParts; existing comments/decisions remain atomic within DynamoDB's 100-item limit. */
-function boundedTurnAdmission(items:TransactItems):TransactItems {
-  if(!items.some(item=>item.Put?.Item?.modelTurnPin!==undefined))return items;
-  const joined=joinTurnAdmissionChecks(items);
-  if(joined.length>100)throw agentXError("RUNTIME_UNAVAILABLE","The turn's atomic model admission is unavailable.");
-  return joined;
 }
 
 async function acceptTask(
@@ -13136,7 +13136,7 @@ async function sendTerminalResult(
       console.log(JSON.stringify({ component: "broker", event: "developer.first_task_queue_failed", taskId: pointer.taskId, operationId: operation.id, error: partsError instanceof Error ? partsError.name : "unknown" }));
       // Plan 3, Task 16: a model the company or the project does not allow is the owner's to fix, and the refusal's words say how.
       // Only that error is quoted: its message names the agent, the step and the model, never the task.
-      if (partsError instanceof AgentXError && partsError.code === "MODEL_NOT_ALLOWED") startRefusal.text = refusalText(partsError);
+      if (partsError instanceof TurnAdmissionLimitError || partsError instanceof AgentXError && partsError.code === "MODEL_NOT_ALLOWED") startRefusal.text = refusalText(partsError);
       await send(failedPrepareItems(dependencies, workspace, operation, now, startRefusal.text));
       return "FAILED";
     }
@@ -13150,6 +13150,11 @@ async function sendTerminalResult(
     if(queued.fallback?.event!==undefined)await flushAuditEvents(dependencies,[queued.fallback.event]);
     if(queued.turnAudit!==undefined)await flushAuditEvents(dependencies,[queued.turnAudit.event]);
   } catch (queueError) {
+    if(queueError instanceof TurnAdmissionLimitError) {
+      startRefusal.text=refusalText(queueError);
+      await send(failedPrepareItems(dependencies,workspace,operation,now,startRefusal.text));
+      return "FAILED";
+    }
     // C19: a temporary error from the one queuing write committed nothing; the worker tries again.
     // A TransactionCanceledException with a TransactionConflict reason is not temporary here: it
     // keeps the QueuingConflict path below.

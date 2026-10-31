@@ -1,3 +1,4 @@
+import {hasCompanyStagePolicy} from "./policy-store.js";
 import {ProcessModelRefusal} from "./process-refusal.js";
 import {mergeProcessModelAuthorityChecks} from "./authority.js";
 import {z} from "zod";
@@ -33,7 +34,7 @@ export async function prepareTurnModelPolicy(deps:TaskStageLiveDependencies&{sto
  for(const value of contexts) {
   if(value.sourcesRevision!==pin.sourcesRevision)throw unavailable();
   if(value.decision.kind==="refusal") {
-   if(value.stage==="build")throw agentXError("MODEL_NOT_ALLOWED","The project's Build model is unavailable. Check How we work.");
+   if(value.stage==="build"&&!await hasCompanyStagePolicy(deps,input.orgId,value.stage,pin.policy))throw agentXError("MODEL_NOT_ALLOWED","The project's Build model is unavailable. Check How we work.");
    throw new ProcessModelRefusal(value.decision.code,value.stage,["MODEL_NOT_VERIFIED","MODEL_STALE","NO_VERIFIED_CANDIDATE"].includes(value.decision.code)?"/app/admin/models/sources":"/app/admin/how-we-work");
   }
  }

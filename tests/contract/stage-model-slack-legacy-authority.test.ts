@@ -1,3 +1,4 @@
+import type {DeveloperTaskRecord} from "../../packages/broker/src/developer/task-records.js";
 import {beforeAll,expect,it} from "vitest";
 import {randomUUID} from "node:crypto";
 import {orgRemovedKey,orgBanKey,developerOrgKey,projectMemberKey,slackBindingKey} from "@agentx/contracts";
@@ -65,4 +66,16 @@ it("keeps the existing U/W Slack-user format in the private authority pin",async
  const h=await fixture(),response=await h.start();expect(response.status).toBe(202);const id=(response.body.operation as {id:string}).id;
  const raw=h.db.get(`WORKSPACE#${h.workspaceId}`,`OPERATION#${id}`)!.modelTurnPin as Record<string,unknown>;const {parseTurnModelPin}=await import("../../packages/broker/src/model-selection/turn-policy.js");
  expect(parseTurnModelPin({...raw,slackUserId:"W0123456789",actorDeveloperId:developerIdForSlackUser("W0123456789")},TEST_ORG,"payments").slackUserId).toBe("W0123456789");
+});
+
+for(const viewer of [true,false])it(`rechecks and fences an existing task's ${viewer?"viewer":"contributor"} grant`,async()=>{
+ const h=await fixture(),taskId=randomUUID();
+ const {taskKey,taskPointerKey}=await import("../../packages/broker/src/developer/task-records.js");
+ const task={taskId,orgId:TEST_ORG,project:"payments",workspaceId:h.workspaceId,developerId:actor,developerName:"Slack owner",provider:"slack"} as unknown as DeveloperTaskRecord;
+ h.db.set({...taskKey(taskId),...task});h.db.set({...taskPointerKey(h.workspaceId),taskId});
+ const Key=projectMemberKey(TEST_ORG,actor,"payments");h.db.set({...Key,role:viewer?"viewer":"developer",projectRole:viewer?"viewer":"contributor"});
+ const request=()=>readTurnActorChecks({documentClient:h.db,tableName:"state",allowImplicitSlack:true},{orgId:TEST_ORG,project:"payments",developerId:actor,task,slackUserId:user,threadChannel:{teamId:SLACK_TEAM,channelId:SLACK_CHANNEL}});
+ if(viewer){await expect(request()).rejects.toMatchObject({code:"MODEL_NOT_ALLOWED"});return;}
+ const checks=await request();h.db.delete(Key);const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");
+ await expect(h.db.send(new TransactWriteCommand({TransactItems:checks}))).rejects.toMatchObject({name:"TransactionCanceledException"});
 });

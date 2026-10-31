@@ -240,7 +240,7 @@ describe("GET /v1/internal/model-access", () => {
     const response = await h.ask();
     expect(response).toMatchObject({ status: 200, body: { baseUrl: PROXY_URL, apiKey: PROXY_KEY, expiresAt: Date.parse("2026-10-19T13:00:00.000Z") } });
     expect(h.mintKey).toHaveBeenCalledTimes(1);
-    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: MAYA.developerId, purpose: "task", refId: h.taskId, maxBudgetUsd: 10, ttlSeconds: 3600, models:["us.anthropic.claude-sonnet-4-6"] });
+    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: MAYA.developerId, purpose: "task", refId: h.taskId, maxBudgetUsd: 10, ttlSeconds: 3600 });
   });
 
   it("uses the task record's own budget when it has one", async () => {
@@ -327,7 +327,7 @@ describe("GET /v1/internal/model-access for a Slack thread's task, which has no 
   it("mints an org-only key from the signed operation when the requester is no known member", async () => {
     const h = await slackTask();
     expect(await h.ask()).toMatchObject({ status: 200, body: { baseUrl: PROXY_URL, apiKey: PROXY_KEY } });
-    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, purpose: "task", refId: h.operationId, maxBudgetUsd: PER_TASK_BUDGET_USD, ttlSeconds: 3600, models:["us.anthropic.claude-sonnet-4-6"] });
+    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, purpose: "task", refId: h.operationId, maxBudgetUsd: PER_TASK_BUDGET_USD, ttlSeconds: 3600 });
     expect(h.mintKey.mock.calls[0]![0]).not.toHaveProperty("developerId");
   });
 
@@ -335,7 +335,7 @@ describe("GET /v1/internal/model-access for a Slack thread's task, which has no 
     const h = await slackTask();
     seedMembership(h.db, developerIdForSlackUser(slackUser), { orgId: TEST_ORG, role: "member" });
     expect((await h.ask()).status).toBe(200);
-    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: developerIdForSlackUser(slackUser), purpose: "task", refId: h.operationId, maxBudgetUsd: PER_TASK_BUDGET_USD, ttlSeconds: 3600, models:["us.anthropic.claude-sonnet-4-6"] });
+    expect(h.mintKey).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: developerIdForSlackUser(slackUser), purpose: "task", refId: h.operationId, maxBudgetUsd: PER_TASK_BUDGET_USD, ttlSeconds: 3600 });
   });
 
   it.each([false, true])("refuses a new key after the Slack requester is removed, even without a payer setting (C1, agents=%s)", async (agents) => {

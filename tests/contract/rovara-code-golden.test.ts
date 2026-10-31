@@ -142,7 +142,7 @@ function modelPolicyChanges(record: unknown): Array<{ path: string; expected: un
   ];
 }
 
-/** C53: exact attribution for legacy operation policy, verified model and scoped key additions. */
+/** C53 policy/pin/model attribution; no-policy legacy key behavior remains compared unchanged. */
 function ordinaryStageChanges(scenario:GoldenScenario,record:unknown):Array<{path:string;expected:unknown;change:7}> {
  const recipe=builtinRecipe("rovara-code",builtinDefaultPin("rovara-code")),digest=recipeDigest(recipe);
  const thread=scenario==="slack-thread-operation"||scenario==="chatgpt-task",actor=thread?developerIdForSlackUser("U0123456789"):"d".repeat(64);
@@ -159,13 +159,7 @@ function ordinaryStageChanges(scenario:GoldenScenario,record:unknown):Array<{pat
   }
   return fields;
  });
- if(policyNodes.length>0)changes.push(...nodePaths(record,node=>"purpose" in node&&"refId" in node&&"maxBudgetUsd" in node).map(path=>({path:`${path}.models`,expected:[model.modelId],change:7 as const})));
- if(scenario==="chatgpt-task") {
-  for(const path of nodePaths(record,node=>node.entityType==="OPERATION"&&"modelPolicy" in node))changes.push({path:`${path}.modelRoute`,expected:null,change:7},{path:`${path}.modelKeyIds`,expected:undefined,change:7});
-  const access=(record as {modelAccess:{response:{requestId:string}}}).modelAccess;
-  expect(access.response.requestId).toBe("0000000e-0000-4000-8000-000000000011");
-  changes.push({path:"modelAccess.status",expected:403,change:7},{path:"modelAccess.response",expected:{error:{code:"MODEL_NOT_ALLOWED",message:"This task's ChatGPT plan has no backup among your company's AI sources, so no company AI key can be issued for it."},requestId:access.response.requestId},change:7},{path:"modelAccess.mintKeyCalls",expected:[],change:7},{path:"modelAccess.calls.mintKey",expected:[],change:7},{path:"modelAccess.calls.keySpend",expected:[],change:7},{path:"modelAccess.calls.orgSpend",expected:[[TEST_ORG]],change:7});
- }
+ if(scenario==="chatgpt-task")for(const path of nodePaths(record,node=>node.entityType==="OPERATION"&&"modelPolicy" in node))changes.push({path:`${path}.modelRoute`,expected:null,change:7});
  return changes;
 }
 
