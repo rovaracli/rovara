@@ -30,7 +30,7 @@ export type ApprovalPolicy = z.infer<typeof ApprovalPolicySchema>;
  * THE switch for the pilot: how a tier-0 lesson (a cited, rendered, corroborated fact) goes live. "auto": by itself, audited (owner decision Q2). "one": only after one
  * person approves it, on every path (ingest, rollback, resume). A project or company can set `tier0Approval` in its learning settings; this is the default when it does not.
  */
-export type Tier0Approval = "auto" | "one";
+export type Tier0Approval = "auto" | "one" | "two";
 export const TIER0_APPROVAL_DEFAULT: Tier0Approval = "one";
 export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = { tier0: TIER0_APPROVAL_DEFAULT, tier1: "one" };
 /** What the project runs with when nothing is set (Q2). A company lock or a project setting may choose another mode. */
