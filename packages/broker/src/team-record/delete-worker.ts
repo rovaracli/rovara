@@ -67,8 +67,8 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
 
     if (entry.type === "principals" || entry.type === "audience") {
       const done = entry.type === "principals"
-        ? await changeScopePrincipals(work0, orgId, { scope: entry.scope ?? "", ...(entry.add === undefined ? {} : { add: entry.add }), ...(entry.remove === undefined ? {} : { remove: entry.remove }), at: new Date(now()).toISOString() }, remaining, entry.walkCursor)
-        : await replaceScopeAudience(work0, orgId, { scope: entry.scope ?? "", audience: entry.audience as never, at: new Date(now()).toISOString() }, remaining, entry.walkCursor);
+        ? await changeScopePrincipals(work0, orgId, { scope: entry.scope ?? "", ...(entry.add === undefined ? {} : { add: entry.add }), ...(entry.remove === undefined ? {} : { remove: entry.remove }), at: entry.changeAt ?? entry.at }, remaining, entry.walkCursor)
+        : await replaceScopeAudience(work0, orgId, { scope: entry.scope ?? "", audience: entry.audience as never, at: entry.changeAt ?? entry.at }, remaining, entry.walkCursor);
       if (done.complete) { await deleteItem(deps.table, key); summary.finished += 1; } else {
         // Go on from here next time, not from the start of the place.
         await putScopeWork(deps.table, orgId, { ...entry, hidePending: true, ...(done.cursor === undefined ? {} : { walkCursor: done.cursor }) });

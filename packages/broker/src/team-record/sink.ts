@@ -7,7 +7,7 @@ import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
 import { DEFAULT_WORK_BUDGET, changeScopePrincipals, queueScopeWork, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
 import { closeScope, getItemHead } from "./item-head.js";
-import { childScopes, deleteItem, getSourceConfigByScope, putScopeWork, type PlaceCursor, type ScopeCursor, type ScopeWork } from "./store.js";
+import { childScopes, deleteItem, getSourceConfigByScope, listScopeWork, putScopeWork, type PlaceCursor, type ScopeCursor, type ScopeWork } from "./store.js";
 import type { IngestOutcome, RecordDraft, TeamRecordTable, TombstoneCause } from "./types.js";
 
 export interface RecordSink {
@@ -78,7 +78,10 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 
     async changePrincipals(input) {
       const orgId = orgOf(input.workspaceId);
-      const item = { type: "principals" as const, system: "scope", scope: input.scope, ...(input.add === undefined ? {} : { add: [...input.add] }), ...(input.remove === undefined ? {} : { remove: [...input.remove] }), hidePending: true };
+      const item = { type: "principals" as const, system: "scope", scope: input.scope, ...(input.add === undefined ? {} : { add: [...input.add] }), ...(input.remove === undefined ? {} : { remove: [...input.remove] }), changeAt: input.at, hidePending: true };
+      // An older change to this place is still waiting (it crashed or ran out of time): this one waits behind it, and the worker replays them oldest first. Never inline over it.
+      const behind = await olderChange(deps.table, orgId, input.scope);
+      if (behind.waiting) { await queueScopeWork(work, orgId, item, behind.latestAt); return; }
       // Someone LOSING access: the place is hidden from everyone from the first write, for as long as the rows are being rewritten. A crash or a timeout in the pass leaves the item,
       // and the worker finishes it. Someone only joining needs no hiding (stale rows are narrower than intended, never wider).
       const queued = (input.remove?.length ?? 0) > 0 ? await queueScopeWork(work, orgId, item) : undefined;
@@ -88,7 +91,9 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 
     async replaceScopeAudience(input) {
       const orgId = orgOf(input.workspaceId);
-      const item = { type: "audience" as const, system: "scope", scope: input.scope, audience: input.audience, hidePending: true };
+      const item = { type: "audience" as const, system: "scope", scope: input.scope, audience: input.audience, changeAt: input.at, hidePending: true };
+      const behind = await olderChange(deps.table, orgId, input.scope);
+      if (behind.waiting) { await queueScopeWork(work, orgId, item, behind.latestAt); return; }
       // The place is hidden from everyone from the first write (a new audience may be narrower), and for as long as the rows are being rewritten.
       const queued = await queueScopeWork(work, orgId, item);
       // A place that turned private: its lake rows still carry the old, wider audience (the lake cannot update it), so they are forgotten.
@@ -97,6 +102,20 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
       await settle(deps.table, orgId, queued, result, item);
     },
   };
+}
+
+const OLDER_CHANGES_READ = 500;
+
+/**
+ * Is a member or audience change to this place still waiting in the queue? Read before a pass: a later change must not finish inline while an earlier one is stuck, or the
+ * worker would replay the earlier one over it. A queue too long to read counts as waiting (fail closed: the change is queued, never applied over a guess).
+ */
+async function olderChange(table: TeamRecordTable, orgId: OrgId, scope: string): Promise<{ waiting: boolean; latestAt?: string }> {
+  const queue = await listScopeWork(table, orgId, OLDER_CHANGES_READ);
+  const same = queue.filter((entry) => (entry.type === "principals" || entry.type === "audience") && entry.scope === scope);
+  const latestAt = same.reduce<string | undefined>((latest, entry) => (latest === undefined || entry.at > latest ? entry.at : latest), undefined);
+  if (same.length === 0) return queue.length >= OLDER_CHANGES_READ ? { waiting: true } : { waiting: false };
+  return { waiting: true, ...(latestAt === undefined ? {} : { latestAt }) };
 }
 
 /**

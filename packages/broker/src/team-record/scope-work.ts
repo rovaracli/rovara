@@ -121,6 +121,14 @@ export async function wasDeletedAtSource(table: TeamRecordTable, orgId: OrgId, s
 
 // ---- permission snapshot changes
 
+/** True when the row's snapshot was captured AFTER `at` (compared as times; an unreadable time is never "after"). */
+function capturedAfter(audience: Audience, at: string): boolean {
+  if (audience.kind !== "restricted") return false;
+  const captured = Date.parse(audience.acl.capturedAt);
+  const limit = Date.parse(at);
+  return Number.isFinite(captured) && Number.isFinite(limit) && captured > limit;
+}
+
 const principalsOf = (audience: Audience): string[] => (audience.kind === "restricted" ? [...(audience.acl.principals ?? [])] : []);
 
 /** Rewrites one item's `audience`, only if it still holds the value read (a concurrent change makes it read again, up to three times). */
@@ -186,6 +194,7 @@ export async function changeScopePrincipals(dependencies: WorkDependencies, orgI
   const remove = new Set(input.remove ?? []);
   const mutate = (current: Audience): Audience | undefined => {
     if (current.kind !== "restricted" || current.acl.scope !== input.scope) return undefined;
+    if (capturedAfter(current, input.at)) return undefined; // a newer change already wrote this row: a replay of an older one must not undo it
     const before = principalsOf(current);
     const after = [...new Set([...before, ...add])].filter((id) => !remove.has(id)).slice(0, ACL_PRINCIPALS_MAX);
     if (after.length === before.length && after.every((id, index) => id === before[index])) return undefined;
@@ -211,16 +220,17 @@ export async function changeScopePrincipals(dependencies: WorkDependencies, orgI
 export async function replaceScopeAudience(dependencies: WorkDependencies, orgId: OrgId, input: { scope: string; audience: Audience; at: string }, budget: WorkBudget = DEFAULT_WORK_BUDGET, resume?: ScopeCursor): Promise<WorkResult> {
   const next = AudienceSchema.parse(input.audience);
   const sameScope = (current: Audience): boolean => current.kind === "restricted" && current.acl.scope === input.scope;
+  const stale = (current: Audience): boolean => capturedAfter(current, input.at);
   return eachInScope(dependencies, orgId, input.scope, budget, async (item, key) => {
     if (item.entityType === "TEAM_RECORD_EVENT") {
       const audience = AudienceSchema.safeParse(item.audience);
       if (!audience.success) return false;
-      return rewriteAudience(dependencies.table, key, audience.data, (current) => (JSON.stringify(current) === JSON.stringify(next) ? undefined : next));
+      return rewriteAudience(dependencies.table, key, audience.data, (current) => (JSON.stringify(current) === JSON.stringify(next) || stale(current) ? undefined : next));
     }
     if (item.entityType === "TEAM_RECORD_DERIVATION" && next.kind === "restricted") {
       const fact = await factOf(dependencies.table, orgId, item);
       if (fact === undefined) return false;
-      return rewriteAudience(dependencies.table, fact.key, fact.audience, (current) => (current.kind === "project" || sameScope(current) ? next : undefined));
+      return rewriteAudience(dependencies.table, fact.key, fact.audience, (current) => ((current.kind === "project" || sameScope(current)) && !stale(current) ? next : undefined));
     }
     return false;
   }, resume);
@@ -229,9 +239,12 @@ export async function replaceScopeAudience(dependencies: WorkDependencies, orgId
 // ---- queueing
 
 /** Writes the queue item for work that did not finish, so reads hide the scope and the delete worker finishes it. */
-export async function queueScopeWork(dependencies: WorkDependencies, orgId: OrgId, work: Omit<ScopeWork, "requestId" | "at" | "queuedAtSeconds" | "hidden"> & { hidden?: number }): Promise<ScopeWork> {
+export async function queueScopeWork(dependencies: WorkDependencies, orgId: OrgId, work: Omit<ScopeWork, "requestId" | "at" | "queuedAtSeconds" | "hidden"> & { hidden?: number }, notBefore?: string): Promise<ScopeWork> {
   const { now } = clock(dependencies);
-  const entry: ScopeWork = { ...work, requestId: randomUUID(), at: new Date(now()).toISOString(), queuedAtSeconds: Math.floor(now() / 1000), hidden: work.hidden ?? 0 };
+  // `notBefore`: the item sorts after the one named (the worker takes items oldest first), even in the same millisecond.
+  const floor = notBefore === undefined ? Number.NEGATIVE_INFINITY : Date.parse(notBefore) + 1;
+  const at = new Date(Math.max(now(), Number.isFinite(floor) ? floor : Number.NEGATIVE_INFINITY)).toISOString();
+  const entry: ScopeWork = { ...work, requestId: randomUUID(), at, queuedAtSeconds: Math.floor(now() / 1000), hidden: work.hidden ?? 0 };
   await putScopeWork(dependencies.table, OrgIdSchema.parse(orgId), entry);
   return entry;
 }

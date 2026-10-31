@@ -367,6 +367,8 @@ export interface ScopeWork {
   add?: string[];
   remove?: string[];
   audience?: unknown;
+  /** `principals` and `audience`: the time of the change itself (the tap's `at`). A replay never rewrites a row captured after it. */
+  changeAt?: string;
   at: string;
   /** While true, every restricted row of the scope is hidden from everyone: the work that makes them safe to show has not finished. */
   hidePending: boolean;
