@@ -8,9 +8,15 @@ import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { OrgIdSchema, stdioSpecIfComplete } from "@agentx/contracts";
+import { EC2Client } from "@aws-sdk/client-ec2";
 import { S3Client } from "@aws-sdk/client-s3";
-import { createMcpController, ecsTaskRunner, objectBundleStore, runsAsRoot, type ApprovedServer, type ControllerRegistry, type McpController } from "@agentx/gateway";
-import { bundleObjectApiFromS3, ecsApiFromSdk, type EcsSdk } from "./aws-adapters.js";
+import { createMcpController, ecsServerResources, ecsTaskRunner, objectBundleStore, runsAsRoot, type ApprovedServer, type ControllerRegistry, type McpController } from "@agentx/gateway";
+import { orgMcpServerSecretName } from "../connections/org-secrets.js";
+import { cidrBlockListOf, parseInstallCidrs } from "../connections/private-endpoints.js";
+import { installEnvironmentName } from "../org/resolve.js";
+import { bundleObjectApiFromS3, ec2GroupApiFromSdk, ecsApiFromSdk, ecsDefinitionApiFromSdk, type EcsSdk } from "./aws-adapters.js";
+import { destinationResolver } from "./destinations.js";
+import { dynamoProbeSlots } from "./probe-slots.js";
 import { dynamoMcpServerStore, summariseProbe } from "../context-sources/mcp-servers.js";
 
 function required(env: Record<string, string | undefined>, name: string): string {
@@ -49,6 +55,18 @@ export interface ControllerConfig {
   bundleBucket: string;
   tlsCert: string;
   tlsKey: string;
+  /** What a runner's task definition and security group are made from (T7). */
+  vpcId: string;
+  runnerImage: string;
+  executionRoleArn: string;
+  logGroup: string;
+  region: string;
+  endpointGroupIds: string[];
+  s3PrefixListId: string;
+  controllerGroupId: string;
+  /** The install's private ranges (`ROVARA_PRIVATE_MCP_CIDRS`) and Rovara's own network (`ROVARA_VPC_CIDRS`). */
+  privateCidrs: string[];
+  rovaraCidrs: string[];
 }
 
 function port(value: string | undefined, fallback: number, name: string): number {
@@ -67,10 +85,18 @@ export function controllerConfigFromEnv(env: Record<string, string | undefined>)
   const registry = new URL(need("ROVARA_MCP_NPM_REGISTRY"));
   if (registry.protocol !== "https:") throw new Error("ROVARA_MCP_NPM_REGISTRY must be an https address");
   const subnets = need("MCP_RUNNER_SUBNETS").split(",").map((item) => item.trim());
+  const rovaraCidrs = (env.ROVARA_VPC_CIDRS ?? "").split(",").map((part) => part.trim()).filter((part) => part !== "");
+  if (cidrBlockListOf(rovaraCidrs) === undefined) throw new Error("ROVARA_VPC_CIDRS is not a list of ranges");
+  // The same rule as the broker's: ranges set without the network Rovara runs in cannot be checked for overlap, so they are refused.
+  const privateCidrs = parseInstallCidrs(env.ROVARA_PRIVATE_MCP_CIDRS, rovaraCidrs);
+  if (privateCidrs.length > 0 && rovaraCidrs.length === 0) throw new Error("ROVARA_PRIVATE_MCP_CIDRS needs ROVARA_VPC_CIDRS");
   return {
     brokerPort: port(env.PORT, 8080, "PORT"), runnerPort: port(env.MCP_RUNNER_PORT, 8443, "MCP_RUNNER_PORT"), cluster: need("MCP_ECS_CLUSTER"), subnets,
     installSecurityGroupId: need("MCP_INSTALL_SECURITY_GROUP"), controllerUrl, controllerCa: env.ROVARA_MCP_CONTROLLER_CA, npmRegistry: registry.href, bundleBucket: need("MCP_BUNDLE_BUCKET"),
     tlsCert: need("MCP_CONTROLLER_TLS_CERT"), tlsKey: need("MCP_CONTROLLER_TLS_KEY"),
+    vpcId: need("MCP_VPC_ID"), runnerImage: need("MCP_RUNNER_IMAGE"), executionRoleArn: need("MCP_EXECUTION_ROLE_ARN"), logGroup: need("MCP_RUNNER_LOG_GROUP"), region: need("AWS_REGION"),
+    endpointGroupIds: need("MCP_ENDPOINT_SECURITY_GROUPS").split(",").map((item) => item.trim()), s3PrefixListId: need("MCP_S3_PREFIX_LIST"), controllerGroupId: need("MCP_CONTROLLER_SECURITY_GROUP"),
+    privateCidrs, rovaraCidrs,
   };
 }
 
@@ -104,10 +130,23 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
   const sdk = await import(ecsModule) as EcsSdk;
   const runner = ecsTaskRunner({ api: ecsApiFromSdk(sdk, new sdk.ECSClient({})), cluster: config.cluster, subnets: config.subnets, defaultSecurityGroupId: config.installSecurityGroupId });
   const bundles = objectBundleStore(bundleObjectApiFromS3(new S3Client({}), config.bundleBucket));
+  const orgId = required(env, "ROVARA_ORG_ID");
+  const stateTable = required(env, "STATE_TABLE_NAME");
+  const installEnvironment = installEnvironmentName(env);
   const log = (event: string, fields: Record<string, string | number>): void => { console.log(JSON.stringify({ component: "mcp-controller", event, ...fields })); };
+  const ecs = new sdk.ECSClient({});
+  const resources = ecsServerResources({
+    definitions: ecsDefinitionApiFromSdk(sdk, ecs), groups: ec2GroupApiFromSdk(new EC2Client({})), vpcId: config.vpcId, image: config.runnerImage, executionRoleArn: config.executionRoleArn,
+    logGroup: config.logGroup, region: config.region,
+    endpoints: { endpointGroupIds: config.endpointGroupIds, s3PrefixListId: config.s3PrefixListId, controllerGroupId: config.controllerGroupId, controllerPort: config.runnerPort },
+    resolveDestinations: destinationResolver({ installCidrs: config.privateCidrs, rovaraCidrs: config.rovaraCidrs }),
+    // Counts only: the audit event with the host names is the audit task's (T10).
+    onEgressChange: (change) => log("mcp_controller.egress_updated", { serverId: change.serverId, added: change.added.length, removed: change.removed.length }),
+  });
   const controller = createMcpController({
-    token, registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: required(env, "STATE_TABLE_NAME") }), required(env, "ROVARA_ORG_ID")), runner, bundles,
+    token, registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, (serverId) => orgMcpServerSecretName(installEnvironment, orgId, serverId)), runner, bundles,
     controllerUrl: config.controllerUrl, controllerCa: config.controllerCa, npmRegistry: config.npmRegistry, installSecurityGroupId: config.installSecurityGroupId, toolsHashOf, log,
+    resources, probeSlots: dynamoProbeSlots({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), sweepMs: 60_000,
   });
   const listeners = listen(controller, { broker: config.brokerPort, runner: config.runnerPort, tls: { cert: config.tlsCert, key: config.tlsKey } });
   const stop = (): void => { listeners.close(); void controller.close().finally(() => process.exit(0)); };

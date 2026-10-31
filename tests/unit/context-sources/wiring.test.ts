@@ -28,11 +28,11 @@ describe("the builders the broker's wiring calls", () => {
   it("keep the MCP host out of reach unless package-run servers are switched on (Enterprise only)", async () => {
     const host = { url: "http://mcp-host.internal", token: "h".repeat(40) };
     const off = createMcpServerDependencies({ ...base("enterprise"), mcpHost: host });
-    await expect(off.prober.stdio({ registry: "npm", name: "p", version: "1.0.0", args: [] })).rejects.toMatchObject({ code: "host_unavailable" });
+    await expect(off.prober.stdio({ registry: "npm", name: "p", version: "1.0.0", args: [], destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } })).rejects.toMatchObject({ code: "host_unavailable" });
     const on = createMcpServerDependencies({ ...base("enterprise"), mcpHost: host, stdioEnabled: true });
     expect(on.stdioEnabled).toBe(true);
     // switched on, the host is asked (an http:// address is refused before anything is sent, which is a different failure from "no host")
-    await expect(on.prober.stdio({ registry: "npm", name: "p", version: "1.0.0", args: [] })).rejects.toMatchObject({ code: "host_refused" });
+    await expect(on.prober.stdio({ registry: "npm", name: "p", version: "1.0.0", args: [], destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } })).rejects.toMatchObject({ code: "host_refused" });
   });
   it("name a registered server's token under the connector path, with a leaf that cannot climb out of the org", async () => {
     const { serverSecretsFromOrgSecrets } = await import("../../../packages/broker/src/context-sources/wiring.js");

@@ -1,12 +1,12 @@
 // Stdio MCP host redesign, task T6: the adapters from the real AWS clients to the gateway's narrow interfaces, with fake SDK classes (nothing here reaches AWS).
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { bundleObjectApiFromS3, ecsApiFromSdk, type EcsSdk } from "../../../packages/broker/src/mcp-host/aws-adapters.js";
+import { bundleObjectApiFromS3, ec2GroupApiFromSdk, ecsApiFromSdk, ecsDefinitionApiFromSdk, type EcsSdk } from "../../../packages/broker/src/mcp-host/aws-adapters.js";
 
 function fakeSdk(responses: Record<string, (input: Record<string, unknown>) => unknown>) {
   const sent: Array<{ command: string; input: Record<string, unknown> }> = [];
   const make = (name: string) => Object.defineProperty(class { constructor(readonly input: Record<string, unknown>) {} }, "name", { value: name });
-  const classes = { RunTaskCommand: make("RunTaskCommand"), StopTaskCommand: make("StopTaskCommand"), DescribeTasksCommand: make("DescribeTasksCommand"), ListTasksCommand: make("ListTasksCommand") };
+  const classes = Object.fromEntries(["RunTask", "StopTask", "DescribeTasks", "ListTasks", "RegisterTaskDefinition", "DeregisterTaskDefinition", "DescribeTaskDefinition", "ListTaskDefinitions", "ListTaskDefinitionFamilies"].map((name) => [`${name}Command`, make(`${name}Command`)]));
   const sdk = {
     ...classes,
     ECSClient: class { async send(command: { constructor: { name: string }; input: Record<string, unknown> }): Promise<unknown> { sent.push({ command: command.constructor.name, input: command.input }); return responses[command.constructor.name]?.(command.input) ?? {}; } },
@@ -69,5 +69,108 @@ describe("bundle bucket adapter", () => {
     await expect(denied.get("k")).rejects.toThrow("d");
     await expect(denied.head("k")).rejects.toThrow("d");
     expect(await bundleObjectApiFromS3(client({}).client, "bucket").head("k")).toBe(true);
+  });
+});
+
+
+describe("ECS task definition adapter (T7)", () => {
+  const FAMILY = "rovara-mcp-serve-mcpsim000001";
+  const arn = (family: string, revision: number) => `arn:aws:ecs:us-east-1:111111111111:task-definition/${family}:${revision}`;
+  it("finds the newest revision of exactly this family (a family that starts the same is not it) and reads the definition hash from its tag", async () => {
+    const { sdk, client, sent } = fakeSdk({
+      ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn(`${FAMILY}x`, 9), arn(FAMILY, 3), arn(FAMILY, 2)] }),
+      DescribeTaskDefinitionCommand: () => ({ tags: [{ key: "other", value: "x" }, { key: "rovara:definition", value: "h".repeat(64) }] }),
+    });
+    expect(await ecsDefinitionApiFromSdk(sdk, client).latestRevision(FAMILY)).toEqual({ arn: arn(FAMILY, 3), definitionHash: "h".repeat(64) });
+    expect(sent[0]).toMatchObject({ command: "ListTaskDefinitionsCommand", input: { familyPrefix: FAMILY, status: "ACTIVE", sort: "DESC" } });
+    expect(sent[1]).toMatchObject({ command: "DescribeTaskDefinitionCommand", input: { taskDefinition: arn(FAMILY, 3), include: ["TAGS"] } });
+  });
+  it("has no latest revision for a family with none", async () => {
+    const { sdk, client } = fakeSdk({ ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn(`${FAMILY}x`, 1)] }) });
+    expect(await ecsDefinitionApiFromSdk(sdk, client).latestRevision(FAMILY)).toBeUndefined();
+  });
+  it("registers a definition as given and returns its ARN, and fails when ECS gives none", async () => {
+    const ok = fakeSdk({ RegisterTaskDefinitionCommand: () => ({ taskDefinition: { taskDefinitionArn: arn(FAMILY, 1) } }) });
+    const definition = { family: FAMILY, networkMode: "awsvpc" } as never;
+    expect(await ecsDefinitionApiFromSdk(ok.sdk, ok.client).register(definition)).toBe(arn(FAMILY, 1));
+    expect(ok.sent[0]!.input).toMatchObject({ family: FAMILY, networkMode: "awsvpc" });
+    expect(ok.sent[0]!.input).not.toHaveProperty("taskRoleArn");
+    const none = fakeSdk({});
+    await expect(ecsDefinitionApiFromSdk(none.sdk, none.client).register(definition)).rejects.toThrow();
+  });
+  it("deregisters every ACTIVE revision of the family and no other, and takes a revision that is already inactive as done", async () => {
+    const { sdk, client, sent } = fakeSdk({ ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn(FAMILY, 2), arn(`${FAMILY}x`, 1), arn(FAMILY, 1)] }) });
+    await ecsDefinitionApiFromSdk(sdk, client).deregisterAll(FAMILY);
+    expect(sent.filter((call) => call.command === "DeregisterTaskDefinitionCommand").map((call) => call.input.taskDefinition)).toEqual([arn(FAMILY, 2), arn(FAMILY, 1)]);
+    const inactive = fakeSdk({ ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn(FAMILY, 1)] }), DeregisterTaskDefinitionCommand: () => { throw Object.assign(new Error("inactive"), { name: "ClientException" }); } });
+    await expect(ecsDefinitionApiFromSdk(inactive.sdk, inactive.client).deregisterAll(FAMILY)).resolves.toBeUndefined();
+    const denied = fakeSdk({ ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn(FAMILY, 1)] }), DeregisterTaskDefinitionCommand: () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); } });
+    await expect(ecsDefinitionApiFromSdk(denied.sdk, denied.client).deregisterAll(FAMILY)).rejects.toThrow("denied");
+  });
+  it("lists families by prefix, across pages, and refuses endless pages", async () => {
+    let page = 0;
+    const paged = fakeSdk({ ListTaskDefinitionFamiliesCommand: () => { page += 1; return { families: [`rovara-mcp-serve-a${page}`, `other-${page}`], nextToken: page < 2 ? "t" : undefined }; } });
+    expect(await ecsDefinitionApiFromSdk(paged.sdk, paged.client).listFamilies("rovara-mcp-serve-")).toEqual(["rovara-mcp-serve-a1", "rovara-mcp-serve-a2"]);
+    const endless = fakeSdk({ ListTaskDefinitionFamiliesCommand: () => ({ families: ["rovara-mcp-serve-a"], nextToken: "more" }) });
+    await expect(ecsDefinitionApiFromSdk(endless.sdk, endless.client).listFamilies("rovara-mcp-serve-")).rejects.toThrow("too many");
+    expect(endless.sent).toHaveLength(20);
+    const arns = fakeSdk({ ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn(FAMILY, 1)], nextToken: "more" }) });
+    await expect(ecsDefinitionApiFromSdk(arns.sdk, arns.client).latestRevision(FAMILY)).rejects.toThrow("too many");
+  });
+});
+
+describe("EC2 security group adapter (T7)", () => {
+  function ec2(responses: Record<string, (input: Record<string, any>) => unknown> = {}) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const sent: Array<{ command: string; input: Record<string, any> }> = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const client = { send: async (command: { constructor: { name: string }; input: Record<string, any> }) => { sent.push({ command: command.constructor.name, input: command.input }); return responses[command.constructor.name]?.(command.input) ?? {}; } }; // eslint-disable-line @typescript-eslint/no-explicit-any
+    return { sent, api: ec2GroupApiFromSdk(client as never) };
+  }
+  it("creates a group in the VPC with its tags, and fails when EC2 gives no id", async () => {
+    const ok = ec2({ CreateSecurityGroupCommand: () => ({ GroupId: "sg-0123456789abcdef0" }) });
+    expect(await ok.api.createGroup({ name: "rovara-mcp-serve-x", description: "d", vpcId: "vpc-1", tags: { "rovara:server": "mcpx" } })).toBe("sg-0123456789abcdef0");
+    expect(ok.sent[0]!.input).toMatchObject({ GroupName: "rovara-mcp-serve-x", VpcId: "vpc-1", TagSpecifications: [{ ResourceType: "security-group", Tags: [{ Key: "rovara:server", Value: "mcpx" }] }] });
+    await expect(ec2().api.createGroup({ name: "n", description: "d", vpcId: "v", tags: {} })).rejects.toThrow();
+  });
+  it("finds groups by all of their tags and reads TCP single-port rules, counting any other rule as foreign", async () => {
+    const { api, sent } = ec2({ DescribeSecurityGroupsCommand: () => ({ SecurityGroups: [
+      { GroupId: "sg-1", Tags: [{ Key: "a", Value: "b" }, { Key: "novalue" }], IpPermissionsEgress: [
+        { IpProtocol: "tcp", FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: "10.1.2.3/32" }], UserIdGroupPairs: [{ GroupId: "sg-2" }], PrefixListIds: [{ PrefixListId: "pl-1" }] },
+        { IpProtocol: "-1", IpRanges: [{ CidrIp: "0.0.0.0/0" }] }, { IpProtocol: "tcp", FromPort: 1, ToPort: 1024, IpRanges: [{ CidrIp: "10.0.0.0/8" }] }, { IpProtocol: "tcp", FromPort: 443, ToPort: 443, Ipv6Ranges: [{ CidrIpv6: "::/0" }] },
+      ], IpPermissions: [{ IpProtocol: "tcp", FromPort: 8080, ToPort: 8080, UserIdGroupPairs: [{ GroupId: "sg-3" }] }] },
+      { Tags: [] },
+    ] }) });
+    const [group, ...rest] = await api.describeGroups({ "rovara:managed": "rovara-mcp", "rovara:server": "mcpx" });
+    expect(rest).toEqual([]);
+    expect(group).toEqual({
+      groupId: "sg-1", tags: { a: "b" }, foreignRules: 3,
+      egress: [{ port: 443, target: { kind: "cidr", cidr: "10.1.2.3/32" } }, { port: 443, target: { kind: "group", groupId: "sg-2" } }, { port: 443, target: { kind: "prefixList", prefixListId: "pl-1" } }],
+      ingress: [{ port: 8080, target: { kind: "group", groupId: "sg-3" } }],
+    });
+    expect(sent[0]!.input.Filters).toEqual([{ Name: "tag:rovara:managed", Values: ["rovara-mcp"] }, { Name: "tag:rovara:server", Values: ["mcpx"] }]);
+  });
+  it("revokes the default 'all traffic to anywhere' rule of a new group", async () => {
+    const { api, sent } = ec2();
+    await api.revokeDefaultEgress("sg-1");
+    expect(sent[0]).toEqual({ command: "RevokeSecurityGroupEgressCommand", input: { GroupId: "sg-1", IpPermissions: [{ IpProtocol: "-1", IpRanges: [{ CidrIp: "0.0.0.0/0" }] }] } });
+  });
+  it("authorizes and revokes TCP rules for one port in the right direction, for a host, a group and a prefix list", async () => {
+    const { api, sent } = ec2();
+    const rules = [{ port: 443, target: { kind: "cidr" as const, cidr: "10.1.2.3/32" } }, { port: 8443, target: { kind: "group" as const, groupId: "sg-2" } }, { port: 443, target: { kind: "prefixList" as const, prefixListId: "pl-1" } }];
+    await api.authorize({ groupId: "sg-1", direction: "egress", rules });
+    await api.authorize({ groupId: "sg-1", direction: "ingress", rules: [rules[1]!] });
+    await api.revoke({ groupId: "sg-1", direction: "egress", rules: [rules[0]!] });
+    await api.revoke({ groupId: "sg-1", direction: "ingress", rules: [rules[1]!] });
+    expect(sent.map((call) => call.command)).toEqual(["AuthorizeSecurityGroupEgressCommand", "AuthorizeSecurityGroupIngressCommand", "RevokeSecurityGroupEgressCommand", "RevokeSecurityGroupIngressCommand"]);
+    expect(sent[0]!.input.IpPermissions).toEqual([
+      { IpProtocol: "tcp", FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: "10.1.2.3/32" }] }, { IpProtocol: "tcp", FromPort: 8443, ToPort: 8443, UserIdGroupPairs: [{ GroupId: "sg-2" }] },
+      { IpProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListIds: [{ PrefixListId: "pl-1" }] },
+    ]);
+  });
+  it("deletes a group by id and lets the error through (a group in use says so)", async () => {
+    const { api, sent } = ec2();
+    await api.deleteGroup("sg-1");
+    expect(sent[0]).toEqual({ command: "DeleteSecurityGroupCommand", input: { GroupId: "sg-1" } });
+    const busy = ec2({ DeleteSecurityGroupCommand: () => { throw Object.assign(new Error("in use"), { name: "DependencyViolation" }); } });
+    await expect(busy.api.deleteGroup("sg-1")).rejects.toMatchObject({ name: "DependencyViolation" });
   });
 });

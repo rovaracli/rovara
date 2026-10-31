@@ -1,74 +1,14 @@
 // Stdio MCP host redesign, task T6: the controller against a fake task runner. What is promised here: the broker's token and a task's token are for different listeners and different
 // routes; a token is bound to one task and one purpose; an approved server gets one task however many first requests arrive; a task that is not exactly the approved one is stopped;
 // every size and wait is bounded; and the task's own text never reaches the broker.
-import { mkdtemp, rm } from "node:fs/promises";
-import { createServer, request as httpRequest, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { McpStdioSpec } from "@agentx/contracts";
-import { createMcpController, memoryProbeSlots, type ApprovedServer, type McpController, type McpControllerOptions, type ProbedTool } from "../../../packages/gateway/src/mcp-controller.js";
-import { directoryBundleStore, type BundleStore } from "../../../packages/gateway/src/mcp-runner/bundle-store.js";
-import { FakeRunner, sha256, toolsHashOfNames, type FakeRunnerOptions } from "../../support/mcp-controller-fixtures.js";
+import { request as httpRequest } from "node:http";
+import { describe, expect, it } from "vitest";
+import { createMcpController, memoryProbeSlots, type McpControllerOptions } from "../../../packages/gateway/src/mcp-controller.js";
+import { directoryBundleStore } from "../../../packages/gateway/src/mcp-runner/bundle-store.js";
+import { FakeRunner, type FakeRunnerOptions, toolsHashOfNames } from "../../support/mcp-controller-fixtures.js";
+import { BROKER, BUNDLE, BYTES, CALL, ECHO, INTEGRITY, OTHER, OTHER_BYTES, approvedOf, mcp, post, specOf, tokenOf, useControllerWorld, world } from "../../support/mcp-controller-world.js";
 
-const BROKER = "b".repeat(48);
-const BYTES = Buffer.from("a bundle");
-const BUNDLE = sha256(BYTES);
-const OTHER_BYTES = Buffer.from("another bundle");
-const OTHER = sha256(OTHER_BYTES);
-const INTEGRITY = `sha512-${"A".repeat(86)}==`;
-const ECHO: ProbedTool[] = [{ name: "echo", inputSchema: { type: "object" } }];
-const specOf = (bundleHash = BUNDLE, over: Partial<McpStdioSpec> = {}): McpStdioSpec => ({
-  registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: ["--read-only"], integrity: INTEGRITY, lockfileHash: "1".repeat(64), bundleHash, destinations: [], secretEnv: ["JIRA_TOKEN"], size: { cpu: 256, memoryMiB: 512 }, ...over,
-});
-const approvedOf = (over: Partial<ApprovedServer> = {}): ApprovedServer => ({ spec: specOf(), toolsHash: toolsHashOfNames(ECHO), ...over });
-
-let work: string;
-const open: Array<() => Promise<void>> = [];
-beforeEach(async () => { work = await mkdtemp(join(tmpdir(), "controller-test-")); });
-afterEach(async () => {
-  for (const close of open.splice(0).reverse()) await close();
-  await rm(work, { recursive: true, force: true });
-});
-
-const listen = async (handler: (req: Parameters<McpController["handleBroker"]>[0], res: Parameters<McpController["handleBroker"]>[1]) => void): Promise<{ server: Server; url: string }> => {
-  const server = createServer(handler);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  open.push(() => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }));
-  return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
-};
-
-async function world(over: { runner?: FakeRunnerOptions; approved?: Record<string, ApprovedServer>; registryThrows?: boolean; controller?: Partial<McpControllerOptions>; bundles?: BundleStore } = {}) {
-  const runner = new FakeRunner(over.runner);
-  open.push(() => runner.closeAll());
-  const bundles = over.bundles ?? directoryBundleStore(join(work, "bundles"));
-  const approved = new Map<string, ApprovedServer>(Object.entries(over.approved ?? { mcpsim000001: approvedOf() }));
-  const changes: Array<{ serverId: string; approved: string; observed: string }> = [];
-  const later: { controller?: McpController } = {};
-  const broker = await listen((req, res) => { void later.controller!.handleBroker(req, res); });
-  const runnerListener = await listen((req, res) => { void later.controller!.handleRunner(req, res); });
-  const controller = createMcpController({
-    token: BROKER, runner, bundles, controllerUrl: runnerListener.url, npmRegistry: "https://registry.example/", toolsHashOf: toolsHashOfNames, pollMs: 5,
-    limits: { startMs: 1_500, installMs: 2_000 },
-    registry: {
-      approved: async (id) => { if (over.registryThrows === true) throw new Error("table down"); return approved.get(id); },
-      toolsChanged: async (serverId, change) => { changes.push({ serverId, ...change }); },
-    },
-    ...over.controller,
-  });
-  later.controller = controller;
-  open.push(() => controller.close());
-  return { runner, bundles, approved, changes, controller, brokerUrl: broker.url, runnerUrl: runnerListener.url };
-}
-
-const post = (url: string, path: string, token: string | undefined, body: unknown = {}, headers: Record<string, string> = {}) => fetch(`${url}${path}`, {
-  method: "POST", headers: { "content-type": "application/json", ...(token === undefined ? {} : { authorization: `Bearer ${token}` }), ...headers }, body: typeof body === "string" ? body : JSON.stringify(body),
-});
-const CALL = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "echo", arguments: {} } };
-/** The MCP request the broker makes: the transport sends initialize first, but a stateless server answers any request. */
-const mcp = (url: string, id: string, body: unknown = CALL, token: string | undefined = BROKER) => post(url, `/servers/${id}/mcp`, token, body, { accept: "application/json, text/event-stream" });
-const tokenOf = (spec: { containers: Record<string, Record<string, string>> }, container = "server"): string => spec.containers[container]!.MCP_RUNNER_TOKEN!;
+useControllerWorld();
 
 describe("T6 controller: the two listeners", () => {
   it("answers /healthz on both, and nothing else without the right kind of token", async () => {
@@ -109,7 +49,7 @@ describe("T6 controller: the two listeners", () => {
     expect((await fetch(`${w.runnerUrl}/nothing`)).status).toBe(404);
   });
   it("refuses a broker token that is too short", () => {
-    expect(() => createMcpController({ token: "short", registry: { approved: async () => undefined }, runner: new FakeRunner(), bundles: directoryBundleStore(work), controllerUrl: "http://127.0.0.1:1", npmRegistry: "https://r.example/", toolsHashOf: toolsHashOfNames })).toThrow(/too short/u);
+    expect(() => createMcpController({ token: "short", registry: { approved: async () => undefined }, runner: new FakeRunner(), bundles: directoryBundleStore("/nowhere"), controllerUrl: "http://127.0.0.1:1", npmRegistry: "https://r.example/", toolsHashOf: toolsHashOfNames })).toThrow(/too short/u);
   });
 });
 

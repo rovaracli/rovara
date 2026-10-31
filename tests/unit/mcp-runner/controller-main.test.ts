@@ -7,6 +7,9 @@ import { summariseProbe } from "../../../packages/broker/src/context-sources/mcp
 const ENV = {
   MCP_CONTROLLER_URL: "https://mcp-controller.corp.example:8443", ROVARA_MCP_NPM_REGISTRY: "https://registry.corp.example/npm/", MCP_RUNNER_SUBNETS: "subnet-0aaaaaaaaaaaaaaaa, subnet-0bbbbbbbbbbbbbbbb",
   MCP_ECS_CLUSTER: "rovara-mcp", MCP_INSTALL_SECURITY_GROUP: "sg-0cccccccccccccccc", MCP_BUNDLE_BUCKET: "bundles", MCP_CONTROLLER_TLS_CERT: "CERT", MCP_CONTROLLER_TLS_KEY: "KEY",
+  MCP_VPC_ID: "vpc-0123456789abcdef0", MCP_RUNNER_IMAGE: `111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara-mcp-runner@sha256:${"a".repeat(64)}`, MCP_EXECUTION_ROLE_ARN: "arn:aws:iam::111111111111:role/rovara-mcp-execution",
+  MCP_RUNNER_LOG_GROUP: "/rovara/mcp-runner", AWS_REGION: "us-east-1", MCP_ENDPOINT_SECURITY_GROUPS: "sg-0eeeeeeeeeeeeeeee, sg-0ffffffffffffffff", MCP_S3_PREFIX_LIST: "pl-0123456789abcdef0",
+  MCP_CONTROLLER_SECURITY_GROUP: "sg-0123456789abcdef0", ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16",
 };
 
 describe("controller main: start", () => {
@@ -24,12 +27,19 @@ describe("controller main: settings", () => {
     expect(controllerConfigFromEnv(ENV)).toEqual({
       brokerPort: 8080, runnerPort: 8443, cluster: "rovara-mcp", subnets: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"], installSecurityGroupId: "sg-0cccccccccccccccc", controllerUrl: "https://mcp-controller.corp.example:8443",
       controllerCa: undefined, npmRegistry: "https://registry.corp.example/npm/", bundleBucket: "bundles", tlsCert: "CERT", tlsKey: "KEY",
+      vpcId: "vpc-0123456789abcdef0", runnerImage: ENV.MCP_RUNNER_IMAGE, executionRoleArn: "arn:aws:iam::111111111111:role/rovara-mcp-execution", logGroup: "/rovara/mcp-runner", region: "us-east-1",
+      endpointGroupIds: ["sg-0eeeeeeeeeeeeeeee", "sg-0ffffffffffffffff"], s3PrefixListId: "pl-0123456789abcdef0", controllerGroupId: "sg-0123456789abcdef0", privateCidrs: ["10.1.0.0/16"], rovaraCidrs: ["10.42.0.0/16"],
     });
   });
   it("refuses what is missing, a controller address that is not https (the tasks refuse plain http), a registry that is not https and a port the controller may not use", () => {
-    for (const name of Object.keys(ENV)) expect(() => controllerConfigFromEnv({ ...ENV, [name]: undefined }), name).toThrow();
+    for (const name of Object.keys(ENV)) if (name !== "ROVARA_PRIVATE_MCP_CIDRS" && name !== "ROVARA_VPC_CIDRS") expect(() => controllerConfigFromEnv({ ...ENV, [name]: undefined }), name).toThrow();
     expect(() => controllerConfigFromEnv({ ...ENV, MCP_CONTROLLER_URL: "http://mcp-controller.corp.example:8443" })).toThrow(/https/u);
     expect(() => controllerConfigFromEnv({ ...ENV, ROVARA_MCP_NPM_REGISTRY: "http://registry.corp.example/" })).toThrow(/https/u);
+    // ranges for private servers need the network Rovara runs in, so that an overlap can be refused; a range that is not private is refused
+    expect(() => controllerConfigFromEnv({ ...ENV, ROVARA_VPC_CIDRS: undefined })).toThrow(/ROVARA_VPC_CIDRS/u);
+    expect(() => controllerConfigFromEnv({ ...ENV, ROVARA_PRIVATE_MCP_CIDRS: "8.8.8.0/24" })).toThrow();
+    expect(() => controllerConfigFromEnv({ ...ENV, ROVARA_VPC_CIDRS: "nonsense" })).toThrow();
+    expect(controllerConfigFromEnv({ ...ENV, ROVARA_PRIVATE_MCP_CIDRS: undefined, ROVARA_VPC_CIDRS: undefined })).toMatchObject({ privateCidrs: [], rovaraCidrs: [] });
     for (const PORT of ["80", "0", "99999", "x"]) expect(() => controllerConfigFromEnv({ ...ENV, PORT }), PORT).toThrow();
     expect(() => controllerConfigFromEnv({ ...ENV, MCP_RUNNER_PORT: "443" })).toThrow();
   });

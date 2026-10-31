@@ -4,7 +4,7 @@
 // customer code (install, probe and serve tasks, through a `TaskRunner`), and forwards MCP requests to the bridge inside a serve task.
 //
 // Two listeners, two kinds of caller, and no route shared between them:
-//   broker listener  (bearer = the broker's token)         POST /install  POST /probe  POST /servers/{id}/mcp  POST /servers/{id}/warm  GET /healthz
+//   broker listener  (bearer = the broker's token)         POST /install  POST /probe  POST /servers/{id}/mcp  POST /servers/{id}/warm  POST /servers/{id}/release  GET /healthz
 //   runner listener  (bearer = one task's own token)        GET /bundles/{hash}  PUT /bundles/{hash}  PUT /result
 // A runner's token reaches the runner listener only, and only what `runnerTokenAllows` says: an install task may PUT one bundle and one result; a fetch, serve or probe task may GET the
 // one bundle it was approved to run. The server container can read its own token (same uid), so a token is worth nothing else (T4 review I4).
@@ -106,10 +106,16 @@ export interface ControllerLimits {
   maxLifetimeMs: number;
   /** An install or probe task older than this is a leftover. */
   jobMaxMs: number;
+  /** This many failed starts or crashes of one server within `failureWindowMs` put it into backoff. */
+  maxFailures: number;
+  failureWindowMs: number;
+  /** How long a server in backoff is not started. */
+  backoffMs: number;
 }
 
 export const CONTROLLER_LIMITS: ControllerLimits = {
-  maxServeTasks: 16, installMs: 5 * 60_000, startMs: 120_000, callMs: 60_000, bodyBytes: 1_048_576, replyBytes: 1_048_576, idleMs: 10 * 60_000, maxLifetimeMs: 12 * 3_600_000, jobMaxMs: 5 * 60_000,
+  maxServeTasks: 16, installMs: 4 * 60_000, startMs: 120_000, callMs: 60_000, bodyBytes: 1_048_576, replyBytes: 1_048_576, idleMs: 10 * 60_000, maxLifetimeMs: 12 * 3_600_000, jobMaxMs: 5 * 60_000,
+  maxFailures: 3, failureWindowMs: 10 * 60_000, backoffMs: 10 * 60_000,
 };
 
 export interface McpControllerOptions {
@@ -133,6 +139,8 @@ export interface McpControllerOptions {
   limits?: Partial<ControllerLimits> | undefined;
   /** How often to look at a task that is starting. */
   pollMs?: number | undefined;
+  /** How often reconcile runs (it also runs once at start). Default 60 s. 0: never on its own (a test calls `reconcile()`). */
+  sweepMs?: number | undefined;
   now?: (() => number) | undefined;
   /** No ids or text from tasks: server ids, task ids and fixed words only. */
   log?: ((event: string, fields: Record<string, string | number>) => void) | undefined;
@@ -217,6 +225,13 @@ export interface McpController {
   /** The runner-facing routes (bundles and the install result). Mount this on the runner listener only, over TLS. */
   handleRunner(req: IncomingMessage, res: ServerResponse): Promise<void>;
   close(): Promise<void>;
+  /**
+   * One pass of reconcile, from the cloud's own records: stops idle servers, servers older than the maximum lifetime, tasks that are unknown, over-age, not approved or not the approved
+   * one; notices tasks that died; removes the task definitions and security groups of servers that are no longer approved. It stops nothing if the cloud cannot be read.
+   */
+  reconcile(): Promise<void>;
+  /** Recent failed starts and crashes of a server, and until when it is in backoff. For the server card ("This server keeps stopping"). */
+  recentStarts(serverId: string): { failures: number; backoffUntil?: number };
   /** How many serve tasks are up or starting. */
   running(): number;
   /** How many serve tasks have been started in all. */
@@ -241,10 +256,46 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   const serving = new Map<string, Serving>();
   const jobs = new Set<Promise<unknown>>();
   const failures = new Map<string, number[]>();
+  const backoffUntil = new Map<string, number>();
+  /** Install and probe tasks this controller started and has not finished with. Serve tasks are the entries of `serving`. */
+  const activeTaskIds = new Set<string>();
+  const activeProbeIds = new Set<string>();
+  /** Starts that have been asked of the runner and not yet recorded: a task that exists but is not recorded yet is not a leftover. */
+  let startsInFlight = 0;
   let startedCount = 0;
   let closed = false;
+  let sweeping = false;
 
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /** Asks the runner for a task. The task is recorded (by `record`) before the start counts as finished, so reconcile never sees a task that exists and is not recorded. */
+  async function startTask(spec: Parameters<TaskRunner["start"]>[0], record: (taskId: string) => void): Promise<string> {
+    startsInFlight += 1;
+    try {
+      const taskId = await runner.start(spec);
+      startedCount += 1;
+      record(taskId);
+      return taskId;
+    } finally {
+      startsInFlight -= 1;
+    }
+  }
+
+  function recordFailure(serverId: string): void {
+    const at = now();
+    const recent = [...(failures.get(serverId) ?? []).filter((time) => at - time < limits.failureWindowMs), at];
+    failures.set(serverId, recent);
+    if (recent.length >= limits.maxFailures) { backoffUntil.set(serverId, at + limits.backoffMs); log("mcp_controller.backoff", { serverId, failures: recent.length }); }
+  }
+  function inBackoff(serverId: string): boolean {
+    const until = backoffUntil.get(serverId);
+    if (until === undefined) return false;
+    if (now() < until) return true;
+    // Backoff is over: the server gets a fresh count.
+    backoffUntil.delete(serverId);
+    failures.delete(serverId);
+    return false;
+  }
 
   // ---- grants: one token per task and purpose ----------------------------------------------------------
   function addGrant(scope: RunnerTokenScope, onResult?: (outcome: InstallOutcome | undefined) => void): { token: string; key: string } {
@@ -321,7 +372,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       try { made = await resources.ensure({ kind: input.kind, id: input.id, spec: input.spec, secretRef: input.secretRef }); } catch { throw new ControllerError("resources_failed"); }
       if (input.isCancelled()) throw new ControllerError("task_stopped");
       const bundleHash = input.spec.bundleHash;
-      taskId = await runner.start({
+      taskId = await startTask({
         purpose: input.kind, serverId: input.id, approval: approvalOf(bundleHash), family: made.family, securityGroupId: made.securityGroupId, size: input.spec.size,
         containers: {
           // The fetch container gets the controller's address and the token; the server container gets the token (the bridge's own bearer) and what it needs to start the package.
@@ -331,9 +382,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
             MCP_MEMORY_MIB: String(input.spec.size.memoryMiB), PORT: "8080",
           },
         },
-      });
-      startedCount += 1;
-      input.onTask(taskId);
+      }, (started) => { input.onTask(started); if (input.kind !== "serve") activeTaskIds.add(started); });
       log("mcp_controller.task_started", { serverId: input.id, taskId, purpose: input.kind });
       if (input.isCancelled()) throw new ControllerError("task_stopped");
       const base = await waitRunning(taskId, input.isCancelled);
@@ -343,6 +392,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       revoke(key);
       if (taskId !== undefined) {
         await runner.stop(taskId, input.reason()).catch(() => undefined);
+        activeTaskIds.delete(taskId);
         log("mcp_controller.task_stopped", { serverId: input.id, taskId, reason: input.reason() });
       }
       if (error instanceof ControllerError) throw error;
@@ -374,11 +424,10 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       const existing = serving.get(serverId);
       if (existing === undefined) break;
       if (sameApproval(existing, approved)) { existing.lastUsed = now(); await existing.ready; return existing; }
-      // The approval moved (another bundle) while a task was up: that task is not the approved one any more.
-      await stopServing(serverId, "approval_changed");
+      // The approval moved while a task was up (another bundle, or a replaced secret): that task is not the approved one any more.
+      await stopServing(serverId, existing.bundleHash === approved.spec.bundleHash ? "secret_replaced" : "approval_changed");
     }
-    const recent = (failures.get(serverId) ?? []).filter((at) => now() - at < 60_000);
-    if (recent.length >= 3) throw new ControllerError("keeps_stopping");
+    if (inBackoff(serverId)) throw new ControllerError("keeps_stopping");
     const victims: string[] = [];
     const byUse = [...serving.values()].sort((a, b) => a.lastUsed - b.lastUsed);
     for (let index = 0; serving.size - victims.length >= limits.maxServeTasks && index < byUse.length; index += 1) victims.push(byUse[index]!.serverId);
@@ -408,7 +457,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     serving.set(serverId, entry);
     entry.ready.catch(() => {
       // A start that was cancelled (the server was disabled, the controller closed) is not a crash.
-      if (!entry.cancelled) failures.set(serverId, [...(failures.get(serverId) ?? []).filter((at) => now() - at < 60_000), now()]);
+      if (!entry.cancelled) recordFailure(serverId);
       if (serving.get(serverId) === entry) serving.delete(serverId);
     });
     await entry.ready;
@@ -423,7 +472,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     const { token, key } = addGrant({ purpose: "install" }, (outcome) => settle(outcome));
     let taskId: string | undefined;
     try {
-      taskId = await runner.start({
+      taskId = await startTask({
         purpose: "install", serverId: "install", approval: "", family: installFamily, securityGroupId: options.installSecurityGroupId, size: { cpu: 512, memoryMiB: 1_024 },
         containers: {
           install: {
@@ -432,8 +481,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
             ...(options.controllerCa === undefined ? {} : { ROVARA_MCP_CONTROLLER_CA: options.controllerCa }),
           },
         },
-      });
-      startedCount += 1;
+      }, (started) => { activeTaskIds.add(started); });
       log("mcp_controller.task_started", { serverId: "install", taskId, purpose: "install" });
       const watched = taskId;
       const deadline = Date.now() + limits.installMs;
@@ -464,6 +512,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       revoke(key);
       if (taskId !== undefined) {
         await runner.stop(taskId, "done").catch(() => undefined);
+        activeTaskIds.delete(taskId);
         log("mcp_controller.task_stopped", { serverId: "install", taskId, reason: "done" });
       }
     }
@@ -471,6 +520,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
 
   async function runProbe(spec: RunnerSpec, id: string, secretRef: string | undefined): Promise<ProbedTool[]> {
     let launched: Launched | undefined;
+    activeProbeIds.add(id);
     try {
       launched = await launch({ kind: "probe", id, spec, secretRef, isCancelled: () => closed, onTask: () => undefined, reason: () => "failed" });
       return await listTools(launched.base, launched.token);
@@ -478,9 +528,11 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       if (launched !== undefined) {
         revoke(launched.grantKey);
         await runner.stop(launched.taskId, "done").catch(() => undefined);
+        activeTaskIds.delete(launched.taskId);
         log("mcp_controller.task_stopped", { serverId: id, taskId: launched.taskId, reason: "done" });
       }
       await resources.release("probe", id).catch(() => undefined);
+      activeProbeIds.delete(id);
     }
   }
 
@@ -578,10 +630,19 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     res.end(reply);
   }
 
-  async function handleServer(req: IncomingMessage, res: ServerResponse, serverId: string, action: "mcp" | "warm"): Promise<void> {
+  async function handleServer(req: IncomingMessage, res: ServerResponse, serverId: string, action: "mcp" | "warm" | "release"): Promise<void> {
     if (req.method !== "POST") { res.writeHead(405, { allow: "POST" }); res.end(); return; }
     let approved: ApprovedServer | undefined;
     try { approved = await options.registry.approved(serverId); } catch { send(res, 503, { error: "registry_unavailable" }); return; }
+    if (action === "release") {
+      // A server that was disabled or removed: its task stops at once and its task definition and security group go. An approved server cannot be released this way.
+      if (approved !== undefined) { send(res, 409, { error: "still_approved" }); return; }
+      await stopServing(serverId, "disabled");
+      let removed = true;
+      try { await resources.release("serve", serverId); } catch { removed = false; log("mcp_controller.release_pending", { serverId }); }
+      send(res, 200, { status: "released", resources: removed ? "removed" : "pending" });
+      return;
+    }
     // Anything the registry does not call approved is not served, and does not say whether it exists.
     if (approved === undefined) { send(res, 404, { error: "not_found" }); return; }
     if (action === "warm") {
@@ -620,9 +681,9 @@ export function createMcpController(options: McpControllerOptions): McpControlle
         await handleProbe(req, res, pathname === "/install");
         return;
       }
-      const match = /^\/servers\/(mcp[a-z0-9]{6,24})\/(mcp|warm)$/u.exec(pathname);
+      const match = /^\/servers\/(mcp[a-z0-9]{6,24})\/(mcp|warm|release)$/u.exec(pathname);
       if (match === null || !SERVER_ID.test(match[1]!)) { send(res, 404, { error: "not_found" }); return; }
-      await handleServer(req, res, match[1]!, match[2] as "mcp" | "warm");
+      await handleServer(req, res, match[1]!, match[2] as "mcp" | "warm" | "release");
     } catch {
       if (!res.headersSent) send(res, 400, { error: "bad_request" });
     }
@@ -674,13 +735,98 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     }
   }
 
+  // ---- reconcile ---------------------------------------------------------------------------------------------
+  async function reconcile(): Promise<void> {
+    if (closed || sweeping) return;
+    sweeping = true;
+    try {
+      const at = now();
+      // 1. Tasks this controller is serving: idle, too old, or dead.
+      for (const entry of [...serving.values()]) {
+        if (entry.cancelled || entry.base === undefined) continue;
+        if (at - entry.lastUsed > limits.idleMs) { await stopServing(entry.serverId, "idle"); continue; }
+        if (at - entry.startedAt > limits.maxLifetimeMs) { await stopServing(entry.serverId, "lifetime"); continue; }
+        if (entry.taskId === undefined) continue;
+        let status: Awaited<ReturnType<TaskRunner["describe"]>>;
+        try { status = await runner.describe(entry.taskId); } catch { continue; }
+        if (status === undefined || status.state === "stopped") {
+          // The task died on its own: it is dropped, counted, and started afresh by the next call (unless it keeps dying).
+          if (serving.get(entry.serverId) === entry) { serving.delete(entry.serverId); revoke(entry.grantKey); recordFailure(entry.serverId); }
+          await runner.stop(entry.taskId, "crash").catch(() => undefined);
+          log("mcp_controller.task_stopped", { serverId: entry.serverId, taskId: entry.taskId, reason: "crash" });
+        }
+      }
+      // 2. The cloud's own list of this controller's tasks. If it cannot be read, nothing is judged from it.
+      let listed: Awaited<ReturnType<TaskRunner["list"]>> | undefined;
+      try { listed = await runner.list(); } catch { log("mcp_controller.list_failed", {}); }
+      if (listed !== undefined) {
+        for (const task of listed) {
+          const entry = task.purpose === "serve" ? [...serving.values()].find((candidate) => candidate.taskId === task.taskId) : undefined;
+          const known = task.purpose === "serve" ? entry !== undefined : activeTaskIds.has(task.taskId);
+          if (!known) {
+            // A start that is in flight may have made a task that is not recorded yet; it is judged on the next pass.
+            if (startsInFlight > 0) continue;
+            await runner.stop(task.taskId, "leftover").catch(() => undefined);
+            log("mcp_controller.task_stopped", { serverId: task.serverId, taskId: task.taskId, reason: "leftover" });
+            continue;
+          }
+          if (task.purpose !== "serve") {
+            if (at - task.startedAt > limits.jobMaxMs) {
+              await runner.stop(task.taskId, "leftover").catch(() => undefined);
+              log("mcp_controller.task_stopped", { serverId: task.serverId, taskId: task.taskId, reason: "leftover" });
+            }
+            continue;
+          }
+          if (entry === undefined) continue;
+          if (at - task.startedAt > limits.maxLifetimeMs) { await stopServing(entry.serverId, "lifetime"); continue; }
+          let approved: ApprovedServer | undefined;
+          try { approved = await options.registry.approved(task.serverId); } catch { continue; }
+          if (approved === undefined) { await stopServing(entry.serverId, "disabled"); continue; }
+          if (approvalOf(approved.spec.bundleHash) !== task.approval || approved.spec.bundleHash !== entry.bundleHash) { await stopServing(entry.serverId, "approval_changed"); continue; }
+          if (approved.secretVersion !== entry.secretVersion) await stopServing(entry.serverId, "secret_replaced");
+        }
+      }
+      // 3. What a server that is gone left behind: its task definition and security group.
+      if (resources.list !== undefined) {
+        let held: Awaited<ReturnType<NonNullable<ServerResources["list"]>>> = [];
+        try { held = await resources.list(); } catch { log("mcp_controller.resources_list_failed", {}); }
+        for (const item of held) {
+          if (item.kind === "probe" ? activeProbeIds.has(item.id) : serving.has(item.id)) continue;
+          if (item.kind === "serve") {
+            let approved: ApprovedServer | undefined;
+            try { approved = await options.registry.approved(item.id); } catch { continue; }
+            if (approved !== undefined) continue;
+          }
+          await resources.release(item.kind, item.id).catch(() => { log("mcp_controller.release_pending", { serverId: item.id }); });
+        }
+      }
+    } finally {
+      sweeping = false;
+    }
+  }
+
+  const sweepMs = options.sweepMs ?? 60_000;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  if (sweepMs > 0) {
+    // At start, and then every minute, from the cloud's records and not from memory, so a restart of this service cannot orphan a task.
+    void reconcile().catch(() => undefined);
+    timer = setInterval(() => { void reconcile().catch(() => undefined); }, sweepMs);
+    timer.unref();
+  }
+
   return {
     running: () => serving.size,
     started: () => startedCount,
+    reconcile,
+    recentStarts: (serverId) => {
+      const until = backoffUntil.get(serverId);
+      return { failures: (failures.get(serverId) ?? []).filter((time) => now() - time < limits.failureWindowMs).length, ...(until === undefined || now() >= until ? {} : { backoffUntil: until }) };
+    },
     handleBroker,
     handleRunner,
     async close() {
       closed = true;
+      if (timer !== undefined) clearInterval(timer);
       for (const serverId of [...serving.keys()]) await stopServing(serverId, "shutdown");
       await Promise.all([...jobs].map((job) => job.catch(() => undefined)));
     },

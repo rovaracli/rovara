@@ -58,6 +58,8 @@ export interface FakeRunnerOptions {
   failStart?: boolean;
   replyStatus?: number;
   callStatus?: number;
+  /** `start` takes this long to answer; the task already exists (and is listed) meanwhile, as an ECS task does. */
+  startDelayMs?: number;
   reply?: (name: string) => string;
   /** What an install task does (the test PUTs the bundle and the result with the token it was given). */
   install?: (input: { taskId: string; token: string; request: Record<string, unknown>; environment: Record<string, string> }) => Promise<void>;
@@ -72,6 +74,9 @@ export class FakeRunner implements TaskRunner {
   /** What `list` returns on top of the tasks started here (leftovers, for reconcile). */
   readonly extra: RunnerTaskInfo[] = [];
   listFails = false;
+  listCalls = 0;
+  /** `list` takes this long to answer. */
+  listDelayMs = 0;
   constructor(readonly options: FakeRunnerOptions = {}) {}
 
   async start(spec: RunnerTaskSpec): Promise<string> {
@@ -80,6 +85,7 @@ export class FakeRunner implements TaskRunner {
     const taskId = `fake-${this.counter}`;
     const task: FakeTask = { spec, state: { state: "pending" }, startedAt: Date.now() };
     this.tasks.set(taskId, task);
+    if (this.options.startDelayMs !== undefined) await new Promise((resolve) => setTimeout(resolve, this.options.startDelayMs));
     if (spec.purpose === "install") {
       task.state = { state: "running" };
       const environment = spec.containers.install ?? {};
@@ -112,6 +118,8 @@ export class FakeRunner implements TaskRunner {
   async describe(taskId: string): Promise<RunnerTaskStatus | undefined> { return this.tasks.get(taskId)?.state; }
 
   async list(): Promise<RunnerTaskInfo[]> {
+    this.listCalls += 1;
+    if (this.listDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.listDelayMs));
     if (this.listFails) throw new Error("cannot list");
     const own = [...this.tasks.entries()].filter(([, task]) => task.state.state !== "stopped").map(([taskId, task]): RunnerTaskInfo => ({
       taskId, purpose: task.spec.purpose, serverId: task.spec.serverId, approval: task.spec.approval, family: task.spec.family, startedAt: task.startedAt, state: task.state.state === "running" ? "running" : "pending",
