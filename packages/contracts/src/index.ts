@@ -27,6 +27,7 @@ export * from "./project-playbook.js";
 export * from "./how-we-work.js";
 export * from "./rovara-code-node.js";
 export * from "./rovara-code-intent.js";
+export * from "./intake.js";
 export * from "./rovara-code-understand.js";
 export * from "./plan-critique-block.js";
 export * from "./workflow-proposed-checks.js";
@@ -214,6 +215,12 @@ export * from "./stage-model-publish-refusal.js";
 export * from "./app-project-slack.js";
 
 export * from "./app-service-status.js";
+
+// Learning v2 (L4): lesson text hygiene and the learnedContext payload.
+export * from "./lesson-text.js";
+export * from "./learned-context.js";
+export * from "./lesson-citation.js";
+export * from "./code-identifiers.js";
 export * from "./decision-cards.js";
 export * from "./decision-card-tabs.js";
 export * from "./test-environment.js";

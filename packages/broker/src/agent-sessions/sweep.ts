@@ -176,7 +176,7 @@ async function stampIndexItems(deps: SummaryDependencies, session: AgentSessionR
     if (share["orgId"] === orgId && share["principal"] !== undefined) await stamp(deps, sharedSessionsKey(orgId, share["principal"] as AgentPrincipal, sessionId), expires);
   }
   // The bindings sit in a partition of their own (`sessionBindingKey`): each one and the surface item it names expire with the session.
-  for (const kind of ["slack_thread", "linear_issue"] as const) {
+  for (const kind of ["slack_thread", "linear_issue", "tracker_item"] as const) {
     const key = sessionBindingKey(orgId, sessionId, kind);
     for (const binding of await queryPartition(deps, key.pk, key.sk, undefined, undefined)) {
       if (binding["orgId"] !== orgId || binding["binding"] === undefined) continue;

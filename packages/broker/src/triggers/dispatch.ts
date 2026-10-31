@@ -35,12 +35,15 @@ import { readChainRun, startChainRun, type ChainRunnerDependencies } from "../ch
 import { connectionServiceActorIds } from "../connections/store.js";
 import { resolvePayer } from "../spend/payer.js";
 import { disableTrigger } from "./lifecycle.js";
+import { isIntakeTrigger, startIntakeFor, type IntakeDispatch } from "./intake-dispatch.js";
 import { runOwnerFor, triggerProblems } from "./requirements.js";
 import type { TriggerRecord } from "./store.js";
 
 export type TriggerDispatchDependencies = ChainRunnerDependencies & {
   /** The GitHub App's slug, to tell its own bot from a person (`<slug>[bot]`); without it GitHub's own events are told by the provider's `actor.kind` alone. */
   githubAppSlug?: () => Promise<string | undefined>;
+  /** Meta repo lane F: the intake engine, which starts Rovara Code from an issue that a label or an assignment asked for. Absent, such an event is recorded as failed and starts nothing. */
+  intake?: IntakeDispatch;
 };
 
 /** What GitHub's API says of a pull request's or issue's author, asked now: a member of the repository's org, an outside collaborator with write access, nobody of those, or an error (which counts as nobody). */
@@ -366,21 +369,34 @@ async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcom
     if (existing !== undefined) return { outcome: await settle(work, trigger, { outcome: "duplicate", taskId: existing.taskId }) };
   }
   // The subject this trigger just started a run for: what that run did to it may be what this event is, so it is not started again at once. No allowance is used.
-  if (await recentlyStarted(work, trigger)) return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "recent_subject" }) };
-  // 4 and 5. The trigger's allowance for the hour (never above the platform's), then the org's for the day.
-  const now = new Date(deps.now()).toISOString();
-  const allowed = Number.isInteger(trigger.maxRunsPerHour) ? Math.min(trigger.maxRunsPerHour, TRIGGER_MAX_RUNS_PER_HOUR) : 0;
-  if (!await countOne(deps, triggerRateKey(orgId, trigger.triggerId, now.slice(0, 13)), allowed, 2 * HOUR_SECONDS)) {
-    return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "rate_limited" }) };
-  }
-  if (!await countOne(deps, orgAutonomousKey(orgId, now.slice(0, 10)), ORG_MAX_AUTONOMOUS_RUNS_PER_DAY, 2 * DAY_SECONDS)) {
-    return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "org_daily_limit" }) };
+  // (An intake trigger is not held by this guard: its tickets are one item each, and a label event counts once, so a new label right after a task ended is a new ask, not an echo of it.)
+  if (!isIntakeTrigger(trigger) && await recentlyStarted(work, trigger)) return { outcome: await settle(work, trigger, { outcome: "skipped", reason: "recent_subject" }) };
+  // 4 and 5. The trigger's allowance for the hour (never above the platform's), then the org's for the day. An intake trigger (Rovara Code asked for by a label) counts them only when a member's
+  // start is about to start work (`admit`, below): an outsider's label that only waits, or a repeat, must not use the allowance other agents' triggers share, and the work is the member's own.
+  const intakeTrigger = isIntakeTrigger(trigger);
+  const allowance = async (): Promise<"rate_limited" | "org_daily_limit" | undefined> => {
+    const now = new Date(deps.now()).toISOString();
+    const allowed = Number.isInteger(trigger.maxRunsPerHour) ? Math.min(trigger.maxRunsPerHour, TRIGGER_MAX_RUNS_PER_HOUR) : 0;
+    if (!await countOne(deps, triggerRateKey(orgId, trigger.triggerId, now.slice(0, 13)), allowed, 2 * HOUR_SECONDS)) return "rate_limited";
+    if (!await countOne(deps, orgAutonomousKey(orgId, now.slice(0, 10)), ORG_MAX_AUTONOMOUS_RUNS_PER_DAY, 2 * DAY_SECONDS)) return "org_daily_limit";
+    return undefined;
+  };
+  if (!intakeTrigger) {
+    const used = await allowance();
+    if (used !== undefined) return { outcome: await settle(work, trigger, { outcome: "skipped", reason: used }) };
   }
   // 6. The start. A refusal is a recorded outcome; a fault that may pass is the event's to be sent again.
   let started: { runId?: string; taskId?: string };
   try {
-    const source = eventSourceOf(event, trigger.triggerId);
-    started = trigger.target.kind === "chain" ? await startChainFor(deps, orgId, trigger, identity, source) : await startAgentFor(deps, orgId, trigger, identity, source);
+    if (isIntakeTrigger(trigger)) {
+      // Rovara Code asked for by a label or an assignment: the intake engine decides from who did it (a member starts it, anyone else makes it wait).
+      const result = await startIntakeFor(deps.intake, orgId, event, async () => await allowance() === undefined);
+      if (result.outcome !== "started") return { outcome: await settle(work, trigger, result) };
+      started = { taskId: result.taskId };
+    } else {
+      const source = eventSourceOf(event, trigger.triggerId);
+      started = trigger.target.kind === "chain" ? await startChainFor(deps, orgId, trigger, identity, source) : await startAgentFor(deps, orgId, trigger, identity, source);
+    }
   } catch (error) {
     const refusal = await refusalOf(deps, orgId, trigger, error);
     if ("transient" in refusal) {
