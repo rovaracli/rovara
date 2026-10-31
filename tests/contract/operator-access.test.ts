@@ -2,6 +2,7 @@
 // Enterprise foundations, N6: the standing Rovara operator role. These tests read what the synthesised role CAN and CANNOT do by evaluating its policy
 // (explicit Deny, then Allow, then implicit deny) against concrete requests, so a deny that is present but ineffective is caught, not only a missing one.
 import { existsSync, mkdirSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
@@ -26,23 +27,51 @@ function access(context: Record<string, unknown>): Template {
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 const resources = (template: Template, type: string): Array<[string, Json]> => Object.entries(template.toJSON().Resources as Record<string, Json>).filter(([, r]) => r.Type === type);
 
+
 const BUCKET = "customer-approved-bundles";
-/** The operator role's policy statements for a parameter value, intrinsics resolved. */
-function statementsFor(template: Template, state: "enabled" | "suspended"): Json[] {
-  const json = template.toJSON();
-  const [bucketId] = resources(template, "AWS::S3::Bucket").find(([id]) => id.includes("ApprovedBundles"))!;
+const FUNCTION_NAME = "agentx-ent-bundle-deployer";
+const DEPLOYER_ARN = `arn:aws:lambda:us-east-1:123456789012:function:${FUNCTION_NAME}`;
+const walkGetAtt = (template: Template) => {
+  const resourcesJson = template.toJSON().Resources as Record<string, Json>;
+  const arnOf = (id: string): string | undefined => {
+    const type = resourcesJson[id]?.Type as string | undefined;
+    if (type === "AWS::S3::Bucket") return `arn:aws:s3:::${BUCKET}`;
+    if (type === "AWS::Lambda::Function") return DEPLOYER_ARN;
+    if (type === "AWS::Logs::LogGroup") return `arn:aws:logs:us-east-1:123456789012:log-group:${resourcesJson[id]!.Properties.LogGroupName as string}`;
+    return undefined;
+  };
   const walk = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(walk);
     if (value === null || typeof value !== "object") return value;
     const entries = Object.entries(value as Json);
-    if (entries.length === 1 && entries[0]![0] === "Fn::GetAtt" && (entries[0]![1] as string[])[0] === bucketId) return `arn:aws:s3:::${BUCKET}`;
+    if (entries.length === 1 && entries[0]![0] === "Fn::GetAtt") {
+      const found = arnOf((entries[0]![1] as string[])[0]!);
+      if (found !== undefined) return found;
+    }
     return Object.fromEntries(entries.map(([k, v]) => [k, walk(v)]));
   };
-  const role = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-rovara-operator")![1];
-  const context = { parameters: { OperatorAccessState: state, [bucketId]: BUCKET }, conditions: json.Conditions as Record<string, unknown> };
-  const policy = evaluate(walk(role.Properties.Policies[0].PolicyDocument), context) as { Statement: Array<Json | undefined> };
+  const ids = Object.entries(resourcesJson).filter(([, r]) => r.Type === "AWS::S3::Bucket").map(([id]) => id);
+  return { walk, parameters: Object.fromEntries(ids.map((id) => [id, BUCKET])) };
+};
+/** A role's policy statements for a parameter value, intrinsics resolved. */
+function resolve(template: Template, document: unknown, state: "enabled" | "suspended"): Json[] {
+  const { walk, parameters } = walkGetAtt(template);
+  const context = { parameters: { OperatorAccessState: state, ...parameters }, conditions: (template.toJSON()).Conditions as Record<string, unknown> };
+  const policy = evaluate(walk(document), context) as { Statement: Array<Json | undefined> };
   return policy.Statement.filter((statement): statement is Json => statement !== undefined);
 }
+function statementsFor(template: Template, state: "enabled" | "suspended"): Json[] {
+  const role = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-rovara-operator")![1];
+  return resolve(template, role.Properties.Policies[0].PolicyDocument, state);
+}
+/** The deployer's role policy (an AWS::IAM::Policy attached to its role). */
+function deployerStatements(template: Template): Json[] {
+  const [roleId] = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-bundle-deployer")!;
+  const policy = resources(template, "AWS::IAM::Policy").find(([, p]) => JSON.stringify(p.Properties.Roles).includes(roleId))![1];
+  return resolve(template, policy.Properties.PolicyDocument, "enabled");
+}
+/** What a policy someone attaches later could add: everything. The explicit Denies must still hold. */
+const withBroadAllow = (statements: Json[]): Json[] => [...statements, { Effect: "Allow", Action: "*", Resource: "*" }];
 
 // A small IAM evaluator: Action/NotAction/Resource/NotResource wildcards and the string condition operators the policy uses.
 const wild = (pattern: string, value: string): boolean => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i").test(value);
@@ -74,10 +103,11 @@ function allowed(statements: Json[], action: string, resource: string, context: 
   return hits.some((statement) => statement.Effect === "Allow");
 }
 
+
 const ARN = (service: string, rest: string, region = "us-east-1") => `arn:aws:${service}:${service === "s3" ? "" : region}:${service === "s3" ? "" : "123456789012"}:${rest}`;
 const DEPLOY_ROLE = "arn:aws:iam::123456789012:role/agentx-ent-cloudformation";
-const STACK = (name: string) => `arn:aws:cloudformation:us-east-1:123456789012:stack/agentx-ent-${name}/uuid`;
-const APPROVED_URL = `https://${BUCKET}.s3.us-east-1.amazonaws.com/approved/${"a".repeat(64)}/templates/control-plane.template.json`;
+const STACK = (name: string) => `arn:aws:cloudformation:us-east-1:123456789012:stack/agentx-${name}/uuid`;
+const PARTS = ["foundation", "identity", "runtime", "control-plane", "slack"];
 
 describe("the Rovara operator role", () => {
   const template = access(ON);
@@ -87,8 +117,9 @@ describe("the Rovara operator role", () => {
     it("is absent unless the install asks for it: Public and Enterprise without the setting create nothing of it", () => {
       for (const context of [ENT, { agentxEnv: "pub", agentxCloud: true, rovaraEdition: "public" }, { agentxEnv: "legacyish" }]) {
         const t = access(context);
-        expect(resources(t, "AWS::IAM::Role").some(([, r]) => String(r.Properties.RoleName).includes("rovara-operator")), JSON.stringify(context)).toBe(false);
-        expect(JSON.stringify(t.toJSON())).not.toMatch(/rovara-operator|ApprovedBundles|OperatorAccessState/);
+        expect(resources(t, "AWS::IAM::Role").some(([, r]) => /rovara-operator|bundle-deployer/.test(String(r.Properties.RoleName))), JSON.stringify(context)).toBe(false);
+        expect(JSON.stringify(t.toJSON())).not.toMatch(/rovara-operator|ApprovedBundles|OperatorAccessState|bundle-deployer|bundle-trust/);
+        expect(resources(t, "AWS::Lambda::Function")).toEqual([]);
       }
     });
 
@@ -101,6 +132,7 @@ describe("the Rovara operator role", () => {
       for (const externalId of [undefined, "short", "x".repeat(2000), "has space in it 123456"]) expect(() => access({ ...ON, rovaraOperatorExternalId: externalId }), String(externalId)).toThrow(/rovaraOperatorExternalId/);
       expect(() => access({ ...ON, rovaraOperatorAccess: "on" })).toThrow(/disabled, enabled or suspended/);
       expect(() => access({ ...ENT, rovaraOperatorPrincipalArn: PRINCIPAL })).toThrow(/is not enabled/);
+      expect(() => access({ ...ENT, rovaraBundleSigningKeys: "[]" })).toThrow(/is not enabled/);
     });
 
     it("lets only log groups that hold no content be named", () => {
@@ -116,12 +148,12 @@ describe("the Rovara operator role", () => {
     const [, role] = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-rovara-operator")!;
     const trust = role.Properties.AssumeRolePolicyDocument.Statement;
 
-    it("is one named role, with the customer's external id, MFA, a source identity on every session, and sessions of at most an hour", () => {
+    it("is one named role, with the customer's external id, MFA, a source identity on every session, only through the install's region, and sessions of at most an hour", () => {
       expect(trust).toHaveLength(1);
       expect(trust[0].Principal).toEqual({ AWS: PRINCIPAL });
       expect(trust[0].Action).toEqual(["sts:AssumeRole", "sts:SetSourceIdentity"]);
       expect(trust[0].Condition).toEqual({
-        StringEquals: { "sts:ExternalId": EXTERNAL_ID },
+        StringEquals: { "sts:ExternalId": EXTERNAL_ID, "aws:RequestedRegion": { Ref: "AWS::Region" } },
         Bool: { "aws:MultiFactorAuthPresent": "true" },
         Null: { "sts:SourceIdentity": "false" },
         StringLike: { "sts:SourceIdentity": "?*" },
@@ -129,64 +161,69 @@ describe("the Rovara operator role", () => {
       expect(role.Properties.MaxSessionDuration).toBe(3600);
     });
 
-    it("never trusts an account root or a wildcard, and its name and description carry no em dash", () => {
+    it("never trusts an account root or a wildcard, and no name or description carries an em dash", () => {
       expect(JSON.stringify(trust)).not.toMatch(/:root|"\*"/);
       expect(JSON.stringify(template.toJSON())).not.toContain("—");
     });
   });
 
-  describe("what it can deploy", () => {
-    const create = (url: string, role = DEPLOY_ROLE, stack = STACK("control-plane")) => allowed(enabled, "cloudformation:CreateChangeSet", stack, { "cloudformation:TemplateUrl": url, "cloudformation:RoleArn": role });
-
-    it("can start a deployment from a template under approved/ in the customer's bucket, through the customer's deploy role", () => {
-      expect(create(APPROVED_URL)).toBe(true);
-      expect(create(`https://s3.us-east-1.amazonaws.com/${BUCKET}/approved/${"a".repeat(64)}/x.json`)).toBe(true);
-      expect(allowed(enabled, "cloudformation:ExecuteChangeSet", STACK("control-plane"))).toBe(true);
+  describe("what it can start (review C1: it no longer chooses a template, a stack or a parameter)", () => {
+    it("can invoke the customer-owned deployer, and nothing else it could invoke", () => {
+      expect(allowed(enabled, "lambda:InvokeFunction", DEPLOYER_ARN)).toBe(true);
+      expect(allowed(enabled, "lambda:InvokeFunction", `${DEPLOYER_ARN}:1`)).toBe(false); // a qualified ARN is not the deployer's
+      expect(allowed(enabled, "lambda:InvokeFunction", ARN("lambda", "function:agentx-ent-broker"))).toBe(false);
+      expect(allowed(enabled, "lambda:InvokeFunction", ARN("lambda", "function:agentx-ent-bundle-deployer-copy"))).toBe(false);
     });
 
-    it("cannot start a deployment of any other template: another bucket, another prefix, a pasted body, or none", () => {
-      expect(create(`https://${BUCKET}.s3.us-east-1.amazonaws.com/unapproved/x.json`)).toBe(false);
-      expect(create(`https://${BUCKET}.s3.us-east-1.amazonaws.com/${"approved/"}`.replace("approved/", "approvedx/x.json"))).toBe(false);
-      expect(create(`https://attacker-bucket.s3.us-east-1.amazonaws.com/approved/x.json`)).toBe(false);
-      expect(create(`https://${BUCKET}.s3.us-east-1.amazonaws.com.evil.example/approved/x.json`)).toBe(false);
-      // A template body has no TemplateUrl at all.
-      expect(allowed(enabled, "cloudformation:CreateChangeSet", STACK("control-plane"), { "cloudformation:RoleArn": DEPLOY_ROLE })).toBe(false);
+    it("makes no CloudFormation change itself, whatever template, role or stack it names: it holds no create, execute, update or delete", () => {
+      const context = { "cloudformation:TemplateUrl": `https://${BUCKET}.s3.us-east-1.amazonaws.com/approved/${"a".repeat(64)}/x.json`, "cloudformation:RoleArn": DEPLOY_ROLE };
+      for (const action of ["CreateChangeSet", "ExecuteChangeSet", "DeleteChangeSet", "UpdateStack", "CreateStack", "DeleteStack", "SetStackPolicy", "UpdateTerminationProtection", "CreateStackSet"]) {
+        for (const stack of ["control-plane", "slack", "access"]) expect(allowed(withBroadAllow(enabled), `cloudformation:${action}`, STACK(`ent-${stack}`), context), `${action} ${stack}`).toBe(false);
+      }
     });
 
-    it("cannot deploy through any role but the customer's deploy role", () => {
-      expect(create(APPROVED_URL, "arn:aws:iam::123456789012:role/some-admin-role")).toBe(false);
-      expect(allowed(enabled, "cloudformation:CreateChangeSet", STACK("control-plane"), { "cloudformation:TemplateUrl": APPROVED_URL })).toBe(false);
-      expect(allowed(enabled, "iam:PassRole", DEPLOY_ROLE, { "iam:PassedToService": "cloudformation.amazonaws.com" })).toBe(true);
-      expect(allowed(enabled, "iam:PassRole", "arn:aws:iam::123456789012:role/some-admin-role", { "iam:PassedToService": "cloudformation.amazonaws.com" })).toBe(false);
-      expect(allowed(enabled, "iam:PassRole", DEPLOY_ROLE, { "iam:PassedToService": "lambda.amazonaws.com" })).toBe(false);
+    it("reads status of this environment's stacks by exact name: an environment whose name starts with this one's (ent-x) is not reachable", () => {
+      for (const part of [...PARTS, "access"]) expect(allowed(enabled, "cloudformation:DescribeStacks", STACK(`ent-${part}`)), part).toBe(true);
+      for (const part of [...PARTS, "access"]) expect(allowed(enabled, "cloudformation:DescribeStacks", STACK(`ent-x-${part}`)), `ent-x ${part}`).toBe(false);
+      expect(allowed(enabled, "cloudformation:DescribeStacks", STACK("ent-anything"))).toBe(false);
+      expect(JSON.stringify(enabled.filter((statement) => statement.Effect === "Allow" && JSON.stringify(statement.Action).includes("cloudformation")).map((s) => s.Resource))).not.toMatch(/agentx-ent-\*|stack\/\*/);
     });
 
-    it("cannot touch the access stack (which holds this role), another account's or environment's stacks, or call the stack APIs directly", () => {
-      expect(create(APPROVED_URL, DEPLOY_ROLE, STACK("access"))).toBe(false);
-      expect(allowed(enabled, "cloudformation:ExecuteChangeSet", STACK("access"))).toBe(false);
-      expect(allowed(enabled, "cloudformation:ExecuteChangeSet", "arn:aws:cloudformation:us-east-1:123456789012:stack/other-team-stack/uuid")).toBe(false);
-      for (const action of ["UpdateStack", "CreateStack", "DeleteStack", "SetStackPolicy", "UpdateTerminationProtection", "CreateStackSet"]) expect(allowed(enabled, `cloudformation:${action}`, STACK("control-plane")), action).toBe(false);
+    it("has no S3 access at all (the deployer reads the approvals), and cannot write any record: settings, the installed-bundle record, restore points", () => {
+      for (const action of ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket", "s3:PutObject", "s3:DeleteObject", "s3:PutBucketPolicy"]) {
+        expect(allowed(enabled, action, `arn:aws:s3:::${BUCKET}/approved/x`, { "s3:prefix": "approved/" }), action).toBe(false);
+        expect(allowed(withBroadAllow(enabled), action, `arn:aws:s3:::${BUCKET}/approved/x`), `${action} (with a broad allow)`).toBe(false);
+      }
+      for (const name of ["settings", "bundle", "lock", "restore-points/20261031T101500000Z", "bundle-trust/public-keys", "signin"]) {
+        for (const action of ["ssm:PutParameter", "ssm:DeleteParameter"]) {
+          expect(allowed(enabled, action, ARN("ssm", `parameter/agentx/ent/${name}`)), `${action} ${name}`).toBe(false);
+          expect(allowed(withBroadAllow(enabled), action, ARN("ssm", `parameter/agentx/ent/${name}`)), `${action} ${name} (with a broad allow)`).toBe(false);
+        }
+        expect(allowed(enabled, "ssm:GetParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), `get ${name}`).toBe(false);
+      }
     });
 
-    it("reads templates only under approved/, and cannot write to any bucket", () => {
-      expect(allowed(enabled, "s3:GetObject", `arn:aws:s3:::${BUCKET}/approved/${"a".repeat(64)}/templates/x.json`)).toBe(true);
-      expect(allowed(enabled, "s3:GetObject", `arn:aws:s3:::${BUCKET}/other/x`)).toBe(false);
-      expect(allowed(enabled, "s3:GetObject", "arn:aws:s3:::agentx-ent-artifacts/screenshots/task.png")).toBe(false);
-      expect(allowed(enabled, "s3:PutObject", `arn:aws:s3:::${BUCKET}/approved/${"b".repeat(64)}/templates/x.json`)).toBe(false);
-      expect(allowed(enabled, "s3:DeleteObject", `arn:aws:s3:::${BUCKET}/approved/x`)).toBe(false);
-      expect(allowed(enabled, "s3:PutBucketPolicy", `arn:aws:s3:::${BUCKET}`)).toBe(false);
-      // Listing is allowed for the approval bucket under approved/ only.
-      expect(allowed(enabled, "s3:ListBucket", `arn:aws:s3:::${BUCKET}`, { "s3:prefix": "approved/" })).toBe(true);
-      expect(allowed(enabled, "s3:ListBucket", `arn:aws:s3:::${BUCKET}`, { "s3:prefix": "secrets/" })).toBe(false);
-      expect(allowed(enabled, "s3:ListBucket", "arn:aws:s3:::agentx-ent-artifacts", { "s3:prefix": "approved/" })).toBe(false);
+    it("cannot push to any registry repository, nor pass any role", () => {
+      for (const resource of [ARN("ecr", "repository/rovara-bundle/ent/litellm"), ARN("ecr", "repository/agentx-worker-production")]) {
+        expect(allowed(enabled, "ecr:PutImage", resource)).toBe(false);
+        expect(allowed(withBroadAllow(enabled), "ecr:PutImage", resource)).toBe(false);
+        expect(allowed(withBroadAllow(enabled), "ecr:UploadLayerPart", resource)).toBe(false);
+      }
+      for (const role of [DEPLOY_ROLE, "arn:aws:iam::123456789012:role/some-admin-role"]) {
+        expect(allowed(enabled, "iam:PassRole", role, { "iam:PassedToService": "cloudformation.amazonaws.com" })).toBe(false);
+        expect(allowed(withBroadAllow(enabled), "iam:PassRole", role, { "iam:PassedToService": "cloudformation.amazonaws.com" })).toBe(false);
+      }
     });
   });
 
-  describe("what it can never do", () => {
-    const denied = (action: string, resource = "*", context: Record<string, string> = {}) => expect(allowed(enabled, action, resource, context), action).toBe(false);
+  describe("what it can never do, even if someone later attaches a policy that allows everything", () => {
+    const denied = (action: string, resource = "*", context: Record<string, string> = {}) => {
+      expect(allowed(enabled, action, resource, context), action).toBe(false);
+      expect(allowed(withBroadAllow(enabled), action, resource, context), `${action} (with a broad allow)`).toBe(false);
+    };
 
     it("makes no IAM change, assumes no other role, and cannot widen itself", () => {
-      for (const action of ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:DeleteRolePermissionsBoundary", "iam:CreateAccessKey", "iam:TagRole", "iam:CreatePolicyVersion"]) denied(action, "arn:aws:iam::123456789012:role/agentx-ent-rovara-operator");
+      for (const action of ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:DeleteRolePermissionsBoundary", "iam:CreateAccessKey", "iam:TagRole", "iam:CreatePolicyVersion", "iam:PassRole"]) denied(action, "arn:aws:iam::123456789012:role/agentx-ent-rovara-operator");
       for (const action of ["sts:AssumeRole", "sts:GetFederationToken", "sts:TagSession"]) denied(action, "arn:aws:iam::123456789012:role/agentx-ent-operator");
     });
 
@@ -194,47 +231,146 @@ describe("the Rovara operator role", () => {
       for (const action of ["ssm:StartSession", "ssm:SendCommand", "ssm:ResumeSession", "ec2:GetConsoleOutput", "ec2:CreateSnapshot", "ec2:CreateImage", "ec2-instance-connect:SendSSHPublicKey", "ebs:GetSnapshotBlock"]) denied(action);
     });
 
-    it("cannot read or replace function code, read secret values, or use a key", () => {
-      for (const action of ["lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration", "lambda:InvokeFunction"]) denied(action);
+    it("cannot read or replace any function's code, read secret values, or use a key", () => {
+      for (const action of ["lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration"]) {
+        denied(action, ARN("lambda", "function:agentx-ent-broker"));
+        denied(action, DEPLOYER_ARN);
+      }
+      denied("lambda:InvokeFunction", ARN("lambda", "function:agentx-ent-broker"));
       for (const action of ["secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue", "secretsmanager:PutSecretValue"]) denied(action);
-      for (const action of ["kms:Decrypt", "kms:GenerateDataKey", "kms:CreateGrant", "kms:PutKeyPolicy"]) denied(action);
+      for (const action of ["kms:Decrypt", "kms:GenerateDataKey", "kms:CreateGrant", "kms:PutKeyPolicy", "kms:DeriveSharedSecret"]) denied(action);
     });
 
     it("has no data-plane read of the stores that hold code, tasks, plans, conversations and the Team record", () => {
-      for (const action of ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:ExecuteStatement", "dynamodb:PartiQLSelect", "dynamodb:ExportTableToPointInTime", "dynamodb:PutItem"]) denied(action, "arn:aws:dynamodb:us-east-1:123456789012:table/agentx-ent-tasks");
+      for (const action of ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:ExecuteStatement", "dynamodb:BatchExecuteStatement", "dynamodb:ExecuteTransaction", "dynamodb:TransactGetItems", "dynamodb:TransactWriteItems", "dynamodb:PartiQLSelect", "dynamodb:ExportTableToPointInTime", "dynamodb:PutItem"]) denied(action, "arn:aws:dynamodb:us-east-1:123456789012:table/agentx-ent-tasks");
       for (const action of ["sqs:ReceiveMessage", "states:GetExecutionHistory", "bedrock:InvokeModel", "s3vectors:QueryVectors", "athena:GetQueryResults"]) denied(action);
     });
 
-    it("cannot read log lines, because they can carry task text (no group is named by default)", () => {
+    it("cannot read log lines of anything but the deployer's own group (it names bundle ids and fixed words) and the groups the customer named", () => {
       for (const action of ["logs:GetLogEvents", "logs:FilterLogEvents", "logs:StartQuery", "logs:StartLiveTail"]) denied(action, ARN("logs", "log-group:/agentx/ent/worker:*"));
       denied("logs:FilterLogEvents", ARN("logs", "log-group:/aws/lambda/agentx-ent-doctor:*"));
+      expect(allowed(enabled, "logs:FilterLogEvents", ARN("logs", `log-group:/aws/lambda/${FUNCTION_NAME}:*`))).toBe(true);
     });
 
     it("can read the named content-free log groups and no others, when the install names some", () => {
       const named = statementsFor(access({ ...ON, rovaraOperatorLogGroups: "/aws/lambda/agentx-ent-doctor" }), "enabled");
       expect(allowed(named, "logs:FilterLogEvents", ARN("logs", "log-group:/aws/lambda/agentx-ent-doctor:*"))).toBe(true);
       expect(allowed(named, "logs:FilterLogEvents", ARN("logs", "log-group:/agentx/ent/worker:*"))).toBe(false);
-      expect(allowed(named, "logs:FilterLogEvents", ARN("logs", "log-group:/aws/lambda/agentx-ent-broker:*"))).toBe(false);
+      expect(allowed(withBroadAllow(named), "logs:FilterLogEvents", ARN("logs", "log-group:/aws/lambda/agentx-ent-broker:*"))).toBe(false);
     });
 
-    it("can read the install's records and health, and load images into its own bundle repositories only", () => {
-      expect(allowed(enabled, "ssm:GetParameter", ARN("ssm", "parameter/agentx/ent/settings"))).toBe(true);
-      expect(allowed(enabled, "ssm:PutParameter", ARN("ssm", "parameter/agentx/ent/restore-points/20261031T101500000Z"))).toBe(true);
-      expect(allowed(enabled, "ssm:PutParameter", ARN("ssm", "parameter/agentx/ent/signin"))).toBe(false);
-      expect(allowed(enabled, "ssm:GetParameter", ARN("ssm", "parameter/agentx/other/settings"))).toBe(false);
-      expect(allowed(enabled, "ecr:PutImage", ARN("ecr", "repository/rovara-bundle/ent/litellm"))).toBe(true);
-      expect(allowed(enabled, "ecr:PutImage", ARN("ecr", "repository/agentx-worker-production"))).toBe(false);
+    it("can read health, and has no allow statement with a wildcard action or any IAM action", () => {
       expect(allowed(enabled, "cloudwatch:GetMetricData", "*")).toBe(true);
-      expect(allowed(enabled, "cloudformation:DescribeStackEvents", STACK("control-plane"))).toBe(true);
-    });
-
-    it("has no allow statement with a wildcard action, and no allow of any IAM action but passing the deploy role", () => {
+      expect(allowed(enabled, "cloudformation:DescribeStackEvents", STACK("ent-control-plane"))).toBe(true);
       for (const statement of enabled.filter((s) => s.Effect === "Allow")) {
         for (const action of list(statement.Action)) {
           expect(action, statement.Sid).not.toMatch(/^\*$|:\*$/);
-          if (action.startsWith("iam:")) expect(action).toBe("iam:PassRole");
+          expect(action.startsWith("iam:"), statement.Sid).toBe(false);
         }
       }
+    });
+  });
+
+  describe("the customer-owned deployer (review C1, C2, I1, I2)", () => {
+    const deployer = deployerStatements(template);
+    const deployable = ["foundation", "identity", "runtime", "control-plane", "slack"].map((part) => STACK(`ent-${part}`));
+    const url = `https://${BUCKET}.s3.us-east-1.amazonaws.com/deploying/${"a".repeat(64)}/foundation.template.json`;
+    const ctx = { "cloudformation:RoleArn": DEPLOY_ROLE, "cloudformation:TemplateUrl": url };
+
+    it("creates change sets only on the five fixed stacks, only through the customer's deploy role, only from its own verified copies", () => {
+      for (const stack of deployable) expect(allowed(deployer, "cloudformation:CreateChangeSet", stack, ctx), stack).toBe(true);
+      expect(allowed(deployer, "cloudformation:CreateChangeSet", STACK("ent-access"), ctx)).toBe(false);
+      expect(allowed(deployer, "cloudformation:CreateChangeSet", STACK("ent-x-control-plane"), ctx)).toBe(false);
+      expect(allowed(deployer, "cloudformation:CreateChangeSet", STACK("ent-control-plane"), { ...ctx, "cloudformation:RoleArn": "arn:aws:iam::123456789012:role/other" })).toBe(false);
+      expect(allowed(deployer, "cloudformation:CreateChangeSet", STACK("ent-control-plane"), { ...ctx, "cloudformation:TemplateUrl": `https://${BUCKET}.s3.us-east-1.amazonaws.com/approved/x.json` })).toBe(false);
+      expect(allowed(deployer, "cloudformation:CreateChangeSet", STACK("ent-control-plane"), { "cloudformation:RoleArn": DEPLOY_ROLE })).toBe(false);
+      for (const action of ["CreateStack", "UpdateStack", "DeleteStack", "SetStackPolicy"]) expect(allowed(deployer, `cloudformation:${action}`, STACK("ent-control-plane")), action).toBe(false);
+      expect(allowed(deployer, "cloudformation:ExecuteChangeSet", STACK("ent-access"))).toBe(false);
+    });
+
+    it("passes the deploy role and no other, and has no other IAM or wildcard action", () => {
+      expect(allowed(deployer, "iam:PassRole", DEPLOY_ROLE, { "iam:PassedToService": "cloudformation.amazonaws.com" })).toBe(true);
+      expect(allowed(deployer, "iam:PassRole", "arn:aws:iam::123456789012:role/other", { "iam:PassedToService": "cloudformation.amazonaws.com" })).toBe(false);
+      for (const statement of deployer.filter((s) => s.Effect === "Allow")) for (const action of list(statement.Action)) {
+        expect(action, statement.Sid).not.toMatch(/^\*$|:\*$/);
+        if (action.startsWith("iam:")) expect(action).toBe("iam:PassRole");
+      }
+    });
+
+    it("reads the approvals and writes only its own verified copies: it cannot place, change or withdraw an approval", () => {
+      expect(allowed(deployer, "s3:GetObjectVersion", `arn:aws:s3:::${BUCKET}/approved/${"a".repeat(64)}/bundle.json`)).toBe(true);
+      expect(allowed(deployer, "s3:GetObject", `arn:aws:s3:::${BUCKET}/approvals/${"a".repeat(64)}.json`)).toBe(true);
+      expect(allowed(deployer, "s3:PutObject", `arn:aws:s3:::${BUCKET}/deploying/${"a".repeat(64)}/control-plane.template.json`)).toBe(true);
+      for (const key of ["approvals/x.json", "approved/x/bundle.json", "other/x"]) expect(allowed(deployer, "s3:PutObject", `arn:aws:s3:::${BUCKET}/${key}`), key).toBe(false);
+      expect(allowed(deployer, "s3:DeleteObject", `arn:aws:s3:::${BUCKET}/approvals/x.json`)).toBe(false);
+    });
+
+    it("writes only the records an upgrade owns, and reads the trusted keys it cannot write", () => {
+      for (const name of ["settings", "bundle", "restore-points/20261031T101500000Z", "deploy/progress"]) expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(true);
+      for (const name of ["bundle-trust/public-keys", "signin", "lock", "install/answers"]) expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
+      expect(allowed(deployer, "ssm:GetParameter", ARN("ssm", "parameter/agentx/ent/bundle-trust/public-keys"))).toBe(true);
+      expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/agentx/ent/deploy/progress"))).toBe(true);
+      expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/agentx/ent/settings"))).toBe(false);
+    });
+
+    it("is one function with a fixed name, a 15 minute limit and only the install's three settings; no caller input reaches its environment", () => {
+      const [, fn] = resources(template, "AWS::Lambda::Function").find(([, f]) => f.Properties.FunctionName === FUNCTION_NAME)!;
+      expect(fn.Properties.Timeout).toBe(900);
+      expect(fn.Properties.Runtime).toBe("nodejs22.x");
+      expect(Object.keys(fn.Properties.Environment.Variables as object).filter((name) => !["ROVARA_EDITION", "AWS_NODEJS_CONNECTION_REUSE_ENABLED"].includes(name)).sort()).toEqual(["APPROVAL_BUCKET", "DEPLOY_ROLE_ARN", "ROVARA_ENV"]);
+      expect(resources(template, "AWS::Lambda::Permission")).toEqual([]);
+      expect(resources(template, "AWS::Lambda::Url")).toEqual([]);
+    });
+  });
+
+  describe("trust anchor and approvals (review I1, I5, M4)", () => {
+    it("keeps the trusted signing keys in the install's own parameter, empty by default so every bundle is refused, set only from the install's settings", () => {
+      const parameter = (t: Template) => resources(t, "AWS::SSM::Parameter").find(([, p]) => p.Properties.Name === "/agentx/ent/bundle-trust/public-keys")![1].Properties.Value;
+      expect(parameter(template)).toBe("[]");
+      const key = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).publicKey.export({ type: "spki", format: "pem" }).toString();
+      expect(JSON.parse(parameter(access({ ...ON, rovaraBundleSigningKeys: JSON.stringify([key]) })) as string)).toEqual([key]);
+      for (const bad of ["not json", JSON.stringify(["junk"]), JSON.stringify([generateKeyPairSync("ec", { namedCurve: "secp384r1" }).publicKey.export({ type: "spki", format: "pem" }).toString()]), JSON.stringify([generateKeyPairSync("ec", { namedCurve: "prime256v1" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString()])]) {
+        expect(() => access({ ...ON, rovaraBundleSigningKeys: bad }), bad.slice(0, 20)).toThrow(/rovaraBundleSigningKeys/);
+      }
+    });
+
+    it("keeps the approval bucket customer-owned: private, versioned, TLS only, kept on delete, never written by the operator, the deploy role or (outside its copies) the deployer", () => {
+      const [, bucket] = resources(template, "AWS::S3::Bucket").find(([id]) => id.includes("ApprovedBundles"))!;
+      expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({ BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true });
+      expect(bucket.Properties.VersioningConfiguration).toEqual({ Status: "Enabled" });
+      expect(bucket.DeletionPolicy).toMatch(/Retain/);
+      const statements = resources(template, "AWS::S3::BucketPolicy").find(([, p]) => JSON.stringify(p.Properties.PolicyDocument).includes("OperatorAndDeployRoleNeverWrite"))![1].Properties.PolicyDocument.Statement as Json[];
+      const never = statements.find((statement) => statement.Sid === "OperatorAndDeployRoleNeverWrite")!;
+      expect(never.Effect).toBe("Deny");
+      expect(JSON.stringify(never.Condition)).toContain("agentx-ent-rovara-operator");
+      expect(JSON.stringify(never.Condition)).toContain("agentx-ent-cloudformation");
+      expect(list(never.Action)).toEqual(expect.arrayContaining(["s3:PutObject*", "s3:DeleteObject*", "s3:PutBucket*"]));
+      const copies = statements.find((statement) => statement.Sid === "DeployerWritesOnlyItsCopies")!;
+      expect(copies.Effect).toBe("Deny");
+      expect(JSON.stringify(copies.Condition)).toContain("agentx-ent-bundle-deployer");
+      expect(JSON.stringify(copies.NotResource)).toContain("deploying/");
+      expect(JSON.stringify(statements)).toContain("aws:SecureTransport");
+      expect(statements.some((statement) => statement.Sid === "OnlyNamedApproversApprove")).toBe(false);
+    });
+
+    it("bars every principal but the customer's named approvers from approvals, when the install names them", () => {
+      const approvers = "arn:aws:iam::123456789012:role/security-approvers,arn:aws:iam::123456789012:user/alice";
+      const t = access({ ...ON, rovaraBundleApproverArns: approvers });
+      const statements = resources(t, "AWS::S3::BucketPolicy").find(([, p]) => JSON.stringify(p.Properties.PolicyDocument).includes("OnlyNamedApproversApprove"))![1].Properties.PolicyDocument.Statement as Json[];
+      const only = statements.find((statement) => statement.Sid === "OnlyNamedApproversApprove")!;
+      expect(only.Effect).toBe("Deny");
+      expect(only.Condition).toEqual({ ArnNotLike: { "aws:PrincipalArn": approvers.split(",") } });
+      expect(JSON.stringify(only.Resource)).toMatch(/approved\/\*/);
+      expect(JSON.stringify(only.Resource)).toMatch(/approvals\/\*/);
+      for (const bad of ["arn:aws:iam::123456789012:role/*", "*", "arn:aws:s3:::x"]) expect(() => access({ ...ON, rovaraBundleApproverArns: bad }), bad).toThrow(/not specific enough|ARN/);
+    });
+
+    it("gives the deploy role read access to the approved packages (Lambda code) and nothing else", () => {
+      const deployRole = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-cloudformation")![1];
+      expect((deployRole.Properties.Policies as Json[]).map((policy) => policy.PolicyName)).toEqual(["deploy", "read-approved-bundles"]);
+      const extra = (deployRole.Properties.Policies as Json[])[1]!.PolicyDocument.Statement as Json[];
+      expect(extra).toHaveLength(1);
+      expect(extra[0]!.Action).toEqual(["s3:GetObject"]);
     });
   });
 
@@ -242,9 +378,9 @@ describe("the Rovara operator role", () => {
     it("suspended: every request is denied, including the ones enabled allows, in sessions already open", () => {
       const suspended = statementsFor(template, "suspended");
       expect(suspended.find((statement) => statement.Sid === "SuspendedByCustomer")).toMatchObject({ Effect: "Deny", Action: "*", Resource: "*" });
-      expect(allowed(enabled, "cloudformation:DescribeStacks", STACK("control-plane"))).toBe(true);
-      expect(allowed(suspended, "cloudformation:DescribeStacks", STACK("control-plane"))).toBe(false);
-      expect(allowed(suspended, "cloudformation:CreateChangeSet", STACK("control-plane"), { "cloudformation:TemplateUrl": APPROVED_URL, "cloudformation:RoleArn": DEPLOY_ROLE })).toBe(false);
+      expect(allowed(enabled, "cloudformation:DescribeStacks", STACK("ent-control-plane"))).toBe(true);
+      expect(allowed(suspended, "cloudformation:DescribeStacks", STACK("ent-control-plane"))).toBe(false);
+      expect(allowed(suspended, "lambda:InvokeFunction", DEPLOYER_ARN)).toBe(false);
       expect(allowed(suspended, "sts:GetCallerIdentity", "*")).toBe(false);
       expect(enabled.find((statement) => statement.Sid === "SuspendedByCustomer")).toBeUndefined();
     });
@@ -257,34 +393,17 @@ describe("the Rovara operator role", () => {
       expect(statementsFor(born, "suspended").some((statement) => statement.Sid === "SuspendedByCustomer")).toBe(true);
     });
 
-    it("keeps the approval bucket customer-owned: private, versioned, TLS only, kept on delete, and written by neither the operator nor the deploy role", () => {
-      const [, bucket] = resources(template, "AWS::S3::Bucket").find(([id]) => id.includes("ApprovedBundles"))!;
-      expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({ BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true });
-      expect(bucket.Properties.VersioningConfiguration).toEqual({ Status: "Enabled" });
-      expect(bucket.DeletionPolicy).toMatch(/Retain/);
-      const policy = resources(template, "AWS::S3::BucketPolicy").find(([, p]) => JSON.stringify(p.Properties.PolicyDocument).includes("OnlyTheCustomerWritesApprovals"))![1].Properties.PolicyDocument.Statement as Json[];
-      const deny = policy.find((statement) => statement.Sid === "OnlyTheCustomerWritesApprovals")!;
-      expect(deny.Effect).toBe("Deny");
-      expect(JSON.stringify(deny.Condition)).toContain("agentx-ent-rovara-operator");
-      expect(JSON.stringify(deny.Condition)).toContain("agentx-ent-cloudformation");
-      expect(list(deny.Action)).toEqual(expect.arrayContaining(["s3:PutObject*", "s3:DeleteObject*", "s3:PutBucketPolicy".replace("PutBucketPolicy", "PutBucket*")]));
-      expect(JSON.stringify(policy)).toContain("aws:SecureTransport");
-    });
-
-    it("gives the deploy role read access to the approved templates, and nothing else is added to it", () => {
-      const deployRole = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-cloudformation")![1];
-      const names = (deployRole.Properties.Policies as Json[]).map((policy) => policy.PolicyName);
-      expect(names).toEqual(["deploy", "read-approved-bundles"]);
-      const extra = (deployRole.Properties.Policies as Json[])[1]!.PolicyDocument.Statement as Json[];
-      for (const statement of extra) expect(list(statement.Action).every((action) => action === "s3:GetObject" || action === "s3:GetObjectVersion" || action === "s3:ListBucket")).toBe(true);
-    });
-
-    it("reports every assumption to the customer's alert topic", () => {
+    it("reports every assumption of the role, and every call to the deployer, to the customer's alert topic", () => {
       const [, rule] = resources(template, "AWS::Events::Rule").find(([, r]) => r.Properties.Name === "agentx-ent-rovara-operator-assumed")!;
       expect(rule.Properties.EventPattern.detail.eventName).toEqual(["AssumeRole"]);
       expect(JSON.stringify(rule.Properties.EventPattern.detail.requestParameters.roleArn)).toContain("role/agentx-ent-rovara-operator");
       const [topicId] = resources(template, "AWS::SNS::Topic").find(([, topic]) => topic.Properties.TopicName === "agentx-ent-rovara-operator-use")!;
       expect(rule.Properties.Targets).toEqual([{ Arn: { Ref: topicId }, Id: "Target0" }]);
+      const invoked = resources(template, "AWS::Events::Rule").find(([, r]) => r.Properties.Name === "agentx-ent-bundle-deployer-invoked")![1];
+      expect(invoked.Properties.EventPattern.detail.eventSource).toEqual(["lambda.amazonaws.com"]);
+      expect(invoked.Properties.EventPattern.detail.eventName).toEqual(expect.arrayContaining(["Invoke"]));
+      expect(JSON.stringify(invoked.Properties.EventPattern.detail.requestParameters.functionName)).toContain(FUNCTION_NAME);
+      expect(invoked.Properties.Targets).toEqual([{ Arn: { Ref: topicId }, Id: "Target0" }]);
       const topicPolicy = resources(template, "AWS::SNS::TopicPolicy").find(([, p]) => JSON.stringify(p.Properties.Topics).includes(topicId))![1];
       expect(JSON.stringify(topicPolicy.Properties.PolicyDocument)).toContain("events.amazonaws.com");
     });

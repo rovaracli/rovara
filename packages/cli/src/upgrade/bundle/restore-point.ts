@@ -1,27 +1,9 @@
 // Enterprise foundations, task N3: what an upgrade records before it changes anything, so a rollback knows where to go back to: the instant
 // (for a DynamoDB point-in-time restore), the version it left and the bundle id it left (null when that install never ran a bundle).
-import { agentXError, environmentSettingsPrefix } from "@agentx/contracts";
-import { z } from "zod";
+import { InstalledBundleSchema, RestorePointSchema, agentXError, installedBundleParameter, restorePointParameter, type InstalledBundle, type RestorePoint } from "@agentx/contracts";
 import { ParameterExistsError, type ParameterStore } from "../../environments/parameter-store.js";
 
-const BundleId = z.string().regex(/^[a-f0-9]{64}$/);
-export const RestorePointSchema = z.object({
-  schemaVersion: z.literal(1),
-  takenAt: z.iso.datetime(),
-  /** Restore the tables to this instant (point-in-time recovery). The same instant as takenAt: nothing of this upgrade is written before it. */
-  pitrTimestamp: z.iso.datetime(),
-  fromVersion: z.string().min(1),
-  previousBundleId: BundleId.nullable(),
-  targetVersion: z.string().min(1),
-  targetBundleId: BundleId,
-}).strict();
-export type RestorePoint = z.infer<typeof RestorePointSchema>;
-
-const InstalledBundleSchema = z.object({ schemaVersion: z.literal(1), bundleId: BundleId, version: z.string().min(1), installedAt: z.iso.datetime() }).strict();
-export type InstalledBundle = z.infer<typeof InstalledBundleSchema>;
-
-export const installedBundleParameter = (env: string): string => `${environmentSettingsPrefix(env)}bundle`;
-export const restorePointParameter = (env: string, takenAt: string): string => `${environmentSettingsPrefix(env)}restore-points/${takenAt.replace(/[-:.]/g, "")}`;
+export { RestorePointSchema, installedBundleParameter, restorePointParameter, type InstalledBundle, type RestorePoint };
 
 /** The bundle the last complete bundle upgrade installed, or undefined for an install that never ran one. An unreadable record is a refusal, not "none". */
 export async function readInstalledBundle(store: ParameterStore, env: string): Promise<InstalledBundle | undefined> {

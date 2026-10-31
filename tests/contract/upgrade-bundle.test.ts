@@ -1,6 +1,7 @@
 // Enterprise foundations, N3: `rovara upgrade --bundle` verifies the signature and every hash before it changes anything, and records a restore point.
 // Every verification step has a test that goes red when the step is removed (see the lane report's mutation table).
-import { readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { afterEach, describe, expect, it } from "vitest";
@@ -347,27 +348,21 @@ describe("rovara upgrade --bundle", () => {
 });
 
 
-describe("the Rovara operator role (N6) runs only approved bundles", () => {
+describe("the Rovara operator role (N6) runs no upgrade itself", () => {
   const OPERATOR = "arn:aws:sts::123456789012:assumed-role/agentx-staging-rovara-operator/alice@example.com";
   const asOperator = (bundle: BuiltBundle) => harness(bundle, { identity: { get: async () => ({ account: "123456789012", arn: OPERATOR }) } });
 
-  it("runs a bundle upgrade when the bundle's id is named and matches", async () => {
+  it("is refused every upgrade this command runs, a verified and approved bundle included (it starts the deployer instead), before any lock, restore point, image or stack", async () => {
     const bundle = await build();
-    const h = await asOperator(bundle);
-    await expect(runUpgrade(options(bundle, { approvedBundleSha256: bundle.bundleSha256 }), h.deps)).resolves.toMatchObject({ to: "1.4.0" });
-  });
-
-  it("is refused a bundle upgrade without the approved id, an unapproved id, and every non-bundle upgrade, before any change", async () => {
-    const bundle = await build();
-    const without = await asOperator(bundle);
-    await expect(runUpgrade(options(bundle), without.deps)).rejects.toThrow(/runs only `agentx upgrade --bundle/);
-    expect(without.events).toEqual([]);
-    expect([...without.store.values.keys()].some((name) => name.includes("restore-points"))).toBe(false);
-    const wrong = await asOperator(bundle);
-    await expect(runUpgrade(options(bundle, { approvedBundleSha256: "e".repeat(64) }), wrong.deps)).rejects.toThrow(/not the approved bundle/);
-    nothingTouched(wrong);
+    for (const extra of [{}, { approvedBundleSha256: bundle.bundleSha256 }]) {
+      const h = await asOperator(bundle);
+      await expect(runUpgrade(options(bundle, extra), h.deps)).rejects.toThrow(/--deploy-approved/);
+      expect(h.events).toEqual([]);
+      expect([...h.store.values.keys()].some((name) => name.includes("restore-points") || name.endsWith("/lock") || name.endsWith("/bundle"))).toBe(false);
+      expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.2.3");
+    }
     const plain = await asOperator(bundle);
-    await expect(runUpgrade({ env: "staging", yes: true, allowReplace: [], releaseDir: "/x" }, { ...plain.deps, loadRelease: async () => { throw new Error("must not load"); } })).rejects.toThrow(/runs only `agentx upgrade --bundle/);
+    await expect(runUpgrade({ env: "staging", yes: true, allowReplace: [], releaseDir: "/x" }, { ...plain.deps, loadRelease: async () => { throw new Error("must not load"); } })).rejects.toThrow(/--deploy-approved/);
     expect(plain.events).toEqual([]);
   });
 
@@ -375,5 +370,41 @@ describe("the Rovara operator role (N6) runs only approved bundles", () => {
     const bundle = await build();
     const own = await harness(bundle, { identity: { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/bob" }) } });
     await runUpgrade(options(bundle), own.deps);
+  });
+});
+
+describe("the bytes that were verified are the bytes used (review I4)", () => {
+  it("reads the release, templates and packages from a private copy: changing the original after verification changes nothing that is deployed", async () => {
+    const bundle = await build();
+    const verified = await verifyBundle({ dir: bundle.dir, trustedKeys: trust(bundle) });
+    const before = verified.release.template("slack", "us-east-1", "staging");
+    await writeFile(join(bundle.dir, "templates/us-east-1/slack.template.json"), '{"Resources":{"Evil":{"Type":"AWS::IAM::User"}}}');
+    await writeFile(join(bundle.dir, "release.json"), "{}");
+    expect(verified.release.template("slack", "us-east-1", "staging")).toBe(before);
+    expect(verified.release.manifest.version).toBe("1.4.0");
+    expect(verified.copyDir).not.toBe(bundle.dir);
+    const info = await stat(verified.copyDir);
+    expect(info.mode & 0o777).toBe(0o700);
+    expect((await stat(join(verified.copyDir, "release.json"))).mode & 0o777).toBe(0o400);
+    await verified.cleanup();
+    await expect(stat(verified.copyDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes the private copy when verification fails, and when the upgrade ends", async () => {
+    const bundle = await build();
+    const before = (await readdir(tmpdir())).filter((name) => name.startsWith("rovara-bundle-")).length;
+    await writeFile(join(bundle.dir, "legal", "LICENSE"), "changed");
+    await refused(verifyBundle({ dir: bundle.dir, trustedKeys: trust(bundle) }), /does not match the signed manifest/);
+    expect((await readdir(tmpdir())).filter((name) => name.startsWith("rovara-bundle-")).length).toBe(before);
+    const good = await build();
+    const h = await harness(good);
+    await runUpgrade(options(good), h.deps);
+    expect((await readdir(tmpdir())).filter((name) => name.startsWith("rovara-bundle-")).length).toBe(before);
+  });
+
+  it("refuses a file with another name on the disk (a hard link), which the checks cannot tell apart from the original", async () => {
+    const bundle = await build();
+    await link(join(bundle.dir, "legal", "LICENSE"), join(bundle.root, "other-name"));
+    await refused(verifyBundle({ dir: bundle.dir, trustedKeys: trust(bundle) }), /hard link/);
   });
 });

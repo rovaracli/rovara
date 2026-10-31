@@ -3,9 +3,11 @@
 // listed files (no extra, no missing, no link), every file's size and SHA-256, and the release inside agrees with the bundle. Any failure is a refusal with
 // a fixed message; nothing is read from AWS and nothing is written here.
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat, readFile, readdir, realpath } from "node:fs/promises";
-import { join, sep } from "node:path";
+import { createReadStream, createWriteStream } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import {
   BUNDLE_MANIFEST_FILE,
   BUNDLE_MANIFEST_MAX_BYTES,
@@ -23,7 +25,12 @@ import {
 import { loadRelease, type LoadedRelease } from "../../deploy/release.js";
 
 export interface VerifiedBundle {
+  /** The directory the bundle was given in. Only the image archives are still read from here (the registry checks them by digest afterwards). */
   dir: string;
+  /** A private copy (mode 0700, files 0400) of every other file, made while hashing it: the release, templates and packages are read from here, never from `dir` again. */
+  copyDir: string;
+  /** Removes the private copy. */
+  cleanup(): Promise<void>;
   /** SHA-256 of bundle.json: what the customer approves and a restore point records. */
   bundleId: string;
   keyId: string;
@@ -64,6 +71,17 @@ async function hashFile(path: string): Promise<{ sha256: string; bytes: number }
   return { sha256: hash.digest("hex"), bytes };
 }
 
+/** Copies `from` to `to` (mode 0400, parents 0700) and returns the size and SHA-256 of the bytes that were written. */
+async function copyAndHash(from: string, to: string): Promise<{ sha256: string; bytes: number }> {
+  await mkdir(dirname(to), { recursive: true, mode: 0o700 });
+  const hash = createHash("sha256");
+  let bytes = 0;
+  const source = createReadStream(from);
+  source.on("data", (chunk) => { hash.update(chunk as Buffer); bytes += (chunk as Buffer).length; });
+  await pipeline(source, createWriteStream(to, { mode: 0o400 }));
+  return { sha256: hash.digest("hex"), bytes };
+}
+
 /** Every regular file under `root`, "/"-separated and relative. A link, a device or any other kind is a refusal; so is a tree that is too large. */
 async function listFiles(root: string): Promise<string[]> {
   const found: string[] = [];
@@ -73,6 +91,7 @@ async function listFiles(root: string): Promise<string[]> {
       const path = relative === "" ? entry : `${relative}/${entry}`;
       const info = await lstat(join(root, path));
       if (info.isDirectory()) await walk(path, depth + 1);
+      else if (info.isFile() && info.nlink > 1) throw refuse(`${shown(path)} has other names on the disk (a hard link)`);
       else if (info.isFile()) found.push(path);
       else throw refuse(`${shown(path)} is a link or a special file`);
       if (found.length > BUNDLE_MAX_FILES + 2) throw refuse("the directory holds more files than a bundle may");
@@ -122,19 +141,27 @@ export async function verifyBundle(input: VerifyBundleInput): Promise<VerifiedBu
   const present = new Set(onDisk);
   for (const file of listed) if (!present.has(file)) throw refuse(`${file} is in the signed manifest but missing from the directory`);
 
-  // 5. Every file's size and hash.
-  for (const entry of manifest.files) {
-    const path = join(root, ...entry.file.split("/"));
-    const real = await realpath(path).catch(() => undefined);
-    if (real === undefined || !real.startsWith(root + sep)) throw refuse(`${entry.file} is outside the bundle directory`);
-    const measured = await hashFile(path);
-    if (measured.bytes !== entry.bytes || measured.sha256 !== entry.sha256) throw refuse(`${entry.file} does not match the signed manifest`);
-  }
+  // 5. Every file's size and hash. Everything but the image archives is copied into a private directory WHILE it is hashed, so the bytes that were checked are the
+  // bytes that are used (review I4); an image archive is hashed in place and checked again by digest when the registry has it.
+  const copyDir = await mkdtemp(join(tmpdir(), "rovara-bundle-"));
+  await chmod(copyDir, 0o700);
+  const cleanup = async (): Promise<void> => { await rm(copyDir, { recursive: true, force: true }); };
+  try {
+    for (const entry of manifest.files) {
+      const path = join(root, ...entry.file.split("/"));
+      const real = await realpath(path).catch(() => undefined);
+      if (real === undefined || !real.startsWith(root + sep)) throw refuse(`${entry.file} is outside the bundle directory`);
+      const measured = entry.kind === "image" ? await hashFile(path) : await copyAndHash(path, join(copyDir, ...entry.file.split("/")));
+      if (measured.bytes !== entry.bytes || measured.sha256 !== entry.sha256) throw refuse(`${entry.file} does not match the signed manifest`);
+    }
+    // The two signed files the verification itself read are kept as well, from the bytes it read, so the copy is a complete bundle apart from its images.
+    await writeFile(join(copyDir, BUNDLE_MANIFEST_FILE), manifestBytes, { mode: 0o400 });
+    await writeFile(join(copyDir, BUNDLE_SIGNATURE_FILE), signatureBytes, { mode: 0o400 });
 
   // 6. The release inside agrees with the bundle, entry by entry.
   let releaseManifest;
   try {
-    releaseManifest = ReleaseManifestSchema.parse(JSON.parse(await readFile(join(root, "release.json"), "utf8")));
+    releaseManifest = ReleaseManifestSchema.parse(JSON.parse(await readFile(join(copyDir, "release.json"), "utf8")));
   } catch {
     throw refuse("release.json is not a valid release manifest");
   }
@@ -158,9 +185,13 @@ export async function verifyBundle(input: VerifyBundleInput): Promise<VerifiedBu
     if (named !== undefined && named !== image.sourceRef) throw refuse(`image ${image.name} differs between release.json and the bundle`);
   }
 
-  // The deploy engine's own loader re-reads and re-checks every template and package.
-  const release = await loadRelease(root).catch(() => {
+  // The deploy engine's own loader re-reads and re-checks every template and package, from the private copy.
+  const release = await loadRelease(copyDir).catch(() => {
     throw refuse("the release inside the bundle could not be loaded");
   });
-  return { dir: root, bundleId, keyId: checked.keyId, manifest, release };
+  return { dir: root, copyDir, cleanup, bundleId, keyId: checked.keyId, manifest, release };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
 }

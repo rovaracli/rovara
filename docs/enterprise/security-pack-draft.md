@@ -77,8 +77,8 @@ Deleting at the source (for example a message) deletes everywhere, and every rec
 
 ## 4. Models
 
-- Models run on your Bedrock, in your account, through the `bedrock-runtime` endpoint in your VPC. No other provider is used unless your admin adds one as a model source, and each such host then needs an entry on the egress allow-list. [Built, not deployed] (endpoint); the model proxy using its own role in your account and its image coming from your registry is [Designed] (task N2).
-- Today the model proxy's image is pulled from a public registry at deploy time. A sealed install cannot start it until N2 puts the image in the release bundle. [Not built]
+- Models run on your Bedrock, in your account, through the `bedrock-runtime` endpoint in your VPC. No other provider is used unless your admin adds one as a model source, and each such host then needs an entry on the egress allow-list. [Built, not deployed] (endpoint); the model proxy using its own role in your account and its image coming from your registry is [Built, not deployed] (task N2).
+- Today the model proxy's image is pulled from a public registry at deploy time. The Enterprise synthesis now takes it from your own registry by digest (loaded from the signed bundle by `agentx bundle approve`); a deployed proof is still to come. [Built, not deployed]
 - A custom model endpoint (your own gateway) is [Designed] (task N8): Enterprise only, https only, usable only after its model check passes. The Public edition refuses the field.
 - Each model is qualified by a model check before use. [Built]
 - Bedrock's own data terms are AWS's; see AWS's documentation of Bedrock data protection [verify the page before sending]. We do not re-verify them.
@@ -128,8 +128,8 @@ Deleting at the source (for example a message) deletes everywhere, and every rec
 
 ## 10. Supply chain and upgrades
 
-- Release bundle: a manifest of SHA-256 hashes of every artifact, the CDK assets, every container image (including the model proxy's), migration notes, and a signature from a Rovara KMS key whose public key is pinned in the installed tool and published. [Designed] (task N2).
-- `rovara upgrade --bundle` verifies the signature and hashes first, runs pre-checks, takes a restore point, then deploys in the existing order. Any changed byte is refused before anything changes. [Designed] (task N3).
+- Release bundle: a manifest of SHA-256 hashes of every artifact, the CDK assets, every container image (including the model proxy's), migration notes, and a signature from a Rovara KMS key whose public key you put in your install's trust list (not taken from the bundle's channel). [Built, not deployed] (task N2); the key itself does not exist yet.
+- `rovara upgrade --bundle` verifies the signature and hashes first (from a private copy it then uses), takes a restore point, then deploys in the existing order. Any changed byte is refused before anything changes. [Built, not deployed] (task N3). Enterprise end to end is blocked, see section 14, item 3.
 - The upgrade tool refuses to install an older release. [Built]
 - Rollback: redeploy the previous bundle and restore to the restore point. It has not been rehearsed. [Not built] (rehearsal is task N10e).
 - Software bill of materials: an open-source bill of materials exists in the platform spec. [verify it is current before sending]
@@ -161,7 +161,7 @@ A standard vendor questionnaire gets honest answers: "not certified", "not yet t
 0. Build a private path to the control plane and move the broker's Lambda functions into the VPC (section 2), or state plainly to the customer that the broker can reach the internet.
 1. Close TF16 (agent shells reaching host listeners) for the Enterprise profile.
 2. Close the dev-container gap (TF13, TF19), or refuse dev-container projects in Enterprise.
-3. Build the release bundle and the signed upgrade (N2, N3), including the model proxy image.
+3. Release bundle and signed upgrade (N2, N3, N6): verification, approval, the customer-owned deployer and the LiteLLM image from the install's registry are [Built, not deployed]; deploying an Enterprise install from a bundle end to end is blocked on an owner decision (per-customer templates or a source archive), and no signing key is pinned yet. See `docs/enterprise/operator-role.md`, section "What is not built".
 4. Build the operator role as designed in appendix A (N6, rescoped), and rehearse suspending it.
 5. Refuse the default public timestamp authorities in the Enterprise edition, or require an explicit choice (E2).
 6. Prove the sealed network in a test account: an allowed call works, a blocked one fails, flow logs show nothing to Rovara (N10a, N10c).

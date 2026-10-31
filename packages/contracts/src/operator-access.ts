@@ -14,6 +14,11 @@ export const OPERATOR_EXTERNAL_ID_CONTEXT_KEY = "rovaraOperatorExternalId";
 /** CDK context: comma-separated log group names the operator may read (groups that hold no content). Empty: none. */
 export const OPERATOR_LOG_GROUPS_CONTEXT_KEY = "rovaraOperatorLogGroups";
 
+/** CDK context: a JSON array of PEM public keys the install trusts to sign bundles. Empty or absent: the deployer refuses every bundle. */
+export const OPERATOR_SIGNING_KEYS_CONTEXT_KEY = "rovaraBundleSigningKeys";
+/** CDK context: comma-separated IAM role or user ARNs (wildcards allowed) that may place approvals in the approval bucket. Absent: only the operator, deploy and deployer roles are barred. */
+export const OPERATOR_APPROVERS_CONTEXT_KEY = "rovaraBundleApproverArns";
+
 /** The key prefix of the customer-owned approval bucket under which a customer places a bundle after approving its id: `approved/<bundle id>/...`. */
 export const APPROVED_BUNDLE_PREFIX = "approved/";
 

@@ -196,9 +196,17 @@ async function verifiedBundle(options: UpgradeOptions, deps: UpgradeDependencies
 }
 
 export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependencies): Promise<UpgradeResult> {
-  const { env } = options;
   // N3: first of all, before the environment, the account or the lock is looked at.
   const bundle = await verifiedBundle(options, deps);
+  try {
+    return await runVerifiedUpgrade(options, deps, bundle);
+  } finally {
+    await bundle?.cleanup();
+  }
+}
+
+async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependencies, bundle: VerifiedBundle | undefined): Promise<UpgradeResult> {
+  const { env } = options;
   if (bundle !== undefined && bundle.manifest.images.length > 0 && deps.loadBundleImages === undefined) {
     throw agentXError("CONFIG_INVALID", "this agentx cannot load the bundle's images into your registry; bundle refused, nothing was changed");
   }
@@ -224,10 +232,10 @@ export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependenc
   if (options.exportDir === undefined && !options.yes && !deps.isInteractive()) throw agentXError("CONFIG_INVALID", "agentx upgrade needs --yes when stdin is not a terminal");
 
   const caller = await deps.identity.get();
-  // N6: the standing Rovara operator role runs upgrades of a signed bundle the customer approved, and nothing else. The bundle was verified at the top
-  // (signature, every hash); here its id must also be the one the customer approved, named on the command line.
-  if (isRovaraOperatorArn(caller.arn, env) && (bundle === undefined || options.approvedBundleSha256 === undefined)) {
-    throw agentXError("CONFIG_INVALID", "the Rovara operator role runs only `agentx upgrade --bundle <dir> --approved-bundle-sha256 <id>` for a bundle your team approved; nothing was changed");
+  // N6: the standing Rovara operator role never runs an upgrade from its own disk or from any release it names: it starts the customer's deployer for an
+  // approved bundle id (`--deploy-approved`), and the deployer does the rest. Anything else here is refused before a lock, a restore point or a stack is touched.
+  if (isRovaraOperatorArn(caller.arn, env)) {
+    throw agentXError("CONFIG_INVALID", "the Rovara operator role starts approved deployments with `agentx upgrade --deploy-approved <bundle id>`; it does not run an upgrade itself, so nothing was changed");
   }
   const operator = isOperatorRole(caller.arn, env);
   // Ruling F20: the cdk engine reads CDK's bootstrap version parameter and deploys through the
