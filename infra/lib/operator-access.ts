@@ -27,7 +27,9 @@ import {
   bundleDeployerFunctionName,
   bundleDeployerRoleName,
   bundleTrustParameter,
+  deployLockParameter,
   deployProgressParameter,
+  operatorAccessStateParameter,
   environmentSettingsPrefix,
   environmentStackName,
   installedBundleParameter,
@@ -97,7 +99,15 @@ export function parseOperatorAccessContext(input: { edition: string | undefined;
   }
   const approversRaw = input.get(OPERATOR_APPROVERS_CONTEXT_KEY);
   const approverArns = approversRaw === undefined || approversRaw === "" ? [] : typeof approversRaw === "string" ? approversRaw.split(",").map((arn) => arn.trim()) : (() => { throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} must be a comma-separated list of ARNs`); })();
+  if (approverArns.length === 0) throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} must name the roles or users that may approve bundles: with none named, nobody may (an approval is the customer's own act)`);
   for (const arn of approverArns) if (!/^arn:aws[a-z-]*:iam::\d{12}:(role|user)\/[A-Za-z0-9+=,.@_/*-]{1,512}$/.test(arn) || arn.endsWith(":role/*") || arn.endsWith(":user/*")) throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} names roles or users; ${JSON.stringify(arn)} is not specific enough`);
+  // The approvers must be the customer's people, never this module's own roles.
+  for (const barred of [rovaraOperatorRoleName(input.env), `agentx-${input.env}-cloudformation`, bundleDeployerRoleName(input.env)]) {
+    for (const arn of approverArns) {
+      const pattern = new RegExp(`^${arn.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`);
+      if (pattern.test(`arn:${arn.split(":")[1]}:iam::${arn.split(":")[4]}:role/${barred}`)) throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} may not name ${barred}: it cannot approve its own deployments`);
+    }
+  }
   return { state: raw, principalArn: principal, externalId, logGroups: groups, signingKeys, approverArns };
 }
 
@@ -121,7 +131,7 @@ export class OperatorAccess extends Construct {
   readonly role: iam.CfnRole;
   readonly deployer: lambdaNodejs.NodejsFunction;
   readonly alertTopic: sns.Topic;
-  /** Added to the customer's CloudFormation deploy role: it reads the approved packages (Lambda code), and nothing else is added. */
+  /** Added to the customer's CloudFormation deploy role: it reads the deployer's verified copies of the packages (Lambda code), and nothing else is added. */
   readonly deployRoleReadPolicy: iam.CfnRole.PolicyProperty;
 
   constructor(scope: Construct, id: string, props: OperatorAccessProps) {
@@ -177,17 +187,25 @@ export class OperatorAccess extends Construct {
       notResources: [`${bucketArn}/${DEPLOYING_PREFIX}*`],
       conditions: { ArnEquals: { "aws:PrincipalArn": [deployerRoleArn] } },
     }));
-    if (settings.approverArns.length > 0) {
-      // Only the customer's named approvers place or withdraw approvals (every other principal of the account is barred, administrators included unless named).
-      this.approvedBundles.addToResourcePolicy(new iam.PolicyStatement({
-        sid: "OnlyNamedApproversApprove",
-        effect: iam.Effect.DENY,
-        principals: [new iam.AnyPrincipal()],
-        actions: ["s3:PutObject*", "s3:DeleteObject*", "s3:PutBucket*", "s3:DeleteBucket*"],
-        resources: [`${bucketArn}/${APPROVED_BUNDLE_PREFIX}*`, `${bucketArn}/${APPROVAL_PREFIX}*`],
-        conditions: { ArnNotLike: { "aws:PrincipalArn": [...settings.approverArns] } },
-      }));
-    }
+    // Only the customer's named approvers place or withdraw approvals; every other principal of the account is barred, administrators included unless named. The list is
+    // required (an empty one stops the synth), so the default is that nobody can approve.
+    this.approvedBundles.addToResourcePolicy(new iam.PolicyStatement({
+      sid: "OnlyNamedApproversApprove",
+      effect: iam.Effect.DENY,
+      principals: [new iam.AnyPrincipal()],
+      actions: ["s3:PutObject*", "s3:DeleteObject*", "s3:PutBucket*", "s3:DeleteBucket*"],
+      resources: [`${bucketArn}/${APPROVED_BUNDLE_PREFIX}*`, `${bucketArn}/${APPROVAL_PREFIX}*`],
+      conditions: { ArnNotLike: { "aws:PrincipalArn": [...settings.approverArns] } },
+    }));
+    // The deployer's verified copies (templates and Lambda packages) are written by the deployer alone: nobody can swap one between its write and CloudFormation's or Lambda's read.
+    this.approvedBundles.addToResourcePolicy(new iam.PolicyStatement({
+      sid: "OnlyTheDeployerWritesCopies",
+      effect: iam.Effect.DENY,
+      principals: [new iam.AnyPrincipal()],
+      actions: ["s3:PutObject*", "s3:DeleteObject*", "s3:PutObjectVersion*", "s3:RestoreObject"],
+      resources: [`${bucketArn}/${DEPLOYING_PREFIX}*`],
+      conditions: { ArnNotEquals: { "aws:PrincipalArn": deployerRoleArn } },
+    }));
 
     const stackArn = (name: string) => `arn:${partition}:cloudformation:${Aws.REGION}:${Aws.ACCOUNT_ID}:stack/${name}/*`;
     // Exact names, never a wildcard: an environment called "prod" must not reach "prod-eu".
@@ -202,6 +220,11 @@ export class OperatorAccess extends Construct {
     // The trusted signing keys live here, written by this stack (administrators), read by the deployer. Never passed on a command line to the operator's path.
     new ssm.StringParameter(this, "BundleTrustedKeys", { parameterName: bundleTrustParameter(env), stringValue: JSON.stringify(settings.signingKeys), description: "PEM public keys that may sign the bundles the deployer accepts; empty refuses every bundle" });
 
+    // The customer's alert topic: assumptions of the operator role (an EventBridge rule) and every start and end of the deployer (published by the deployer itself, first).
+    this.alertTopic = new sns.Topic(this, "UseAlerts", { topicName: `agentx-${env}-rovara-operator-use`, displayName: "Rovara operator role or bundle deployer was used" });
+    // The switch, mirrored where a deployer run that is already going can read it.
+    new ssm.StringParameter(this, "OperatorAccessStateRecord", { parameterName: operatorAccessStateParameter(env), stringValue: state.valueAsString, description: "enabled or suspended: the deployer checks it before every stack" });
+
     // ---- The deployer: customer account, customer role, customer logs.
     const deployerName = bundleDeployerFunctionName(env);
     const deployerLogs = new logs.LogGroup(this, "BundleDeployerLogs", { logGroupName: `/aws/lambda/${deployerName}`, retention: logs.RetentionDays.ONE_YEAR, removalPolicy: RemovalPolicy.RETAIN });
@@ -213,7 +236,9 @@ export class OperatorAccess extends Construct {
     const deployerPolicy: Statement[] = [
       { Sid: "ReadApprovals", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion"], Resource: [approvedObjects, approvalObjects] },
       { Sid: "WriteVerifiedCopies", Effect: "Allow", Action: ["s3:PutObject", "s3:GetObject"], Resource: deployingObjects },
-      { Sid: "ReadInstallRecords", Effect: "Allow", Action: ["ssm:GetParameter"], Resource: [`${prefix}settings`, `${prefix}bundle`, bundleTrustParameter(env), deployProgressParameter(env)].map(parameterArn) },
+      { Sid: "ReadInstallRecords", Effect: "Allow", Action: ["ssm:GetParameter"], Resource: [`${prefix}settings`, `${prefix}bundle`, bundleTrustParameter(env), deployProgressParameter(env), operatorAccessStateParameter(env), deployLockParameter(env)].map(parameterArn) },
+      { Sid: "TellTheCustomer", Effect: "Allow", Action: ["sns:Publish"], Resource: this.alertTopic.topicArn },
+      { Sid: "OneRunAtATime", Effect: "Allow", Action: ["ssm:PutParameter", "ssm:DeleteParameter"], Resource: parameterArn(deployLockParameter(env)) },
       { Sid: "WriteUpgradeRecords", Effect: "Allow", Action: ["ssm:PutParameter"], Resource: [`${prefix}settings`, installedBundleParameter(env), `${prefix}restore-points/*`, deployProgressParameter(env)].map(parameterArn) },
       { Sid: "CloseProgress", Effect: "Allow", Action: ["ssm:DeleteParameter"], Resource: parameterArn(deployProgressParameter(env)) },
       { Sid: "ReadStacks", Effect: "Allow", Action: ["cloudformation:DescribeStacks", "cloudformation:GetTemplate"], Resource: allStacks },
@@ -233,10 +258,12 @@ export class OperatorAccess extends Construct {
       timeout: Duration.minutes(15),
       memorySize: 2048,
       logGroup: deployerLogs,
-      environment: { ROVARA_ENV: env, APPROVAL_BUCKET: bucketName, DEPLOY_ROLE_ARN: deployRoleArn },
+      environment: { ROVARA_ENV: env, APPROVAL_BUCKET: bucketName, DEPLOY_ROLE_ARN: deployRoleArn, ALERT_TOPIC_ARN: this.alertTopic.topicArn, URL_SUFFIX: Aws.URL_SUFFIX },
       bundling: { externalModules: [], minify: true, sourceMap: true, target: "node22" },
     });
     const deployerArn = this.deployer.functionArn;
+    // A queued (asynchronous) call is dropped rather than retried or run late, so suspending cannot leave one waiting to start after it.
+    new lambda.EventInvokeConfig(this, "BundleDeployerAsync", { function: this.deployer, retryAttempts: 0, maxEventAge: Duration.seconds(60) });
 
     // ---- The operator role: it can start the deployer and look at health. Nothing else.
     const allow: Statement[] = [
@@ -303,27 +330,18 @@ export class OperatorAccess extends Construct {
       policyName: "read-approved-bundles",
       policyDocument: {
         Version: "2012-10-17",
-        Statement: [{ Effect: "Allow", Action: ["s3:GetObject"], Resource: approvedObjects }],
+        Statement: [{ Effect: "Allow", Action: ["s3:GetObject"], Resource: deployingObjects }],
       },
     };
 
     // Every assumption of the role goes to the customer's alert topic, with the name of the person (the event carries the source identity). The trust policy lets
     // the role be assumed through this region's endpoint only, so the assumption is always recorded where this rule listens. The topic holds no content.
-    this.alertTopic = new sns.Topic(this, "UseAlerts", { topicName: `agentx-${env}-rovara-operator-use`, displayName: "Rovara operator role was assumed" });
     new events.Rule(this, "AssumptionRule", {
       ruleName: `agentx-${env}-rovara-operator-assumed`,
       description: "Every assumption of the Rovara operator role",
       eventPattern: { source: ["aws.sts"], detailType: ["AWS API Call via CloudTrail"], detail: { eventSource: ["sts.amazonaws.com"], eventName: ["AssumeRole"], requestParameters: { roleArn: [roleArn] } } },
       targets: [new targets.SnsTopic(this.alertTopic)],
     });
-    // Every deployer start, from any caller, also reaches the topic: the deployer's invocations are API calls in the customer's CloudTrail.
-    new events.Rule(this, "DeployerInvocationRule", {
-      ruleName: `agentx-${env}-bundle-deployer-invoked`,
-      description: "Every call to the bundle deployer",
-      eventPattern: { source: ["aws.lambda"], detailType: ["AWS API Call via CloudTrail"], detail: { eventSource: ["lambda.amazonaws.com"], eventName: ["Invoke", "InvokeFunction", "InvokeAsync"], requestParameters: { functionName: [deployerName, this.deployer.functionArn] } } },
-      targets: [new targets.SnsTopic(this.alertTopic)],
-    });
-
     new CfnOutput(this, "RovaraOperatorRoleArn", { value: this.role.attrArn, description: "The Rovara operator role; suspend it with the OperatorAccessState parameter" });
     new CfnOutput(this, "ApprovedBundlesBucketName", { value: bucketName, description: "Place a bundle under approved/<bundle id>/ and write approvals/<bundle id>.json only after you approved its id" });
     new CfnOutput(this, "BundleDeployerFunctionName", { value: this.deployer.functionName });

@@ -4,7 +4,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { approvedFileKey, bundleApprovalKey, bundleTrustParameter, deployProgressParameter, installedBundleParameter, restorePointParameter } from "@agentx/contracts";
+import { approvedFileKey, bundleApprovalKey, bundleTrustParameter, deployLockParameter, deployProgressParameter, installedBundleParameter, operatorAccessStateParameter, restorePointParameter } from "@agentx/contracts";
 import { builtBundle, newTestKey, type BuiltBundle } from "../support/bundle-fixture.js";
 import { T0, World } from "../support/deployer-world.js";
 
@@ -12,7 +12,8 @@ const made: BuiltBundle[] = [];
 afterEach(async () => { await Promise.all(made.splice(0).map((bundle) => bundle.cleanup())); });
 const build = async (options?: Parameters<typeof builtBundle>[0]) => { const bundle = await builtBundle(options); made.push(bundle); return bundle; };
 const PARTS = ["foundation", "identity", "runtime", "control-plane", "slack"];
-const changes = (world: World) => world.log.filter((line) => line.startsWith("cfn.") || line.startsWith("ssm.put") || line.startsWith("s3.put") || line.startsWith("ssm.delete"));
+/** What changed anything but the alert and the one-run lock. */
+const changes = (world: World) => world.log.filter((line) => (line.startsWith("cfn.") || line.startsWith("ssm.put") || line.startsWith("s3.put") || line.startsWith("ssm.delete")) && !line.endsWith("/deploy/lock"));
 
 async function ready(options: Parameters<typeof builtBundle>[0] & { seed?: Partial<Parameters<World["seed"]>[0]>; approve?: Parameters<World["approve"]>[1] } = {}) {
   const bundle = await build(options);
@@ -51,7 +52,8 @@ describe("the deployer: a bundle id is the whole request", () => {
       const result = await world.run(request);
       expect(result.status, JSON.stringify(request)).toBe("refused");
     }
-    expect(world.log).toEqual([]);
+    expect(changes(world)).toEqual([]);
+    expect(world.log.filter((line) => line.startsWith("s3.get"))).toEqual([]);
   });
 });
 
@@ -87,6 +89,27 @@ describe("the customer's approval governs", () => {
     expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/does not match the approval record/) });
     world.versions.set(key, []);
     expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/is missing/) });
+    expect(changes(world)).toEqual([]);
+  });
+});
+
+describe("the approval record is checked against the files it pins (review: duplicate check)", () => {
+  async function corruptRecord(world: World, bundle: BuiltBundle, edit: (entry: { file: string; sha256: string; bytes: number }) => void) {
+    const key = bundleApprovalKey(bundle.bundleSha256);
+    const record = JSON.parse((await world.ports().s3.get(key))!.toString("utf8")) as { files: Array<{ file: string; sha256: string; bytes: number }> };
+    edit(record.files.find((entry) => entry.file === "legal/LICENSE")!);
+    world.putObject(key, Buffer.from(JSON.stringify(record)));
+  }
+  it("refuses a record whose hash for a file is wrong although the file itself is the signed one", async () => {
+    const { bundle, world } = await ready();
+    await corruptRecord(world, bundle, (entry) => { entry.sha256 = "0".repeat(64); });
+    expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/does not match the approval record/) });
+    expect(changes(world)).toEqual([]);
+  });
+  it("refuses a record whose size for a file is wrong although the hash is right", async () => {
+    const { bundle, world } = await ready();
+    await corruptRecord(world, bundle, (entry) => { entry.bytes += 1; });
+    expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/does not match the approval record/) });
     expect(changes(world)).toEqual([]);
   });
 });
@@ -196,7 +219,7 @@ describe("direction, restore point and the fixed stack set", () => {
 
   it("refuses a bundle that changes the access stack (the stack that holds the operator role and the deployer), before touching anything", async () => {
     const { bundle, world } = await ready({ seed: { accessTemplate: JSON.stringify({ Resources: { Older: { Type: "AWS::S3::Bucket" } } }) } });
-    expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/changes the access stack/) });
+    expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/access stack is not the deployed one/) });
     expect(changes(world)).toEqual([]);
   });
 
@@ -245,8 +268,123 @@ describe("parameters: never from the caller", () => {
     expect(set.parameters).toEqual([
       { key: "B", value: "approvals-bucket" },
       { key: "H", value: expect.stringMatching(/^[a-f0-9]{64}$/) },
-      { key: "K", value: expect.stringMatching(new RegExp(`^approved/${bundle.bundleSha256}/packages/[a-f0-9]{64}\\.zip$`)) },
+      { key: "K", value: expect.stringMatching(new RegExp(`^deploying/${bundle.bundleSha256}/packages/[a-f0-9]{64}\\.zip$`)) },
     ]);
+  });
+});
+
+describe("what CloudFormation and Lambda read is the verified bytes, by version (review N1, N3, N7)", () => {
+  const PKG_TEMPLATE = { Parameters: { B: { Type: "String" }, K: { Type: "String" }, H: { Type: "String" } }, Resources: {} };
+  const seedPkg = { stackParameters: { "control-plane": { B: "x", K: "y", H: "z" } } };
+
+  it("copies each package's verified bytes to a key only the deployer writes and points the stack there, so overwriting the approved object afterwards changes nothing deployed", async () => {
+    const { bundle, world } = await ready({ templates: { "control-plane": PKG_TEMPLATE }, seed: seedPkg });
+    const original = await readFile(join(bundle.dir, "packages", (await (await import("node:fs/promises")).readdir(join(bundle.dir, "packages")))[0]!));
+    for (const [key] of world.versions) if (key.includes("/packages/")) world.putObject(key, Buffer.from("Evil code, uploaded after the approval"));
+    expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("done");
+    const set = world.changeSets.find((entry) => entry.stackName === "agentx-ent-control-plane")!;
+    const keyParameter = (set.parameters as Array<{ key: string; value?: string }>).find((parameter) => parameter.key === "K")!.value!;
+    expect(keyParameter.startsWith(`deploying/${bundle.bundleSha256}/packages/`)).toBe(true);
+    expect(world.uploaded.get(keyParameter)!.equals(original)).toBe(true);
+    expect(world.uploaded.get(keyParameter)!.toString()).not.toContain("Evil");
+  });
+
+  it("hands CloudFormation the exact object version it just wrote (a swap of the key in between is not read), under the partition's suffix", async () => {
+    const { bundle, world } = await ready();
+    await world.run({ bundleId: bundle.bundleSha256 }, { urlSuffix: "amazonaws.com.cn" });
+    for (const set of world.changeSets) {
+      const key = set.templateUrl.replace(/^https:\/\/[^/]+\//, "").replace(/\?versionId=.*$/, "");
+      expect(set.templateUrl).toMatch(/^https:\/\/approvals-bucket\.s3\.us-east-1\.amazonaws\.com\.cn\/deploying\//);
+      expect(set.templateUrl.endsWith(`?versionId=${world.uploadedVersions.get(key)!}`)).toBe(true);
+    }
+    expect(world.changeSets.length).toBe(5);
+  });
+
+  it("refuses when the bucket gives no version id (it must be versioned)", async () => {
+    const { bundle, world } = await ready();
+    const ports = world.ports();
+    const result = await (await import("../../packages/broker/src/bundle-deployer/deploy.js")).runDeployer({ bundleId: bundle.bundleSha256 }, { ...ports, s3: { ...ports.s3, put: async (key, body) => ({ versionId: (await ports.s3.put(key, body), undefined) }) } });
+    expect(result).toMatchObject({ status: "refused", reason: expect.stringMatching(/must be versioned/) });
+    expect(world.changeSets).toEqual([]);
+  });
+});
+
+describe("the customer is told first, and can stop a run (review N2, N4, N6)", () => {
+  it("publishes to the customer's topic before anything else, on every call, and again with the outcome", async () => {
+    const { bundle, world } = await ready();
+    await world.run({ bundleId: bundle.bundleSha256 });
+    expect(world.log[0]).toBe("alert");
+    expect(world.log.indexOf("alert")).toBeLessThan(world.log.findIndex((line) => line.startsWith("s3.get")));
+    expect(world.alerts.map((message) => JSON.parse(message) as unknown)).toEqual([
+      { event: "bundle-deployer.started", env: "ent", bundleId: bundle.bundleSha256 },
+      { event: "bundle-deployer.finished", env: "ent", bundleId: bundle.bundleSha256, status: "done" },
+    ]);
+    const bad = new World();
+    await bad.run({ bundleId: "x", parameters: {} });
+    expect(bad.alerts.map((message) => (JSON.parse(message) as { event: string; bundleId: unknown }))).toEqual([
+      { event: "bundle-deployer.started", env: "ent", bundleId: null },
+      expect.objectContaining({ event: "bundle-deployer.finished", bundleId: null, status: "refused" }),
+    ]);
+  });
+
+  it("does nothing at all when the customer's topic cannot be told", async () => {
+    const { bundle, world } = await ready();
+    world.failAlert = true;
+    expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "failed", reason: expect.stringMatching(/alert could not be sent/) });
+    expect(world.log.filter((line) => line !== "alert")).toEqual([]);
+  });
+
+  it("refuses to start while the customer has suspended access, and treats a missing or unreadable switch as suspended", async () => {
+    const { bundle, world } = await ready();
+    for (const value of ["suspended", undefined, "ENABLED", ""]) {
+      if (value === undefined) world.params.delete(operatorAccessStateParameter("ent")); else world.params.set(operatorAccessStateParameter("ent"), value);
+      expect(await world.run({ bundleId: bundle.bundleSha256 }), String(value)).toMatchObject({ status: "refused", reason: expect.stringMatching(/suspended/) });
+    }
+    expect(changes(world)).toEqual([]);
+    expect(world.log.filter((line) => line.startsWith("s3.get"))).toEqual([]);
+  });
+
+  it("treats a switch it cannot read as suspended, and refuses when two runs race for the lock", async () => {
+    const { bundle, world } = await ready();
+    const ports = world.ports();
+    const { runDeployer } = await import("../../packages/broker/src/bundle-deployer/deploy.js");
+    const unreadable = await runDeployer({ bundleId: bundle.bundleSha256 }, { ...ports, ssm: { ...ports.ssm, get: async (name) => { if (name === operatorAccessStateParameter("ent")) throw new Error("throttled"); return ports.ssm.get(name); } } });
+    expect(unreadable).toMatchObject({ status: "refused", reason: expect.stringMatching(/suspended/) });
+    expect(changes(world)).toEqual([]);
+    // The other run took the lock between this run's read and its create-only write.
+    world.params.set(deployLockParameter("ent"), JSON.stringify({ startedAt: world.now }));
+    const raced = await runDeployer({ bundleId: bundle.bundleSha256 }, { ...ports, ssm: { ...ports.ssm, get: async (name) => (name === deployLockParameter("ent") ? undefined : ports.ssm.get(name)) } });
+    expect(raced).toMatchObject({ status: "refused", reason: expect.stringMatching(/another run/) });
+    expect(changes(world)).toEqual([]);
+  });
+
+  it("stops a run already going when the customer suspends: the stack being updated finishes, no next stack starts, the progress is kept", async () => {
+    const { bundle, world } = await ready();
+    world.afterStack = (stackName) => { if (stackName === "agentx-ent-identity") world.params.set(operatorAccessStateParameter("ent"), "suspended"); };
+    const result = await world.run({ bundleId: bundle.bundleSha256 });
+    expect(result).toMatchObject({ status: "refused", done: ["foundation", "identity"], remaining: ["runtime", "control-plane", "slack"], reason: expect.stringMatching(/suspended by the customer/) });
+    expect(world.changeSets.map((set) => set.stackName)).toEqual(["agentx-ent-foundation", "agentx-ent-identity"]);
+    expect(JSON.parse(world.params.get(deployProgressParameter("ent"))!).done).toEqual(["foundation", "identity"]);
+    expect(world.params.has(installedBundleParameter("ent"))).toBe(false);
+    // Resumed when the customer turns it back on.
+    world.afterStack = undefined;
+    world.params.set(operatorAccessStateParameter("ent"), "enabled");
+    expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("done");
+  });
+
+  it("runs one at a time: a fresh lock refuses, a stale one is taken over, and the lock is released when the run ends or is refused", async () => {
+    const { bundle, world } = await ready();
+    world.params.set(deployLockParameter("ent"), JSON.stringify({ startedAt: world.now - 60_000 }));
+    expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/another run/) });
+    expect(world.params.has(deployLockParameter("ent"))).toBe(true);
+    expect(changes(world)).toEqual([]);
+    world.params.set(deployLockParameter("ent"), JSON.stringify({ startedAt: world.now - 21 * 60_000 }));
+    expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("done");
+    expect(world.params.has(deployLockParameter("ent"))).toBe(false);
+    world.params.delete(bundleApprovalKey(bundle.bundleSha256));
+    world.deleteObject(bundleApprovalKey(bundle.bundleSha256));
+    expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("refused");
+    expect(world.params.has(deployLockParameter("ent"))).toBe(false);
   });
 });
 

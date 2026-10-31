@@ -59,6 +59,10 @@ export const deployingKey = (bundleId: string, file: string): string => `${DEPLO
 
 /** The customer-written list of trusted bundle signing keys (a JSON array of PEM public keys). Only administrators write it; the operator role has no SSM access. */
 export const bundleTrustParameter = (env: string): string => `${environmentSettingsPrefix(env)}bundle-trust/public-keys`;
+/** Mirrors the access stack's OperatorAccessState switch (`enabled` | `suspended`) so a deployer run already started can read it before every stack. Written by the stack only. */
+export const operatorAccessStateParameter = (env: string): string => `${environmentSettingsPrefix(env)}operator-access/state`;
+/** Held (create-only, expiring) by the one deployer run that is working. */
+export const deployLockParameter = (env: string): string => `${environmentSettingsPrefix(env)}deploy/lock`;
 export const deployProgressParameter = (env: string): string => `${environmentSettingsPrefix(env)}deploy/progress`;
 
 const BundleIdText = BundleId;

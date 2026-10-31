@@ -19,7 +19,9 @@ import {
   bundleApprovalKey,
   approvedFileKey,
   bundleTrustParameter,
+  deployLockParameter,
   deployProgressParameter,
+  operatorAccessStateParameter,
   deployingKey,
   environmentSettingsPrefix,
   environmentStackName,
@@ -49,6 +51,8 @@ export interface DeployerPorts {
   env: string;
   region: string;
   bucket: string;
+  /** The partition's S3 DNS suffix (`amazonaws.com`, `amazonaws.com.cn`), from the function's environment. */
+  urlSuffix: string;
   deployRoleArn: string;
   now(): number;
   /** The time by which this invocation must stop starting new work (the function's timeout less a margin). */
@@ -56,8 +60,11 @@ export interface DeployerPorts {
   s3: {
     /** The current version when `versionId` is absent; undefined when there is none (never written, or deleted). */
     get(key: string, versionId?: string): Promise<Buffer | undefined>;
-    put(key: string, body: Buffer): Promise<void>;
+    /** Returns the version id the bucket gave the object; the deployer hands CloudFormation that exact version. */
+    put(key: string, body: Buffer): Promise<{ versionId: string | undefined }>;
   };
+  /** The customer's alert topic. Publishing must succeed before the deployer acts. */
+  alert: { publish(message: string): Promise<void> };
   ssm: {
     get(name: string): Promise<string | undefined>;
     put(name: string, value: string, options?: { createOnly?: true }): Promise<void>;
@@ -104,10 +111,71 @@ function compare(a: string, b: string): number | undefined {
   return 0;
 }
 
+/** A run that has held the lock longer than a function can run is dead. */
+const LOCK_STALE_MS = 20 * 60 * 1000;
+
+/** The customer's switch. Anything but an explicit `enabled` (absent, unreadable, `suspended`) counts as off. */
+async function isSuspended(ports: DeployerPorts): Promise<boolean> {
+  try {
+    return (await ports.ssm.get(operatorAccessStateParameter(ports.env))) !== "enabled";
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Every call: tell the customer's topic first (if that cannot be done, nothing is done), check the customer's switch, take the one-run lock, do the work, say how it
+ * ended. The alert does not depend on CloudTrail data events.
+ */
 export async function runDeployer(rawRequest: unknown, ports: DeployerPorts): Promise<DeployerResult> {
   const parsedRequest = DeployerRequestSchema.safeParse(rawRequest);
-  if (!parsedRequest.success) return refused("the request must be exactly a bundle id");
-  const bundleId = parsedRequest.data.bundleId;
+  const bundleId = parsedRequest.success ? parsedRequest.data.bundleId : null;
+  try {
+    await ports.alert.publish(JSON.stringify({ event: "bundle-deployer.started", env: ports.env, bundleId }));
+  } catch {
+    return failed("the alert could not be sent, so nothing was done");
+  }
+  let result: DeployerResult;
+  try {
+    result = await guarded(rawRequest, ports);
+  } catch {
+    result = failed("an unexpected error stopped the deployment");
+  }
+  try {
+    await ports.alert.publish(JSON.stringify({ event: "bundle-deployer.finished", env: ports.env, bundleId, status: result.status, ...(result.reason === undefined ? {} : { reason: result.reason }) }));
+  } catch {
+    // The start was reported; the end is reported when the topic works again. The result still goes to the caller.
+  }
+  return result;
+}
+
+async function guarded(rawRequest: unknown, ports: DeployerPorts): Promise<DeployerResult> {
+  if (!DeployerRequestSchema.safeParse(rawRequest).success) return refused("the request must be exactly a bundle id");
+  if (await isSuspended(ports)) return refused("the operator's access is suspended by the customer");
+  // One run at a time (a second would delete the first's change set).
+  const lockName = deployLockParameter(ports.env);
+  const held = await ports.ssm.get(lockName);
+  let startedAt: number;
+  try {
+    startedAt = held === undefined ? 0 : z.object({ startedAt: z.number() }).parse(JSON.parse(held)).startedAt;
+  } catch {
+    startedAt = ports.now();
+  }
+  if (held !== undefined && ports.now() - startedAt < LOCK_STALE_MS) return refused("another run of this deployer is active");
+  try {
+    await ports.ssm.put(lockName, JSON.stringify({ startedAt: ports.now() }), held === undefined ? { createOnly: true } : undefined);
+  } catch {
+    return refused("another run of this deployer is active");
+  }
+  try {
+    return await deployVerified(rawRequest, ports);
+  } finally {
+    await ports.ssm.delete(lockName);
+  }
+}
+
+async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promise<DeployerResult> {
+  const bundleId = DeployerRequestSchema.parse(rawRequest).bundleId;
   const { env, region, bucket } = ports;
 
   // 1. The customer's approval. Deleting the record withdraws it.
@@ -203,7 +271,7 @@ export async function runDeployer(rawRequest: unknown, ports: DeployerPorts): Pr
   if (accessTemplate === undefined || deployedAccess === undefined) return refused("the access stack could not be compared");
   try {
     if (JSON.stringify(canonical(JSON.parse(accessTemplate))) !== JSON.stringify(canonical(JSON.parse(deployedAccess)))) {
-      return refused("the bundle changes the access stack, which only your administrators deploy");
+      return refused("the bundle's access stack is not the deployed one (an Enterprise install's access stack is not in a Public bundle); only your administrators deploy the access stack");
     }
   } catch {
     return refused("the access stack could not be compared");
@@ -243,6 +311,8 @@ export async function runDeployer(rawRequest: unknown, ports: DeployerPorts): Pr
   for (const part of parts) {
     if (done.has(part)) continue;
     if (ports.now() > ports.deadlineAt - MIN_BUDGET_MS) return { status: "in-progress", bundleId, done: [...done], remaining: parts.filter((p) => !done.has(p)) };
+    // The customer's switch is read before every stack, so suspending stops a run that is already going (the stack being updated finishes; no next one starts).
+    if (await isSuspended(ports)) return { status: "refused", bundleId, done: [...done], remaining: parts.filter((p) => !done.has(p)), reason: "the operator's access was suspended by the customer; the deployment stopped before the next stack" };
     const stackName = environmentStackName(env, part);
     const stack = await ports.cfn.describe(stackName);
     if (stack === undefined) return refused(`the ${part} stack does not exist; this path only updates stacks`);
@@ -266,9 +336,13 @@ export async function runDeployer(rawRequest: unknown, ports: DeployerPorts): Pr
     const values = new Map<string, string>();
     for (const pkg of release.packages) {
       if (!pkg.parts.includes(part)) continue;
-      // Packages are read from the bucket's approved copy, whose hash was checked above.
+      // Lambda reads the CURRENT object at a key, so the verified bytes are copied to a key only this function may write, and that key is what the stack gets.
+      const bytes = bytesByFile.get(pkg.file);
+      if (bytes === undefined) return refused("a package the release lists is not in the approval");
+      const packageKey = deployingKey(bundleId, pkg.file);
+      if (declared[pkg.bucketParameter] !== undefined || declared[pkg.keyParameter] !== undefined) await ports.s3.put(packageKey, bytes);
       if (declared[pkg.bucketParameter] !== undefined) values.set(pkg.bucketParameter, bucket);
-      if (declared[pkg.keyParameter] !== undefined) values.set(pkg.keyParameter, approvedFileKey(bundleId, pkg.file));
+      if (declared[pkg.keyParameter] !== undefined) values.set(pkg.keyParameter, packageKey);
       if (declared[pkg.hashParameter] !== undefined) values.set(pkg.hashParameter, pkg.assetId);
     }
     const pinned = approval.parameters[part] ?? {};
@@ -287,10 +361,11 @@ export async function runDeployer(rawRequest: unknown, ports: DeployerPorts): Pr
 
     // The verified bytes go to a prefix only this function writes, and CloudFormation reads them from there.
     const key = deployingKey(bundleId, `${part}.template.json`);
-    await ports.s3.put(key, Buffer.from(text, "utf8"));
+    const copy = await ports.s3.put(key, Buffer.from(text, "utf8"));
+    if (copy.versionId === undefined) return refused("the approval bucket returned no version id; it must be versioned");
     const changeSetName = `rovara-${bundleId.slice(0, 12)}-${part}`;
     await ports.cfn.deleteChangeSet(stackName, changeSetName);
-    await ports.cfn.createChangeSet({ stackName, name: changeSetName, templateUrl: `https://${bucket}.s3.${region}.amazonaws.com/${key}`, parameters, roleArn: ports.deployRoleArn });
+    await ports.cfn.createChangeSet({ stackName, name: changeSetName, templateUrl: `https://${bucket}.s3.${region}.${ports.urlSuffix}/${key}?versionId=${encodeURIComponent(copy.versionId)}`, parameters, roleArn: ports.deployRoleArn });
     const outcome = await ports.cfn.waitChangeSet(stackName, changeSetName, ports.deadlineAt);
     if (outcome === "failed") return failed(`the ${part} change set could not be created`);
     if (outcome === "ready") {

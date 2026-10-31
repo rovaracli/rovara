@@ -1,7 +1,7 @@
 // Test support for the customer-owned bundle deployer: an in-memory bucket with object versions and delete markers, parameter store and CloudFormation.
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { BundleManifestSchema, approvedFileKey, bundleApprovalKey, bundleTrustParameter, environmentStackName, sha256OfBytes, type ApprovalRecord } from "@agentx/contracts";
+import { BundleManifestSchema, approvedFileKey, bundleApprovalKey, bundleTrustParameter, environmentStackName, operatorAccessStateParameter, sha256OfBytes, type ApprovalRecord } from "@agentx/contracts";
 import { runDeployer, type DeployerPorts, type StackState } from "../../packages/broker/src/bundle-deployer/deploy.js";
 import type { BuiltBundle } from "./bundle-fixture.js";
 
@@ -15,6 +15,11 @@ export class World {
   readonly log: string[] = [];
   readonly changeSets: Array<{ stackName: string; name: string; templateUrl: string; parameters: unknown[]; roleArn: string }> = [];
   readonly uploaded = new Map<string, Buffer>();
+  readonly uploadedVersions = new Map<string, string>();
+  readonly alerts: string[] = [];
+  failAlert = false;
+  /** Runs after each stack wait, to change the world mid-run. */
+  afterStack: ((stackName: string) => void) | undefined;
   now = T0;
   deadlineAt = T0 + 14 * 60_000;
   stackOutcome: Record<string, "complete" | "failed" | "timeout"> = {};
@@ -32,7 +37,7 @@ export class World {
 
   ports(overrides: Partial<DeployerPorts> = {}): DeployerPorts {
     return {
-      env: "ent", region: "us-east-1", bucket: "approvals-bucket", deployRoleArn: DEPLOY_ROLE,
+      env: "ent", region: "us-east-1", bucket: "approvals-bucket", urlSuffix: "amazonaws.com", deployRoleArn: DEPLOY_ROLE,
       now: () => this.now, deadlineAt: this.deadlineAt,
       s3: {
         get: async (key, versionId) => {
@@ -41,8 +46,9 @@ export class World {
           const found = versionId === undefined ? list[list.length - 1] : list.find((entry) => entry.versionId === versionId);
           return found === undefined || found.body === "deleted" ? undefined : found.body;
         },
-        put: async (key, body) => { this.log.push(`s3.put ${key}`); this.uploaded.set(key, body); },
+        put: async (key, body) => { this.log.push(`s3.put ${key}`); this.uploaded.set(key, body); const versionId = this.putObject(`__copy__/${key}`, body); this.uploadedVersions.set(key, versionId); return { versionId }; },
       },
+      alert: { publish: async (message) => { this.log.push("alert"); if (this.failAlert) throw new Error("sns down"); this.alerts.push(message); } },
       ssm: {
         get: async (name) => this.params.get(name),
         put: async (name, value, options) => {
@@ -60,7 +66,7 @@ export class World {
         createChangeSet: async (input) => { this.log.push(`cfn.create ${input.stackName}`); this.changeSets.push(input); },
         waitChangeSet: async () => "ready",
         executeChangeSet: async (stackName) => { this.log.push(`cfn.execute ${stackName}`); },
-        waitStack: async (stackName) => this.stackOutcome[stackName] ?? "complete",
+        waitStack: async (stackName) => { const outcome = this.stackOutcome[stackName] ?? "complete"; this.afterStack?.(stackName); return outcome; },
       },
       ...overrides,
     };
@@ -71,6 +77,7 @@ export class World {
   seed(options: { key: string; version?: string; identityMode?: "cognito" | "oidc"; accessTemplate?: string; stackParameters?: Record<string, Record<string, string>> }): void {
     this.params.set("/agentx/ent/settings", JSON.stringify({ version: options.version ?? "1.2.3", region: "us-east-1", identity: { mode: options.identityMode ?? "cognito" }, updatedAt: "2026-10-01T00:00:00.000Z" }));
     this.params.set(bundleTrustParameter("ent"), JSON.stringify([options.key]));
+    this.params.set(operatorAccessStateParameter("ent"), "enabled");
     for (const part of ["access", "foundation", "identity", "runtime", "control-plane", "slack"] as const) {
       this.stacks.set(environmentStackName("ent", part), { status: "UPDATE_COMPLETE", parameters: options.stackParameters?.[part] ?? {}, ...(part === "access" ? { template: options.accessTemplate ?? JSON.stringify({ Resources: {} }) } : {}) });
     }

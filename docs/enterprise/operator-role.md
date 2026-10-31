@@ -1,6 +1,6 @@
 # The Rovara operator role (Enterprise, managed-VPC agreement)
 
-Draft of 31 October 2026, revised after the first review. This page replaces the earlier break-glass wording ("no standing access; a role disabled until you flip a parameter") wherever it appears. Owner decision, 31 October 2026: under the managed-VPC agreement Rovara holds one standing operator role in your account. It is narrow, you control it, and every use is visible to you. Your security team must still agree to it per install.
+Draft of 31 October 2026, revised after two reviews. This page replaces the earlier break-glass wording ("no standing access; a role disabled until you flip a parameter") wherever it appears. Owner decision, 31 October 2026: under the managed-VPC agreement Rovara holds one standing operator role in your account. It is narrow, you control it, and every use is visible to you. Your security team must still agree to it per install.
 
 Status marks as in the security pack: **[Built, not deployed]** means infrastructure code and tests exist and nothing has run in an account. **[Designed]** means written down and not built. **[verify]** marks a behaviour of AWS that the tests cannot show and the install proof must.
 
@@ -29,13 +29,15 @@ An older release is refused unless the approval says `--rollback`. A bundle that
 
 It refuses unless every step holds, and it returns only fixed words and part names (never text from a stack or a file):
 
+0. The deployer publishes to your alert topic that it was called (the bundle id, or null for a malformed request). If it cannot, it does nothing. It publishes again with the outcome. Nothing here depends on CloudTrail data events.
+0. Your switch (`/agentx/<env>/operator-access/state`) says `enabled`, and no other run holds the lock (one run at a time, a lock that stale after 20 minutes is taken over).
 1. The request is exactly a bundle id (an extra field, a template, a stack name, a parameter is refused).
 2. `approvals/<id>.json` exists in the current version of your bucket and names this id.
 3. Your list of trusted signing keys (`/agentx/<env>/bundle-trust/public-keys`, written by your administrators; the operator role cannot even read it) is not empty.
 4. Each pinned file version is read once, and its size and hash match both your record and the signed manifest; the manifest's hash is the id; the signature verifies against a trusted key; the approval, the manifest and the release agree about the version; the files pinned are exactly the files the manifest lists.
 5. The installed version is not newer than the bundle, unless you approved a rollback.
-6. The access stack is unchanged.
-7. A restore point is written (create-only), then each of the five fixed stacks (`foundation`, `identity` unless you bring your own provider, `runtime`, `control-plane`, `slack`) is updated in order, never created or deleted. For each: the template is the verified bytes, copied to a prefix only the deployer writes; every existing parameter is kept at its current value; the bundle's packages point at the approved copy of the package; the only values that change are the ones your approval pins, and a pinned parameter the template does not declare, or a new parameter with no value, is refused. The change set goes through your deploy role.
+6. The access stack is unchanged. (For an Enterprise install this refuses today: see "What is not built".)
+7. The customer's switch is read again before every stack (below). A restore point is written (create-only), then each of the five fixed stacks (`foundation`, `identity` unless you bring your own provider, `runtime`, `control-plane`, `slack`) is updated in order, never created or deleted. For each: the template is the verified bytes, copied to `deploying/` (a prefix only the deployer may write) and handed to CloudFormation by the exact object version just written; every existing parameter is kept at its current value; each package's verified bytes are copied the same way and the stack's code location is that copy (Lambda reads the current object at a key, so the approved object itself is never the source); the only values that change are the ones your approval pins, and a pinned parameter the template does not declare, or a new parameter with no value, is refused. The change set goes through your deploy role.
 8. After the last stack: the installed-bundle record and the settings version are written, and the progress record is closed. A deployment that needs longer than one run of the function resumes from its progress record.
 
 ## Who may assume it
@@ -75,7 +77,7 @@ The tests (`tests/contract/operator-access.test.ts`) evaluate the synthesised po
 
 ## Your switches
 
-**Suspend, at once.** Set the stack parameter `OperatorAccessState` of the access stack to `suspended` with your own admin credentials. The role then denies every action, in sessions that are already open too (inline policy changes apply immediately). Set it back to `enabled` to resume. The operator cannot do this and cannot redeploy the access stack: the role is denied it, and the deployer refuses a bundle that changes it.
+**Suspend, at once.** Set the stack parameter `OperatorAccessState` of the access stack to `suspended` with your own admin credentials. The role then denies every action, in sessions that are already open too (inline policy changes apply immediately). The same switch is mirrored to `/agentx/<env>/operator-access/state`, which the deployer reads before it starts and before every stack, so a run already going stops before its next stack (the stack being updated finishes; CloudFormation cannot be stopped half way); a call queued asynchronously is dropped (no retry, 60 seconds of age at most). Progress is kept; set the parameter back to `enabled` and the same run continues. Set it back to `enabled` to resume. The operator cannot do this and cannot redeploy the access stack: the role is denied it, and the deployer refuses a bundle that changes it.
 
 **Suspend without our stack.** You own the account, so you do not need our infrastructure code to stop the role. Any of these works on its own:
 
@@ -87,16 +89,32 @@ The tests (`tests/contract/operator-access.test.ts`) evaluate the synthesised po
 
 **Say no to a bundle.** Do not approve it, or withdraw it (above). Nothing else can start it.
 
-**Name the people who may approve.** `rovaraBundleApproverArns` (comma-separated role or user ARNs, wildcards allowed inside a name, never `role/*`) makes the bucket refuse approvals from every other principal of your account, administrators included unless named. Without it the bucket bars only the roles this module creates (the operator, the deploy role, and the deployer outside its own copies); then any principal in your account with broad S3 write could place an approval, so name your approvers.
+**Name the people who may approve.** `rovaraBundleApproverArns` is required (comma-separated role or user ARNs; never `role/*`, and never this module's own roles). The bucket refuses approvals and withdrawals from every other principal of your account, administrators included unless named. With none named the build stops, so the default is that nobody can approve. The deployer's verified copies under `deploying/` can be written by the deployer alone, whoever else is named.
+
+**Clear a stuck deployment.** If a deployment failed and you do not mean to finish it (for example you withdrew its bundle), the deployer refuses every other bundle while its progress record stands. `agentx bundle reset-deployment` (your administrators; the operator role has no Parameter Store access) clears the record and the run lock. Stacks already updated stay as they are; check them first.
 
 **Change windows.** Not built. If you need the role to work only at set times, the same deny-all mechanism can be driven by a schedule you own. Owner to decide whether to build it.
 
 ## What you see
 
 - Your CloudTrail records every assumption and every call under the person's name (source identity).
-- An EventBridge rule sends each assumption of the role, and a second rule each call to the deployer, to the SNS topic `agentx-<env>-rovara-operator-use` (stack output `RovaraOperatorAlertTopicArn`). They carry API call metadata and no content. Subscribe your security mailbox. The rules see the events your CloudTrail management events carry in the install's region. [verify in a test account; and check that a trail that logs management events is active, as the alert depends on it.]
+- An EventBridge rule sends each assumption of the role to the SNS topic `agentx-<env>-rovara-operator-use` (stack output `RovaraOperatorAlertTopicArn`), and the deployer itself publishes to the same topic at every start and end (bundle id and fixed words; no content). The deployer's alert does not depend on CloudTrail: a function invocation is a CloudTrail data event and is not seen unless you log data events for it. The assumption rule needs an active trail that logs management events. Subscribe your security mailbox.
+
+The deployer accepts any caller in your account that holds `lambda:InvokeFunction` on it; no application role does. Such a call skips the assumption alert, MFA and source identity, but it deploys only what you approved, and it is announced on the topic like any other. Do not grant that permission to people you would not trust to approve.
 - The deployer writes its decisions to `/aws/lambda/agentx-<env>-bundle-deployer`, a log group in your account, kept for a year.
 - We give you a monthly list of uses.
+
+## Install-proof checklist for the [verify] items
+
+Run these in the test account (Rovara's own, never a customer's) and write down what each shows; the results go into the security pack's evidence marks.
+
+1. Assume the role through the regional STS endpoint and then the global one; only the regional one should succeed (`aws:RequestedRegion`), and an assumption event should reach the topic.
+2. Assume it from a session obtained with MFA and one without, and from an IAM Identity Center session; record which satisfy `aws:MultiFactorAuthPresent`. If Identity Center sessions never do, the owner decides how Rovara's operators sign in (the MFA condition is not weakened in code).
+3. Run the deployer for an approved test bundle; confirm CloudFormation reads the `?versionId=` template URL under `deploying/` with the deployer's credentials, and that Lambda starts from the copied package.
+4. Suspend while a multi-stack run is going; confirm it stops before the next stack and resumes after.
+5. Withdraw an approval; confirm the next start is refused.
+6. Attach the manual customer deny; update the stack; confirm the deny survives.
+7. Export a real skopeo oci-archive and confirm `index.json` lists the source manifest digest (the builder refuses otherwise).
 
 ## How it is turned on
 
@@ -109,7 +127,7 @@ Enterprise installs only. The role does not exist unless the install's CDK conte
 | `rovaraOperatorExternalId` | The external id you hold |
 | `rovaraOperatorLogGroups` | Comma-separated exact log group names you allow, or none |
 | `rovaraBundleSigningKeys` | JSON array of PEM public keys (ECDSA P-256) you trust to sign bundles; empty or absent: the deployer refuses every bundle |
-| `rovaraBundleApproverArns` | The principals that may place approvals (optional, recommended) |
+| `rovaraBundleApproverArns` | The principals that may place and withdraw approvals (required; none named means the build stops) |
 
 The trusted signing key comes from you, not from the bundle: it is written to `/agentx/<env>/bundle-trust/public-keys` by the access stack, and `agentx bundle approve` and `agentx upgrade --bundle` read the same list. A key published beside a bundle is not trusted by that fact. Record the key's fingerprint (SHA-256 of its SubjectPublicKeyInfo) in your security file when you first set it.
 

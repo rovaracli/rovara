@@ -9,12 +9,14 @@ import {
   GetTemplateCommand,
 } from "@aws-sdk/client-cloudformation";
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { PublishCommand, SNSClient } from "@aws-sdk/client-sns";
 import { DeleteParameterCommand, GetParameterCommand, PutParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { runDeployer, type DeployerPorts } from "./deploy.js";
 
 const cloudFormation = new CloudFormationClient({});
 const s3 = new S3Client({});
 const ssm = new SSMClient({});
+const sns = new SNSClient({});
 const errorName = (error: unknown): string | undefined => (error instanceof Error ? error.name : undefined);
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -30,6 +32,7 @@ export function buildPorts(deadlineAt: number): DeployerPorts {
     env: required("ROVARA_ENV"),
     region: required("AWS_REGION"),
     bucket,
+    urlSuffix: required("URL_SUFFIX"),
     deployRoleArn: required("DEPLOY_ROLE_ARN"),
     now: () => Date.now(),
     deadlineAt,
@@ -45,7 +48,13 @@ export function buildPorts(deadlineAt: number): DeployerPorts {
         }
       },
       async put(key, body) {
-        await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body }));
+        const result = await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body }));
+        return { versionId: result.VersionId };
+      },
+    },
+    alert: {
+      async publish(message) {
+        await sns.send(new PublishCommand({ TopicArn: required("ALERT_TOPIC_ARN"), Subject: "Rovara bundle deployer", Message: message }));
       },
     },
     ssm: {

@@ -17,7 +17,8 @@ if (!existsSync("packages/web/dist/app/assets")) mkdirSync("packages/web/dist/ap
 const PRINCIPAL = "arn:aws:iam::210987654321:role/rovara-operators";
 const EXTERNAL_ID = "ext-id-held-by-the-customer-0001";
 const ENT = { agentxEnv: "ent", rovaraEdition: "enterprise", rovaraEnterpriseEgressCidrs: "10.99.0.0/16", agentxAuditTsa: "off" } as const;
-const ON = { ...ENT, rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID } as const;
+const APPROVERS = "arn:aws:iam::123456789012:role/security-approvers";
+const ON = { ...ENT, rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID, rovaraBundleApproverArns: APPROVERS } as const;
 
 function access(context: Record<string, unknown>): Template {
   const app = buildAgentXApp(context);
@@ -50,8 +51,10 @@ const walkGetAtt = (template: Template) => {
     }
     return Object.fromEntries(entries.map(([k, v]) => [k, walk(v)]));
   };
-  const ids = Object.entries(resourcesJson).filter(([, r]) => r.Type === "AWS::S3::Bucket").map(([id]) => id);
-  return { walk, parameters: Object.fromEntries(ids.map((id) => [id, BUCKET])) };
+  const entries = Object.entries(resourcesJson);
+  const buckets = entries.filter(([, r]) => r.Type === "AWS::S3::Bucket").map(([id]) => [id, BUCKET] as const);
+  const topics = entries.filter(([, r]) => r.Type === "AWS::SNS::Topic").map(([id]) => [id, "arn:aws:sns:us-east-1:123456789012:alerts"] as const);
+  return { walk, parameters: Object.fromEntries([...buckets, ...topics]) };
 };
 /** A role's policy statements for a parameter value, intrinsics resolved. */
 function resolve(template: Template, document: unknown, state: "enabled" | "suspended"): Json[] {
@@ -124,8 +127,8 @@ describe("the Rovara operator role", () => {
     });
 
     it("refuses to be asked for outside Enterprise, or with settings that do not name one role and one external id", () => {
-      expect(() => access({ agentxEnv: "pub", agentxCloud: true, rovaraEdition: "public", rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID })).toThrow(/Enterprise setting/);
-      expect(() => access({ agentxEnv: "legacyish", rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID })).toThrow(/Enterprise setting/);
+      expect(() => access({ agentxEnv: "pub", agentxCloud: true, rovaraEdition: "public", rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID, rovaraBundleApproverArns: APPROVERS })).toThrow(/Enterprise setting/);
+      expect(() => access({ agentxEnv: "legacyish", rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID, rovaraBundleApproverArns: APPROVERS })).toThrow(/Enterprise setting/);
       for (const principal of [undefined, "arn:aws:iam::210987654321:root", "arn:aws:iam::210987654321:user/someone", "*", "arn:aws:iam::210987654321:role/*", "210987654321"]) {
         expect(() => access({ ...ON, rovaraOperatorPrincipalArn: principal }), String(principal)).toThrow(/rovaraOperatorPrincipalArn/);
       }
@@ -136,7 +139,7 @@ describe("the Rovara operator role", () => {
     });
 
     it("lets only log groups that hold no content be named", () => {
-      const parse = (groups: string) => parseOperatorAccessContext({ edition: "enterprise", env: "ent", workerLogGroup: "/agentx/ent/worker", get: (key) => ({ rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID, rovaraOperatorLogGroups: groups })[key] });
+      const parse = (groups: string) => parseOperatorAccessContext({ edition: "enterprise", env: "ent", workerLogGroup: "/agentx/ent/worker", get: (key) => ({ rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID, rovaraBundleApproverArns: APPROVERS, rovaraOperatorLogGroups: groups })[key] });
       expect(parse("/aws/lambda/agentx-ent-doctor").logGroups).toEqual(["/aws/lambda/agentx-ent-doctor"]);
       expect(() => parse("/agentx/ent/worker")).toThrow(/holds task content/);
       expect(() => parse("/agentx/ent/worker/i-123")).toThrow(/holds task content/);
@@ -313,11 +316,11 @@ describe("the Rovara operator role", () => {
       expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/agentx/ent/settings"))).toBe(false);
     });
 
-    it("is one function with a fixed name, a 15 minute limit and only the install's three settings; no caller input reaches its environment", () => {
+    it("is one function with a fixed name, a 15 minute limit and only the install's five settings (environment, bucket, deploy role, alert topic, S3 suffix); no caller input reaches its environment", () => {
       const [, fn] = resources(template, "AWS::Lambda::Function").find(([, f]) => f.Properties.FunctionName === FUNCTION_NAME)!;
       expect(fn.Properties.Timeout).toBe(900);
       expect(fn.Properties.Runtime).toBe("nodejs22.x");
-      expect(Object.keys(fn.Properties.Environment.Variables as object).filter((name) => !["ROVARA_EDITION", "AWS_NODEJS_CONNECTION_REUSE_ENABLED"].includes(name)).sort()).toEqual(["APPROVAL_BUCKET", "DEPLOY_ROLE_ARN", "ROVARA_ENV"]);
+      expect(Object.keys(fn.Properties.Environment.Variables as object).filter((name) => !["ROVARA_EDITION", "AWS_NODEJS_CONNECTION_REUSE_ENABLED"].includes(name)).sort()).toEqual(["ALERT_TOPIC_ARN", "APPROVAL_BUCKET", "DEPLOY_ROLE_ARN", "ROVARA_ENV", "URL_SUFFIX"]);
       expect(resources(template, "AWS::Lambda::Permission")).toEqual([]);
       expect(resources(template, "AWS::Lambda::Url")).toEqual([]);
     });
@@ -350,7 +353,38 @@ describe("the Rovara operator role", () => {
       expect(JSON.stringify(copies.Condition)).toContain("agentx-ent-bundle-deployer");
       expect(JSON.stringify(copies.NotResource)).toContain("deploying/");
       expect(JSON.stringify(statements)).toContain("aws:SecureTransport");
-      expect(statements.some((statement) => statement.Sid === "OnlyNamedApproversApprove")).toBe(false);
+      expect(statements.find((statement) => statement.Sid === "OnlyNamedApproversApprove")!.Condition).toEqual({ ArnNotLike: { "aws:PrincipalArn": [APPROVERS] } });
+    });
+
+    it("requires the approvers to be named: with none, the build stops (the default is that nobody can approve), and the barred roles cannot be named", () => {
+      const { rovaraBundleApproverArns: _approvers, ...withoutApprovers } = ON;
+      void _approvers;
+      expect(() => access(withoutApprovers)).toThrow(/must name the roles or users that may approve/);
+      expect(() => access({ ...ON, rovaraBundleApproverArns: "" })).toThrow(/must name the roles or users that may approve/);
+      for (const name of ["agentx-ent-rovara-operator", "agentx-ent-cloudformation", "agentx-ent-bundle-deployer", "agentx-ent-*", "agentx-ent-bundle-*"]) {
+        expect(() => access({ ...ON, rovaraBundleApproverArns: `arn:aws:iam::123456789012:role/${name}` }), name).toThrow(/cannot approve its own deployments/);
+      }
+    });
+
+    it("lets only the deployer write its verified copies (templates and packages): everyone else is denied on deploying/", () => {
+      const statements = resources(template, "AWS::S3::BucketPolicy").find(([, p]) => JSON.stringify(p.Properties.PolicyDocument).includes("OnlyTheDeployerWritesCopies"))![1].Properties.PolicyDocument.Statement as Json[];
+      const only = statements.find((statement) => statement.Sid === "OnlyTheDeployerWritesCopies")!;
+      expect(only.Effect).toBe("Deny");
+      expect(only.Condition).toEqual({ ArnNotEquals: { "aws:PrincipalArn": expect.anything() } });
+      expect(JSON.stringify(only.Condition)).toContain("role/agentx-ent-bundle-deployer");
+      expect(list(only.Action)).toEqual(expect.arrayContaining(["s3:PutObject*", "s3:DeleteObject*"]));
+      expect(JSON.stringify(only.Resource)).toMatch(/\/deploying\/\*"/);
+      expect(JSON.stringify(only.Resource)).not.toMatch(/approv/);
+    });
+
+    it("limits the deployer's own bucket statement to deploying/ exactly: it cannot place or change an approval", () => {
+      const statements = resources(template, "AWS::S3::BucketPolicy").find(([, p]) => JSON.stringify(p.Properties.PolicyDocument).includes("DeployerWritesOnlyItsCopies"))![1].Properties.PolicyDocument.Statement as Json[];
+      const copies = statements.find((statement) => statement.Sid === "DeployerWritesOnlyItsCopies")!;
+      expect(copies.Action).toEqual(expect.arrayContaining(["s3:PutObject*", "s3:DeleteObject*"]));
+      const notResource = JSON.stringify(copies.NotResource);
+      expect(notResource).toMatch(/\/deploying\/\*"\]\}\]\}$|\/deploying\/\*"\]\}$|deploying\/\*/);
+      expect(notResource).not.toMatch(/approv|\/\*"\]\}\]\}$/);
+      expect(JSON.stringify(copies.Condition)).toContain("role/agentx-ent-bundle-deployer");
     });
 
     it("bars every principal but the customer's named approvers from approvals, when the install names them", () => {
@@ -365,12 +399,14 @@ describe("the Rovara operator role", () => {
       for (const bad of ["arn:aws:iam::123456789012:role/*", "*", "arn:aws:s3:::x"]) expect(() => access({ ...ON, rovaraBundleApproverArns: bad }), bad).toThrow(/not specific enough|ARN/);
     });
 
-    it("gives the deploy role read access to the approved packages (Lambda code) and nothing else", () => {
+    it("gives the deploy role read access to the deployer's verified copies (Lambda code) and nothing else", () => {
       const deployRole = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-cloudformation")![1];
       expect((deployRole.Properties.Policies as Json[]).map((policy) => policy.PolicyName)).toEqual(["deploy", "read-approved-bundles"]);
       const extra = (deployRole.Properties.Policies as Json[])[1]!.PolicyDocument.Statement as Json[];
       expect(extra).toHaveLength(1);
       expect(extra[0]!.Action).toEqual(["s3:GetObject"]);
+      expect(JSON.stringify(extra[0]!.Resource)).toMatch(/\/deploying\/\*/);
+      expect(JSON.stringify(extra[0]!.Resource)).not.toMatch(/approv/);
     });
   });
 
@@ -393,19 +429,39 @@ describe("the Rovara operator role", () => {
       expect(statementsFor(born, "suspended").some((statement) => statement.Sid === "SuspendedByCustomer")).toBe(true);
     });
 
-    it("reports every assumption of the role, and every call to the deployer, to the customer's alert topic", () => {
+    it("reports every assumption of the role to the customer's alert topic, and the deployer itself publishes at every start and end (not CloudTrail data events)", () => {
       const [, rule] = resources(template, "AWS::Events::Rule").find(([, r]) => r.Properties.Name === "agentx-ent-rovara-operator-assumed")!;
       expect(rule.Properties.EventPattern.detail.eventName).toEqual(["AssumeRole"]);
       expect(JSON.stringify(rule.Properties.EventPattern.detail.requestParameters.roleArn)).toContain("role/agentx-ent-rovara-operator");
       const [topicId] = resources(template, "AWS::SNS::Topic").find(([, topic]) => topic.Properties.TopicName === "agentx-ent-rovara-operator-use")!;
       expect(rule.Properties.Targets).toEqual([{ Arn: { Ref: topicId }, Id: "Target0" }]);
-      const invoked = resources(template, "AWS::Events::Rule").find(([, r]) => r.Properties.Name === "agentx-ent-bundle-deployer-invoked")![1];
-      expect(invoked.Properties.EventPattern.detail.eventSource).toEqual(["lambda.amazonaws.com"]);
-      expect(invoked.Properties.EventPattern.detail.eventName).toEqual(expect.arrayContaining(["Invoke"]));
-      expect(JSON.stringify(invoked.Properties.EventPattern.detail.requestParameters.functionName)).toContain(FUNCTION_NAME);
-      expect(invoked.Properties.Targets).toEqual([{ Arn: { Ref: topicId }, Id: "Target0" }]);
       const topicPolicy = resources(template, "AWS::SNS::TopicPolicy").find(([, p]) => JSON.stringify(p.Properties.Topics).includes(topicId))![1];
       expect(JSON.stringify(topicPolicy.Properties.PolicyDocument)).toContain("events.amazonaws.com");
+      // No rule leans on Lambda data events.
+      expect(resources(template, "AWS::Events::Rule").every(([, r]) => !JSON.stringify(r.Properties.EventPattern).includes("lambda.amazonaws.com"))).toBe(true);
+      const [, fn] = resources(template, "AWS::Lambda::Function").find(([, f]) => f.Properties.FunctionName === FUNCTION_NAME)!;
+      expect(fn.Properties.Environment.Variables.ALERT_TOPIC_ARN).toEqual({ Ref: topicId });
+      const publish = deployerStatements(template).find((statement) => statement.Sid === "TellTheCustomer")!;
+      expect(publish).toMatchObject({ Effect: "Allow" });
+      expect(list(publish.Action)).toEqual(["sns:Publish"]);
+      expect(publish.Resource).toBe("arn:aws:sns:us-east-1:123456789012:alerts"); // the topic, resolved
+    });
+
+    it("mirrors the switch where a deployer run already going can read it, and drops queued calls instead of retrying them", () => {
+      const record = resources(template, "AWS::SSM::Parameter").find(([, p]) => p.Properties.Name === "/agentx/ent/operator-access/state")![1];
+      expect(record.Properties.Value).toEqual({ Ref: "OperatorAccessState" });
+      expect(allowed(deployerStatements(template), "ssm:GetParameter", ARN("ssm", "parameter/agentx/ent/operator-access/state"))).toBe(true);
+      expect(allowed(deployerStatements(template), "ssm:PutParameter", ARN("ssm", "parameter/agentx/ent/operator-access/state"))).toBe(false);
+      const [, config] = resources(template, "AWS::Lambda::EventInvokeConfig")[0]!;
+      expect(config.Properties).toMatchObject({ MaximumRetryAttempts: 0, MaximumEventAgeInSeconds: 60 });
+    });
+
+    it("lets the deployer take and release only its one-run lock, and gives it the partition's S3 suffix", () => {
+      const deployer = deployerStatements(template);
+      expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", "parameter/agentx/ent/deploy/lock"))).toBe(true);
+      expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/agentx/ent/deploy/lock"))).toBe(true);
+      const [, fn] = resources(template, "AWS::Lambda::Function").find(([, f]) => f.Properties.FunctionName === FUNCTION_NAME)!;
+      expect(fn.Properties.Environment.Variables.URL_SUFFIX).toEqual({ Ref: "AWS::URLSuffix" });
     });
 
     it("keeps the role's policy within IAM's 10,240-character limit for inline role policies", () => {

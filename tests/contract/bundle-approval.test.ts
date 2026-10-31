@@ -92,3 +92,18 @@ describe("the operator's client", () => {
     expect(called).toBe(1);
   });
 });
+
+describe("agentx bundle reset-deployment (review N8)", () => {
+  it("clears a stuck progress record and lock, says which bundle it belonged to, and leaves everything else", async () => {
+    const { MemoryParameterStore } = await import("../support/memory-parameter-store.js");
+    const { resetDeployment } = await import("../../packages/cli/src/upgrade/bundle/reset-deployment.js");
+    const { deployLockParameter, deployProgressParameter } = await import("@agentx/contracts");
+    const store = new MemoryParameterStore();
+    await store.put(deployProgressParameter("ent"), JSON.stringify({ schemaVersion: 1, bundleId: "b".repeat(64), startedAt: "2026-10-31T10:00:00.000Z", done: ["foundation"] }));
+    await store.put(deployLockParameter("ent"), JSON.stringify({ startedAt: 1 }));
+    await store.put("/agentx/ent/settings", "{}");
+    expect(await resetDeployment({ store, env: "ent" })).toEqual({ bundleId: "b".repeat(64), clearedProgress: true, clearedLock: true });
+    expect([...store.values.keys()]).toEqual(["/agentx/ent/settings"]);
+    expect(await resetDeployment({ store, env: "ent" })).toEqual({ bundleId: undefined, clearedProgress: false, clearedLock: false });
+  });
+});

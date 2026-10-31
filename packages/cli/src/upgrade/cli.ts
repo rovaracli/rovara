@@ -25,6 +25,7 @@ import { RELEASE_VERSION } from "../version.js";
 import { approveBundle, withdrawApproval, type ApprovalStore } from "./bundle/approve.js";
 import { startApprovedDeployment, type DeployerInvoker } from "./bundle/deployer-client.js";
 import { loadBundleImages } from "./bundle/load-images.js";
+import { resetDeployment } from "./bundle/reset-deployment.js";
 import { PINNED_BUNDLE_SIGNING_KEYS } from "./bundle/trusted-keys.js";
 import { verifyBundle } from "./bundle/verify.js";
 import { runUpgrade, type UpgradeDependencies } from "./run.js";
@@ -199,6 +200,17 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       } finally {
         await bundle.cleanup();
       }
+    });
+  bundleCommand
+    .command("reset-deployment")
+    .description("clear the deployer's progress record and run lock, after a deployment you do not mean to finish (for example a failed one whose bundle you withdrew); the next approved bundle can then start")
+    .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
+    .action(async (options: { region?: string }, command: Command) => {
+      const globals = command.optsWithGlobals<{ env: string }>();
+      const outcome = await resetDeployment({ store: context.parameterStore(options.region), env: globals.env });
+      context.stdout.write(outcome.clearedProgress || outcome.clearedLock
+        ? `Cleared the deployer's ${outcome.clearedProgress ? `progress record${outcome.bundleId === undefined ? "" : ` (bundle ${outcome.bundleId})`}` : ""}${outcome.clearedProgress && outcome.clearedLock ? " and " : ""}${outcome.clearedLock ? "run lock" : ""}. Stacks already updated stay as they are; check them before approving the next bundle.\n`
+        : "Nothing to clear: the deployer has no progress record or lock.\n");
     });
   bundleCommand
     .command("withdraw <bundle id>")
