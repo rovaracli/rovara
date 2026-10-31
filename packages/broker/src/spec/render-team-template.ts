@@ -1,6 +1,6 @@
 // K1 lane D, D1: the team-template format. The team keeps a folder in the meta repo with one file per section of its own spec; Rovara writes the same files and the same headings,
 // and puts the approved plan's content under the headings that ask for it. Every heading, its level, its order and the text under headings Rovara has nothing for are kept as the team wrote them.
-import { agentXError, SPEC_FILES_MAX, specDraftStatements, specStripHidden, type SpecDraft, type SpecFile, type SpecRequirementRef } from "@agentx/contracts";
+import { agentXError, SPEC_FILES_MAX, nextFenceState, specDraftStatements, specStripHidden, type SpecDraft, type SpecFile, type SpecRequirementRef } from "@agentx/contracts";
 import { assertRenderedSpec, extractLabelledLines, resolveSpecFolder, type SpecRenderer, type SpecRenderInput } from "./renderer.js";
 
 type Slot = "requirements" | "tasks" | "design" | "summary";
@@ -20,10 +20,12 @@ interface Heading { index: number; level: number; title: string }
 
 function headingsOf(lines: readonly string[]): Heading[] {
   const out: Heading[] = [];
-  let fenced = false;
+  let fence: ReturnType<typeof nextFenceState>;
   lines.forEach((line, index) => {
-    if (/^\s{0,3}(?:`{3,}|~{3,})/u.test(line)) { fenced = !fenced; return; }
-    if (fenced) return;
+    const wasOpen = fence !== undefined;
+    fence = nextFenceState(fence, line);
+    if (wasOpen || fence !== undefined) return;
+    if (/^ {0,3}(?:`{3,}|~{3,})/u.test(line)) return;
     const match = /^(#{1,6})\s+(.*?)\s*#*\s*$/u.exec(line);
     if (match !== null) out.push({ index, level: match[1]!.length, title: match[2] ?? "" });
   });

@@ -2,7 +2,7 @@
 //
 // A renderer turns the approved-plan `SpecDraft` into the files of one format, and reads a format's files back into checkable requirements (so a review can walk a spec a person
 // has edited). Kiro is one renderer among several; a team's own format is a renderer registered under another id. Nothing here knows a customer or a tool by name.
-import { agentXError, SPEC_FILES_MAX, SPEC_FILE_MAX_BYTES, SPEC_REVIEW_REQUIREMENTS_MAX, specPathProblem, specSlug, type SpecDraft, type SpecFile, type SpecRequirementRef, type SpecTarget } from "@agentx/contracts";
+import { agentXError, SPEC_FILES_MAX, SPEC_FILE_MAX_BYTES, SPEC_REVIEW_REQUIREMENTS_MAX, nextFenceState, specFileNameProblem, specFolderProblem, specPathProblem, specSlug, type SpecDraft, type SpecFile, type SpecRequirementRef, type SpecTarget } from "@agentx/contracts";
 
 /** What a renderer is given. All of it is data the broker already trusts (the draft is cleaned by its schema); `template` is meta-repo text read at the task's `knowledgeCommit`. */
 export interface SpecRenderInput {
@@ -15,6 +15,8 @@ export interface SpecRenderInput {
   existingFolders: readonly string[];
   /** `team_template`: the template folder's files (paths relative to the folder). */
   template?: readonly SpecFile[] | undefined;
+  /** The project's own knowledge folders (steering, skills, runbooks, key docs): a spec is never written into one. */
+  forbiddenFolders?: readonly string[] | undefined;
 }
 
 export interface RenderedSpec {
@@ -88,6 +90,7 @@ export function resolveSpecFolder(renderer: Pick<SpecRenderer, "defaultPathTempl
   };
   const folder = template.replace(/\{(slug|taskKey|ticket|n)\}/gu, (_whole, token: string) => values[token]!).replace(/\/+$/u, "");
   if (specPathProblem(folder) !== undefined) throw agentXError("CONFIG_INVALID", "the spec folder is not a safe path");
+  if (specFolderProblem(folder, input.forbiddenFolders) !== undefined) throw agentXError("CONFIG_INVALID", "the spec folder is a rules, steering, skills, config or automation folder");
   return `${folder}/`;
 }
 
@@ -98,8 +101,9 @@ export function assertRenderedSpec(rendered: RenderedSpec): RenderedSpec {
   for (const file of rendered.files) {
     const problem = specPathProblem(file.path);
     if (problem !== undefined || !file.path.startsWith(rendered.folder)) throw agentXError("CONFIG_INVALID", "a spec file is outside the spec folder");
-    if (seen.has(file.path)) throw agentXError("CONFIG_INVALID", "a spec has two files at one path");
-    seen.add(file.path);
+    if (seen.has(file.path.toLowerCase())) throw agentXError("CONFIG_INVALID", "a spec has two files at one path");
+    if (specFileNameProblem(file.path) !== undefined) throw agentXError("CONFIG_INVALID", "a spec cannot hold a rules, steering or ownership file");
+    seen.add(file.path.toLowerCase());
     if (new TextEncoder().encode(file.content).byteLength > SPEC_FILE_MAX_BYTES) throw agentXError("CONFIG_INVALID", "a spec file is larger than 64 KiB");
   }
   return rendered;
@@ -113,10 +117,12 @@ export function extractLabelledLines(file: SpecFile, options: { sectionHeadings?
   const out: SpecRequirementRef[] = [];
   let inSection = options.sectionHeadings === undefined;
   let defect = false;
-  let fenced = false;
+  let fence: ReturnType<typeof nextFenceState>;
   for (const raw of file.content.split("\n")) {
-    if (/^\s{0,3}(?:`{3,}|~{3,})/u.test(raw)) { fenced = !fenced; continue; }
-    if (fenced) continue;
+    const wasOpen = fence !== undefined;
+    fence = nextFenceState(fence, raw);
+    if (wasOpen || fence !== undefined) continue;
+    if (/^ {0,3}(?:`{3,}|~{3,})/u.test(raw)) continue;
     const heading = /^(#{1,6})\s+(.*?)\s*#*\s*$/u.exec(raw);
     if (heading !== null) {
       const title = heading[2] ?? "";

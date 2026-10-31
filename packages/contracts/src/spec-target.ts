@@ -33,13 +33,32 @@ export const SPEC_PATH_TOKENS = ["slug", "taskKey", "ticket", "n"] as const;
 const HIDDEN = /[\p{Cf}\p{Cc}\p{Co}\p{Cn}\p{Cs}\p{Default_Ignorable_Code_Point}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/gu;
 
 /**
+ * Text made inert for GitHub (the same rules as Rovara's pull request lines): images dropped, links reduced to their text, raw HTML and HTML comments dropped, `<url>` autolinks and bare URLs broken
+ * with a zero-width joiner so nothing renders as a link, and `@`, `www.` and `#<digit>` broken so nothing mentions anyone or cross-references an issue. Applying it twice gives the same text.
+ */
+export function inertSpecText(text: string): string {
+  return text
+    .replace(/<!--[\s\S]*?(?:-->|$)/gu, "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/gu, "")
+    .replace(/!\[[^\]]*\]\[[^\]]*\]/gu, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/gu, "$1")
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/gu, "$1")
+    .replace(/<((?:https?|mailto):[^>]*)>/giu, "$1")
+    .replace(/<\/?[A-Za-z][^>]*>/gu, "")
+    .replaceAll("@", "@\u200D")
+    .replaceAll("://", ":\u200D//\u200D")
+    .replace(/\bwww\./giu, (match) => `${match.slice(0, 3)}\u200D.`)
+    .replace(/#(?=\d)/gu, "#\u200D");
+}
+
+/**
  * Untrusted text as one visible line: secrets redacted, hidden and control characters (line breaks included) gone, white space collapsed, a leading list or heading marker
- * dropped, and cut to `max` characters. A line made this way cannot start a heading, a list item or a code fence in a file that holds it.
+ * dropped, made inert for GitHub, and cut to `max` characters. A line made this way cannot start a heading, a list item or a code fence in a file that holds it, nor render a link, image or tag.
  */
 export function specLine(text: string, max: number = SPEC_LINE_MAX): string {
   const plain = redactText(text).replace(/[\r\n\t\u2028\u2029]+/gu, " ").replace(HIDDEN, "").replace(/\s+/gu, " ").trim();
   // Leading markers go one after another until none is left: `- 1.1 text` is `text`.
-  let bare = plain;
+  let bare = inertSpecText(plain);
   for (let guard = 0; guard < 8; guard += 1) {
     const next = bare.replace(/^(?:[#>*+\-=`|~]+|\d+(?:\.\d+)+\.?|\d+[.)])\s*/u, "").trim();
     if (next === bare) break;
@@ -50,19 +69,40 @@ export function specLine(text: string, max: number = SPEC_LINE_MAX): string {
   return points.length <= max ? bare : `${points.slice(0, max - 1).join("")}…`;
 }
 
-/** Untrusted multi-line markdown (a design section) made safe to sit inside one section of a spec: hidden characters gone, every heading turned into a bold line, fences kept balanced, bounded. */
+/** A code fence line: its character and length, or undefined. A backtick fence's info string has no backtick (CommonMark). */
+export function markdownFenceOf(line: string): { char: "`" | "~"; length: number; rest: string } | undefined {
+  const match = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+  if (match === null) return undefined;
+  const run = match[1]!;
+  const rest = match[2] ?? "";
+  if (run[0] === "`" && rest.includes("`")) return undefined;
+  return { char: run[0] as "`" | "~", length: run.length, rest };
+}
+
+/** Follows fences the CommonMark way: an open fence closes only on the same character, at least as long, with nothing after it but white space. */
+export function nextFenceState(open: { char: "`" | "~"; length: number } | undefined, line: string): { char: "`" | "~"; length: number } | undefined {
+  const fence = markdownFenceOf(line);
+  if (fence === undefined) return open;
+  if (open === undefined) return { char: fence.char, length: fence.length };
+  return fence.char === open.char && fence.length >= open.length && fence.rest.trim() === "" ? undefined : open;
+}
+
+/** Untrusted multi-line markdown (a design section) made safe to sit inside one section of a spec: hidden characters gone, every heading turned into a bold line, links, images and HTML made inert outside code fences, fences kept balanced, bounded. */
 export function specMarkdown(text: string, max: number = SPEC_DESIGN_MAX): string {
-  const lines = redactText(text).replace(/\r\n?/gu, "\n").replace(HIDDEN_BUT_NEWLINE, "").split("\n");
+  // Comments can span lines; they go first (a fenced example that mentions one loses it, which is harmless).
+  const lines = redactText(text).replace(/\r\n?/gu, "\n").replace(HIDDEN_BUT_NEWLINE, "").replace(/<!--[\s\S]*?(?:-->|$)/gu, "").split("\n");
   const out: string[] = [];
-  let fenced = false;
+  let fence: { char: "`" | "~"; length: number } | undefined;
   for (const raw of lines) {
     const line = raw.replace(/[ \t]+$/u, "");
-    if (/^\s{0,3}(?:`{3,}|~{3,})/u.test(line)) { fenced = !fenced; out.push(line); continue; }
-    if (fenced) { out.push(line); continue; }
+    const wasOpen = fence !== undefined;
+    fence = nextFenceState(fence, line);
+    if (wasOpen || fence !== undefined || markdownFenceOf(line) !== undefined) { out.push(line); continue; }
+    if (/^ {0,3}\[[^\]]+\]:\s*\S+/u.test(line)) continue;
     const heading = /^\s{0,3}#{1,6}\s+(.*)$/u.exec(line);
-    out.push(heading === null ? line : `**${(heading[1] ?? "").replace(/\s*#+\s*$/u, "").trim()}**`);
+    out.push(inertSpecText(heading === null ? line : `**${(heading[1] ?? "").replace(/\s*#+\s*$/u, "").trim()}**`));
   }
-  if (fenced) out.push("```");
+  if (fence !== undefined) out.push(fence.char.repeat(fence.length));
   const joined = out.join("\n").replace(/\n{3,}/gu, "\n\n").trim();
   const points = Array.from(joined);
   return points.length <= max ? joined : `${points.slice(0, max - 1).join("")}…`;
@@ -97,9 +137,46 @@ export function specPathProblem(path: string, options: { tokens?: boolean } = {}
   return undefined;
 }
 
+/** Folders a spec is never written into: Rovara's own config, the places teams keep rules, steering, skills and hooks for their tools, and the repository's automation. Compared by prefix, any case. */
+export const SPEC_FORBIDDEN_FOLDERS: readonly string[] = [
+  ".rovara", ".github", ".kiro/steering", ".kiro/hooks", ".kiro/skills", ".cursor", ".claude", ".agents", ".windsurf", ".continue", ".gemini", ".codex", ".vscode",
+  ".rovara/rules", ".cursor/rules", ".claude/rules", ".github/instructions", ".agents/skills", ".claude/skills", "runbooks", "docs/runbooks",
+];
+
+/** File names that are rules, steering, skills or ownership for some tool whatever folder they sit in: a spec never contains one. Compared by base name, any case. */
+export const SPEC_FORBIDDEN_FILE_NAMES: readonly string[] = [
+  "codeowners", "agents.md", "agents.override.md", "claude.md", "gemini.md", "skill.md", ".cursorrules", ".windsurfrules", "copilot-instructions.md", ".rules", "project.yaml", "project.yml", "project.json",
+];
+
+/**
+ * Why a folder (no tokens left in it) is not one a spec may be written to, or undefined. `extra` are the project's own knowledge folders (steering, skills, runbooks, key docs). The repository root
+ * is refused: a spec has a folder of its own, and the first folder is named by the project, never by a token.
+ */
+export function specFolderProblem(folder: string, extra: readonly string[] = []): string | undefined {
+  const bare = folder.replace(/\/+$/u, "").toLowerCase();
+  if (bare === "") return "must be a folder, not the repository root";
+  for (const forbidden of [...SPEC_FORBIDDEN_FOLDERS, ...extra.map((entry) => entry.replace(/\/+$/u, "").toLowerCase())]) {
+    if (forbidden !== "" && (bare === forbidden.toLowerCase() || bare.startsWith(`${forbidden.toLowerCase()}/`))) return "must not be a rules, steering, skills, config or automation folder";
+  }
+  return undefined;
+}
+
+/** Why a spec file's name is refused (see SPEC_FORBIDDEN_FILE_NAMES), or undefined. */
+export function specFileNameProblem(path: string): string | undefined {
+  const name = path.split("/").pop()!.toLowerCase();
+  return SPEC_FORBIDDEN_FILE_NAMES.includes(name) ? "a spec cannot hold a rules, steering or ownership file" : undefined;
+}
+
 const pathTemplate = z.string().superRefine((value, context) => {
   const problem = specPathProblem(value, { tokens: true });
-  if (problem !== undefined) context.addIssue({ code: "custom", message: `a path template ${problem}` });
+  if (problem !== undefined) { context.addIssue({ code: "custom", message: `a path template ${problem}` }); return; }
+  const first = value.split("/")[0]!;
+  if (/\{(?:slug|taskKey|ticket|n)\}/u.test(first)) { context.addIssue({ code: "custom", message: "a path template starts with a folder the project names, not a token" }); return; }
+  // The literal folders before the first token; what a token could complete is checked when the folder is resolved (specFolderProblem again, with the project's own knowledge folders).
+  const segments = value.replace(/\/$/u, "").split("/");
+  const firstToken = segments.findIndex((segment) => /\{/u.test(segment));
+  const folderProblem = specFolderProblem((firstToken === -1 ? segments : segments.slice(0, firstToken)).join("/"));
+  if (folderProblem !== undefined) context.addIssue({ code: "custom", message: `a path template ${folderProblem}` });
 });
 const folderPath = z.string().superRefine((value, context) => {
   const problem = specPathProblem(value);
@@ -338,9 +415,9 @@ const VerdictAnswerSchema = z.object({
 
 /**
  * A review's answer about a spec, read against the requirements it was given. Fail closed: only labels that were asked about count (a made-up label is dropped); a label answered twice keeps its first answer;
- * `met` needs a stated reason AND at least one piece of evidence (diff lines or a test), or it stands as unanswered; every label not answered counts as not met. The result is bounded by the input.
+ * `met` needs a stated reason AND at least one piece of evidence that `evidenceOk` accepts (a file in the change or at the head, a line inside it), or it stands as unanswered; every label not answered counts as not met. The result is bounded by the input.
  */
-export function readSpecVerdicts(answer: unknown, input: SpecReviewInput): SpecReviewResult {
+export function readSpecVerdicts(answer: unknown, input: SpecReviewInput, options: { evidenceOk?: (entry: string) => boolean } = {}): SpecReviewResult {
   const asked = new Map(input.requirements.map((requirement) => [requirement.id, requirement]));
   const rows = typeof answer === "object" && answer !== null && Array.isArray((answer as { specVerdicts?: unknown }).specVerdicts) ? (answer as { specVerdicts: unknown[] }).specVerdicts : [];
   const verdicts = new Map<string, SpecRequirementVerdict>();
@@ -348,7 +425,8 @@ export function readSpecVerdicts(answer: unknown, input: SpecReviewInput): SpecR
     const parsed = VerdictAnswerSchema.safeParse(row);
     if (!parsed.success || !asked.has(parsed.data.id) || verdicts.has(parsed.data.id)) continue;
     const reason = specLine(parsed.data.reason, 300);
-    const evidence = (parsed.data.evidence ?? []).map((entry) => specLine(entry, 200)).filter((entry) => entry !== "").slice(0, 6);
+    // Evidence is kept only when it names something that is there (a file in the change or at the head, a line inside it): a claim of "met" that points at nothing is not met.
+    const evidence = (parsed.data.evidence ?? []).map((entry) => specLine(entry, 200)).filter((entry) => entry !== "" && (options.evidenceOk === undefined || options.evidenceOk(entry))).slice(0, 6);
     if (reason === "" || (parsed.data.verdict === "met" && evidence.length === 0)) continue;
     verdicts.set(parsed.data.id, { id: parsed.data.id, verdict: parsed.data.verdict, reason, evidence });
   }
