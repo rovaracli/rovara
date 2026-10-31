@@ -3,10 +3,12 @@
   "include": [
     "../tests/acceptance/**/*.ts",
     "../tests/e2e/**/*.ts",
+    "../tests/egress/**/*.ts",
     "../tests/eval/**/*.ts",
     "../tests/fixtures/**/*.ts",
     "../tests/linux/**/*.ts",
     "../tests/live/**/*.ts",
+    "../tests/plugins/**/*.ts",
     "../tests/*.ts"
   ],
   "references": [

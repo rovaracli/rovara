@@ -2,6 +2,7 @@
   "extends": "./base-referenced.json",
   "include": [
     "../tests/contract/p*.ts",
+    "../tests/contract/q*.ts",
     "../tests/contract/r*.ts"
   ],
   "references": [
