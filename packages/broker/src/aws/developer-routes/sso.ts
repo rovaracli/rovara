@@ -8,10 +8,12 @@
 // A mapping never grants owner (the schema refuses it), so saving one cannot make anyone an owner. Nothing here echoes the provider's words: refusals are fixed sentences.
 import { z } from "zod";
 import {
-  BREAK_GLASS_MAX_DAYS, BreakGlassOwnersSchema, GroupMappingConfigSchema, GroupMappingRuleSchema, GroupClaimNameSchema, agentXError, requireFeature, type GroupMappingConfig,
+  AUDIT_ERROR_MESSAGES, BREAK_GLASS_MAX_DAYS, BreakGlassOwnersSchema, GroupMappingConfigSchema, GroupMappingRuleSchema, GroupClaimNameSchema, agentXError, requireFeature, type GroupMappingConfig,
 } from "@agentx/contracts";
 import { auditOccurrence, auditSsoBreakGlassChanged, auditSsoGroupMappingChanged } from "../../audit/events.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
+import { isFreshSignIn, type SessionRecord } from "../../developer/store.js";
+import { getSignIn } from "./authentication.js";
 import { jsonBody } from "./organization.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
@@ -29,8 +31,18 @@ const BreakGlassBodySchema = z.object({ expectedVersion: z.number().int().min(0)
 
 const systemSaved = (caller: DeveloperCaller): { updatedAt: string; updatedBy: string } => ({ updatedAt: new Date().toISOString(), updatedBy: caller.developerId });
 
-function requireBrowserWrite(caller: DeveloperCaller): void {
+export const SSO_FRESH_SIGN_IN_MESSAGE = "Sign in again to change company sign-in.";
+
+/**
+ * A change to company sign-in needs a live browser session AND a sign-in made within the last few minutes (the same rule as the other high-risk actions): saving a
+ * mapping can make any provider group an admin, and saving the emergency list decides who can bypass the mapping. And it needs the audit ledger: a change that could not
+ * be recorded is not made.
+ */
+async function requireFreshBrowserWrite(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<void> {
   if (caller.browserSession !== true) throw agentXError("FORBIDDEN", "Use a live browser session to change company sign-in.");
+  const session = await getSignIn<Pick<SessionRecord, "authTime">>(deps, `SESSION#${caller.sessionId}`);
+  if (session === undefined || !isFreshSignIn(session, deps.now())) throw agentXError("REAUTH_REQUIRED", SSO_FRESH_SIGN_IN_MESSAGE);
+  if (deps.audit === undefined) throw agentXError("AUDIT_UNAVAILABLE", AUDIT_ERROR_MESSAGES.AUDIT_UNAVAILABLE);
 }
 
 export async function routeSsoRequest(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, pathname: string): Promise<unknown> {
@@ -50,7 +62,7 @@ export async function routeSsoRequest(deps: DeveloperRouteDependencies, caller: 
       return { mapping: mapping ?? null, version: mapping?.version ?? 0 };
     }
     if (request.method === "PUT") {
-      requireBrowserWrite(caller);
+      await requireFreshBrowserWrite(deps, caller);
       const parsed = MappingBodySchema.safeParse(jsonBody(request));
       if (!parsed.success) throw agentXError("CONFIG_INVALID", "The group mapping is not valid.");
       const { expectedVersion, claim, rules } = parsed.data;
@@ -80,7 +92,7 @@ export async function routeSsoRequest(deps: DeveloperRouteDependencies, caller: 
     return { owners: record?.owners ?? [], version: record?.version ?? 0, maxDays: BREAK_GLASS_MAX_DAYS };
   }
   if (request.method === "PUT") {
-    requireBrowserWrite(caller);
+    await requireFreshBrowserWrite(deps, caller);
     const parsed = BreakGlassBodySchema.safeParse(jsonBody(request));
     if (!parsed.success) throw agentXError("CONFIG_INVALID", "The emergency sign-in list is not valid.");
     const { expectedVersion, owners } = parsed.data;

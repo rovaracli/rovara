@@ -146,11 +146,12 @@ export function dynamoGroupMappingStore(input: { documentClient: DocumentClient;
             ? { ConditionExpression: "attribute_not_exists(pk)" }
             : { ConditionExpression: "#version = :expected", ExpressionAttributeNames: { "#version": "version" }, ExpressionAttributeValues: { ":expected": expectedVersion } }),
         } }, [...events]);
-        await flushAuditEvents(deps, [...events]);
       } catch (error) {
         if ((error as { name?: string }).name === "ConditionalCheckFailedException") throw agentXError("IDEMPOTENCY_CONFLICT", "Someone else changed the group mapping. Reload it and make your change again.");
         throw error;
       }
+      // A flush that fails leaves the pending item for the drain; it never undoes or fails a save that has committed.
+      await flushAuditEvents(deps, [...events]);
       return next;
     },
   };
@@ -208,11 +209,12 @@ export function dynamoBreakGlassStore(input: { documentClient: DocumentClient; t
             ? { ConditionExpression: "attribute_not_exists(pk)" }
             : { ConditionExpression: "#version = :expected", ExpressionAttributeNames: { "#version": "version" }, ExpressionAttributeValues: { ":expected": expectedVersion } }),
         } }, [...events]);
-        await flushAuditEvents(deps, [...events]);
       } catch (error) {
         if ((error as { name?: string }).name === "ConditionalCheckFailedException") throw agentXError("IDEMPOTENCY_CONFLICT", "Someone else changed the break-glass list. Reload it and make your change again.");
         throw error;
       }
+      // A flush that fails leaves the pending item for the drain; it never undoes or fails a save that has committed.
+      await flushAuditEvents(deps, [...events]);
       return next;
     },
   };

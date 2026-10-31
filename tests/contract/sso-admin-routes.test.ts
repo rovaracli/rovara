@@ -17,12 +17,12 @@ const ORIGIN = new URL(DEV_ISSUER).origin;
 const MEMBER = { ...OMAR, developerId: "e".repeat(64) };
 const RULES = [{ id: "admins", group: "rovara-admins", orgRole: "admin", projectRoles: [] }, { id: "users", group: "rovara-users", orgRole: "member", projectRoles: [{ project: "payments", role: "contributor" }] }];
 
-async function world(options: { policy?: ReturnType<typeof editionPolicy> | undefined; role?: "owner" | "admin" | "member" } = {}) {
+async function world(options: { policy?: ReturnType<typeof editionPolicy> | undefined; role?: "owner" | "admin" | "member"; ledger?: boolean } = {}) {
   const policy = "policy" in options ? options.policy : editionPolicy("enterprise");
   const capture = capturingAuditDeps();
   const db = new FakeDynamoDb();
   const sso = ssoStoresFor({ documentClient: db, tableName: "state", policy, audit: capture.audit });
-  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, ...(policy === undefined ? {} : { editionPolicy: policy }), ...(sso === undefined ? {} : { sso }) }, audit: capture });
+  const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, ...(policy === undefined ? {} : { editionPolicy: policy }), ...(sso === undefined ? {} : { sso }) }, ...(options.ledger === false ? {} : { audit: capture }) });
   // The routes and the stores share one table.
   const stores = ssoStoresFor({ documentClient: h.db, tableName: "state", policy, audit: capture.audit });
   Object.assign(sso ?? {}, stores ?? {});
@@ -37,10 +37,17 @@ async function world(options: { policy?: ReturnType<typeof editionPolicy> | unde
     let id = browserSessions.get(who.developerId);
     if (id === undefined) {
       id = randomUUID();
-      h.db.set({ ...h.db.get(`SESSION#${who.sessionId}`, "META")!, pk: `SESSION#${id}`, sessionId: id, reviewExpiresAt: Math.floor(Date.now() / 1000) + 3600 });
+      h.db.set({ ...h.db.get(`SESSION#${who.sessionId}`, "META")!, pk: `SESSION#${id}`, sessionId: id, reviewExpiresAt: Math.floor(Date.now() / 1000) + 3600, authTime: new Date().toISOString() });
       browserSessions.set(who.developerId, id);
     }
     return id;
+  };
+  /** Makes the person's browser session's sign-in `minutes` old (or one with no sign-in time at all). */
+  const ageSignIn = (who: typeof MAYA, minutes: number | undefined) => {
+    const id = browserSessionOf(who);
+    const record = { ...h.db.get(`SESSION#${id}`, "META")! } as Record<string, unknown>;
+    if (minutes === undefined) delete record.authTime; else record.authTime = new Date(Date.now() - minutes * 60_000).toISOString();
+    h.db.set(record);
   };
   const web = async (who: typeof MAYA, method: string, path: string, body?: unknown) => {
     const id = browserSessionOf(who);
@@ -51,7 +58,7 @@ async function world(options: { policy?: ReturnType<typeof editionPolicy> | unde
     });
     return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
   };
-  return { h: { ...h, dev }, capture, web, sso: sso! };
+  return { h: { ...h, dev }, capture, web, ageSignIn, sso: sso! };
 }
 
 describe("the group mapping routes", () => {
@@ -119,6 +126,43 @@ describe("the group mapping routes", () => {
     const legacy = await world({ policy: undefined });
     expect((await legacy.web(MAYA, "GET", MAPPING)).status).toBe(404);
     expect((await legacy.h.dev(MAYA, "PUT", MAPPING, { expectedVersion: 0, claim: "groups", rules: RULES })).status).toBe(404);
+  });
+});
+
+describe("a change to company sign-in needs a fresh sign-in and the audit ledger (fix round 1, I-4)", () => {
+  it("refuses a save from a session whose sign-in is older than the fresh window, or has no time, and changes nothing; a read is not affected", async () => {
+    const { web, ageSignIn, capture } = await world({ role: "owner" });
+    const owners = [{ personId: MAYA.developerId, expiresAt: Date.now() + 5 * 86_400_000 }];
+    for (const age of [11, 600, undefined]) {
+      ageSignIn(MAYA, age);
+      const mapping = await web(MAYA, "PUT", MAPPING, { expectedVersion: 0, claim: "groups", rules: RULES });
+      expect(mapping.status, JSON.stringify(mapping.body)).toBe(403);
+      expect(JSON.stringify(mapping.body)).toContain("REAUTH_REQUIRED");
+      expect(JSON.stringify(mapping.body)).toContain("Sign in again");
+      expect((await web(MAYA, "PUT", BREAK_GLASS, { expectedVersion: 0, owners })).status, String(age)).toBe(403);
+      expect((await web(MAYA, "GET", MAPPING)).status).toBe(200);
+    }
+    expect((await web(MAYA, "GET", MAPPING)).body).toMatchObject({ version: 0 });
+    expect(capture.recorded().filter((event) => event.action.startsWith("sso."))).toEqual([]);
+    ageSignIn(MAYA, 5);
+    expect((await web(MAYA, "PUT", MAPPING, { expectedVersion: 0, claim: "groups", rules: RULES })).status).toBe(200);
+    expect((await web(MAYA, "PUT", BREAK_GLASS, { expectedVersion: 0, owners })).status).toBe(200);
+  });
+
+  it("refuses a save when there is no ledger to record it in", async () => {
+    const { web } = await world({ role: "owner", ledger: false });
+    const refused = await web(MAYA, "PUT", MAPPING, { expectedVersion: 0, claim: "groups", rules: RULES });
+    expect(refused.status).toBe(503);
+    expect((await web(MAYA, "GET", MAPPING)).body).toMatchObject({ version: 0 });
+    expect((await web(MAYA, "PUT", BREAK_GLASS, { expectedVersion: 0, owners: [] })).status).toBe(503);
+  });
+
+  it("a flush that fails after a committed save does not fail the save", async () => {
+    const { web, capture } = await world({ role: "owner" });
+    capture.queueDown();
+    const saved = await web(MAYA, "PUT", MAPPING, { expectedVersion: 0, claim: "groups", rules: RULES });
+    expect(saved.status).toBe(200);
+    expect(capture.pending().filter((event) => event.action === "sso.group_mapping_changed")).toHaveLength(1);
   });
 });
 
