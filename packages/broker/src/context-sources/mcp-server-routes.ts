@@ -5,17 +5,24 @@
 //   POST   /v1/app/org/mcp-servers/{id}/disable       take it out of the allow-list
 //   DELETE /v1/app/org/mcp-servers/{id}               remove a disabled or waiting entry
 import { z } from "zod";
-import { ConnectionIdSchema, agentXError } from "@agentx/contracts";
+import { agentXError } from "@agentx/contracts";
 import type { AgentCaller } from "../agents/access.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
-import { approveMcpServer, disableMcpServer, listMcpServers, proposeMcpServer, removeMcpServer, type McpServerDependencies } from "./mcp-servers.js";
+import { approveMcpServer, disableMcpServer, listMcpServers, proposeMcpServer, removeMcpServer, stdioAvailable, type McpServerDependencies } from "./mcp-servers.js";
 
 export const MCP_SERVERS_PATH = /^\/v1\/app\/org\/mcp-servers(?:\/(mcp[a-z0-9]{6,24})(?:\/(approve|disable))?)?$/;
 
+/** Nothing about where a token is stored leaves the broker: only that the server has one. */
+function withoutSecretVersion<T extends { secretVersion?: string | undefined }>(entry: T): Omit<T, "secretVersion"> {
+  const { secretVersion: _version, ...rest } = entry;
+  void _version;
+  return rest;
+}
+
 const notThere = () => agentXError("NOT_FOUND", "route not found");
 
-const AddBodySchema = z.object({ label: z.string().max(200), transport: z.unknown(), authConnectionId: ConnectionIdSchema.optional() }).strict();
+const AddBodySchema = z.object({ label: z.string().max(200), transport: z.unknown(), secret: z.string().min(1).max(4_096).optional() }).strict();
 
 function jsonBody(request: AdaptedHttpRequest): unknown {
   if (request.body === undefined || request.body === "") return {};
@@ -28,7 +35,7 @@ export async function routeMcpServers(deps: McpServerDependencies, caller: Agent
   const actor = { orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole };
   const [, serverId, action] = match;
   if (serverId === undefined) {
-    if (request.method === "GET") return { servers: await listMcpServers(deps, actor) };
+    if (request.method === "GET") return { servers: (await listMcpServers(deps, actor)).map(withoutSecretVersion), stdioAvailable: stdioAvailable(deps) };
     if (request.method !== "POST") throw notThere();
     const parsed = AddBodySchema.safeParse(jsonBody(request));
     if (!parsed.success) {
@@ -37,7 +44,7 @@ export async function routeMcpServers(deps: McpServerDependencies, caller: Agent
       throw agentXError("CONFIG_INVALID", `${issue === undefined || issue.path.length === 0 ? "body" : issue.path.join(".")}: ${issue?.code === "unrecognized_keys" ? "has a field this route does not take" : issue?.message ?? "is not valid"}`);
     }
     const entry = await proposeMcpServer(deps, actor, parsed.data);
-    return new StatusReply(202, { status: "NEEDS_APPROVAL", server: entry });
+    return new StatusReply(202, { status: "NEEDS_APPROVAL", server: withoutSecretVersion(entry) });
   }
   if (action === undefined) {
     if (request.method !== "DELETE") throw notThere();
@@ -45,7 +52,7 @@ export async function routeMcpServers(deps: McpServerDependencies, caller: Agent
     return { status: "REMOVED" };
   }
   if (request.method !== "POST") throw notThere();
-  if (action === "approve") return { server: await approveMcpServer(deps, actor, serverId) };
+  if (action === "approve") return { server: withoutSecretVersion(await approveMcpServer(deps, actor, serverId)) };
   await disableMcpServer(deps, actor, serverId);
   return { status: "DISABLED" };
 }

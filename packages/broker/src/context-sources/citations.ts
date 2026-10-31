@@ -1,7 +1,7 @@
 // E5: citations in plans and reviews, and the facts that are fetched fresh when shown (design 3.6, "Plans and reviews cite sources", "Live facts").
 //
 // A stage records a citation for every source item it read, with the call that fetched it (kept here, on the server). A plan's claim cites an item by writing its
-// label and reference in square brackets, `[SIM P123456]`. Rovara matches each marker to what the stage really read:
+// label and reference in square brackets, `[Tracker ABC-123]`. Rovara matches each marker to what the stage really read:
 //   - a marker that matches a recorded citation is verified;
 //   - a marker that matches nothing is shown as "unverified" (the planner cannot cite what it did not read);
 //   - the plan check replays each cited call and flags an item that is gone, or whose answer changed (apart from the live facts);

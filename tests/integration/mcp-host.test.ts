@@ -42,7 +42,7 @@ function portFor(url: string, entries: McpServerEntry[], edition: "enterprise" |
   const table = new FakeDynamoDb();
   const store = dynamoMcpServerStore({ documentClient: table, tableName: "state" });
   return Promise.all(entries.map((entry) => store.create(ORG, entry))).then(() => gatewayServerPort({
-    edition, connections: { read: async () => undefined, token: async () => undefined }, servers: store, mcpHost: { url, token: TOKEN },
+    edition, connections: { read: async () => undefined, token: async () => undefined }, servers: store, stdioEnabled: true, mcpHost: { url, token: TOKEN },
   }));
 }
 const entry = (serverId: string, over: Partial<McpServerEntry> = {}): McpServerEntry => ({

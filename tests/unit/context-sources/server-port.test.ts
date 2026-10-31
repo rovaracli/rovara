@@ -12,14 +12,14 @@ const http = (status: McpServerEntry["status"] = "approved"): McpServerEntry => 
   serverId: "mcpsim000001", label: "SIM", status, transport: { kind: "http", address: "https://sim.corp.example:8443/mcp" }, probe: summariseProbe([], NOW), requestedBy: "dev1", requestedAt: "2026-11-01T10:00:00Z",
 });
 
-function world(options: { entries?: McpServerEntry[]; connections?: ConnectionLookup; edition?: "enterprise" | "public"; mcpHost?: { url: string; token: string } } = {}) {
+function world(options: { entries?: McpServerEntry[]; connections?: ConnectionLookup; edition?: "enterprise" | "public"; mcpHost?: { url: string; token: string }; secrets?: Record<string, string>; stdio?: boolean } = {}) {
   const table = new FakeDynamoDb();
   const store = dynamoMcpServerStore({ documentClient: table, tableName: "state" });
   const connects: Array<Record<string, unknown>> = [];
   const guards: string[] = [];
   const tools = [SEARCH_TOOL, GET_TOOL].map((tool) => ({ ...tool }));
   const port = gatewayServerPort({
-    edition: options.edition ?? "enterprise", connections: options.connections ?? connection(), servers: store, ...(options.mcpHost === undefined ? {} : { mcpHost: options.mcpHost }),
+    edition: options.edition ?? "enterprise", connections: options.connections ?? connection(), servers: store, stdioEnabled: options.stdio !== false, serverSecrets: { read: async (_org: unknown, id: string) => options.secrets?.[id] }, ...(options.mcpHost === undefined ? {} : { mcpHost: options.mcpHost }),
     publicGuard: async (endpoint) => { guards.push(`public:${endpoint.host}`); return (async () => new Response("")); },
     privateGuard: () => async (endpoint) => { guards.push(`private:${endpoint.host}`); return (async () => new Response("")); },
     connect: (async (input: Record<string, unknown>) => { connects.push(input); return { tools, call: async () => ({ content: [{ type: "text", text: "ok" }] }), close: async () => undefined }; }) as never,
@@ -73,12 +73,19 @@ describe("a registered http server", () => {
     await expect(w.port.open(ORG, server, signal(), ["x"])).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(w.connects).toEqual([]);
   });
-  it("sends its auth connection's token", async () => {
-    const w = world({ entries: [{ ...http(), authConnectionId: "con_aaaaaaaaaaaaaaaaaaaa" }], connections: connection({ endpoint: "https://sim.corp.example:8443/mcp" }) });
+  it("sends the server's own token, read now, and no connection is involved", async () => {
+    const w = world({ entries: [{ ...http(), hasSecret: true, secretVersion: "v1" }], secrets: { mcpsim000001: "its-own-token" }, connections: { read: async () => undefined, token: async () => "an-org-connection-token" } });
     await w.seed();
     await w.port.open(ORG, server, signal(), ["x"]);
-    expect(w.connects[0]).toMatchObject({ token: "secret-token" });
+    expect(w.connects[0]).toMatchObject({ token: "its-own-token" });
     expect(w.connects[0]).not.toHaveProperty("auth");
+    expect(JSON.stringify(w.connects)).not.toContain("an-org-connection-token");
+  });
+  it("is refused, with nothing sent, when the token it should have cannot be read", async () => {
+    const w = world({ entries: [{ ...http(), hasSecret: true, secretVersion: "v1" }], secrets: {} });
+    await w.seed();
+    await expect(w.port.open(ORG, server, signal(), ["x"])).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(w.connects).toEqual([]);
   });
 });
 
@@ -92,6 +99,12 @@ describe("a registered stdio server", () => {
     expect(String((w.connects[0]!.endpoint as URL).href)).toBe("https://mcp-host.internal:8080/servers/mcpsim000001/mcp");
     expect(session.hosts).toEqual([]);
     expect(w.guards).toEqual([]);
+  });
+  it("is never reached while package-run servers are off, and the host is not called", async () => {
+    const w = world({ entries: [stdio()], stdio: false, mcpHost: { url: "https://mcp-host.internal:8080/", token: "h".repeat(40) } });
+    await w.seed();
+    await expect(w.port.open(ORG, { kind: "registered_server", serverId: "mcpsim000001" }, signal(), ["x"])).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(w.connects).toEqual([]);
   });
   it("is unavailable without a host", async () => {
     const w = world({ entries: [stdio()] });
@@ -132,25 +145,6 @@ describe("testing a pasted address", () => {
     [new Error("Unexpected token < in JSON"), "not_mcp"],
   ])("maps %s to the fixed code %s", async (error, code) => {
     await expect(gatewayProber({ guard: async () => { throw error; } }).http("https://sim.corp.example/mcp", undefined)).rejects.toMatchObject({ code });
-  });
-});
-
-describe("review I1: the token of an auth connection is sent only to its own host", () => {
-  const server = { kind: "registered_server" as const, serverId: "mcpsim000001" };
-  const withAuth = (): McpServerEntry => ({ ...http(), authConnectionId: "con_aaaaaaaaaaaaaaaaaaaa" });
-  it("is refused when the connection can also write, or points at another host", async () => {
-    for (const bad of [connection({ access: "read_write", endpoint: "https://sim.corp.example:8443/mcp" }), connection({ endpoint: "https://api.linear.app/mcp" }), connection({ type: "linear" })]) {
-      const w = world({ entries: [withAuth()], connections: bad });
-      await w.seed();
-      await expect(w.port.open(ORG, server, signal(), ["x"])).rejects.toBeDefined();
-      expect(w.connects).toEqual([]);
-    }
-  });
-  it("is sent when the connection is read-only and on the same host and port", async () => {
-    const w = world({ entries: [withAuth()], connections: connection({ endpoint: "https://sim.corp.example:8443/mcp" }) });
-    await w.seed();
-    await w.port.open(ORG, server, signal(), ["x"]);
-    expect(w.connects[0]).toMatchObject({ token: "secret-token" });
   });
 });
 

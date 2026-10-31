@@ -9,7 +9,7 @@ import { connectMcp, listMcpTools, type McpConnection, type McpToolResult } from
 import { agentXError, editionPolicy, featureEnabled, type ContextSourceServer, type Edition, type McpAuth, type OrgId } from "@agentx/contracts";
 import { mcpEndpointGuard, type McpEndpointGuard } from "../connections/pinned-endpoint.js";
 import { privateMcpEndpointGuard, probeMcpEndpointGuard } from "../connections/private-endpoints.js";
-import { McpProbeError, allowedTargets, authConnectionFits, type McpProber, type McpServerStore } from "./mcp-servers.js";
+import { McpProbeError, STDIO_OFF_MESSAGE, allowedTargets, stdioAvailable, type McpProber, type McpServerSecrets, type McpServerStore } from "./mcp-servers.js";
 import type { ContextServerPort, ContextServerSession } from "./routes.js";
 import type { DiscoveredTool, SourceEnvironment } from "./settings.js";
 
@@ -42,6 +42,10 @@ export interface ServerPortDependencies {
   connections: ConnectionLookup;
   servers: Pick<McpServerStore, "get" | "list">;
   mcpHost?: McpHostEndpoint | undefined;
+  /** Each registered server's own token (write-only; read only here, to send to that server's checked host and port). */
+  serverSecrets?: Pick<McpServerSecrets, "read"> | undefined;
+  /** Whether the install runs package-run servers (see `stdioAvailable`). Off: the MCP host is never called. */
+  stdioEnabled?: boolean | undefined;
   /** The install's private address ranges (`parseInstallCidrs(process.env.ROVARA_PRIVATE_MCP_CIDRS)`). None: no private server is called. */
   privateCidrs?: readonly string[] | undefined;
   /** For a public connection. Default: the existing guard. */
@@ -73,15 +77,16 @@ async function targetOf(deps: ServerPortDependencies, orgId: OrgId, server: Cont
   if (entry.transport.kind === "http") {
     const endpoint = new URL(entry.transport.address);
     const guard = (deps.privateGuard ?? ((org: OrgId) => privateMcpEndpointGuard({ allowed: () => allowedTargets(deps.servers, org, deps.privateCidrs ?? []) })))(orgId);
+    // The server's own token, read now and sent only to this server's checked host and port (the pinned fetch refuses any other origin).
     let token: string | undefined;
-    if (entry.authConnectionId !== undefined) {
-      // Read now: the connection must still be read-only and still made for this same server (authConnectionFits), or its token is not sent.
-      if (!authConnectionFits(await deps.connections.read(orgId, entry.authConnectionId), entry.transport.address)) throw agentXError("FORBIDDEN", "this server's connection cannot be used");
-      token = await deps.connections.token(orgId, entry.authConnectionId);
-      if (token === undefined) throw agentXError("CONFIG_INVALID", "this server's connection has no key");
+    if (entry.hasSecret === true) {
+      token = await deps.serverSecrets?.read(orgId, entry.serverId, entry.secretVersion);
+      if (token === undefined) throw agentXError("FORBIDDEN", "this server's token cannot be read");
     }
     return { endpoint, token: token ?? "", auth: token === undefined ? NO_TOKEN_AUTH : undefined, fetchImplementation: await guard(endpoint), hosts: [endpoint.hostname] };
   }
+  // NOT FOR PRODUCTION until the host is redesigned: with the switch off the broker never calls the MCP host.
+  if (!stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled })) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
   if (deps.mcpHost === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the MCP host is not set up in this install");
   // The host address is the operator's, not a person's: it is not an SSRF input and is called with the host's own token. A stdio server has no site of its own, so
   // no address argument is ever on its host.

@@ -91,11 +91,13 @@ function requestIdFor(context: { workspaceId: string; conversationId: string; op
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 }
 
-export function createContextTools(catalog: ContextToolCatalog, call: ContextBridgeCall, context: { workspaceId: string; conversationId: string; operationId: string }): ToolDefinition[] {
+export function createContextTools(catalog: ContextToolCatalog, call: ContextBridgeCall, context: { workspaceId: string; conversationId: string; operationId: string }, options: { onText?: (text: string) => void } = {}): ToolDefinition[] {
   const labelOf = new Map(catalog.sources.map((source) => [source.sourceId, source.label]));
   const run = async (name: string, label: string, callId: string, args: Record<string, unknown>, signal: AbortSignal | undefined) => {
     try {
       const answer = await call({ requestId: requestIdFor(context, name, callId), tool: name, arguments: args }, signal);
+      // What a source returned is remembered for the stage, so that the model cannot copy it out word for word into stored text (text-guard.ts).
+      if (answer.status === "OK") options.onText?.(answer.text);
       return text(frameForModel(answer, label));
     } catch (error) {
       // A stopped stage or a refused capability ends the stage; anything else is one source being down.

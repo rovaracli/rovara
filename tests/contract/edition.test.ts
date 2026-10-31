@@ -32,6 +32,7 @@ const EXPECTED: Record<EditionFeature, { enterprise: boolean; public: boolean }>
   publicSignInMethods: { enterprise: false, public: true },
   aiNavigationUncharged: { enterprise: true, public: false },
   privateMcpServers: { enterprise: true, public: false },
+  stdioMcpServers: { enterprise: true, public: false },
 };
 
 describe("edition feature table", () => {

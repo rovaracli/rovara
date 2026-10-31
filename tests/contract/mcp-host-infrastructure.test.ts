@@ -11,14 +11,14 @@ const at = (value: unknown, ...path: Array<string | number>): unknown => path.re
 
 const CERTIFICATE = "arn:aws:acm:us-east-1:111111111111:certificate/abc";
 
-function synth(over: { certificateArn?: string; cidrs?: string[] } = {}) {
+function synth(over: { certificateArn?: string; cidrs?: string[]; hostName?: string } = {}) {
   const app = new App();
   const stack = new Stack(app, "Test", { env: { account: "111111111111", region: "us-east-1" } });
   const host = new McpHost(stack, "McpHost", {
     vpcId: "vpc-0123456789abcdef0", availabilityZones: ["us-east-1a", "us-east-1b"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"],
     image: ecs.ContainerImage.fromRegistry("111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara-broker:1"), clientSecurityGroupIds: ["sg-0123456789abcdef0"],
     stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/state", stateTableName: "state", orgId: "org_aaaaaaaaaaaaaaaaaaaa",
-    privateEgressCidrs: over.cidrs ?? ["10.0.0.0/16"], certificateArn: over.certificateArn ?? CERTIFICATE,
+    privateEgressCidrs: over.cidrs ?? ["10.0.0.0/16"], certificateArn: over.certificateArn ?? CERTIFICATE, hostName: over.hostName ?? "mcp-host.example.net", hostedZoneId: "Z0123456789ABCDEFGHIJ",
   });
   const json = Template.fromStack(stack).toJSON() as { Resources: Record<string, Resource> };
   const of = (type: string): Array<Record<string, unknown>> => Object.entries(json.Resources).filter(([, resource]) => resource.Type === type).map(([id, resource]) => ({ id, ...resource.Properties }));
@@ -76,7 +76,16 @@ describe("the MCP host", () => {
     expect(of("AWS::ElasticLoadBalancingV2::Listener").map((listener) => [listener.Protocol, listener.Port])).toEqual([["HTTPS", 443]]);
     expect(host.url).toMatch(/^https:\/\//u);
     expect(() => synth({ certificateArn: "" })).toThrow(/certificate/u);
-    expect(() => new McpHost(new Stack(new App(), "NoCert"), "H", { vpcId: "vpc-0123456789abcdef0", availabilityZones: ["us-east-1a"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa"], image: ecs.ContainerImage.fromRegistry("x"), clientSecurityGroupIds: [], stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/s", stateTableName: "s", orgId: "org_aaaaaaaaaaaaaaaaaaaa", privateEgressCidrs: ["10.0.0.0/16"] } as never)).toThrow(/certificate/u);
+    expect(() => new McpHost(new Stack(new App(), "NoCert"), "H", { vpcId: "vpc-0123456789abcdef0", availabilityZones: ["us-east-1a"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa"], image: ecs.ContainerImage.fromRegistry("x"), clientSecurityGroupIds: [], stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/s", stateTableName: "s", orgId: "org_aaaaaaaaaaaaaaaaaaaa", privateEgressCidrs: ["10.0.0.0/16"], hostName: "h.example.net", hostedZoneId: "Z1" } as never)).toThrow(/certificate/u);
+  });
+  it("is reached by a DNS name the certificate is for, through an alias record to the load balancer (review m4)", () => {
+    const { of, host } = synth({ hostName: "mcp-host.corp.example.net" });
+    expect(host.url).toBe("https://mcp-host.corp.example.net");
+    const record = of("AWS::Route53::RecordSet")[0]!;
+    expect(record.Name).toBe("mcp-host.corp.example.net");
+    expect(record.Type).toBe("A");
+    expect(at(record, "AliasTarget", "EvaluateTargetHealth")).toBe(true);
+    for (const bad of ["", "internal-x.us-east-1.elb.amazonaws.com", "localhost", "10.0.0.5"]) expect(() => synth({ hostName: bad }), bad).toThrow(/DNS name/u);
   });
   it("starts as root only to give each hosted server its own uid, and drops the capabilities it does not need", () => {
     const { of } = synth();

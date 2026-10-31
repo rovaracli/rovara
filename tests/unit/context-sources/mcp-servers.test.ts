@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MCP_PROBE_FAILURES } from "@agentx/contracts";
-import { McpProbeError, allowedTargets, approveMcpServer, disableMcpServer, dynamoMcpServerStore, listMcpServers, proposeMcpServer, removeMcpServer, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
+import { type McpServerSecrets, McpProbeError, STDIO_OFF_MESSAGE, stdioAvailable, allowedTargets, approveMcpServer, disableMcpServer, dynamoMcpServerStore, listMcpServers, proposeMcpServer, removeMcpServer, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { routeMcpServers } from "../../../packages/broker/src/context-sources/mcp-server-routes.js";
 import { StatusReply } from "../../../packages/broker/src/aws/status-reply.js";
 import type { AgentCaller } from "../../../packages/broker/src/agents/access.js";
@@ -13,7 +13,7 @@ const ADDRESS = "https://sim.corp.example/mcp";
 const HTTP = { kind: "http" as const, address: ADDRESS };
 const STDIO = { kind: "stdio" as const, spec: { registry: "npm" as const, name: "@acme/sim-mcp", version: "1.4.2", args: ["--read-only"] } };
 
-function world(over: { edition?: "enterprise" | "public"; tools?: DiscoveredTool[]; fails?: McpProbeError | Error; secondAdmin?: boolean } = {}) {
+function world(over: { edition?: "enterprise" | "public"; tools?: DiscoveredTool[]; fails?: McpProbeError | Error; secondAdmin?: boolean; stdio?: boolean } = {}) {
   const table = new FakeDynamoDb();
   const state = { tools: over.tools ?? [SEARCH_TOOL, GET_TOOL], integrity: `sha512-${"A".repeat(86)}==`, fails: over.fails, tokens: [] as Array<string | undefined>, httpProbes: 0 };
   let counter = 0;
@@ -22,13 +22,20 @@ function world(over: { edition?: "enterprise" | "public"; tools?: DiscoveredTool
     stdio: async () => { if (state.fails) throw state.fails; return { tools: state.tools, integrity: state.integrity }; },
   };
   const audit: string[] = [];
+  const vault = new Map<string, string>();
+  const secretLog: string[] = [];
+  const secrets: McpServerSecrets = {
+    put: async (_org, id, value) => { vault.set(id, value); secretLog.push(`put:${id}`); return `v-${vault.size}`; },
+    read: async (_org, id) => vault.get(id),
+    remove: async (_org, id) => { vault.delete(id); secretLog.push(`remove:${id}`); },
+  };
   const deps: McpServerDependencies = {
     store: dynamoMcpServerStore({ documentClient: table, tableName: "state" }), prober, edition: over.edition ?? "enterprise", now: () => NOW,
-    authToken: async () => "tok-123", authConnectionUsable: async (_org, id) => id === "con_aaaaaaaaaaaaaaaaaaaa",
+    secrets, stdioEnabled: over.stdio !== false,
     newId: () => `${String(++counter).padStart(8, "0")}abcd`, audit: async (event) => { audit.push(`${event.action}:${event.serverId}`); },
     ...(over.secondAdmin === undefined ? {} : { secondAdminToApprove: over.secondAdmin }),
   };
-  return { deps, state, audit };
+  return { deps, state, audit, vault, secretLog };
 }
 
 describe("adding a server is easy: paste, test, see, approve", () => {
@@ -87,12 +94,42 @@ describe("adding a server is easy: paste, test, see, approve", () => {
       await expect(proposeMcpServer(deps, admin(), { label: "x", transport: bad })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     }
   });
-  it("sends the auth connection's token to an http test, only a usable one, and never to a stdio server", async () => {
-    const { deps, state } = world();
-    await proposeMcpServer(deps, admin(), { label: "SIM", transport: HTTP, authConnectionId: "con_aaaaaaaaaaaaaaaaaaaa" });
+  it("sends the server's own token to its test, stores it write-only, and never returns it", async () => {
+    const { deps, state, vault, secretLog } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "SIM", transport: HTTP, secret: "tok-123" });
     expect(state.tokens).toEqual(["tok-123"]);
-    await expect(proposeMcpServer(deps, admin(), { label: "SIM2", transport: { kind: "http", address: "https://other.corp.example/mcp" }, authConnectionId: "con_bbbbbbbbbbbbbbbbbbbb" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    await expect(proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO, authConnectionId: "con_aaaaaaaaaaaaaaaaaaaa" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(vault.get(entry.serverId)).toBe("tok-123");
+    expect(entry).toMatchObject({ hasSecret: true });
+    expect(JSON.stringify(entry)).not.toContain("tok-123");
+    expect(JSON.stringify(await deps.store.get(ORG, entry.serverId))).not.toContain("tok-123");
+    expect(JSON.stringify(await listMcpServers(deps, admin()))).not.toContain("tok-123");
+    expect(secretLog).toEqual([`put:${entry.serverId}`]);
+  });
+  it("keeps no token for a test that failed, and takes none for a package-run server", async () => {
+    const failing = world({ fails: new McpProbeError("unreachable") });
+    await expect(proposeMcpServer(failing.deps, admin(), { label: "SIM", transport: HTTP, secret: "tok-123" })).rejects.toBeDefined();
+    expect(failing.vault.size).toBe(0);
+    const { deps } = world();
+    await expect(proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO, secret: "tok" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+  it("tests again with the stored token when approving, and refuses an entry whose token can no longer be read (review m3)", async () => {
+    const { deps, state, vault } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "SIM", transport: HTTP, secret: "tok-123" });
+    await approveMcpServer(deps, admin(), entry.serverId);
+    expect(state.tokens).toEqual(["tok-123", "tok-123"]);
+    const second = await proposeMcpServer(deps, admin(), { label: "B", transport: { kind: "http", address: "https://b.corp.example/mcp" }, secret: "tok-b" });
+    vault.delete(second.serverId);
+    await expect(approveMcpServer(deps, admin(), second.serverId)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect((await deps.store.get(ORG, second.serverId))!.status).toBe("awaiting_approval");
+  });
+  it("gives a token to each server alone, and deletes it with the server", async () => {
+    const { deps, vault } = world();
+    const a = await proposeMcpServer(deps, admin(), { label: "A", transport: HTTP, secret: "tok-a" });
+    const b = await proposeMcpServer(deps, admin(), { label: "B", transport: { kind: "http", address: "https://b.corp.example/mcp" }, secret: "tok-b" });
+    expect([vault.get(a.serverId), vault.get(b.serverId)]).toEqual(["tok-a", "tok-b"]);
+    await removeMcpServer(deps, admin(), a.serverId);
+    expect(vault.has(a.serverId)).toBe(false);
+    expect(vault.get(b.serverId)).toBe("tok-b");
   });
   it("does not add the same host and port twice", async () => {
     const { deps } = world();
@@ -187,29 +224,6 @@ describe("review I2: no install ranges, no allow-list", () => {
   });
 });
 
-describe("review I1: an auth connection belongs to its own server", () => {
-  it("fits only a read-only MCP connection whose own address is on the same host and port as the server", async () => {
-    const { authConnectionFits } = await import("../../../packages/broker/src/context-sources/mcp-servers.js");
-    const mcp = (over: Record<string, unknown> = {}) => ({ type: "mcp", access: "read" as const, endpoint: "https://sim.corp.example/mcp", ...over });
-    expect(authConnectionFits(mcp(), "https://sim.corp.example/other")).toBe(true);
-    expect(authConnectionFits(mcp({ access: "read_write" }), ADDRESS)).toBe(false);
-    expect(authConnectionFits(mcp({ type: "linear" }), ADDRESS)).toBe(false);
-    expect(authConnectionFits(mcp({ endpoint: "https://api.linear.app/mcp" }), "https://collector.attacker.example/mcp")).toBe(false);
-    expect(authConnectionFits(mcp({ endpoint: "https://sim.corp.example:8443/mcp" }), ADDRESS)).toBe(false);
-    expect(authConnectionFits(mcp({ endpoint: undefined }), ADDRESS)).toBe(false);
-    expect(authConnectionFits(undefined, ADDRESS)).toBe(false);
-  });
-  it("is asked at propose time with the address, and a connection that does not fit is refused before any test is sent", async () => {
-    const { deps, state } = world();
-    const asked: string[] = [];
-    deps.authConnectionUsable = async (_org, _id, address) => { asked.push(address); return false; };
-    await expect(proposeMcpServer(deps, admin(), { label: "Anything", transport: { kind: "http", address: "https://collector.attacker.example/mcp" }, authConnectionId: "con_aaaaaaaaaaaaaaaaaaaa" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    expect(asked).toEqual(["https://collector.attacker.example/mcp"]);
-    expect(state.httpProbes).toBe(0);
-    expect(state.tokens).toEqual([]);
-  });
-});
-
 describe("review I2: tests of an address are rate limited", () => {
   it("refuses a test over the limit before sending it", async () => {
     const { deps, state } = world();
@@ -251,5 +265,38 @@ describe("review I3: a stdio package is pinned by its tarball's integrity", () =
     expect(McpStdioProposalSchema.safeParse(STDIO.spec).success).toBe(true);
     expect(McpStdioSpecSchema.safeParse(STDIO.spec).success).toBe(false);
     expect(McpServerEntrySchema.safeParse({ serverId: "mcpabc123456", label: "x", status: "approved", transport: STDIO, probe: { at: "t", toolsHash: "a".repeat(64), tools: [] }, requestedBy: "d", requestedAt: "t" }).success).toBe(false);
+  });
+});
+
+describe("package-run servers are off unless the install switches them on", () => {
+  it("refuses to add one with a clear sentence, and never calls the host", async () => {
+    const { deps } = world({ stdio: false });
+    let hostCalls = 0;
+    deps.prober = { ...deps.prober, stdio: async () => { hostCalls += 1; return { tools: [], integrity: "x" }; } };
+    await expect(proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO })).rejects.toThrow(STDIO_OFF_MESSAGE);
+    expect(hostCalls).toBe(0);
+    expect(await deps.store.list(ORG)).toEqual([]);
+  });
+  it("refuses to approve one that was added while it was on, and says so", async () => {
+    const { deps } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO });
+    deps.stdioEnabled = false;
+    await expect(approveMcpServer(deps, admin(), entry.serverId)).rejects.toThrow(STDIO_OFF_MESSAGE);
+    expect((await deps.store.get(ORG, entry.serverId))!.status).toBe("awaiting_approval");
+  });
+  it("is Enterprise only: the switch alone does nothing in Public, and an address-based server still works with it off", async () => {
+    expect(stdioAvailable({ edition: "public", stdioEnabled: true })).toBe(false);
+    expect(stdioAvailable({ edition: "enterprise", stdioEnabled: true })).toBe(true);
+    expect(stdioAvailable({ edition: "enterprise", stdioEnabled: false })).toBe(false);
+    expect(stdioAvailable({ edition: "enterprise" })).toBe(false);
+    const { deps } = world({ stdio: false });
+    expect((await proposeMcpServer(deps, admin(), { label: "SIM", transport: HTTP })).status).toBe("awaiting_approval");
+  });
+  it("tells the settings page whether to offer them", async () => {
+    const off = world({ stdio: false });
+    const listed = await routeMcpServers(off.deps, { orgId: ORG, developerId: "dev1", orgRole: "admin" } as never, { method: "GET", path: "/v1/app/org/mcp-servers", headers: {}, requestId: "r" }, new URL("https://x/v1/app/org/mcp-servers"));
+    expect(listed).toMatchObject({ stdioAvailable: false });
+    const on = world();
+    expect(await routeMcpServers(on.deps, { orgId: ORG, developerId: "dev1", orgRole: "admin" } as never, { method: "GET", path: "/v1/app/org/mcp-servers", headers: {}, requestId: "r" }, new URL("https://x/v1/app/org/mcp-servers"))).toMatchObject({ stdioAvailable: true });
   });
 });

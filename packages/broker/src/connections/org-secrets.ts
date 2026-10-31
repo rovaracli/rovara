@@ -21,6 +21,11 @@ export function orgConnectorSecretName(env: string, orgId: string, connectionId:
   return `agentx/${env}/org-connectors/${orgId}/${connectionId}`;
 }
 
+/** A registered MCP server's own token: under the connector path, so the one org-tagged role that reaches an org's connection secrets reaches it and nothing else does. */
+export function orgMcpServerSecretName(env: string, orgId: string, serverId: string): string {
+  return `agentx/${env}/org-connectors/${orgId}/${serverId}`;
+}
+
 export function orgHookSecretName(env: string, orgId: string, hookId: string): string {
   return `agentx/${env}/org-hooks/${orgId}/${hookId}`;
 }

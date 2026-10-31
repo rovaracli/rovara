@@ -1,3 +1,5 @@
+// NOT FOR PRODUCTION until the follow-up redesign (lane E, "stdio host redesign"): package-run servers are off by default and the broker never calls this host unless the
+// install switches them on. The code and its tests stay so the redesign starts from them.
 // E6: the MCP host. A stdio MCP server cannot be reached over a network, and no server code may run in a worker or in the broker (design 3.6). The host is the one
 // small service that runs stdio servers an admin approved, and shows each to the broker as a Streamable HTTP MCP server on a private listener:
 //

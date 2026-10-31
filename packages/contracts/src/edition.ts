@@ -65,6 +65,11 @@ export const EDITION_FEATURES = [
    * context sources. Refused on Public: a customer-chosen private address there is a server-side request forgery risk.
    */
   "privateMcpServers",
+  /**
+   * MCP servers that Rovara runs for the customer from an npm package (the MCP host). NOT FOR PRODUCTION until the host is redesigned (see the lane E follow-up): Enterprise only,
+   * and even there it is off until the install sets `ROVARA_STDIO_MCP_SERVERS=1`.
+   */
+  "stdioMcpServers",
 ] as const;
 export const EditionFeatureSchema = z.enum(EDITION_FEATURES);
 export type EditionFeature = z.infer<typeof EditionFeatureSchema>;
@@ -90,6 +95,7 @@ export const EDITION_FEATURE_TABLE: Readonly<Record<EditionFeature, { readonly e
   publicSignInMethods: { enterprise: false, public: true },
   aiNavigationUncharged: { enterprise: true, public: false },
   privateMcpServers: { enterprise: true, public: false },
+  stdioMcpServers: { enterprise: true, public: false },
 };
 
 /** Team record retention (Learning v2): A live only, B process then drop, C raw text about 30 days plus distilled knowledge, D full history. */

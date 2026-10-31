@@ -22,7 +22,7 @@ const ProbeTool = z.object({ name: z.string().max(64), description: z.string().m
 const McpServerReader = z.object({
   serverId: z.string().max(40), label: z.string().max(60), status: z.enum(["awaiting_approval", "approved", "disabled"]),
   transport: z.discriminatedUnion("kind", [z.object({ kind: z.literal("http"), address: z.string().max(2048) }), z.object({ kind: z.literal("stdio"), spec: z.object({ name: z.string().max(100), version: z.string().max(50), integrity: z.string().max(200) }) })]),
-  probe: z.object({ tools: z.array(ProbeTool).max(100) }), requestedAt: z.string().max(40),
+  probe: z.object({ tools: z.array(ProbeTool).max(100) }), hasSecret: z.boolean().optional(), requestedAt: z.string().max(40),
 });
 export type McpServerView = z.infer<typeof McpServerReader>;
 
@@ -47,8 +47,8 @@ export function createContextSourcesApi(host: AppHost) {
       call({ method: "POST", path: `${sourcesPath(project)}/changes`, body }, z.object({ changeId: z.string().max(60), needsSecondAdmin: z.array(z.string().max(300)).max(20) }), [202]),
     confirm: (project: string, changeId: string) => call({ method: "POST", path: `${sourcesPath(project)}/changes/${changeId}/confirm` }, z.object({}).passthrough()),
     reject: (project: string, changeId: string) => call({ method: "POST", path: `${sourcesPath(project)}/changes/${changeId}/reject` }, z.object({}).passthrough()),
-    servers: () => call({ method: "GET", path: serversPath }, z.object({ servers: z.array(McpServerReader).max(200) })),
-    addServer: (body: { label: string; transport: unknown }) => call({ method: "POST", path: serversPath, body }, z.object({ server: McpServerReader }), [202]),
+    servers: () => call({ method: "GET", path: serversPath }, z.object({ servers: z.array(McpServerReader).max(200), stdioAvailable: z.boolean().optional() })),
+    addServer: (body: { label: string; transport: unknown; secret?: string }) => call({ method: "POST", path: serversPath, body }, z.object({ server: McpServerReader }), [202]),
     approveServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/approve` }, z.object({ server: McpServerReader })),
     disableServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/disable` }, z.object({}).passthrough()),
     removeServer: (serverId: string) => call({ method: "DELETE", path: `${serversPath}/${serverId}` }, z.object({}).passthrough()),

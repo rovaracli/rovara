@@ -1,7 +1,7 @@
 // E3: the saved transcript of a stage that used sources holds stubs, never the sources' text (design 3.6, "Where results go").
 //
 // Pi appends each tool result to the session file as it happens. When a prompt has finished and the session is idle, the results of the context tools are
-// rewritten in place: the content becomes `[SIM P123456 · 2.1 KB · see Sources]` and the details are dropped. The live session keeps what the model read
+// rewritten in place: the content becomes `[Tracker ABC-123 · 2.1 KB · see Sources]` and the details are dropped. The live session keeps what the model read
 // in memory for the rest of the turn; a session opened again from the file (a resume) reads the stubs.
 import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";

@@ -112,7 +112,7 @@ describe("MCP servers on the network", () => {
   const waiting = { ...approved, serverId: "mcpnew0000001", label: "Wiki", status: "awaiting_approval", probe: { tools: [{ name: "lookup_page", description: "Look up", annotation: "unannotated" }] } };
   const f = fakeHost(async (input: ApiRequest) => {
    if (input.method === "POST") posts.push(input);
-   if (input.method === "GET") return { status: 200, body: { servers: list } };
+   if (input.method === "GET") return { status: 200, body: { servers: list, stdioAvailable: true } };
    if (input.path.endsWith("/approve")) { list = [{ ...waiting, status: "approved" }];return { status: 200, body: { server: { ...waiting, status: "approved" } } }; }
    list = [waiting];return { status: 202, body: { status: "NEEDS_APPROVAL", server: waiting } };
   });
@@ -130,10 +130,27 @@ describe("MCP servers on the network", () => {
   await screen.findByText(/Allowed/);
   expect(posts.map(request => request.path)).toEqual(["/v1/app/org/mcp-servers", "/v1/app/org/mcp-servers/mcpnew0000001/approve"]);
  });
+it("sends the server's token with the address, once, and offers package-run servers only when the install has them", async () => {
+  const posts: ApiRequest[] = [];
+  const f = fakeHost(async (input: ApiRequest) => {
+   if (input.method === "GET") return { status: 200, body: { servers: [], stdioAvailable: false } };
+   posts.push(input);return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "The server asked for a login. Check the token." } } };
+  });
+  renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(McpServers) }) }));
+  await screen.findByText("No MCP servers added yet.");
+  expect(screen.queryByLabelText("Rovara runs a package for it")).toBeNull();
+  fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tracker" } });
+  fireEvent.change(screen.getByLabelText("Address"), { target: { value: "https://x.example/mcp" } });
+  fireEvent.change(screen.getByLabelText("Token (optional)"), { target: { value: "srv-token" } });
+  expect(screen.getByLabelText<HTMLInputElement>("Token (optional)").type).toBe("password");
+  fireEvent.click(screen.getByRole("button", { name: "Test it" }));
+  await screen.findByRole("alert");
+  expect(posts[0]!.body).toEqual({ label: "Tracker", transport: { kind: "http", address: "https://x.example/mcp" }, secret: "srv-token" });
+ });
  it("sends a package with an exact version for a server Rovara runs, and shows the fixed sentence when the test fails", async () => {
   const posts: ApiRequest[] = [];
   const f = fakeHost(async (input: ApiRequest) => {
-   if (input.method === "GET") return { status: 200, body: { servers: [] } };
+   if (input.method === "GET") return { status: 200, body: { servers: [], stdioAvailable: true } };
    posts.push(input);return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "The server did not answer in time." } } };
   });
   renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(McpServers) }) }));

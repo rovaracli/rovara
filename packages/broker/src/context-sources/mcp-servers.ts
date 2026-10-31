@@ -9,7 +9,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  MCP_PROBE_FAILURES, McpServerEntrySchema, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, orgScoped, requireFeature,
+  MCP_PROBE_FAILURES, McpServerEntrySchema, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, featureEnabled, orgScoped, requireFeature,
   type Edition, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type McpStdioProposal, type OrgId,
 } from "@agentx/contracts";
 import { parsePrivateTarget, type AllowedTarget } from "../connections/private-endpoints.js";
@@ -125,15 +125,18 @@ export async function allowedTargets(store: Pick<McpServerStore, "list">, orgId:
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Review I1: a connection's token goes only to that connection's own host. A server's auth connection must be a read-only MCP connection whose own address is on the
- * same host and port as the server's, so an admin cannot send another system's token (a tracker's, say) to an address they typed. Another server needs its own token.
+ * A registered server's own token. It is write-only: `put` stores it under the server's id (the org's secret store, tagged and reachable only with the org's session),
+ * nothing reads it back to a person, and the only reader is the broker's call to this server's checked host and port. It is not an org connection: no other system's token
+ * can be chosen for a typed address (review I1), and none needs to share the server's host.
  */
-export function authConnectionFits(connection: { type: string; access: "read" | "read_write"; endpoint?: string | undefined } | undefined, address: string): boolean {
-  if (connection === undefined || connection.type !== "mcp" || connection.access !== "read" || connection.endpoint === undefined) return false;
-  const own = parsePrivateTarget(connection.endpoint);
-  const target = parsePrivateTarget(address);
-  return !("problem" in own) && !("problem" in target) && own.host === target.host && own.port === target.port;
+export interface McpServerSecrets {
+  put(orgId: OrgId, serverId: string, value: string): Promise<string>;
+  read(orgId: OrgId, serverId: string, version?: string): Promise<string | undefined>;
+  remove(orgId: OrgId, serverId: string): Promise<void>;
 }
+
+/** The sentence an admin is told when a package-run server is asked for and the install has that switched off. */
+export const STDIO_OFF_MESSAGE = "Servers that Rovara runs from a package are not available on this install yet. Add a server that has an address.";
 
 export interface McpServerActor { orgId: OrgId; developerId: string; orgRole: string }
 
@@ -142,10 +145,13 @@ export interface McpServerDependencies {
   prober: McpProber;
   edition: Edition;
   now: () => number;
-  /** The token of the org connection an http entry authenticates with; absent when the entry has none. Throws or answers undefined when it cannot be read. */
-  authToken(orgId: OrgId, connectionId: string): Promise<string | undefined>;
-  /** Whether the connection may authenticate the server at `address`: see `authConnectionFits`. */
-  authConnectionUsable(orgId: OrgId, connectionId: string, address: string): Promise<boolean>;
+  /** Each server's own write-only token. */
+  secrets: McpServerSecrets;
+  /**
+   * Whether this install runs servers from a package (the MCP host). Off unless the operator switched it on AND the edition has the `stdioMcpServers` feature. NOT FOR
+   * PRODUCTION until the host is redesigned (see the lane E follow-up): with it off, a package-run server cannot be added or approved, and the broker never calls the host.
+   */
+  stdioEnabled?: boolean | undefined;
   /** Called before every test of a server (add and approve); false refuses it. The test is a network call from inside the customer's network, so it is bounded (review I2). */
   probeAllowed?: ((orgId: OrgId) => boolean) | undefined;
   /** Install setting: the admin who added a server may not be the one who approves it. Off by default, because adding one must be easy. */
@@ -157,6 +163,11 @@ export interface McpServerDependencies {
 function guard(deps: McpServerDependencies, actor: McpServerActor): void {
   requireFeature(editionPolicy(deps.edition), "privateMcpServers");
   if (actor.orgRole !== "owner" && actor.orgRole !== "admin") throw agentXError("FORBIDDEN", "Only an org owner or admin can add or approve an MCP server.");
+}
+
+/** A package-run server is refused with a clear sentence unless the install runs the MCP host (Enterprise, switched on). */
+export function stdioAvailable(deps: Pick<McpServerDependencies, "edition" | "stdioEnabled">): boolean {
+  return deps.stdioEnabled === true && featureEnabled(editionPolicy(deps.edition), "stdioMcpServers");
 }
 
 const told = async (deps: McpServerDependencies, event: Parameters<NonNullable<McpServerDependencies["audit"]>>[0]): Promise<void> => {
@@ -183,14 +194,12 @@ export function probeLimiter(options: { max: number; windowMs: number; now: () =
   };
 }
 
-async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerTransport | { kind: "stdio"; spec: McpStdioProposal }, authConnectionId: string | undefined): Promise<{ probe: McpServerProbe; integrity?: string }> {
+async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerTransport | { kind: "stdio"; spec: McpStdioProposal }, token: string | undefined): Promise<{ probe: McpServerProbe; integrity?: string }> {
   if (deps.probeAllowed !== undefined && !deps.probeAllowed(orgId)) throw agentXError("TOO_MANY_REQUESTS", "Too many server tests just now. Wait a few minutes and try again.");
   let tools: DiscoveredTool[];
   let integrity: string | undefined;
   try {
     if (transport.kind === "http") {
-      let token: string | undefined;
-      if (authConnectionId !== undefined) token = await deps.authToken(orgId, authConnectionId).catch(() => undefined);
       tools = await deps.prober.http(transport.address, token);
     } else {
       ({ tools, integrity } = await deps.prober.stdio(transport.spec));
@@ -203,7 +212,7 @@ async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpSe
   return { probe: summariseProbe(tools, deps.now()), ...(integrity === undefined ? {} : { integrity }) };
 }
 
-export async function proposeMcpServer(deps: McpServerDependencies, actor: McpServerActor, body: { label: unknown; transport: unknown; authConnectionId?: string | undefined }): Promise<McpServerEntry> {
+export async function proposeMcpServer(deps: McpServerDependencies, actor: McpServerActor, body: { label: unknown; transport: unknown; secret?: string | undefined }): Promise<McpServerEntry> {
   guard(deps, actor);
   const label = typeof body.label === "string" ? inertSentence(body.label, 60) : "";
   if (label === "") throw agentXError("CONFIG_INVALID", "label: give the server a short name");
@@ -217,21 +226,24 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
       return !("problem" in other) && other.host === target.host && other.port === target.port;
     })());
     if (same !== undefined) throw agentXError("CONFIG_INVALID", "that server is already added; open it in the list");
-  } else if (body.authConnectionId !== undefined) {
-    throw agentXError("CONFIG_INVALID", "a stdio server is reached through the MCP host and takes no connection");
+  } else {
+    if (!stdioAvailable(deps)) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
+    if (body.secret !== undefined) throw agentXError("CONFIG_INVALID", "a server that Rovara runs takes no token");
   }
-  if (body.authConnectionId !== undefined && !await deps.authConnectionUsable(actor.orgId, body.authConnectionId, transport.data.kind === "http" ? transport.data.address : "")) {
-    throw agentXError("CONFIG_INVALID", "authConnectionId: that must be a read-only MCP connection made for this same server address");
-  }
-  const shown = await probe(deps, actor.orgId, transport.data, body.authConnectionId);
+  const serverId = `mcp${(deps.newId ?? (() => randomBytes(8).toString("hex")))().replace(/[^a-z0-9]/gu, "").slice(0, 16)}`;
+  const shown = await probe(deps, actor.orgId, transport.data, body.secret);
   // A stdio package is pinned by its tarball's integrity: the one the admin gave (the host refused anything else), or the one the host computed, which the admin sees now.
   const stored: McpServerTransport = transport.data.kind === "http" ? transport.data : { kind: "stdio", spec: { ...transport.data.spec, integrity: shown.integrity! } };
+  // The token is stored only after the test passed with it, under this server's id, and is never returned (the entry holds only that there is one).
+  const secretVersion = body.secret === undefined ? undefined : await deps.secrets.put(actor.orgId, serverId, body.secret);
   const entry: McpServerEntry = McpServerEntrySchema.parse({
-    serverId: `mcp${(deps.newId ?? (() => randomBytes(8).toString("hex")))().replace(/[^a-z0-9]/gu, "").slice(0, 16)}`,
-    label, status: "awaiting_approval", transport: stored, ...(body.authConnectionId === undefined ? {} : { authConnectionId: body.authConnectionId }),
+    serverId, label, status: "awaiting_approval", transport: stored, ...(secretVersion === undefined ? {} : { hasSecret: true, secretVersion }),
     probe: shown.probe, requestedBy: actor.developerId, requestedAt: new Date(deps.now()).toISOString(),
   });
-  if (!await deps.store.create(actor.orgId, entry)) throw agentXError("IDEMPOTENCY_CONFLICT", "that server id is taken; try again");
+  if (!await deps.store.create(actor.orgId, entry)) {
+    await deps.secrets.remove(actor.orgId, serverId).catch(() => undefined);
+    throw agentXError("IDEMPOTENCY_CONFLICT", "that server id is taken; try again");
+  }
   await told(deps, { action: "mcp_server.added", actor, serverId: entry.serverId, label: entry.label });
   return entry;
 }
@@ -245,7 +257,14 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
   const entry = await deps.store.get(actor.orgId, serverId);
   if (entry === undefined || entry.status !== "awaiting_approval") throw agentXError("NOT_FOUND", "no MCP server is waiting for approval with that id");
   if (deps.secondAdminToApprove === true && entry.requestedBy === actor.developerId) throw agentXError("FORBIDDEN", "A second admin must approve this server.");
-  const again = await probe(deps, actor.orgId, entry.transport, entry.authConnectionId);
+  if (entry.transport.kind === "stdio" && !stdioAvailable(deps)) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
+  // The server's own token is read now (review m3): an entry whose token cannot be read is not approved, and the test sends exactly what a call will send.
+  let token: string | undefined;
+  if (entry.hasSecret === true) {
+    token = await deps.secrets.read(actor.orgId, serverId, entry.secretVersion).catch(() => undefined);
+    if (token === undefined) throw agentXError("CONFIG_INVALID", "This server's token can no longer be read. Add the server again.");
+  }
+  const again = await probe(deps, actor.orgId, entry.transport, token);
   // The host installed the tarball again and checked it against the pinned integrity; a different tarball never gets here, and the tools must be the ones that were shown.
   if (entry.transport.kind === "stdio" && again.integrity !== entry.transport.spec.integrity) throw agentXError("CHANGE_STALE", "The package is not the one you were shown. Add it again to look at it now.");
   if (again.probe.toolsHash !== entry.probe.toolsHash) throw agentXError("CHANGE_STALE", "The server's tools are not the ones you were shown. Add it again to look at what it offers now.");
@@ -273,6 +292,8 @@ export async function removeMcpServer(deps: McpServerDependencies, actor: McpSer
   if (entry === undefined) throw agentXError("NOT_FOUND", "no MCP server has that id");
   if (entry.status === "approved") throw agentXError("CONFIG_INVALID", "Turn the server off first, then remove it.");
   await deps.store.remove(actor.orgId, serverId);
+  // Its token goes with it.
+  if (entry.hasSecret === true) await deps.secrets.remove(actor.orgId, serverId).catch(() => undefined);
   await told(deps, { action: "mcp_server.removed", actor, serverId, label: entry.label });
 }
 

@@ -4,7 +4,6 @@
 // approval. On approval the entry becomes part of the install's allow-list, which is nothing more than the set of approved entries: there is no second list to
 // keep in step. Public never has these: its endpoints stay public https only (mcp-connector.ts).
 import { z } from "zod";
-import { ConnectionIdSchema } from "./agent-node.js";
 
 export const McpServerIdSchema = z.string().regex(/^mcp[a-z0-9]{6,24}$/);
 
@@ -84,8 +83,12 @@ export const McpServerEntrySchema = z.object({
   label: OneLine,
   status: McpServerStatusSchema,
   transport: McpServerTransportSchema,
-  /** An org connection (type `mcp`) whose token is sent to an http server. Absent: the server needs none. */
-  authConnectionId: ConnectionIdSchema.optional(),
+  /**
+   * Whether the server has its own token. The token is write-only: it is stored in the org's secret store under this server's id, never returned, and sent only to this
+   * server's checked host and port. `secretVersion` names the stored version (not a secret). Absent: the server needs none.
+   */
+  hasSecret: z.boolean().optional(),
+  secretVersion: z.string().max(200).optional(),
   probe: McpServerProbeSchema,
   requestedBy: z.string().max(200),
   requestedAt: z.string().max(40),

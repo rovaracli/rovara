@@ -29,7 +29,7 @@ export function neutralizeFrameTags(text: string): string {
 const kib = (bytes: number): string => `${(bytes / 1_024).toFixed(1)} KB`;
 
 /**
- * The stub kept in a saved transcript in place of a source's text: `[SIM P123456 · 2.1 KB · see Sources]`. The raw text lives only in the short-lived
+ * The stub kept in a saved transcript in place of a source's text: `[Tracker ABC-123 · 2.1 KB · see Sources]`. The raw text lives only in the short-lived
  * blob store, and only people allowed to see the source can read it there.
  */
 export function stubFor(framedText: string): string {

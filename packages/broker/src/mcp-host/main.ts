@@ -1,3 +1,4 @@
+// NOT FOR PRODUCTION until the host is redesigned (lane E follow-up: stdio host redesign). The broker does not call it unless the install switches package-run servers on.
 // E6: the process the MCP host service runs (infra/lib/mcp-host.ts). It reads the registry of approved stdio servers from the install's own table, with a
 // read-only role, and serves them (gateway/src/mcp-host.ts). It needs no secret but its own bearer token, which the task's secret store gives it.
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -31,10 +32,13 @@ export function start(): void {
   // removed from the environment this process hands on. (A same-uid process could still read the initial environment from /proc, which is why they never share the uid.)
   delete process.env.MCP_HOST_TOKEN;
   // Without the ability to change uid the host would run servers beside its own secrets; it refuses to start rather than do that.
-  if (process.getuid?.() !== 0 && process.env.MCP_HOST_ALLOW_SAME_UID !== "1") throw new Error("the MCP host must start as root so that it can run each server under its own uid");
+  // The switch that turns isolation off exists for tests only: in any other NODE_ENV it is ignored, and a host that is not root refuses to start (review m7).
+  const sameUidForTest = process.env.NODE_ENV === "test" && process.env.MCP_HOST_ALLOW_SAME_UID === "1";
+  if (process.env.MCP_HOST_ALLOW_SAME_UID === "1" && !sameUidForTest) throw new Error("MCP_HOST_ALLOW_SAME_UID is for tests only and is refused here");
+  if (process.getuid?.() !== 0 && !sameUidForTest) throw new Error("the MCP host must start as root so that it can run each server under its own uid");
   const host = createMcpHost({
     token,
-    isolation: process.env.MCP_HOST_ALLOW_SAME_UID === "1" ? "none" : { firstUid: 20_000, count: 32, gid: 20_000 },
+    isolation: sameUidForTest ? "none" : { firstUid: 20_000, count: 32, gid: 20_000 },
     registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: required("STATE_TABLE_NAME") }), required("ROVARA_ORG_ID")),
     launcher: npmLauncher(),
     log: (event, fields) => console.log(JSON.stringify({ component: "mcp-host", event, ...fields })),

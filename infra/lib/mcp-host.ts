@@ -8,11 +8,13 @@ import {
   aws_elasticloadbalancingv2 as elbv2,
   aws_iam as iam,
   aws_logs as logs,
+  aws_route53 as route53,
   aws_secretsmanager as secretsmanager,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { enterpriseHttpsEgress } from "./vpc-endpoints.js";
 
+/** NOT FOR PRODUCTION until the host is redesigned (lane E follow-up: stdio host redesign); not instantiated by the install yet. */
 /** The port the service listens on, behind the load balancer. */
 export const MCP_HOST_PORT = 8080;
 
@@ -38,6 +40,12 @@ export interface McpHostProps {
    * as deferred. Rotating the token: replace the secret's value and restart the task; the broker reads it afresh on its next cold start.
    */
   certificateArn: string;
+  /**
+   * The DNS name the certificate is for (review m4). The broker reaches the host by this name, so its TLS check passes: no certificate can name the load balancer's own
+   * `*.elb.amazonaws.com` name, and nobody should have to turn the check off. An alias record for it is made in `hostedZoneId`.
+   */
+  hostName: string;
+  hostedZoneId: string;
   /** The registry the host installs approved packages from (an internal mirror, in an install with no internet). */
   npmRegistry?: string;
 }
@@ -57,6 +65,9 @@ export class McpHost extends Construct {
   constructor(scope: Construct, id: string, props: McpHostProps) {
     super(scope, id);
     if (props.certificateArn === undefined || props.certificateArn === "") throw new Error("the MCP host needs a certificate for its HTTPS listener: there is no plain-HTTP mode");
+    if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/u.test(props.hostName ?? "") || /(?:^|\.)(?:amazonaws\.com|elb\.amazonaws\.com)$/u.test(props.hostName)) {
+      throw new Error("the MCP host needs a DNS name of its own that the certificate is for (not the load balancer's amazonaws.com name)");
+    }
     const stack = Stack.of(this);
     const vpc = ec2.Vpc.fromVpcAttributes(this, "Vpc", { vpcId: props.vpcId, availabilityZones: props.availabilityZones, privateSubnetIds: props.subnetIds });
     const subnets = { subnets: props.subnetIds.map((subnetId, index) => ec2.Subnet.fromSubnetId(this, `Subnet${index}`, subnetId)) };
@@ -126,7 +137,11 @@ export class McpHost extends Construct {
     const listener = loadBalancer.addListener("Listener", { port: 443, protocol: elbv2.ApplicationProtocol.HTTPS, certificates: [elbv2.ListenerCertificate.fromArn(props.certificateArn)], open: false });
     listener.addTargets("Target", { port: MCP_HOST_PORT, protocol: elbv2.ApplicationProtocol.HTTP, targets: [service], healthCheck: { path: "/healthz", healthyHttpCodes: "200" }, deregistrationDelay: Duration.seconds(30) });
 
-    this.url = `https://${loadBalancer.loadBalancerDnsName}`;
+    new route53.CfnRecordSet(this, "HostName", {
+      hostedZoneId: props.hostedZoneId, name: props.hostName, type: "A",
+      aliasTarget: { dnsName: loadBalancer.loadBalancerDnsName, hostedZoneId: loadBalancer.loadBalancerCanonicalHostedZoneId, evaluateTargetHealth: true },
+    });
+    this.url = `https://${props.hostName}`;
     new CfnOutput(this, "McpHostUrl", { value: this.url, description: "The MCP host's private URL: the broker's MCP_HOST_URL" });
   }
 }
