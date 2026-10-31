@@ -2,7 +2,7 @@
 //
 // Two pools, each with its own byte budget: the always-on items, and the additions (fileMatch, manual and auto items that were
 // activated). When a pool is over its budget, items are dropped farthest-first in the order the design names: folder before repo
-// before meta (then project, group and company). Inside one layer the deeper folder goes first, then the later path, so the same
+// before meta (then project, group and company). Inside one layer the deeper folder goes first, then the larger file, then the later path, so the same
 // inputs always drop the same files. A locked company rule is never dropped; if locked rules alone exceed the always-on budget the
 // caller fails the stage closed ("Company rules exceed the size budget") so an admin fixes the rules.
 import { KNOWLEDGE_LAYER_ORDER, type KnowledgeBudgets, type KnowledgeItem } from "./model.js";
@@ -36,6 +36,8 @@ export function dropOrder(items: readonly KnowledgeItem[]): KnowledgeItem[] {
     .toSorted((left, right) =>
       dropRank(left) - dropRank(right)
       || depthOf(right.scopeDir) - depthOf(left.scopeDir)
+      // The larger file goes first, so fewer files are lost to make room.
+      || right.bytes - left.bytes
       || (right.path ?? "").localeCompare(left.path ?? "")
       || (right.name ?? "").localeCompare(left.name ?? ""));
 }

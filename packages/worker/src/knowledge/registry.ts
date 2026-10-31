@@ -4,6 +4,7 @@ import { claudeRulesReader } from "./claude-rules.js";
 import { copilotInstructionsReader, copilotRepoReader } from "./copilot.js";
 import { cursorReader } from "./cursor.js";
 import { kiroSteeringReader } from "./kiro.js";
+import { rovaraRulesReader } from "./rovara-rules.js";
 import type { KnowledgeFormatReader } from "./reader.js";
 
 /** Every built-in reader. Order decides which reader owns a path two readers both accept (none do today). */
@@ -15,6 +16,7 @@ export const BUILT_IN_READERS: readonly KnowledgeFormatReader[] = [
   copilotRepoReader,
   copilotInstructionsReader,
   claudeRulesReader,
+  rovaraRulesReader,
 ];
 
 export interface ReaderRegistry {

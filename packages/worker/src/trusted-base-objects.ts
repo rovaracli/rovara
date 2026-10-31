@@ -333,19 +333,66 @@ async function place(source: string, target: string, placement: Placement): Prom
   }
 }
 
+/** One entry of a verified tree: its name, mode and object id. */
+export interface TreeListingEntry { name: string; mode: number; oid: string }
+
+/** The most entries one tree may list; a larger one stops the read. */
+const MAX_TREE_ENTRIES = 100_000;
+
 /**
- * The verified rule file of `baseCommit`'s tree, by the first of `candidates` that the tree names. Throws {@link BaseObjectsUnverified} when the
- * commit, the tree or the rule file is missing, malformed, or does not hash to its id, or when the deadline passes. A commit whose tree names none
- * of the candidates gives `absent`. `limit` is the largest rule file whose bytes are returned; a larger one is still verified (its bytes are hashed
- * as they stream, so a stored size that was changed is caught), and reported by its size.
+ * Every entry of a raw tree whose bytes were already verified against the tree's id. Names are read as UTF-8; an entry git itself would refuse
+ * (an empty name, `.`, `..`, `.git`, or a name holding `/`) means the tree was tampered with and stops the read.
  */
-export async function readVerifiedBaseRuleFile(directory: string, baseCommit: string, candidates: readonly string[], limit: number, options: ReadOptions = {}): Promise<BaseRuleFile> {
+export function parseTreeListing(bytes: Buffer, hashBytes: number): TreeListingEntry[] {
+  const listed: TreeListingEntry[] = [];
+  let position = 0;
+  while (position < bytes.length) {
+    const space = bytes.indexOf(0x20, position);
+    if (space <= position) throw new BaseObjectsUnverified();
+    const mode = bytes.toString("latin1", position, space);
+    if (!/^[0-7]{5,7}$/u.test(mode)) throw new BaseObjectsUnverified();
+    const end = bytes.indexOf(0, space + 1);
+    if (end <= space + 1 || end + 1 + hashBytes > bytes.length) throw new BaseObjectsUnverified();
+    const name = bytes.toString("utf8", space + 1, end);
+    if (name === "." || name === ".." || name.toLowerCase() === ".git" || name.includes("/")) throw new BaseObjectsUnverified();
+    // A name that is not valid UTF-8 cannot be addressed by a path the resolver builds, so it is left out.
+    if (name.includes("\uFFFD")) { position = end + 1 + hashBytes; continue; }
+    listed.push({ name, mode: Number.parseInt(mode, 8), oid: bytes.toString("hex", end + 1, end + 1 + hashBytes) });
+    if (listed.length > MAX_TREE_ENTRIES) throw new BaseObjectsUnverified();
+    position = end + 1 + hashBytes;
+  }
+  const names = new Set<string>();
+  for (const entry of listed) {
+    if (names.has(entry.name)) throw new BaseObjectsUnverified();
+    names.add(entry.name);
+  }
+  return listed;
+}
+
+/**
+ * A base commit's objects, opened once and read many times: the same verified copy {@link readVerifiedBaseRuleFile} makes (one scratch directory
+ * of linked packs, a read-only empty git directory, every object hashed against its own id), kept open until `close()`. `fetchObject` returns the
+ * bytes of a commit, tree or blob only when they hash to the id asked for, and `rootTreeId` is the verified commit's tree. The overall deadline
+ * runs from `open` to `close`; every failure is {@link BaseObjectsUnverified}. The caller must `close()` (it removes the scratch directory).
+ */
+export interface VerifiedBaseObjects {
+  readonly rootTreeId: string;
+  readonly hashBytes: number;
+  fetchObject(type: "commit" | "tree" | "blob", oid: string, maximum: number, keep: number): Promise<{ size: number; bytes: Buffer | undefined }>;
+  close(): Promise<void>;
+}
+
+export async function openVerifiedBaseObjects(directory: string, baseCommit: string, options: ReadOptions = {}): Promise<VerifiedBaseObjects> {
   const algorithm = algorithmOf(baseCommit);
   const hashBytes = algorithm === "sha1" ? 20 : 32;
   const controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), options.deadlineMs ?? OVERALL_DEADLINE_MS);
   const { signal } = controller;
   let scratch: string | undefined;
+  const cleanUp = async (): Promise<void> => {
+    clearTimeout(deadline);
+    if (scratch !== undefined) await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+  };
   try {
     const layout = await candidateLayout(directory);
     const now = options.now ?? Date.now;
@@ -372,6 +419,7 @@ export async function readVerifiedBaseRuleFile(directory: string, baseCommit: st
         await place(join(packs, name), join(objectsDirectory, "pack", name), placement);
       }
     }
+    const scratchDirectory = scratch;
     const fetch = async (type: "commit" | "tree" | "blob", oid: string, maximum: number, keep: number): Promise<{ size: number; bytes: Buffer | undefined }> => {
       // A loose object is linked in only for the object being read: one link per read, however many loose objects the workspace holds.
       let looseTarget: string | undefined;
@@ -382,11 +430,11 @@ export async function readVerifiedBaseRuleFile(directory: string, baseCommit: st
         if (await place(join(loose, oid.slice(2)), target, placement)) looseTarget = target;
       }
       const attempt = async (): Promise<{ size: number; bytes: Buffer | undefined }> => {
-        const sizeText = (await execFile("git", ["cat-file", "-s", oid], { cwd: scratch, env, timeout: GIT_TIMEOUT_MS, signal, encoding: "utf8", maxBuffer: 64 })).stdout.trim();
+        const sizeText = (await execFile("git", ["cat-file", "-s", oid], { cwd: scratchDirectory, env, timeout: GIT_TIMEOUT_MS, signal, encoding: "utf8", maxBuffer: 64 })).stdout.trim();
         if (!/^\d{1,15}$/u.test(sizeText)) throw new BaseObjectsUnverified();
         const size = Number(sizeText);
         if (size > maximum) throw new BaseObjectsUnverified();
-        return { size, bytes: await streamVerified(scratch!, env, algorithm, type, oid, size, keep, signal) };
+        return { size, bytes: await streamVerified(scratchDirectory, env, algorithm, type, oid, size, keep, signal) };
       };
       try {
         return await attempt();
@@ -397,10 +445,33 @@ export async function readVerifiedBaseRuleFile(directory: string, baseCommit: st
         return attempt();
       }
     };
+    const fetchObject: VerifiedBaseObjects["fetchObject"] = async (type, oid, maximum, keep) => {
+      try {
+        return await fetch(type, oid, maximum, keep);
+      } catch (error) {
+        throw error instanceof BaseObjectsUnverified ? error : new BaseObjectsUnverified();
+      }
+    };
     const commit = (await fetch("commit", baseCommit, COMMIT_BYTES, COMMIT_BYTES)).bytes!;
-    const treeId = commitTreeId(commit, hashBytes);
-    const tree = (await fetch("tree", treeId, TREE_BYTES, TREE_BYTES)).bytes!;
-    const entries = parseTreeEntries(tree, hashBytes, new Set(candidates));
+    const rootTreeId = commitTreeId(commit, hashBytes);
+    return { rootTreeId, hashBytes, fetchObject, close: cleanUp };
+  } catch (error) {
+    await cleanUp();
+    throw error instanceof BaseObjectsUnverified ? error : new BaseObjectsUnverified();
+  }
+}
+
+/**
+ * The verified rule file of `baseCommit`'s tree, by the first of `candidates` that the tree names. Throws {@link BaseObjectsUnverified} when the
+ * commit, the tree or the rule file is missing, malformed, or does not hash to its id, or when the deadline passes. A commit whose tree names none
+ * of the candidates gives `absent`. `limit` is the largest rule file whose bytes are returned; a larger one is still verified (its bytes are hashed
+ * as they stream, so a stored size that was changed is caught), and reported by its size.
+ */
+export async function readVerifiedBaseRuleFile(directory: string, baseCommit: string, candidates: readonly string[], limit: number, options: ReadOptions = {}): Promise<BaseRuleFile> {
+  const objects = await openVerifiedBaseObjects(directory, baseCommit, options);
+  try {
+    const tree = (await objects.fetchObject("tree", objects.rootTreeId, TREE_BYTES, TREE_BYTES)).bytes!;
+    const entries = parseTreeEntries(tree, objects.hashBytes, new Set(candidates));
     for (const candidate of candidates) {
       const entry = entries.get(candidate);
       if (entry === undefined) continue;
@@ -408,7 +479,7 @@ export async function readVerifiedBaseRuleFile(directory: string, baseCommit: st
       // Directories and submodules are passed over, as the working-tree read passes over them.
       if (kind === 0o120000) return { kind: "symlink", candidate };
       if (kind !== 0o100000) continue;
-      const blob = await fetch("blob", entry.oid, options.maxBlobBytes ?? MAX_BLOB_BYTES, limit);
+      const blob = await objects.fetchObject("blob", entry.oid, options.maxBlobBytes ?? MAX_BLOB_BYTES, limit);
       if (blob.bytes === undefined) return { kind: "oversize", candidate, size: blob.size };
       return { kind: "file", candidate, content: blob.bytes };
     }
@@ -416,10 +487,14 @@ export async function readVerifiedBaseRuleFile(directory: string, baseCommit: st
   } catch (error) {
     throw error instanceof BaseObjectsUnverified ? error : new BaseObjectsUnverified();
   } finally {
-    clearTimeout(deadline);
-    if (scratch !== undefined) await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+    await objects.close();
   }
 }
+
+/** The most a tree may hold in bytes (the same bound the rule-file read uses). */
+export const VERIFIED_TREE_BYTES = TREE_BYTES;
+/** The most a blob whose bytes are hashed may hold. */
+export const VERIFIED_MAX_BLOB_BYTES = MAX_BLOB_BYTES;
 
 /**
  * Runs `git cat-file <type> <oid>`, hashes `<type> <size>\0` plus what it prints, and resolves with the bytes (when `size` is at most `keep`) only when

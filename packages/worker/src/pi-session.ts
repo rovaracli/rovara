@@ -35,12 +35,14 @@ import { readSkillTool } from "./read-skill-tool.js";
 import { isEc2WorkerRuntime, localBashOperations } from "./task-sandbox.js";
 import {
   appendRepositoryContextFiles,
-  loadRepositoryContextFiles,
   ruleFileEditNote,
   readPreparedRepositories,
   workspaceRepositoriesNote,
   type RepositoryContextFile,
 } from "./repository-context.js";
+import { loadKnowledgeContext, type KnowledgeSessionInput } from "./knowledge/load.js";
+import type { KnowledgeStage } from "./knowledge/model.js";
+import type { ResolvedKnowledge } from "./knowledge/resolve.js";
 import type { PiCacheRetention } from "./usage.js";
 
 export type PiThinkingLevel = ThinkingLevel;
@@ -189,6 +191,13 @@ export async function createWorkspacePiSession(
      * has no rule file and a diagnostic; the preparation manifest's commit is never used, because the agent can write it.
      */
     baseCommits?: readonly { repositoryId: string; baseCommitSha?: string | undefined }[];
+    /**
+     * What the knowledge resolver (K1) needs beyond where to read: the stage, the files in play, `#name` rules asked for, and the team's own
+     * rules. Absent: the stage follows the workflow mode and no file is in play yet (only always-on rules and nested root rules load).
+     */
+    knowledge?: SessionKnowledgeOptions;
+    /** Called with what the resolver loaded and skipped, once per session; the worker reports it as the stage's "what the agent loaded" record. */
+    onKnowledgeLoaded?: (resolved: ResolvedKnowledge) => void;
   },
   adapter: PiSessionAdapter = defaultPiSessionAdapter,
 ): Promise<PiSessionHandle> {
@@ -205,7 +214,7 @@ export async function createWorkspacePiSession(
     mkdir(agentDirectory, { recursive: true, mode: 0o700 }),
   ]);
   // An agent step reads the repository as information: its context files (written by whoever can push) are not loaded.
-  const contextFiles = input.agentRun === undefined ? await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits) : [];
+  const contextFiles = input.agentRun === undefined ? await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded }) : [];
   const handle = await adapter.create({
     cwd: workingDirectory,
     sessionDirectory,
@@ -247,6 +256,8 @@ export async function openRegisteredWorkspacePiSession(
     /** As for `createWorkspacePiSession`. */
     contextFilesAt?: "working-tree" | "base-commit";
     baseCommits?: readonly { repositoryId: string; baseCommitSha?: string | undefined }[];
+    knowledge?: SessionKnowledgeOptions;
+    onKnowledgeLoaded?: (resolved: ResolvedKnowledge) => void;
   },
   adapter: PiSessionAdapter = defaultPiSessionAdapter,
 ): Promise<PiSessionHandle> {
@@ -262,7 +273,7 @@ export async function openRegisteredWorkspacePiSession(
   });
   assertContained(sessionDirectory, sessionFile);
   if (!adapter.open) throw new Error("pi session adapter does not support saved-session reopen");
-  const contextFiles = await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits);
+  const contextFiles = await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded });
   const handle = await adapter.open({
     cwd: rootPath,
     sessionDirectory,
@@ -679,6 +690,20 @@ export function devcontainerFileTools(cwd: string, paths: DevcontainerPaths): To
   }));
 }
 
+/** What a caller adds to a session's knowledge: the resolver's inputs other than where each repository is read from. */
+export type SessionKnowledgeOptions = Omit<KnowledgeSessionInput, "at" | "stage"> & {
+  /** The stage, when it is not the one the workflow mode implies (the plan check runs in PLAN mode). */
+  stage?: KnowledgeStage;
+};
+
+/** The stage a workflow mode loads knowledge for, when the caller names none: a base-commit PLAN session is the plan check. */
+export function knowledgeStageOf(mode: PiWorkflowMode | undefined, at: "working-tree" | "base-commit"): KnowledgeStage {
+  if (mode === "UNDERSTAND") return "understand";
+  if (mode === "REVIEW") return "review";
+  if (mode === "PLAN") return at === "base-commit" ? "plan_check" : "plan";
+  return "build";
+}
+
 /** Reloaded for every session, so an edited context file reaches the next task. */
 async function loadWorkspaceContextFiles(
   rootPath: string,
@@ -686,6 +711,7 @@ async function loadWorkspaceContextFiles(
   devcontainerPaths?: DevcontainerPaths,
   at: "working-tree" | "base-commit" = "working-tree",
   baseCommits: readonly { repositoryId: string; baseCommitSha?: string | undefined }[] = [],
+  knowledge: { workflowMode: PiWorkflowMode | undefined; knowledge: SessionKnowledgeOptions | undefined; onLoaded: ((resolved: ResolvedKnowledge) => void) | undefined } = { workflowMode: undefined, knowledge: undefined, onLoaded: undefined },
 ): Promise<RepositoryContextFile[]> {
   const prepared = await readPreparedRepositories(rootPath);
   const repositories = at === "base-commit"
@@ -694,8 +720,13 @@ async function loadWorkspaceContextFiles(
         return baseCommit === undefined ? repository : { ...repository, baseCommit };
       })
     : prepared;
-  const { files, diagnostics, notices } = await loadRepositoryContextFiles(rootPath, repositories, { at });
+  const { stage, ...options } = knowledge.knowledge ?? {};
+  const canonicalRoot = await realpath(resolve(rootPath)).catch(() => resolve(rootPath));
+  const { files, diagnostics, notices, resolved } = await loadKnowledgeContext(
+    rootPath, repositories, { ...options, at, stage: stage ?? knowledgeStageOf(knowledge.workflowMode, at) }, canonicalRoot,
+  );
   for (const diagnostic of diagnostics) onDiagnostic?.(diagnostic);
+  knowledge.onLoaded?.(resolved);
   // AgentX's note comes first and is present with or without the repositories' own files.
   const note = workspaceRepositoriesNote(repositories);
   const editNote = ruleFileEditNote(notices);
