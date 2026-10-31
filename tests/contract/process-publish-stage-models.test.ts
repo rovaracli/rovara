@@ -39,7 +39,7 @@ const publish = async (w: MergeWorld, agentId: AgentId, who = MAX) => {
 const approvals = (w: MergeWorld) => [...w.db.items.values()].filter((item) => item["entityType"] === "APPROVAL").length;
 const versions = async (w: MergeWorld, agentId: AgentId) => { const agent = (await w.store.get(ORG_A, agentId))!; return { current: agent.currentVersion, latest: (agent as { latestVersion?: number }).latestVersion }; };
 /** Lane C's ProcessModelRefusal: the code, the stage and the page that fixes it (409), the first refusal only. */
-const refusalOf = (error: { code: string | undefined; status?: number; stage?: string; fixHref?: string } | undefined) => ({ code: error?.code, stage: error?.stage, fixHref: error?.fixHref, status: error?.status });
+const refusalOf = (error: { code: string | undefined; status?: number | undefined; stage?: string | undefined; fixHref?: string | undefined } | undefined) => ({ code: error?.code, stage: error?.stage, fixHref: error?.fixHref, status: error?.status });
 const lock = (w: MergeWorld, stepOverrides: unknown) => w.db.set({ pk: `ORG#${ORG_A}#SETTINGS`, sk: "MODEL_SELECTION_POLICY", orgId: ORG_A, entityType: "MODEL_SELECTION_POLICY", version: 1, revision: 1, rankingVersion: "g3-v1", stepOverrides });
 const decide = (w: MergeWorld, who: string, approvalId: string) => decideApproval(w.deps, callerOf(w, who), approvalId, { requestId: randomUUID(), decision: "APPROVE" });
 const approvalIdOf = (w: MergeWorld, result: unknown) => w.approvalIdOf((result as { confirmUrl: string }).confirmUrl);

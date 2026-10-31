@@ -182,10 +182,10 @@ export function modelSourceStoreOf(dependencies: AwsBrokerDependencies): ModelSo
 
 /**
  * Task 26: what routing a step's model needs: the org's sources, the project's own order, a person's ChatGPT plan and the endpoint hosts' approvals.
- * Undefined where the install has no agents or no model proxy: nothing is routed there, and keys are minted as they always were.
+ * Governed stage routing reads sources even before agents are configured; other flows retain their existing enablement.
  */
-export function routingOf(dependencies: AwsBrokerDependencies): RoutingDependencies | undefined {
-  if (dependencies.agents === undefined || dependencies.modelAccess === undefined) return undefined;
+export function routingOf(dependencies: AwsBrokerDependencies, stageModel = false): RoutingDependencies | undefined {
+  if ((!stageModel && dependencies.agents === undefined) || dependencies.modelAccess === undefined) return undefined;
   const settings = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
   let geography: RoutingDependencies["rovaraGeography"];
   try { geography = proxyGeographyForRegion(process.env.AWS_REGION ?? "us-east-1"); } catch { geography = undefined; }
@@ -194,7 +194,7 @@ export function routingOf(dependencies: AwsBrokerDependencies): RoutingDependenc
     egress: settings,
     projectSourceOrder: async (orgId, project) => (await readProjectAi(settings, orgId, project)).sourceOrder,
     ...(dependencies.chatgpt === undefined ? {} : { chatgpt: chatGptServing(dependencies.chatgpt) }),
-    ...(dependencies.agents.modelSources?.launch === undefined ? {} : { launch: dependencies.agents.modelSources.launch }),
+    ...(dependencies.agents?.modelSources?.launch === undefined ? {} : { launch: dependencies.agents.modelSources.launch }),
     ...(geography === undefined ? {} : { rovaraGeography: geography }),
   };
 }

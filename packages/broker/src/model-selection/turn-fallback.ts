@@ -1,13 +1,13 @@
 import {mergeProcessModelAuthorityChecks} from "./authority.js";
-import {taskKey,taskPointerKey} from "../developer/task-records.js";
+import {taskKey,taskPointerKey,type DeveloperTaskRecord} from "../developer/task-records.js";
 import type {DeveloperApiConfiguration} from "../aws/developer-routes.js";
 import {queryAllItems} from "../aws/admin-reads.js";
 import {taskStageReferences,taskStageReferenceChecks} from "./task-references.js";
-import {readTurnActorChecks} from "./turn-authority.js";
+import {readTurnActorChecks,type TurnActorDependencies} from "./turn-authority.js";
 // Signed operation authority for project coding turns without a developer-task recipe record.
 import {createHash} from "node:crypto";
 import {GetCommand,TransactWriteCommand} from "@aws-sdk/lib-dynamodb";
-import {TaskModelFallbackRequestSchema,TaskModelPolicyBindingSchema,TaskModelFallbackAuthorizationSchema,ModelSelectionSchema,canonicalModelName,canonicalJson,agentXError,type OrgId} from "@agentx/contracts";
+import {TaskModelFallbackRequestSchema,TaskModelPolicyBindingSchema,TaskModelFallbackAuthorizationSchema,ModelSelectionSchema,canonicalModelName,canonicalJson,sharedTaskKey,agentXError,type OrgId} from "@agentx/contracts";
 import {operationKey,type CallbackClaims} from "../aws/cancellation.js";
 import {turnStagesForMode,parseTurnModelPin} from "./turn-policy.js";
 import {loadPinnedTaskStageContext} from "./task-live.js";
@@ -17,8 +17,9 @@ import {flushAuditEvents} from "../audit/flush.js";
 import type {TaskModelAuthorizationDependencies} from "./authorize-fallback.js";
 import type {TransactItem} from "../agents/table-writes.js";
 const refused=()=>agentXError("MODEL_NOT_ALLOWED","The turn's pinned stage model cannot use this fallback. Check How we work.");
-async function read(deps:TaskModelAuthorizationDependencies,Key:{pk:string;sk:string}) {return (await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key,ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;}
-export async function authorizeTurnModelFallback(deps:TaskModelAuthorizationDependencies&{developer?:DeveloperApiConfiguration},input:{orgId:OrgId;workspaceId:string;operationId:string;fence:number;verifiedClaims:CallbackClaims;request:unknown}) {
+type TurnFallbackDependencies=Omit<TaskModelAuthorizationDependencies,"signInStore"|"modelSignInTableName">&TurnActorDependencies;
+async function read(deps:TurnFallbackDependencies,Key:{pk:string;sk:string}) {return (await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key,ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;}
+export async function authorizeTurnModelFallback(deps:TurnFallbackDependencies&{developer?:DeveloperApiConfiguration},input:{orgId:OrgId;workspaceId:string;operationId:string;fence:number;verifiedClaims:CallbackClaims;request:unknown}) {
  const request=TaskModelFallbackRequestSchema.parse(input.request),claims=input.verifiedClaims;
  if(!claims.actions.includes("model-fallback")||claims.expiresAt<=Math.floor(deps.now()/1000)||claims.workspaceId!==input.workspaceId||claims.operationId!==input.operationId||claims.fence!==input.fence||canonicalJson(claims.modelPolicy)!==canonicalJson(request.binding))throw refused();
  const [operation,workspace]=await Promise.all([read(deps,operationKey(input.workspaceId,input.operationId)),read(deps,{pk:`WORKSPACE#${input.workspaceId}`,sk:"META"})]);
@@ -39,14 +40,20 @@ export async function authorizeTurnModelFallback(deps:TaskModelAuthorizationDepe
  const context=contexts[0];if(context===undefined||context.decision.kind!=="resolved")throw refused();
  const resolved=context.decision;
  if(contexts.some(value=>value.decision.kind!=="resolved"||canonicalModelName(value.decision.model)!==canonicalModelName(resolved.model)||value.decision.sourceId!==resolved.sourceId||value.decision.thinkingLevel!==resolved.thinkingLevel))throw refused();
- const actorChecks=await readTurnActorChecks(deps,{orgId:input.orgId,project:workspace.projectName,developerId:frozen.actorDeveloperId,projectRevision:context.projectRevision,...(frozen.threadChannel===undefined?{}:{threadChannel:frozen.threadChannel})});
+ const actorChecks=await readTurnActorChecks(deps,{orgId:input.orgId,project:workspace.projectName,developerId:frozen.actorDeveloperId,...(task===undefined?{}:{task:task as unknown as DeveloperTaskRecord}),projectRevision:context.projectRevision,...(frozen.slackUserId===undefined?{}:{slackUserId:frozen.slackUserId}),...(frozen.threadChannel===undefined?{}:{threadChannel:frozen.threadChannel})});
  const decision=context.decision,route=await routeTaskFallback(deps.routing,{orgId:input.orgId,project:workspace.projectName,agent:frozen.agentId,stage:binding.data.stage,model:decision.model,sourceId:decision.sourceId});
  const model={...decision.model,...(decision.thinkingLevel===null?{}:{thinkingLevel:decision.thinkingLevel})};
  const authorization=TaskModelFallbackAuthorizationSchema.parse({version:1,binding:binding.data,model,sourcesRevision:context.sourcesRevision,...(route===undefined?{}:{modelRoute:route.wire})});
  const requestDigest=createHash("sha256").update(canonicalJson(request)).digest("hex"),nextRoute=route===undefined?null:{sourceId:route.sourceId,alias:route.wire.alias,model:decision.model};
- const scopeChecks:TransactItem[]=[{ConditionCheck:{TableName:deps.tableName,Key:taskPointerKey(input.workspaceId),...(pointer===undefined?{ConditionExpression:"attribute_not_exists(pk)"}:{ConditionExpression:"taskId = :task",ExpressionAttributeValues:{":task":pointer.taskId}})}}];
- if(task!==undefined)scopeChecks.push({ConditionCheck:{TableName:deps.tableName,Key:taskKey(scope.taskId),ConditionExpression:"taskId = :task AND orgId = :org AND workspaceId = :workspace AND #turnProject = :project",ExpressionAttributeNames:{"#turnProject":"project"},ExpressionAttributeValues:{":task":scope.taskId,":org":input.orgId,":workspace":input.workspaceId,":project":workspace.projectName}}});
- const checks:TransactItem[]=[...scopeChecks,...mergeProcessModelAuthorityChecks(contexts.map(value=>value.checks)),...actorChecks,...taskStageReferenceChecks(deps.tableName,operations,scope,binding.data.stage),
+ const slackTaskChecks:TransactItem[]=[];
+ if(frozen.slackTask!==undefined) {
+  if(task?.taskId!==frozen.slackTask.taskId||task.slackUserId!==frozen.slackUserId||frozen.threadChannel===undefined)throw refused();
+  const Key=sharedTaskKey({...frozen.threadChannel,threadTs:frozen.slackTask.threadTs}),shared=await read(deps,Key);
+  if(shared?.workflowThread!==true||shared.taskId!==task.taskId||shared.workspaceId!==input.workspaceId||shared.developerId!==task.developerId)throw refused();
+  slackTaskChecks.push({ConditionCheck:{TableName:deps.tableName,Key,ConditionExpression:"taskId = :task AND workspaceId = :workspace AND developerId = :actor AND workflowThread = :workflow",ExpressionAttributeValues:{":task":task.taskId,":workspace":input.workspaceId,":actor":task.developerId,":workflow":true}}});
+ }
+ const scopeChecks:TransactItem[]=task===undefined?[{ConditionCheck:{TableName:deps.tableName,Key:taskPointerKey(input.workspaceId),ConditionExpression:"attribute_not_exists(pk)"}}]:[];
+ const checks:TransactItem[]=[...slackTaskChecks,...scopeChecks,...mergeProcessModelAuthorityChecks(contexts.map(value=>value.checks)),...actorChecks,...taskStageReferenceChecks(deps.tableName,operations,scope,binding.data.stage),
  {ConditionCheck:{TableName:deps.tableName,Key:{pk:`WORKSPACE#${input.workspaceId}`,sk:"META"},ConditionExpression:"orgId = :org AND projectName = :project AND activeOperationId = :operation AND fence = :fence AND #status = :busy",ExpressionAttributeNames:{"#status":"status"},ExpressionAttributeValues:{":org":input.orgId,":project":workspace.projectName,":operation":input.operationId,":fence":input.fence,":busy":"BUSY"}}}];
  const current=ModelSelectionSchema.safeParse(operation.model);if(!current.success)throw refused();
  const predicate="orgId = :org AND id = :operation AND workspaceId = :workspace AND fence = :fence AND #status = :status AND modelPolicy = :binding AND modelTurnPin = :pin AND #model = :before";

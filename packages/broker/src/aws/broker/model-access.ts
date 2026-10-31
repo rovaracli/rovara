@@ -27,7 +27,11 @@ import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { effectiveSources, routeOnWire, servingRoutes, type ModelRoute, type RoutingDependencies } from "../../model-sources/routing.js";
 import { json } from "../json-reply.js";
 import { developerTaskRouteDependencies, type DeveloperCaller } from "../developer-routes.js";
-import type { DeveloperTaskActions, TransactItems } from "../developer-task-actions.js";
+import { readCompanyStagePolicy } from "../../model-selection/policy-store.js";
+import { parseTurnModelPin } from "../../model-selection/turn-policy.js";
+import { ProcessModelRefusal } from "../../model-selection/process-refusal.js";
+import { canonicalModelName } from "@agentx/contracts";
+import type { DeveloperTaskActions } from "../developer-task-actions.js";
 import { ADMISSION_REFUSALS, agentStepNotes, taskPageUrl } from "../developer-tasks.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { resolveTaskAccess } from "../../developer/task-access.js";
@@ -233,7 +237,17 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
   // before routing has none, and is keyed as it was.
   const merges = dependencies.developer === undefined ? undefined : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
   const resolveMember = (developerId: string): Promise<string> => (merges === undefined ? Promise.resolve(developerId) : followMerges(merges, developerId));
-  const routing = routingOf(dependencies);
+  const pinnedCompany=operation.orgId===undefined||operation.modelPolicy===undefined?undefined:operation.modelTurnPin!==undefined
+    ?parseTurnModelPin(operation.modelTurnPin,operation.orgId,(await requireWorkspace(dependencies,operation.workspaceId)).projectName).pin.policy
+    :operation.modelTaskId===undefined?undefined:(await readTaskRecipe(dependencies,operation.modelTaskId,operation.orgId))?.modelPolicyPin?.policy;
+  if(operation.orgId!==undefined&&operation.modelPolicy!==undefined&&(pinnedCompany===undefined||pinnedCompany.revision!==operation.modelPolicy.companyRevision))throw agentXError("MODEL_NOT_ALLOWED","The task's pinned model authority could not be verified.");
+  const companyPolicy=operation.orgId===undefined||operation.modelPolicy===undefined?undefined:await readCompanyStagePolicy(dependencies,operation.orgId,operation.modelPolicy.stage,pinnedCompany);
+  const companyGoverned=companyPolicy?.applies===true;
+  const routing = routingOf(dependencies,companyGoverned);
+  if(companyGoverned&&operation.chatgptDeveloperId!==undefined&&operation.modelPolicy!==undefined) {
+    if(companyPolicy.sourceOrder!==undefined&&!companyPolicy.sourceOrder.includes("personal-chatgpt"))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/models/sources");
+    if(companyPolicy.locked&&companyPolicy.model!==undefined&&(operation.model===undefined||canonicalModelName(companyPolicy.model)!==canonicalModelName(operation.model)))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/how-we-work");
+  }
   const route = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
     : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {
@@ -503,8 +517,3 @@ export async function gatedTaskWorkspace(dependencies: AwsBrokerDependencies, wo
   return pointer !== undefined && (await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)))?.workflow !== undefined;
 }
 
-/** Ordinary turn admission keeps policy/source/identity fences and its audit within one small transaction. */
-export function boundedTurnAdmission(items:TransactItems):TransactItems {
-  if(items.some(item=>item.Put?.Item?.modelTurnPin!==undefined)&&items.length>25)throw agentXError("RUNTIME_UNAVAILABLE","The turn's atomic model admission is unavailable.");
-  return items;
-}

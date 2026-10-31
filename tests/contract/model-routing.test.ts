@@ -355,6 +355,8 @@ describe("routeStep: the operation's model, the plan and the install's geography
   it("keeps the ChatGPT plan only while it is the first source in the order that serves the plan's model", async () => {
     const t = install({ chatgpt: plan });
     await t.add(openai());
+    // Governed routing verifies the same stored-key presence as the C53 resolver.
+    const sourceKey=modelSourcesKey(TEST_ORG);t.db.set({...t.db.get(sourceKey)!,credentials:[SRC_OPENAI]});
     const withPlan = { plan: { developerId: "maya", model: GPT } };
     await t.order(["personal-chatgpt", SRC_OPENAI, "rovara"]);
     expect(await routeStep(t.deps, step(DEFAULT_MODEL, withPlan))).toMatchObject({ keepChatgpt: true, route: { sourceId: "rovara" } });

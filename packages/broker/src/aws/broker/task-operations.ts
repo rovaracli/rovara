@@ -7,7 +7,8 @@ import { taskStageReferenceChecks, taskStageReferences, scopedTaskOperations, ta
 import { prepareTurnModelFallback, prepareTaskModelFallback } from "../../model-selection/fallback-record.js";
 import type { StageModelResult } from "../../model-selection/resolver.js";
 import { loadPinnedTaskStage } from "../../model-selection/task-live.js";
-import { type TaskModelPolicyBinding, STAGE_OPERATION_MAPPING } from "@agentx/contracts";
+import { type TaskModelPolicyBinding, STAGE_OPERATION_MAPPING, sharedTaskKey, type SharedTaskRecord } from "@agentx/contracts";
+import { TurnAdmissionLimitError } from "../../model-selection/turn-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { E2ESetupProposalSchema, E2EPolicySchema, WEB_API_RUNTIME_PROFILE_ID, verifyE2ESetupProposal, canonicalJson, OPERATION_PROMPT_MAX_BYTES, agentXError, type OperationRequester, type ProjectCommand, type WorkflowFeedbackApprovalBinding, type WorkflowFixPayload, type WorkflowDependencyInvocation, type WorkflowReviewBase, type WorkflowReviewChecks, type WorkflowReviewPlan, type WorkflowReviewFeedback, type WorkflowReviewNote, type SlackThread, type WorkerInvocation, type WorkspaceInstance, ModelSelectionSchema, recipeDigest, recipeRunner, type ModelIdentifier, type ModelSelection, type ResolvedRecipe, type ResolvedStep, type AgentGuardrails, type OrgId, sameJsonContent, type E2ESourceSnapshot, type E2EWorkflowAdmissionRef, type E2ESetupProposal, type E2EPolicy, type PlanApprovalRef, type E2EApplicationPlanIntent, type E2EApplicationSelectionRecord, type E2ERuntimeAccountRef, type E2EApplicationAccountDefinition, readE2EApplicationProjectContract, e2eSyntheticAccountContractDigest, type E2ERegisteredRuntime, ResolvedRecipeSchema } from "@agentx/contracts";
@@ -27,7 +28,7 @@ import { accountRegistryFences, readAccountRegistryEntries } from "../e2e-accoun
 import { E2EAccountRegistryError, unreadableAccountMessage, type E2EAccountRegistryEntry } from "../../e2e/application-account-registry.js";
 import { TERMINAL, getItem, issueCapability, operationKey, operationOrg, operationRecord, outboxRecord, requireOperation, type CallbackClaims, type OperationRecord } from "../cancellation.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember } from "../../developer/creator-member.js";
-import { taskKey, taskPointerKey, taskRecipeKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { effectiveTaskOwner, taskKey, taskPointerKey, taskRecipeKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { hashJson, isConditional, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, planDocumentInstructions, workerPrompt } from "../broker-shared.js";
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../../e2e/feature-plan-planning-context.js";
 import { offersApplicationE2EPlan } from "../../e2e/feature-plan-executable-kinds.js";
@@ -313,18 +314,25 @@ export async function taskOperationParts(
   const turnMapping=!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS"?turnStagesForMode(input.workflowMode??"IMPLEMENT"):undefined;
   // Plan 3, Task 16: the recipe the task froze at its start (never the live agent) decides this step's model, instructions and worker settings.
   let applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model,frozen);
-  const turnActor=chatGptOwner(task?.developerId,input.requester.requestedBy,developerIdForSlackUser);
+  const turnActor=task===undefined?chatGptOwner(undefined,input.requester.requestedBy,developerIdForSlackUser):effectiveTaskOwner(task).developerId;
   let turnPolicy:Awaited<ReturnType<typeof prepareTurnModelPolicy>>|undefined;
   if(!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS") {
     const signInTableName=dependencies.developer?.signInTableName;
-    if(turnActor===undefined||signInTableName===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");
-    const signInStore=new DeveloperSignInStore({documentClient:dependencies.documentClient,tableName:signInTableName,nameTableName:dependencies.tableName,now:Date.now});
-    const actorDeveloperId=await followMerges(signInStore,turnActor);
-    const payerDeveloperId=planOwner===undefined?undefined:await followMerges(signInStore,planOwner);
+    const signInStore=signInTableName===undefined?undefined:new DeveloperSignInStore({documentClient:dependencies.documentClient,tableName:signInTableName,nameTableName:dependencies.tableName,now:Date.now});
+    let slackBasis: {slackUserId:string;slackTask?:{taskId:string;threadTs:string};threadChannel:{teamId:string;channelId:string}}|undefined;
+    if(task===undefined&&input.slackThread!==undefined&&input.requester.requestedBy!==undefined&&!("kind" in input.requester.requestedBy))slackBasis={slackUserId:input.requester.requestedBy.userId,threadChannel:{teamId:input.slackThread.teamId,channelId:input.slackThread.channelId}};
+    else if(task?.provider==="slack"&&task.slackUserId!==undefined&&task.share?.threadTs!==undefined&&(signInStore===undefined||await signInStore.getDeveloper(turnActor??"")===undefined)) {
+      const shared=await getItem<SharedTaskRecord>(dependencies,sharedTaskKey({teamId:task.share.teamId,channelId:task.share.channelId,threadTs:task.share.threadTs}));
+      if(shared?.workflowThread===true&&shared.taskId===task.taskId&&shared.workspaceId===workspace.id&&shared.developerId===task.developerId)slackBasis={slackUserId:task.slackUserId,slackTask:{taskId:task.taskId,threadTs:task.share.threadTs},threadChannel:{teamId:task.share.teamId,channelId:task.share.channelId}};
+    }
+    if(turnActor===undefined||signInStore===undefined&&slackBasis===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");
+    const actorDeveloperId=signInStore===undefined?turnActor:await followMerges(signInStore,turnActor);
+    const payerDeveloperId=planOwner===undefined?undefined:signInStore===undefined?planOwner:await followMerges(signInStore,planOwner);
     const referenceScope={orgId,workspaceId:workspace.id,conversationId:input.conversationId,taskId:task?.taskId??workspace.id};
     const turnOperations=turnMapping?.stages.some(stage=>stage==="code_review"||stage==="security_review"||stage==="plan_check")?await queryAllItems(dependencies,`WORKSPACE#${workspace.id}`,"OPERATION#"):[];
-    turnPolicy=await prepareTurnModelPolicy({...dependencies,store:new AgentStore({documentClient:dependencies.documentClient,tableName:dependencies.tableName,now:Date.now,...(dependencies.agents?.builtins===undefined?{}:{builtins:dependencies.agents.builtins})}),routing:routingOf(dependencies)??{},now:Date.now},{orgId,project:workspace.projectName,actorDeveloperId,...(task===undefined&&input.slackThread!==undefined?{threadChannel:{teamId:input.slackThread.teamId,channelId:input.slackThread.channelId}}:{}),workflowMode:input.workflowMode??"IMPLEMENT",priorModels:taskStageReferences(turnOperations,referenceScope),...(payerDeveloperId===undefined?{}:{payerDeveloperId}),...(planSelection===undefined?{}:{defaultPreferred:planSelection.model})});
-    const actorChecks=await readTurnActorChecks({...dependencies,signInStore,modelSignInTableName:signInTableName},{orgId,project:workspace.projectName,developerId:actorDeveloperId,projectRevision:turnPolicy.projectRevision,...(turnPolicy.frozen.threadChannel===undefined?{}:{threadChannel:turnPolicy.frozen.threadChannel})});
+    turnPolicy=await prepareTurnModelPolicy({...dependencies,store:new AgentStore({documentClient:dependencies.documentClient,tableName:dependencies.tableName,now:Date.now,...(dependencies.agents?.builtins===undefined?{}:{builtins:dependencies.agents.builtins})}),routing:routingOf(dependencies,true)??{},now:Date.now},{orgId,project:workspace.projectName,actorDeveloperId,...(slackBasis??{}),workflowMode:input.workflowMode??"IMPLEMENT",priorModels:taskStageReferences(turnOperations,referenceScope),...(payerDeveloperId===undefined?{}:{payerDeveloperId}),...(planSelection===undefined?{}:{defaultPreferred:planSelection.model})});
+    const actorChecks=await readTurnActorChecks({...dependencies,allowImplicitSlack:dependencies.orgResolver===undefined,...(signInStore===undefined?{}:{signInStore}),...(signInTableName===undefined?{}:{modelSignInTableName:signInTableName})},{orgId,project:workspace.projectName,developerId:actorDeveloperId,...(task===undefined?{}:{task}),projectRevision:turnPolicy.projectRevision,...(turnPolicy.frozen.slackUserId===undefined?{}:{slackUserId:turnPolicy.frozen.slackUserId}),...(turnPolicy.frozen.threadChannel===undefined?{}:{threadChannel:turnPolicy.frozen.threadChannel})});
+    if(slackBasis?.slackTask!==undefined)turnPolicy.checks.push({ConditionCheck:{TableName:dependencies.tableName,Key:sharedTaskKey({...slackBasis.threadChannel,threadTs:slackBasis.slackTask.threadTs}),ConditionExpression:"taskId = :slackTask AND workspaceId = :slackWorkspace AND developerId = :slackActor AND workflowThread = :workflow",ExpressionAttributeValues:{":slackTask":slackBasis.slackTask.taskId,":slackWorkspace":workspace.id,":slackActor":task!.developerId,":workflow":true}}});
     turnPolicy.checks.push(...actorChecks,...taskStageReferenceChecks(dependencies.tableName,turnOperations,referenceScope,turnPolicy.binding.stage));
   }
   if(!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS"&&turnPolicy===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The turn's model authority is unavailable.");
@@ -343,7 +351,7 @@ export async function taskOperationParts(
   }
   // Task 26: the order of the company's AI sources decides where the model comes from. The plan is kept only if no source listed before it serves its model; the
   // key the worker is later given is scoped to the route chosen here, and the route is recorded on the operation so the key can be checked again when asked for.
-  const routing = routingOf(dependencies);
+  const routing = routingOf(dependencies,true);
   const routed = routing === undefined || input.workflowMode === "CHECKS" ? undefined : await routeStep(routing, {
     orgId, project: workspace.projectName, agent: task?.agent?.name ?? ROVARA_CODE_NAME, step: applied?.stepName ?? stepNameOf(undefined, input.workflowMode),
     model: applied?.model ?? resolvedModel.model,
@@ -531,7 +539,9 @@ export async function taskOperationParts(
   };
   const fallback=turnPolicy!==undefined||applied?.modelDecision?.fallback===undefined?undefined:await prepareTaskModelFallback({...dependencies,now:Date.now},{orgId,taskId:task!.taskId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:applied.modelCompanyRevision!,decision:applied.modelDecision});
   if(fallback?.replayed===true)throw agentXError("IDEMPOTENCY_CONFLICT","The fallback operation has already been recorded.");
-  return { operation, outbox: outboxRecord(workspace, invocation), fence,...(turnPolicy===undefined?{}:{modelChecks:[...turnPolicy.checks,...(turnAudit?.items??[])]}),...(turnAudit===undefined?{}:{turnAudit}),...(fallback===undefined?{}:{fallback}) };
+  const modelChecks=turnPolicy===undefined?undefined:[...turnPolicy.checks,...(turnAudit?.items??[])];
+  if(modelChecks!==undefined&&modelChecks.length>25)throw new TurnAdmissionLimitError(modelChecks.length,25);
+  return { operation, outbox: outboxRecord(workspace, invocation), fence,...(modelChecks===undefined?{}:{modelChecks}),...(turnAudit===undefined?{}:{turnAudit}),...(fallback===undefined?{}:{fallback}) };
 }
 
 /** Whether the workspace's task has a baseline round that is requested and not yet started, so a coding run is to export the unchanged code. Never throws: a baseline never stops the coding. */

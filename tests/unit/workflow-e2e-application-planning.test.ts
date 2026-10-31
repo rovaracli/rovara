@@ -792,6 +792,10 @@ describe("ordinary feature PLAN with an approved qualified web target", () => {
     const otherBinding = { ...planned.projectBinding, launchTemplateId: "lt-fedcba9876543210" };
     // A newer revision of the project is bound elsewhere; the task is pinned to the revision it started on.
     planned.harness.db.set({ ...pinned, sk: `REV#${String(definition.revision + 1).padStart(12, "0")}`, definition: { ...definition, revision: definition.revision + 1 }, runtimeBinding: otherBinding });
+    // Production registration advances the catalog together with its immutable revision.
+    const {orgProjectCatalogKey}=await import("@agentx/contracts");
+    const catalogKey=orgProjectCatalogKey(TEST_ORG,"payments");
+    planned.harness.db.set({...planned.harness.db.get(catalogKey)!,latestRevision:definition.revision+1});
     const approved = await decide(planned, "APPROVE");
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     expect(workflowOf(planned).e2e?.applicationSelection).toMatchObject({ runtimeRows: [{ bindingDigest: shaCanonical(planned.projectBinding) }] });

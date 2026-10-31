@@ -14,7 +14,7 @@ function snapshot(deps: Deps, Key: {pk:string;sk:string}, raw: Item | undefined,
   const condition=["attribute_exists(pk)",...fields.map(field=>raw[field]===undefined?`attribute_not_exists(${aliases.name(field)})`:`${aliases.name(field)} = ${aliases.value(raw[field])}`)].join(" AND ");
   return {ConditionCheck:{TableName:deps.tableName,Key,ConditionExpression:condition,ExpressionAttributeNames:aliases.names,...(Object.keys(aliases.values).length===0?{}:{ExpressionAttributeValues:aliases.values})}};
 }
-export async function projectAiLifecycleChecks(deps: Deps, orgId: OrgId, project: string): Promise<TransactItem[]> {
+export async function projectAiLifecycleChecks(deps: Deps, orgId: OrgId, project: string, options: {allowArchived?:boolean} = {}): Promise<TransactItem[]> {
   const catalogKey=orgProjectCatalogKey(orgId,project),metaKey=projectMetaKey(orgId,project);
   const [response,catalog,meta]=await Promise.all([
     deps.documentClient.send(new QueryCommand({TableName:deps.tableName,KeyConditionExpression:"pk = :pk AND begins_with(sk, :prefix)",ExpressionAttributeValues:{":pk":projectPk(orgId,project),":prefix":PROJECT_REVISION_SK_PREFIX},ScanIndexForward:false,Limit:1,ConsistentRead:true})) as Promise<{Items?:Item[]}>,read(deps,catalogKey),read(deps,metaKey),
@@ -27,6 +27,6 @@ export async function projectAiLifecycleChecks(deps: Deps, orgId: OrgId, project
   if(row.pk!==key.pk||row.sk!==key.sk)throw unavailable();
   if(catalog!==undefined&&(catalog.entityType!=="PROJECT_CATALOG"||catalog.name!==project||(catalog.orgId!==undefined&&catalog.orgId!==orgId)||(catalog.latestRevision!==undefined&&catalog.latestRevision!==parsed.data.revision)))throw unavailable();
   if(meta!==undefined&&(meta.entityType!=="PROJECT_META"||meta.name!==project||(meta.status!==undefined&&meta.status!=="active"&&meta.status!=="archived")))throw unavailable();
-  if(meta?.status==="archived")throw agentXError("PROJECT_ARCHIVED",projectArchivedMessage(project));
+  if(meta?.status==="archived"&&options.allowArchived!==true)throw agentXError("PROJECT_ARCHIVED",projectArchivedMessage(project));
   return [snapshot(deps,key,row,["definition"]),snapshot(deps,catalogKey,catalog,["entityType","name","orgId","latestRevision"]),snapshot(deps,metaKey,meta,["entityType","name","status","revision","archivedAt","archivedBy","updatedAt"])];
 }

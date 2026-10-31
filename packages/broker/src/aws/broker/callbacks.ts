@@ -68,11 +68,11 @@ export async function handleCallback(
     throw agentXError("STALE_FENCE", "terminal operations cannot publish more output");
   }
   if(action==="model-fallback") {
-    if(cancelClaims!==undefined||dependencies.developer===undefined||operation.orgId===undefined||(operation.modelTaskId===undefined&&operation.modelTurnPin===undefined))throw agentXError("CALLBACK_FORBIDDEN","This operation cannot authorize a model fallback.");
-    const signInTableName=dependencies.developer.signInTableName;
-    if(signInTableName===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's model authority is unavailable.");
-    const signInStore=new DeveloperSignInStore({documentClient:dependencies.documentClient,tableName:signInTableName,nameTableName:dependencies.tableName,now:Date.now});
-    if(operation.modelTurnPin!==undefined)return json(await authorizeTurnModelFallback({...dependencies,routing:routingOf(dependencies)??{},now:Date.now,signInStore,modelSignInTableName:signInTableName},{orgId:operation.orgId,workspaceId,operationId,fence:claims.fence,verifiedClaims:claims,request:parseBody(request.body)}),request.requestId);
+    if(cancelClaims!==undefined||operation.orgId===undefined||(operation.modelTaskId===undefined&&operation.modelTurnPin===undefined))throw agentXError("CALLBACK_FORBIDDEN","This operation cannot authorize a model fallback.");
+    const signInTableName=dependencies.developer?.signInTableName;
+    const signInStore=signInTableName===undefined?undefined:new DeveloperSignInStore({documentClient:dependencies.documentClient,tableName:signInTableName,nameTableName:dependencies.tableName,now:Date.now});
+    if(operation.modelTurnPin!==undefined)return json(await authorizeTurnModelFallback({...dependencies,allowImplicitSlack:dependencies.orgResolver===undefined,routing:routingOf(dependencies,true)??{},now:Date.now,...(signInStore===undefined?{}:{signInStore}),...(signInTableName===undefined?{}:{modelSignInTableName:signInTableName})},{orgId:operation.orgId,workspaceId,operationId,fence:claims.fence,verifiedClaims:claims,request:parseBody(request.body)}),request.requestId);
+    if(signInStore===undefined||signInTableName===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The task's model authority is unavailable.");
     if(operation.modelTaskId===undefined)throw agentXError("CALLBACK_FORBIDDEN","This operation has no task model authority.");
     return json(await resolveAndAuthorizeTaskFallback({...dependencies,routing:routingOf(dependencies)??{},now:Date.now,signInStore,modelSignInTableName:signInTableName},{orgId:operation.orgId,taskId:operation.modelTaskId,workspaceId,operationId,fence:claims.fence,verifiedClaims:claims,request:parseBody(request.body)}),request.requestId);
   }

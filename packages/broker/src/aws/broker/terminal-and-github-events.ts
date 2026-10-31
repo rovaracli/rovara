@@ -34,7 +34,7 @@ import { parseStoredEvent, pullRequestKey, workspaceKey } from "./admin-and-help
 import type { AwsBrokerDependencies, PullRequestRecord } from "./definitions.js";
 import { developerTaskActions } from "./dependency-wiring.js";
 import { FEEDBACK_BUNDLE_MAX_BYTES, companyAutonomyLimit, ownerCallerOf } from "./feedback-and-codebuild.js";
-import { boundedTurnAdmission } from "./model-access.js";
+import { boundedTurnAdmission, TurnAdmissionLimitError } from "../../model-selection/turn-admission.js";
 import { readObjectText } from "./plan-answers.js";
 import { describeFeedbackFixes } from "./pull-request-reconcile.js";
 import { githubScope, installOrgId, orgOfRecord, webhookRepositoryUrl } from "./scope-helpers.js";
@@ -155,7 +155,7 @@ export async function sendTerminalResult(
       console.log(JSON.stringify({ component: "broker", event: "developer.first_task_queue_failed", taskId: pointer.taskId, operationId: operation.id, error: partsError instanceof Error ? partsError.name : "unknown" }));
       // Plan 3, Task 16: a model the company or the project does not allow is the owner's to fix, and the refusal's words say how.
       // Only that error is quoted: its message names the agent, the step and the model, never the task.
-      if (partsError instanceof AgentXError && partsError.code === "MODEL_NOT_ALLOWED") startRefusal.text = refusalText(partsError);
+      if (partsError instanceof TurnAdmissionLimitError || partsError instanceof AgentXError && partsError.code === "MODEL_NOT_ALLOWED") startRefusal.text = refusalText(partsError);
       await send(failedPrepareItems(dependencies, workspace, operation, now, startRefusal.text));
       return "FAILED";
     }
@@ -169,6 +169,11 @@ export async function sendTerminalResult(
     if(queued.fallback?.event!==undefined)await flushAuditEvents(dependencies,[queued.fallback.event]);
     if(queued.turnAudit!==undefined)await flushAuditEvents(dependencies,[queued.turnAudit.event]);
   } catch (queueError) {
+    if(queueError instanceof TurnAdmissionLimitError) {
+      startRefusal.text=refusalText(queueError);
+      await send(failedPrepareItems(dependencies,workspace,operation,now,startRefusal.text));
+      return "FAILED";
+    }
     // C19: a temporary error from the one queuing write committed nothing; the worker tries again.
     // A TransactionCanceledException with a TransactionConflict reason is not temporary here: it
     // keeps the QueuingConflict path below.

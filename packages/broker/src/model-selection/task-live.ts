@@ -41,7 +41,7 @@ async function readPinnedTaskStage(deps:TaskStageLiveDependencies,input:TaskStag
  const decision=resolvePinnedTaskStage({...input,registeredAt:pin.registeredAt,builtinDefault,live:{...evidence,forbidden:guardrails.forbiddenModels,deniedModels:input.deniedModels,requireDifferentVendor:guardrails.requireCrossCompanyReview&&(input.stage==="code_review"||input.stage==="security_review")}});
  const checks:TransactItem[]=[];
  if(commitFences) {
-  const lifecycle=await projectAiLifecycleChecks(deps,input.orgId,input.project),identity=lifecycle[0]?.ConditionCheck;
+  const lifecycle=await projectAiLifecycleChecks(deps,input.orgId,input.project,{allowArchived:true}),identity=lifecycle[0]?.ConditionCheck;
   if(identity===undefined)throw unavailable();
   identity.ConditionExpression+=" AND #g3RegisteredAt = :g3RegisteredAt";
   identity.ExpressionAttributeNames={...identity.ExpressionAttributeNames,"#g3RegisteredAt":"registeredAt"};identity.ExpressionAttributeValues={...identity.ExpressionAttributeValues,":g3RegisteredAt":pin.registeredAt};
