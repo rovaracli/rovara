@@ -24,8 +24,8 @@ it("refuses an agentless project turn when the company Build lock is unavailable
  const conversationId=(conversation.body.conversation as {id:string}).id;
  const priorOutboxCount=db.find(row=>row.entityType==="OUTBOX").length;
  const result=await serviceCall(handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Fix the project."});
- expect(result.status).toBe(403);
- expect(result.body).toMatchObject({error:{code:"MODEL_NOT_ALLOWED"}});
+ expect(result.status).toBe(409);
+ expect(result.body).toMatchObject({error:{code:"LOCK_UNSATISFIABLE",stage:"build",fixHref:"/app/admin/how-we-work"}});
  expect(db.find(row=>row.entityType==="OUTBOX")).toHaveLength(priorOutboxCount);
 });
 
@@ -232,7 +232,32 @@ it("starts a channel-only developer's first task without a native project grant"
 
 it("uses and fences the real legacy task identity at turn fallback",async()=>{
  const h=await runtimeTurnFixture(),taskId=randomUUID();const {taskKey,taskPointerKey}=await import("../../packages/broker/src/developer/task-records.js");
- h.db.set({...taskPointerKey(h.workspaceId),taskId});h.db.set({...taskKey(taskId),taskId,orgId:TEST_ORG,workspaceId:h.workspaceId,project:"payments"});
+ h.db.set({...taskPointerKey(h.workspaceId),taskId});h.db.set({...taskKey(taskId),taskId,orgId:TEST_ORG,workspaceId:h.workspaceId,project:"payments",developerId:h.actor,developerName:"Owner",provider:"slack"});
  const original=h.db.send.bind(h.db);let fenced=false;h.db.send=async command=>{if(command.constructor.name==="TransactWriteCommand"){const input=command.input as {TransactItems?:Array<{ConditionCheck?:{Key?:{pk?:string}}}>};fenced=input.TransactItems?.some(item=>item.ConditionCheck?.Key?.pk===`DEVTASK#${taskId}`)??false;}return original(command);};
  const response=await call(h.handler,{method:"POST",path:h.path,headers:{"x-agentx-callback-capability":h.invocation.callbackCapability},body:h.body});expect(response.status,JSON.stringify(response.body)).toBe(200);expect(fenced).toBe(true);
+});
+
+for(const locked of [false,true])it(`keeps a project-chosen ChatGPT model above an unlocked default but refuses an unavailable lock (locked=${locked})`,async()=>{
+ const {fakeModelAccess}=await import("../support/fake-model-access.js");const access=fakeModelAccess();access.setOrgSpent(TEST_ORG,0);
+ const {handler,db,actor}=await createTurnHarness({modelAccess:{access,proxyUrl:"http://test-proxy.invalid:4000"},chatgpt:{settings:async()=>({enabled:true,preferredModel:"gpt-6.1-sol"}),view:async()=>({connected:true,status:"connected",connectedAt:"2026-10-01T00:00:00.000Z",models:["gpt-6.1-sol"]})}});
+ access.setMemberSpent(TEST_ORG,actor,0);
+ await registerSlackProject(handler);
+ const {AgentStore,resolveAgent}=await import("../../packages/broker/src/agents/store.js");
+ const {recipeDigest,projectPlaybookKey}=await import("@agentx/contracts");
+ const store=new AgentStore({documentClient:db,tableName:"state",now:Date.now});
+ const agent=await store.create({orgId:TEST_ORG,name:"Plan choice",owner:{kind:"project",project:"payments"},accountable:{developerId:actor},extends:"rovara-code",overlay:{steps:{build:{model:{provider:"openai",modelId:"gpt-6.1-sol"}}}},purpose:"process",createdBy:actor});
+ const recipe=await resolveAgent(store,TEST_ORG,agent.agentId,"draft");
+ await store.publish({orgId:TEST_ORG,agentId:agent.agentId,expectedDraftRevision:agent.draftRevision,digest:recipeDigest(recipe),by:actor});
+ db.set({...projectPlaybookKey(TEST_ORG,"payments"),revision:1,defaultProcess:{kind:"project_process",agentId:agent.agentId}});
+ db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model:{provider:"anthropic",modelId:"claude-sonnet-4-6"},thinkingLevel:null,locked}}});
+ const thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000092`,user="U0123456789";
+ const workspace=await ensureWorkspace(handler,thread,user),workspaceId=String(workspace.body.workspaceId);markReady(db,workspaceId);
+ const conversation=await serviceCall(handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
+ const result=await serviceCall(handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Fix the project."});
+ if(locked){expect(result).toMatchObject({status:409,body:{error:{code:"LOCK_UNSATISFIABLE",stage:"build",fixHref:"/app/admin/how-we-work"}}});return;}
+ expect(result.status,JSON.stringify(result.body)).toBe(202);const operationId=(result.body.operation as {id:string}).id;
+ const invocation=db.find(row=>row.entityType==="OUTBOX"&&row.operationId===operationId)[0]!.invocation as {callbackCapability:string;payload:{model:unknown}};
+ expect(invocation.payload.model).toMatchObject({provider:"openai",modelId:"gpt-6.1-sol"});
+ const key=await call(handler,{method:"GET",path:"/v1/internal/model-access",headers:{"x-agentx-callback-capability":invocation.callbackCapability}});
+ expect(key.status,JSON.stringify(key.body)).toBe(200);
 });

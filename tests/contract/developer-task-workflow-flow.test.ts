@@ -1,6 +1,6 @@
 import { commitReviewedProjectWorkingBranch } from "../../packages/broker/src/org/project-working-branch-save.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
-import { githubInstallationKey, orgMetaKey, orgMemberKey, developerOrgKey } from "@agentx/contracts";
+import { githubInstallationKey, orgMetaKey, orgMemberKey, developerOrgKey, orgProjectCatalogKey } from "@agentx/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -3084,6 +3084,8 @@ describe("checks AgentX proposes in the coding plan", () => {
     const pinned = harness.db.get(projectRevisionKey(TEST_ORG, "payments", record.startingRevision)) as Record<string, unknown> & { definition: Record<string, unknown> & { repositories: Array<Record<string, unknown>> } };
     const later = record.startingRevision + 1;
     harness.db.set({ ...pinned, sk: `REV#${String(later).padStart(12, "0")}`, definition: { ...pinned.definition, revision: later, repositories: pinned.definition.repositories.map((repository) => ({ ...repository, path: "repo/moved" })) } });
+    // Registration advances the catalog with the immutable revision in production.
+    const catalogKey=orgProjectCatalogKey(TEST_ORG,"payments");harness.db.set({...harness.db.get(catalogKey)!,latestRevision:later});
     await harness.finish(record.workspaceId, String(operations(harness, record.workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
     const prompt = outboxPrompt(harness, String(operations(harness, record.workspaceId).find((item) => item.workflowMode === "PLAN")!.id));
     expect(prompt).toContain(planChecksInstructions(["repo/demo"], [REQUIRED_CHECK]));
@@ -3102,6 +3104,8 @@ describe("checks AgentX proposes in the coding plan", () => {
     const pinned = harness.db.get(projectRevisionKey(TEST_ORG, "payments", record.startingRevision)) as Record<string, unknown> & { definition: Record<string, unknown> & { repositories: Array<Record<string, unknown>> } };
     const later = record.startingRevision + 1;
     harness.db.set({ ...pinned, sk: `REV#${String(later).padStart(12, "0")}`, definition: { ...pinned.definition, revision: later, repositories: [{ ...pinned.definition.repositories[0], name: "renamed-later", path: "repo/later" }] } });
+    // Production registration updates the catalog in the same transaction.
+    const catalogKey=orgProjectCatalogKey(TEST_ORG,"payments");harness.db.set({...harness.db.get(catalogKey)!,latestRevision:later});
     await harness.finish(record.workspaceId, String(operations(harness, record.workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
 
     const promptFor = () => {

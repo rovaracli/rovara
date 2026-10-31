@@ -2,6 +2,7 @@
 // records (FR-016, FR-021, FR-023, FR-037, R12, R16, R17, US1 scenarios 4 and 5).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import {projectMemberKey} from "@agentx/contracts";
 import type { ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, call } from "../support/slack-broker.js";
@@ -466,3 +467,9 @@ async function registerRevision(handler: Parameters<typeof call>[0], revision: n
   });
   if (response.status !== 201) throw new Error(`registration failed: ${JSON.stringify(response.body)}`);
 }
+
+for(const role of ["viewer","contributor"] as const)it(`C53 rechecks an existing owner's ${role} grant while waiving lost channel access`,async()=>{
+ let channel=true;const h=await finished("SUCCEEDED",{channelMembers:async request=>({ok:true,memberOf:channel?[...request.channelIds]:[]})});channel=false;
+ h.db.set({...projectMemberKey(TEST_ORG,MAYA.developerId,"payments"),role:role==="viewer"?"viewer":"developer",projectRole:role,ownerKey:MAYA.developerId,projectName:"payments"});
+ const response=await h.post("continue",{requestId:randomUUID(),instructions:"Continue"});expect(response.status).toBe(role==="viewer"?403:200);
+});
