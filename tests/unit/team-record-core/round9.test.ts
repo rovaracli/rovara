@@ -356,6 +356,23 @@ describe("R8-1 learning v2 asks the access records at read time", () => {
     expect(await idsFor({ principals: ["U-other"], groups: [] })).toContain("les_proj0001");
   });
 
+  it("a caller that cannot supply the access port gets no lessons, an empty digest and hidden panel rows, each with a log line", async () => {
+    const { deps, store } = await setup();
+    const lines: string[] = [];
+    const log = (event: string) => { lines.push(event); };
+    const without = { ...deps, access: undefined as never, log };
+    const loaded = await loadLessonsForStage(without, request(member));
+    expect(loaded.context).toBeUndefined();
+    expect(loaded.skipped).toBe("access_unavailable");
+    expect((await learnedContextForDispatch(without, request(member), ["task.learnedContext.v1"])).learnedContext).toBeUndefined();
+    const digest = await buildWeeklyDigest(store, key, deps.now(), member, undefined as never, log);
+    expect(digest.top).toEqual([]);
+    expect(digest.restrictedHidden).toBe(1);
+    await store.putManifest({ taskId: "t1", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_slack001", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 100 });
+    expect((await lessonPanelRows(store, key, "t1", member, undefined as never, log))[0]).toMatchObject({ visible: false, canMark: false });
+    expect(lines).toEqual(expect.arrayContaining(["learning.load_no_access_port", "learning.digest_no_access_port", "learning.panel_no_access_port"]));
+  });
+
   it("a record that cannot be read loads no lessons (and the load says why)", async () => {
     const { w, deps } = await setup();
     w.db.injectFault({ command: "BatchGetCommand", error: { name: "InternalServerError" }, times: 100 });

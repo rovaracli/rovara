@@ -11,7 +11,7 @@ import { PROJECT_VOLUME_KEY } from "../../../packages/broker/src/lessons/sources
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
-import { Alerts, Audit, Clock, KEY, uniqueDraft, lessonRecord, seed, MemoryVectors, ScriptedModel, Spend, candidateJson, codeCite, draft, embedder, memberSpan, reply, settings, subject, verifier, classifyTier, facts, autoSettings } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, uniqueDraft, lessonRecord, seed, MemoryVectors, ScriptedModel, Spend, candidateJson, codeCite, draft, embedder, memberSpan, reply, settings, subject, verifier, classifyTier, facts, autoSettings, allowAllAccess } from "./lesson-helpers.js";
 
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
 const tierInput = (over: Partial<TierInput> = {}): TierInput => ({ ...draft(), citationChecks: valid, ...over });
@@ -253,7 +253,7 @@ describe("the digest never names a restricted source to people who cannot see it
     const store = new InMemoryLessonStore();
     await seed(store, secretLesson(), openLesson());
     await store.setFlags(KEY, flags);
-    const digest = await buildWeeklyDigest(store, KEY, new Clock().now(), { principals: ["U-stranger"], groups: [] });
+    const digest = await buildWeeklyDigest(store, KEY, new Clock().now(), { principals: ["U-stranger"], groups: [] }, allowAllAccess);
     expect(digest.pausedSources).toEqual(["member:ann", "slack:CPUBLIC"]);
     expect(digest.pausedSourcesHidden).toBe(2);
     const text = JSON.stringify(digest);
@@ -266,7 +266,7 @@ describe("the digest never names a restricted source to people who cannot see it
     const store = new InMemoryLessonStore();
     await seed(store, secretLesson(), openLesson());
     await store.setFlags(KEY, flags);
-    const digest = await buildWeeklyDigest(store, KEY, new Clock().now(), { principals: ["U-member"], groups: [] });
+    const digest = await buildWeeklyDigest(store, KEY, new Clock().now(), { principals: ["U-member"], groups: [] }, allowAllAccess);
     expect(digest.pausedSources).toEqual(["member:ann", "slack:CPUBLIC", "slack:CSECRET"]);
     expect(digest.pausedSourcesHidden).toBe(1);
   });
@@ -275,7 +275,7 @@ describe("the digest never names a restricted source to people who cannot see it
     const store = new InMemoryLessonStore();
     await seed(store, secretLesson(), { ...openLesson(), id: "les_mixed001", provenance: { ...openLesson().provenance, inputSources: ["slack:CSECRET"] } });
     await store.setFlags(KEY, { pausedSources: { "slack:CSECRET": { at: 1, reason: "spike" } } });
-    const digest = await buildWeeklyDigest(store, KEY, new Clock().now(), { principals: ["U-stranger"], groups: [] });
+    const digest = await buildWeeklyDigest(store, KEY, new Clock().now(), { principals: ["U-stranger"], groups: [] }, allowAllAccess);
     expect(digest.pausedSources).toEqual([]);
     expect(digest.pausedSourcesHidden).toBe(1);
   });

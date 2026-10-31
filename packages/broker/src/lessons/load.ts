@@ -37,9 +37,10 @@ export interface LoadDeps extends LessonDeps {
   store: LessonStore; embedder: Embedder; vectors: LessonVectors; settings: LearningSettingsReader;
   /**
    * The record core's access check. Each lesson's source places are checked against the access records at load time (not only against the snapshot the lesson froze), so a person
-   * removed from a channel stops getting its lessons. WIRING: production must pass it; without it only the frozen snapshot is checked.
+   * removed from a channel stops getting its lessons. REQUIRED: a caller that cannot supply it gets no lessons (fail closed, with a log line), never the frozen snapshot alone.
    */
-  access?: AccessCheckPort;
+  access: AccessCheckPort;
+  log?: (event: string, fields: Record<string, unknown>) => void;
 }
 
 
@@ -115,9 +116,14 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   }
 
   // The access records, asked now for the places each candidate lesson was learned from (one batch for the whole load). A record that cannot be read loads nothing.
-  const placed = deps.access === undefined ? [] : active.filter((lesson) => stageAllows(lesson, stage) && lessonPlaces(lesson).scopes.length > 0);
+  if ((deps.access as AccessCheckPort | undefined) === undefined) {
+    deps.log?.("learning.load_no_access_port", { stage });
+    deps.metrics?.count("learning_load_skipped", { reason: "access_unavailable" });
+    return empty("access_unavailable", setVersion);
+  }
+  const placed = active.filter((lesson) => stageAllows(lesson, stage) && lessonPlaces(lesson).scopes.length > 0);
   const stillAllowed = new Map<string, boolean>();
-  if (deps.access !== undefined && placed.length > 0) {
+  if (placed.length > 0) {
     try {
       const viewer = request.taskAudience.kind === "private" ? { principals: request.taskAudience.identity.principals, groups: request.taskAudience.identity.groups } : undefined;
       const answers = await deps.access.mayRead(OrgIdSchema.parse(key.workspaceId), viewer, placed.map((lesson) => lessonPlaces(lesson)));

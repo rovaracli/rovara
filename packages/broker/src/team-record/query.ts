@@ -91,7 +91,7 @@ export interface RecordQueryDependencies {
   limiter?: RateLimiter;
   tasks?: PastWorkTasksPort;
   /** The titles of the lessons learned from a task, each with the audience of the lesson (a lesson from a private channel is restricted). */
-  lessonsOfTask?(orgId: OrgId, project: string, taskId: string): Promise<Array<{ title: string; audience: Audience; /** The places the lesson was learned from; each is checked at read time. */ scopes?: string[]; /** Of those, the ones whose own access record the lesson requires. */ restrictedScopes?: string[] }>>;
+  lessonsOfTask?(orgId: OrgId, project: string, taskId: string): Promise<Array<{ title: string; audience: Audience; /** The places the lesson was learned from; each is checked at read time. */ scopes: string[]; /** Of those, the ones whose own access record the lesson requires. */ restrictedScopes: string[] }>>;
   stats?: StatsPort;
   now?: () => number;
   log?: RecordLog;
@@ -295,7 +295,7 @@ export async function pastWork(deps: RecordQueryDependencies, audience: ReadAudi
   let lessonHidden = false;
   for (const task of checked.visible.slice(0, limit)) {
     // A lesson from a private place shows its title only to an audience that could see that place.
-    const learned = await (deps.lessonsOfTask?.(orgId, project, task.taskId) ?? Promise.resolve<Array<{ title: string; audience: Audience; scopes?: string[]; restrictedScopes?: string[] }>>([])).then((list) => list, () => []);
+    const learned = await (deps.lessonsOfTask?.(orgId, project, task.taskId) ?? Promise.resolve<Array<{ title: string; audience: Audience; scopes: string[]; restrictedScopes: string[] }>>([])).then((list) => list, () => []);
     // One malformed lesson audience drops that entry, not the call.
     const wellFormed = learned.slice(0, 20).filter((lesson) => AudienceSchema.safeParse(lesson.audience).success);
     const visibleLessons = await filterVisible(wellFormed, effective, filters);

@@ -4,7 +4,7 @@ import { approveLesson, listWaiting, rejectLesson, retireByPerson, rollbackLesso
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
 import { promoteToRule, ruleParagraph, type PromoteDeps } from "../../../packages/broker/src/lessons/promote.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { Audit, Clock, KEY, Publisher, directory, lessonRecord, seed, settings } from "./lesson-helpers.js";
+import { Audit, Clock, KEY, Publisher, directory, lessonRecord, seed, settings, allowAllAccess } from "./lesson-helpers.js";
 
 const base = (over: Parameters<typeof lessonRecord>[0] = {}) => lessonRecord({ id: "les_pend0001", status: "pending", tier: 1, tierReasons: ["not_a_fact"], approvals: [], type: "convention", pendingExpiresAt: 9e15, provenance: { ...lessonRecord().provenance, authors: ["carl"] }, ...over });
 const input = (approverId: string, id = "les_pend0001") => ({ ...KEY, lessonId: id, approverId });
@@ -254,7 +254,7 @@ describe("weekly digest (decision Q2)", () => {
       lessonRecord({ id: "les_auto0001", updatedAt: now - 1000 }), lessonRecord({ id: "les_wait0001", status: "pending", approvals: [] }),
       lessonRecord({ id: "les_gone0001", status: "retired", updatedAt: now - 1000 }), lessonRecord({ id: "les_old00001", status: "retired", updatedAt: now - 30 * 86_400_000 }),
       lessonRecord({ id: "les_rest0001", provenance: restricted, updatedAt: now - 1000 }), lessonRecord({ id: "les_stal0001", status: "stale" }));
-    const digest = await buildWeeklyDigest(store, KEY, now, { principals: [], groups: [] });
+    const digest = await buildWeeklyDigest(store, KEY, now, { principals: [], groups: [] }, allowAllAccess);
     expect(digest.autoApplied.map((i) => i.id)).toEqual(["les_auto0001"]);
     expect(digest.waiting.map((i) => i.id)).toEqual(["les_wait0001"]);
     expect(digest.retired.map((i) => i.id)).toEqual(["les_gone0001"]);

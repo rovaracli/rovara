@@ -28,18 +28,20 @@ export interface WeeklyDigest {
   restrictedHidden: number;
 }
 
-export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: number, viewer: IdentitySet, access?: AccessCheckPort): Promise<WeeklyDigest> {
+export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: number, viewer: IdentitySet, access: AccessCheckPort, log?: (event: string, fields: Record<string, unknown>) => void): Promise<WeeklyDigest> {
   const since = now - WEEK;
   const all = await store.list(key);
   const item = (l: Lesson): DigestItem => ({ id: l.id, title: l.title, type: l.type, tier: l.tier, scope: l.scope, links: l.citations.flatMap((c) => (c.kind === "pr" ? [c.url] : [])) });
   // The frozen snapshot AND the access records now, for the places each lesson was learned from (an unreadable record fails the digest rather than showing or hiding a guess).
   const current = new Map<string, boolean>();
-  if (access !== undefined) {
+  const noPort = (access as AccessCheckPort | undefined) === undefined;
+  if (noPort) log?.("learning.digest_no_access_port", {}); // fail closed: no lesson is shown without the check
+  else {
     const placed = all.filter((l) => lessonPlaces(l).scopes.length > 0);
     const answers = placed.length === 0 ? [] : await access.mayRead(OrgIdSchema.parse(key.workspaceId), viewer, placed.map((l) => lessonPlaces(l)));
     for (const [index, l] of placed.entries()) current.set(l.id, answers[index] === true);
   }
-  const visible = (l: Lesson): boolean => (l.provenance.audience.kind !== "restricted" || satisfiesAcl(viewer, l.provenance.audience.acl)) && current.get(l.id) !== false;
+  const visible = (l: Lesson): boolean => (l.provenance.audience.kind !== "restricted" || satisfiesAcl(viewer, l.provenance.audience.acl)) && !noPort && current.get(l.id) !== false;
   const shown = all.filter(visible);
   const byValue = (a: Lesson, b: Lesson): number => lessonValue(b) - lessonValue(a) || a.id.localeCompare(b.id);
   return {

@@ -15,7 +15,7 @@ import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import { isCorroborated, lessonValue } from "../../../packages/broker/src/lessons/value.js";
 import type { Audience, Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, Judge, KEY, MemoryVectors, PROJECT, Publisher, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, Judge, KEY, MemoryVectors, PROJECT, Publisher, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings, allowAllAccess } from "./lesson-helpers.js";
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 
 const restricted: Audience = { kind: "restricted", acl: { source: "slack", scope: "slack:T/C9", principals: ["U-member"], capturedAt: "x", liveCheck: "none" } };
@@ -218,10 +218,10 @@ describe("I2: restricted lessons are shown and decided only by people who can se
   it("the digest lists restricted waiting lessons for people allowed to see them, and counts them for everyone else", async () => {
     const { store, clock } = approveSetup();
     await seed(store, pending(), base({ id: "les_open0001" }));
-    const member = await buildWeeklyDigest(store, KEY, clock.now(), inACL);
+    const member = await buildWeeklyDigest(store, KEY, clock.now(), inACL, allowAllAccess);
     expect(member.waiting.map((i) => i.id).sort()).toEqual(["les_open0001", "les_pend0001"]);
     expect(member.restrictedHidden).toBe(0);
-    const stranger = await buildWeeklyDigest(store, KEY, clock.now(), outside);
+    const stranger = await buildWeeklyDigest(store, KEY, clock.now(), outside, allowAllAccess);
     expect(stranger.waiting.map((i) => i.id)).toEqual(["les_open0001"]);
     expect(stranger.restrictedHidden).toBe(1);
     expect(JSON.stringify(stranger)).not.toContain("les_pend0001");
@@ -417,7 +417,7 @@ describe("P9: tenancy across the whole lane", () => {
     expect(await recordTaskOutcome(counters, { ...B, taskId: "task-1", outcome: "merged", sendBacks: 0, corrections: [] })).toEqual({ harmful: [], queuedHelpful: [] });
     expect((await s.store.get(KEY, "les_live0001"))!.counters.harmful).toBe(0);
     expect(await listWaiting(s.store, B, inACL)).toEqual([]);
-    expect((await buildWeeklyDigest(s.store, B, s.clock.now(), inACL)).top).toEqual([]);
+    expect((await buildWeeklyDigest(s.store, B, s.clock.now(), inACL, allowAllAccess)).top).toEqual([]);
     const load = await loadLessonsForStage({ store: s.store, embedder, vectors: new MemoryVectors(), settings: settings(), audit: new Audit(), now: s.clock.now }, { workspaceId: "ws-B", project: PROJECT, taskId: "t", stage: "IMPLEMENT", round: 1, intent: "x", repos: ["api"], files: [], languages: [], taskAudience: { kind: "shared" } });
     expect(load.context).toBeUndefined();
   });
@@ -449,7 +449,7 @@ describe("owner decision 'Lesson limits': ranking by value", () => {
     const { store, clock } = approveSetup();
     await seed(store, rec("les_low00001", { type: "preference", createdAt: 9 }), rec("les_top00001", { type: "preference", createdAt: 1 }, { sourceKinds: ["send_back"], measured: true }), rec("les_mid00001", { type: "pitfall", createdAt: 5 }, { supportTasks: ["t1", "t2"] }));
     expect((await listWaiting(store, KEY, inACL)).map((l) => l.id)).toEqual(["les_top00001", "les_mid00001", "les_low00001"]);
-    const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL);
+    const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL, allowAllAccess);
     expect(digest.top.map((i) => i.id)).toEqual(["les_top00001", "les_mid00001", "les_low00001"]);
     expect(digest.queuedCount).toBe(0);
   });
@@ -458,7 +458,7 @@ describe("owner decision 'Lesson limits': ranking by value", () => {
     const { store, clock } = approveSetup();
     await seed(store, rec("les_cand0001", { status: "candidate" }, { sources: ["slack:C1"], inputSources: ["slack:C1"] }));
     await store.setFlags(KEY, { pausedSources: { "slack:C1": { at: 1, reason: "spike" } } });
-    const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL);
+    const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL, allowAllAccess);
     expect(digest).toMatchObject({ queuedCount: 1, pausedSources: ["slack:C1"] });
   });
 });

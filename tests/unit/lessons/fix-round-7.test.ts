@@ -9,7 +9,7 @@ import { processDraft, resumeAndResettle, type ProcessDeps } from "../../../pack
 import { isMeasured } from "../../../packages/broker/src/lessons/reflect.js";
 import { noteCandidateSources } from "../../../packages/broker/src/lessons/sources.js";
 import { InMemoryLessonStore, type LessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, directory, draft, embedder, facts, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, directory, draft, embedder, facts, lessonRecord, seed, settings, verifier, allowAllAccess } from "./lesson-helpers.js";
 
 describe("F10: rollback honours the erasure fence", () => {
   async function erasureInFlight() {
@@ -154,13 +154,13 @@ describe("one switch: the tier-0 approval default", () => {
     const { deps, store, approve } = pipeline();
     const out = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, ...strong } }));
     const viewer = { principals: [], groups: [] };
-    const before = await buildWeeklyDigest(store, KEY, deps.now(), viewer);
+    const before = await buildWeeklyDigest(store, KEY, deps.now(), viewer, allowAllAccess);
     expect(before.waiting.map((i) => i.id)).toEqual([out.lesson!.id]);
     expect(before.top.map((i) => i.id)).toEqual([out.lesson!.id]);
     expect(before.autoApplied).toEqual([]);
     expect((await listWaiting(store, KEY, viewer)).map((l) => l.id)).toEqual([out.lesson!.id]);
     expect(await approveLesson(approve, { ...KEY, lessonId: out.lesson!.id, approverId: "bob" })).toMatchObject({ ok: true, status: "active" });
-    const after = await buildWeeklyDigest(store, KEY, deps.now(), viewer);
+    const after = await buildWeeklyDigest(store, KEY, deps.now(), viewer, allowAllAccess);
     expect(after.waiting).toEqual([]);
     expect(after.top.map((i) => i.id)).toEqual([out.lesson!.id]);
     expect(after.autoApplied).toEqual([]);

@@ -216,7 +216,7 @@ describe("pastWork (the Plan 9 contract)", () => {
     await outcomes(w);
     await observeRowAccess(w.table, ORG_A, privateAudience.acl);
     const list = [task("t1", PROJECT_AUDIENCE), task("t2", privateAudience)];
-    const d = deps(w, { tasks: tasks(list), lessonsOfTask: async (_o, _p, id) => (id === "t1" ? [{ title: "Use withRetry", audience: PROJECT_AUDIENCE }] : []) });
+    const d = deps(w, { tasks: tasks(list), lessonsOfTask: async (_o, _p, id) => (id === "t1" ? [{ title: "Use withRetry", audience: PROJECT_AUDIENCE, scopes: [], restrictedScopes: [] }] : []) });
     const sharedResult = await pastWork(d, person(), "shared", "web", { query: "billing" });
     expect(sharedResult.items.map((item) => item.taskId)).toEqual(["t1"]);
     expect(sharedResult.someHidden).toBe(false);

@@ -213,7 +213,7 @@ describe("I-7 past_work lesson titles follow the lesson's audience", () => {
     const w = world();
     await observeRowAccess(w.table, ORG_A, { source: "slack", scope: "slack:T1/C1", principals: ["U1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" });
     const task: PastWorkTask = { taskId: "t1", title: "T", status: "merged", pullRequests: [], planSummary: "p", audience: PROJECT, trust: "member" };
-    const lessons = async (): Promise<Array<{ title: string; audience: Audience }>> => [{ title: "Public lesson", audience: PROJECT }, { title: "Layoff lesson", audience: { kind: "restricted", acl: { source: "slack", scope: "slack:T1/C1", principals: ["U1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } } }];
+    const lessons = async (): Promise<Array<{ title: string; audience: Audience; scopes: string[]; restrictedScopes: string[] }>> => [{ title: "Public lesson", audience: PROJECT, scopes: [], restrictedScopes: [] }, { title: "Layoff lesson", audience: { kind: "restricted", acl: { source: "slack", scope: "slack:T1/C1", principals: ["U1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } }, scopes: ["slack:T1/C1"], restrictedScopes: ["slack:T1/C1"] }];
     const d = deps(w, { tasks: { async search() { return [task]; } }, lessonsOfTask: lessons });
     const asShared = await pastWork(d, shared, "shared", "web", { query: "x" });
     expect(asShared.items[0]!.lessonsLearned).toEqual(["Public lesson"]);
@@ -392,7 +392,7 @@ describe("Fix round 2 (recheck)", () => {
     const w = world();
     await observeRowAccess(w.table, ORG_A, { source: "slack", scope: "slack:T1/C1", principals: ["U1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" });
     const task: PastWorkTask = { taskId: "t1", title: "T", status: "merged", pullRequests: [], planSummary: "p", audience: PROJECT, trust: "member" };
-    const lessons = async () => [{ title: "Good", audience: PROJECT }, { title: "Bad", audience: { kind: "restricted" } as never }];
+    const lessons = async () => [{ title: "Good", audience: PROJECT, scopes: [], restrictedScopes: [] }, { title: "Bad", audience: { kind: "restricted" } as never, scopes: [], restrictedScopes: [] }];
     const result = await pastWork(deps(w, { tasks: { async search() { return [task]; } }, lessonsOfTask: lessons }), person(), "private", "web", { query: "x" });
     expect(result.items[0]!.lessonsLearned).toEqual(["Good"]);
   });
