@@ -17,3 +17,6 @@ export * from "./refresh-token.js";
 export * from "./schema.js";
 export * from "./types.js";
 export * from "./util.js";
+export * from "./mcp-runner/bundle.js";
+export * from "./mcp-runner/lockfile-policy.js";
+export * from "./mcp-runner/tar.js";
