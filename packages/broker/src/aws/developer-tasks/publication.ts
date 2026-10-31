@@ -42,6 +42,8 @@ import { resumeParkedTaskDispatch } from "./access-resume.js";
 import { candidateChangedFiles, taskView } from "./task-view.js";
 import { syncIndex } from "./task-index.js";
 import { actionableWorkspace, busyOrClosing, extraItemsCancelled } from "./task-window.js";
+import { specPublicationGate } from "./spec-wiring.js";
+import { withSpecLink } from "../../spec/link.js";
 import { type WorkflowPublicationAuthority, approvedPlanForPullRequest, proofContextOfTask, workflowPullRequestBody } from "./pull-request-body.js";
 
 type LoadedPublicationProject = NonNullable<Awaited<ReturnType<DeveloperTaskActions["latestProject"]>>>;
@@ -171,7 +173,7 @@ export async function startTaskWorkflowPublicationFromSystem(
   taskId: string,
   expected: { workflowRevision: number; candidateDigest: string },
   origin: { taskPageUrl?: string; ownerRetry?: boolean; ownerAccess?: Pick<TaskAccess, "peopleRevision">; ownerActor?: DeveloperCaller },
-): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
+): Promise<"STARTED" | "DUPLICATE" | "STALE" | "WAITING"> {
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   const workflow = task?.workflow;
   const ownerRetry = origin.ownerRetry === true;
@@ -207,6 +209,13 @@ export async function startTaskWorkflowPublicationFromSystem(
   if (attempt > 1 && !ownerRetry) return "STALE";
   const requestId = workflowRequestId("agentx-auto-publish", taskId, expected.workflowRevision, expected.candidateDigest, repository.repositoryId, attempt);
   const approvedPlan = await approvedPlanForPullRequest(deps, workflow);
+  // Meta repo lane D: a project that asked for a spec gets it first. The spec is written and published (this is where that is started), and the code pull request waits for it, HELD, never opened without it
+  // unless the owner chose to continue without; a published spec's link goes in the description. A task with no spec target is not affected (one read).
+  const spec = await specPublicationGate(deps, task, workflow);
+  if (!spec.proceed) {
+    deps.log?.({ event: "developer.task_publication_held_for_spec", taskId, reason: spec.hold.reason });
+    return "WAITING";
+  }
   // The catalog guard below needs the project's latest-revision pointer. A catalog row written before the pointer existed
   // is repaired from the revision history first (CONFIG_INVALID naming the project when that is not possible). A required
   // E2E task carries the same guard in its current-authority checks, which repair it where they are built.
@@ -223,7 +232,7 @@ export async function startTaskWorkflowPublicationFromSystem(
   const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}) : workflow;
   // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.
   const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${rovaraV2 ? breakLinearKeys(inertTaskTitle(task.title)) : inertTaskTitle(task.title)}`.slice(0, 256);
-  const body = workflowPullRequestBody(task, judged, approvedPlan, origin.taskPageUrl, bodyContext, await loadTestProofLines(deps.actions, task, workflow.candidate?.digest, inertPlanLine));
+  const body = withSpecLink(workflowPullRequestBody(task, judged, approvedPlan, origin.taskPageUrl, bodyContext, await loadTestProofLines(deps.actions, task, workflow.candidate?.digest, inertPlanLine)), spec.linkLine);
   const receivedAt = iso(deps);
   const unchanged = {
     ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",

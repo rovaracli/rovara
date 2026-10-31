@@ -18,6 +18,7 @@ import { WorkflowFixPayloadSchema } from "./rovara-code.js";
 import { LiveSteerPayloadSchema } from "./live-steer.js";
 import { PrepareMetaSchema } from "./meta-project.js";
 import { LearnedContextSchema } from "./learned-context.js";
+import { SpecReviewInputSchema, SpecWriteBindingSchema } from "./spec-target.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
 
@@ -28,7 +29,7 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", "prepare.metaRepo", "task.contextSources.v1", "task.learnedContext.v1"] as const;
+export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "task.workflowReviewSpec.v1", "task.learnedContext.v1"] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -271,7 +272,7 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         /** The control plane's record that this conversation already owns a saved session. */
         conversationStarted: z.boolean().optional(),
         /** The broker-selected tool boundary for the current native workflow stage (spec 056). */
-        workflowMode: z.enum(["PLAN", "IMPLEMENT", "REVIEW", "CHECKS", "FEEDBACK_REVIEW", "UNDERSTAND", "PLAN_CRITIQUE", "SETUP_DRAFT"]).optional(),
+        workflowMode: z.enum(["PLAN", "IMPLEMENT", "REVIEW", "CHECKS", "FEEDBACK_REVIEW", "UNDERSTAND", "PLAN_CRITIQUE", "SETUP_DRAFT", "SPEC_WRITE"]).optional(),
         /**
          * Meta repo lane B: a setup proposal run is told which of the project's repositories is its meta repository (the team's rules, specs and runbooks live there), so it
          * knows where to look for them. Sent only with `workflowMode: "SETUP_DRAFT"`, and only to a worker whose /ping lists "task.setupProposal.v2".
@@ -332,6 +333,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * the review without it.
          */
         workflowReviewFeedback: WorkflowReviewFeedbackSchema.optional(),
+        /**
+         * Meta repo lane D (D3): the spec's requirements, read by the broker at the commit recorded when the spec was published, for the code review to walk. Review operations only. Sent only to a worker whose /ping
+         * lists "task.workflowReviewSpec.v1"; never dropped, because an older worker would review without the spec.
+         */
+        workflowReviewSpec: SpecReviewInputSchema.optional(),
         /** The exact owner retry note, shown as untrusted context. Older workers omit it and review as before. */
         workflowReviewNote: WorkflowReviewNoteSchema.optional(),
         /**
@@ -350,6 +356,11 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * nothing it can do helps. Implementation mode only. Sent only to a worker whose /ping lists "task.workflowFix"; never dropped, because an older worker would take the run for a first build.
          */
         workflowFix: WorkflowFixPayloadSchema.optional(),
+        /**
+         * Meta repo lane D: the spec write run. It reads the owner-approved plan (in the prompt, as data) and returns a structured spec draft; it changes nothing. SPEC_WRITE mode only. Sent only to a worker whose /ping
+         * lists "task.specWrite.v1"; never dropped, because an older worker would not know the mode.
+         */
+        specWrite: SpecWriteBindingSchema.optional(),
         /**
          * Lane E: the project has MCP context sources for this stage (Understand, Plan, Plan check or Review; never Build), so the worker asks the broker for the stage's source tools with its
          * `context-tools` capability. Sent only to a worker that lists "task.contextSources.v1"; never dropped, because an older worker would run the stage without the team's sources and say nothing.
@@ -410,6 +421,9 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         if (payload.workflowReviewNote !== undefined && payload.workflowMode !== "REVIEW") {
           context.addIssue({ code: "custom", path: ["workflowReviewNote"], message: "the retry note reviewers are shown requires review mode" });
         }
+        if (payload.workflowReviewSpec !== undefined && payload.workflowMode !== "REVIEW") {
+          context.addIssue({ code: "custom", path: ["workflowReviewSpec"], message: "the spec the review walks requires review mode" });
+        }
         if (payload.workflowReviewers !== undefined && payload.workflowMode !== "REVIEW") {
           context.addIssue({ code: "custom", path: ["workflowReviewers"], message: "the reviews to run require review mode" });
         }
@@ -418,6 +432,9 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         }
         if (payload.workflowFix !== undefined && (payload.workflowMode !== "IMPLEMENT" || payload.workflowDependencies !== undefined)) {
           context.addIssue({ code: "custom", path: ["workflowFix"], message: "a fix to an open pull request requires implementation mode and no work breakdown" });
+        }
+        if ((payload.workflowMode === "SPEC_WRITE") !== (payload.specWrite !== undefined)) {
+          context.addIssue({ code: "custom", path: ["specWrite"], message: "the spec write mode and its binding go together" });
         }
         if (payload.workflowFeedbackApproval !== undefined && payload.workflowMode !== "IMPLEMENT") {
           context.addIssue({ code: "custom", path: ["workflowFeedbackApproval"], message: "feedback approval binding requires implementation mode" });

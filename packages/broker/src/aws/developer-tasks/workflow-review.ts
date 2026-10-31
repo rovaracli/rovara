@@ -1,3 +1,4 @@
+import { specReviewGate } from "./spec-wiring.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   UNDERSTAND_TIMEOUT_MINUTES,
@@ -13,6 +14,7 @@ import {
   type ProjectCommand,
   type WorkflowReviewChecks,
   type WorkflowReviewPlan,
+  type SpecReviewInput,
   type WorkflowReviewFeedback,
   type WorkflowFeedbackReviewReport,
   WorkflowReviewFeedbackSchema,
@@ -207,7 +209,16 @@ export async function queueWorkflowReview(
   actor?: DeveloperCaller,
   /** AUTOFIX: Rovara's own retry of blocked reviews records its decision in the same write. */
   autoDecision?: WorkflowDecision,
+  /** Meta repo lane D (D3): the spec's requirements for the code review to walk. A review that was given them is never sent to a worker that cannot read them. */
+  reviewSpec?: SpecReviewInput,
 ): Promise<{ operation: Operation; duplicate: boolean }> {
+  // Meta repo lane D (D3): every start of the reviews, an owner's retry included, is given the spec's requirements when the task has a published spec; the review of a task whose spec is not ready does not start.
+  let specInput = reviewSpec;
+  if (specInput === undefined) {
+    const gate = await specReviewGate(deps, task, workflow);
+    if (!gate.proceed) throw agentXError("WORKSPACE_NOT_READY", gate.hold.message);
+    specInput = gate.input;
+  }
   const receivedAt = iso(deps);
   const candidateDigest = workflow.candidate.digest;
   const { blockReason: _blockReason, reviews: _oldReviews, ...retryBase } = workflow;
@@ -236,7 +247,7 @@ export async function queueWorkflowReview(
       request: "Run independent candidate reviews", response: `Independent ${reviewRoles.length === 2 ? "code and security reviews" : reviewRoles[0] === "SECURITY" ? "security review" : "code review"} started as operation ${operation.id}.`, operationId: operation.id,
     })),
     ...(access === undefined ? [] : [accessFence(deps, access)]),
-  ], { sharedTask: task.shared === true, workflowMode: "REVIEW", workflowReviewNote: note, ...taskBaseOption(task, next), ...workflowReviewChecksOption(workflow), ...workflowReviewRiskOption(workflow), ...reviewPlan, ...reviewFeedback,
+  ], { sharedTask: task.shared === true, workflowMode: "REVIEW", workflowReviewNote: note, ...taskBaseOption(task, next), ...workflowReviewChecksOption(workflow), ...workflowReviewRiskOption(workflow), ...reviewPlan, ...reviewFeedback, ...(specInput === undefined ? {} : { workflowReviewSpec: specInput }),
     // A custom sequence's review step: which step it is, and (when it asks for fewer than both) which reviews to run.
     ...(workflow.programStepId === undefined ? {} : { programStepId: workflow.programStepId }), ...(reviewRoles.length === 2 ? {} : { workflowReviewers: reviewRoles }) });
 }
@@ -253,7 +264,7 @@ export async function startTaskWorkflowReviewFromSystem(
   taskId: string,
   expected: { workflowRevision: number; candidateDigest: string },
   actor?: DeveloperCaller,
-): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
+): Promise<"STARTED" | "DUPLICATE" | "STALE" | "WAITING"> {
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   const workflow = task?.workflow;
   if (task === undefined || task.closedAt !== undefined || workflow === undefined
@@ -270,7 +281,13 @@ export async function startTaskWorkflowReviewFromSystem(
   if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "STALE";
   const requestId = workflowRequestId("agentx-auto-review", taskId, expected.workflowRevision, expected.candidateDigest);
   const note = workflow.verification.reviewOnly === true ? AUTOMATIC_REVIEW_ONLY_NOTE : AUTOMATIC_REVIEW_NOTE;
-  const accepted = await queueWorkflowReview(deps, task, { ...workflow, candidate: workflow.candidate }, requestId, note, dispatchAccess, actor);
+  // Meta repo lane D (D3): a project that asked for a spec has it written and published before the code is reviewed, and the review is given its requirements. Held (the row stays) while the spec is not ready.
+  const spec = await specReviewGate(deps, task, workflow);
+  if (!spec.proceed) {
+    deps.log?.({ event: "developer.task_review_held_for_spec", taskId, reason: spec.hold.reason });
+    return "WAITING";
+  }
+  const accepted = await queueWorkflowReview(deps, task, { ...workflow, candidate: workflow.candidate }, requestId, note, dispatchAccess, actor, undefined, spec.input);
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 

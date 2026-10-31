@@ -83,7 +83,7 @@ export interface OperationRecord extends Operation {
   chatgptFallback?: "limit" | "revoked" | "model";
   /** #342: the Slack thread a ChatGPT task was asked from, where a fallback is told; absent for a developer task (its own thread). */
   chatgptThread?: { teamId: string; channelId: string; threadTs: string };
-  workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT" | undefined;
+  workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT" | "SPEC_WRITE" | undefined;
   candidateSourceRef?: { key: string; sha256: string; byteLength: number; candidateDigest: string };
   /** The build source manifest the worker exported for that candidate, or why there is none (see StoredCandidateBuildSourceSchema); absent when the worker sent nothing. */
   candidateBuildSource?: StoredCandidateBuildSource;

@@ -40,6 +40,7 @@ import { describeFeedbackFixes } from "./pull-request-reconcile.js";
 import { githubScope, installOrgId, orgOfRecord, webhookRepositoryUrl } from "./scope-helpers.js";
 import { taskOperationParts } from "./task-operations.js";
 import { latestChecksItem } from "./terminal-result.js";
+import { handleSpecPullRequestEvent } from "./spec-wiring.js";
 
 /**
  * Spec 025 R3: the first instructions of a developer task, queued in the prepare's own result
@@ -361,6 +362,8 @@ export async function processGithubWorkflowEvent(
     await wakeFromHeadEvent(headEventDependencies(dependencies), event);
     return;
   }
+  // Meta repo lane D (D4): a person editing or approving a task's spec pull request. One read for any other pull request; a failure here never fails the delivery.
+  await handleSpecPullRequestEvent(dependencies, event);
   // Bug I: a review (given, edited or dismissed), or a pull request made ready, pushed to or reopened, wakes the task's tracking row too, so the pass that reads the reviews from GitHub
   // comes in seconds, not at the heartbeat. The delivery still goes on to the feedback path below; a wake that fails only means the pass comes at its own time.
   if (options === undefined && wakesTrackingRow(event)) {

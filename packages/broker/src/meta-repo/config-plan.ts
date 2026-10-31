@@ -26,6 +26,7 @@ import {
   parseMetaProjectConfigJson,
   projectMetaShape,
   safePathPart,
+  specFolderProblem,
   settingOriginOf,
   type MetaConfigParse,
   type MetaConfigProblem,
@@ -58,10 +59,10 @@ export function parseMetaConfigFile(path: string, text: string): MetaConfigParse
 }
 
 /** The sections of a config this release validates and carries but does not apply; the lane that owns each one applies it. */
-export const DEFERRED_CONFIG_SECTIONS = ["checks", "knowledge", "specTarget", "sources", "intake"] as const;
+export const DEFERRED_CONFIG_SECTIONS = ["checks", "knowledge", "sources", "intake"] as const;
 
 /** The project fields a config applies, by the name the project record's `origins` gives them. */
-export type ConfigField = "repositories" | "setup" | "readiness";
+export type ConfigField = "repositories" | "setup" | "readiness" | "specTarget";
 
 export type PlanBlockReason =
   /** Only repositories on github.com can be added until another code host's plug-in lands. */
@@ -75,7 +76,7 @@ export interface PlanItem {
   /** Stable within a plan: `repositories:add:<name>`, `repositories:remove:<name>`, `setup`, `readiness`. */
   id: string;
   field: ConfigField;
-  kind: "add_repository" | "remove_repository" | "set_commands";
+  kind: "add_repository" | "remove_repository" | "set_commands" | "set_spec_target";
   repository?: string;
   url?: string;
   /** For an added repository: the folder it gets in the workspace (always `repo/<name>`), shown so the maintainer sees what they apply. */
@@ -230,6 +231,25 @@ export function planMetaConfigChange(input: { config: MetaProjectConfig; definit
       before: currentLines(current, definition.repositories).slice(0, DISPLAY_LINES_MAX),
       after: desired.lines.slice(0, DISPLAY_LINES_MAX),
       ...(current.length > desired.commands.length ? { removes: current.length - desired.commands.length } : {}),
+      ...(personTyped ? { conflict: "person_value" as const } : {}),
+    });
+  }
+
+  // Meta repo lane D (I6): the file may not point the specs into the folders it names as its own rules, steering, skills, runbooks or key docs.
+  const template = config.specTarget?.pathTemplate;
+  if (template !== undefined) {
+    const segments = template.replace(/\/$/u, "").split("/");
+    const firstToken = segments.findIndex((segment) => /\{/u.test(segment));
+    const literal = (firstToken === -1 ? segments : segments.slice(0, firstToken)).join("/");
+    const own = [config.knowledge?.steering, config.knowledge?.skills, config.knowledge?.runbooks, config.knowledge?.keyDocs].flatMap((paths) => paths ?? []);
+    if (specFolderProblem(literal, own) !== undefined) problems.push({ path: "specTarget.pathTemplate", message: "points the specs into a rules, steering, skills, runbooks or key docs folder" });
+  }
+  // Meta repo lane D: where the project's specs are written and in which format. Shown as JSON lines, one key each, so the maintainer sees what they apply.
+  if (config.specTarget !== undefined && canonicalJson(definition.specTarget ?? null) !== canonicalJson(config.specTarget)) {
+    const lines = (target: object | undefined) => target === undefined ? [] : Object.entries(target as Record<string, unknown>).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).slice(0, DISPLAY_LINES_MAX);
+    const personTyped = definition.specTarget !== undefined && settingOriginOf(definition, "specTarget") === "person";
+    items.push({
+      id: "specTarget", field: "specTarget", kind: "set_spec_target", before: lines(definition.specTarget), after: lines(config.specTarget),
       ...(personTyped ? { conflict: "person_value" as const } : {}),
     });
   }

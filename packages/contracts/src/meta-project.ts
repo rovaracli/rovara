@@ -14,6 +14,7 @@ import { canonicalJson } from "./canonical-json.js";
 import { AgentXNameSchema } from "./names.js";
 import { RelativeWorkspacePathSchema } from "./project.js";
 import { GitBranchNameSchema } from "./git-branch.js";
+import { SpecTargetSchema } from "./spec-target.js";
 import { IntakeChannelRefSchema } from "./intake.js";
 
 /** The config file's places, in the order they are tried. The first that exists is the file. */
@@ -146,8 +147,8 @@ export const MetaProjectConfigSchema = z.object({
     runbooks: knowledgePaths.optional(),
     keyDocs: knowledgePaths.optional(),
   }).strict().optional(),
-  /** Lane D's `SpecTarget` replaces this schema. */
-  specTarget: OpaqueSectionSchema.optional(),
+  /** Lane D: where a task's spec is written, and in which format (spec-target.ts). */
+  specTarget: SpecTargetSchema.optional(),
   sources: z.array(MetaConfigSourceSchema).max(META_CONFIG_MAX_SOURCES).optional(),
   /** Meta repo lane F: the places work is asked for. Like everything in this file it is never applied directly; a maintainer approves turning an intake source on. */
   intake: z.array(IntakeChannelRefSchema).max(META_CONFIG_MAX_INTAKE).optional(),

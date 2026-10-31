@@ -1,5 +1,6 @@
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
 // The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
+import { SPEC_CHOICE_ROUTE, routeSpecChoice } from "./developer-routes/spec-routes.js";
 import "../org/service-status.js";
 import "../model-selection/company-prepare.js";
 import "../model-selection/company-approval.js";
@@ -511,6 +512,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && howWeWorkRoute !== null) {
     return getProjectHowWeWork({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) }, caller, howWeWorkRoute[1]!);
   }
+  const specChoice = SPEC_CHOICE_ROUTE.exec(url.pathname);
+  if (request.method === "POST" && specChoice !== null) return routeSpecChoice(deps, caller, specChoice[1]!, specChoice[2]!);
   const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
   if (setupDraftRoute !== null) {
     const drafting = setupDraftDepsOf(deps);

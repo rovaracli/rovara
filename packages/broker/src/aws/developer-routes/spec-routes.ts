@@ -1,0 +1,19 @@
+// Meta repo lane D: the task owner's choices on a held spec. POST /v1/app/tasks/{id}/spec/{retry|continue|keep|replan}. The task's owner or a co-owner only (the same authority as publishing); the choice is applied to
+// the spec's state only when the state is where the choice expects (a late or repeated press is refused as out of date).
+import { agentXError } from "@agentx/contracts";
+import type { DeveloperCaller, DeveloperRouteDependencies } from "../developer-routes.js";
+import { specOwnerChoice } from "../developer-tasks/spec-wiring.js";
+import { developerTaskRouteDependencies } from "./dependencies.js";
+
+export const SPEC_CHOICE_ROUTE = /^\/v1\/app\/tasks\/([^/]+)\/spec\/(retry|continue|keep|replan)$/u;
+
+const ACTIONS = { retry: "retry", continue: "continue_without_spec", keep: "keep", replan: "replan" } as const;
+
+export async function routeSpecChoice(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawTaskId: string, rawAction: string): Promise<{ status: string }> {
+  if (deps.tasks === undefined) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
+  const action = ACTIONS[rawAction as keyof typeof ACTIONS];
+  if (action === undefined) throw agentXError("NOT_FOUND", "route not found");
+  let taskId: string;
+  try { taskId = decodeURIComponent(rawTaskId); } catch { throw agentXError("NOT_FOUND", "route not found"); }
+  return specOwnerChoice(developerTaskRouteDependencies(deps, caller), caller, taskId, action);
+}
