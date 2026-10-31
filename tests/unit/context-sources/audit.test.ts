@@ -61,6 +61,15 @@ describe("private MCP servers in the audit ledger", () => {
     expect(capture.recorded().map((event) => event.action).sort()).toEqual(["mcp_server.added", "mcp_server.disabled"]);
     expect(capture.recordedBy("mcp_server.disabled")[0]?.facts).toEqual({ transport: "http" });
   });
+  it("tidy round: the label in the event's details is capped (it is free text) and otherwise left as typed", async () => {
+    const { deps, capture } = serverWorld();
+    const { auditMcpServerChanged } = await import("../../../packages/broker/src/audit/events.js");
+    const long = auditMcpServerChanged({ orgId: ORG, actor: { kind: "member", id: "dev1" }, occurredAt: "2026-11-01T10:00:00.000Z", occurrence: "x", action: "mcp_server.added", serverId: "mcpone000001", label: "L".repeat(500), transport: "http" });
+    expect(long.details).toEqual([{ subject: "org", fields: { label: "L".repeat(60) } }]);
+    const entry = await proposeMcpServer(deps, actor, { label: "My SIM server", transport: { kind: "http", address: ADDRESS } });
+    expect(capture.recordedBy("mcp_server.added")[0]?.details).toEqual([{ subject: "org", fields: { label: "My SIM server" } }]);
+    expect(entry.label).toBe("My SIM server");
+  });
   it("records nothing, and does not fail the change, where the install has no ledger", async () => {
     expect(mcpServerAudit({}, () => NOW)).toBeUndefined();
     expect(contextSourceAudit({}, () => NOW)).toBeUndefined();
