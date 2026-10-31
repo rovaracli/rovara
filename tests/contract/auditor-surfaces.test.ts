@@ -56,7 +56,9 @@ describe("Slack", () => {
     const h = await createDeveloperTaskBroker();
     setup(h);
     const { slackCallerFor } = await import("../../packages/broker/src/aws/broker/dependency-wiring.js");
-    return slackCallerFor({ ...h.brokerInput, ...(edition === undefined ? {} : { editionPolicy: editionPolicy(edition) }) } as never, USER, SLACK_TEAM);
+    // Enterprise: the company sign-in (I1) allows this Slack user (its allowance store says who), and the Slack caller then also needs a member record (I2 below it).
+    const allowance = edition === "enterprise" ? { sso: { slack: { allowedDeveloper: async () => standIn } } } : {};
+    return slackCallerFor({ ...h.brokerInput, ...allowance, ...(edition === undefined ? {} : { editionPolicy: editionPolicy(edition) }) } as never, USER, SLACK_TEAM);
   }
   const seed = (role: string) => (h: Awaited<ReturnType<typeof createDeveloperTaskBroker>>) => { seedMembership(h.db, standIn, { orgId: TEST_ORG, role: role as never }); };
 
@@ -81,12 +83,20 @@ describe("Slack", () => {
     await expect(resolved(setup)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("on Enterprise a Slack identity with no member record is not let in as an implicit member; on Public and where the edition is not known it is, as before", async () => {
+  it("on Enterprise a Slack identity with no member record is not let in as an implicit member (refused by the company sign-in's allowance first, and by the role step behind it); on Public and where the edition is not known it is, as before", async () => {
     const none = () => undefined;
     await expect(resolved(none, "enterprise")).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect((await resolved(none, "public")).orgRole).toBe("member");
     expect((await resolved(none)).orgRole).toBe("member");
     expect((await resolved(seed("member"), "enterprise")).orgRole).toBe("member");
+  });
+
+  it("the role step refuses an unknown Slack identity by itself where the edition has the Auditor but no company allowance to ask (the rule does not lean on the allowance)", async () => {
+    const h = await createDeveloperTaskBroker();
+    const { slackCallerFor } = await import("../../packages/broker/src/aws/broker/dependency-wiring.js");
+    const enterprise = editionPolicy("enterprise");
+    const policy = { ...enterprise, features: { ...enterprise.features, sso: false } };
+    await expect(slackCallerFor({ ...h.brokerInput, editionPolicy: policy } as never, USER, SLACK_TEAM)).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("has not signed in to Rovara") });
   });
 });
 

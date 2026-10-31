@@ -141,7 +141,8 @@ import { requireReviewedModelSourceWebWrite } from "../model-sources/routes.js";
 import { restoreProjectReviewedWithEffects, archiveProjectReviewedWithEffects } from "../org/project-archive.js";
 import { effectiveProjectRole, requireNewWorkAllowed } from "../developer/project-roles.js";
 import { isAuditOrgPath, routeAuditRequest } from "../audit/routes.js";
-import { requireAuditorRoute } from "../org/auditor.js";
+import { requireFreshSignInForExport, startsAuditExport } from "./developer-routes/audit-export-fresh.js";
+import { canReadAuditLog, requireAuditorRoute } from "../org/auditor.js";
 import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
 import {
   createPageComment,
@@ -628,6 +629,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // The audit log: the org is the session's, and owners and admins only (the route checks the role before it says anything else).
   if (isAuditOrgPath(url.pathname)) {
+    // Starting an export (the whole log in one file) needs a fresh sign-in; the role check comes first, so a caller who may not read the log is told that, not asked to sign in again.
+    if (startsAuditExport(request.method, url.pathname) && canReadAuditLog(caller.orgRole)) await requireFreshSignInForExport(deps, caller);
     const reply = await routeAuditRequest(deps.auditLedger, { developerId: caller.developerId, orgId: caller.orgId, orgRole: caller.orgRole },
       { method: request.method, body: request.method === "POST" ? jsonBody(request) : {}, requestId: request.requestId }, url);
     return reply.status === 200 ? reply.body : new StatusReply(reply.status, reply.body);

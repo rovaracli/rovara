@@ -29,18 +29,18 @@ function fixture(role: OrgRole, policy: EditionPolicy | "none" = ENTERPRISE) {
   const member = (who: string, r: string) => { db.set({ ...orgMemberKey(org, who), orgId: org, developerId: who, role: r, joinedAt: "2026-10-01T00:00:00Z" }); db.set({ ...developerOrgKey(who), orgId: org, developerId: who, role: r }); };
   member(actor, role);
   member(other, "member");
-  db.set({ pk: `DEVELOPER#${actor}`, sk: "META", developerId: actor, displayName: "Priya", provider: "cloud" });
-  db.set({ pk: `SESSION#${sessionId}`, sk: "META", developerId: actor, amr: "cloud", endsAt: Math.floor(audit.audit.now() / 1000) + 3600, reviewExpiresAt: Math.floor(audit.audit.now() / 1000) + 3600, startedAt: "2026-10-26T11:00:00Z" });
+  db.set({ pk: `DEVELOPER#${actor}`, sk: "META", developerId: actor, displayName: "Priya", provider: "oidc" });
+  db.set({ pk: `SESSION#${sessionId}`, sk: "META", developerId: actor, amr: "oidc", endsAt: Math.floor(audit.audit.now() / 1000) + 3600, reviewExpiresAt: Math.floor(audit.audit.now() / 1000) + 3600, startedAt: "2026-10-26T11:00:00Z" });
   db.set({ ...orgMetaKey(org), orgId: org, name: "Acme", plan: "team" });
-  const claims = { iss: "https://cell.example/v1/auth", aud: "agentx-developer", sub: actor, sid: sessionId, amr: "cloud", env: "test", org, org_role: role };
+  const claims = { iss: "https://cell.example/v1/auth", aud: "agentx-developer", sub: actor, sid: sessionId, amr: "oidc", env: "test", org, org_role: role };
   const deps: DeveloperRouteDependencies = {
     tableName: "state", now: audit.audit.now, documentClient: db, audit: { ...audit.audit, tableName: "state" },
     ...(policy === "none" ? {} : { editionPolicy: policy }),
-    developer: { issuer: "https://cell.example/v1/auth", env: "test", methods: { slack: false, oidc: false, cloud: true }, signInTableName: "signin", verifyAccessToken: async () => claims, channelMembers: async () => ({ ok: true, memberOf: [] }) },
+    developer: { issuer: "https://cell.example/v1/auth", env: "test", methods: { slack: false, oidc: true, cloud: false }, signInTableName: "signin", verifyAccessToken: async () => claims, channelMembers: async () => ({ ok: true, memberOf: [] }) },
     orgs: new OrgStore({ documentClient: db, tableName: "state", now: audit.audit.now }),
     tasks: {} as never,
   };
-  const caller: DeveloperCaller = { orgId: org, developerId: actor, orgRole: role, name: "Priya", amr: "cloud", sessionId: "fixture" };
+  const caller: DeveloperCaller = { orgId: org, developerId: actor, orgRole: role, name: "Priya", amr: "oidc", sessionId: "fixture" };
   /** A browser-session call (the caller is given), or with `token` an API call whose caller is read from the bearer token and the live membership. */
   async function call(method: string, path: string, body?: unknown, as: DeveloperCaller = caller, token = false) {
     const request = { method, path, headers: {}, body: body === undefined ? "" : JSON.stringify(body), requestId: "test" };
@@ -196,14 +196,14 @@ describe("the Auditor is an Enterprise role", () => {
     expect(await owner.call("POST", "/v1/app/org/invites", { requestId, role: "auditor" })).toMatchObject({ code: "CONFIG_INVALID" });
   });
 
-  it("a group mapping grants the role on Enterprise, ranks it below member, and is refused where the edition has no Auditor", () => {
+  it("a group mapping grants the role on Enterprise, refuses a person who is also a member, and is refused where the edition has no Auditor", () => {
     const config = (roles: Array<"admin" | "member" | "auditor">) => ({
       version: 1, updatedAt: "2026-10-31T00:00:00Z", updatedBy: actor, claim: "groups", rules: roles.map((orgRole, index) => ({ id: `rule${String(index)}`, group: `g-${orgRole}`, orgRole, projectRoles: [] })),
     });
     const claims = (...groups: string[]) => ({ groups });
     const ok = evaluateGroupMapping({ policy: ENTERPRISE, config: config(["auditor"]), claims: claims("g-auditor") });
     expect(ok).toMatchObject({ ok: true, access: { orgRole: "auditor" } });
-    expect(evaluateGroupMapping({ policy: ENTERPRISE, config: config(["auditor", "member"]), claims: claims("g-auditor", "g-member") })).toMatchObject({ ok: true, access: { orgRole: "member" } });
+    expect(evaluateGroupMapping({ policy: ENTERPRISE, config: config(["auditor", "member"]), claims: claims("g-auditor", "g-member") })).toEqual({ ok: false, reason: "auditor_and_writer" });
     const noAuditor = { ...ENTERPRISE, features: { ...ENTERPRISE.features, auditorRole: false } } as EditionPolicy;
     expect(evaluateGroupMapping({ policy: noAuditor, config: config(["auditor"]), claims: claims("g-auditor") })).toEqual({ ok: false, reason: "config_invalid" });
     expect(decideSignIn({ policy: noAuditor, config: config(["auditor"]), claims: claims("g-auditor"), currentRole: undefined, personId: actor, breakGlass: [], now: 0 })).toMatchObject({ allow: false });
