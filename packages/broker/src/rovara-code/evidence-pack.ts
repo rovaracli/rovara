@@ -76,7 +76,8 @@ const sha256 = (text: string): string => createHash("sha256").update(text, "utf8
 function tailWithin(text: string, maxBytes: number): string {
   let tail = text;
   while (Buffer.byteLength(tail, "utf8") > maxBytes) tail = tail.slice(Math.max(1, Math.ceil((Buffer.byteLength(tail, "utf8") - maxBytes) / 4)));
-  return tail;
+  // A cut in the middle of a surrogate pair leaves a lone low surrogate at the start: drop it.
+  return tail.replace(/^[\uDC00-\uDFFF]/u, "");
 }
 
 const SERVICE_WORDS: Record<EvidenceEnvironment["services"][number]["mode"], string> = { preprod: "pre-prod", mocked: "mocked", "live-forbidden": "live access refused" };
