@@ -20,7 +20,9 @@ export const SESSION_ID_PATTERN = /^ses_[0-9a-z]{20}$/;
 export const SessionIdSchema = z.union([z.string().regex(SESSION_ID_PATTERN), ChainRunIdSchema]);
 export type SessionId = z.infer<typeof SessionIdSchema>;
 
-/** The outside place a session is bound to: one Slack thread or one Linear issue, at `BINDING#<kind>` (Plan 9 posts through it). */
+const TRACKER_URL_MAX = 2048;
+
+/** The outside place a session is bound to: one Slack thread, one Linear issue or one ticket of any other tracker, at `BINDING#<kind>` (Plan 9 posts through it). */
 export const SessionBindingSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("slack_thread"), teamId: SlackTeamIdSchema, channelId: SlackChannelIdSchema, threadTs: SlackMessageTimestampSchema }).strict(),
   z
@@ -28,6 +30,22 @@ export const SessionBindingSchema = z.discriminatedUnion("kind", [
       kind: z.literal("linear_issue"),
       issueId: z.string().regex(new RegExp(`^[A-Za-z0-9_-]{1,${String(LINEAR_ISSUE_ID_MAX)}}$`)),
       url: z.string().url().max(LINEAR_URL_MAX).refine((value) => value.startsWith("https://"), "must be an https link"),
+    })
+    .strict(),
+  // Meta repo lane F (R9): a ticket of any tracker (Jira, GitHub Issues, a team's own). Generic: `system` names the tracker, `id` the ticket in it. No `#` in an id (it separates the parts of a stored key).
+  z
+    .object({
+      kind: z.literal("tracker_item"),
+      system: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
+      id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$/),
+      url: z.string().url().max(TRACKER_URL_MAX).refine((value) => {
+        try {
+          const link = new URL(value);
+          return link.protocol === "https:" && link.username === "" && link.password === "";
+        } catch {
+          return false;
+        }
+      }, "must be an https link without a user name or password"),
     })
     .strict(),
 ]);

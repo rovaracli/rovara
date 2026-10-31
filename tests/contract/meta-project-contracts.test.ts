@@ -165,7 +165,7 @@ describe("the meta repo's config file", () => {
       knowledge: { steering: [".kiro/steering"], skills: [".agents/skills"], specs: [".kiro/specs"], runbooks: ["runbooks"], keyDocs: ["ARCHITECTURE.md"] },
       specTarget: { where: "meta_repo", format: "kiro" },
       sources: [{ connection: "Team wiki", label: "Wiki" }],
-      intake: [{ channel: "slack" }],
+      intake: [{ channel: "tracker", system: "sim", when: { label: "rovara" } }],
     };
     expect(parseMetaProjectConfig(full)).toMatchObject({ ok: true });
   });
@@ -227,7 +227,7 @@ describe("the meta repo's config file", () => {
     expect(parseMetaProjectConfig({ version: 1, specTarget: { a: { b: { c: { d: { e: { f: { g: 1 } } } } } } } }).ok).toBe(false);
     const polluted = JSON.parse('{"version":1,"specTarget":{"__proto__":{"x":1}}}') as unknown;
     expect(parseMetaProjectConfig(polluted).ok).toBe(false);
-    expect(parseMetaProjectConfig({ version: 1, intake: Array.from({ length: 17 }, () => ({ channel: "slack" })) }).ok).toBe(false);
+    expect(parseMetaProjectConfig({ version: 1, intake: Array.from({ length: 17 }, () => ({ channel: "tracker", system: "sim", when: { label: "rovara" } })) }).ok).toBe(false);
   });
 
   it("reports where a problem is and what, never the value", () => {

@@ -9,15 +9,18 @@ import { RunInputSchema } from "./agent-run.js";
 import { SessionBindingSchema } from "./browser-ids.js";
 import { WorkflowPathSchema } from "./task-workflow.js";
 
-/** Where an intent came from. The first three are a person's own client; the rest are Plan 9's surfaces. */
-export const CODE_INTENT_SOURCES = ["app", "cli", "mcp", "slack", "linear", "offer"] as const;
+/** Where an intent came from. The first three are a person's own client; the rest are Plan 9's surfaces. `jira`, `github_issue` and `tracker` are a ticket in an outside tracker (meta repo lane F). */
+export const CODE_INTENT_SOURCES = ["app", "cli", "mcp", "slack", "linear", "jira", "github_issue", "tracker", "offer"] as const;
 export type CodeIntentSource = (typeof CODE_INTENT_SOURCES)[number];
 
 const Hex64 = z.string().regex(/^[a-f0-9]{64}$/);
 const RequestIdSchema = z.string().uuid();
 
 /** The kind of outside place each source may bind its session to. */
-export const CODE_INTENT_BINDING_OF_SOURCE = { slack: "slack_thread", linear: "linear_issue" } as const;
+export const CODE_INTENT_BINDING_OF_SOURCE = { slack: "slack_thread", linear: "linear_issue", jira: "tracker_item", github_issue: "tracker_item", tracker: "tracker_item" } as const;
+
+/** The tracker a ticket intent's source fixes: a Jira intent is for system `jira`, a GitHub Issues intent for `github`; a `tracker` intent is for any other system. */
+const FIXED_TRACKER_SYSTEM_OF_SOURCE = { jira: "jira", github_issue: "github" } as const;
 
 export const CodeIntentRequestSchema = z
   .object({
@@ -40,9 +43,15 @@ export const CodeIntentRequestSchema = z
   })
   .strict()
   .superRefine((request, context) => {
-    const wanted = request.source === "slack" || request.source === "linear" ? CODE_INTENT_BINDING_OF_SOURCE[request.source] : undefined;
+    const wanted = Object.hasOwn(CODE_INTENT_BINDING_OF_SOURCE, request.source) ? CODE_INTENT_BINDING_OF_SOURCE[request.source as keyof typeof CODE_INTENT_BINDING_OF_SOURCE] : undefined;
     if (request.binding !== undefined && request.binding.kind !== wanted) context.addIssue({ code: "custom", path: ["binding"], message: "a binding must match the source it came from" });
-    if (wanted !== undefined && request.binding === undefined) context.addIssue({ code: "custom", path: ["binding"], message: `a ${request.source} intent names its ${request.source === "slack" ? "thread" : "issue"}` });
+    if (wanted !== undefined && request.binding === undefined) context.addIssue({ code: "custom", path: ["binding"], message: `a ${request.source} intent names its ${request.source === "slack" ? "thread" : wanted === "tracker_item" ? "ticket" : "issue"}` });
+    if (request.binding?.kind === "tracker_item") {
+      const fixed = Object.hasOwn(FIXED_TRACKER_SYSTEM_OF_SOURCE, request.source) ? FIXED_TRACKER_SYSTEM_OF_SOURCE[request.source as keyof typeof FIXED_TRACKER_SYSTEM_OF_SOURCE] : undefined;
+      const system = request.binding.system;
+      // A `tracker` intent is for a team's own tracker: never one of the two that have sources of their own.
+      if (fixed !== undefined ? system !== fixed : system === "jira" || system === "github") context.addIssue({ code: "custom", path: ["binding", "system"], message: "a ticket must be from the tracker its source names" });
+    }
     if (request.assignedBy !== undefined && request.source !== "linear") context.addIssue({ code: "custom", path: ["assignedBy"], message: "only a Linear intent has an assigner" });
     if (request.retryOf !== undefined && request.source !== "app") context.addIssue({ code: "custom", path: ["retryOf"], message: "only an app intent can follow an answered task" });
     if (request.offerId !== undefined && request.source !== "offer") context.addIssue({ code: "custom", path: ["offerId"], message: "only an offer has an offer id" });

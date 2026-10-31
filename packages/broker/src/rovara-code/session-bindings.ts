@@ -3,8 +3,8 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { SessionBindingSchema, SessionIdSchema, sessionBindingKey, type OrgId, type SessionBinding } from "@agentx/contracts";
 
-/** The kinds a session can be bound to, in the order they are reported. */
-const BINDING_KINDS = ["slack_thread", "linear_issue"] as const;
+/** The kinds a session can be bound to, in the order they are reported (a ticket of any tracker last). */
+const BINDING_KINDS = ["slack_thread", "linear_issue", "tracker_item"] as const;
 
 export interface SessionBindingReader {
   documentClient: { send(command: unknown): Promise<unknown> };
