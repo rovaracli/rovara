@@ -144,6 +144,8 @@ export interface SetupItemApplyContext {
     releasePullRequestClaim(requestId: string): Promise<void>;
     /** Adds one intake source to the project, as the maintainer applying (wire lane D, MF-2). Idempotent: a source already there is `already_set`. */
     addIntakeSource(ref: IntakeChannelRef): Promise<"added" | "already_set" | "differs">;
+    /** Whether the project has a connection of this name now (one of its own connectors). A name that is not one is never used by an applier. */
+    connectionExists(name: string): Promise<boolean>;
   };
 }
 

@@ -1199,8 +1199,11 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
     const JIRA = { channel: "jira", hint: "tickets labelled rovara", label: "rovara", connection: "acme-jira", from: [cite("README.md", 1)] };
     const intakeId = "intake-jira-rovara";
 
+    const withJiraConnection = (t: Setup) => withDefinition(t, { integrations: { connectors: [{ name: "acme-jira", type: "custom-tracker" }] } });
+
     it("is asked for as its own card, approved by the org admin who asked (no second admin), and then makes one intake source of the project", async () => {
       const t = await setup();
+      withJiraConnection(t);
       await t.drafted({ ...NODE_ANSWER, intake: [JIRA] });
       const asked = await t.apply([{ id: intakeId }]);
       expect(outcomeOf(asked, intakeId)?.outcome, JSON.stringify(asked.body)).toBe("approval_needed");
@@ -1219,6 +1222,7 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
 
     it("uses the approval up: applying again needs a new card, and a card for a source already there changes nothing", async () => {
       const t = await setup();
+      withJiraConnection(t);
       await t.drafted({ ...NODE_ANSWER, intake: [JIRA] });
       const first = outcomeOf(await t.apply([{ id: intakeId }]), intakeId)!.approval!.approvalId;
       t.approve(first);
@@ -1235,6 +1239,7 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
 
     it("does not overwrite a place a maintainer already set up with another label: the card fails in fixed words and the source is as it was", async () => {
       const t = await setup();
+      withJiraConnection(t);
       await t.drafted({ ...NODE_ANSWER, intake: [JIRA] });
       const { replaceIntakeSources } = await import("../../packages/broker/src/intake/sources.js");
       await replaceIntakeSources({ documentClient: t.db, tableName: "state", now: () => Date.now() }, { orgId: TEST_ORG, project: NAME, refs: [{ channel: "jira", connection: "acme-jira", when: { label: "ai-work" } }], setBy: MAYA.developerId });
@@ -1243,6 +1248,17 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
       const done = await t.apply([{ id: intakeId }]);
       expect(outcomeOf(done, intakeId)?.outcome).toBe("failed");
       expect(t.db.find((item) => item.entityType === "INTAKE_SOURCE").map((item) => (item as { ref: { when: { label: string } } }).ref.when.label)).toEqual(["ai-work"]);
+    });
+
+    it("refuses a connection the project does not have (a name from a README is not a connection), and makes no source", async () => {
+      const t = await setup();
+      await t.drafted({ ...NODE_ANSWER, intake: [JIRA] });
+      const asked = await t.apply([{ id: intakeId }]);
+      t.approve(outcomeOf(asked, intakeId)!.approval!.approvalId);
+      const done = await t.apply([{ id: intakeId }]);
+      expect(outcomeOf(done, intakeId)?.outcome).toBe("failed");
+      expect((done.body.warnings as string[]).join(" ")).toContain("connection the project does not have");
+      expect(t.db.find((item) => item.entityType === "INTAKE_SOURCE")).toEqual([]);
     });
 
     it("refuses, in fixed words, a channel that starts work another way and a suggestion with no label, and makes no source", async () => {

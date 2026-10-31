@@ -717,6 +717,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
             startPullRequest: (request) => deps.startPullRequest(caller, { requestId: request.requestId, project: name, text: request.text }),
             claimPullRequest: (requestId) => claimPullRequest(deps, caller.orgId, name, pointer.taskId, requestId),
             releasePullRequestClaim: (requestId) => releasePullRequestClaim(deps, caller.orgId, name, pointer.taskId, requestId),
+            connectionExists: async (connection) => (await deps.latest(caller.orgId, name))?.definition.integrations?.connectors?.some((entry) => entry.name === connection) === true,
             addIntakeSource: (ref) => addIntakeSource({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { orgId: caller.orgId, project: name, ref, setBy: caller.developerId }),
           },
         });

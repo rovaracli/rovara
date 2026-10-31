@@ -85,7 +85,7 @@ export const SETUP_INTAKE_CHANNELS = ["slack", "linear", "jira", "github_issue",
 export const SetupIntakeValueSchema = z.object({
   channel: z.enum(SETUP_INTAKE_CHANNELS), hint: z.string().trim().min(1).max(200),
   system: IntakeSystemSchema.optional(),
-  connection: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/, "a connection is a name or id, never an address").optional(),
+  connection: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/, "a connection is a name, never an address or a host name").optional(),
   label: z.string().trim().min(1).max(100).regex(/^[^\p{Cc}\p{Cf}]+$/u, "one plain line").optional(),
 }).strict();
 

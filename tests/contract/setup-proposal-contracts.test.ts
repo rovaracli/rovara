@@ -299,6 +299,11 @@ describe("intake suggestions carry what a source needs (wire lane D, MF-2)", () 
   });
 
   it("drops a system that is not a plain name, a connection that is an address or holds a credential, and a label with a credential in it", () => {
+    for (const host of ["acme.atlassian.net", "evil.example", "https://acme.atlassian.net", "10.0.0.1"]) {
+      const named = read([{ channel: "jira", hint: "tickets", connection: host, from: [cited] }]);
+      if (!named.ok) throw new Error(JSON.stringify(named));
+      expect(named.proposal.intake[0]!.value, host).toEqual({ channel: "jira", hint: "tickets" });
+    }
     const reading = read([{ channel: "jira", hint: "tickets", system: "Not A System", connection: "https://evil.example/hook", label: "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB", from: [cited] }]);
     if (!reading.ok) throw new Error(JSON.stringify(reading));
     expect(reading.proposal.intake[0]!.value).toEqual({ channel: "jira", hint: "tickets" });

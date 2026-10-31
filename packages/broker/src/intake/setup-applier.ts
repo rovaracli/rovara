@@ -10,6 +10,7 @@ export const INTAKE_SETUP_WORDS = {
   channel: "Rovara can't set up this channel as an intake source from here. Slack and Linear start work in their own way.",
   label: "Say which label asks for work before this can be set up.",
   invalid: "This intake suggestion is not one Rovara can set up.",
+  connection: "This suggestion names a connection the project does not have. Add the connection first, or set the source up without one.",
   differs: "This place already has an intake source with other settings. Change it in the project's intake sources instead.",
 } as const;
 
@@ -38,6 +39,8 @@ export const intakeSetupApplier: SetupItemApplier = {
   },
   apply: async (context) => {
     const ref = intakeRefOfSetupValue(context.item.proposed.value as SetupIntakeValue);
+    // A source reads through a connection by name: it must be one the project has now (a name from a README is not a connection).
+    if (ref.connection !== undefined && !await context.host.connectionExists(ref.connection)) throw agentXError("CONFIG_INVALID", INTAKE_SETUP_WORDS.connection);
     const added = await context.host.addIntakeSource(ref);
     if (added === "differs") throw agentXError("CONFIG_INVALID", INTAKE_SETUP_WORDS.differs);
     return { warnings: added === "already_set" ? ["This place was already set up as an intake source."] : [] };

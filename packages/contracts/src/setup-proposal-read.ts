@@ -278,7 +278,7 @@ export function sanitizeSetupProposal(raw: unknown, context: SetupProposalContex
     if (channel === undefined || hint === "") return undefined;
     // What an applier needs to make a source of it: each is kept only when it is plainly what it says (a lower-case system, a connection NAME, a label with no credential in it).
     const system = typeof entry["system"] === "string" && IntakeSystemSchema.safeParse(entry["system"]).success ? entry["system"] : undefined;
-    const connection = typeof entry["connection"] === "string" && /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/u.test(entry["connection"]) && redactText(entry["connection"]) === entry["connection"] ? entry["connection"] : undefined;
+    const connection = typeof entry["connection"] === "string" && /^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/u.test(entry["connection"]) && redactText(entry["connection"]) === entry["connection"] ? entry["connection"] : undefined;
     const labelText = oneLineText(entry["label"], 100);
     const label = labelText !== "" && typeof entry["label"] === "string" && labelText === entry["label"].trim() && redactText(labelText) === labelText ? labelText : undefined;
     return { key: [channel, system, label].filter((part) => part !== undefined).join("-"), value: { channel, hint, ...(system === undefined ? {} : { system }), ...(connection === undefined ? {} : { connection }), ...(label === undefined ? {} : { label }) } };
