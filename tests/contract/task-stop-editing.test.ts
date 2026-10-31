@@ -41,7 +41,7 @@ for (const project of [false, true]) it(`Spending editing applies an exact tight
  expect((await f.call("PUT", path, body)).body).toEqual(result.body);
  const row = f.db.get(project ? projectAiKey(orgId, "web") : f.key)!;
  expect(project ? row.taskStopPolicy : row.policy).toEqual(project ? { schemaVersion: 1, stopMicrousd: 1234567 } : { schemaVersion: 2, defaultPolicy: body.policy });
- expect(row.enrollment ?? { state: "disabled" }).toMatchObject({ state: "disabled" });
+ expect(f.db.get(f.key)?.enrollment).toEqual({ version: 1, state: "disabled" });
  expect(f.capture.recordedBy("spending.policy_changed")).toHaveLength(1);
 });
 it("Spending loosening pins original terms and uses distinct people even without membership version", async () => {
@@ -118,4 +118,34 @@ it("monthly writes fence a proposal inserted after their read", async () => {
  f.db.send = async command => { if (!raced && command instanceof TransactWriteCommand) { raced = true;f.db.set({ ...f.db.get(key)!, pendingTaskStopChange: { unexpected: "concurrent proposal" } }); }return send(command); };
  await expect(writeProjectAi({ ...f.deps, projectAiSignInTableName: "signin" }, orgId, "web", { projectPays: false, monthlyBudgetUsd: 51 }, a, { actor: { developerId: a, role: "owner" }, expectedRevision: 1 })).rejects.toThrow();
  expect(f.db.get(key)?.monthlyBudgetUsd).toBe(50);expect(f.db.get(key)?.pendingTaskStopChange).toEqual({ unexpected: "concurrent proposal" });
+});
+it("self approval with the displayed original digest remains forbidden", async () => {
+ const f = fixture(), p = await proposal(f);expect((await f.call("POST", `${base}/decisions`, p.body, a)).status).not.toBe(200);
+ expect(f.db.get(f.key)?.revision).toBe(1);
+});
+it("every Spending mutation requires audit and commits neither policy nor pending without it", async () => {
+ const f = fixture(), view = await f.call("GET", `${base}/editing`);delete f.deps.audit;
+ const result = await f.call("PUT", base, { requestId: randomUUID(), expectedRevision: 1, expectedPolicyDigest: view.body.sourceDigest, policy: { kind: "limited", stopMicrousd: 1 } });
+ expect(result.body.code).toBe("AUDIT_UNAVAILABLE");expect(f.db.get(f.key)?.revision).toBe(1);expect(f.db.get(f.key)?.pendingTaskStopChange).toBeUndefined();
+});
+it("a Spending lost acknowledgement returns the committed answer and does not repeat the audit", async () => {
+ const f = fixture(), p = await proposal(f), send = f.db.send.bind(f.db);let lost = false;
+ f.db.send = async command => { const answer = await send(command);if (!lost && command instanceof TransactWriteCommand) { lost = true;throw new Error("lost acknowledgement"); }return answer; };
+ const result = await f.call("POST", `${base}/decisions`, p.body, b);expect(result.status).toBe(200);expect(result.body.state).toBe("applied");
+ expect((await f.call("POST", `${base}/decisions`, p.body, b)).body).toEqual(result.body);expect(f.db.get(f.key)?.revision).toBe(2);
+});
+it("monthly revision movement preserves a proposal but refuses its old approval terms", async () => {
+ const f = fixture(), p = await proposal(f, true);
+ await writeProjectAi({ ...f.deps, projectAiSignInTableName: "signin" }, orgId, "web", { projectPays: false, monthlyBudgetUsd: 51 }, a, { actor: { developerId: a, role: "owner" }, expectedRevision: 1 });
+ expect((await f.call("POST", `${p.path}/decisions`, p.body, b)).body.code).toBe("CHANGE_STALE");expect(f.db.get(projectAiKey(orgId, "web"))?.pendingTaskStopChange).toBeDefined();
+});
+it("Spending original sources and body schemas refuse spoofing and concurrent numeric movement", async () => {
+ const f = fixture(), view = await f.call("GET", `${base}/editing`), body = { requestId: randomUUID(), expectedRevision: 1, expectedPolicyDigest: view.body.sourceDigest, policy: { kind: "limited", stopMicrousd: 1234567 } };
+ expect((await f.call("PUT", base, { ...body, orgId: "org_bbbbbbbbbbbbbbbbbbbb" })).status).not.toBe(200);
+ f.db.set({ ...f.db.get(f.key)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 1 } } });
+ expect((await f.call("PUT", base, body)).body.code).toBe("CHANGE_STALE");
+});
+it("the Spending editor retains the explicit seeded-policy review label without a numeric estimate", async () => {
+ const f = fixture();f.db.set({ ...f.db.get(f.key)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, seedProvenance: { source: "bootstrap", reviewRequired: true, seededAt: "2026-10-01T00:00:00.000Z" } });
+ const view = await f.call("GET", `${base}/editing`);expect(view.status).toBe(200);expect(view.body.seedReview).toEqual({ source: "bootstrap", reviewRequired: true, seededAt: "2026-10-01T00:00:00.000Z" });expect(view.body.policy).toEqual({ kind: "rovara_estimate" });
 });
