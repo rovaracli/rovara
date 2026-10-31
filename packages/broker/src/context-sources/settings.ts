@@ -196,7 +196,7 @@ export interface SettingsDependencies {
   now: () => number;
   newId?: () => string;
   /** Told after a decision, for the audit trail. A failure is not the caller's problem. */
-  audit?: (event: { action: "context_source.proposed" | "context_source.applied" | "context_source.rejected"; actor: SettingsActor; project: string; sourceId: string; changeId: string }) => Promise<void>;
+  audit?: (event: { action: "context_source.proposed" | "context_source.applied" | "context_source.rejected"; actor: SettingsActor; project: string; sourceId: string; changeId: string; change: "set" | "remove" }) => Promise<void>;
 }
 
 function requireAdmin(actor: SettingsActor): void {
@@ -230,7 +230,7 @@ export async function proposeSourceChange(deps: SettingsDependencies, actor: Set
     change = { ...base, kind: "set", sourceId: checked.source.sourceId, source: checked.source, secondAdminReasons: checked.secondAdminReasons };
   }
   await deps.store.putChange(change);
-  await told(deps, { action: "context_source.proposed", actor, project, sourceId: change.sourceId, changeId: change.changeId });
+  await told(deps, { action: "context_source.proposed", actor, project, sourceId: change.sourceId, changeId: change.changeId, change: change.kind });
   return change;
 }
 
@@ -263,7 +263,7 @@ export async function confirmSourceChange(deps: SettingsDependencies, actor: Set
   if (await deps.store.apply({ change, next, decidedBy: actor.developerId, decidedAt: at }) === "stale") {
     throw agentXError("CHANGE_STALE", "The project's sources changed while this was confirmed. Propose it again.");
   }
-  await told(deps, { action: "context_source.applied", actor, project, sourceId: change.sourceId, changeId });
+  await told(deps, { action: "context_source.applied", actor, project, sourceId: change.sourceId, changeId, change: change.kind });
   return next;
 }
 
@@ -274,5 +274,5 @@ export async function rejectSourceChange(deps: SettingsDependencies, actor: Sett
   if (change === undefined || change.status !== "pending") throw agentXError("NOT_FOUND", "no pending change has that id");
   const result = await deps.store.reject({ change, decidedBy: actor.developerId, decidedAt: new Date(deps.now()).toISOString() });
   if (result === "stale") throw agentXError("CHANGE_STALE", "That change was already decided.");
-  await told(deps, { action: "context_source.rejected", actor, project, sourceId: change.sourceId, changeId });
+  await told(deps, { action: "context_source.rejected", actor, project, sourceId: change.sourceId, changeId, change: change.kind });
 }

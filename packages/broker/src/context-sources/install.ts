@@ -7,7 +7,9 @@
 //
 // Public ignores every private-network setting. A host address that is not https stops the install even while package-run servers are off, so a later switch-on cannot send the token in clear.
 import { EditionSchema, agentXError, type Edition } from "@agentx/contracts";
+import type { AuditDeps } from "../audit/outbox.js";
 import { parseInstallCidrs } from "../connections/private-endpoints.js";
+import { contextSourceAudit, mcpServerAudit } from "./audit.js";
 import { connectionLookupFromStore, createContextSourceRouteDependencies, createContextSourcesRuntime, createMcpServerDependencies, serverSecretsFromOrgSecrets } from "./wiring.js";
 import type { OrgConnectionDeps } from "../connections/store.js";
 import type { McpServerDependencies } from "./mcp-servers.js";
@@ -70,6 +72,8 @@ export interface ContextSourcesInstallInput {
   now?: () => number;
   /** Default true: delete a task's live-only source text when it ends. */
   registerCleanup?: boolean;
+  /** The Audit Ledger (`dependencies.audit`). Absent on a legacy install: nothing is recorded. */
+  audit?: AuditDeps;
 }
 
 /** Builds the lane for this install, or undefined (inert: no sources, no capability) where there is no connection secrets role. A wrong setting throws. */
@@ -86,13 +90,17 @@ export function installContextSources(input: ContextSourcesInstallInput): Contex
     ...(config.mcpHost === undefined ? {} : { mcpHost: config.mcpHost }),
   };
   const runtime = createContextSourcesRuntime(common);
+  // Admin changes to servers and Sources are recorded in the Audit Ledger (audit.ts), where the install has one.
+  const ledger: AuditDeps = input.audit ?? {};
+  const serverAudit = mcpServerAudit(ledger, common.now);
+  const sourceAudit = contextSourceAudit(ledger, common.now);
   // Built once for the install: the limiter on tests of a pasted server counts in this process.
-  const mcpServers = config.edition === "enterprise" ? createMcpServerDependencies(common) : undefined;
+  const mcpServers = config.edition === "enterprise" ? createMcpServerDependencies({ ...common, ...(serverAudit === undefined ? {} : { audit: serverAudit }) }) : undefined;
   const stopCleanup = input.registerCleanup === false ? undefined : registerContextSourceCleanup({ store: dynamoResultStore(common), log: (event, fields) => console.warn(JSON.stringify({ event, ...fields })) });
   return {
     config, runtime,
     routes: ({ requireProjectRole }) => ({
-      contextSources: createContextSourceRouteDependencies({ ...common, requireProjectRole }),
+      contextSources: createContextSourceRouteDependencies({ ...common, requireProjectRole, ...(sourceAudit === undefined ? {} : { audit: sourceAudit }) }),
       ...(mcpServers === undefined ? {} : { mcpServers }),
     }),
     ...(stopCleanup === undefined ? {} : { stopCleanup }),

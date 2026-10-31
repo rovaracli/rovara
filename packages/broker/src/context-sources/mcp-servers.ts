@@ -140,6 +140,11 @@ export const STDIO_OFF_MESSAGE = "Servers that Rovara runs from a package are no
 
 export interface McpServerActor { orgId: OrgId; developerId: string; orgRole: string }
 
+/** What the audit trail is told: ids, fixed words and flags. The label goes in the event's org details; an address and a token never do. */
+export type McpServerAuditEvent =
+  | { action: "mcp_server.added" | "mcp_server.approved" | "mcp_server.disabled" | "mcp_server.removed"; actor: McpServerActor; serverId: string; label: string; transport: "http" | "stdio"; hasToken: boolean }
+  | { action: "mcp_server.token_changed"; actor: McpServerActor; serverId: string; change: "stored" | "deleted" };
+
 export interface McpServerDependencies {
   store: McpServerStore;
   prober: McpProber;
@@ -157,7 +162,7 @@ export interface McpServerDependencies {
   /** Install setting: the admin who added a server may not be the one who approves it. Off by default, because adding one must be easy. */
   secondAdminToApprove?: boolean;
   newId?: () => string;
-  audit?: (event: { action: "mcp_server.added" | "mcp_server.approved" | "mcp_server.disabled" | "mcp_server.removed"; actor: McpServerActor; serverId: string; label: string }) => Promise<void>;
+  audit?: (event: McpServerAuditEvent) => Promise<void>;
 }
 
 function guard(deps: McpServerDependencies, actor: McpServerActor): void {
@@ -170,7 +175,7 @@ export function stdioAvailable(deps: Pick<McpServerDependencies, "edition" | "st
   return deps.stdioEnabled === true && featureEnabled(editionPolicy(deps.edition), "stdioMcpServers");
 }
 
-const told = async (deps: McpServerDependencies, event: Parameters<NonNullable<McpServerDependencies["audit"]>>[0]): Promise<void> => {
+const told = async (deps: McpServerDependencies, event: McpServerAuditEvent): Promise<void> => {
   try { await deps.audit?.(event); } catch { /* an audit hiccup does not undo the decision */ }
 };
 
@@ -244,7 +249,8 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
     await deps.secrets.remove(actor.orgId, serverId).catch(() => undefined);
     throw agentXError("IDEMPOTENCY_CONFLICT", "that server id is taken; try again");
   }
-  await told(deps, { action: "mcp_server.added", actor, serverId: entry.serverId, label: entry.label });
+  await told(deps, { action: "mcp_server.added", actor, serverId: entry.serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
+  if (secretVersion !== undefined) await told(deps, { action: "mcp_server.token_changed", actor, serverId: entry.serverId, change: "stored" });
   return entry;
 }
 
@@ -272,7 +278,7 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
   if (await deps.store.decide({ orgId: actor.orgId, serverId, from: "awaiting_approval", to: "approved", by: actor.developerId, at, toolsHash: entry.probe.toolsHash }) === "stale") {
     throw agentXError("CHANGE_STALE", "That server was already decided. Reload the list.");
   }
-  await told(deps, { action: "mcp_server.approved", actor, serverId, label: entry.label });
+  await told(deps, { action: "mcp_server.approved", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
   return { ...entry, status: "approved", decidedBy: actor.developerId, decidedAt: at };
 }
 
@@ -283,11 +289,12 @@ export async function disableMcpServer(deps: McpServerDependencies, actor: McpSe
   if (entry === undefined || entry.status === "disabled") throw agentXError("NOT_FOUND", "no MCP server with that id is in use");
   const result = await deps.store.decide({ orgId: actor.orgId, serverId, from: entry.status, to: "disabled", by: actor.developerId, at: new Date(deps.now()).toISOString() });
   if (result === "stale") throw agentXError("CHANGE_STALE", "That server changed while this was decided. Reload the list.");
-  await told(deps, { action: "mcp_server.disabled", actor, serverId, label: entry.label });
+  await told(deps, { action: "mcp_server.disabled", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
   // ME-16: a disabled server is never turned back on, so its token has no further use: delete it now. The server is already off (the allow-list reads the entry at every call); if the delete
   // fails the admin is told and removing the server tries again.
   if (entry.hasSecret === true) {
     try { await deps.secrets.remove(actor.orgId, serverId); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "The server is turned off, but its token could not be deleted just now. Remove the server to try again."); }
+    await told(deps, { action: "mcp_server.token_changed", actor, serverId, change: "deleted" });
   }
 }
 
@@ -312,7 +319,8 @@ export async function removeMcpServer(deps: McpServerDependencies, actor: McpSer
     try { await deps.secrets.remove(actor.orgId, serverId); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "The server's token could not be deleted just now, so the server was kept. Try removing it again."); }
   }
   await deps.store.remove(actor.orgId, serverId);
-  await told(deps, { action: "mcp_server.removed", actor, serverId, label: entry.label });
+  if (entry.hasSecret === true) await told(deps, { action: "mcp_server.token_changed", actor, serverId, change: "deleted" });
+  await told(deps, { action: "mcp_server.removed", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
 }
 
 /** The list the settings page shows an admin: every entry, with the tools each offers. */

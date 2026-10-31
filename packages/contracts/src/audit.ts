@@ -213,6 +213,15 @@ export const AUDIT_ACTIONS = [
   "lesson.promoted",
   "lesson.rolled_back",
   "lesson.snapshot_created",
+  // Lane E (private MCP servers and project Sources): ids, fixed words and flags only. A server's label, address and token, and a source's id, never go in a fact.
+  "mcp_server.added",
+  "mcp_server.approved",
+  "mcp_server.disabled",
+  "mcp_server.removed",
+  "mcp_server.token_changed",
+  "context_source.proposed",
+  "context_source.applied",
+  "context_source.rejected",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -244,6 +253,7 @@ export const AUDIT_TARGET_KINDS = [
   "process",
   "lesson",
   "record_source",
+  "mcp_server",
 ] as const;
 
 export const AuditTargetKindSchema = z.enum(AUDIT_TARGET_KINDS);
@@ -379,6 +389,14 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "lesson.promoted": ["tier"],
   "lesson.rolled_back": ["fromSetVersion", "toSetVersion"],
   "lesson.snapshot_created": ["lessonSetVersion", "lessonCount"],
+  "mcp_server.added": ["transport", "hasCredential"],
+  "mcp_server.approved": ["transport", "hasCredential"],
+  "mcp_server.disabled": ["transport"],
+  "mcp_server.removed": ["transport"],
+  "mcp_server.token_changed": ["change"],
+  "context_source.proposed": ["change"],
+  "context_source.applied": ["change"],
+  "context_source.rejected": ["change"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

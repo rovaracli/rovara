@@ -428,8 +428,8 @@ export async function requireRecordProject(
 
 /** The handler's dependencies from what callers supply (see AwsBrokerInput). */
 /** The lane E install for these dependencies (undefined, inert, where there is no connection secrets role). A wrong install setting throws, which stops the container at its first request. */
-function contextSourcesInstallOf(dependencies: Pick<AwsBrokerDependencies, "orgConnections" | "documentClient" | "tableName">) {
-  return sharedContextSourcesInstall({ env: process.env, orgConnections: dependencies.orgConnections, documentClient: dependencies.documentClient, tableName: dependencies.tableName });
+function contextSourcesInstallOf(dependencies: Pick<AwsBrokerDependencies, "orgConnections" | "documentClient" | "tableName" | "audit">) {
+  return sharedContextSourcesInstall({ env: process.env, orgConnections: dependencies.orgConnections, documentClient: dependencies.documentClient, tableName: dependencies.tableName, ...(dependencies.audit === undefined ? {} : { audit: { audit: dependencies.audit } }) });
 }
 
 export function brokerDependencies(input: AwsBrokerInput): AwsBrokerDependencies {

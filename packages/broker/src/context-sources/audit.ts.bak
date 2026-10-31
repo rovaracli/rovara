@@ -1,0 +1,34 @@
+// The audit trail of private MCP servers and project Sources: the adapters that turn the hooks of mcp-servers.ts and settings.ts into ledger events (audit/events.ts) and record them
+// durably (audit/flush.ts: the event is a pending item first, then sent). The admin change has already committed when its hook runs, so this is the "record after" pattern used where
+// the store cannot join the ledger's transaction; a failure is logged by the ledger and never undoes the decision (`told` in the callers). Ids, fixed words and flags only: the server's
+// label goes in the event's org details; its address, its token and a source's name never do.
+import { auditContextSourceChange, auditMcpServerChanged, auditMcpServerTokenChanged } from "../audit/events.js";
+import { auditOccurrence } from "../audit/events.js";
+import { recordAuditEventDurably } from "../audit/flush.js";
+import type { AuditDeps } from "../audit/outbox.js";
+import type { McpServerDependencies } from "./mcp-servers.js";
+import type { SettingsDependencies } from "./settings.js";
+
+/** The `audit` hook of the MCP servers flow; undefined where the install has no ledger (nothing is built or looked up). */
+export function mcpServerAudit(deps: AuditDeps, now: () => number): McpServerDependencies["audit"] | undefined {
+  if (deps.audit === undefined) return undefined;
+  return async (event) => {
+    const at = new Date(now()).toISOString();
+    const base = { orgId: event.actor.orgId, actor: { kind: "member" as const, id: event.actor.developerId }, occurredAt: at, occurrence: auditOccurrence(event.serverId, at) };
+    await recordAuditEventDurably(deps, event.action === "mcp_server.token_changed"
+      ? auditMcpServerTokenChanged({ ...base, serverId: event.serverId, change: event.change })
+      : auditMcpServerChanged({ ...base, action: event.action, serverId: event.serverId, label: event.label, transport: event.transport, hasToken: event.hasToken }));
+  };
+}
+
+/** The `audit` hook of the Sources settings. */
+export function contextSourceAudit(deps: AuditDeps, now: () => number): SettingsDependencies["audit"] | undefined {
+  if (deps.audit === undefined) return undefined;
+  return async (event) => {
+    const at = new Date(now()).toISOString();
+    await recordAuditEventDurably(deps, auditContextSourceChange({
+      orgId: event.actor.orgId, actor: { kind: "member", id: event.actor.developerId }, occurredAt: at, occurrence: auditOccurrence(event.changeId),
+      action: event.action, projectName: event.project, sourceId: event.sourceId, change: event.change, related: [event.changeId],
+    }));
+  };
+}

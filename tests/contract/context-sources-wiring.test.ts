@@ -3,6 +3,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OrgRole } from "../../packages/contracts/src/org-node.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { dynamoMcpServerStore, summariseProbe } from "../../packages/broker/src/context-sources/mcp-servers.js";
 import { orgMcpServerSecretName } from "../../packages/broker/src/connections/org-secrets.js";
@@ -22,12 +23,12 @@ const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMA
 beforeAll(async () => { await loadSlackBroker(); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
-async function setup(options: { connectionSecrets?: boolean; cloud?: boolean; people?: Array<[Developer, OrgRole, typeof TEST_ORG?]> } = {}) {
+async function setup(options: { audit?: ReturnType<typeof capturingAuditDeps>; connectionSecrets?: boolean; cloud?: boolean; people?: Array<[Developer, OrgRole, typeof TEST_ORG?]> } = {}) {
   const fake = new FakeOrgSecrets({ env: ENV, now: Date.now });
   const secrets = new OrgSecrets({ env: ENV, roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: Date.now });
   const holder: { db?: { send(command: unknown): Promise<unknown> } } = {};
   const h = await createDeveloperTaskBroker({
-    orgResolver, register: false,
+    orgResolver, register: false, ...(options.audit === undefined ? {} : { audit: options.audit }),
     brokerExtra: {
       ...(options.cloud === true ? { cloud: true } : {}),
       agents: { projectMembers: new FakeProjectMembers() },
@@ -113,5 +114,27 @@ describe("closing an org (ME-16)", () => {
     for (const id of ["mcpone000001", "mcptwo000002"]) expect(fake.stored(orgMcpServerSecretName("staging", TEST_ORG, id))!.deleteAt, id).toBeGreaterThan(START);
     expect((await store.list(OTHER)).map((item) => item.serverId)).toEqual(["mcpoth000003"]);
     expect(fake.stored(orgMcpServerSecretName("staging", OTHER, "mcpoth000003"))!.deleteAt).toBeUndefined();
+  });
+});
+
+describe("the audit ledger (fix round)", () => {
+  it("records an admin's removal of an MCP server and its token through the real handler, without the token", async () => {
+    vi.stubEnv("ROVARA_EDITION", "enterprise");
+    const audit = capturingAuditDeps();
+    const { h, call, secrets } = await setup({ audit });
+    const store = dynamoMcpServerStore({ documentClient: h.db, tableName: "state" });
+    await store.create(TEST_ORG, { serverId: "mcpone000001", label: "SIM", status: "disabled", transport: { kind: "http", address: "https://sim.corp.example/mcp" }, probe: summariseProbe([], Date.now()), requestedBy: "dev1", requestedAt: "2026-11-01T10:00:00Z", hasSecret: true, secretVersion: "v1" });
+    const TOKEN = ["tok", "sekret", "98765"].join("-");
+    await secrets.put(TEST_ORG, orgMcpServerSecretName("staging", TEST_ORG, "mcpone000001"), TOKEN);
+    const removed = await call(DANA, "DELETE", "/v1/app/org/mcp-servers/mcpone000001");
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    const events = audit.recorded();
+    expect(events.map((event) => event.action).sort()).toEqual(["mcp_server.removed", "mcp_server.token_changed"]);
+    for (const event of events) {
+      expect(event.orgId).toBe(TEST_ORG);
+      expect(event.actor).toEqual({ kind: "member", id: DANA.developerId });
+      expect(event.target).toEqual({ kind: "mcp_server", id: "mcpone000001" });
+    }
+    expect(JSON.stringify([events, audit.pendingItems(), audit.logs])).not.toContain(TOKEN);
   });
 });
