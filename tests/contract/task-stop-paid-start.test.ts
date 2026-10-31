@@ -2501,7 +2501,7 @@ for (const drift of ["at_read", "at_commit"] as const) it(`a reached stop with t
   return send(command);
  };
  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers });
- expect(raced).toBe(true);expect(["BUDGET_EXCEEDED", "TASK_STOP_CONFIG_INVALID"]).toContain((reply.body.error as { code: string }).code);
+ expect(raced).toBe(true);expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
 });
 it("a member payer cannot self-decide a raise beyond the final company stop", async () => {
  const f = await approvalWindow("company"), before = f.t.meta(f.task.taskId);
@@ -2708,4 +2708,22 @@ it("funding C: a coding test payer transition keeps verified own-source funding 
  await f.t.pauseAndEnd(task, { kind: "test", taskId: task.taskId });
  const reply = await f.t.api(MAYA, "POST", `/v1/app/tasks/${task.taskId}/continue-as-task`, { requestId: randomUUID() });
  expect(reply.status, JSON.stringify(reply.body)).toBe(200);expect(f.t.meta(task.taskId).fundingProof).toBeDefined();
+});
+
+// Final review minors: real admission/read and native mint races.
+it("funding review: unrelated task-row updates do not invalidate an own-source mint", async () => {
+ const f = await ownSourceOperation(), send = f.t.db.send.bind(f.t.db);let raced = false;
+ f.t.db.send = async command => {
+  if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === taskKey(f.taskId).pk && JSON.stringify(item).includes("modelKeyIds"))) {
+   raced = true;f.t.db.set({ ...f.t.meta(f.taskId), title: "An unrelated title edit", updatedAt: new Date().toISOString() });
+  }
+  return send(command);
+ };
+ const reply = await f.modelAccess();expect(raced).toBe(true);expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+});
+it("funding review: source proof read failure is an admission refusal without workspace effects", async () => {
+ const f = await ownSourceFundingFixture(), send = f.t.db.send.bind(f.t.db);
+ f.t.db.send = async command => {if (command instanceof GetCommand && command.input.Key?.pk === f.policy.pk && command.input.Key?.sk === f.policy.sk) throw new Error("unreadable funding policy");return send(command);};
+ const reply = await f.start();expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
+ expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
 });
