@@ -578,6 +578,13 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
    * break-glass sign-in durably BEFORE it is let through (a record that cannot be made refuses it). Anything but the company's own sign-in is refused: the edition's
    * other methods are not offered, and a flow that reaches here by another method gets no access.
    */
+  /** Removes the Slack allowance of a person whose company sign-in was refused, by the Slack user their developer record names. */
+  async function revokeSlackAllowance(developerId: string): Promise<void> {
+    if (deps.sso === undefined || deps.singleOrgId === undefined) return;
+    const slackUserId = (await store.getDeveloper(developerId))?.slackUserId;
+    if (slackUserId !== undefined) await deps.sso.slack.revoke(deps.singleOrgId, slackUserId);
+  }
+
   async function decideCompanySignInFor(method: DeveloperSignInMethod, identity: ProviderIdentity, developerId: string, occurrence: string): Promise<CompanySignIn> {
     const current = await deps.orgs.orgForDeveloper(developerId);
     const audit = deps.audit === undefined ? {} : { audit: deps.audit };
@@ -636,6 +643,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       const decided = await decideCompanySignInFor(method, identity, developerId, request.id);
       if (!decided.allow) {
         deps.log({ event: "signin.refused", method, reason: decided.reason, developerId });
+        // A person the mapping no longer lets in loses their Slack access too (Enterprise foundations I-6).
+        await revokeSlackAllowance(developerId);
         if (join) return page(403, "Sign-in was refused", [decided.message, "Ask your administrator."]);
         if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
         return client({ error: "access_denied", error_description: decided.message });
@@ -648,6 +657,10 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (slackUserId === undefined && identity.email !== undefined) {
       const link = await deps.directory.lookupByEmail(identity.email);
       slackUserId = link === "unavailable" ? existing?.slackUserId : link === "none" ? undefined : link.userId;
+    }
+    // Enterprise foundations I-6: the Slack user this person is, allowed until their session ends. Without a Slack account there is nothing for Slack to act as.
+    if (companySignIn !== undefined && slackUserId !== undefined && deps.sso !== undefined && deps.singleOrgId !== undefined) {
+      await deps.sso.slack.record(deps.singleOrgId, slackUserId, developerId, companySignIn.sessionEndsAt);
     }
     // The developer record keeps the first identity's issuer and subject (ownerKeyForSubject(issuer, subject) === developerId, which
     // task-person-identity.ts relies on), so a linked sign-in only records that it happened.

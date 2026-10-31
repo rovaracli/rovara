@@ -11,10 +11,13 @@ import type { AuditRuntime } from "../audit/outbox.js";
 import { auditOccurrence, auditSsoBreakGlassUsed, auditSsoSignIn, auditSsoSignInRefused } from "../audit/events.js";
 import { decideSignIn, dynamoBreakGlassStore, dynamoGroupMappingStore, readBreakGlassForSignIn, readMappingForSignIn, type BreakGlassStore, type GroupMappingStore } from "./group-mapping.js";
 import type { ProviderIdentity } from "./providers.js";
+import { dynamoSlackAllowanceStore, type SlackAllowanceStore } from "./slack-allowance.js";
 
 export interface SsoStores {
   mappings: GroupMappingStore;
   breakGlass: BreakGlassStore;
+  /** Which Slack users the company sign-in currently allows (the Slack ingress asks). */
+  slack: SlackAllowanceStore;
 }
 
 /** The stores, built once per process where the edition has company group sign-in; none elsewhere. */
@@ -22,7 +25,7 @@ export function ssoStoresFor(input: { documentClient: { send(command: unknown): 
   if (input.policy === undefined || !input.policy.features.sso) return undefined;
   const { documentClient, tableName, policy } = input;
   const audit = input.audit === undefined ? {} : { audit: input.audit };
-  return { mappings: dynamoGroupMappingStore({ documentClient, tableName, policy, ...audit }), breakGlass: dynamoBreakGlassStore({ documentClient, tableName, policy, ...audit }) };
+  return { mappings: dynamoGroupMappingStore({ documentClient, tableName, policy, ...audit }), breakGlass: dynamoBreakGlassStore({ documentClient, tableName, policy, ...audit }), slack: dynamoSlackAllowanceStore({ documentClient, tableName }) };
 }
 
 export type CompanySignIn =
