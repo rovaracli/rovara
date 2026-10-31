@@ -120,6 +120,7 @@ interface Site { file: string; calls: readonly string[]; why: string }
 const SITES: readonly Site[] = [
   { file: "packages/broker/src/aws/broker/handler.ts", calls: ["routeEditionDependencies(dependencies)"], why: "both builders of the route dependencies spread routeEditionDependencies (the edition itself is built once by installEditionPolicy in edition-wiring.ts)" },
   { file: "packages/broker/src/aws/broker/scope-helpers.ts", calls: ["routeEditionDependencies(dependencies)"], why: "the authenticateBearer dependencies" },
+  { file: "packages/broker/src/aws/developer-tasks/start.ts", calls: ["assertRepositoryHostsKnown("], why: "a task start refuses a repository whose host kind is not registered" },
 ];
 const root = resolve(import.meta.dirname, "..", "..");
 const source = (file: string) => readFileSync(resolve(root, file), "utf8");

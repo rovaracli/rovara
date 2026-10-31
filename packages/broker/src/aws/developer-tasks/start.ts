@@ -80,6 +80,7 @@ import { loadOwnedTask, refuse } from "./access.js";
 import { openTasksText, taskView } from "./task-view.js";
 import { runResultOf } from "./task-index.js";
 import { releaseFinishedTasksOf } from "./release.js";
+import { assertRepositoryHostsKnown } from "../../wiring/enterprise-identity.js";
 
 export async function limitError(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, full: "member" | "organization", limits: WorkspaceLimits): Promise<AgentXError> {
   const open = await openTasksText(deps, caller.developerId);
@@ -284,6 +285,15 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (deps.requireRepositoriesConnected !== undefined) {
     try {
       await deps.requireRepositoriesConnected(deps.orgId, project.definition);
+    } catch (error) {
+      if (error instanceof AgentXError) return refused(error);
+      throw error;
+    }
+  }
+  // Enterprise foundations P7: every repository of the project must live on a code host this install has registered; a task on any other is refused here, before the budget, the limits and any write.
+  if (deps.codeHost !== undefined) {
+    try {
+      assertRepositoryHostsKnown(project.definition.repositories, deps.codeHost);
     } catch (error) {
       if (error instanceof AgentXError) return refused(error);
       throw error;

@@ -1,4 +1,5 @@
 import type { CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
+import type { CodeHostRouter } from "../../plugins/registry.js";
 import type { MetaProjectCreated } from "../../org/create-from-meta.js";
 import type { MetaConfigDependencies } from "../../meta-repo/config-import.js";
 import type { ServiceStatusDependencies } from "../../org/service-status.js";
@@ -160,6 +161,8 @@ export interface DeveloperRouteDependencies {
   sso?: SsoStores;
   /** Enterprise foundations E2: the edition's feature table. Absent on an install deployed before editions (no gates, today's behaviour). The Auditor role (I2) needs it: without a policy, or with one that has no `auditorRole`, an Auditor's session is refused and the role cannot be given. */
   editionPolicy?: EditionPolicy;
+  /** Enterprise foundations P7: the code hosts this install registers (the router's kinds). A task start refuses a repository whose host is not among them. Absent in a harness that builds no registry: no check. */
+  codeHost?: Pick<CodeHostRouter, "kinds">;
   /**
    * Plan 2, Task 16: creates a project in the caller's org from a repository the org's GitHub connection reaches, through the broker's
    * registration, and grants the caller access; a replay of the same request answers the same project with `duplicate: true`. The route

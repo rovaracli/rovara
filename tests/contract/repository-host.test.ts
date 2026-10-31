@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   type CodeHost,
+  editionPolicy,
   ProjectDefinitionSchema,
   RepositoryHostSchema,
   StoredProjectDefinitionSchema,
@@ -11,7 +12,7 @@ import {
   withRepositoryHost,
   workerProjectDefinition,
 } from "../../packages/contracts/src/index.js";
-import { assertRepositoryHostsKnown, selectCodeHost } from "../../packages/broker/src/plugins/registry.js";
+import { assertRepositoryHostsKnown, createPluginRegistry, selectCodeHost } from "../../packages/broker/src/plugins/registry.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { newModel } from "../plugins/fake-worlds.js";
 
@@ -125,5 +126,36 @@ describe("the code host router", () => {
     expect(() => assertRepositoryHostsKnown(ok.repositories, [github, other])).not.toThrow();
     expect(() => assertRepositoryHostsKnown(ok.repositories, [github])).toThrow("CONFIG_INVALID");
     expect(() => assertRepositoryHostsKnown(ok.repositories, [])).toThrow("CONFIG_INVALID");
+  });
+});
+
+describe("the P4 router picks by the repository record's host (one registry)", () => {
+  const asKind = (kind: string): CodeHost => Object.create(new FakeCodeHost(newModel()), { kind: { value: kind } }) as CodeHost;
+  const github = asKind("github");
+  const farm = asKind("gitfarm");
+  const enterprise = createPluginRegistry({ codeHosts: [github, farm], checkRunners: [], policy: editionPolicy("enterprise") });
+  const publicOnly = createPluginRegistry({ codeHosts: [github], checkRunners: [] });
+
+  it("forRecord routes by host.kind, and a record with no host (or old pins) is GitHub", () => {
+    expect(enterprise.codeHost.forRecord(ProjectDefinitionSchema.parse(project([repo("api")])).repositories[0]!)).toBe(github);
+    expect(enterprise.codeHost.forRecord(StoredProjectDefinitionSchema.parse(project([repo("api", { host: { kind: "gitfarm" } })])).repositories[0]!)).toBe(farm);
+    expect(enterprise.codeHost.forRecord({ installationId: 7, githubRepositoryId: 99 })).toBe(github);
+  });
+
+  it("forRecord refuses a kind with no registered host (fixed sentence, kind not echoed) and never falls back to GitHub", () => {
+    let error: unknown;
+    try { publicOnly.codeHost.forRecord(StoredProjectDefinitionSchema.parse(project([repo("api", { host: { kind: "gitfarm" } })])).repositories[0]!); } catch (caught) { error = caught; }
+    expect((error as { code: string }).code).toBe("CONFIG_INVALID");
+    expect((error as Error).message).not.toContain("gitfarm");
+  });
+
+  it("the start check takes the router's kinds: the same answer as with the entries", () => {
+    const stored = StoredProjectDefinitionSchema.parse(project([repo("api"), repo("lib", { host: { kind: "gitfarm" } })]));
+    expect(() => assertRepositoryHostsKnown(stored.repositories, enterprise.codeHost)).not.toThrow();
+    expect(() => assertRepositoryHostsKnown(stored.repositories, publicOnly.codeHost)).toThrow("CONFIG_INVALID");
+  });
+
+  it("a non-GitHub host cannot be registered without the Enterprise feature (P4), so Public refuses at build", () => {
+    expect(() => createPluginRegistry({ codeHosts: [github, farm], checkRunners: [], policy: editionPolicy("public") })).toThrow();
   });
 });

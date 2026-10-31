@@ -29,6 +29,7 @@ import { unlockTrial } from "../../org/trial.js";
 import { requireSlackPersonAllowed } from "../../developer/slack-allowance.js";
 import { trialAvailable } from "../../org/trial-availability.js";
 import { rovaraCodeV2LiveFromEnvironment } from "../../rovara-code/v2-switch.js";
+import type { CodeHostRouter } from "../../plugins/registry.js";
 import { requireOrgId, resolveSlackOrgForInstall } from "../../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../../org/store.js";
 import { requireProject } from "../project-records.js";
@@ -362,9 +363,13 @@ export function workingBranchPreviewRoute(dependencies: AwsBrokerDependencies): 
 }
 
 /** `requireRepositoriesConnected` for the task routes, absent where there is no gate. */
-export function repositoriesGateRoute(dependencies: AwsBrokerDependencies): { requireRepositoriesConnected?: NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]> } {
+export function repositoriesGateRoute(dependencies: AwsBrokerDependencies): { requireRepositoriesConnected?: NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]>; codeHost?: Pick<CodeHostRouter, "kinds"> } {
   const gate = repositoryGateOf(dependencies);
-  return gate === undefined ? {} : { requireRepositoriesConnected: (orgId, definition) => requireRepositoriesConnected(gate, orgId, definition) };
+  return {
+    // P7: the registered code hosts travel with the repositories gate to every builder of the route dependencies, so a task start checks each repository's host kind.
+    ...(dependencies.codeHost === undefined ? {} : { codeHost: dependencies.codeHost }),
+    ...(gate === undefined ? {} : { requireRepositoriesConnected: (orgId: OrgId, definition: Parameters<NonNullable<DeveloperRouteDependencies["requireRepositoriesConnected"]>>[1]) => requireRepositoriesConnected(gate, orgId, definition) }),
+  };
 }
 
 /** A person's name from their sign-in record, for the answer to an erasure (read before their details are erased). */
