@@ -764,6 +764,10 @@ describe("I4: the builders", () => {
     ["auditProcessRolledBack", (occurrence) => builders.auditProcessRolledBack({ ...base, occurrence, details, agentId: "agt_1", fromVersion: 3, toVersion: 2, safety: "safe" })],
     ["auditPlaybookDefaultProcessChanged", (occurrence) => builders.auditPlaybookDefaultProcessChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, processKind: "builtin" })],
     ["auditCompanyChangeAppliedToProject", (occurrence) => builders.auditCompanyChangeAppliedToProject({ ...base, occurrence, details, projectName: "Secret Project", changeRevision: 5, settingCount: 2 })],
+    // Test environment: a tier change records the tier and how many less-safe fields it turned on
+    ["auditProjectTestEnvChanged", (occurrence) => builders.auditProjectTestEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, tier: "preview", lessSafeCount: 1 })],
+    // Proof and evidence P6: one event per evidence download, the artifact named by its fixed kind and retention class
+    ["auditEvidenceDownloaded", (occurrence) => builders.auditEvidenceDownloaded({ ...base, occurrence, details, taskId: "tsk_1", artifactKind: "screenshot", retentionClass: "evidence-short" })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
