@@ -4,7 +4,7 @@ import { auditEventId } from "@agentx/contracts";
 import { TaskFundingProofSchema, actualCompanyFunding, fundingRevisionCheck, fundingAuditItems } from "../org/task-stop-funding.js";
 import { requirePricedTaskStopAdmission } from "../org/task-stop-unpriced.js";
 import { AuditEventInputSchema } from "@agentx/contracts";
-import { projectAiKey } from "@agentx/contracts";
+import { orgSettingsKey, projectAiKey } from "@agentx/contracts";
 import { taskStopProjectCreationItems } from "../org/task-stop-bootstrap.js";
 import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
 import {readCompanyStagePolicy} from "../model-selection/policy-store.js";
@@ -3555,9 +3555,16 @@ export async function registerProjectFor(
     }) ?? [];
     const projectSpendingItems: TransactItems = [];
     if (snapshot.catalog === undefined && snapshot.newestRevision === 0) {
-      const key = projectAiKey(orgId, definition.name);
-      const existing = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: key, ConsistentRead: true }))).Item;
-      projectSpendingItems.push(...(existing === undefined ? taskStopProjectCreationItems(dependencies.tableName, orgId, definition.name, Date.parse(now)) : nativeSnapshotConditions(dependencies.tableName, [key], [existing], ["taskStopPolicy"])));
+      const policyKey = orgSettingsKey(orgId, "TASK_STOP_POLICY");
+      const policy = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: policyKey, ConsistentRead: true }))).Item;
+      // An unenrolled company keeps the existing registration and settings shape.
+      // Explicit upgrade inventories prepare inheritance before enrollment.
+      const enrollment = z.object({ version: z.literal(1), state: z.literal("enabled") }).safeParse(policy?.enrollment);
+      if (policy?.entityType === "ORG_TASK_STOP_POLICY" && policy.orgId === orgId && enrollment.success) {
+        const key = projectAiKey(orgId, definition.name);
+        const existing = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: key, ConsistentRead: true }))).Item;
+        projectSpendingItems.push(...nativeSnapshotConditions(dependencies.tableName, [policyKey], [policy], ["enrollment"]), ...(existing === undefined ? taskStopProjectCreationItems(dependencies.tableName, orgId, definition.name, Date.parse(now)) : nativeSnapshotConditions(dependencies.tableName, [key], [existing], ["taskStopPolicy"])));
+      }
     }
     const registrationItems: TransactItems = [
       { Put: { TableName: dependencies.tableName, Item: record, ConditionExpression: "attribute_not_exists(pk)" } },
@@ -6538,7 +6545,7 @@ async function taskOperationParts(
   if(turnPolicy!==undefined){operation.modelPolicy=turnPolicy.binding;operation.modelTurnPin=turnPolicy.frozen;delete operation.modelTaskId;}
   const turnAudit=turnPolicy?.decision.fallback===undefined?undefined:prepareTurnModelFallback({...dependencies,now:Date.now},{orgId,taskId:operationId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:turnPolicy.binding.companyRevision,decision:turnPolicy.decision});
   if(turnAudit!==undefined)Object.assign(operation,turnAudit.fields);
-  if (applied?.modelDecision !== undefined) operation.fundingSourceId = applied.modelDecision.sourceId === "personal-chatgpt" && routed?.route != null ? routed.route.sourceId : applied.modelDecision.sourceId;
+  if (task?.fundingProof !== undefined && applied?.modelDecision !== undefined) operation.fundingSourceId = applied.modelDecision.sourceId === "personal-chatgpt" && routed?.route != null ? routed.route.sourceId : applied.modelDecision.sourceId;
   if (routed !== undefined) {
     operation.modelRoute = routed.route?.alias === undefined ? null : { sourceId: routed.route.sourceId, alias: routed.route.alias, model: routed.requested };
   }
