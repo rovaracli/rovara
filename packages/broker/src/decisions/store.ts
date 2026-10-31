@@ -25,6 +25,8 @@ export interface DecisionStore {
   evidenceOpenedAt(key: EvidenceOpenedKey, digest: string): Promise<string | undefined>;
   /** Records a decision once per request id; a repeat is a no-op. */
   recordDecision(record: DecisionRecord): Promise<void>;
+  /** The decision this person recorded under this request id, so a retry after success gets the earlier answer. */
+  findDecision(who: DecisionWho, requestId: string): Promise<DecisionRecord | undefined>;
 }
 
 /** An opened-evidence record counts for this long. */
@@ -43,6 +45,7 @@ export function inMemoryDecisionStore(now: () => number = Date.now): DecisionSto
       return found !== undefined && found.digest === digest && now() - Date.parse(found.at) < DECISION_EVIDENCE_OPEN_TTL_MS ? found.at : undefined;
     },
     async recordDecision(record) { if (!decisions.some((existing) => existing.requestId === record.requestId && existing.developerId === record.developerId)) decisions.push(record); },
+    async findDecision(who, requestId) { return decisions.find((existing) => existing.requestId === requestId && existing.developerId === who.developerId && existing.orgId === who.orgId); },
   };
 }
 
@@ -68,6 +71,17 @@ export function dynamoDecisionStore(deps: DynamoDecisionStoreDependencies): Deci
       const item = read.Item;
       if (item === undefined || item["digest"] !== digest || typeof item["openedAt"] !== "string") return undefined;
       return deps.now() - Date.parse(item["openedAt"]) < DECISION_EVIDENCE_OPEN_TTL_MS ? item["openedAt"] : undefined;
+    },
+    async findDecision(who, requestId) {
+      const read = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk: partition(who), sk: `DECIDED#${requestId}` }, ConsistentRead: true })) as { Item?: Record<string, unknown> };
+      const item = read.Item;
+      if (item === undefined || item["entityType"] !== "DECISION_RECORD") return undefined;
+      const text = (key: string) => (typeof item[key] === "string" ? item[key] : undefined);
+      const outcome = item["outcome"];
+      const kind = text("kind"), risk = text("risk"), cardId = text("cardId"), createdAt = text("createdAt"), decidedAt = text("decidedAt");
+      if ((outcome !== "approved" && outcome !== "rejected") || kind === undefined || risk === undefined || cardId === undefined || createdAt === undefined || decidedAt === undefined) return undefined;
+      const tab = text("tab");
+      return { orgId: who.orgId, developerId: who.developerId, cardId, kind: kind as DecisionKind, risk: risk as DecisionRisk, outcome, requestId, createdAt, decidedAt, ...(tab === "requirements" || tab === "design" ? { tab } : {}) };
     },
     async recordDecision(record) {
       try {

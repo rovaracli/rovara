@@ -328,8 +328,9 @@ export type MergePressReply = { status: 200; body: MergeDone } | { status: 202; 
  * `POST /v1/app/sessions/{id}/merge { requestId, risk? }`: the session's effective owner, a maintainer of its project or an org owner or admin presses Merge. Readiness is checked from what tracking
  * stored (the merge re-reads GitHub); a branch GitHub needs up to date is brought up to date first. Not ready, it answers `409 MERGE_NOT_READY` and writes nothing.
  *
- * - A browser session (the web boundary vouched for the cookie and the CSRF token: `caller.browserSession`) merges at once: one click and the app's own confirm dialog, no email-code sign-in. The press
- *   must name the risk level the person saw when it is medium or high; one that saw another level is refused. Answers `200` with the pull requests merged.
+ * - A browser session (the web boundary vouched for the cookie and the CSRF token: `caller.browserSession`) merges at once at low or medium risk: one click and the app's own confirm dialog, no email-code
+ *   sign-in. The press must name the risk level the person saw when it is medium or high; one that saw another level is refused. Answers `200` with the pull requests merged. At HIGH risk it never merges
+ *   on a click: it answers like a token press (below), so the person decides on the confirmation page with a fresh sign-in (owner decision 2026-10-30).
  * - Any other caller (the CLI, an AI tool: a token) never merges. It gets `202 NEEDS_CONFIRMATION` with ONE pending change that lists every required pull request and its head, decided only by the
  *   presser on the confirmation page (R66) with a fresh sign-in.
  */
@@ -374,10 +375,11 @@ export async function pressMerge(
     pullRequests: byRepository(open.map((entry) => ({ repositoryId: entry.repositoryId, number: entry.number, headSha: heads.get(pullRequestKey(entry))! }))),
   };
 
-  if (caller.browserSession === true) {
-    // What the person saw in the dialog has to be what is true now: a medium or high risk is part of the click, and a risk that changed since is a new question.
-    const current = riskOfTask(tracked.workflow, items).level;
-    if ((seen ?? "low") !== current) throw agentXError("MERGE_NOT_READY", M.riskChanged(current));
+  // What the person saw in the dialog has to be what is true now: a medium or high risk is part of the click, and a risk that changed since is a new question.
+  const current = riskOfTask(tracked.workflow, items).level;
+  if (caller.browserSession === true && (seen ?? "low") !== current) throw agentXError("MERGE_NOT_READY", M.riskChanged(current));
+  // Owner decision 2026-10-30: a HIGH-risk change never merges on a click. Even a browser session decides it on the confirmation page, with a fresh sign-in (below, as for a token).
+  if (caller.browserSession === true && current !== "high") {
     const merged = await mergeTask(approvals, host, tracked, subject, { decidedBy: caller.developerId, occurrence: requestId });
     return { status: 200, body: { status: "MERGED", pullRequests: merged } };
   }

@@ -102,7 +102,7 @@ export function riskTierOf(kind: DecisionKind, inputs: TierInputs, locks: Decisi
     case "approve_spend": {
       const amount = inputs.spend?.amountUsd;
       if (amount === undefined || !Number.isFinite(amount) || amount < 0) throw new Error("spend inputs missing");
-      if (amount > DECISION_SPEND_MEDIUM_MAX_USD) tally.raise("high", `Asks for more than $${String(DECISION_SPEND_MEDIUM_MAX_USD)}.`);
+      if (amount > DECISION_SPEND_MEDIUM_MAX_USD) { tally.raise("high", `Asks for more than $${String(DECISION_SPEND_MEDIUM_MAX_USD)}.`); tally.secondPerson = true; }
       else if (amount > DECISION_SPEND_LOW_MAX_USD) tally.raise("medium", `Asks for more than $${String(DECISION_SPEND_LOW_MAX_USD)}.`);
       break;
     }

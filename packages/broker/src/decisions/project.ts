@@ -9,9 +9,10 @@
 // Anything an item says in words (a title, a question, a path) is flattened to plain text and cut; fixed words come from this file.
 import {
   DECISION_REJECT_REASONS, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
-  type CardAction, type DecisionCard, type DecisionKind, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip,
+  type CardAction, type DecisionCard, type DecisionKind, type DecisionDetailGroup, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip,
 } from "@agentx/contracts";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks, type TierInputs, type TierResult } from "./risk-tier.js";
+import { cardDigest } from "./digest.js";
 import { isSafeRelativePath, plainLine } from "./text.js";
 
 const SUBJECT_ID = /^[A-Za-z0-9_-]{1,150}$/u;
@@ -27,8 +28,20 @@ export interface ItemBase {
   title: string;
   createdAt: string;
   expiresAt?: string | undefined;
-  /** Where the full page for this decision is: a same-origin relative path. */
+  /** Where the full page for this decision is: a path under `/app/` or `/v1/app/`. */
   openPath: string;
+  /**
+   * The confirmation page that asks for a FRESH sign-in (`/v1/app/approve/<id>`). A high-risk card opens it instead of `openPath`. A source that has no such page for the decision leaves it out: the
+   * card still opens its page but the projection lists it in `unconfirmed`, and no surface claims a fresh sign-in for it.
+   */
+  confirmPath?: string | undefined;
+  /**
+   * What version of the thing decided on this item is: the plan or document version, the pull request head SHA with the risk digest, the approval record's version. REQUIRED. It goes into the card's
+   * digest, so a revised plan or a new push (same title, same counts) makes an earlier "evidence opened" worthless.
+   */
+  contentVersion: string;
+  /** Evidence lines that are not on the card's front (names, not counts): shown in the panel a medium card makes the person open. */
+  details?: ReadonlyArray<{ title: string; lines: readonly string[] }> | undefined;
   /** Set when a standing rule answered the item (a high card ignores it). */
   answeredByRule?: { ruleId: string; at: string } | undefined;
   /** Set when the item is no longer waiting (history); such a card has no actions. */
@@ -42,7 +55,7 @@ export type DecisionItem =
   | (ItemBase & { kind: "approve_plan"; path: "quick" | "full"; files: readonly string[]; claims: number; untestedClaims: number; cost?: Cost | undefined; tooBig?: boolean | undefined })
   | (ItemBase & { kind: "approve_requirements"; claims: number })
   | (ItemBase & { kind: "approve_design"; files: readonly string[] })
-  | (ItemBase & { kind: "merge"; prRisk: DecisionRisk; prReasons: readonly string[]; proof: ProofCounts; reviewVerdict: "approved" | "concerns" | "none"; ci: "passing" | "failing" | "pending"; securityFindingsHigh: number; fullSuitePending: boolean })
+  | (ItemBase & { kind: "merge"; sessionId?: string | undefined; prRisk: DecisionRisk; prReasons: readonly string[]; proof: ProofCounts; reviewVerdict: "approved" | "concerns" | "none"; ci: "passing" | "failing" | "pending"; securityFindingsHigh: number; fullSuitePending: boolean })
   | (ItemBase & { kind: "answer_question"; question: string; index: number; of: number })
   | (ItemBase & { kind: "choose_checks"; defaultLabels: readonly string[] })
   | (ItemBase & { kind: "approve_dependency"; packages: number; newInstallScripts: boolean })
@@ -61,12 +74,23 @@ export interface ProjectOptions {
   pairFullCards?: boolean | undefined;
 }
 
+/** The card and the item behind it (or, for a tab, the document's own card and item), so the performer acts on the right thing and records the right kind. */
+export interface Subject { card: DecisionCard; item: DecisionItem }
+
 export interface Projection {
   cards: DecisionCard[];
   /** The tabs of the cards that have them, by card id. */
   tabs: Record<string, DecisionTab[]>;
-  /** For a card with tabs: the pending item each tab approves (its `subjectId`), so the performer acts on the right document. */
-  tabSubjects: Record<string, Record<DecisionTabId, string>>;
+  /** For a card with tabs: each document's own card and item. */
+  tabSubjects: Record<string, Record<DecisionTabId, Subject>>;
+  /** The card's own item (for a card with tabs: the requirements'). */
+  subjects: Record<string, Subject>;
+  /** The evidence detail of each card, by card id. */
+  details: Record<string, DecisionDetailGroup[]>;
+  /** The digest of what is shown now, by card id: card, tabs, details and content versions. */
+  digests: Record<string, string>;
+  /** High-risk cards whose source gave no confirmation page: no fresh sign-in is claimed or enforced for them (owner decision pending). */
+  unconfirmed: string[];
   /** Items left out because they could not become a safe card (a bad id or path, a missing input), counted, never described. */
   dropped: number;
 }
@@ -172,7 +196,7 @@ function tierInputsOf(item: DecisionItem): TierInputs {
 
 function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { actions: CardAction[]; recommended: CardAction["kind"] } {
   const base = decisionCardPath(cardId);
-  const open: CardAction = { kind: "open", label: risk === "high" ? "Open to decide" : "Open the details", href: item.openPath, method: "GET" };
+  const open: CardAction = { kind: "open", label: risk === "high" ? "Open to decide" : "Open the details", href: risk === "high" ? item.confirmPath ?? item.openPath : item.openPath, method: "GET" };
   if (risk === "high") return { actions: [open], recommended: "open" };
   // A question or a checks choice is answered on its own page: the card only opens it (an answer or a choice is a POST of that page, never a link).
   if (item.kind === "answer_question") return { actions: [{ ...open, label: "Answer" }], recommended: "open" };
@@ -190,6 +214,8 @@ const REJECTABLE_REASONS: readonly DecisionRejectReason[] = DECISION_REJECT_REAS
 /** The card for one item, or undefined when the item cannot become a safe one. */
 export function cardOfItem(item: DecisionItem, locks: DecisionLocks = {}): { card: DecisionCard; tier: TierResult } | undefined {
   if (!SUBJECT_ID.test(item.subjectId) || !isSafeRelativePath(item.openPath)) return undefined;
+  if (item.confirmPath !== undefined && !(item.confirmPath.startsWith("/v1/app/approve/") && isSafeRelativePath(item.confirmPath))) return undefined;
+  if (!/^[^\p{Cc}\p{Cf}]{1,100}$/u.test(item.contentVersion)) return undefined;
   const id = `${item.kind}:${item.subjectId}`;
   if (!DecisionCardIdSchema.safeParse(id).success) return undefined;
   let tier: TierResult;
@@ -220,19 +246,37 @@ export function cardOfItem(item: DecisionItem, locks: DecisionLocks = {}): { car
 
 const TAB_TITLES = { requirements: "Requirements", design: "Design" } as const;
 
+const listed = (values: readonly string[], max = 20): string[] => {
+  const lines = values.slice(0, max).map((value) => plainLine(value, 200)).filter((line) => line !== "");
+  return values.length > max ? [...lines, `and ${String(values.length - max)} more`] : lines;
+};
+
+/**
+ * The evidence a medium card makes the person open: names, which the front does not carry. From the item's own `details`, the files a plan or design changes and the reasons behind a merge's
+ * risk, then the card's risk reasons. A card with none of these gets one line saying why it needs a look, so the panel is never empty.
+ */
+export function detailsOfItem(item: DecisionItem, card: DecisionCard, tab?: DecisionTabId): DecisionDetailGroup[] {
+  const groups: Array<{ title: string; lines: string[] }> = [];
+  if (item.kind === "approve_plan" || item.kind === "approve_design") groups.push({ title: "Files that change", lines: listed(item.files) });
+  if (item.kind === "merge") groups.push({ title: "Why the pull request has this risk", lines: listed(item.prReasons) });
+  for (const group of item.details ?? []) groups.push({ title: plainLine(group.title, 60), lines: listed(group.lines) });
+  groups.push({ title: "Why this needs a look", lines: card.riskReasons.length > 0 ? listed(card.riskReasons) : ["It is a kind of decision that always gets a look first."] });
+  return groups.filter((group) => group.lines.length > 0 && group.title !== "").slice(0, 8).map((group) => ({ ...(tab === undefined ? {} : { tab }), title: group.title, lines: group.lines }));
+}
+
 /** One card for a task's requirements and design: the requirements card, at the higher of the two tiers, with a tab for each document. Each tab is still its own approval. */
-function pairCards(requirements: { card: DecisionCard; item: DecisionItem }, design: { card: DecisionCard; item: DecisionItem }): { card: DecisionCard; tabs: DecisionTab[] } | undefined {
+function pairCards(requirements: Subject, design: Subject): { card: DecisionCard; tabs: DecisionTab[] } | undefined {
   const risk = requirements.card.risk === "high" || design.card.risk === "high" ? "high" : requirements.card.risk === "medium" || design.card.risk === "medium" ? "medium" : "low";
   const base = requirements.card;
   const high = risk === "high";
-  const approve = (action: CardAction) => action.kind === "approve" && !high;
-  const actions = base.actions.filter((action) => action.kind === "open" || approve(action) || (action.kind === "reject" && !high)).slice(0, 4);
-  const shown: CardAction[] = high ? [{ kind: "open", label: "Open to decide", href: requirements.item.openPath, method: "GET" }] : actions;
+  const actions = base.actions.filter((action) => action.kind === "open" || (action.kind === "approve" && !high) || (action.kind === "reject" && !high)).slice(0, 4);
+  const confirm = requirements.item.confirmPath ?? design.item.confirmPath;
+  const shown: CardAction[] = high ? [{ kind: "open", label: "Open to decide", href: confirm ?? requirements.item.openPath, method: "GET" }] : actions;
   const merged = DecisionCardSchema.safeParse({
     ...base,
     title: plainLine(requirements.item.title, 80),
     question: "Approve the requirements and the design?",
-    next: { text: "Each document is approved on its own; when both are, Rovara writes the coding plan." },
+    next: { text: "Each document is approved on its own, requirements first; when both are, Rovara writes the coding plan." },
     evidence: [...requirements.card.evidence.slice(0, 3), ...design.card.evidence.slice(0, 3)],
     risk,
     riskReasons: [...new Set([...requirements.card.riskReasons, ...design.card.riskReasons])].slice(0, 5),
@@ -252,13 +296,14 @@ function pairCards(requirements: { card: DecisionCard; item: DecisionItem }, des
 const RISK_RANK: Record<DecisionRisk, number> = { high: 0, medium: 1, low: 2 };
 
 /**
- * Items in, cards out. Newest-first within a tier, high first. A Full-path requirements and design pair for one task is merged into one card when `pairFullCards` (the default). The same items
- * and locks always give the same cards, in the same order.
+ * Items in, cards out. High first, then newest first. A Full-path requirements and design pair for one task is merged into one card when `pairFullCards` (the default) and BOTH are waiting (today's
+ * Full flow asks for them one after the other, so a pair forms only if the controller drafts the design early: owner Q1 follow-up). The same items and locks always give the same cards, in the
+ * same order.
  */
 export function projectDecisionCards(items: readonly DecisionItem[], options: ProjectOptions = {}): Projection {
   const locks = options.locks ?? {};
   let dropped = 0;
-  const built: Array<{ item: DecisionItem; card: DecisionCard }> = [];
+  const built: Subject[] = [];
   const seen = new Set<string>();
   for (const item of items) {
     const result = cardOfItem(item, locks);
@@ -268,7 +313,11 @@ export function projectDecisionCards(items: readonly DecisionItem[], options: Pr
   }
   const cards: DecisionCard[] = [];
   const tabs: Record<string, DecisionTab[]> = {};
-  const tabSubjects: Record<string, Record<DecisionTabId, string>> = {};
+  const tabSubjects: Record<string, Record<DecisionTabId, Subject>> = {};
+  const subjects: Record<string, Subject> = {};
+  const details: Record<string, DecisionDetailGroup[]> = {};
+  const detailsOf = (id: string): DecisionDetailGroup[] => details[id] ?? [];
+  const digests: Record<string, string> = {};
   const merged = new Set<string>();
   if (options.pairFullCards !== false) {
     for (const first of built) {
@@ -281,10 +330,20 @@ export function projectDecisionCards(items: readonly DecisionItem[], options: Pr
       merged.add(second.card.id);
       cards.push(pair.card);
       tabs[pair.card.id] = pair.tabs;
-      tabSubjects[pair.card.id] = { requirements: first.item.subjectId, design: second.item.subjectId };
+      tabSubjects[pair.card.id] = { requirements: first, design: second };
+      subjects[pair.card.id] = first;
+      details[pair.card.id] = [...detailsOfItem(first.item, first.card, "requirements"), ...detailsOfItem(second.item, second.card, "design")].slice(0, 12);
+      digests[pair.card.id] = cardDigest(pair.card, pair.tabs, detailsOf(pair.card.id), [first.item.contentVersion, second.item.contentVersion]);
     }
   }
-  for (const entry of built) if (!merged.has(entry.card.id)) cards.push(entry.card);
+  for (const entry of built) {
+    if (merged.has(entry.card.id)) continue;
+    cards.push(entry.card);
+    subjects[entry.card.id] = entry;
+    details[entry.card.id] = detailsOfItem(entry.item, entry.card);
+    digests[entry.card.id] = cardDigest(entry.card, undefined, detailsOf(entry.card.id), [entry.item.contentVersion]);
+  }
   cards.sort((a, b) => RISK_RANK[a.risk] - RISK_RANK[b.risk] || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
-  return { cards, tabs, tabSubjects, dropped };
+  const unconfirmed = cards.filter((card) => card.risk === "high" && card.status === "pending" && !(card.actions.find((action) => action.kind === "open")?.href ?? "").startsWith("/v1/app/approve/")).map((card) => card.id);
+  return { cards, tabs, tabSubjects, subjects, details, digests, unconfirmed, dropped };
 }
