@@ -2441,3 +2441,18 @@ it("accepted spending window and required admission audit commit in the same tra
  expect(transaction).toBeDefined();
  expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Put: expect.objectContaining({ Item: expect.objectContaining({ event: expect.objectContaining({ action: "spending.stop_admitted", actor: { kind: "member", id: MAYA.developerId }, facts: expect.objectContaining({ effectiveStopMicrousd: 1234567 }) }) }) }) })]));
 });
+
+it("zero stop refusal has a required native outbox decision before paid side effects", async () => {
+ const f = await fixture(0); const reply = await f.start(); expect(reply.status).toBe(409);
+ expect(f.t.db.transactions()).toEqual(expect.arrayContaining([expect.arrayContaining([expect.objectContaining({ Put: expect.objectContaining({ Item: expect.objectContaining({ event: expect.objectContaining({ action: "spending.stop_refused" }) }) }) })])]));
+ expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
+it("a reached stop commits its pause and required audit together", async () => {
+ const f = await fixture(), task = await f.t.plainTask(), plan = f.t.taskOps(task.workspaceId).at(-1)!;
+ const headers = { "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability };
+ const first = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers }); expect(first.status).toBe(200);
+ f.t.access.keySpend.mockResolvedValue(1.234567);
+ const second = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers }); expect(second.status).not.toBe(200);
+ const transaction = f.t.db.transactions().find(items => items.some(item => (item.Put as { Item?: { event?: { action?: string } } } | undefined)?.Item?.event?.action === "spending.stop_reached"));
+ expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Update: expect.objectContaining({ Key: taskKey(task.taskId) }) })]));
+});
