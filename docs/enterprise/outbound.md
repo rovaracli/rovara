@@ -40,7 +40,7 @@ Enterprise: These names are in the default DNS firewall allow-list that agent ma
 Enterprise: Names that appear in IAM trust and resource policies. Nothing connects to them.
 
 - Service principals named in IAM trust and resource policies and in the CDK stacks.
-  `apigateway.amazonaws.com`, `cloudformation.amazonaws.com`, `codebuild.amazonaws.com`, `delivery.logs.amazonaws.com`, `ec2.amazonaws.com`, `ecs-tasks.amazonaws.com`, `ecs.amazonaws.com`, `elasticloadbalancing.amazonaws.com`, `email.cognito-idp.amazonaws.com`, `events.amazonaws.com`, `lambda.amazonaws.com`, `rds.amazonaws.com`, `route53resolver.amazonaws.com`, `s3.amazonaws.com`, `scheduler.amazonaws.com`, `states.amazonaws.com`, `vpc-flow-logs.amazonaws.com`
+  `apigateway.amazonaws.com`, `cloudformation.amazonaws.com`, `codebuild.amazonaws.com`, `delivery.logs.amazonaws.com`, `ec2.amazonaws.com`, `ecs-tasks.amazonaws.com`, `ecs.amazonaws.com`, `elasticloadbalancing.amazonaws.com`, `email.cognito-idp.amazonaws.com`, `events.amazonaws.com`, `indexing.s3vectors.amazonaws.com`, `lambda.amazonaws.com`, `maintenance.s3tables.amazonaws.com`, `rds.amazonaws.com`, `route53resolver.amazonaws.com`, `s3.amazonaws.com`, `s3tables.amazonaws.com`, `s3vectors.amazonaws.com`, `scheduler.amazonaws.com`, `states.amazonaws.com`, `vpc-flow-logs.amazonaws.com`
 
 ## AWS endpoints and the AWS domain suffix
 
@@ -100,4 +100,4 @@ Enterprise: Shown in help text and messages. Never called by the install.
 Enterprise: Names that cannot resolve (.invalid, .test, example domains) or that are not hosts at all. Never reached.
 
 - Names that cannot resolve, example values in help text, test doubles' addresses, and a bundle id that looks like a host.
-  `abc123.execute-api.us-west-2.amazonaws.com`, `acme.okta.com`, `agentx-mock.invalid`, `agentx.example.com`, `agentx.invalid`, `application.invalid`, `auth.test`, `builds.example.test`, `host.example.test`, `nativeexport.app`, `none.invalid`, `probe.example.com`, `rovara.invalid`
+  `abc123.execute-api.us-west-2.amazonaws.com`, `acme.okta.com`, `agentx-mock.invalid`, `agentx.example.com`, `agentx.invalid`, `application.invalid`, `auth.test`, `builds.example.test`, `host.example.test`, `mock.invalid`, `nativeexport.app`, `none.invalid`, `probe.example.com`, `rovara.invalid`

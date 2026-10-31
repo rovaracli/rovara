@@ -120,6 +120,8 @@ export const HOST_RULES: readonly HostRule[] = [
       "apigateway.amazonaws.com", "cloudformation.amazonaws.com", "codebuild.amazonaws.com", "delivery.logs.amazonaws.com", "ec2.amazonaws.com", "ecs-tasks.amazonaws.com",
       "ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "email.cognito-idp.amazonaws.com", "events.amazonaws.com", "lambda.amazonaws.com", "rds.amazonaws.com",
       "route53resolver.amazonaws.com", "s3.amazonaws.com", "scheduler.amazonaws.com", "states.amazonaws.com", "vpc-flow-logs.amazonaws.com",
+      // Team record edition: the KMS key policy statements the install emits for the customer's key (infra/lib/team-record-edition.ts).
+      "maintenance.s3tables.amazonaws.com", "s3tables.amazonaws.com", "indexing.s3vectors.amazonaws.com", "s3vectors.amazonaws.com",
     ],
   },
   {
@@ -154,7 +156,7 @@ export const HOST_RULES: readonly HostRule[] = [
   {
     category: "reserved-example", why: "Names that cannot resolve, example values in help text, test doubles' addresses, and a bundle id that looks like a host.",
     hosts: [
-      "agentx.invalid", "agentx-mock.invalid", "application.invalid", "none.invalid", "rovara.invalid", "auth.test", "agentx.example.com", "probe.example.com", "acme.okta.com",
+      "agentx.invalid", "agentx-mock.invalid", "mock.invalid", "application.invalid", "none.invalid", "rovara.invalid", "auth.test", "agentx.example.com", "probe.example.com", "acme.okta.com",
       "abc123.execute-api.us-west-2.amazonaws.com", "host.example.test", "builds.example.test", "nativeexport.app",
     ],
   },
