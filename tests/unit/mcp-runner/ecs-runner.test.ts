@@ -105,8 +105,8 @@ describe("ECS runner: start", () => {
   });
   it("is built only with subnets and a security group that are real", () => {
     const { api } = fakeApi();
-    for (const subnets of [[], ["x"], Array.from({ length: 17 }, () => SUBNETS[0]!)]) expect(() => ecsTaskRunner({ api, cluster: "c", subnets, defaultSecurityGroupId: DEFAULT_SG })).toThrow();
-    expect(() => ecsTaskRunner({ api, cluster: "c", subnets: SUBNETS, defaultSecurityGroupId: "bad" })).toThrow();
+    for (const subnets of [[], ["x"], Array.from({ length: 17 }, () => SUBNETS[0]!)]) expect(() => ecsTaskRunner({ instanceId: INSTANCE, api, cluster: "c", subnets, defaultSecurityGroupId: DEFAULT_SG })).toThrow();
+    expect(() => ecsTaskRunner({ instanceId: INSTANCE, api, cluster: "c", subnets: SUBNETS, defaultSecurityGroupId: "bad" })).toThrow();
   });
 });
 

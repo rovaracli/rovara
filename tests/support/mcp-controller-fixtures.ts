@@ -127,7 +127,7 @@ export class FakeRunner implements TaskRunner {
         this.tokens.set(taskId, { install: environment.MCP_RUNNER_TOKEN! });
         task.state = { state: "running", ...this.addressField() };
         await this.options.install?.({ taskId, token: environment.MCP_RUNNER_TOKEN!, request: JSON.parse(environment.MCP_INSTALL_REQUEST ?? "{}") as Record<string, unknown>, environment });
-        if (task.state.state !== "stopped") task.state = { state: "stopped", exitCode: 0 };
+        if ((task.state as RunnerTaskStatus).state !== "stopped") task.state = { state: "stopped", exitCode: 0 };
         return;
       }
       const fetchEnvironment = await redeem("fetch");
@@ -138,7 +138,7 @@ export class FakeRunner implements TaskRunner {
         token: server.MCP_RUNNER_TOKEN!, bundleHash: this.options.reportedBundle?.(spec) ?? server.MCP_BUNDLE_HASH ?? "", tools: this.options.tools?.(spec) ?? [{ name: "echo", inputSchema: { type: "object" } }],
         ...(this.options.replyStatus === undefined ? {} : { replyStatus: this.options.replyStatus }), ...(this.options.callStatus === undefined ? {} : { callStatus: this.options.callStatus }), ...(this.options.redirect === undefined ? {} : { redirect: this.options.redirect }), ...(this.options.reply === undefined ? {} : { reply: this.options.reply }),
       });
-      if (task.state.state === "stopped") { await bridge.close(); return; }
+      if ((task.state as RunnerTaskStatus).state === "stopped") { await bridge.close(); return; }
       task.bridge = bridge;
       task.state = { state: "running", ...this.addressField(), endpoint: bridge.url };
     } catch {
