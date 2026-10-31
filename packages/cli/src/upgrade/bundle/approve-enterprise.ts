@@ -2,7 +2,8 @@
 // credentials: verifies the signed bundle (done by the caller), reads the install's recorded settings, builds the install's exact templates from the release's own pinned
 // CDK app, shows what it built against what is deployed, and only then places the build and writes the approval, which pins the hash of the result and every setting.
 // The Rovara operator supplies no input to any of this: it has no command here, no access to the settings and no say in the bundle's kit.
-import { agentXError, editionRecordParameter, environmentStackName, synthSettingsSha256, type ApprovalRecord, type BuiltPart } from "@agentx/contracts";
+import { agentXError, environmentStackName, synthSettingsSha256, type ApprovalRecord, type BuiltPart } from "@agentx/contracts";
+import { readRecordedEdition } from "../../deploy/edition.js";
 import type { ParameterStore } from "../../environments/parameter-store.js";
 import type { EnvironmentSettings } from "../../environments/settings.js";
 import { approveBundle, type ApprovalStore } from "./approve.js";
@@ -32,13 +33,9 @@ export interface ApproveEnterpriseInput {
   beforeApproval?(): Promise<void>;
 }
 
-/** Whether the install is recorded as Enterprise: the edition record is read from the install, and an unreadable one is a refusal. */
+/** Whether the install is recorded as Enterprise: the edition record, or its backup while a deploy has the record out of the way. An unreadable or disagreeing record is a refusal. */
 export async function installIsEnterprise(store: ParameterStore, env: string): Promise<boolean> {
-  const stored = await store.get(editionRecordParameter(env));
-  if (stored === undefined) return false;
-  if (stored.value === "enterprise") return true;
-  if (stored.value === "public") return false;
-  throw agentXError("CONFIG_INVALID", `the edition recorded for ${env} is not "enterprise" or "public"; fix it before approving a bundle. Nothing was approved`);
+  return (await readRecordedEdition(store, env)) === "enterprise";
 }
 
 export async function approveEnterpriseBundle(input: ApproveEnterpriseInput): Promise<{ record: ApprovalRecord; build: BuiltBundle }> {

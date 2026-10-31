@@ -326,7 +326,7 @@ describe("the Rovara operator role", () => {
     });
 
     it("reads the install's recorded build settings and edition (to check an approval built for it) and can write neither; the operator reads neither (N3b)", () => {
-      for (const name of ["synth-settings", "edition"]) {
+      for (const name of ["synth-settings", "edition", "edition-backup"]) {
         expect(allowed(deployer, "ssm:GetParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(true);
         expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
         expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);

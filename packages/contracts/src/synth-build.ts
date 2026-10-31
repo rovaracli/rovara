@@ -15,6 +15,8 @@ const Sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 export const synthSettingsParameter = (env: string): string => `${environmentSettingsPrefix(env)}synth-settings`;
 /** The edition record the foundation stack keeps (`/agentx/<env>/edition`); the deployer reads it to tell an Enterprise install from any other. */
 export const editionRecordParameter = (env: string): string => `${environmentSettingsPrefix(env)}edition`;
+/** The backup of that record, written before the record is taken out of the way during a deploy; while it exists it counts as the record. */
+export const editionBackupParameter = (env: string): string => `${environmentSettingsPrefix(env)}edition-backup`;
 
 /**
  * The CDK context an install may be built with, and nothing else. Every other key is refused: a bundle, a command line and an operator cannot add one. The edition, the environment,

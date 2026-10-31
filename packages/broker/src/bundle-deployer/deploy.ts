@@ -14,6 +14,7 @@ import {
   SynthSettingsSchema,
   accessTemplatesAgree,
   canonicalJson,
+  editionBackupParameter,
   editionRecordParameter,
   redactedSynthSettings,
   synthKitSha256,
@@ -280,9 +281,13 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
 
   // The edition of the install decides which kind of approval may deploy to it: an Enterprise install takes only a build made at its own approval (below), and an install
   // that is not Enterprise never takes one. An edition record that cannot be read is a refusal, never "not Enterprise".
+  // The record, or its backup while a deploy has the record out of the way; both present must agree.
   let edition: string | undefined;
   try {
-    edition = await ports.ssm.get(editionRecordParameter(env));
+    const record = await ports.ssm.get(editionRecordParameter(env));
+    const backup = await ports.ssm.get(editionBackupParameter(env));
+    if (record !== undefined && backup !== undefined && record !== backup) return refused("the install's edition record and its backup disagree");
+    edition = record ?? backup;
   } catch {
     return refused("the install's edition record could not be read");
   }

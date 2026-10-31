@@ -2,7 +2,7 @@
 // N3b: the customer-owned deployer installs only the bytes an Enterprise approval pinned, and checks them again: against the approval record, the build's own manifest, the signed kit,
 // the install's recorded settings and the install's edition. Each test tampers with one link of that chain.
 import { afterEach, describe, expect, it } from "vitest";
-import { BuiltManifestSchema, accessTemplatesAgree, approvedFileKey, bundleApprovalKey, editionRecordParameter, sha256OfBytes, synthSettingsParameter, templateWithoutCodeLocations, type ApprovalRecord } from "@agentx/contracts";
+import { editionBackupParameter, BuiltManifestSchema, accessTemplatesAgree, approvedFileKey, bundleApprovalKey, editionRecordParameter, sha256OfBytes, synthSettingsParameter, templateWithoutCodeLocations, type ApprovalRecord } from "@agentx/contracts";
 import type { BuiltBundle } from "../support/bundle-fixture.js";
 import { EnterpriseWorld, SETTINGS_ENT } from "../support/enterprise-approval-world.js";
 
@@ -171,6 +171,15 @@ describe("the deployer installs a build made at approval", () => {
       if (edition === undefined) ew.world.params.delete(editionRecordParameter("ent")); else ew.world.params.set(editionRecordParameter("ent"), edition);
       expect(await ew.world.run({ bundleId: id }), String(edition)).toMatchObject({ status: "refused", reason: expect.stringMatching(/is for an Enterprise install/) });
     }
+    // The edition's backup counts as the record while a deploy has the record out of the way; the two must agree.
+    const backupOnly = await EnterpriseWorld.create(made);
+    backupOnly.world.params.delete(editionRecordParameter("ent"));
+    backupOnly.world.params.set(editionBackupParameter("ent"), "enterprise");
+    await backupOnly.world.approve(backupOnly.bundle);
+    expect(await backupOnly.world.run({ bundleId: backupOnly.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/Enterprise install takes only/) });
+    const disagree = await approved();
+    disagree.ew.world.params.set(editionBackupParameter("ent"), "public");
+    expect(await disagree.ew.world.run({ bundleId: disagree.id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/edition record and its backup disagree/) });
     const garbage = await approved();
     garbage.ew.world.params.set(editionRecordParameter("ent"), "something else");
     expect(await garbage.ew.world.run({ bundleId: garbage.id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/edition record is not readable/) });

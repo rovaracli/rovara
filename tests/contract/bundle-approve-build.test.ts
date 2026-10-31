@@ -193,9 +193,24 @@ describe("agentx bundle approve, Enterprise", () => {
     expect(world.output.join("\n")).toMatch(/foundation: changed \(1 added, 1 removed/);
   });
 
+  it("reads the edition from the record, or from its backup while a deploy has the record out of the way, and refuses when the two disagree", async () => {
+    const { editionBackupParameter, editionRecordParameter } = await import("@agentx/contracts");
+    const backupOnly = await EnterpriseWorld.create(made);
+    await backupOnly.deployAsBuilt();
+    await backupOnly.store.delete(editionRecordParameter("ent"));
+    await backupOnly.store.put(editionBackupParameter("ent"), "enterprise");
+    await backupOnly.approve();
+    expect(backupOnly.puts.length).toBeGreaterThan(3);
+    const disagree = await EnterpriseWorld.create(made);
+    await disagree.deployAsBuilt();
+    await disagree.store.put(editionBackupParameter("ent"), "public");
+    await refused(disagree.approve(), /disagree/);
+    expect(disagree.puts).toEqual([]);
+  });
+
   it("is refused for an install that is not recorded as Enterprise, and for a bundle with no kit, before anything is placed", async () => {
     const garbage = await EnterpriseWorld.create(made, { edition: "something else" });
-    await refused(garbage.approve(), /edition recorded for ent is not "enterprise" or "public"/);
+    await refused(garbage.approve(), /edition recorded for environment ent .* is not "enterprise" or "public"/);
     expect(garbage.puts).toEqual([]);
     const notEnterprise = await EnterpriseWorld.create(made, { edition: "public" });
     await refused(notEnterprise.approve(), /not recorded as an Enterprise install/);
