@@ -247,7 +247,7 @@ describe("the health route's grants (A13)", () => {
       // Team record (Enterprise): its own table, with its own TTL on the same attribute name (infra/lib/team-record-table.ts); rows leave the hot table a grace period after `hotExpiresAt` so the archiver can copy them first.
       "packages/broker/src/team-record/item-head.ts", "packages/broker/src/team-record/retention.ts", "packages/broker/src/team-record/scope-work.ts",
       "packages/broker/src/team-record/query.ts", "packages/broker/src/team-record/ingest.ts", "packages/broker/src/team-record/store.ts",
-      "packages/contracts/src/team-record.ts", "packages/contracts/src/org-scoped-keys.ts", "infra/lib/team-record-table.ts",
+      "packages/contracts/src/team-record.ts", "infra/lib/team-record-table.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
