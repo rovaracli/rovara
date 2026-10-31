@@ -2501,7 +2501,7 @@ for (const drift of ["at_read", "at_commit"] as const) it(`a reached stop with t
   return send(command);
  };
  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers });
- expect(raced).toBe(true);expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
+ expect(raced).toBe(true);expect(reply.body.error).toMatchObject({ code: drift === "at_read" ? "TASK_STOP_CONFIG_INVALID" : "BUDGET_EXCEEDED" });
 });
 it("a member payer cannot self-decide a raise beyond the final company stop", async () => {
  const f = await approvalWindow("company"), before = f.t.meta(f.task.taskId);
@@ -2546,8 +2546,8 @@ it("unpriced refusal uses the dependency clock and maps a lost native snapshot f
 // actual prior Plan/Build models for future checking stages. These exercise the
 // real broker/C53 evidence path; the exemption adapter remains under review.
 async function ownSourceFundingFixture(mixed = false) {
- const { capturingAuditDeps } = await import("../support/audit-capture.js");const audit = capturingAuditDeps();
- const f = await fixture(0, { agents: { modelSources: { launch: { kinds: ["bedrock"] } } }, extra: { audit: audit.audit } });
+ const { capturingAuditDeps } = await import("../support/audit-capture.js");const audit = capturingAuditDeps();const fundingNow = Date.now() - 1000;
+ const f = await fixture(0, { agents: { modelSources: { launch: { kinds: ["bedrock"] } } }, extra: { audit: audit.audit, now: () => fundingNow } });
  audit.attach(f.t.db);audit.audit.documentClient = f.t.db as never;
  const { modelSourcesKey } = await import("@agentx/contracts");
  const { bedrockClaudeModelIds } = await import("@agentx/model-runtime/catalog");
@@ -2556,7 +2556,7 @@ async function ownSourceFundingFixture(mixed = false) {
   sources: [{ sourceId, kind: "bedrock", label: "Company funding", roleArn: "arn:aws:iam::123456789012:role/test", region: "us-east-1", externalId: `rovara-${TEST_ORG}`, tested: true,
    models: (mixed ? bedrockClaudeModelIds("us").slice(0, 1) : bedrockClaudeModelIds("us")).map(modelId => ({ catalog: { provider: "amazon-bedrock", modelId } })) }],
   order: mixed ? [sourceId, "rovara"] : [sourceId], credentials: [], removing: [] });
- return { ...f, sourceId, sourceKey };
+ return { ...f, sourceId, sourceKey, fundingNow };
 }
 it("funding C: every frozen stage excludes Rovara and commits durable own-source exemption evidence even at a zero stop", async () => {
  const f = await ownSourceFundingFixture(), before = f.t.db.transactions().length;
@@ -2720,10 +2720,20 @@ it("funding review: unrelated task-row updates do not invalidate an own-source m
   return send(command);
  };
  const reply = await f.modelAccess();expect(raced).toBe(true);expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+ const native = f.t.db.transactions().flat().find(item => item.Update?.Key?.pk === taskKey(f.taskId).pk && JSON.stringify(item).includes("cutoverSource"));
+ expect(Object.values(native?.Update?.ExpressionAttributeNames ?? {})).not.toContain("title");
+ expect(Object.values(native?.Update?.ExpressionAttributeNames ?? {})).not.toContain("updatedAt");
 });
 it("funding review: source proof read failure is an admission refusal without workspace effects", async () => {
  const f = await ownSourceFundingFixture(), send = f.t.db.send.bind(f.t.db);
  f.t.db.send = async command => {if (command instanceof GetCommand && command.input.Key?.pk === f.policy.pk && command.input.Key?.sk === f.policy.sk) throw new Error("unreadable funding policy");return send(command);};
  const reply = await f.start();expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
  expect(f.t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+});
+
+it("funding review: refusal records the injected clock and known source evidence", async () => {
+ const f = await ownSourceOperation(), key = operationKey(f.workspaceId, f.plan.id);f.t.db.set({ ...f.t.db.get(key)!, workflowMode: "CHECKS" });
+ await f.modelAccess();
+ const event = f.t.db.transactions().map(items => transactionAuditEvent(items, "spending.stop_refused")).find(event => event !== undefined);
+ expect(event).toMatchObject({ occurredAt: new Date(f.fundingNow).toISOString(), facts: { sourceId: f.sourceId, sourceKind: "tested_bedrock_role", sourcesRevision: 1 } });
 });
