@@ -1,3 +1,4 @@
+import { TaskFundingProofSchema, type TaskFundingProof } from "../org/task-stop-funding.js";
 import {prepareTaskModelPolicyPin,parseTaskModelPolicyPin,taskModelPolicyAdmissionChecks,type TaskModelPolicyPin} from "../model-selection/task-pin.js";
 // Plan 3 Task 15: starting a run from a frozen recipe. The developer task start (`startTask`, aws/developer-tasks.ts) holds the project checks, the
 // budget floor, the workspace charge and the one transaction that creates a task; this file holds what is particular to an agent's run:
@@ -208,7 +209,7 @@ export async function resolveRunPayer(deps: AgentRunDependencies, input: {
   orgId: OrgId; project: string; agentId: AgentId; origin: WorkOrigin; startedBy?: { developerId: string } | undefined; payer?: Payer | undefined; payerFacts?: PayerFacts | undefined;
   /** The payer was worked out by an earlier read of the same settings, not named by the caller: a difference now is the setting changing under the start. */
   payerFromRules?: boolean | undefined;
-}): Promise<{ payer: Payer; place: Place; projectAiRevision: number }> {
+}): Promise<{ payer: Payer; place: Place; projectAiRevision: number; projectPays: boolean }> {
   const { settings, revision } = await readProjectAiWithRevision(deps, input.orgId, input.project);
   const payer = resolvePayer({
     origin: input.origin, project: input.project, projectPays: settings.projectPays, agentId: input.agentId,
@@ -220,7 +221,7 @@ export async function resolveRunPayer(deps: AgentRunDependencies, input: {
     if (input.payerFromRules === true) throw agentXError("WORKSPACE_BUSY", "the project's payment settings changed while starting; try again with the same request_id");
     throw agentXError("CONFIG_INVALID", "payer: this run's payer is not the one its origin names");
   }
-  return { payer, place: { project: input.project }, projectAiRevision: revision };
+  return { payer, place: { project: input.project }, projectAiRevision: revision, projectPays: settings.projectPays };
 }
 
 /**
@@ -238,6 +239,7 @@ async function requireMayStart(deps: AgentRunStarter, input: { orgId: OrgId; pro
 // ---- preparing a run: nothing is charged or written
 
 export interface PreparedRun {
+  fundingProof?: TaskFundingProof;
   modelPolicyPin?:TaskModelPolicyPin;
   recipe: ResolvedRecipe;
   digest: string;
@@ -258,6 +260,8 @@ export interface PreparedRun {
   payer: Payer;
   place: Place;
   projectAiRevision: number;
+  /** Exact payment input, kept separately from unrelated numeric policy revisions. */
+  projectPays?: boolean;
 }
 
 export interface PrepareRunInput {
@@ -329,7 +333,7 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
     if (!contract.success) throw agentXError("CONFIG_INVALID", `resultContract: ${contract.error.issues[0]?.message ?? "is not valid"}`);
   }
   const origin: WorkOrigin = resolved.testRun ? "test_run" : input.origin;
-  const { payer, place, projectAiRevision } = await resolveRunPayer(deps, { orgId: input.orgId, project: input.project, agentId: ref.agentId, origin, startedBy: input.startedBy, payer: input.payer, payerFromRules: input.payerFromRules, payerFacts: input.payerFacts });
+  const { payer, place, projectAiRevision, projectPays } = await resolveRunPayer(deps, { orgId: input.orgId, project: input.project, agentId: ref.agentId, origin, startedBy: input.startedBy, payer: input.payer, payerFromRules: input.payerFromRules, payerFacts: input.payerFacts });
   if (autonomous && input.startedBy !== undefined) throw agentXError("CONFIG_INVALID", "startedBy: a run no person started has no one who started it");
   const program = runner === "coding" ? codingProgram(recipe) : undefined;
   if (program !== undefined) {
@@ -353,7 +357,7 @@ export async function prepareRun(deps: AgentRunDependencies, input: PrepareRunIn
     ...limits,
     ...(input.resultContract === undefined ? {} : { resultContract: input.resultContract }),
     ...(input.chain === undefined ? {} : { chain: input.chain }),
-    checkout, payer, place, projectAiRevision,
+    checkout, payer, place, projectAiRevision, projectPays,
   };
 }
 
@@ -436,17 +440,20 @@ export function runStartItems(table: TableInput, input: {
   project: string;
   developerId: string;
   prepared: PreparedRun;
+  /** Enrolled starts already captured numeric policy; fence payment independently. */
+  policySnapshotCaptured?: boolean;
   /** `startAgentRun`'s request: its item is written with the run, so a repeat of the request is answered from it. */
   request?: { requestId: string; fingerprint: string };
   /** Plan 5: the run's session, remembered on the request item so a repeat answers the same one. */
   sessionId?: string;
 }): TransactItem[] {
   const { prepared } = input;
+  if (input.policySnapshotCaptured === true && typeof prepared.projectPays !== "boolean") throw agentXError("TASK_STOP_CONFIG_INVALID", "The project payer binding is missing. Start again after reviewing Spending.");
   const modelPolicyPin=prepared.runner==="coding"?parseTaskModelPolicyPin(prepared.modelPolicyPin,{orgId:input.orgId,project:input.project,agentId:prepared.ref.agentId,recipe:prepared.recipe,digest:prepared.digest}):undefined;
   const nowSeconds = Math.floor(table.now() / 1000);
   const expires = nowSeconds + RUN_RECORD_MEMORY_DAYS * 86_400;
   const items: TransactItem[] = [
-    putNew(table, taskRecipeKey(input.taskId), "TASK_RECIPE", { orgId: input.orgId, recipe: prepared.recipe, digest: prepared.digest,...(modelPolicyPin===undefined?{}:{modelPolicyPin}) }),
+    putNew(table, taskRecipeKey(input.taskId), "TASK_RECIPE", { orgId: input.orgId, recipe: prepared.recipe, digest: prepared.digest, ...(prepared.fundingProof === undefined ? {} : { fundingProof: prepared.fundingProof }),...(modelPolicyPin===undefined?{}:{modelPolicyPin}) }),
     putNew(table, agentTasksKey(input.orgId, prepared.ref.agentId, input.createdAt, input.taskId), "AGENT_TASK", {
       orgId: input.orgId, agentId: prepared.ref.agentId, taskId: input.taskId, project: input.project, version: prepared.ref.version, origin: prepared.origin, createdAt: input.createdAt,
       [INDEX_EXPIRY_ATTRIBUTE]: expires,
@@ -468,9 +475,11 @@ export function runStartItems(table: TableInput, input: {
     ConditionCheck: {
       TableName: table.tableName,
       Key: projectAiKey(input.orgId, input.project),
-      ...(prepared.projectAiRevision === 0
-        ? { ConditionExpression: "attribute_not_exists(pk)" }
-        : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": prepared.projectAiRevision } }),
+      ...(input.policySnapshotCaptured === true
+        ? { ConditionExpression: "#type = :type AND #org = :org AND #project = :project AND #pays = :pays", ExpressionAttributeNames: { "#type": "entityType", "#org": "orgId", "#project": "project", "#pays": "projectPays" }, ExpressionAttributeValues: { ":type": "PROJECT_AI", ":org": input.orgId, ":project": input.project, ":pays": prepared.projectPays } }
+        : prepared.projectAiRevision === 0
+          ? { ConditionExpression: "attribute_not_exists(pk)" }
+          : { ConditionExpression: "#revision = :revision", ExpressionAttributeNames: { "#revision": "revision" }, ExpressionAttributeValues: { ":revision": prepared.projectAiRevision } }),
     },
   });
   if (input.request !== undefined) {
@@ -495,15 +504,17 @@ export function runStartItems(table: TableInput, input: {
 // ---- reading a run back
 
 /** The frozen recipe of a task, or undefined for a task from before agents. The item is a named exception to org-scoped keys: another org's refuses. */
-export async function readTaskRecipe(deps: Pick<TableInput, "documentClient" | "tableName">, taskId: string, orgId: OrgId): Promise<{ recipe: ResolvedRecipe; digest: string; modelPolicyPin?:TaskModelPolicyPin } | undefined> {
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskRecipeKey(taskId), ConsistentRead: true })) as { Item?: { orgId?: unknown; recipe?: unknown; digest?: unknown; modelPolicyPin?:unknown } };
+export async function readTaskRecipe(deps: Pick<TableInput, "documentClient" | "tableName">, taskId: string, orgId: OrgId): Promise<{ recipe: ResolvedRecipe; digest: string; modelPolicyPin?:TaskModelPolicyPin; fundingProof?: TaskFundingProof } | undefined> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskRecipeKey(taskId), ConsistentRead: true })) as { Item?: { orgId?: unknown; recipe?: unknown; digest?: unknown; modelPolicyPin?:unknown; fundingProof?: unknown } };
   const item = response.Item;
   if (item === undefined) return undefined;
   if (item.orgId !== orgId) throw agentXError("NOT_FOUND", "no agent snapshot belongs to this task");
   const recipe = ResolvedRecipeSchema.safeParse(item.recipe);
   if (!recipe.success || typeof item.digest !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
   const modelPolicyPin=item.modelPolicyPin===undefined?undefined:parseTaskModelPolicyPin(item.modelPolicyPin,{orgId,recipe:recipe.data,digest:item.digest});
-  return { recipe: recipe.data, digest: item.digest,...(modelPolicyPin===undefined?{}:{modelPolicyPin}) };
+  const funding = item.fundingProof === undefined ? undefined : TaskFundingProofSchema.safeParse(item.fundingProof);
+  if (funding !== undefined && !funding.success) throw agentXError("TASK_STOP_CONFIG_INVALID", "The pinned funding proof is invalid.");
+  return { recipe: recipe.data, digest: item.digest,...(modelPolicyPin===undefined?{}:{modelPolicyPin}), ...(funding?.success ? { fundingProof: funding.data } : {}) };
 }
 
 /** The request item of a run, if one is there and has not expired. */

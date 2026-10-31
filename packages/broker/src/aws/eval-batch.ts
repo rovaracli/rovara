@@ -287,6 +287,8 @@ export async function createBatch(
   const batchId = options.batchId ?? randomUUID();
   const record = EvalBatchRecordSchema.parse({
     batchId,
+    ...(context.orgId === undefined ? {} : { orgId: context.orgId }),
+    ...(context.developerId === undefined ? {} : { developerId: context.developerId }),
     file: { ...file, runnerImage },
     createdBy: context.requester,
     thread: context.thread,
@@ -566,6 +568,8 @@ async function startClaimed(dependencies: EvalBatchDependencies, stored: Stored,
   const runId = evalBatchRunId(record.batchId, claim.index, claim.attempt);
   const model: ModelSelection = { provider: entry.model.provider, modelId: entry.model.modelId, thinkingLevel: entry.model.thinkingLevel };
   const context: SwebenchSlackContext = {
+    ...(record.orgId === undefined ? {} : { orgId: record.orgId }),
+    ...(record.developerId === undefined ? {} : { developerId: record.developerId }),
     thread: record.thread,
     requester: record.createdBy,
     projectName: stored.projectName,

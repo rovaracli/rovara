@@ -141,6 +141,6 @@ it("retains custom agent accountable approval alongside chain flow",async()=>{
 it("retains legacy builtin accountable approval without forOwner alongside chain flow",async()=>{
  const t=await setup(),id="root-cause-analyst",path=`/v1/app/agents/${id}`;
  expect((await t.api(ADA,"PUT",path+"/accountable",{accountable:{developerId:ADA.developerId}})).status).toBe(200);expect((await t.api(ADA,"PUT",path+"/budget",{monthlyUsd:30})).status).toBe(200);await t.budgeted(40,DEB);await t.budgeted(40,DEB);
- const reply=await t.api(DEB,"PUT",path+"/accountable",{accountable:{developerId:DEB.developerId}});expect(reply.status).toBe(202);const requestId=String(reply.body.spendRequestId),key=spendRequestKey(TEST_ORG,requestId),{forOwner:_forOwner,...record}=t.db.get(key)!;void _forOwner;t.db.set(record);
+ const reply=await t.api(DEB,"PUT",path+"/accountable",{accountable:{developerId:DEB.developerId}});expect(reply.status).toBe(202);const requestId=String(reply.body.spendRequestId),key=spendRequestKey(TEST_ORG,requestId),{forOwner:_forOwner,ownerFinancialTerms:_financialTerms,...record}=t.db.get(key)!;void _forOwner;void _financialTerms;t.db.set(record);
  await t.decide(ADA,requestId);expect((await t.deps().store.getBuiltinSettings(TEST_ORG,id))?.accountable).toEqual({developerId:DEB.developerId});expect(t.requests().find(r=>r.spendRequestId===requestId)?.status).toBe("APPROVED");
 });

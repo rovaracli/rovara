@@ -182,7 +182,7 @@ async function untilSettled(attempt: () => Promise<void>): Promise<void> {
 }
 
 /** What asks an org admin to confirm a move that left someone over the cap (Task 32 registers it: spend/requests.ts, `confirmOwnerMove`). */
-type OwnerCapConfirmation = (deps: LifecycleDeps, orgId: OrgId, owner: string, reason: MoveCause["kind"], totals: { totalUsd: number; capUsd: number }) => Promise<unknown>;
+type OwnerCapConfirmation = (deps: LifecycleDeps, orgId: OrgId, owner: string, reason: MoveCause["kind"], totals: { totalUsd: number; capUsd: number; policyRevision?: number; counterVersion?: number }) => Promise<unknown>;
 let confirmOwnerCap: OwnerCapConfirmation | undefined;
 
 /** Registers what asks an org admin to confirm a move over the cap (the spend requests do, PF27). The returned function unregisters it. */
@@ -206,7 +206,7 @@ async function noteOwnerCap(deps: LifecycleDeps, orgId: OrgId, owner: string, re
       log(deps, "owner_cap.exceeded_by_move", { orgId, owner, totalUsd: check.totalUsd, capUsd: check.capUsd, reason });
       return;
     }
-    await confirmOwnerCap(deps, orgId, owner, reason, { totalUsd: check.totalUsd, capUsd: check.capUsd });
+    await confirmOwnerCap(deps, orgId, owner, reason, { totalUsd: check.totalUsd, capUsd: check.capUsd, policyRevision: check.policyRevision, ...(check.counterVersion === undefined ? {} : { counterVersion: check.counterVersion }) });
   } catch (error) {
     log(deps, "owner_cap.check_failed", { orgId, owner, reason, error: errorName(error) });
   }

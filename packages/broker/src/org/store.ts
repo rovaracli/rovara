@@ -1,3 +1,4 @@
+import { taskStopBootstrapItems } from "./task-stop-bootstrap.js";
 import { clearProjectAllowedDomainProposals } from "./project-allowed-domains-cleanup.js";
 import { clearTrackRecordData } from "./track-record-cleanup.js";
 import { approvalGrantChange, approvalCompanyChange } from "./approval-membership.js";
@@ -11,7 +12,7 @@ import { takeRateAt } from "../developer/page-comments.js";
 // invite is accepted in one transaction with the membership writes, so a refused acceptance never
 // burns the invite. Invite tokens are stored only as SHA-256 hashes.
 import { randomBytes, randomUUID } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MEMBER_GRANT_SK_PREFIX,
   AgentXError,
@@ -19,7 +20,6 @@ import {
   InviteCreateReceiptSchema,
   agentXError,
   LAST_OWNER_MESSAGE,
-  builtinSettingsKey,
   currentBuiltinVersion,
   ROVARA_CODE_V2_FOR_NEW_ORGS,
   developerOrgKey,
@@ -237,13 +237,16 @@ export class OrgStore {
   async ensureOrg(orgId: OrgId, name: string): Promise<void> {
     const org: OrgRecord = { orgId, name, createdAt: this.iso(), createdBy: "system", plan: "team" };
     try {
-      await this.input.documentClient.send(new PutCommand({
-        TableName: this.input.tableName,
-        Item: { ...orgMetaKey(orgId), entityType: "ORG", ...org },
-        ConditionExpression: NOT_EXISTS,
-      }));
+      await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        this.put(orgMetaKey(orgId), "ORG", org as unknown as Item),
+        ...taskStopBootstrapItems(this.input.tableName, orgId, this.input.now()),
+      ] }));
     } catch (error) {
-      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      const failed = failedIndexes(error);
+      // Only an already-existing organization is an idempotent replay. A seed
+      // collision on an otherwise missing org is a real failure, not success.
+      if (failed?.has(0) && await this.get(orgMetaKey(orgId)) !== undefined) return;
+      throw error;
     }
   }
 
@@ -266,7 +269,7 @@ export class OrgStore {
         ...this.membershipItems({ orgId, developerId: input.developerId, role: "owner", email: input.email, joinedAt }),
         ...this.pendingFor(event),
         // Plan 6: when the flag is on, a new org runs Rovara Code version 2 from its first task, as an explicit pin. Otherwise (and for an org with no settings item) it stays on version 1 until an admin adopts 2.
-        ...((this.input.rovaraCodeV2ForNewOrgs ?? ROVARA_CODE_V2_FOR_NEW_ORGS) ? [this.put(builtinSettingsKey(orgId, "rovara-code"), "BUILTIN_AGENT_SETTINGS", { pinnedVersion: currentBuiltinVersion("rovara-code"), updatedBy: input.developerId, updatedAt: joinedAt })] : []),
+        ...taskStopBootstrapItems(this.input.tableName, orgId, this.input.now(), (this.input.rovaraCodeV2ForNewOrgs ?? ROVARA_CODE_V2_FOR_NEW_ORGS) ? { codePin: { version: currentBuiltinVersion("rovara-code"), by: input.developerId } } : {}),
       ],
       (failed) => (failed.has(2) || failed.has(3) ? alreadyInOrg() : undefined),
     );

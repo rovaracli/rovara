@@ -35,7 +35,7 @@ export async function getTaskStopProject(deps: Dependencies, caller: DeveloperCa
     // Metadata is bound above; use the exact same snapshot and parser as the legacy view/writer.
     const stored = parseProjectAiWithRevision(raw, project);
     const policy = stored.settings.taskStopPolicy;
-    const projectOverride: TaskStopProjectRead["projectOverride"] = policy === undefined ? { kind: "inherit" } : { kind: "limited", stopMicrousd: policy.stopMicrousd };
+    const projectOverride: TaskStopProjectRead["projectOverride"] = policy === undefined || policy.schemaVersion === 2 ? { kind: "inherit" } : { kind: "limited", stopMicrousd: policy.stopMicrousd };
     if (await catalogRevision() !== revision) throw unavailable();
     const after = await getTaskStopCompany(deps, caller);
     if (after.policyDigest !== before.policyDigest) throw unavailable();

@@ -1,3 +1,16 @@
+import { TaskFundingProofSchema, captureTaskFundingProof, taskFundingModelPool, fundingAuditItems, fundingRevisionCheck } from "../org/task-stop-funding.js";
+import { resolveAgentForAutonomousRun } from "../agents/roster.js";
+import { recipeRunner, AgentRunStateSchema, type SpendingAdmissionReference } from "@agentx/contracts";
+import { isDeepStrictEqual } from "node:util";
+import { projectAiKey } from "@agentx/contracts";
+import { checkedTaskMaxPerRun, taskMaxPerRunForAdmission, withAdmittedTaskSource, checkedTaskStopSnapshot, readTaskStopWindow, taskStopWindowItems, readTaskStopTransition, taskStopTransitionItems, taskStopTransitionRecoveryChecks, type PreparedTaskApprovalAdmission, type TaskStopTransition } from "../org/task-stop-window.js";
+import { taskStartAgentAuthorityChecks } from "../org/task-start-agent-authority.js";
+import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
+import { captureTaskStopAdmission, type CapturedTaskStop } from "../org/task-stop-admission.js";
+import { usdToWholeMicrodollars } from "../org/budget-amount.js";
+import { budgetActorChecks, budgetActorRefused } from "../agents/budget-authority.js";
+import { requireAgentAccess } from "../agents/access.js";
+import { Aliases, failedIndexes } from "../agents/table-writes.js";
 // Spec 025 FR-016 to FR-021: the developer task routes. Every task has its own workspace, reached
 // through the existing handlers (DeveloperTaskActions) with the task's owner key. Nothing here
 // reads the deployment mode (FR-024).
@@ -256,6 +269,7 @@ import {
   taskIndexKey,
   taskActionRequestKey,
   taskAgentRunKey,
+  taskRecipeKey,
   taskKey,
   taskOwnerKey,
   taskOwnerLabel,
@@ -320,7 +334,7 @@ import type { TaskPeopleDisplayAdmission } from "../developer/task-people-displa
 import { requireCreatorStillMember } from "../developer/creator-member.js";
 import { requireNewWorkAllowed } from "../developer/project-roles.js";
 import { setupDraftPointerItem } from "../rovara-code/setup-draft.js";
-import { prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
+import { readTaskRecipe, prepareRun, readRunRequest, resolveRunPayer, runLimitsOf, runStartItems, type AgentRunDependencies, type AgentRunResult, type PreparedRun, type RunStartOptions } from "../agents/runs.js";
 import { bindingItems, threadBindingItems } from "../agent-sessions/bindings.js";
 import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "../agent-sessions/events.js";
 import { createTaskSessionItems, ensureTaskSession, lazyTaskSessionRecord, sessionStarterFor } from "../agent-sessions/create.js";
@@ -365,12 +379,7 @@ export interface DeveloperTaskRouteDependencies {
   /** Spec 059: absent is the safe default; production factories intentionally leave graph starts disabled. */
   workflowDependenciesEnabled?: boolean;
   /** C: trusted exact-principal eligibility and bound-channel proof; never supplied by a request body. */
-  checkTaskPerson?: (task: DeveloperTaskRecord, developerId: string, admission?: TaskPeopleDisplayAdmission) => Promise<{
-    subject: { developerId: string; slackUserId?: string };
-    identity: { developerId: string; slackUserId: string; name: string; method: "slack" | "oidc"; issuer: string; subject: string };
-    eligible: boolean;
-    channelMember: boolean;
-  }>;
+  checkTaskPerson?: (task: DeveloperTaskRecord, developerId: string, admission?: TaskPeopleDisplayAdmission) => Promise<TaskPersonCheck>;
   listTaskPeople?: (task: DeveloperTaskRecord, admission: TaskPeopleDisplayAdmission) => Promise<readonly TaskPersonCheck[]>;
   createTaskPeopleDisplayAdmission?: () => TaskPeopleDisplayAdmission;
   actions: DeveloperTaskActions;
@@ -2107,10 +2116,71 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   }
   // Plan 3, Task 34: with a model proxy a workflow task starts at its planning limit, a task with no workflow at the TASK estimate's run limit and an
   // agent-step run at the AGENT estimate's; a request can only lower it. Without a proxy nothing is limited, as before.
-  const startLimitUsd = deps.modelAccess === undefined ? undefined : await startingLimitUsd(deps, {
+  let startLimitUsd = deps.modelAccess === undefined ? undefined : await startingLimitUsd(deps, {
     project: request.project, asWorkflow: asWorkflow || settingUpDraft, workflowPath, prepared,
   });
   if (prepared !== undefined && startLimitUsd !== undefined) prepared = { ...prepared, ...runLimitsOf(startLimitUsd, run?.runLimitUsd, prepared.maxPerRunUsd) };
+  let fundingProof: ReturnType<typeof TaskFundingProofSchema.parse> | undefined;
+  let spendingStop: CapturedTaskStop | undefined;
+  let spendingScopeChecks: TransactItem[] = [];
+  // Every task captures once after its existing live principal checks and
+  // before monthly admission, workspace creation or key effects.
+  {
+    const authorizeSpendingAgent = async (agentId: NonNullable<typeof prepared>["ref"]["agentId"]): Promise<void> => {
+      if (deps.agentRuns === undefined) { if (run?.autonomous === true) throw budgetActorRefused(); return; }
+      if (run?.autonomous === true) {
+        if (prepared === undefined || prepared.ref.agentId !== agentId || typeof prepared.ref.version !== "number") throw budgetActorRefused();
+        await resolveAgentForAutonomousRun(deps.agentRuns, { orgId: deps.orgId, project: request.project, agentId, version: prepared.ref.version });
+      } else await requireAgentAccess(deps.agentRuns, caller, agentId, prepared?.ref.version === "draft" ? "edit" : "use");
+    };
+    try {
+      fundingProof = prepared?.modelPolicyPin === undefined || deps.agentRuns?.modelRouting === undefined ? undefined : await captureTaskFundingProof({ documentClient: deps.documentClient, tableName: deps.tableName, routing: deps.agentRuns.modelRouting, chatgpt: deps.agentRuns.stageChatgpt, now: () => deps.now() }, {
+    orgId: deps.orgId, project: request.project, models: taskFundingModelPool(prepared.modelPolicyPin, deps.agentRuns.modelRouting.rovaraGeography), ...(prepared.payer.kind === "member" ? { payerDeveloperId: prepared.payer.developerId } : {}),
+  }).catch(() => { throw agentXError("TASK_STOP_CONFIG_MISSING", "The funding sources could not be read. Try again."); });
+  if (fundingProof !== undefined && prepared !== undefined) {
+    if (prepared.modelPolicyPin?.sourcesRevision !== fundingProof.sourcesRevision) return refused(agentXError("TASK_STOP_CONFIG_INVALID", "The funding sources changed during admission."));
+    prepared = { ...prepared, fundingProof };
+  }
+      const pathLimitMicrousd = usdToWholeMicrodollars(startLimitUsd ?? prepared?.runLimitUsd ?? PER_TASK_BUDGET_USD);
+      const requestedMicrousd = run?.runLimitUsd === undefined ? undefined : usdToWholeMicrodollars(run.runLimitUsd);
+      const captured = fundingProof === undefined ? await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(),
+        requireScopeAccess: async input => {
+          const fresh = await deps.checkAccess(input.project);
+          await requireNewWorkAllowed(deps, deps.orgId, input.project, fresh.role, "task");
+          await authorizeSpendingAgent(input.agentId);
+        },
+      }, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project,
+        agentId: prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID, pathLimitMicrousd: pathLimitMicrousd ?? null,
+        ...(requestedMicrousd !== undefined ? { requestedMicrousd } : run?.runLimitUsd === undefined ? {} : { requestedMicrousd: null }),
+      }) : { kind: "disabled" as const };
+      if (captured.kind === "captured" || fundingProof !== undefined) {
+        spendingScopeChecks = await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project }, async () => {
+          const fresh = await deps.checkAccess(request.project);
+          await requireNewWorkAllowed(deps, deps.orgId, request.project, fresh.role, "task");
+        });
+        if (deps.agentRuns !== undefined && prepared !== undefined) {
+          const agentId = prepared.ref.agentId, draft = prepared.ref.version === "draft";
+          spendingScopeChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: request.project, agentId, draft, process: prepared.ref.process === true, developerId: caller.developerId, role: caller.orgRole, ...(prepared.ref.draftRevision === undefined ? {} : { expectedDraftRevision: prepared.ref.draftRevision }) }, async () => {
+            if (deps.agentRuns === undefined) throw budgetActorRefused();
+            await authorizeSpendingAgent(agentId);
+          }, async () => {
+            if (deps.agentRuns === undefined) throw budgetActorRefused();
+            return deps.agentRuns.store.listShares(deps.orgId, agentId);
+          }));
+        }
+        if (captured.kind === "captured") {
+        const exactUsd = captured.effectiveStopMicrousd / 1_000_000;
+        if (usdToWholeMicrodollars(exactUsd) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
+        if (exactUsd === 0 && !paused) return refused(agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0."));
+        spendingStop = captured; startLimitUsd = exactUsd;
+        if (prepared !== undefined) prepared = { ...prepared, ...runLimitsOf(exactUsd, undefined, prepared.maxPerRunUsd) };
+        }
+      }
+    } catch (error) {
+      if (error instanceof AgentXError) return refused(error);
+      throw error;
+    }
+  }
   // What a coding run is asked: the text as sent, or the text with its context rendered and cut to the request limit (G3).
   const requestText = prepared?.runner === "coding" && request.input !== undefined ? codingRequestText(request.input, DEVELOPER_INSTRUCTIONS_MAX_BYTES) : request.instructions;
   // The budget comes first (ruling R23: soft caps, so this is a floor, not a promise): after the agent is resolved, before the limit's counters are read
@@ -2150,9 +2220,11 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const title = redactedTitle(request);
   // The run limit is the task's budget. A task keeps one when the proxy admitted it or the run limit is not the usual one (a lower limit, or 0).
   const budgetUsd = prepared?.runLimitUsd ?? startLimitUsd ?? PER_TASK_BUDGET_USD;
-  const keepsBudget = admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
+  const keepsBudget = spendingStop !== undefined || admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
   const task: DeveloperTaskRecord = {
     ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId,
+    ...(fundingProof === undefined ? {} : { fundingProof }),
+    ...(spendingStop === undefined ? {} : { spendingStop, spendingAdmission: { requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash } }),
     ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
@@ -2198,12 +2270,19 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   });
   // A paused run is prepared but not dispatched: the workspace and its prepare operation are written, the outbox item that sends the prepare is not.
   const noted = setupNote === undefined ? preparation.items : withFirstEvent(preparation.items, deps.tableName, setupNote, receivedAt);
-  const preparationItems = paused ? noted.filter((item) => (item.Put?.Item as { entityType?: unknown } | undefined)?.entityType !== "OUTBOX") : noted;
+  const preparedItems = paused ? noted.filter((item) => (item.Put?.Item as { entityType?: unknown } | undefined)?.entityType !== "OUTBOX") : noted;
+  const preparationItems = spendingStop === undefined ? preparedItems : preparedItems.map(item => item.Put?.Item?.entityType === "OPERATION"
+    ? { Put: { ...item.Put, Item: { ...item.Put.Item, spendingTaskId: taskId, spendingAdmission: task.spendingAdmission } } } : item);
   const items: TransactItems = [
     // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position (a paused run takes no slot).
     ...(paused ? [] : chargeItems(deps.tableName, charge, limits, taskId)),
     ...preparationItems,
+    ...(fundingProof === undefined ? [] : fundingAuditItems(deps.tableName, fundingProof, { taskId, occurrence: request.requestId, actor: { kind: "member", id: caller.developerId }, at: deps.now() })),
     putNew(deps.tableName, { ...task }),
+    ...(spendingStop === undefined ? [] : taskStopWindowItems(deps.tableName, {
+      orgId: deps.orgId, taskId, requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash,
+      project: request.project, agentId: spendingStop.agentId,
+    }, spendingStop, preparation.operationId, receivedAt, 0)),
     ...(share?.threadTs === undefined ? [] : [putNew(deps.tableName, {
       ...sharedTaskKey({ teamId: share.teamId, channelId: share.channelId, threadTs: share.threadTs }),
       entityType: "SHARED_TASK", taskId, workspaceId, ownerKey: task.ownerKey, developerId: task.developerId,
@@ -2232,6 +2311,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // Plan 3, Task 15: the frozen recipe, the agent's task index, an agent-step run's state and (for startAgentRun) the run's request item.
     ...(prepared === undefined ? [] : runStartItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, {
       orgId: deps.orgId, taskId, createdAt: receivedAt, project: request.project, developerId: caller.developerId, prepared,
+      ...(spendingStop === undefined ? {} : { policySnapshotCaptured: true }),
       ...(run?.requestFingerprint === undefined ? {} : { request: { requestId: request.requestId, fingerprint: run.requestFingerprint } }),
       ...(sessionId === undefined ? {} : { sessionId }),
     })),
@@ -2247,11 +2327,30 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(codeBinding === undefined || codeBinding.kind === "slack_thread" ? [] : bindingItems({ tableName: deps.tableName }, deps.orgId, sessionId, codeBinding, receivedAt)),
     ]),
   ];
+  const spendingAuthorityIndexes = new Set<number>();
+  if (spendingStop !== undefined || fundingProof !== undefined) for (const guard of [...(fundingProof === undefined ? [] : [fundingRevisionCheck(deps.tableName, fundingProof)]), ...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), ...spendingScopeChecks]) {
+    const check = guard.ConditionCheck;
+    if (check?.Key === undefined) throw budgetActorRefused();
+    const checkKey = check.Key;
+    const index = items.findIndex(item => {
+      const action = item.Update ?? item.ConditionCheck;
+      return action?.Key?.pk === checkKey.pk && action?.Key?.sk === checkKey.sk;
+    });
+    if (index < 0) { spendingAuthorityIndexes.add(items.length); items.push(guard); continue; }
+    const item = items[index]!, action = item.Update ?? item.ConditionCheck!;
+    for (const [name, value] of Object.entries(check.ExpressionAttributeNames ?? {})) if (action.ExpressionAttributeNames?.[name] !== undefined && action.ExpressionAttributeNames[name] !== value) throw budgetActorRefused();
+    for (const [name, value] of Object.entries(check.ExpressionAttributeValues ?? {})) if (action.ExpressionAttributeValues?.[name] !== undefined && !isDeepStrictEqual(action.ExpressionAttributeValues[name], value)) throw budgetActorRefused();
+    const names = { ...action.ExpressionAttributeNames, ...check.ExpressionAttributeNames }, values = { ...action.ExpressionAttributeValues, ...check.ExpressionAttributeValues };
+    const combined = { ConditionExpression: action.ConditionExpression === undefined ? check.ConditionExpression : `(${action.ConditionExpression}) AND (${check.ConditionExpression})`, ...(Object.keys(names).length === 0 ? {} : { ExpressionAttributeNames: names }), ...(Object.keys(values).length === 0 ? {} : { ExpressionAttributeValues: values }) };
+    items[index] = item.Update === undefined ? { ConditionCheck: { ...item.ConditionCheck!, ...combined } } : { Update: { ...item.Update, ...combined } };
+    spendingAuthorityIndexes.add(index);
+  }
   if(prepared?.modelPolicyPin!==undefined&&items.length>90) throw agentXError("CONFIG_INVALID","The model admission exceeds the transaction limit.");
   try {
     await deps.actions.transact(items);
   } catch (error) {
     if (!isConditional(error)) throw error;
+    if (spendingStop !== undefined && [...(failedIndexes(error) ?? [])].some(index => spendingAuthorityIndexes.has(index))) return refused(budgetActorRefused());
     const conflict = paused ? undefined : await chargeFailure(deps, charge, taskId, error);
     // This task's own charge is there: the transaction committed and only its answer was lost.
     if (conflict === "already_charged") return returning({ taskId, payloadHash });
@@ -2552,7 +2651,27 @@ function refuseAutomaticWhilePaused(task: DeveloperTaskRecord): void {
 }
 
 /** The task's update in a Continue: the new cap window (R38) and, Task 32, the removal of a stale mid-run pause; nothing when neither applies. */
-function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, baseline: number | undefined): TransactItems {
+function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, baseline: number | undefined, admission?: CapturedTaskStop, reference?: SpendingAdmissionReference): TransactItems {
+  if (admission !== undefined) {
+    const a = new Aliases(), values: Record<string, unknown> = { ":now": iso(deps), ":stop": admission, ":cap": admission.effectiveStopMicrousd / 1_000_000 };
+    const sets = ["updatedAt = :now", "budgetUsd = :cap", "spendingStop = :stop"], removes: string[] = [];
+    if (reference === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task admission reference is unavailable.");
+    sets.push("spendingAdmission = :admission"); values[":admission"] = reference;
+    if (baseline !== undefined) { sets.push("budgetBaselineUsd = :baseline"); values[":baseline"] = baseline; }
+    if (staleBudgetPause(task)) removes.push("budgetPause");
+    const maxPerRun = taskMaxPerRunForAdmission(admission);
+    if (maxPerRun !== undefined) {
+      const exactMaxUsd = maxPerRun / 1_000_000;
+      if (usdToWholeMicrodollars(exactMaxUsd) !== maxPerRun) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task per-run stop cannot be represented exactly.");
+      sets.push("maxPerRunUsd = :taskStop"); values[":taskStop"] = exactMaxUsd;
+    } else if (task.maxPerRunUsd !== undefined) removes.push("maxPerRunUsd");
+    const conditions = ["attribute_exists(pk)", "attribute_not_exists(closedAt)"];
+    for (const field of ["orgId", "project", "agent", "payer", "developerId", "ownerKey", "budgetUsd", "maxPerRunUsd", "budgetBaselineUsd", "spendingStop", "spendingAdmission"] as const) {
+      const value = task[field]; conditions.push(value === undefined ? `attribute_not_exists(${a.name(field)})` : `${a.name(field)} = ${a.value(value)}`);
+    }
+    return [{ Update: { TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: `SET ${sets.join(", ")}${removes.length === 0 ? "" : ` REMOVE ${removes.join(", ")}`}`,
+      ConditionExpression: conditions.join(" AND "), ExpressionAttributeNames: a.names, ExpressionAttributeValues: { ...values, ...a.values } } }];
+  }
   const removes = staleBudgetPause(task) ? " REMOVE budgetPause" : "";
   if (baseline === undefined && removes === "") return [];
   return [{ Update: {
@@ -2590,6 +2709,9 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   const { task } = access;
   // Ruling R60, first: before the busy, workspace and model-proxy refusals, so the removal's reason wins.
   await creatorGuard(deps, task);
+  const windowIdentity = { orgId: deps.orgId, taskId: task.taskId, requestId: request.requestId, actorId: caller.developerId,
+    intentHash: hashJson({ taskId: task.taskId, actorId: caller.developerId, request }), project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID };
+  if (await readTaskStopWindow(deps, windowIdentity) !== undefined) return { task: await taskView(deps, task, { events: 0, details: false }) };
   // Rovara Code asked questions and waits for answers: more instructions cannot answer them, and "approval steps" is not what it waits on.
   if (task.workflow !== undefined && openQuestions(task.workflow).length > 0) throw agentXError("WORKSPACE_BUSY", waitingForAnswersTurnRefusal(task.sessionId));
   if (task.workflow !== undefined) throw agentXError("WORKSPACE_BUSY", GATED_TASK_TURN_REFUSAL);
@@ -2606,6 +2728,37 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   }
   const turns = turnTable(deps);
   await actionableWorkspace(deps, task);
+  let windowStop: CapturedTaskStop | undefined;
+  let windowChecks: TransactItem[] = [];
+  if (deps.spendResume === undefined && task.fundingProof === undefined) {
+    const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
+    const pathLimitMicrousd = previous?.calculationInput.approvedRunLimitMicrousd ?? previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD);
+    const oldBounds = previous?.calculationInput;
+    const requestedMicrousd = oldBounds?.requestedMicrousd ?? (task.requestedRunLimitUsd === undefined ? undefined : usdToWholeMicrodollars(task.requestedRunLimitUsd));
+    const authorize = async () => { await authorizeTaskAction(deps, caller, taskId, "work"); };
+    const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), requireScopeAccess: authorize }, {
+      orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
+      pathLimitMicrousd: pathLimitMicrousd ?? null,
+      ...(task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
+      ...(requestedMicrousd !== undefined ? { requestedMicrousd } : task.requestedRunLimitUsd === undefined ? {} : { requestedMicrousd: null }),
+      ...(oldBounds?.chainMicrousd === undefined ? {} : { chainMicrousd: oldBounds.chainMicrousd }), ...(oldBounds?.testingMicrousd === undefined ? {} : { testingMicrousd: oldBounds.testingMicrousd }),
+    });
+    if (captured.kind === "captured") {
+      checkedTaskMaxPerRun(task);
+      if (captured.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
+      if (usdToWholeMicrodollars(captured.effectiveStopMicrousd / 1_000_000) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
+      windowStop = captured;
+      windowChecks = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }),
+        ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project }, authorize)];
+      if (deps.agentRuns !== undefined && task.agent !== undefined) {
+        const agentId = task.agent.agentId, draft = task.agent.version === "draft";
+        windowChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId, draft, process: task.agent.process === true,
+          developerId: caller.developerId, role: caller.orgRole, ...(task.agent.draftRevision === undefined ? {} : { expectedDraftRevision: task.agent.draftRevision }) }, async () => {
+          await authorize(); if (deps.agentRuns === undefined) throw budgetActorRefused(); await requireAgentAccess(deps.agentRuns, caller, agentId, draft ? "edit" : "use");
+        }, async () => { if (deps.agentRuns === undefined) throw budgetActorRefused(); return deps.agentRuns.store.listShares(deps.orgId, agentId); }));
+      }
+    }
+  }
   // Ruling R38: a Continue starts a new window of the task's own cap, at what its keys have spent so far. A proxy that cannot
   // say refuses the Continue before anything is written.
   const baseline = deps.modelAccess === undefined ? undefined
@@ -2617,7 +2770,9 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
     // acceptTask answers a repeated requestId with its first operation and writes nothing, and
     // refuses a second running turn (TASK_BUSY) before anything is written.
     await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt: request.instructions }, (operation) => [
-      ...windowAndPauseUpdate(deps, task, baseline),
+      ...windowAndPauseUpdate(deps, task, baseline, windowStop, { requestId: windowIdentity.requestId, actorId: windowIdentity.actorId, intentHash: windowIdentity.intentHash }),
+      ...windowChecks,
+      ...(windowStop === undefined ? [] : taskStopWindowItems(deps.tableName, windowIdentity, windowStop, operation.id, receivedAt, baseline === undefined ? task.budgetBaselineUsd === undefined ? 0 : task.budgetBaselineUsd : baseline)),
       ...(withdrawal?.items ?? []),
       // R12: the accepted record commits with the operation or not at all.
       putNew(turns, aiToolTurn({
@@ -2627,12 +2782,21 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
       accessFence(deps, access),
     ], { sharedTask: task.shared === true });
   } catch (error) {
+    if (await readTaskStopWindow(deps, windowIdentity) !== undefined) return { task: await taskView(deps, await loadOwnedTask(deps, caller, taskId), { events: 0, details: false }) };
+    const windowFailures = error instanceof AgentXError ? (error as { extraCancellation?: string[] }).extraCancellation : undefined;
+    if (windowStop !== undefined && windowFailures !== undefined) {
+      // acceptTask reports reasons relative to this callback's items. The one
+      // task update precedes authority checks; TaskAccess is the final item.
+      if (windowFailures.slice(1, 1 + windowChecks.length).includes("ConditionalCheckFailed") || windowFailures.at(-1) === "ConditionalCheckFailed") throw budgetActorRefused();
+      if (windowFailures[0] === "ConditionalCheckFailed") throw agentXError("CHANGE_STALE", "The task's spending window changed. Review it and continue again.");
+    }
     if (isConditional(error)) await authorizeTaskAction(deps, caller, taskId, "work");
     return busyOrClosing(deps, task, error);
   }
   await withdrawal?.flush();
-  const view = await taskView(deps, task, { events: 0, details: false });
-  await syncIndex(deps, task, view.status, view.updatedAt);
+  const current = windowStop === undefined ? task : await loadOwnedTask(deps, caller, taskId);
+  const view = await taskView(deps, current, { events: 0, details: false });
+  await syncIndex(deps, current, view.status, view.updatedAt);
   return { task: view };
 }
 
@@ -2652,7 +2816,7 @@ function resumeRequestId(spendRequestId: string, what: string): string {
  * still naming that preparation, the workspace slot is taken, the preparation's outbox item is written (with a new capability and repository grant), its
  * setup watch starts and the pause is removed. The preparation's success then starts the task, or wakes the agent-step engine.
  */
-async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<void> {
+async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, nativeChecks: readonly TransactItem[] = []): Promise<void> {
   const held = task.budgetPause?.firstDispatch;
   if (held === undefined) return;
   const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
@@ -2671,9 +2835,30 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
       ExpressionAttributeValues: { ":now": iso(deps), ":operation": held.operationId },
     } },
   ];
+  let operationBindingIndex: number | undefined;
+  if (task.spendingStop !== undefined) {
+    if (task.spendingAdmission === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The held spending admission is unavailable.");
+    const Key = operationKey(task.workspaceId, held.operationId), operation = await get<Record<string, unknown>>(deps, Key);
+    if (operation?.entityType !== "OPERATION" || operation.orgId !== deps.orgId || operation.workspaceId !== task.workspaceId || operation.id !== held.operationId
+      || operation.kind !== "prepare" || operation.status !== "ACCEPTED") throw agentXError("CHANGE_STALE", "The held preparation changed.");
+    const a = new Aliases();
+    const conditions = ["entityType", "orgId", "workspaceId", "id", "kind", "status", "fence", "spendingTaskId", "spendingAdmission"].map(field =>
+      operation[field] === undefined ? `attribute_not_exists(${a.name(field)})` : `${a.name(field)} = ${a.value(operation[field])}`);
+    operationBindingIndex = items.length;
+    items.push({ Update: { TableName: deps.tableName, Key, UpdateExpression: "SET spendingTaskId = :bindingTask, spendingAdmission = :bindingAdmission",
+      ConditionExpression: conditions.join(" AND "), ExpressionAttributeNames: a.names,
+      ExpressionAttributeValues: { ...a.values, ":bindingTask": task.taskId, ":bindingAdmission": task.spendingAdmission } } });
+  }
+  const admitted = nativeChecks.length === 0 ? undefined : withAdmittedTaskSource(deps.tableName, task, items);
+  const nativeStart = items.length;
+  const dispatchItems = [...(admitted?.items ?? items), ...nativeChecks];
   try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: dispatchItems }));
   } catch (error) {
+    const failed = failedIndexes(error);
+    if (nativeChecks.length > 0 && [...(failed ?? [])].some(index => index >= nativeStart)) throw budgetActorRefused();
+    if (admitted !== undefined && failed?.has(admitted.sourceIndex)) throw agentXError("CHANGE_STALE", "The held preparation's accepted spending source changed. Review it before starting work.");
+    if (operationBindingIndex !== undefined && failed?.has(operationBindingIndex)) throw agentXError("CHANGE_STALE", "The held preparation operation changed before dispatch.");
     const conflict = await chargeFailure(deps, charge, task.taskId, error);
     if (conflict === "member" || conflict === "organization") throw await limitError(deps, { developerId: task.developerId } as DeveloperCaller, conflict, limits);
     // Another resume dispatched it first, or the task closed meanwhile: either way there is nothing to dispatch.
@@ -2689,6 +2874,9 @@ export interface SpendResumeInput {
   spendRequestId: string;
   resetRunWindow: boolean;
   firstDispatch: boolean;
+  expectedPausedAgentRevision?: number;
+  nativeRecoveryChecks?: TransactItems;
+  spendingAdmission?: SpendingAdmissionReference;
   /** `"implement"`: the approved request was for a plan blocked on its run limit (Task 34), and `runLimitUsd` is the limit approved. */
   resume?: "implement";
   runLimitUsd?: number;
@@ -2700,20 +2888,62 @@ export interface SpendResumeInput {
  * retry, made by the system); a task with no workflow gets the system's Continue, "Your AI budget was raised. Continue where you stopped." The cap window is
  * reset only where the approval reset it (`resetRunWindow`). A task still paused on another limit, closed, or not the org's is left as it is.
  */
+/** Carries an existing approved admission into a workflow's actual paid write.
+ * The source condition merges with the workflow's task update, never a second
+ * action for that key. Identical native checks are held exactly once. */
+function taskStopGuardedPaidDispatch(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, checks: readonly TransactItem[]): DeveloperTaskRouteDependencies {
+  return { ...deps, actions: { ...deps.actions,
+    acceptTask: (identity, workspaceId, request, extra, options) => deps.actions.acceptTask(identity, workspaceId, request, (operation) => {
+      const items = [...extra(operation)];
+      for (const guard of checks) {
+        const key = guard.ConditionCheck?.Key;
+        const existing = items.find(item => { const other = item.ConditionCheck?.Key ?? item.Update?.Key ?? item.Put?.Item ?? item.Delete?.Key; return key !== undefined && other !== undefined && key.pk === other.pk && key.sk === other.sk; });
+        if (existing !== undefined) { if (canonicalJson(existing) !== canonicalJson(guard)) throw budgetActorRefused(); } else items.push(guard);
+      }
+      return withAdmittedTaskSource(deps.tableName, task, items).items;
+    }, options),
+  } };
+}
+
 export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDependencies, owner: DeveloperCaller, input: SpendResumeInput): Promise<void | "STALE"> {
   const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
   if (task === undefined || task.orgId !== deps.orgId || task.orgId !== input.orgId || task.closedAt !== undefined) return;
   // Ruling R60, first: a task whose creator was removed is not resumed, nor a held start dispatched.
   await creatorGuard(deps, task);
+  if (input.spendingAdmission !== undefined) {
+    if (deps.agentRuns === undefined) throw budgetActorRefused();
+    const reference = input.spendingAdmission;
+    input = { ...input, nativeRecoveryChecks: await taskStopTransitionRecoveryChecks(deps.agentRuns, task, reference) };
+    const receipt = await readTaskStopTransition(deps, { orgId: deps.orgId, taskId: task.taskId, requestId: reference.requestId, actorId: reference.actorId,
+      intentHash: reference.intentHash, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID });
+    if (receipt === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved spending admission is missing.");
+    if (receipt.transitionKind === "spend-approval" && receipt.spendRequestId !== input.spendRequestId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The recovery does not name the approved spending request.");
+    if (input.resume === "implement" && (receipt.transitionKind !== "spend-approval" || receipt.workflowRevision === null || usdToWholeMicrodollars(input.runLimitUsd) !== receipt.spendingStop.calculationInput.approvedRunLimitMicrousd)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The implementation limit does not match the approved spending admission.");
+    if (receipt.transitionKind === "spend-approval" && receipt.firstDispatch != null) {
+      if (task.budgetPause?.firstDispatch === undefined) {
+        const workspace = await deps.actions.workspace(task.workspaceId);
+        const mark = await get<{ operationId?: string; taskId?: string; workspaceId?: string }>(deps, setupWatchKey(workspace.createdAt, workspace.id));
+        if (mark?.operationId === receipt.firstDispatch.operationId && mark.taskId === task.taskId && mark.workspaceId === task.workspaceId) return;
+        const completedKey = operationKey(task.workspaceId, receipt.firstDispatch.operationId);
+        const completed = await get<Record<string, unknown>>(deps, completedKey);
+        if (completed?.pk === completedKey.pk && completed.sk === completedKey.sk && completed.entityType === "OPERATION" && completed.id === receipt.firstDispatch.operationId
+          && completed.kind === "prepare" && completed.status === "SUCCEEDED" && completed.workspaceId === task.workspaceId && completed.orgId === deps.orgId) return;
+        throw agentXError("TASK_STOP_CONFIG_INVALID", "The approved preparation dispatch could not be verified.");
+      }
+      input = { ...input, firstDispatch: true };
+    }
+    if (receipt.agentRunRevision !== null) input = { ...input, expectedPausedAgentRevision: receipt.agentRunRevision };
+  }
   if (input.firstDispatch) {
-    await dispatchHeldStart(deps, task);
+    await dispatchHeldStart(deps, task, input.nativeRecoveryChecks);
     return;
   }
   // A plan blocked on its run limit starts coding by this approval and nothing else (`resumeAfterRunLimitApproval`); a repeat of it is the same request.
   if (input.resume === "implement") {
     if (input.runLimitUsd === undefined) throw agentXError("CONFIG_INVALID", "a run limit approval names the limit it approved");
     // STALE (the plan was not blocked on its run limit any more) is answered, so a caller that counts starts does not count it.
-    return await resumeAfterRunLimitApproval(deps, task.taskId, { requestId: resumeRequestId(input.spendRequestId, "implement"), runLimitUsd: input.runLimitUsd }) === "STALE" ? "STALE" : undefined;
+    const guarded = input.spendingAdmission === undefined ? deps : taskStopGuardedPaidDispatch(deps, task, input.nativeRecoveryChecks ?? []);
+    return await resumeAfterRunLimitApproval(guarded, task.taskId, { requestId: resumeRequestId(input.spendRequestId, "implement"), runLimitUsd: input.runLimitUsd }) === "STALE" ? "STALE" : undefined;
   }
   if (task.budgetPause !== undefined) return;
   // A chain's step hears that its task went on, so the step and the run show running again before the task ends and a second stop can be told as a pause.
@@ -2721,17 +2951,36 @@ export async function resumeTaskAfterSpendApproval(deps: DeveloperTaskRouteDepen
   const resumed: DeveloperTaskRouteDependencies = { ...deps, spendResume: { keepWindow: !input.resetRunWindow } };
   if (task.agent !== undefined && task.workflow === undefined && await get(deps, taskAgentRunKey(task.taskId)) !== undefined) {
     if (deps.agentEngine === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
-    await advanceAgentRun(deps.agentEngine, task.taskId);
+    await advanceAgentRun(deps.agentEngine, task.taskId, input.expectedPausedAgentRevision, input.nativeRecoveryChecks, input.spendingAdmission);
     return;
   }
   const requestId = resumeRequestId(input.spendRequestId, "resume");
   if (task.workflow !== undefined) {
     if (task.workflow.state !== "BLOCKED" || task.workflow.blockReason !== WORKFLOW_BLOCK_REASONS.budgetPaused) return;
-    await retryTaskWorkflow(resumed, owner, task.taskId, { requestId, instructions: SPEND_RESUME_INSTRUCTIONS, expectedRevision: task.workflow.revision });
+    const guarded = input.spendingAdmission === undefined ? resumed : taskStopGuardedPaidDispatch(resumed, task, input.nativeRecoveryChecks ?? []);
+    await retryTaskWorkflow(guarded, owner, task.taskId, { requestId, instructions: SPEND_RESUME_INSTRUCTIONS, expectedRevision: task.workflow.revision });
     return;
   }
   // A task with no workflow: the system's Continue (its window is the approval's).
-  await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt: SPEND_RESUME_INSTRUCTIONS }, () => [], { sharedTask: task.shared === true });
+  let paidChecks = input.nativeRecoveryChecks ?? [];
+  if (task.spendingStop !== undefined && input.spendingAdmission === undefined) {
+    checkedTaskStopSnapshot(task.spendingStop);
+    const access = await authorizeTaskAction(deps, owner, task.taskId, "work"), agentId = task.agent?.agentId ?? ROVARA_CODE_AGENT_ID;
+    const authorize = async () => {
+      await authorizeTaskAction(deps, owner, task.taskId, "work");
+      if (deps.agentRuns === undefined) throw budgetActorRefused();
+      await requireAgentAccess(deps.agentRuns, owner, agentId, task.agent?.version === "draft" ? "edit" : "use");
+    };
+    const agentRuns = deps.agentRuns;
+    if (agentRuns === undefined) throw budgetActorRefused();
+    paidChecks = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: owner.developerId, role: owner.orgRole }), accessFence(deps, access),
+      ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: owner.developerId, role: owner.orgRole, project: task.project }, authorize),
+      ...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId, draft: task.agent?.version === "draft", frozenRecipe: true,
+        process: task.agent?.process === true, developerId: owner.developerId, role: owner.orgRole }, authorize,
+        () => agentRuns.store.listShares(deps.orgId, agentId))];
+  }
+  if (task.spendingStop !== undefined) paidChecks = withAdmittedTaskSource(deps.tableName, task, paidChecks).items;
+  await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId, conversationId: task.conversationId, prompt: SPEND_RESUME_INSTRUCTIONS }, () => paidChecks, { sharedTask: task.shared === true });
   const fresh = await get<DeveloperTaskRecord>(deps, taskKey(task.taskId));
   if (fresh !== undefined) {
     const view = await taskView(deps, fresh, { events: 0, details: false });
@@ -2747,25 +2996,188 @@ const ContinueAsTaskSchema = z.object({ requestId: z.string().uuid() }).strict()
  * ledger lines already written name it). Conditional on the test's pause still being there, so a repeat changes nothing; anyone else gets the 404 a task
  * they can't see gets.
  */
+/** Server-only preparation: a new approval's money is captured by the spend
+ * calculator; this contributes current execution authority and its receipt. */
+export async function prepareTaskApprovalAdmission(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller,
+  input: { taskId: string; decisionRequestId: string; spendRequestId: string; snapshot: CapturedTaskStop; budgetBaselineUsd: number }): Promise<PreparedTaskApprovalAdmission | undefined> {
+  const access = await authorizeTaskAction(deps, caller, input.taskId, "work"), task = access.task;
+  // The accepted recipe distinguishes agent-step state from coding/workflow
+  // state; every new approved window keeps the same immutable receipt.
+  if (task.agent === undefined) return undefined;
+  const frozen = await readTaskRecipe(deps, task.taskId, deps.orgId);
+  if (frozen === undefined || frozen.digest !== task.agent.digest) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task's accepted recipe could not be checked.");
+  const agentSteps = task.workflow === undefined && recipeRunner(frozen.recipe) === "agent_steps";
+  const runKey = taskAgentRunKey(task.taskId);
+  let run: { revision: number } | undefined;
+  if (agentSteps) {
+    const raw = await get<Record<string, unknown>>(deps, runKey);
+    if (raw === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The paused run's admission state is missing.");
+    const parsedRun = AgentRunStateSchema.safeParse(Object.fromEntries(Object.entries(raw).filter(([key]) => !["pk", "sk", "entityType"].includes(key))));
+    if (!parsedRun.success || raw.pk !== runKey.pk || raw.sk !== runKey.sk || raw.entityType !== "AGENT_RUN" || parsedRun.data.orgId !== deps.orgId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The paused run's admission state could not be checked.");
+    if (parsedRun.data.state !== "PAUSED_BUDGET" || parsedRun.data.revision >= Number.MAX_SAFE_INTEGER) throw agentXError("CHANGE_STALE", "The run's paused step changed. Review it before approving a new window.");
+    run = parsedRun.data;
+  }
+  if (deps.agentRuns === undefined || task.payer === undefined || task.origin === undefined) throw budgetActorRefused();
+  await creatorGuard(deps, task);
+  const snapshot = checkedTaskStopSnapshot(input.snapshot);
+  if (snapshot.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
+  if (snapshot.orgId !== deps.orgId || snapshot.project !== task.project || snapshot.agentId !== task.agent.agentId) throw budgetActorRefused();
+  const authorize = async () => {
+    await authorizeTaskAction(deps, caller, task.taskId, "work");
+    if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused();
+    await requireAgentAccess(deps.agentRuns, caller, task.agent.agentId, task.agent.version === "draft" ? "edit" : "use");
+  };
+  const authority = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), accessFence(deps, access),
+    ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project }, authorize),
+    ...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, draft: task.agent.version === "draft", frozenRecipe: true,
+      process: task.agent.process === true, developerId: caller.developerId, role: caller.orgRole }, authorize,
+      async () => { if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused(); return deps.agentRuns.store.listShares(deps.orgId, task.agent.agentId); })];
+  const identity = { orgId: deps.orgId, taskId: task.taskId, requestId: input.decisionRequestId, actorId: caller.developerId, project: task.project, agentId: task.agent.agentId,
+    intentHash: hashJson({ action: "spend-approval", taskId: task.taskId, spendRequestId: input.spendRequestId, requestId: input.decisionRequestId, policyDigest: snapshot.policyDigest }) };
+  const reference = { requestId: identity.requestId, actorId: identity.actorId, intentHash: identity.intentHash }, pausedRevision = run === undefined ? null : run.revision + 1;
+  return { authority, reference, receiptIndex: run === undefined ? 0 : 1,
+    ...(task.workflow === undefined ? {} : { workflowRevision: task.workflow.revision }),
+    taskReference: true,
+    ...(run === undefined ? {} : { expectedPausedAgentRevision: run.revision + 1, runSourceIndex: 0 }),
+    items: [...(run === undefined ? [] : [{ Update: { TableName: deps.tableName, Key: runKey, UpdateExpression: "SET spendingAdmission = :admission, #revision = :nextRevision",
+      ConditionExpression: "#revision = :revision AND #state = :state AND orgId = :org AND entityType = :type",
+      ExpressionAttributeNames: { "#revision": "revision", "#state": "state" },
+      ExpressionAttributeValues: { ":admission": reference, ":nextRevision": pausedRevision, ":revision": run.revision, ":state": "PAUSED_BUDGET", ":org": deps.orgId, ":type": "AGENT_RUN" } } }]),
+      ...taskStopTransitionItems(deps.tableName, identity, { transitionKind: "spend-approval", budgetBaselineUsd: input.budgetBaselineUsd, firstDispatch: task.budgetPause?.firstDispatch ?? null, origin: task.origin, spendRequestId: input.spendRequestId, spendingStop: snapshot, payer: task.payer, place: { project: task.project },
+        actorRole: caller.orgRole, peopleRevision: access.peopleRevision ?? null, agentRunRevision: pausedRevision, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) })] };
+}
+
 export async function continueAsTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueAsTaskSchema, value, deps, "continue-as-task");
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   if (task === undefined || task.orgId !== deps.orgId || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) throw agentXError("TASK_NOT_FOUND", `task ${taskId} doesn't exist`);
   await creatorGuard(deps, task);
+  const identity = { orgId: deps.orgId, taskId, requestId: request.requestId, actorId: caller.developerId,
+    intentHash: hashJson({ taskId, actorId: caller.developerId, action: "continue-as-task", request }), project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID };
+  const recover = async (receipt: TaskStopTransition): Promise<{ task: DeveloperTaskView }> => {
+    const access = await authorizeTaskAction(deps, caller, taskId, "work"), current = access.task;
+    if (deps.agentRuns === undefined || current.agent === undefined) throw budgetActorRefused();
+    await requireAgentAccess(deps.agentRuns, caller, current.agent.agentId, current.agent.version === "draft" ? "edit" : "use");
+    if (current.origin !== "app" || !isDeepStrictEqual(current.payer, receipt.payer) || current.project !== receipt.place.project) throw agentXError("CHANGE_STALE", "The task's payer changed. Review the task before continuing.");
+    const nativeRecoveryChecks = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), accessFence(deps, access)];
+    try {
+      await deps.actions.transact(nativeRecoveryChecks);
+    } catch (error) {
+      if (failedIndexes(error) !== undefined) throw budgetActorRefused();
+      throw error;
+    }
+    if (current.closedAt === undefined && (receipt.workflowRevision === null || current.workflow?.revision === receipt.workflowRevision)) {
+      await resumeTaskAfterSpendApproval(deps, caller, { orgId: deps.orgId, taskId, spendRequestId: receipt.requestId, resetRunWindow: false, firstDispatch: false, nativeRecoveryChecks, spendingAdmission: { requestId: receipt.requestId, actorId: receipt.actorId, intentHash: receipt.intentHash },
+        ...(receipt.agentRunRevision === null ? {} : { expectedPausedAgentRevision: receipt.agentRunRevision }) });
+    }
+    const fresh = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+    return { task: await taskView(deps, fresh ?? current, { events: 0, details: false }) };
+  };
+  const committed = await readTaskStopTransition(deps, identity);
+  if (committed !== undefined) return recover(committed);
   if (task.origin === "app" && task.budgetPause === undefined && task.startedBy !== undefined) return { task: await taskView(deps, task, { events: 0, details: false }) };
   if (task.origin !== "test_run" || task.budgetPause?.scope.kind !== "test" || task.agent === undefined) {
     throw agentXError("CONFIG_INVALID", "only a test run that reached its cap can continue as a normal task");
   }
   if (deps.agentRuns === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agents are not set up in this deployment");
-  const { payer, place } = await resolveRunPayer(deps.agentRuns, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, origin: "app", startedBy: { developerId: caller.developerId } });
-  try {
-    await deps.documentClient.send(new UpdateCommand({
+  const authorize = async () => {
+    await authorizeTaskAction(deps, caller, taskId, "work");
+    if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused();
+    await requireAgentAccess(deps.agentRuns, caller, task.agent.agentId, task.agent.version === "draft" ? "edit" : "use");
+  };
+  const { payer, place, projectPays } = await resolveRunPayer(deps.agentRuns, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, origin: "app", startedBy: { developerId: caller.developerId } });
+  let fundingTransition: ReturnType<typeof TaskFundingProofSchema.parse> | undefined;
+  if (task.fundingProof !== undefined) {
+    await authorize();
+    const pinned = await readTaskRecipe(deps, taskId, deps.orgId), prior = TaskFundingProofSchema.parse(task.fundingProof);
+    if (pinned?.modelPolicyPin === undefined || !isDeepStrictEqual(pinned.fundingProof, prior) || deps.agentRuns.modelRouting === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The admitted funding proof is unavailable.");
+    fundingTransition = await captureTaskFundingProof({ documentClient: deps.documentClient, tableName: deps.tableName, routing: deps.agentRuns.modelRouting, chatgpt: deps.agentRuns.stageChatgpt, now: () => deps.now() }, { orgId: deps.orgId, project: task.project, models: taskFundingModelPool(pinned.modelPolicyPin, deps.agentRuns.modelRouting.rovaraGeography), admittedProof: prior, ...(payer.kind === "member" ? { payerDeveloperId: payer.developerId } : {}) });
+    if (fundingTransition === undefined) throw agentXError("TASK_STOP_CONFIG_MISSING", "The task's own-source funding changed. Start again with current spending rules.");
+  }
+  const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
+  const captured = fundingTransition === undefined ? await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), requireScopeAccess: authorize }, {
+    orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project, agentId: task.agent.agentId,
+    pathLimitMicrousd: previous?.calculationInput.approvedRunLimitMicrousd ?? previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
+    ...(task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
+    ...(previous?.calculationInput.chainMicrousd === undefined ? {} : { chainMicrousd: previous.calculationInput.chainMicrousd }),
+    // The testing allowance belongs to historical spend; this is a new payer.
+    ...(previous?.calculationInput.requestedMicrousd !== undefined ? { requestedMicrousd: previous.calculationInput.requestedMicrousd }
+      : task.requestedRunLimitUsd === undefined ? {} : { requestedMicrousd: usdToWholeMicrodollars(task.requestedRunLimitUsd) ?? null }),
+  }) : { kind: "disabled" as const };
+  if (captured.kind === "captured") {
+    checkedTaskMaxPerRun(task);
+    if (captured.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
+    if (usdToWholeMicrodollars(captured.effectiveStopMicrousd / 1_000_000) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
+    const checks = [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }),
+      ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project }, authorize),
+      ...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, draft: task.agent.version === "draft", process: task.agent.process === true,
+        developerId: caller.developerId, role: caller.orgRole, ...(task.agent.draftRevision === undefined ? {} : { expectedDraftRevision: task.agent.draftRevision }) }, authorize,
+      async () => { if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused(); return deps.agentRuns.store.listShares(deps.orgId, task.agent.agentId); })];
+    const runSource = await get<{ revision: number; state: string }>(deps, taskAgentRunKey(taskId));
+    if (runSource !== undefined && (!Number.isSafeInteger(runSource.revision) || runSource.revision < 1 || runSource.state !== "PAUSED_BUDGET")) throw agentXError("CHANGE_STALE", "The test run's paused step changed. Review it and continue again.");
+    const baseline = deps.modelAccess === undefined ? undefined
+      : await taskSpendBaseline({ documentClient: deps.documentClient, tableName: deps.tableName, access: deps.modelAccess }, task.modelKeyIds ?? []);
+    const transitionAccess = await authorizeTaskAction(deps, caller, taskId, "work");
+    const [receipt, admissionAudit] = taskStopTransitionItems(deps.tableName, identity, { spendingStop: captured, budgetBaselineUsd: baseline === undefined ? task.budgetBaselineUsd === undefined ? 0 : task.budgetBaselineUsd : baseline, payer, place, actorRole: caller.orgRole, peopleRevision: transitionAccess.peopleRevision ?? null,
+      agentRunRevision: runSource?.revision ?? null, workflowRevision: task.workflow?.revision ?? null, admittedAt: iso(deps) });
+    const item = windowAndPauseUpdate(deps, task, baseline, captured, { requestId: identity.requestId, actorId: identity.actorId, intentHash: identity.intentHash })[0]?.Update;
+    if (item === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task spending transition could not be prepared.");
+    const source = ["origin", "budgetPause", "startedBy", "place", "workflow", "modelKeyIds"] as const;
+    // Transition aliases must not collide with the window source aliases.
+    const seen = new Aliases();
+    const sourceConditions = source.map(field => {
+      const name = `#transition_${field}`; seen.names[name] = field;
+      if (task[field] === undefined) return `attribute_not_exists(${name})`;
+      const value = `:transition_${field}`; seen.values[value] = task[field]; return `${name} = ${value}`;
+    });
+    try {
+      await deps.actions.transact([{ Update: { ...item,
+        UpdateExpression: `${item.UpdateExpression?.split(" REMOVE ")[0]}, #transition_origin = :app, payer = :payer, #transition_place = :place, #transition_startedBy = :startedBy REMOVE budgetPause${task.maxPerRunUsd !== undefined && taskMaxPerRunForAdmission(captured) === undefined ? ", maxPerRunUsd" : ""}`,
+        ConditionExpression: `${item.ConditionExpression} AND ${sourceConditions.join(" AND ")}`,
+        ExpressionAttributeNames: { ...item.ExpressionAttributeNames, ...seen.names },
+        ExpressionAttributeValues: { ...item.ExpressionAttributeValues, ...seen.values, ":app": "app", ":payer": payer, ":place": place, ":startedBy": { developerId: caller.developerId } },
+      } }, ...checks, { ConditionCheck: { TableName: deps.tableName, Key: projectAiKey(deps.orgId, task.project),
+        ConditionExpression: "#type = :type AND #org = :org AND #project = :project AND #pays = :pays",
+        ExpressionAttributeNames: { "#type": "entityType", "#org": "orgId", "#project": "project", "#pays": "projectPays" },
+        ExpressionAttributeValues: { ":type": "PROJECT_AI", ":org": deps.orgId, ":project": task.project, ":pays": projectPays } } },
+        { ConditionCheck: { TableName: deps.tableName, Key: taskAgentRunKey(taskId),
+          ...(runSource === undefined ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "#revision = :revision AND #state = :state",
+            ExpressionAttributeNames: { "#revision": "revision", "#state": "state" }, ExpressionAttributeValues: { ":revision": runSource.revision, ":state": "PAUSED_BUDGET" } }) } }, accessFence(deps, transitionAccess), receipt, admissionAudit]);
+    } catch (error) {
+      const accepted = await readTaskStopTransition(deps, identity);
+      if (accepted !== undefined) return recover(accepted);
+      const failures = failedIndexes(error);
+      if (failures !== undefined && [...failures].some(index => index > 0)) throw budgetActorRefused();
+      if (failures?.has(0)) throw agentXError("CHANGE_STALE", "The task's payer or spending window changed. Review it and continue again.");
+      throw error;
+    }
+    const accepted = await readTaskStopTransition(deps, identity);
+    if (accepted === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The spending transition receipt is missing.");
+    return recover(accepted);
+  } else try {
+    const update = {
       TableName: deps.tableName, Key: taskKey(taskId),
-      UpdateExpression: "SET origin = :app, payer = :payer, place = :place, startedBy = :startedBy, updatedAt = :now REMOVE budgetPause",
-      ConditionExpression: "origin = :test AND budgetPause.#scope.#kind = :testScope AND attribute_not_exists(closedAt)",
+      UpdateExpression: "SET origin = :app, payer = :payer, place = :place, startedBy = :startedBy, updatedAt = :now" + (fundingTransition === undefined ? "" : ", fundingProof = :nextFunding") + " REMOVE budgetPause",
+      ConditionExpression: "origin = :test AND budgetPause.#scope.#kind = :testScope AND attribute_not_exists(closedAt)" + (fundingTransition === undefined ? "" : " AND fundingProof = :priorFunding"),
       ExpressionAttributeNames: { "#scope": "scope", "#kind": "kind" },
-      ExpressionAttributeValues: { ":app": "app", ":payer": payer, ":place": place, ":startedBy": { developerId: caller.developerId }, ":now": iso(deps), ":test": "test_run", ":testScope": "test" },
-    }));
+      ExpressionAttributeValues: { ":app": "app", ":payer": payer, ":place": place, ":startedBy": { developerId: caller.developerId }, ":now": iso(deps), ":test": "test_run", ":testScope": "test", ...(fundingTransition === undefined ? {} : { ":priorFunding": task.fundingProof, ":nextFunding": fundingTransition }) },
+    };
+    if (fundingTransition === undefined) await deps.documentClient.send(new UpdateCommand(update));
+    else {
+      const agent = task.agent;
+      const agentChecks = await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId: agent.agentId, draft: agent.version === "draft", frozenRecipe: true, process: agent.process === true, developerId: caller.developerId, role: caller.orgRole }, authorize,
+        async () => { if (deps.agentRuns === undefined) throw budgetActorRefused();return deps.agentRuns.store.listShares(deps.orgId, agent.agentId); });
+      const fundingItems: TransactItem[] = [
+        { Update: update },
+        { Update: { TableName: deps.tableName, Key: taskRecipeKey(taskId), UpdateExpression: "SET fundingProof = :nextFunding", ConditionExpression: "orgId = :fundingOrg AND fundingProof = :priorFunding", ExpressionAttributeValues: { ":fundingOrg": deps.orgId, ":priorFunding": task.fundingProof, ":nextFunding": fundingTransition } } },
+        fundingRevisionCheck(deps.tableName, fundingTransition),
+        ...fundingAuditItems(deps.tableName, fundingTransition, { taskId, occurrence: request.requestId, actor: { kind: "member", id: caller.developerId }, at: deps.now() }),
+        ...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }),
+        ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project }, authorize), ...agentChecks,
+      ];
+      if (fundingItems.length > 100) throw agentXError("TASK_STOP_CONFIG_INVALID", "The funding transition exceeds the transaction limit.");
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: fundingItems }));
+    }
   } catch (error) {
     if (!isConditional(error)) throw error;
     const now = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
@@ -4078,7 +4490,10 @@ export async function resumeAfterRunLimitApproval(
   if (workflowDependencies !== undefined && !workflowDependenciesAllowed(deps, workflow)) {
     throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to start it");
   }
-  const baselineUsd = await capWindowBaseline(deps, task) ?? 0;
+  const admitted = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
+  if (admitted !== undefined && (admitted.calculationInput.approvedRunLimitMicrousd !== usdToWholeMicrodollars(input.runLimitUsd) || usdToWholeMicrodollars(task.budgetBaselineUsd) === undefined)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The implementation window does not match its approved admission.");
+  const admittedBudgetUsd = admitted === undefined ? input.runLimitUsd : admitted.effectiveStopMicrousd / 1_000_000;
+  const baselineUsd = admitted === undefined ? await capWindowBaseline(deps, task) ?? 0 : task.budgetBaselineUsd;
   const receivedAt = iso(deps);
   const { blockReason: _blockReason, ...unblocked } = workflow;
   void _blockReason;
@@ -4092,7 +4507,7 @@ export async function resumeAfterRunLimitApproval(
       ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :blocked AND attribute_not_exists(closedAt)${task.budgetUsd === undefined ? " AND attribute_not_exists(budgetUsd)" : " AND budgetUsd = :seenBudget"}`,
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
       ExpressionAttributeValues: { ":workflow": workflowWithCurrentGraphOperation(next, workflowDependencies === undefined ? undefined : operation.id, workflowDependencies), ":now": receivedAt,
-        ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":runLimit": input.runLimitUsd, ":baseline": baselineUsd,
+        ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":runLimit": admittedBudgetUsd, ":baseline": baselineUsd,
         ...(task.budgetUsd === undefined ? {} : { ":seenBudget": task.budgetUsd }) },
     } },
     putNew(turnTable(deps), aiToolTurn({

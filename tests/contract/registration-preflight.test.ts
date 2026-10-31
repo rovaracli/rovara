@@ -129,7 +129,7 @@ describe("registration preflight", () => {
     let raced = false;
     // Another writer stores the same revision between this request's read and its conditional write.
     db.send = async (command) => {
-      if (!raced && command.constructor.name === "TransactWriteCommand") {
+      if (!raced && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command).includes("REV#000000000001")) {
         raced = true;
         seedRegisteredRevision(db, overrides);
         throw Object.assign(new Error("transaction cancelled"), { name: "TransactionCanceledException" });

@@ -58,17 +58,28 @@ export async function requireProjectWorkRole(
     role = result.role;
     granted = result.access === "granted";
   } catch {
-    try {
-      const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMemberKey(actor.orgId, actor.developerId, task.project), ConsistentRead: true })) as { Item?: Record<string, unknown> };
-      role = effectiveProjectRole(actor, response.Item, false);
-      granted = true;
-    } catch {
-      throw agentXError("RUNTIME_UNAVAILABLE", "your role in this project could not be checked; try again in a moment");
-    }
+    return requireNativeProjectWorkRole(deps, task, actor);
   }
-  if (granted && role !== undefined && !projectAllows(role, "start_tasks")) {
-    throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(task.project));
+  requireProjectWorkRoleValue(task.project, role, granted);
+}
+
+function requireProjectWorkRoleValue(project: string, role: ProjectRole | undefined, granted: boolean): void {
+  if (granted && role !== undefined && !projectAllows(role, "start_tasks")) throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(project));
+}
+
+/** The same TaskWork role decision for platform recovery, which has no human
+ * request's project/channel resolver. Failed native reads remain unavailable. */
+export async function requireNativeProjectWorkRole(
+  deps: Pick<AccessDependencies, "documentClient" | "tableName">, task: { project: string }, actor: { developerId: string; orgId: OrgId; orgRole: OrgRole },
+): Promise<void> {
+  let role: ProjectRole | undefined;
+  try {
+    const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMemberKey(actor.orgId, actor.developerId, task.project), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+    role = effectiveProjectRole(actor, response.Item, false);
+  } catch {
+    throw agentXError("RUNTIME_UNAVAILABLE", "your role in this project could not be checked; try again in a moment");
   }
+  requireProjectWorkRoleValue(task.project, role, true);
 }
 
 /** Whether the actor may start or change work on the task now: false for a project viewer (or when that cannot be told). For the page's controls. */

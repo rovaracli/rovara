@@ -19,6 +19,7 @@ import {
   type OperationRequester,
   type OrgId,
   type OperationStatus,
+  type SpendingAdmissionReference,
   type WorkerInvocation,
   type WorkspaceInstance,
 } from "@agentx/contracts";
@@ -42,6 +43,7 @@ export interface CancellationDependencies extends StateTable {
 export const TERMINAL = new Set<OperationStatus>(["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"]);
 
 export interface OperationRecord extends Operation {
+  fundingSourceId?: string;
   /** Frozen developer task identity for governed fallback callbacks. */
   modelTaskId?: string;
   modelTurnPin?: TurnModelPin;
@@ -52,6 +54,9 @@ export interface OperationRecord extends Operation {
   sk: string;
   entityType: "OPERATION";
   eventSequence: number;
+  /** Broker-only immutable spending window accepted with this operation. */
+  spendingTaskId?: string;
+  spendingAdmission?: SpendingAdmissionReference;
   /** Broker-internal purpose binding for a resume used only to warm feature-E2E compute. */
   workflowE2EReadiness?: WorkflowE2EReadinessMarker & { outboxId: string; readyGeneration?: number };
   targetOperationId?: string;

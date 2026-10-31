@@ -580,6 +580,13 @@ export function auditProjectLearningChanged(input: AuditBuilderBase & { projectN
   return build("project.learning_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, enabled: input.enabled, selfConfirmedSoleOwner: input.selfConfirmedSoleOwner });
 }
 
+/** One system bootstrap/upgrade occurrence, preserving numeric policies already set by an admin. */
+export function auditTaskStopPolicySeeded(input: AuditBuilderBase & { source: "bootstrap" | "upgrade"; mode: "rovara_estimate"; revision: number; ceilingMicrousd: number }): AuditEventInput {
+  return build("spending.policy_seeded", input, { kind: "spend_policy", id: "task_stop" }, {
+    mode: input.mode, source: input.source, revision: input.revision, ceilingMicrousd: input.ceilingMicrousd,
+  });
+}
+
 // G3 registrations/builders only. Writers must pair each event with the actual state change atomically.
 export function auditModelFallbackUsed(input:AuditBuilderBase&{projectName:string;stage:StageId;used:ModelIdentifier;wanted?:ModelIdentifier;reasonCode:ModelFallback["reasonCode"];companyRevision:number}):AuditEventInput {
  const digest=(model:ModelIdentifier)=>createHash("sha256").update(JSON.stringify([model.provider,model.modelId])).digest("hex");
@@ -610,4 +617,26 @@ export function auditSlackChannelProposed(input: AuditBuilderBase & { projectNam
 /** Terminal pending-link decision; never claims a canonical binding changed. */
 export function auditSlackChannelDecision(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string; proposalId: string; state: "cancelled" | "rejected" }): AuditEventInput {
  return build(input.state === "cancelled" ? "slack_channel.cancelled" : "slack_channel.rejected", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.proposalId });
+}
+
+/** Exact original/proposed policy facts; estimate/inherit has no invented amount. */
+export function auditTaskStopPolicyChange(input: AuditBuilderBase & {
+ action: "spending.policy_changed" | "spending.policy_change_requested" | "spending.policy_change_decided";
+ scopeKind: "company" | "project"; project?: string; revision: number; requestId: string; proposalId?: string;
+ before: { kind: string; stopMicrousd?: number }; after: { kind: string; stopMicrousd?: number }; decision?: string; reason?: "tightening_applied";
+}): AuditEventInput {
+ return build(input.action, input, input.project === undefined ? { kind: "spend_policy", id: "task_stop" } : { kind: "project", name: input.project }, {
+  scopeKind: input.scopeKind, revision: input.revision, requestId: input.requestId, beforeKind: input.before.kind, afterKind: input.after.kind,
+  ...(input.reason === undefined ? {} : { outcomeCode: input.reason }), ...(input.proposalId === undefined ? {} : { proposalId: input.proposalId }), ...(input.decision === undefined ? {} : { decision: input.decision }),
+  ...(input.before.stopMicrousd === undefined ? {} : { beforeMicrousd: input.before.stopMicrousd }), ...(input.after.stopMicrousd === undefined ? {} : { afterMicrousd: input.after.stopMicrousd }),
+ });
+}
+
+/** Required decision audit, committed by the caller beside the native admission or pause. */
+export function auditTaskStopDecision(input: AuditBuilderBase & {
+ action: "spending.stop_admitted" | "spending.stop_reached";
+ taskId: string; effectiveStopMicrousd: number; approvalCapMicrousd: number; policyDigest: string; admissionId: string;
+}): AuditEventInput {
+ return build(input.action, input, { kind: "task", id: input.taskId }, { effectiveStopMicrousd: input.effectiveStopMicrousd, approvalCapMicrousd: input.approvalCapMicrousd,
+  policyDigest: input.policyDigest, workKind: "task-window", admissionId: input.admissionId });
 }

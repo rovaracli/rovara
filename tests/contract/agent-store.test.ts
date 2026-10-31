@@ -75,7 +75,7 @@ describe("AgentStore create and names", () => {
     const agent = await store.create({ orgId: ORG_A, name: "  Release notes ", description: "Writes them", owner: MEMBER, createdBy: ALICE });
     expect(await store.get(ORG_A, agent.agentId)).toEqual({
       orgId: ORG_A, agentId: agent.agentId, name: "Release notes", description: "Writes them", owner: MEMBER,
-      latestVersion: 0, draftRevision: 1, status: "active", createdBy: ALICE, createdAt: "2026-10-20T09:00:00.000Z", updatedAt: "2026-10-20T09:00:00.000Z",
+      latestVersion: 0, draftRevision: 1, revision: 1, stopKind: "inherit", status: "active", createdBy: ALICE, createdAt: "2026-10-20T09:00:00.000Z", updatedAt: "2026-10-20T09:00:00.000Z",
     });
     expect(await store.getDraft(ORG_A, agent.agentId)).toEqual({ overlay: {}, revision: 1, updatedBy: ALICE, updatedAt: "2026-10-20T09:00:00.000Z" });
     expect(db.get(agentNameKey(ORG_A, "release notes"))).toMatchObject({ agentId: agent.agentId });
@@ -427,7 +427,7 @@ describe("layers, cycles, archived bases and problems", () => {
     expect(await code(store.updateBase({ orgId: ORG_A, agentId: c.agentId, expectedRevision: 1, by: ALICE }))).toEqual(expected);
     // The archived agent itself still resolves; the check is on bases.
     expect(instructionsOf(await resolveAgent(store, ORG_A, b.agentId, "current"))).toEqual(["B"]);
-    await store.unarchive(ORG_A, b.agentId, ALICE);
+    await store.unarchive(ORG_A, b.agentId, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     expect(instructionsOf(await resolveAgent(store, ORG_A, c.agentId, "current"))).toEqual(["B", "C"]);
   });
 
@@ -480,7 +480,7 @@ describe("archive, budget, owner, accountable and events", () => {
     const c = await store.create({ orgId: ORG_A, name: "C", owner: project, accountable: { developerId: ALICE }, extends: b.agentId, overlay: layer("C"), createdBy: ALICE });
     await store.archive(ORG_A, c.agentId, ALICE);
     await store.archive(ORG_A, c.agentId, ALICE); // already archived: no write, no event
-    await store.unarchive(ORG_A, c.agentId, BOB);
+    await store.unarchive(ORG_A, c.agentId, BOB, undefined, { actor: fixtureActor(store, ORG_A, BOB) });
     await store.setBudget(ORG_A, c.agentId, { monthlyUsd: 30, maxPerRunUsd: 5 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
     await store.setAccountable(ORG_A, c.agentId, { developerId: BOB }, ALICE, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
     await store.setOwner(ORG_A, c.agentId, MEMBER, ALICE, undefined, undefined, { actor: fixtureActor(store, ORG_A, ALICE) });
@@ -633,7 +633,7 @@ describe("G1 legacy agent per-run precision compatibility", () => {
   });
   it("leaves historical sub-micro intent unchanged on an omitted patch and allows explicit correction", async () => {
     const { db, store, make } = setup(); const agent = await make("Historical money", scratch("a")); const key = agentKey(ORG_A, agent.agentId, "META");
-    db.set({ ...db.get(key), maxPerRunUsd: .0000001 });
+    const legacy: Record<string, unknown> = { ...db.get(key)!, maxPerRunUsd: .0000001 };delete legacy.revision;delete legacy.stopKind;db.set(legacy);
     expect((await store.get(ORG_A, agent.agentId))?.maxPerRunUsd).toBe(.0000001);
     await store.setBudget(ORG_A, agent.agentId, { monthlyUsd: 12 }, fixtureActor(store, ORG_A, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, ORG_A, ALICE) });
     expect(db.get(key)?.maxPerRunUsd).toBe(.0000001);

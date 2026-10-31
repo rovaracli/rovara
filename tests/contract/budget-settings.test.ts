@@ -362,7 +362,7 @@ describe("the one monthly total of a person's agent budgets", () => {
     expect(totalOf(ALICE)).toBe(40);
     await store.setBudget(TEST_ORG, first!, { monthlyUsd: 90 }, fixtureActor(store, TEST_ORG, ALICE).developerId, undefined, { ...({}), actor: fixtureActor(store, TEST_ORG, ALICE) }); // raised while archived: counts for no one
     expect(totalOf(ALICE)).toBe(40);
-    await store.unarchive(TEST_ORG, first!, ALICE);
+    await store.unarchive(TEST_ORG, first!, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE) });
     expect(totalOf(ALICE)).toBe(130);
     await store.archive(TEST_ORG, second!, ALICE);
     await store.archive(TEST_ORG, second!, ALICE); // already archived: nothing is taken off twice
@@ -375,7 +375,7 @@ describe("the one monthly total of a person's agent budgets", () => {
     await store.archive(TEST_ORG, first!, ALICE);
     await ownerAgents(50);
     expect(totalOf(ALICE)).toBe(80);
-    await expect(store.unarchive(TEST_ORG, first!, ALICE, undefined, { ownerCap: await capOf() })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: containing(OVER_CAP_TEXT) });
+    await expect(store.unarchive(TEST_ORG, first!, ALICE, undefined, { actor: fixtureActor(store, TEST_ORG, ALICE), ownerCap: await capOf() })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: containing(OVER_CAP_TEXT) });
     expect((await store.get(TEST_ORG, first!))?.status).toBe("archived");
     expect(totalOf(ALICE)).toBe(80);
   });

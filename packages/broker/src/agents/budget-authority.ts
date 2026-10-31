@@ -18,3 +18,19 @@ export function budgetActorChecks(tableName: string, orgId: OrgId, actor: Budget
   }
   return checks;
 }
+
+/** Unarchive restores a monthly share. Validate server identity before reading
+ * it; approved decisions receive their actor checks exactly once in withOverride. */
+export function unarchiveActorChecks(tableName: string, orgId: OrgId, by: string,
+  request: { orgId: OrgId; developerId: string } | undefined,
+  options: { actor?: BudgetActor; overrideCap?: { actor?: BudgetActor }; cause?: unknown }): TransactItem[] {
+  const actor = options.actor ?? options.overrideCap?.actor;
+  if (actor === undefined) {
+    if (request !== undefined || by !== "system" || options.cause === undefined) throw budgetActorRefused();
+    return [];
+  }
+  if (actor.developerId !== by || (request !== undefined && (request.orgId !== orgId || request.developerId !== by))
+    || (options.overrideCap !== undefined && (options.overrideCap.actor?.developerId !== by || options.overrideCap.actor.role !== actor.role))) throw budgetActorRefused();
+  const checks = budgetActorChecks(tableName, orgId, actor);
+  return options.overrideCap === undefined ? checks : [];
+}

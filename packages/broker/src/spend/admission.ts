@@ -1,3 +1,8 @@
+import { usdToWholeMicrodollars } from "../org/budget-amount.js";
+import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
+import { checkedTaskStopSnapshot } from "../org/task-stop-window.js";
+import { auditTaskStopDecision, auditOccurrence } from "../audit/events.js";
+import { auditPendingItem } from "../audit/outbox.js";
 // Plan 3 Task 31: admission and key caps at every budget level. A run is admitted (`admitWork`) only when each budget it counts against has room, and every
 // model key it is given is capped (`mintOperationKey`) at the smallest room anywhere: the run's own limits, the step's, the proxy's figure for the member and
 // the org, and every limited scope's limit less what is already counted or held there. A key's cap is held on those scopes (reserved, Task 30's ledger) before
@@ -6,11 +11,11 @@
 // The levels are the scopes of `budgetScopesFor` (the org and the project always; the member who pays, or the starter's testing allowance for a test run, or the
 // agent that pays). An org or a member is also held to the proxy's own figure, which stays authoritative (R22, R23); every other level is counted by the ledger.
 import {
-  PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX, agentXError, chainBudgetExceededMessage, chainBudgetRequiredMessage, scopeKey,
+  AuditEventInputSchema, PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX, agentXError, chainBudgetExceededMessage, chainBudgetRequiredMessage, scopeKey,
   type AgentId, type AgentXError, type AgentXErrorCode, type BudgetScope, type OrgId, type Payer, type PauseScope,
 } from "@agentx/contracts";
-import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { failedIndexes } from "../agents/table-writes.js";
+import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { type TransactItem, failedIndexes } from "../agents/table-writes.js";
 import type { MintTags, MintedKey } from "../model-proxy/access.js";
 import {
   MINIMUM_REMAINING_USD, budgetExceeded, clean, dollars, ensureSynced, figuresFor, keyIdOf, mintKeyHealing, orgBudgetExceeded, recordMintedKey, remaining, viaProxy,
@@ -177,6 +182,8 @@ export interface MintOperationDependencies extends BudgetDependencies {
 }
 
 export interface MintOperationKeyInput {
+  /** Set only after native actual own-source funding validation in the broker. */
+  taskStopExempt?: boolean;
   orgId: OrgId;
   /** The member the key is minted in the name of (`keyMember(payer)`); absent when the payer is not a member. */
   developerId?: string | undefined;
@@ -219,6 +226,8 @@ export interface MintOperationKeyInput {
    * the whole remainder) and the operation. Nothing is recorded when absent.
    */
   recordOn?: ReadonlyArray<{ key: { pk: string; sk: string }; knownCount?: number | undefined }> | undefined;
+  /** Internal native source conditions, merged into the same key-record transaction. */
+  guardRecord?: ((items: readonly TransactItem[]) => TransactItem[]) | undefined;
 }
 
 export type MintedOperationKey =
@@ -233,6 +242,35 @@ const now = (deps: BudgetDependencies): number => (deps.now ?? Date.now)();
 /** Notes on the task what it is waiting on for money. The first pause stands; one that cannot be written is logged, and the refusal goes on without it. */
 async function writePause(deps: BudgetDependencies, pause: MintOperationKeyInput["pause"], scope: PauseScope): Promise<void> {
   if (pause === undefined) return;
+  if (["task", "max_per_run", "planning"].includes(scope.kind)) {
+    const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: pause.key, ConsistentRead: true })) as { Item?: Record<string, unknown> };
+    const task = response.Item;
+    if (task?.spendingStop !== undefined) {
+      const snapshot = checkedTaskStopSnapshot(task.spendingStop);
+      const agent = task.agent as { agentId?: unknown } | undefined;
+      if (snapshot.orgId !== task.orgId || snapshot.project !== task.project || snapshot.agentId !== agent?.agentId || usdToWholeMicrodollars(task.budgetUsd) !== snapshot.effectiveStopMicrousd) throw agentXError("BUDGET_EXCEEDED", "The spending stop changed while this turn was being refused. Reload the task.");
+      if (task.budgetPause !== undefined) return;
+      const reference = task.spendingAdmission as { requestId?: unknown } | undefined;
+      if (typeof reference?.requestId !== "string" || task.taskId !== pause.taskId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The spending window is missing its admission.");
+      const at = new Date(now(deps)).toISOString(), guard = nativeSnapshotConditions(deps.tableName, [pause.key], [task], ["budgetPause"])[0]?.ConditionCheck;
+      if (guard === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The spending pause source is missing.");
+      const event = AuditEventInputSchema.parse(auditTaskStopDecision({ action: "spending.stop_reached", orgId: snapshot.orgId, actor: { kind: "system", id: "rovara" },
+        taskId: pause.taskId, admissionId: reference.requestId, occurrence: auditOccurrence(pause.taskId, reference.requestId), occurredAt: at,
+        effectiveStopMicrousd: snapshot.effectiveStopMicrousd, approvalCapMicrousd: snapshot.approvalCapMicrousd, policyDigest: snapshot.policyDigest }));
+      try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: { ...guard,
+        UpdateExpression: pause.operationId === undefined ? "SET #pause = :pause" : "SET #pause = :pause, budgetStopOf = :operation",
+        ExpressionAttributeNames: { ...guard.ExpressionAttributeNames, "#pause": "budgetPause" },
+        ExpressionAttributeValues: { ...guard.ExpressionAttributeValues, ":pause": { scope, at }, ...(pause.operationId === undefined ? {} : { ":operation": pause.operationId }) },
+      } }, { Put: { TableName: deps.tableName, Item: auditPendingItem(event, Date.parse(at)), ConditionExpression: "attribute_not_exists(pk)" } }] })); }
+      catch (error) {
+        // A competing pause or task-window change cannot turn a refusal into a
+        // proxy failure. No key was minted; retain the caller's financial refusal.
+        if (failedIndexes(error)?.size) return;
+        throw error;
+      }
+      return;
+    }
+  }
   try {
     await deps.documentClient.send(new UpdateCommand({
       // Plan 3, M-6 (I-1): the operation this refusal stopped is kept on the task (`budgetStopOf`) and stays when an approval removes the pause, so the stop is still known as a pause.
@@ -312,11 +350,11 @@ async function closeUnrecorded(deps: MintOperationDependencies, minted: MintedKe
  * Notes the key on every record that owns it, in one write. False when a record no longer holds the count the caller read (another mint recorded first). A
  * single record is written as `recordMintedKey` always did.
  */
-async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOperationKeyInput["recordOn"]>, keyId: string): Promise<boolean> {
+async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOperationKeyInput["recordOn"]>, keyId: string, guardRecord?: MintOperationKeyInput["guardRecord"]): Promise<boolean> {
   const [only] = recordOn;
   if (only === undefined) return true;
-  if (recordOn.length === 1 && only.knownCount !== undefined) return recordMintedKey(deps, only.key, keyId, only.knownCount);
-  const items = recordOn.map(({ key, knownCount }) => ({
+  if (guardRecord === undefined && recordOn.length === 1 && only.knownCount !== undefined) return recordMintedKey(deps, only.key, keyId, only.knownCount);
+  const items: TransactItem[] = recordOn.map(({ key, knownCount }) => ({
     Update: {
       TableName: deps.tableName, Key: key,
       UpdateExpression: "SET #ids = list_append(if_not_exists(#ids, :none), :id)",
@@ -326,7 +364,7 @@ async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOpe
     },
   }));
   try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: guardRecord === undefined ? items : guardRecord(items) }));
     return true;
   } catch (error) {
     if (failedIndexes(error) !== undefined) return false;
@@ -346,6 +384,7 @@ async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOpe
  * once and mints again; a second miss is that scope's error. A key that is reserved and cannot be recorded is blocked and finalized.
  */
 export async function mintOperationKey(deps: MintOperationDependencies, input: MintOperationKeyInput): Promise<MintedOperationKey> {
+  if (input.taskStopExempt === true && (deps.ledger === undefined || input.scopes === undefined || input.tags === undefined || input.guardRecord === undefined || !/^src_[a-z0-9]{20}$/.test(input.route?.sourceId ?? ""))) throw agentXError("TASK_STOP_CONFIG_INVALID", "Own-source funding requires scoped native admission.");
   const names = { agentName: input.agentName ?? "Rovara Code", chainName: input.chainName };
   const scopes = input.scopes ?? [{ kind: "org" } as const, ...(input.developerId === undefined ? [] : [{ kind: "member", developerId: input.developerId } as const])];
   const ledger = input.scopes !== undefined && input.tags !== undefined ? deps.ledger : undefined;
@@ -380,7 +419,7 @@ export async function mintOperationKey(deps: MintOperationDependencies, input: M
       }
     }
     try {
-      if (await recordKey(deps, input.recordOn ?? [], keyId)) return { outcome: "minted", key: minted.key, keyId, expiresAt: minted.expiresAt, maxBudgetUsd: capUsd };
+      if (await recordKey(deps, input.recordOn ?? [], keyId, input.guardRecord)) return { outcome: "minted", key: minted.key, keyId, expiresAt: minted.expiresAt, maxBudgetUsd: capUsd };
     } catch (error) {
       await closeUnrecorded({ ...deps, ledger }, minted, keyId, input.orgId);
       throw error;

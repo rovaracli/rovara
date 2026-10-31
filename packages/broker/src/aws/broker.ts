@@ -1,3 +1,12 @@
+import { readStageModelEvidence } from "../model-selection/evidence.js";
+import { failedIndexes, type TransactItem } from "../agents/table-writes.js";
+import { auditEventId } from "@agentx/contracts";
+import { TaskFundingProofSchema, actualCompanyFunding, fundingRevisionCheck, fundingAuditItems } from "../org/task-stop-funding.js";
+import { requirePricedTaskStopAdmission } from "../org/task-stop-unpriced.js";
+import { AuditEventInputSchema } from "@agentx/contracts";
+import { orgSettingsKey, projectAiKey } from "@agentx/contracts";
+import { taskStopProjectCreationItems } from "../org/task-stop-bootstrap.js";
+import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
 import {readCompanyStagePolicy} from "../model-selection/policy-store.js";
 import {boundedTurnAdmission,TurnAdmissionLimitError} from "../model-selection/turn-admission.js";
 import { readServiceStatusEvidence } from "./service-status-runtime.js";
@@ -24,6 +33,7 @@ import { approvalGrantChange } from "../org/approval-membership.js";
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
+import { newTaskStopWindowReference, taskStopKeyActorChecks, withAdmittedTaskSource, requireTaskStopWindowContext } from "../org/task-stop-window.js";
 import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "../org/project-working-branch-provider.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "./task-web.js";
 import { withDecideIsolation } from "../developer/confirm-page.js";
@@ -396,7 +406,7 @@ import { learningSettler } from "../learning/settle.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
 import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
-import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
+import { auditPendingItem, auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence, auditPullRequestOpened, auditSlackChannelBound, auditSlackChannelUnbound, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../audit/events.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
@@ -593,7 +603,7 @@ import { developerReply, json } from "./json-reply.js";
 import { agentRunStarterOf, codeIntentDependenciesOf, authenticateBearer, channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerTaskRouteDependencies, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, routeDeveloperRequest, realtimeTokenThroughLambda, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, projectMembersOf, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "./developer-task-actions.js";
 import type { EndTold } from "./developer-tasks.js";
-import { ADMISSION_REFUSALS, planUnreadablePrompt, startTaskWorkflowE2EGroundingFromSystem, startTaskWorkflowPlanRevisionFromSystem, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, laterProgramBuild, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, approvedPlanForPullRequest, workflowPullRequestStatusLines, planAutomaticFeedbackRound, workflowTaskAnswerContext } from "./developer-tasks.js";
+import { ADMISSION_REFUSALS, prepareTaskApprovalAdmission, planUnreadablePrompt, startTaskWorkflowE2EGroundingFromSystem, startTaskWorkflowPlanRevisionFromSystem, agentStepNotes, finishedReleaseMarkItem, continueAsTask, resumeTaskAfterSpendApproval, adminShareMode, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, currentWorkflowPublicationAuthorityForTask, enqueueFinishedTaskRelease, finishTaskClose, noteTaskEnded, releaseFinishedTaskQuietly, releaseFinishedTasksOf, releasePendingFinishedTasks, noteTaskPaused, getTaskPeople, getWorkflowFeedbackReview, markWorkflowThreadNoteAnswered, planWhyEntries, promptTagId, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, startTaskWorkflowE2EBaselineFromSystem, startTaskWorkflowE2EChecksFromSystem, startTaskWorkflowE2EReplayFromSystem, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowImplementationFromSystem, laterProgramBuild, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, systemTaskDispatchAccessFence, submitSlackTaskOwnership, workflowEndOutcome, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision, taskPageUrl, candidateChangedFiles, approvedPlanForPullRequest, workflowPullRequestStatusLines, planAutomaticFeedbackRound, workflowTaskAnswerContext } from "./developer-tasks.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { planQualityFindings } from "../developer/plan-quality.js";
 import { planDryRunFindings, readPlanDryRunOutcome } from "../developer/plan-dry-run-results.js";
@@ -791,6 +801,8 @@ interface CodeBuildRecord {
 }
 
 interface AwsBrokerDependencies {
+  /** Injectable clock for funding evidence and its durable audit. */
+  now?: () => number;
   documentClient: DynamoDBDocumentClient;
   /** The Audit Ledger's outbox (named environments only); absent on a legacy install, where every audit function does nothing. */
   audit?: AuditRuntime;
@@ -2597,6 +2609,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
 
       if (request.method === "POST" && url.pathname === "/v1/admin/projects/setup-proposals") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+        await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-setup-proposals" });
         if (!dependencies.projectSetupSource) throw agentXError("RUNTIME_UNAVAILABLE", "trusted project source capture is not configured");
         const requestBody = z.object({ repositoryUrl: z.string().url().max(500), ref: z.string().min(1).max(255) }).strict().parse(body);
         const urlParts = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(requestBody.repositoryUrl);
@@ -2657,6 +2670,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
 
       if (request.method === "POST" && url.pathname === "/v1/admin/projects/setup-approvals") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+        if ((body as { decision?: unknown } | null)?.decision !== "decline") await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-setup-approvals" });
         const approvalInput = z.object({ projectName: z.string().regex(/^[a-z][a-z0-9-]{0,62}$/), proposalRef: z.string().min(1).max(512), proposalSha256: z.string().regex(/^[a-f0-9]{64}$/), decision: z.enum(["approve", "decline"]) }).strict().parse(body);
         const expectedPrefix = `project-setup-proposals/${identity.ownerKey}/`;
         if (!approvalInput.proposalRef.startsWith(expectedPrefix) || approvalInput.proposalRef !== `${expectedPrefix}${approvalInput.proposalSha256}.json`) throw agentXError("FORBIDDEN", "setup proposal reference is outside the authenticated administrator scope");
@@ -2766,6 +2780,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const modelCheck = /^\/v1\/admin\/e2e\/model-checks(?:\/([0-9a-f-]{36}))?$/.exec(url.pathname);
       if (modelCheck !== null && ((request.method === "POST" && modelCheck[1] === undefined) || (request.method === "GET" && modelCheck[1] !== undefined) || (request.method === "GET" && url.pathname.endsWith("/model-checks")))) {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+        if (request.method === "POST") await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-model-check" });
         return await adminModelChecks(dependencies, request.method, modelCheck[1], body, request.requestId);
       }
       // #343: Sign in with ChatGPT, for rovara doctor.
@@ -3294,6 +3309,9 @@ export async function registerProjectFor(
   value: unknown,
   options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; extraItems?: Array<Record<string, unknown>>; expectedBaseRevision?: number; appliedDomainProposal?: AppliedDomainProposalProof; checked?: { preflight?: PreflightOutcome }; credentialsChecked?: readonly string[] },
 ): Promise<RegistrationResult> {
+  // Even the minimal registration needs its own action. Reject a provably
+  // oversized trusted extension before bootstrap or any other write.
+  if ((options.extraItems?.length ?? 0) >= 100) throw agentXError("CONFIG_INVALID", "This project change cannot fit one transaction.");
   const checked = options.checked;
   const orgId = actor.orgId;
   const { definition, runtimeBinding, wantsPreflight, setupApproval, takeover } = parseRegistrationInput(value);
@@ -3469,7 +3487,7 @@ export async function registerProjectFor(
   };
   const membershipKey = membership === undefined ? undefined : { pk: membership.pk, sk: membership.sk };
   const setupAdmissionRows = setupRuntimeAdmission && setupApprovalBinding?.decision === "approve" && definition.e2e !== undefined
-    ? await createProjectSetupAdmissionRows(dependencies, actor, record, setupApprovalBinding, setupRuntimeAdmission)
+    ? await createProjectSetupAdmissionRows(dependencies, { ...actor, auditActor: actor.auditActor ?? auditActorOf(actor.ownerKey) }, record, setupApprovalBinding, setupRuntimeAdmission)
     : undefined;
   setupExecutionCreated = setupAdmissionRows !== undefined;
   await ensureInstallOrg(dependencies, orgId);
@@ -3550,6 +3568,19 @@ export async function registerProjectFor(
       if (check.ExpressionAttributeValues !== undefined) update.ExpressionAttributeValues = { ...update.ExpressionAttributeValues, ...check.ExpressionAttributeValues };
       return false;
     }) ?? [];
+    const projectSpendingItems: TransactItems = [];
+    if (snapshot.catalog === undefined && snapshot.newestRevision === 0) {
+      const policyKey = orgSettingsKey(orgId, "TASK_STOP_POLICY");
+      const policy = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: policyKey, ConsistentRead: true }))).Item;
+      // An unenrolled company keeps the existing registration and settings shape.
+      // Explicit upgrade inventories prepare inheritance before enrollment.
+      const enrollment = z.object({ version: z.literal(1), state: z.literal("enabled") }).safeParse(policy?.enrollment);
+      if (policy?.entityType === "ORG_TASK_STOP_POLICY" && policy.orgId === orgId && enrollment.success) {
+        const key = projectAiKey(orgId, definition.name);
+        const existing = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: key, ConsistentRead: true }))).Item;
+        projectSpendingItems.push(...nativeSnapshotConditions(dependencies.tableName, [policyKey], [policy], ["enrollment"]), ...(existing === undefined ? taskStopProjectCreationItems(dependencies.tableName, orgId, definition.name, Date.parse(now)) : nativeSnapshotConditions(dependencies.tableName, [key], [existing], ["taskStopPolicy"])));
+      }
+    }
     const registrationItems: TransactItems = [
       { Put: { TableName: dependencies.tableName, Item: record, ConditionExpression: "attribute_not_exists(pk)" } },
       // The operator's first registration and a takeover write the registrant's administrator membership; an administrator's own is left as it is (its grant is not reissued)
@@ -3576,12 +3607,12 @@ export async function registerProjectFor(
       ...(updateCatalog ? [{ Update: {
         TableName: dependencies.tableName,
         Key: orgProjectCatalogKey(orgId, definition.name),
-        UpdateExpression: "SET entityType = :entity, #name = :name, latestRevision = :revision, firstRegisteredAt = if_not_exists(firstRegisteredAt, :now)",
+        UpdateExpression: "SET entityType = :entity, #name = :name, latestRevision = :revision, firstRegisteredAt = if_not_exists(firstRegisteredAt, :now), orgId = if_not_exists(orgId, :spendingOrg)",
         ConditionExpression: snapshot.catalog === undefined ? "attribute_not_exists(pk)"
           : snapshot.catalog.latestRevision === undefined ? "attribute_not_exists(latestRevision)"
             : "latestRevision = :observed AND latestRevision < :revision",
         ExpressionAttributeNames: { "#name": "name" },
-        ExpressionAttributeValues: { ":entity": "PROJECT_CATALOG", ":name": definition.name, ":revision": latestRevision, ":now": now,
+        ExpressionAttributeValues: { ":entity": "PROJECT_CATALOG", ":name": definition.name, ":revision": latestRevision, ":now": now, ":spendingOrg": orgId,
           ...(snapshot.catalog?.latestRevision === undefined ? {} : { ":observed": snapshot.catalog.latestRevision }) },
       } }] : []),
       // A late older revision does not update the catalog, but must still observe its same pointer.
@@ -3593,6 +3624,7 @@ export async function registerProjectFor(
       ...(setupAdmissionRows?.transactionItems ?? []),
       ...accounts.items,
       ...repositoryIndex,
+      ...projectSpendingItems,
       // The caller's own writes that must land with the project (Task 16: the creation request's record), after every item above.
       ...(options.extraItems ?? []),
       ...membershipGeneration,
@@ -3602,7 +3634,7 @@ export async function registerProjectFor(
       ];
       if (registrationItems.length > 100) throw agentXError("CONFIG_INVALID", "This project change cannot fit one transaction.");
       await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: registrationItems }));
-      await flushAuditEvents(dependencies, [...audit.events, ...(initialDomainPlan === undefined ? [] : [initialDomainPlan.event]), ...(commonDomainPlan === undefined ? [] : [commonDomainPlan.event])]);
+      await flushAuditEvents(dependencies, [...audit.events, ...projectSpendingItems.flatMap(item => item.Put?.Item?.event === undefined ? [] : [AuditEventInputSchema.parse(item.Put.Item.event)]), ...(initialDomainPlan === undefined ? [] : [initialDomainPlan.event]), ...(commonDomainPlan === undefined ? [] : [commonDomainPlan.event])]);
       if (authority === "takeover") {
         ownershipTakenOver = true;
         console.log(JSON.stringify({ component: "broker", event: "project.ownership_taken_over", project: definition.name, revision: definition.revision, takenBy: actor.ownerKey }));
@@ -3878,13 +3910,14 @@ async function ensureProjectCatalogPointer(dependencies: AwsBrokerDependencies, 
 
 async function createProjectSetupAdmissionRows(
   dependencies: AwsBrokerDependencies,
-  identity: Pick<AuthenticatedIdentity, "ownerKey" | "orgId">,
+  identity: Pick<AuthenticatedIdentity, "ownerKey" | "orgId"> & { auditActor: AuditActor },
   project: RegisteredProjectRecord,
   setupApproval: NonNullable<RegisteredProjectRecord["setupApproval"]>,
   runtime: NonNullable<ReturnType<typeof admitProjectSetupRuntime>>,
   retry?: { attemptId: string; retryOfExecutionId: string },
 ): Promise<{ transactionItems: Array<Record<string, unknown>> } | undefined> {
   if (!dependencies.projectSetupRuntimeCatalogId || project.runtimeBinding.deploymentMode !== "ec2-ebs") return undefined;
+  await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: identity.auditActor, workKind: "admin-setup-execution" });
   const endpoint = new URL(runtime.endpoint);
   if (endpoint.protocol !== "http:" || !z.ipv4().safeParse(endpoint.hostname).success) return undefined;
   const approval = await getItem<Record<string, unknown>>(dependencies, projectSetupApprovalKey(requireOrgId(identity.orgId), project.definition.name, setupApproval.proposalSha256));
@@ -4064,6 +4097,7 @@ async function retryProjectSetupAsAdministrator(
     && priorOperation.data.fence === parked.data.fence && priorOperation.data.transportCorrelationId === parked.data.transportCorrelationId;
   if (!parkedRetry && !expiredDispatchRetry) throw agentXError("STALE_FENCE", "only an owned parked setup execution or an expired matching dispatch can be retried");
   if (identity.ownerKey !== parked.data.ownerKey) throw agentXError("FORBIDDEN", "setup retry actor must be the original project creator");
+  await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-setup-retry" });
   const project = await requireRecordProject(dependencies, parked.data, parked.data.projectName, parked.data.projectRevision);
   await requireAdministrator(dependencies, identity, parked.data.projectName);
   if (project.runtimeBinding.deploymentMode !== "ec2-ebs") throw agentXError("RUNTIME_UNAVAILABLE", "the approved setup runtime profile is unavailable");
@@ -4106,7 +4140,7 @@ async function retryProjectSetupAsAdministrator(
     return { setupExecutionId: prior.setupExecutionId, operationId: prior.operationId, status: "QUEUED", duplicate: true };
   }
   const setupApproval = project.setupApproval;
-  const rows = await createProjectSetupAdmissionRows(dependencies, identity, project, setupApproval, admittedRuntime,
+  const rows = await createProjectSetupAdmissionRows(dependencies, { ...identity, auditActor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) } }, project, setupApproval, admittedRuntime,
     { attemptId: input.requestId, retryOfExecutionId: setupExecutionId });
   if (!rows) throw agentXError("RUNTIME_UNAVAILABLE", "the approved source-interface setup run cannot be admitted");
   const executionPut = rows.transactionItems.find((item) => "Put" in item && (item as { Put: { Item?: { entityType?: unknown } } }).Put.Item?.entityType === "PROJECT_SETUP_EXECUTION") as { Put: { Item: Record<string, unknown> } } | undefined;
@@ -4188,6 +4222,7 @@ async function prepareWorkspace(
     const workspace = await requireWorkspace(dependencies, idempotency.workspaceId);
     return { operationId: idempotency.operationId, workspace: publicWorkspace(workspace), alreadyReady: workspace.status === "READY", duplicate: true };
   }
+  await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-workspace-prepare" });
   const project = await requireProject(dependencies, requireOrgId(identity.orgId), projectName, projectRevision);
   const existing = await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), targetOwnerKey, projectName);
   if (existing) {
@@ -4389,6 +4424,12 @@ function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: Develope
     return { deps, caller };
   };
   return {
+    prepareApprovalAdmission: async (input) => {
+      const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(input.taskId));
+      if (task === undefined || task.orgId !== input.orgId) throw agentXError("TASK_NOT_FOUND", "The task is no longer available.");
+      const { deps, caller } = await asOwner(input.orgId, effectiveTaskOwner(task).developerId);
+      return prepareTaskApprovalAdmission(deps, caller, input);
+    },
     resumeTask: async (input) => {
       const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(input.taskId));
       if (task === undefined || task.orgId !== input.orgId) return;
@@ -6519,6 +6560,7 @@ async function taskOperationParts(
   if(turnPolicy!==undefined){operation.modelPolicy=turnPolicy.binding;operation.modelTurnPin=turnPolicy.frozen;delete operation.modelTaskId;}
   const turnAudit=turnPolicy?.decision.fallback===undefined?undefined:prepareTurnModelFallback({...dependencies,now:Date.now},{orgId,taskId:operationId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:turnPolicy.binding.companyRevision,decision:turnPolicy.decision});
   if(turnAudit!==undefined)Object.assign(operation,turnAudit.fields);
+  if (task?.fundingProof !== undefined && applied?.modelDecision !== undefined) operation.fundingSourceId = applied.modelDecision.sourceId === "personal-chatgpt" && routed?.route != null ? routed.route.sourceId : applied.modelDecision.sourceId;
   if (routed !== undefined) {
     operation.modelRoute = routed.route?.alias === undefined ? null : { sourceId: routed.route.sourceId, alias: routed.route.alias, model: routed.requested };
   }
@@ -6923,6 +6965,19 @@ async function chatGptTaskToken(dependencies: AwsBrokerDependencies, operation: 
   if (operation.kind !== "task" || operation.chatgptDeveloperId === undefined || dependencies.chatgpt === undefined) {
     throw agentXError("CALLBACK_FORBIDDEN", "this operation does not run on a ChatGPT plan");
   }
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
+  const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  const pinnedFunding = task?.orgId === undefined || task.agent === undefined ? undefined : (await readTaskRecipe(dependencies, task.taskId, task.orgId))?.fundingProof;
+  if (task !== undefined && (task.fundingProof !== undefined || pinnedFunding !== undefined)) {
+    const proof = TaskFundingProofSchema.parse(task.fundingProof ?? pinnedFunding), source = proof.sources.find(source => source.sourceId === "personal-chatgpt");
+    const routing = routingOf(dependencies, true);
+    const evidence = routing === undefined || operation.model === undefined ? undefined : await readStageModelEvidence({ ...dependencies, routing, chatgpt: dependencies.chatgpt, now: () => dependencies.now?.() ?? Date.now() }, { orgId: proof.orgId, project: proof.project, models: [operation.model], payerDeveloperId: operation.chatgptDeveloperId });
+    if (task.fundingProof === undefined || pinnedFunding === undefined || canonicalJson(task.fundingProof) !== canonicalJson(pinnedFunding) || operation.fundingSourceId === undefined || operation.modelPolicy === undefined || source === undefined || evidence === undefined || source.payerDeveloperId !== operation.chatgptDeveloperId || evidence.connectionRevision !== source.connectionRevision || evidence.sourcesRevision !== proof.sourcesRevision || !evidence.candidates.some(candidate => candidate.sourceId === "personal-chatgpt")) {
+      const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", `${operation.id}:chatgpt-funding`), orgId: task.orgId, action: "spending.stop_refused", actor: { kind: "system", id: "rovara" }, target: { kind: "task", id: task.taskId }, occurredAt: new Date(dependencies.now?.() ?? Date.now()).toISOString(), facts: { outcomeCode: "TASK_STOP_CONFIG_MISSING", workKind: "chatgpt-funding-changed", admissionId: operation.id, ...(source === undefined ? {} : { sourceId: source.sourceId, sourceKind: source.kind, sourcesRevision: evidence?.sourcesRevision ?? proof.sourcesRevision }) } });
+      try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, dependencies.now?.() ?? Date.now()), ConditionExpression: "attribute_not_exists(pk)" } }] })); } catch (error) { if (!failedIndexes(error)?.size) throw error; }
+      throw agentXError("TASK_STOP_CONFIG_MISSING", "The admitted ChatGPT funding connection changed. Start again with the current connection.");
+    }
+  }
   const token = await dependencies.chatgpt.accessToken(operation.chatgptDeveloperId);
   return { accessToken: token.access, expiresAt: new Date(token.expiresAt).toISOString() };
 }
@@ -7255,7 +7310,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
   try { claims = verifyCapability(dependencies, token, "model-access"); }
   catch { throw agentXError("AUTH_REQUIRED", "invalid callback capability"); }
   const operation = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
-  if (operation.fence !== claims.fence) throw agentXError("STALE_FENCE", "callback fence is stale");
+  if (operation.fence !== claims.fence || operation.id !== claims.operationId || operation.workspaceId !== claims.workspaceId || operation.entityType !== "OPERATION") throw agentXError("STALE_FENCE", "callback operation binding is stale");
   if (TERMINAL.has(operation.status)) throw agentXError("STALE_FENCE", "terminal operations cannot ask for model access");
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
@@ -7285,8 +7340,12 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {
     const current = await requireOperation(dependencies, claims.workspaceId, claims.operationId);
+    if (current.fence !== claims.fence || TERMINAL.has(current.status) || current.id !== claims.operationId || current.workspaceId !== claims.workspaceId
+      || current.entityType !== "OPERATION" || current.orgId !== operation.orgId || current.kind !== operation.kind
+      || canonicalJson({ route: current.modelRoute }) !== canonicalJson({ route: operation.modelRoute })) throw agentXError("STALE_FENCE", "The operation can no longer ask for model access.");
     const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(current.workspaceId));
     const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+    if ((current.spendingTaskId !== undefined || current.spendingAdmission !== undefined) && (pointer === undefined || task === undefined)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The admitted operation lost its task binding.");
     // Task 29: with agents set up a key says who pays and what ran, and carries a member's name only when a member pays. Without them
     // (an install that never had agents) the key is minted exactly as it always was.
     const withAgents = dependencies.agents !== undefined;
@@ -7296,6 +7355,61 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       const payment = withAgents ? await unreadable("payer", () => paymentOfTaskResolved(task, resolveMember)) : undefined;
       // The org must be open and the task's owner (and the member whose budget pays) still in it, or no key is minted (Task 21, Re-check R-2).
       await requireOrgOpenFor(dependencies, task.orgId, [tryEffectiveTaskOwner(task)?.developerId, ...(payment?.payer.kind === "member" ? [payment.payer.developerId] : [])]);
+      if (current.spendingAdmission !== undefined || current.spendingTaskId !== undefined || task.spendingStop !== undefined || task.spendingAdmission !== undefined) {
+        if (current.orgId !== task.orgId || task.workspaceId !== claims.workspaceId || current.spendingTaskId !== task.taskId || current.spendingAdmission === undefined || task.spendingStop === undefined || task.spendingAdmission === undefined
+          || canonicalJson(current.spendingAdmission) !== canonicalJson(task.spendingAdmission)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation spending window is unavailable or changed.");
+      }
+      await requireTaskStopWindowContext(dependencies, task);
+      const pinnedFunding = task.agent === undefined ? undefined : (await readTaskRecipe(dependencies, task.taskId, task.orgId))?.fundingProof;
+      const fundingRequired = task.fundingProof !== undefined || pinnedFunding !== undefined;
+      const keyAuthority = task.spendingStop === undefined && !fundingRequired ? [] : await taskStopKeyActorChecks(dependencies, task, effectiveTaskOwner(task).developerId, payment?.payer.kind === "member" ? payment.payer.developerId : undefined, agentRouteDependencies(dependencies, developerTaskActions(dependencies)));
+      if (task.spendingStop !== undefined || fundingRequired) {
+        if (pointer === undefined || pointer.entityType !== "DEVELOPER_TASK_POINTER" || pointer.taskId !== task.taskId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task pointer could not be checked.");
+        keyAuthority.push({ ConditionCheck: { TableName: dependencies.tableName, Key: taskPointerKey(current.workspaceId),
+          ConditionExpression: "#pointerType = :pointerType AND taskId = :pointerTask AND developerId = :pointerDeveloper",
+          ExpressionAttributeNames: { "#pointerType": "entityType" },
+          ExpressionAttributeValues: { ":pointerType": pointer.entityType, ":pointerTask": pointer.taskId, ":pointerDeveloper": pointer.developerId } } });
+        if (dependencies.developer === undefined) throw agentXError("TASK_ACCESS_DENIED", "Task work authority is unavailable.");
+        const peopleDependencies = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName,
+          developer: dependencies.developer, now: Date.now, tasks: developerTaskActions(dependencies) },
+        await ownerCallerOf(dependencies, task, "model-key-work-authority"), undefined, null);
+        const checkPerson = peopleDependencies.checkTaskPerson;
+        const oidcProofs = new Map<string, { developerId: string; issuer: string; subject: string; slackUserId: string }>();
+        const peopleFence = await systemTaskDispatchAccessFence({ ...peopleDependencies, checkTaskPerson: async (...input) => {
+          if (checkPerson === undefined) throw agentXError("TASK_ACCESS_DENIED", "Task-person identity proof is unavailable.");
+          const proof = await checkPerson(...input);
+          if (proof.eligible && proof.channelMember && proof.projectViewer !== true && proof.identity.method === "oidc") {
+            const identity = { developerId: proof.identity.developerId, issuer: proof.identity.issuer, subject: proof.identity.subject, slackUserId: proof.identity.slackUserId };
+            const previous = oidcProofs.get(identity.developerId);
+            if (previous !== undefined && canonicalJson(previous) !== canonicalJson(identity)) throw agentXError("TASK_ACCESS_DENIED", "Task-person identity changed during qualification.");
+            oidcProofs.set(identity.developerId, identity);
+          }
+          return proof;
+        } }, task);
+        keyAuthority.push(peopleFence ?? taskAccessFence(dependencies.tableName, task.taskId));
+        for (const identity of oidcProofs.values()) keyAuthority.push({ ConditionCheck: {
+          TableName: dependencies.developer.signInTableName, Key: { pk: `DEVELOPER#${identity.developerId}`, sk: "META" },
+          ConditionExpression: "#identityId = :identityId AND #identityProvider = :identityProvider AND #identityIssuer = :identityIssuer AND #identitySubject = :identitySubject AND #identitySlack = :identitySlack AND #identityRevoked = :identityRevoked",
+          ExpressionAttributeNames: { "#identityId": "developerId", "#identityProvider": "provider", "#identityIssuer": "issuer", "#identitySubject": "subject", "#identitySlack": "slackUserId", "#identityRevoked": "revoked" },
+          ExpressionAttributeValues: { ":identityId": identity.developerId, ":identityProvider": "oidc", ":identityIssuer": identity.issuer,
+            ":identitySubject": identity.subject, ":identitySlack": identity.slackUserId, ":identityRevoked": false },
+        } });
+      }
+      let funding: ReturnType<typeof TaskFundingProofSchema.parse> | undefined;
+      if (fundingRequired) {
+        const proof = TaskFundingProofSchema.parse(task.fundingProof ?? pinnedFunding);
+        if (task.fundingProof !== undefined && pinnedFunding !== undefined && canonicalJson(task.fundingProof) === canonicalJson(pinnedFunding) && proof.orgId === task.orgId && proof.project === task.project && routing !== undefined && route !== undefined && current.modelRoute !== undefined && current.modelRoute !== null
+          && current.fundingSourceId === route.sourceId && current.modelPolicy !== undefined && current.workflowMode !== "CHECKS" && payment !== undefined) {
+          funding = await actualCompanyFunding({ ...dependencies, routing, now: () => dependencies.now?.() ?? Date.now(), chatgpt: dependencies.chatgpt }, proof, { sourceId: route.sourceId, model: current.modelRoute.model });
+        }
+        if (funding === undefined) {
+          const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", `${current.id}:funding`), orgId: task.orgId, action: "spending.stop_refused", actor: { kind: "system", id: "rovara" }, target: { kind: "task", id: task.taskId }, occurredAt: new Date(dependencies.now?.() ?? Date.now()).toISOString(), facts: { outcomeCode: "TASK_STOP_CONFIG_MISSING", workKind: "funding-changed", admissionId: current.id, ...(route === undefined ? {} : { sourceId: route.sourceId }), ...(route?.sourceId === "rovara" ? { sourceKind: "rovara_catalog" } : proof.sources.find(source => source.sourceId === route?.sourceId) === undefined ? {} : { sourceKind: proof.sources.find(source => source.sourceId === route?.sourceId)!.kind, sourcesRevision: proof.sourcesRevision }) } });
+          try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, dependencies.now?.() ?? Date.now()), ConditionExpression: "attribute_not_exists(pk)" } }] })); }
+          catch (error) { if (!failedIndexes(error)?.size) throw error; }
+          throw agentXError("TASK_STOP_CONFIG_MISSING", "This operation no longer has verified own-source funding. Review Spending before continuing.");
+        }
+      }
+      const fundingChecks: TransactItem[] = funding === undefined ? [] : [{ ConditionCheck: { TableName: dependencies.tableName, Key: taskRecipeKey(task.taskId), ConditionExpression: "orgId = :fundingOrg AND fundingProof = :fundingProof", ExpressionAttributeValues: { ":fundingOrg": task.orgId, ":fundingProof": pinnedFunding } } }, fundingRevisionCheck(dependencies.tableName, funding), ...fundingAuditItems(dependencies.tableName, funding, { taskId: task.taskId, occurrence: `${current.id}:${task.modelKeyIds?.length ?? 0}`, actor: { kind: "system", id: "rovara" }, at: dependencies.now?.() ?? Date.now() })];
       const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
       const taskKeyIds = task.modelKeyIds ?? [];
@@ -7310,6 +7424,16 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       return {
         orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,
         ...(route === undefined ? {} : { route }),
+        ...(task.spendingStop === undefined ? {} : { guardRecord: items => [...guardModelKeyOperation(current, withAdmittedTaskSource(dependencies.tableName, task, items).items), ...keyAuthority] }),
+        ...(funding === undefined ? {} : { taskStopExempt: true, guardRecord: (items: readonly TransactItem[]) => {
+          const guarded = guardModelKeyOperation(current, [...items]), key = taskKey(task.taskId);
+          const source = nativeSnapshotConditions(dependencies.tableName, [key], [Object.fromEntries(["pk", "sk", "orgId", "project", "developerId", "payer", "origin", "startedBy", "agent", "fundingProof", "budgetUsd", "maxPerRunUsd", "budgetBaselineUsd", "modelKeyIds", "budgetPause", "status", "releasedAt", "spendingStop", "spendingAdmission"].map(field => [field, (task as unknown as Record<string, unknown>)[field]]))], ["modelKeyIds"])[0]?.ConditionCheck;
+          if (source === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The funding source is unavailable.");
+          const index = guarded.findIndex(item => item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk), update = guarded[index]?.Update;
+          if (update === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The funding task record is unavailable.");
+          guarded[index] = { Update: { ...update, ConditionExpression: `(${update.ConditionExpression ?? "attribute_exists(pk)"}) AND (${source.ConditionExpression})`, ExpressionAttributeNames: { ...update.ExpressionAttributeNames, ...source.ExpressionAttributeNames }, ExpressionAttributeValues: { ...update.ExpressionAttributeValues, ...source.ExpressionAttributeValues } } };
+          return [...guarded, ...fundingChecks, ...keyAuthority];
+        } }),
         runLimitUsd, stopAtUsd: task.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, task.maxPerRunUsd),
         taskKeyIds, budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
         // Task 31: with agents set up, the key is held on every budget the task counts against, recorded on the operation as well as the task, and a refusal
@@ -7397,6 +7521,26 @@ async function liveRouteOf(routing: RoutingDependencies, operation: OperationRec
     throw agentXError("MODEL_NOT_ALLOWED", "The AI source this step was running on is no longer available to your company. Ask an admin to check your AI sources, then continue the task.");
   }
   return { alias: recorded.alias, sourceId: recorded.sourceId };
+}
+
+/** Merge the accepted operation source into its existing key-list update. */
+function guardModelKeyOperation(operation: OperationRecord, input: TransactItems): TransactItems {
+  const Key = operationKey(operation.workspaceId, operation.id), items = [...input];
+  const index = items.findIndex(item => item.Update?.Key?.pk === Key.pk && item.Update.Key.sk === Key.sk);
+  const update = items[index]?.Update;
+  if (update === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation key record is unavailable.");
+  const names: Record<string, string> = {}, values: Record<string, unknown> = {};
+  const conditions = ["entityType", "id", "workspaceId", "orgId", "kind", "status", "fence", "modelRoute", "workflowMode", "programStepId", "spendingTaskId", "spendingAdmission", "fundingSourceId", "modelPolicy"].map(field => {
+    const name = `#admittedOp_${field}`, value = `:admittedOp_${field}`;
+    if (update.ExpressionAttributeNames?.[name] !== undefined || update.ExpressionAttributeValues?.[value] !== undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation source condition is ambiguous.");
+    names[name] = field;
+    const source = operation as unknown as Record<string, unknown>;
+    if (source[field] === undefined) return `attribute_not_exists(${name})`;
+    values[value] = source[field]; return `${name} = ${value}`;
+  });
+  items[index] = { Update: { ...update, ConditionExpression: `(${update.ConditionExpression ?? "attribute_exists(pk)"}) AND ${conditions.join(" AND ")}`,
+    ExpressionAttributeNames: { ...update.ExpressionAttributeNames, ...names }, ExpressionAttributeValues: { ...update.ExpressionAttributeValues, ...values } } };
+  return items;
 }
 
 /** What `handleModelAccess` knows of the work a key is for: the input of `mintOperationKey` less the key's lifetime. */
@@ -7628,6 +7772,16 @@ async function acceptTask(
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
     ...(options.agentRun === undefined ? {} : { agentRun: options.agentRun }),
   }, now);
+  let dispatchExtras = extra(publicOperation(operation));
+  const taskPointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
+  const admittedTask = taskPointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskPointer.taskId));
+  if (admittedTask !== undefined && (admittedTask.spendingStop !== undefined || admittedTask.spendingAdmission !== undefined)) {
+    await requireTaskStopWindowContext(dependencies, admittedTask);
+    const reference = newTaskStopWindowReference(dispatchExtras, admittedTask) ?? admittedTask.spendingAdmission;
+    if (reference === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task admission reference is unavailable.");
+    operation.spendingTaskId = admittedTask.taskId; operation.spendingAdmission = reference;
+    dispatchExtras = withAdmittedTaskSource(dependencies.tableName, admittedTask, dispatchExtras, "operationWindow").items;
+  }
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: boundedTurnAdmission(joinTaskModelFallback([
       { Update: {
@@ -7646,7 +7800,7 @@ async function acceptTask(
       { Put: { TableName: dependencies.tableName, Item: options.firstEvent === undefined ? operation : { ...operation, eventSequence: 1 }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: outbox, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: { ...idempotencyKey, entityType: "IDEMPOTENCY", operationId: operation.id, payloadHash: requestHash }, ConditionExpression: "attribute_not_exists(pk)" } },
-      ...extra(publicOperation(operation)),
+      ...dispatchExtras,
       // Last, so the caller's extra items keep their positions in a cancellation's reasons.
       ...(options.firstEvent === undefined ? [] : [{ Put: {
         TableName: dependencies.tableName,
@@ -13053,8 +13207,8 @@ async function queuedFirstTask(
   prepare: OperationRecord,
   pointer: DeveloperTaskPointerRecord & { pendingPrompt: string },
   now: string,
-): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems;turnAudit?:ReturnType<typeof prepareTurnModelFallback>;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
-  const task = pointer.pendingWorkflowMode === "PLAN" ? await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)) : undefined;
+): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems; admittedTask?: DeveloperTaskRecord; turnAudit?:ReturnType<typeof prepareTurnModelFallback>; fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
   const { operation, outbox, fence,fallback,modelChecks,turnAudit } = await taskOperationParts(dependencies, workspace, {
     requestId: pointer.firstRequestId,
     conversationId: pointer.conversationId,
@@ -13065,7 +13219,14 @@ async function queuedFirstTask(
     ...(pointer.pendingWorkflowMode === undefined ? { legacyTask: true } : {}),
     ...(task?.workflow?.reviewPhase === undefined ? {} : { workflowPhase: task.workflow.reviewPhase }),
   }, now);
+  if (prepare.spendingAdmission !== undefined || task?.spendingStop !== undefined || task?.spendingAdmission !== undefined) {
+    if (task === undefined || task.spendingStop === undefined || task.spendingAdmission === undefined || prepare.spendingTaskId !== task.taskId
+      || canonicalJson(prepare.spendingAdmission) !== canonicalJson(task.spendingAdmission)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The preparation spending window changed.");
+    await requireTaskStopWindowContext(dependencies, task);
+    operation.spendingTaskId = task.taskId; operation.spendingAdmission = task.spendingAdmission;
+  }
   return {
+    ...(task?.spendingStop === undefined ? {} : { admittedTask: task }),
     ...(fallback===undefined?{}:{fallback}),
     ...(turnAudit===undefined?{}:{turnAudit}),
     workspaceUpdate: { Update: {
@@ -13165,7 +13326,8 @@ async function sendTerminalResult(
     return terminalStatus;
   }
   try {
-    await send(boundedTurnAdmission(joinTaskModelFallback([...transactItems.filter((item) => item !== workspaceUpdate), queued.workspaceUpdate, ...queued.items],queued.fallback?.items??[])));
+    const queuedItems = boundedTurnAdmission(joinTaskModelFallback([...transactItems.filter((item) => item !== workspaceUpdate), queued.workspaceUpdate, ...queued.items],queued.fallback?.items??[]));
+    await send(queued.admittedTask === undefined ? queuedItems : withAdmittedTaskSource(dependencies.tableName, queued.admittedTask, queuedItems, "firstOperationWindow").items);
     if(queued.fallback?.event!==undefined)await flushAuditEvents(dependencies,[queued.fallback.event]);
     if(queued.turnAudit!==undefined)await flushAuditEvents(dependencies,[queued.turnAudit.event]);
   } catch (queueError) {
@@ -18588,7 +18750,7 @@ function swebenchDependencies(dependencies: AwsBrokerDependencies): EvalBatchDep
 function swebenchSlackContext(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): SwebenchSlackContext {
   const slack = identity.slack;
   if (!slack) throw agentXError("FORBIDDEN", "Slack thread context is required");
-  return { thread: slack.thread, requester: slack.requester, ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), slack.binding.projectName) };
+  return { orgId: requireOrgId(identity.orgId), developerId: developerIdForSlackUser(slack.requester.userId), thread: slack.thread, requester: slack.requester, ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), slack.binding.projectName) };
 }
 
 /** The project and its approved models, for a run or batch whose thread and requester the caller supplies. */
@@ -18616,7 +18778,7 @@ async function routeStartEvalBatch(dependencies: AwsBrokerDependencies, identity
   const binding = await getSlackBinding(dependencies, requireOrgId(identity.orgId), body.teamId, body.channelId);
   if (!binding) throw agentXError("NOT_FOUND", "Slack channel binding not found; bind the channel to a project first");
   await requireAdministrator(dependencies, identity, binding.projectName);
-  return startBatch(swebenchDependencies(dependencies), swebenchProjectContext(dependencies, requireOrgId(identity.orgId), binding.projectName), body);
+  return startBatch(swebenchDependencies(dependencies), { ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), binding.projectName), orgId: requireOrgId(identity.orgId), developerId: identity.ownerKey }, body);
 }
 
 /** Spec 052 FR-009, FR-010: show, stop or read the results of a batch, for an administrator of its channel's project. */
@@ -18738,6 +18900,7 @@ async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, identity:
     const records = await listWorkflowE2EReplayRecords(store, taskId, roundId.data);
     return { sourceRoundId: roundId.data, replays: records.map(replayRecordView) };
   }
+  await requirePricedTaskStopAdmission(dependencies, { orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-e2e-replay" });
   const { roundId } = z.object({ roundId: z.string().uuid() }).strict().parse(value);
   // A replay runs a runner for the task's org, so on a cloud install it is admitted like any other launch: a locked trial, or a month of machine time used up, refuses it before anything is created.
   if (dependencies.cloud === true) {

@@ -124,10 +124,15 @@ export type RunCheckout = z.infer<typeof RunCheckoutSchema>;
  * An agent-step run's state at `{ pk: DEVTASK#<taskId>, sk: "AGENT_RUN" }` (Plan 3, Task 22 owns the engine that moves it). Starting a run writes
  * it with every step pending, `cursor` 0 (the index of the step the engine dispatches next) and no reports.
  */
+export const SpendingAdmissionReferenceSchema = z.object({
+  requestId: z.string().uuid(), actorId: z.string().regex(/^[a-f0-9]{64}$/), intentHash: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type SpendingAdmissionReference = z.infer<typeof SpendingAdmissionReferenceSchema>;
 export const AgentRunStateSchema = z.object({
   orgId: OrgIdSchema,
   revision: z.number().int().min(1),
   state: z.enum(AGENT_RUN_STATES),
+  spendingAdmission: SpendingAdmissionReferenceSchema.optional(),
   cursor: z.number().int().min(0),
   /** What the run was asked: the engine hands it to each agent step beside the earlier steps' reports. */
   input: RunInputSchema,

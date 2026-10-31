@@ -25,7 +25,7 @@ async function exchangedAfterSignIn(h: ReturnType<typeof identityHarness>, metho
   return exchanged.body;
 }
 
-const orgMetas = (state: FakeDynamoDb) => state.find((item) => item.sk === "META" && String(item.pk).startsWith("ORG#org_"));
+const orgMetas = (state: FakeDynamoDb) => state.find((item) => item.entityType === "ORG" && item.sk === "META" && String(item.pk).startsWith("ORG#org_"));
 
 describe("a cloud sign-in creates an org on first sign-in", () => {
   it("makes the caller the owner of a new org named for them, and the token carries it", async () => {

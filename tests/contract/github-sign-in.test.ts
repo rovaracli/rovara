@@ -18,7 +18,7 @@ const GITHUB_ISSUER = "https://github.com";
 const ada: FakeGithubUser = { id: 4242, login: "ada", name: "Ada Lovelace", emails: [{ email: "ada@example.com", primary: true, verified: true }, { email: "ada@old.example", primary: false, verified: true }] };
 const adaId = ownerKeyForSubject(GITHUB_ISSUER, "4242");
 const claimsOf = (accessToken: unknown) => JSON.parse(Buffer.from(String(accessToken).split(".")[1]!, "base64url").toString("utf8")) as Record<string, unknown>;
-const orgMetas = (state: FakeDynamoDb) => state.find((item) => item.sk === "META" && String(item.pk).startsWith("ORG#org_"));
+const orgMetas = (state: FakeDynamoDb) => state.find((item) => item.entityType === "ORG" && item.sk === "META" && String(item.pk).startsWith("ORG#org_"));
 
 async function signedIn(h: ReturnType<typeof identityHarness>, method: "github" | "cloud", who: string) {
   const code = (await h.signIn(method, who)).searchParams.get("code")!;

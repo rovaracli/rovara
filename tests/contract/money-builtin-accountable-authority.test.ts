@@ -80,13 +80,14 @@ for(const after of ["none","actor","snapshot"] as const)it(`builtin cap retry pr
  f.t.db.send=async command=>{if(!nested&&settingsWrite(writes(command))){commits++;if(commits===1){const counterKey=ownerBudgetKey(TEST_ORG,DEB.developerId),row=f.t.db.get(counterKey)!;f.t.db.set({...row,version:Number(row.version??0)+1});winner=f.snapshot();try{return await send(command);}catch(error){if(after==="snapshot"){nested=true;expect((await f.t.api(DEB,"PUT",path+"/budget",{monthlyUsd:12})).status).toBe(200);winner=f.snapshot();nested=false;}throw error;}}if(after==="actor")f.t.db.set({...f.t.db.get(orgMemberKey(TEST_ORG,ADA.developerId))!,role:"member"});}return send(command);};
  expect((await f.transfer()).status).toBe(after==="actor"?403:after==="snapshot"?409:200);expect(commits).toBe(after==="snapshot"?1:2);if(after!=="none")expect(f.snapshot()).toEqual(winner);expect(f.standalone()).toBe(0);
 });
-async function seededPending(){
- const f=await fixture(false),body={requestId:f.requestId,accountable:{developerId:DEB.developerId}},deps=f.t.deps(),{mark}=await markRequest(deps,f.t.caller(DEB,"admin"),"accountable",id,body);
- // Explicit legacy/pending figures, not a budget read or a route-generated first-row ask.
- const asked=await requestOwnerCap(deps,{orgId:TEST_ORG,agentId:id,requestedBy:DEB.developerId,owner:DEB.developerId,wouldBeUsd:110,capUsd:100,change:{op:"set_accountable",accountable:{developerId:DEB.developerId}},request:mark});
- expect((await f.t.api(DEB,"PUT",path+"/accountable",body)).status).toBe(202);expect(f.t.db.get(key)).toBeUndefined();expect(f.standalone()).toBe(0);return{...f,approvalId:asked.record.spendRequestId};
+async function seededPending(existing=false){
+ const f=await fixture(existing),body={requestId:f.requestId,accountable:{developerId:DEB.developerId}},deps=f.t.deps(),{mark}=await markRequest(deps,f.t.caller(DEB,"admin"),"accountable",id,body);
+ const original=f.t.db.get(key);
+ // Explicit pending ask captures the native source, including first-row absence.
+ const asked=await requestOwnerCap(deps,{orgId:TEST_ORG,agentId:id,requestedBy:DEB.developerId,owner:DEB.developerId,wouldBeUsd:110,capUsd:100,before:await deps.store.builtinBudgetSnapshot(TEST_ORG,id),change:{op:"set_accountable",accountable:{developerId:DEB.developerId}},request:mark});
+ expect((await f.t.api(DEB,"PUT",path+"/accountable",body)).status).toBe(202);expect(f.t.db.get(key)).toEqual(original);expect(f.standalone()).toBe(0);return{...f,approvalId:asked.record.spendRequestId};
 }
-it("seeded pending/legacy approval with absent settings uses virtual default and atomically creates row",async()=>{
+it("seeded pending approval with absent settings uses virtual default and atomically creates row",async()=>{
  const f=await seededPending();await expect(f.t.decide(ADA,f.approvalId)).resolves.toBeDefined();expect(f.t.requests().find(r=>r.spendRequestId===f.approvalId)?.status).toBe("APPROVED");expect(f.t.db.get(key)).toMatchObject({accountable:{developerId:DEB.developerId},pinnedVersion:f.t.deps().store.builtinDefaultPin(id)});expect(f.t.db.get(key)?.monthlyBudgetUsd).toBeUndefined();expect(f.t.db.get(key)?.maxPerRunUsd).toBeUndefined();expect(f.standalone()).toBe(0);
 });
 for(const loss of [false,true])it(`seeded absent approval actual decider ${loss?"loses native authority":"checks org exactly once"}`,async()=>{
@@ -102,12 +103,12 @@ it("existing budget gives real route-generated self-assignment202; requester can
  const f=await fixture();await f.t.budgeted(49,DEB);await f.t.budgeted(50,DEB);const before=f.t.db.get(key),reply=await f.t.api(DEB,"PUT",path+"/accountable",{accountable:{developerId:DEB.developerId}});expect(reply.status).toBe(202);expect(f.t.db.get(key)).toEqual(before);const approvalId=String(reply.body.spendRequestId);await expect(f.t.decide(DEB,approvalId)).rejects.toMatchObject({code:"FORBIDDEN"});await expect(f.t.decide(ADA,approvalId)).resolves.toBeDefined();expect(f.t.db.get(key)?.accountable).toEqual({developerId:DEB.developerId});expect(f.standalone()).toBe(0);
 });
 
-for(const existing of [false,true])it(`seeded pending approval ${existing?"existing CAS":"first creator"} race preserves pending and full competing winner`,async()=>{
- const f=await seededPending();if(existing)expect((await f.t.api(ADA,"PUT",path+"/accountable",{accountable:{developerId:ADA.developerId}})).status).toBe(200);
+for(const existing of [false,true])it(`seeded pending approval ${existing?"existing CAS":"first creator"} race expires the ask and preserves the competing money source`,async()=>{
+ const f=await seededPending(existing);
  const send=f.t.db.send.bind(f.t.db);let raced=false,winner=f.snapshot();
  f.t.db.send=async command=>{if(!raced&&settingsWrite(writes(command))){raced=true;
  if(existing)await send(new TransactWriteCommand({TransactItems:[{Update:{TableName:"state",Key:key,UpdateExpression:"SET #perRun = :perRun",ConditionExpression:"attribute_exists(pk)",ExpressionAttributeNames:{"#perRun":"maxPerRunUsd"},ExpressionAttributeValues:{":perRun":3}}}]}));
  else expect((await f.t.api(DEB,"PUT",path+"/accountable",{accountable:{developerId:ADA.developerId}})).status).toBe(200);
  winner=f.snapshot();}return send(command);};
- await expect(f.t.decide(ADA,f.approvalId)).rejects.toMatchObject({code:"AGENT_REVISION_CONFLICT"});expect(raced).toBe(true);expect(f.snapshot()).toEqual(winner);expect(f.t.requests().find(r=>r.spendRequestId===f.approvalId)?.status).toBe("PENDING");expect(f.standalone()).toBe(0);
+ await expect(f.t.decide(ADA,f.approvalId)).rejects.toMatchObject({code:"SPENDING_APPROVAL_STALE"});expect(raced).toBe(true);expect(f.snapshot().settings).toEqual(winner.settings);expect(f.snapshot().counters).toEqual(winner.counters);expect(f.snapshot().events).toEqual(winner.events);expect(f.snapshot().receipts).toEqual(winner.receipts);expect(f.t.requests().find(r=>r.spendRequestId===f.approvalId)).toMatchObject({status:"EXPIRED",endedBecause:"figures_changed"});expect(f.standalone()).toBe(0);
 });

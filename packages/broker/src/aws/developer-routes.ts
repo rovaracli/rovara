@@ -1,3 +1,5 @@
+import { requirePricedTaskStopAdmission } from "../org/task-stop-unpriced.js";
+import { getTaskStopEditing, writeTaskStopEditing } from "../org/task-stop-editing.js";
 import { readOrgServiceStatus, type ServiceStatusDependencies } from "../org/service-status.js";
 import {CompanySameModelPolicyRefusal} from "../model-selection/company-prepare.js";
 import {updateCompanyModelPolicy} from "../model-selection/company-approval.js";
@@ -1211,6 +1213,7 @@ async function startProjectSetupCheck(deps: DeveloperRouteDependencies, caller: 
     // The replay comes before every admission: an id that was used answers what it started, whatever has changed since.
     if (await setupCheckReplay(checks, caller.orgId, name, requestId, caller.developerId) !== undefined) return new StatusReply(200, { project: await getAppProject(deps, caller, name) });
     await requireNewWorkAllowed(deps, caller.orgId, name, role, "setup_check");
+    await requirePricedTaskStopAdmission(deps, { orgId: caller.orgId, actor: { kind: "member", id: caller.developerId }, workKind: "project-setup-check" });
     const project = await tasks.latestProject(caller.orgId, name);
     if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
     const meta = await readProjectMeta(deps, caller.orgId, name);
@@ -2276,6 +2279,13 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
+  const spendingEditing = /^\/v1\/app\/org\/task-stop-policy(?:\/projects\/([^/]+))?(?:\/(editing|decisions))?$/.exec(url.pathname);
+  if (spendingEditing !== null) {
+    const project = spendingEditing[1] === undefined ? undefined : decodeURIComponent(spendingEditing[1]);
+    if (request.method === "GET" && spendingEditing[2] === "editing") return getTaskStopEditing(deps, caller, project);
+    if (request.method === "PUT" && spendingEditing[2] === undefined) return writeTaskStopEditing(deps, caller, project, jsonBody(request));
+    if (request.method === "POST" && spendingEditing[2] === "decisions") return writeTaskStopEditing(deps, caller, project, jsonBody(request), true);
+  }
   // Lane A G1: no policy write, default inference or paid-start permission.
   if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-ceiling") return getTaskStopCeiling(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-policy") return getTaskStopCompany(deps, caller);

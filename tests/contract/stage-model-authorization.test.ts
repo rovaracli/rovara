@@ -1,3 +1,4 @@
+import { afterProjectBootstrap } from "../support/transaction-audit.js";
 import {call} from "../support/slack-broker.js";
 import {issueCapability} from "../../packages/broker/src/aws/cancellation.js";
 import {resolveAndAuthorizeTaskFallback} from "../../packages/broker/src/model-selection/fallback-request.js";
@@ -30,9 +31,9 @@ it("prepares one atomic operation replacement, fallback history and audit, and r
  const {h,cap,deps,input}=await fixture();const prepared=await prepareTaskModelAuthorization(deps,input);
  expect(h.db.get(`DEVTASK#${input.taskId}`,"META")?.modelFallbacks).toBeUndefined();
  await h.db.send(new TransactWriteCommand({TransactItems:prepared.items}));
- expect(h.db.get(`DEVTASK#${input.taskId}`,"META")?.modelFallbacks).toHaveLength(1);expect(cap.pending()).toHaveLength(1);
+ expect(h.db.get(`DEVTASK#${input.taskId}`,"META")?.modelFallbacks).toHaveLength(1);expect(afterProjectBootstrap(cap.pending())).toHaveLength(1);
  expect(h.db.get(`WORKSPACE#${input.workspaceId}`,`OPERATION#${input.operationId}`)).toMatchObject({model:prepared.authorization.model,modelFallbackAuthorization:prepared.authorization});
- const blocked=await fixture(true);await expect(prepareTaskModelAuthorization(blocked.deps,blocked.input)).rejects.toThrow();expect(blocked.cap.pending()).toHaveLength(0);
+ const blocked=await fixture(true);await expect(prepareTaskModelAuthorization(blocked.deps,blocked.input)).rejects.toThrow();expect(afterProjectBootstrap(blocked.cap.pending())).toHaveLength(0);
 });
 it("rejects stale binding and cross-org scope before constructing writes",async()=>{
  const {deps,input}=await fixture();
@@ -46,12 +47,12 @@ it("replays exactly once and rejects a closed task racing the prepared transacti
  const replay=await prepareTaskModelAuthorization(deps,input);
  expect(replay.replayed).toBe(true);expect(replay.authorization).toEqual(first.authorization);
  await h.db.send(new TransactWriteCommand({TransactItems:replay.items}));
- expect(cap.pending()).toHaveLength(1);
+ expect(afterProjectBootstrap(cap.pending())).toHaveLength(1);
  const race=await fixture();const pending=await prepareTaskModelAuthorization(race.deps,race.input);
  const task=race.h.db.get(`DEVTASK#${race.input.taskId}`,"META")!;
  race.h.db.set({...task,closedAt:new Date().toISOString()});
  await expect(race.h.db.send(new TransactWriteCommand({TransactItems:pending.items}))).rejects.toThrow();
- expect(race.cap.pending()).toHaveLength(0);
+ expect(afterProjectBootstrap(race.cap.pending())).toHaveLength(0);
  expect(race.h.db.get(`DEVTASK#${race.input.taskId}`,"META")?.modelFallbacks).toBeUndefined();
 });
 for(const change of ["member","identity","workspace","operation-org","operation-model","task-project","task-workspace"] as const)it(`fences ${change} revocation during first authorization and replay`,async()=>{
@@ -67,7 +68,7 @@ for(const change of ["member","identity","workspace","operation-org","operation-
   if(change==="operation-model"){const row=h.db.get(`WORKSPACE#${input.workspaceId}`,`OPERATION#${input.operationId}`)!;h.db.set({...row,model:{provider:"openai",modelId:"gpt-5"}});}
   if(change==="task-project"||change==="task-workspace"){const row=h.db.get(`DEVTASK#${input.taskId}`,"META")!;h.db.set({...row,...(change==="task-project"?{project:"other"}:{workspaceId:"other"})});}
   await expect(h.db.send(new TransactWriteCommand({TransactItems:prepared.items}))).rejects.toThrow();
-  expect(cap.pending()).toHaveLength(replay?1:0);
+  expect(afterProjectBootstrap(cap.pending())).toHaveLength(replay?1:0);
  }
 });
 it("refuses replay when the stored operation route changes before preparation or commit",async()=>{
@@ -91,8 +92,8 @@ it("returns authorization only after atomic commit and preserves audit during qu
  const {h,cap,deps,input}=await fixture();cap.queueDown();
  const result=await authorizeTaskModelFallback(deps,input);
  expect(h.db.get(`WORKSPACE#${input.workspaceId}`,`OPERATION#${input.operationId}`)?.modelFallbackAuthorization).toEqual(result);
- expect(h.db.get(`DEVTASK#${input.taskId}`,"META")?.modelFallbacks).toHaveLength(1);expect(cap.pending()).toHaveLength(1);
- expect(await authorizeTaskModelFallback(deps,input)).toEqual(result);expect(cap.pending()).toHaveLength(1);
+ expect(h.db.get(`DEVTASK#${input.taskId}`,"META")?.modelFallbacks).toHaveLength(1);expect(afterProjectBootstrap(cap.pending())).toHaveLength(1);
+ expect(await authorizeTaskModelFallback(deps,input)).toEqual(result);expect(afterProjectBootstrap(cap.pending())).toHaveLength(1);
 });
 it("never returns authorization or flushes audit when the final transaction loses authority",async()=>{
  const {h,cap,deps,input}=await fixture();
@@ -101,7 +102,7 @@ it("never returns authorization or flushes audit when the final transaction lose
   return deps.documentClient.send(command as Parameters<typeof deps.documentClient.send>[0]);
  }}};
  await expect(authorizeTaskModelFallback(guarded,input)).rejects.toThrow();
- expect(cap.pending()).toHaveLength(0);expect(cap.flushed()).toHaveLength(0);
+ expect(afterProjectBootstrap(cap.pending())).toHaveLength(0);expect(afterProjectBootstrap(cap.flushed())).toHaveLength(0);
  expect(h.db.get(`DEVTASK#${input.taskId}`,"META")?.modelFallbacks).toBeUndefined();
  expect(h.db.get(`WORKSPACE#${input.workspaceId}`,`OPERATION#${input.operationId}`)?.modelFallbackAuthorization).toBeUndefined();
 });
@@ -157,7 +158,7 @@ it("refuses a plan-check fallback callback after the task exhausted six critic a
  for(let i=0;i<6;i++)h.db.set({pk:opKey.pk,sk:`OPERATION#exhausted-${i}`,entityType:"OPERATION",id:`exhausted-${i}`,orgId:TEST_ORG,workspaceId:input.workspaceId,conversationId:task.conversationId,kind:"task",workflowMode:"PLAN_CRITIQUE",status:"FAILED",model:{provider:"openai",modelId:`failed-model-${i}`},error:"MODEL_NOT_ALLOWED: unavailable",createdAt:new Date(from+i+1).toISOString()});
  await expect(resolveAndAuthorizeTaskFallback(deps,{orgId:input.orgId,taskId:input.taskId,workspaceId:input.workspaceId,operationId:input.operationId,fence:input.fence,request:{...input.request,binding},verifiedClaims:{...input.verifiedClaims,modelPolicy:binding}})).rejects.toThrow("plan check");
  expect(h.db.get(opKey)?.modelFallbackAuthorization).toBeUndefined();
- expect(h.db.get(`DEVTASK#${input.taskId}`,"META")?.modelFallbacks).toBeUndefined();expect(cap.pending()).toHaveLength(0);expect(cap.flushed()).toHaveLength(0);
+ expect(h.db.get(`DEVTASK#${input.taskId}`,"META")?.modelFallbacks).toBeUndefined();expect(afterProjectBootstrap(cap.pending())).toHaveLength(0);expect(afterProjectBootstrap(cap.flushed())).toHaveLength(0);
 });
 
 it("does not carry an exhausted critic attempt count across a newer plan",async()=>{
