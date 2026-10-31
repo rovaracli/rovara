@@ -507,13 +507,13 @@ describe("send-back capture: what is not a correction", () => {
     expect(learningItems(t.harness.db)).toEqual([]);
   });
 
-  it("an archived project stores nothing; the send-back of a task already running still happens (C53 lifecycle authority)", async () => {
+  it("an archived project stores nothing: the send-back itself is refused (PROJECT_ARCHIVED), since it would start a new agent run", async () => {
     const t = await waitingPlan();
     seedPerson(t.harness.db, MAYA_CALLER, "contributor");
     seedProject(t.harness.db, PROJECT, "archived");
     const requestId = randomUUID();
-    await t.page(MAYA_CALLER, NOTE, [], requestId);
-    expect(requested(t.harness, t.taskId, requestId)).toBe(true);
+    await expect(t.page(MAYA_CALLER, NOTE, [], requestId)).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(requested(t.harness, t.taskId, requestId)).toBe(false);
     expect(learningItems(t.harness.db)).toEqual([]);
   });
 
