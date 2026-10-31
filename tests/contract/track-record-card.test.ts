@@ -170,7 +170,7 @@ describe("How we work carries each stage's record", () => {
     const text = JSON.stringify(v);
     expect(text).not.toContain("risk_low");
     expect(v.stages.some((entry) => entry.id === "risk")).toBe(false);
-    expect(v.stages.flatMap((entry) => entry.trackRecord ?? []).every((entry) => entry.claim !== "risk_low")).toBe(true);
+    expect(v.stages.flatMap((entry) => entry.trackRecord ?? []).every((entry) => (entry.claim as string) !== "risk_low")).toBe(true);
     // A risk record somebody sends anyway is dropped on reading, and the rest of the view still loads.
     const sent = { ...v, stages: v.stages.map((entry) => entry.id === "review" ? { ...entry, trackRecord: [record({ claim: "risk_low" as never })] } : entry) };
     expect(HowWeWorkViewSchema.parse(sent).stages.flatMap((entry) => entry.trackRecord ?? [])).toEqual(v.stages.flatMap((entry) => entry.id === "review" ? [] : entry.trackRecord ?? []));

@@ -395,7 +395,7 @@ describe("a fix replaces a candidate", () => {
 });
 
 describe("the task ends", () => {
-  const withReader = (reader: EndedPullRequestReader | undefined, prs: Array<{ number: number; state: string; candidateDigest?: string }>) => ({ ...task, workflow: workflowOf(prs), reader });
+  const withReader = (reader: EndedPullRequestReader | undefined, prs: Array<{ number: number; state: string; repositoryId?: string; candidateDigest?: string }>) => ({ ...task, workflow: workflowOf(prs), reader });
 
   it("open samples become no_outcome, and nothing stays pending: a candidate no pull request holds any more was superseded", async () => {
     const w = await seeded();
