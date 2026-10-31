@@ -37,6 +37,13 @@ describe("the Slack card follows the card's friction", () => {
     expect(elements[0]).toMatchObject({ action_id: DECISION_SLACK_OPEN_ACTION, url: URL_ });
     expect((elements[0]?.["text"] as { text: string }).text).toBe("Open to decide");
   });
+  it("never claims a fresh sign-in for a high card without a confirmation page; says it only for one that opens it", () => {
+    const without = JSON.stringify(slackCardMessage(card(highItem), { cardUrl: URL_, digest: DIGEST }).blocks);
+    expect(without).toContain("decided on its own page");
+    expect(without).not.toContain("sign in again");
+    const withPage = JSON.stringify(slackCardMessage(card({ ...highItem, confirmPath: "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }), { cardUrl: URL_, digest: DIGEST }).blocks);
+    expect(withPage).toContain("after you sign in again");
+  });
   it("a question is answered on its page, never approved in Slack", () => {
     const question = card({ ...base("q1"), kind: "answer_question", question: "Which gateway?", index: 1, of: 1 });
     expect(elementsOf(slackCardMessage(question, { cardUrl: URL_, digest: DIGEST })).some((element) => element["action_id"] === DECISION_SLACK_APPROVE_ACTION)).toBe(false);

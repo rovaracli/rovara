@@ -51,6 +51,11 @@ describe("GET /v1/app/decisions", () => {
     }
     expect(DecisionCardsViewSchema.parse((await t.call(OTHER, "GET", "/v1/app/decisions"))?.body).cards).toEqual([]);
   });
+  it("N1: lists the high cards that have no confirmation page, so a missing one is visible", async () => {
+    const t = setup([low(), high(), { ...high(), subjectId: "set2", confirmPath: "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }]);
+    const view = DecisionCardsViewSchema.parse((await t.call(ME, "GET", "/v1/app/decisions"))?.body);
+    expect(view.unconfirmed).toEqual(["approve_setting:set1"]);
+  });
   it("answers undefined for a path or method it does not own", async () => {
     const t = setup();
     expect(await t.call(ME, "GET", "/v1/app/home")).toBeUndefined();

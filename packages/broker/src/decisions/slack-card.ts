@@ -19,7 +19,10 @@ const SECTION_MAX = 2_800;
 const clip = (value: string): string => [...value].slice(0, SECTION_MAX).join("");
 
 const STATE_WORDS: Record<DecisionCard["evidence"][number]["state"], string> = { good: "", warning: " (check this)", bad: " (problem)", unknown: "" };
-const RISK_WORDS: Record<DecisionCard["risk"], string> = { low: "Low risk", medium: "Medium risk: look at the evidence first", high: "High risk: decided on its own page, after you sign in again" };
+const RISK_WORDS: Record<DecisionCard["risk"], string> = { low: "Low risk", medium: "Medium risk: look at the evidence first", high: "High risk: decided on its own page" };
+/** A high card promises a fresh sign-in only when it opens the confirmation page (`/v1/app/approve/<id>`); otherwise it only says it is decided on the item's page. */
+const opensConfirmationPage = (card: DecisionCard): boolean => (card.actions.find((action) => action.kind === "open")?.href ?? "").startsWith("/v1/app/approve/");
+const riskWords = (card: DecisionCard): string => (card.risk === "high" && opensConfirmationPage(card) ? `${RISK_WORDS.high}, after you sign in again` : RISK_WORDS[card.risk]);
 
 const button = (actionId: string, text: string, extra: Record<string, unknown>): Record<string, unknown> => ({ type: "button", action_id: actionId, text: { type: "plain_text", text }, ...extra });
 
@@ -37,7 +40,7 @@ export function slackCardMessage(card: DecisionCard, input: { cardUrl: string; /
     { type: "section", text: { type: "mrkdwn", text: clip(head) } },
     { type: "section", text: { type: "mrkdwn", text: clip([`Recommended: ${escapeSlack(card.recommended.action)}. ${escapeSlack(card.recommended.why)}`, `Next: ${escapeSlack(card.next.text)}`, ...tabs].join("\n")) } },
     ...(evidence.length === 0 ? [] : [{ type: "context", elements: [{ type: "mrkdwn", text: clip(evidence.join("  |  ")) }] }]),
-    { type: "context", elements: [{ type: "mrkdwn", text: clip([escapeSlack(RISK_WORDS[card.risk]), ...reasons, `Project: ${escapeSlack(card.project)}`].join("  |  ")) }] },
+    { type: "context", elements: [{ type: "mrkdwn", text: clip([escapeSlack(riskWords(card)), ...reasons, `Project: ${escapeSlack(card.project)}`].join("  |  ")) }] },
   ];
   if (card.status !== "pending") {
     const done = card.status === "answered_by_rule" ? "Answered by a standing rule." : card.status === "approved" ? "Approved." : card.status === "rejected" ? "Not now." : card.status === "expired" ? "Expired." : "Cancelled.";

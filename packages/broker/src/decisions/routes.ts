@@ -141,7 +141,7 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     if (request.method !== "GET") return undefined;
     const projection = await project(deps, caller);
     const cards = projection.cards.slice(0, DECISION_CARDS_MAX);
-    const view: DecisionCardsView = { cards, total: projection.cards.length, tabs: {}, details: {}, digests: {}, dropped: projection.dropped };
+    const view: DecisionCardsView = { cards, total: projection.cards.length, tabs: {}, details: {}, digests: {}, dropped: projection.dropped, unconfirmed: projection.unconfirmed.slice(0, DECISION_CARDS_MAX) };
     for (const card of cards) {
       const tabs = projection.tabs[card.id];
       if (tabs !== undefined) view.tabs[card.id] = tabs;

@@ -336,6 +336,8 @@ export type MergePressReply = { status: 200; body: MergeDone } | { status: 202; 
  */
 export async function pressMerge(
   deps: SessionShareDependencies, caller: ShareCaller, sessionId: string, rawBody: unknown, approvals: ApprovalDependencies | undefined,
+  /** The head of each pull request the person was SHOWN (a decision card carries them). When given, the press is refused unless exactly those heads are what would be merged now. */
+  options: { expectedHeads?: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }> } = {},
 ): Promise<MergePressReply> {
   const { requestId, risk: seen } = parsePressBody(rawBody);
   const host = approvals?.codeMerge;
@@ -352,6 +354,13 @@ export async function pressMerge(
   const tracked = task as DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot };
   const items = await readMergeTracking(deps, tracked.taskId, tracked.orgId);
 
+  // The heads the person was shown must be the heads Rovara would merge: checked first, so a push since the card never reads as some other problem and never merges.
+  if (options.expectedHeads !== undefined) {
+    const unmerged = items.filter((item) => item.state !== "merged");
+    const now = new Set(unmerged.map((pr) => `${pr.repositoryId}#${String(pr.number)}@${pr.headSha}`));
+    const seenHeads = new Set(options.expectedHeads.map((pr) => `${pr.repositoryId}#${String(pr.number)}@${pr.headSha}`));
+    if (now.size !== seenHeads.size || [...now].some((key) => !seenHeads.has(key))) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
+  }
   // A branch that is behind may be one GitHub wants up to date before it merges: only GitHub says so (its `mergeable_state` is `behind`), so it is asked for those alone.
   const behindRequired = new Map<string, boolean>();
   const scope = host.scope(tracked.orgId);

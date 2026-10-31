@@ -45,6 +45,8 @@ export const DecisionCardsViewSchema = z
     details: z.record(DecisionCardIdSchema, DecisionDetailGroupsSchema),
     digests: z.record(DecisionCardIdSchema, DecisionDigestSchema),
     dropped: z.number().int().min(0).max(100_000),
+    /** High-risk cards whose source gave no confirmation page: they open the item's own page and make no fresh-sign-in claim. A source should supply one; this makes a missing one visible. */
+    unconfirmed: z.array(DecisionCardIdSchema).max(DECISION_CARDS_MAX).optional(),
   })
   .strict()
   .refine((view) => [...Object.keys(view.tabs), ...Object.keys(view.details)].every((id) => view.cards.some((card) => card.id === id)), { message: "tabs and details belong to listed cards", path: ["tabs"] })

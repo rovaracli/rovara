@@ -31,7 +31,7 @@ export function createDecisionPerformer<C extends DecisionCaller>(handlers: Part
 export function refusalOf(error: unknown): DecisionRefusalReason | undefined {
   if (!(error instanceof AgentXError)) return undefined;
   if (error.code === "FORBIDDEN" || error.code === "TASK_ACCESS_DENIED" || error.code === "PROJECT_ACCESS_DENIED") return "forbidden";
-  if (error.code === "MERGE_NOT_READY") return /now (low|medium|high)\b/u.test(error.message) ? "stale" : "not_ready";
+  if (error.code === "MERGE_NOT_READY") return /now (low|medium|high)\b/u.test(error.message) || error.message.includes("changed after you confirmed") ? "stale" : "not_ready";
   if (error.code === "CHANGE_STALE" || error.code === "POLICY_STALE") return "stale";
   return undefined;
 }
@@ -48,15 +48,15 @@ export async function perform(run: () => Promise<PerformOutcome>): Promise<Perfo
 type MergeItem = Extract<DecisionItem, { kind: "merge" }>;
 
 /**
- * Merge: `POST /v1/app/sessions/{id}/merge` through `pressMerge`, with the risk the person SAW (the pull request's own level: `item.prRisk`), not the card's tier. A 200 is done; a 202 is the
+ * Merge: `POST /v1/app/sessions/{id}/merge` through `pressMerge`, with the risk the person SAW (the pull request's own level: `item.prRisk`), not the card's tier, and the head of each pull request they were shown (`item.heads`): a push since refuses the press as stale. A 200 is done; a 202 is the
  * confirmation page (a non-browser press such as Slack, and any HIGH-risk press): nothing merged, and no surface may say so.
  */
-export function mergeHandler<C extends DecisionCaller>(press: (caller: C, sessionId: string, body: { requestId: string; risk: "low" | "medium" | "high" }) => Promise<MergePressReply>): KindHandler<C> {
+export function mergeHandler<C extends DecisionCaller>(press: (caller: C, sessionId: string, body: { requestId: string; risk: "low" | "medium" | "high" }, expectedHeads: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }>) => Promise<MergePressReply>): KindHandler<C> {
   return {
     approve: (caller, input) => perform(async () => {
       const item = input.item as MergeItem;
-      if (item.kind !== "merge" || item.sessionId === undefined) return { kind: "refused", reason: "unsupported" };
-      const reply = await press(caller, item.sessionId, { requestId: input.requestId, risk: item.prRisk });
+      if (item.kind !== "merge" || item.sessionId === undefined || item.heads === undefined || item.heads.length === 0) return { kind: "refused", reason: "unsupported" };
+      const reply = await press(caller, item.sessionId, { requestId: input.requestId, risk: item.prRisk }, item.heads);
       return reply.status === 200 ? { kind: "done" } : { kind: "needs_confirmation", confirmUrl: reply.body.confirmUrl };
     }),
   };

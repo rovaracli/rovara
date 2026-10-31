@@ -12,7 +12,7 @@ import { createDecisionPerformer, mergeHandler, spendHandler } from "../../packa
 import { routeDecisionCards, type DecisionCaller } from "../../packages/broker/src/decisions/routes.js";
 import { decisionCardPath, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store.js";
-import { mergeWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
+import { HEAD_A, HEAD_B, mergeWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
 import { ARJUN, PRIYA } from "../support/agent-session-world.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -33,13 +33,13 @@ const risk = (level: "low" | "medium" | "high") => ({ level, reasons: ["A reason
 
 function mergeItem(w: MergeWorld, prRisk: "low" | "medium" | "high"): DecisionItem {
   return { kind: "merge", sessionId: w.sessionId, subjectId: "pr1", project: "web", title: "Fix refunds", createdAt: "2026-10-30T10:00:00.000Z", contentVersion: "head-a", openPath: `/app/sessions/${w.sessionId}`,
-    prRisk, prReasons: ["A reason in words."], proof: { proven: 2, passed: 0, failed: 0, notTested: 0 }, reviewVerdict: "approved", ci: "passing", securityFindingsHigh: 0, fullSuitePending: false };
+    heads: [{ repositoryId: "payments", number: 7, headSha: HEAD_A }], prRisk, prReasons: ["A reason in words."], proof: { proven: 2, passed: 0, failed: 0, notTested: 0 }, reviewVerdict: "approved", ci: "passing", securityFindingsHigh: 0, fullSuitePending: false };
 }
 
 function mergeRoute(w: MergeWorld, items: DecisionItem[], browser: boolean, locks: Record<string, "low" | "medium" | "high"> = {}) {
   type Caller = DecisionCaller & { who: string };
   const performer = createDecisionPerformer<Caller>({
-    merge: mergeHandler<Caller>((caller, sessionId, body) => pressMerge(w.shareDeps, { ...w.caller(caller.who), ...(browser ? { browserSession: true as const } : {}) }, sessionId, body, w.deps)),
+    merge: mergeHandler<Caller>((caller, sessionId, body, expectedHeads) => pressMerge(w.shareDeps, { ...w.caller(caller.who), ...(browser ? { browserSession: true as const } : {}) }, sessionId, body, w.deps, { expectedHeads })),
   });
   const deps = { sources: { list: async () => items, locks: async () => locks }, performer, store: inMemoryDecisionStore(() => NOW), now: () => NOW };
   const run = async (who: string, action: "approve" | "reject", body: Record<string, unknown>) =>
@@ -104,6 +104,29 @@ describe("merge card: the real pressMerge", () => {
     const t = mergeRoute(w, [mergeItem(w, "low")], true);
     const digest = (await t.shown(PRIYA)).digests["merge:pr1"]!;
     await expect(t.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: digest })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(w.github.mergeCalls).toEqual([]);
+  });
+
+  it("N3: a push between the card and the press (the head moved) is refused as changed and nothing merges, even at the same risk level", async () => {
+    const w = await ready();
+    w.setWorkflow({ risk: risk("low") });
+    const shownBefore = mergeItem(w, "low");
+    const t = mergeRoute(w, [shownBefore], true);
+    const digest = (await t.shown(PRIYA)).digests["merge:pr1"]!;
+    // A new push lands after the projection: tracking now holds another head.
+    w.seedTracking({ headSha: HEAD_B });
+    const stale = mergeRoute(w, [shownBefore], true);
+    await expect(stale.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: digest })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(w.github.mergeCalls).toEqual([]);
+    expect(stale.deps.store.decisions).toHaveLength(0);
+  });
+
+  it("a merge card with no shown heads is not pressed (unsupported)", async () => {
+    const w = await ready();
+    w.setWorkflow({ risk: risk("low") });
+    const t = mergeRoute(w, [{ ...mergeItem(w, "low"), heads: undefined } as DecisionItem], true);
+    const digest = (await t.shown(PRIYA)).digests["merge:pr1"]!;
+    await expect(t.run(PRIYA, "approve", { requestId: randomUUID(), shownDigest: digest })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(w.github.mergeCalls).toEqual([]);
   });
 
