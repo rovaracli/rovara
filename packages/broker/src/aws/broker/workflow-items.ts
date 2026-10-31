@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, CheckReportSchema, skipPlanRevision, canonicalJson, type PlanEvidenceBundle, workflowIsReviewOnly, workflowPullRequestTrees, workflowSelectedChecks, blockWorkflow, endWorkflowCiFixUnrelated, WorkflowDependencyResultSchema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, completeWorkflowFeedbackReview, createCandidateManifest, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, FEEDBACK_NOT_RUN_REASON, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_BLOCK_REASONS, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_UNREADABLE_MESSAGE, answerWorkflowIntent, recordIntentAssessment, WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON, WORKFLOW_DISPATCH_DUE_INDEX, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WorkflowReviewBaseSchema as PreparedBaseSchema, recordWorkflowVerification, completeWorkflowBuild, nextProgramStep, workflowReviewRoles, submitWorkflowReview, registerWorkflowPullRequest, blockWorkflowPullRequestUpdate, recordWorkflowPullRequestUpdate, recordWorkflowBranchSync, CONFLICT_ROUNDS_MAX, observeWorkflowPullRequestMergedWithFix, workflowPullRequestUpdateDue, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WORKFLOW_FIX_DROPS_BASE_CHANGES, type WorkflowPullRequestUpdateCause, PullRequestLifecycleResultSchema, PullRequestResultSchema, agentXError, type OperationStatus, type WorkflowSnapshot, type CandidateRepository, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewReportSchema, WorkflowFeedbackReviewRefSchema, INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, ROVARA_CODE_AGENT_ID, type RunEstimate } from "@agentx/contracts";
+import { AgentXError, CheckReportSchema, skipPlanRevision, canonicalJson, type PlanEvidenceBundle, workflowIsReviewOnly, workflowPullRequestTrees, workflowSelectedChecks, blockWorkflow, endWorkflowCiFixUnrelated, WorkflowDependencyResultSchema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, completeWorkflowFeedbackReview, createCandidateManifest, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, FEEDBACK_NOT_RUN_REASON, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_BLOCK_REASONS, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_UNREADABLE_MESSAGE, answerWorkflowIntent, recordIntentAssessment, WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON, WORKFLOW_DISPATCH_DUE_INDEX, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WorkflowReviewBaseSchema as PreparedBaseSchema, recordWorkflowVerification, completeWorkflowBuild, nextProgramStep, workflowReviewRoles, submitWorkflowReview, registerWorkflowPullRequest, blockWorkflowPullRequestUpdate, recordWorkflowPullRequestUpdate, recordWorkflowBranchSync, CONFLICT_ROUNDS_MAX, observeWorkflowPullRequestMergedWithFix, workflowPullRequestUpdateDue, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WORKFLOW_FIX_DROPS_BASE_CHANGES, type WorkflowPullRequestUpdateCause, PullRequestLifecycleResultSchema, PullRequestResultSchema, agentXError, type OperationStatus, type WorkflowSnapshot, type CandidateRepository, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewReportSchema, WorkflowFeedbackReviewRefSchema, INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, ROVARA_CODE_AGENT_ID, type RunEstimate, codeRepositoriesOf } from "@agentx/contracts";
 import { resultsWithStoredArtifacts, storeWorkflowE2EArtifacts } from "../workflow-e2e-artifacts.js";
 import { queryAllItems } from "../admin-reads.js";
 import type { z } from "zod";
@@ -38,6 +38,7 @@ import { autofixBlockRows } from "../workflow-autofix-dispatch-exhaust.js";
 import { setupDraftEndItems } from "../../rovara-code/setup-draft.js";
 import { githubRepositoryFullName, pullRequestKey, pullRequestMatchesRepository } from "./admin-and-helpers.js";
 import { MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES, type AwsBrokerDependencies, type PullRequestRecord } from "./definitions.js";
+import { knowledgeCommitToStore, taskPreparedUpdate } from "../../meta-repo/prepare-meta.js";
 import { requireRecordProject } from "./dependency-wiring.js";
 import { readUnderstandingArtifact, runWorkflowDispatch } from "./dispatch.js";
 import { PLAN_GROUNDING_HOLD_PK, isNonCandidateRound, sweepGroundingHolds } from "./e2e-rounds.js";
@@ -179,7 +180,7 @@ async function completedPullRequestUpdateItems(
     pushedCommit = pushed.data.commit;
   }
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
-  const repository = project.definition.repositories.find((entry) => entry.name === maintenance.repository);
+  const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === maintenance.repository);
   const gateway = dependencies.githubPullRequests;
   const getFeedback = gateway.getPullRequestFeedback;
   if (repository === undefined || getFeedback === undefined) {
@@ -283,7 +284,7 @@ async function candidateRekeyItems(
   for (const pullRequest of after.pullRequests ?? []) {
     const earlier = before.pullRequests?.find((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number);
     if (earlier === undefined || earlier.candidateDigest === pullRequest.candidateDigest) continue;
-    const repository = project.definition.repositories.find((entry) => entry.name === pullRequest.repositoryId);
+    const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === pullRequest.repositoryId);
     if (repository === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not part of the task's registered project revision");
     items.push({ Update: {
       TableName: dependencies.tableName,
@@ -332,7 +333,7 @@ export async function completedBranchSyncItems(
     ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.revision, ":stage": "WAIT_FOR_MERGE", ":running": "RUNNING" },
   } });
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
-  const repository = project.definition.repositories.find((entry) => entry.name === maintenance.repository);
+  const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === maintenance.repository);
   const gateway = dependencies.githubPullRequests;
   const parsed = terminalStatus === "SUCCEEDED" ? PullRequestLifecycleResultSchema.safeParse(result) : undefined;
   const reported = parsed?.success === true && parsed.data.repository === maintenance.repository ? parsed.data : undefined;
@@ -472,12 +473,13 @@ export async function completedWorkflowItems(
     if (terminalStatus !== "SUCCEEDED" || task.workflow.reviewBase !== undefined) return [];
     const reported = result !== null && typeof result === "object" ? (result as { preparedBase?: unknown }).preparedBase : undefined;
     const preparedBase = PreparedBaseSchema.safeParse(reported);
+    // Meta repo lane A: the task's knowledgeCommit is the one the broker chose for this prepare, kept only when the worker reported the same one.
+    const knowledgeCommit = knowledgeCommitToStore(operation.knowledgeCommit, result);
     return [{ Update: {
       TableName: dependencies.tableName,
       Key: taskKey(task.taskId),
-      UpdateExpression: preparedBase.success ? "SET preparedBase = :base" : "REMOVE preparedBase",
+      ...taskPreparedUpdate(preparedBase.success ? preparedBase.data : undefined, knowledgeCommit),
       ConditionExpression: "attribute_exists(pk)",
-      ...(preparedBase.success ? { ExpressionAttributeValues: { ":base": preparedBase.data } } : {}),
     } }];
   }
   if (operation.kind === "publish") {
@@ -485,7 +487,7 @@ export async function completedWorkflowItems(
     const published = PullRequestResultSchema.safeParse(result);
     if (!published.success) throw agentXError("CONFIG_INVALID", "workflow pull request result is invalid");
     const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
-    const repository = project.definition.repositories.find((entry) => entry.name === published.data.repository);
+    const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === published.data.repository);
     if (repository === undefined) throw agentXError("CONFIG_INVALID", "published pull request repository is not part of the task's registered project revision");
     const repositoryFullName = githubRepositoryFullName(repository.url);
     if (!pullRequestMatchesRepository(published.data.url, repositoryFullName, published.data.number)) {

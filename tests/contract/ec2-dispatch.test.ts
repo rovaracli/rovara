@@ -1158,6 +1158,21 @@ describe("ec2-ebs delivery", () => {
         expect(postedPayload(capable.post).readOnly).toBe(true);
       });
 
+      it("refuses a preparation that brings the project's meta repo on a worker that lacks prepare.metaRepo, and sends it unchanged to one that has it (meta repo lane A)", async () => {
+        const meta = { repository: { name: "service-meta", url: "https://github.com/acme/service-meta.git", path: "repo/service-meta", defaultBranch: "main", credentialRef: "github-app" }, paths: [".kiro/steering"], commit: "a".repeat(40) };
+        const record = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant", meta } } as unknown as WorkerInvocation };
+        for (const features of [undefined, [], ["task.agentRun", "task.agentStep"]]) {
+          const older = delivery(features === undefined ? {} : { workerFeatures: async () => features });
+          const refused = await older.deliver(record, record.invocation).then(() => undefined, (error: unknown) => error as { code?: string; message?: string });
+          expect(refused?.code).toBe("RUNTIME_UNAVAILABLE");
+          expect(refused?.message).toContain("This project's meta repo needs a newer worker");
+          expect(older.post).not.toHaveBeenCalled();
+        }
+        const capable = delivery({ workerFeatures: async () => ["prepare.metaRepo"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).meta).toEqual(meta);
+      });
+
       it("never drops a governed model policy binding for an older or unprobed worker",async()=>{
         const modelPolicy={version:1,stage:"build",companyRevision:0,recipeDigest:"a".repeat(64)};
         const record=taskRecord({model:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"},modelPolicy});

@@ -38,4 +38,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowE2EMidStepSync.v1",
   // Live steer: a person's message reaches the running Understand, Plan or Implement step's session (steer-invocation.ts).
   "task.liveSteer.v1",
+  // Meta repo lane A3: the prepare invocation's `meta` request (the project's meta repository, read-only and sparse; meta-checkout.ts).
+  "prepare.metaRepo",
 ] as const satisfies readonly WorkerInvocationFeature[];

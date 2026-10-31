@@ -25,6 +25,9 @@ import {
   projectAllows,
   projectMetaKey,
   projectPk,
+  settingOriginOf,
+  withSettingOrigins,
+  type ProjectOriginField,
   type AppProjectDetail,
   type OrgId,
   type OrgRole,
@@ -41,7 +44,7 @@ import { egressStatusWarnings, putEgressDomains, readEgressDomains, type EgressD
 export interface ProjectSettingsCaller { developerId: string; orgId: OrgId; orgRole: OrgRole }
 
 /** The repository GitHub's App sees, as `getRepositoryIdentity` describes it. */
-export interface RepositoryIdentity { fullName: string; defaultBranch?: string | undefined }
+export interface RepositoryIdentity { fullName: string; defaultBranch?: string | undefined; repositoryId?: number | undefined }
 
 export interface ProjectSettingsDependencies<Caller extends ProjectSettingsCaller = ProjectSettingsCaller> {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -259,6 +262,16 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
     throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register");
   }
 
+  // Meta repo lane A: a setting the meta repo's config file manages is changed by changing the file, so a save that touches one is refused before anything is read from GitHub.
+  const touched: ProjectOriginField[] = [];
+  if (body.setupCommands !== undefined) touched.push("setup");
+  if (body.testCommands !== undefined) touched.push("readiness");
+  if (body.devcontainer !== undefined) touched.push("devcontainer");
+  if (body.allowedDomains !== undefined) touched.push("network");
+  if (body.addRepositories !== undefined || body.removeRepositories !== undefined) touched.push("repositories");
+  const managed = touched.filter((field) => settingOriginOf(current, field) === "file");
+  if (managed.length > 0) throw agentXError("FORBIDDEN", `${managed.join(", ")} ${managed.length === 1 ? "is" : "are"} managed by the meta repo's config file; change ${managed.length === 1 ? "it" : "them"} there`);
+
   const { repositories, removed } = await changedRepositories(deps, caller, current.repositories, body);
   if (repositories.length === 0) throw invalid("removeRepositories: a project keeps at least one repository");
 
@@ -302,6 +315,13 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   if (domains !== undefined) {
     if (domains.length === 0) delete next.network;
     else next.network = { allowedDomains: domains };
+  }
+
+  // What a person changes is theirs again: a setting an agent or the config file had set loses that mark (a field with no mark was set by a person).
+  const personChanged = touched.filter((field) => canonicalJson((current as Record<string, unknown>)[field] ?? null) !== canonicalJson(next[field] ?? null));
+  if (personChanged.length > 0) {
+    const origins = withSettingOrigins(current.origins, personChanged, "person");
+    if (origins === undefined) delete next.origins; else next.origins = origins;
   }
 
   const parsed = ProjectDefinitionSchema.safeParse(next);

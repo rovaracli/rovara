@@ -1,3 +1,6 @@
+import type { CreateProjectFromMetaBody } from "@agentx/contracts";
+import type { MetaProjectCreated } from "../../org/create-from-meta.js";
+import type { MetaConfigDependencies } from "../../meta-repo/config-import.js";
 import type { ServiceStatusDependencies } from "../../org/service-status.js";
 import type { AllowedDomainBrowserDependencies } from "../../org/project-allowed-domains-http.js";
 import type { WorkingBranchReviewDependencies } from "../../org/project-working-branch.js";
@@ -150,6 +153,10 @@ export interface DeveloperRouteDependencies {
    * has already checked the install, the caller's role and the body.
    */
   createProject?: (caller: DeveloperCaller, input: CreateProjectInput) => Promise<{ duplicate: boolean }>;
+  /** Meta repo lane A: `POST /v1/app/projects` with a `metaRepository` (same checks as `createProject`, different body). Without it the route answers NOT_FOUND. */
+  createFromMeta?: (caller: DeveloperCaller, input: CreateProjectFromMetaBody) => Promise<MetaProjectCreated>;
+  /** Meta repo lane A: what the project's meta-config routes need beyond the settings' own pieces: reading the meta repository's head and files. */
+  metaConfig?: Pick<MetaConfigDependencies<DeveloperCaller>, "registerRevision" | "githubCredentialRef" | "repositoryIdentity" | "requireRepositoryConnected" | "readMetaFile" | "getHead">;
   /** The Audit Ledger's reader and export client (Task 12). Absent on an install with no ledger: the audit routes then answer NOT_FOUND. */
   auditLedger?: AuditExportClientDeps;
   /** The Audit Ledger's outbox: what a route's audited action adds its pending item through. Absent on a legacy install, where nothing is recorded. */

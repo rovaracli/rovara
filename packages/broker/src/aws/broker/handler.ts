@@ -73,6 +73,7 @@ import { adminChangeDependencies, adminReadDependencies, agentRouteDependencies,
 import { runWokenTrackingPass, trackingPassDependencies } from "./e2e-rounds.js";
 import { handleProjectSetupCallback, handleProjectSetupEvidenceChunk, handleProjectSetupEvidenceFinalize, handleProjectSetupEvidenceInit, handleProjectSetupExecutionRead } from "./evidence-and-setup.js";
 import { handleModelAccess, handleSlackModelAccess } from "./model-access.js";
+import { metaConfigQueueFor, metaRepoRouteDependencies } from "./meta-repo-wiring.js";
 import { createCloudProject, prepareWorkspace, registerProject, registerProjectFor, retryProjectSetupAsAdministrator } from "./project-registration.js";
 import { getProjectModels, putProjectModel } from "./records.js";
 import { decideEgress, decideRequestContext, egressDepsOf, githubScope, listEgressPending, orgConnectionStoreOf, orgResolverOf, putInstallBudget, routingOf, webhookRepositoryUrl } from "./scope-helpers.js";
@@ -479,6 +480,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
                 ...(dependencies.githubPullRequests.authorStanding === undefined ? {} : {
                   authorStanding: (query: AuthorQuery) => dependencies.githubPullRequests.authorStanding!(query.installationId, query),
                 }),
+                // Meta repo lane A: a push to a project's meta repository queues its config file as a pending change.
+                queueMetaConfigImport: metaConfigQueueFor(dependencies),
               }, trigger),
             }),
             // Plan 2, Task 14: an approved request to a GitHub admin arrives as `installation.created` naming the requester.
@@ -680,6 +683,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
             }),
           },
           ...workflowApplicationRouteDependencies(dependencies) };
+        // Meta repo lane A: creating a project from a meta repo, and the meta repo's config file (reuses the settings route's own pieces).
+        Object.assign(routeDependencies, metaRepoRouteDependencies(dependencies, routeDependencies.projectSettings));
         let authenticated: { caller: DeveloperCaller; csrf: string } | undefined;
         if (url.pathname.startsWith("/v1/web/")) {
           const caller = await authenticateWebRequest(routeDependencies, request);

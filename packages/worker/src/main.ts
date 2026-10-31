@@ -93,6 +93,8 @@ const state = createWorkerServerState(
           ...(invocation.payload.checkout === undefined ? {} : { checkout: invocation.payload.checkout }),
           // An agent-step run's preparation runs none of the repository's code (runs I-2).
           ...(invocation.payload.readOnly === true ? { readOnly: true } : {}),
+          // Meta repo lane A3: the project's meta repository, read-only and sparse.
+          ...(invocation.payload.meta === undefined ? {} : { meta: invocation.payload.meta }),
         });
         return {
           manifestPath: ".agentx/preparation-manifest.json",

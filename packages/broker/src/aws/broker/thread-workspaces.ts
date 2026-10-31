@@ -32,7 +32,7 @@ import { ROVARA_CODE_NAME, linkedRequester, slackWorkPayment } from "./model-acc
 import { EARLIER_PLAN_MAX_BYTES, readObjectText } from "./plan-answers.js";
 import { developerRequested, getDefaultWorkspace, getMembership, getThreadWorkspace, requireLatestProject, requireWorkspace } from "./records.js";
 import { resolveSlackThreadKey } from "./scope-helpers.js";
-import { MEMBERSHIP_PREPARATION_ATTEMPTS, membershipMovedSince, membershipPreparationItem, newWorkspacePreparation, requireSlackRequesterMayWork, slackRequesterRole } from "./workspace-preparation.js";
+import { MEMBERSHIP_PREPARATION_ATTEMPTS, membershipMovedSince, membershipPreparationItem, newWorkspacePreparation, metaPrepareOf, requireSlackRequesterMayWork, slackRequesterRole } from "./workspace-preparation.js";
 import { connectorTypeContext } from "./workspace-routes.js";
 
 /** The close preflight's operation, worker invocation and outbox item: the Slack close's and a developer task's. */
@@ -744,6 +744,8 @@ async function startThreadPreparation(
     updatedAt: now,
     ...requesterOf(identity),
   });
+  const metaPrepare = await metaPrepareOf(dependencies, latest, requireOrgId(identity.orgId));
+  if (metaPrepare.knowledgeCommit !== undefined) operation.knowledgeCommit = metaPrepare.knowledgeCommit;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "prepare",
@@ -755,6 +757,7 @@ async function startThreadPreparation(
     payload: {
       project: workerProjectDefinition(latest.definition),
       repositoryGrant: issueRepositoryGrant(dependencies, latest, identity.ownerKey, workspace.id, operationId),
+      ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
     },
   };
   // The runtime fields stay the workspace's own (only deploymentMode today); outboxRecord refuses a
@@ -1357,6 +1360,7 @@ export async function retryWorkspacePreparation(
   workspace: ReturnType<typeof publicWorkspace>;
   alreadyReady: false;
 }> {
+  const metaPrepare = await metaPrepareOf(dependencies, project, requireOrgId(identity.orgId));
   const now = new Date().toISOString();
   const operationId = randomUUID();
   const fence = workspace.fence + 1;
@@ -1377,6 +1381,7 @@ export async function retryWorkspacePreparation(
     updatedAt: now,
     ...requesterOf(identity),
   });
+  if (metaPrepare.knowledgeCommit !== undefined) operation.knowledgeCommit = metaPrepare.knowledgeCommit;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "prepare",
@@ -1394,6 +1399,7 @@ export async function retryWorkspacePreparation(
         workspace.id,
         operationId,
       ),
+      ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
     },
   };
   const updated = WorkspaceInstanceSchema.parse({
