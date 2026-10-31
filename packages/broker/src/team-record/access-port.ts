@@ -2,7 +2,7 @@
 // snapshot taken when it was learned; this port asks the access records NOW, for the places the lesson was learned from, so a person removed from a channel stops getting
 // that channel's lessons. The same check as a record search (`judgeAccess`), with the same fail-closed rules: a restricted place without a record denies, and a record that
 // cannot be read throws RUNTIME_UNAVAILABLE (the caller must not treat that as "visible", nor as "hidden").
-import { agentXError, scopeAndAncestors, type OrgId } from "@agentx/contracts";
+import { aclUnitOfSource, agentXError, scopeAndAncestors, type OrgId } from "@agentx/contracts";
 import { createAccessReader, judgeAccess, viewerOfLists } from "./access.js";
 import type { TeamRecordTable } from "./types.js";
 
@@ -29,14 +29,21 @@ export interface AccessCheckPort {
   mayRead(orgId: OrgId, viewer: AccessViewerLists | undefined, places: readonly AccessPlaces[]): Promise<boolean[]>;
 }
 
-export function createAccessCheckPort(table: TeamRecordTable): AccessCheckPort {
+/** A place-level scope of an item-level source (`jira:project/KEY`): the scope an old lesson recorded before items had their own units. */
+const isLegacyPlaceScope = (scope: string): boolean => aclUnitOfSource(scope.split(":", 1)[0] ?? "") === "item" && !scope.includes("/item:");
+
+export function createAccessCheckPort(table: TeamRecordTable, options: { log?: (event: string, fields: Record<string, unknown>) => void } = {}): AccessCheckPort {
   return {
     async mayRead(orgId, viewer, places) {
       const reader = createAccessReader(table, orgId);
       const who = viewer === undefined ? undefined : viewerOfLists(viewer);
-      const units = places.map((place) => ({
-        all: [...new Set([...place.restrictedScopes, ...place.scopes].flatMap((scope) => scopeAndAncestors(scope)))], own: place.restrictedScopes, capturedAt: place.capturedAt,
-      }));
+      const units = places.map((place) => {
+        // A lesson learned before items had their own units names the PLACE of a tracker (`jira:project/KEY`), which has no record of its own now. It is not loaded for nobody:
+        // it is limited to the people its frozen snapshot allows (the caller applies that), and the access check does not require a record for that place. Logged each time.
+        const legacy = place.restrictedScopes.filter(isLegacyPlaceScope);
+        if (legacy.length > 0) options.log?.("learning.legacy_place_scoped_lesson", { places: legacy.length });
+        return { all: [...new Set([...place.restrictedScopes, ...place.scopes].flatMap((scope) => scopeAndAncestors(scope)))], own: place.restrictedScopes.filter((scope) => !isLegacyPlaceScope(scope)), capturedAt: place.capturedAt };
+      });
       await reader.load(units.flatMap((unit) => unit.all), who);
       return units.map((unit) => {
         const verdict = judgeAccess(reader, who, unit);

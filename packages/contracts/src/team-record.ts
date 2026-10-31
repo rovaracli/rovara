@@ -29,6 +29,13 @@ export function minTrust(...classes: readonly TrustClass[]): TrustClass {
 }
 
 export const RECORD_SOURCES = ["slack", "github", "linear", "jira", "mcp", "rovara"] as const;
+/**
+ * Where a source keeps its ACL: `place` (a channel, a repository, a Rovara task: one list for everything recorded there) or `item` (a tracker issue or an MCP record carries its
+ * OWN list inside one place). The record core files a row's access under the unit named here. A new source does not compile without a choice.
+ */
+export const RECORD_SOURCE_ACL_UNIT = { slack: "place", github: "place", linear: "item", jira: "item", mcp: "item", rovara: "place" } as const satisfies Record<(typeof RECORD_SOURCES)[number], "item" | "place">;
+/** The ACL unit of any source system; a code host plug-in (`codehost:*`) is place-level. */
+export const aclUnitOfSource = (source: string): "item" | "place" => (Object.hasOwn(RECORD_SOURCE_ACL_UNIT, source) ? RECORD_SOURCE_ACL_UNIT[source as keyof typeof RECORD_SOURCE_ACL_UNIT] : "place");
 export const RecordSourceSchema = z.enum(RECORD_SOURCES);
 export type RecordSource = z.infer<typeof RecordSourceSchema>;
 

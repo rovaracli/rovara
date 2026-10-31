@@ -6,6 +6,7 @@
 // It stores no row for an outside source under retention A or B. It never logs text, a name or an error message.
 import {
   OrgIdSchema,
+  aclUnitOfSource,
   RecordEventSchema,
   RecordProjectSchema,
   minTrust,
@@ -18,7 +19,7 @@ import {
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { Aliases } from "../agents/table-writes.js";
 import { createHash } from "node:crypto";
-import { observeOpenRow, observeRowAccess } from "./access.js";
+import { observeOpenRow, observeRowAccess, unitHasList } from "./access.js";
 import { captureIsOn, type LearningModeReader } from "./mode.js";
 import { exceedsRetention, retentionPlan, retentionRefusal } from "./retention.js";
 import { supersedeItem, wasDeletedAtSource } from "./scope-work.js";
@@ -96,15 +97,20 @@ function draftScope(draft: RecordDraft): string | undefined {
 }
 
 /**
- * Sources whose ACL belongs to ONE ITEM, not to the place: a tracker issue with a security level, a record an MCP server returns with its own list. The access record of such a
- * row is its item's (an issue and its comments share one), so one restricted issue never hides the open issues of its project and a newer item's list never replaces another's.
- * The place stays the row's `scope`; only the access unit in the snapshot moves down to the item.
+ * Sources whose ACL belongs to ONE ITEM, not to the place (`RECORD_SOURCE_ACL_UNIT` in the contracts says which): a tracker issue with a security level, a record an MCP server
+ * returns with its own list. The access record of such a row is its item's, so one restricted issue never hides the open issues of its project and a newer item's list never
+ * replaces another's. The place stays the row's `scope`; only the access unit in the snapshot moves down to the item. A comment shares its issue's unit only when its own list
+ * is the issue's; a comment with its own visibility gets a child unit UNDER the issue, so it narrows only itself.
  */
-const PER_ITEM_ACL_SOURCES: ReadonlySet<string> = new Set(["jira", "linear", "mcp"]);
-function accessUnitAudience(draft: RecordDraft): RecordDraft["audience"] {
-  if (draft.audience.kind !== "restricted" || !PER_ITEM_ACL_SOURCES.has(draft.source)) return draft.audience;
-  const item = createHash("sha256").update(`${draft.sourceRef.system}\u0000${draft.sourceRef.parentId ?? draft.sourceRef.id}`).digest("hex").slice(0, 24);
-  return { kind: "restricted", acl: { ...draft.audience.acl, scope: `${draft.audience.acl.scope}/item:${item}` } };
+async function accessUnitAudience(deps: IngestDependencies, orgId: OrgId, draft: RecordDraft): Promise<RecordDraft["audience"]> {
+  if (draft.audience.kind !== "restricted" || aclUnitOfSource(draft.source) !== "item") return draft.audience;
+  const hash = (id: string): string => createHash("sha256").update(`${draft.sourceRef.system}\u0000${id}`).digest("hex").slice(0, 24);
+  const place = draft.audience.acl.scope;
+  if (draft.sourceRef.parentId === undefined) return { kind: "restricted", acl: { ...draft.audience.acl, scope: `${place}/item:${hash(draft.sourceRef.id)}` } };
+  const issueUnit = `${place}/item:${hash(draft.sourceRef.parentId)}`;
+  // Same list as the issue's (the usual comment): share its unit. A different list, or an issue not recorded yet: a unit of its own under the issue's.
+  const shares = await unitHasList(deps.table, orgId, issueUnit, draft.audience.acl);
+  return { kind: "restricted", acl: { ...draft.audience.acl, scope: shares ? issueUnit : `${issueUnit}/c:${hash(draft.sourceRef.id)}` } };
 }
 
 /** What the distiller may use of a retention-B draft once it passed the same checks as a stored row. Nothing here is written to the table. */
@@ -249,7 +255,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
     occurredAt,
     ...(draft.actor === undefined ? {} : { actor: draft.actor }),
     trust,
-    audience: accessUnitAudience(draft),
+    audience: await accessUnitAudience(deps, orgId, draft),
     ...(text === undefined ? {} : { text }),
     ...(structured === undefined ? {} : { structured }),
     links: draft.links.filter(validLink).slice(0, LINKS_MAX),

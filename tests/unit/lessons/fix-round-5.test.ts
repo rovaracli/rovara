@@ -10,7 +10,7 @@ import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-
 import { InMemoryLessonStore, type CommitResult, type ScopeKey } from "../../../packages/broker/src/lessons/store.js";
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings, allowAllAccess } from "./lesson-helpers.js";
 
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
 const tierOf = (over: Partial<TierInput>) => classifyTier({ ...draft({ description: "" }), citationChecks: valid, ...over });
@@ -148,7 +148,7 @@ describe("N-2: a rollback never restores approval", () => {
   it("any restored active lesson comes back without its automatic approval; a person's approval survives but is flagged; it is re-checked through the hook", async () => {
     const store = new InMemoryLessonStore();
     const clock = new Clock();
-    const deps: ApproveDeps = { store, directory: directory(), settings: settings(), audit: new Audit(), now: clock.now };
+    const deps: ApproveDeps = { access: allowAllAccess, store, directory: directory(), settings: settings(), audit: new Audit(), now: clock.now };
     await seed(store, lessonRecord({ id: "les_auto0001" }), lessonRecord({ id: "les_pers0001", approvals: [{ approvalId: "p", by: "ann", at: 1, mode: "one" }], provenance: { ...lessonRecord().provenance, authors: ["carl"] } }));
     const before = await store.setVersion(KEY);
     await seed(store, lessonRecord({ id: "les_x0000001" }));
@@ -177,7 +177,7 @@ describe("N-2: a rollback never restores approval", () => {
 
   it("a person can approve the restored lesson again (back through the normal approval)", async () => {
     const store = new InMemoryLessonStore();
-    const deps: ApproveDeps = { store, directory: directory(), settings: settings(), audit: new Audit(), now: new Clock().now };
+    const deps: ApproveDeps = { access: allowAllAccess, store, directory: directory(), settings: settings(), audit: new Audit(), now: new Clock().now };
     await seed(store, lessonRecord({ id: "les_auto0001", tier: 1, provenance: { ...lessonRecord().provenance, authors: ["carl"] } }));
     const before = await store.setVersion(KEY);
     await seed(store, lessonRecord({ id: "les_x0000001" }));

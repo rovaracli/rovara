@@ -15,7 +15,7 @@ function setup(over: { dir?: ReturnType<typeof directory>; settings?: ReturnType
   const clock = new Clock();
   let n = 0;
   const dir = over.dir ?? directory();
-  const deps: ApproveDeps = { store, directory: dir, settings: over.settings ?? settings(), audit, now: clock.now, newId: () => `ap-${++n}` };
+  const deps: ApproveDeps = { access: allowAllAccess, store, directory: dir, settings: over.settings ?? settings(), audit, now: clock.now, newId: () => `ap-${++n}` };
   return { deps, store, audit, clock, dir };
 }
 
@@ -194,7 +194,7 @@ describe("edit and approve, reject, retire, rollback", () => {
   it("lists the lessons waiting for people, newest first", async () => {
     const { store } = setup();
     await seed(store, base({ id: "les_pend0001", createdAt: 5 }), base({ id: "les_pend0002", createdAt: 9 }), lessonRecord());
-    expect((await listWaiting(store, KEY, { principals: [], groups: [] })).map((l) => l.id)).toEqual(["les_pend0002", "les_pend0001"]);
+    expect((await listWaiting(store, KEY, { principals: [], groups: [] }, allowAllAccess)).map((l) => l.id)).toEqual(["les_pend0002", "les_pend0001"]);
   });
 });
 

@@ -11,7 +11,7 @@ import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-
 import { BASELINE_DAILY_GROWTH, baselineOf, noteCandidateSources } from "../../../packages/broker/src/lessons/sources.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
-import { Alerts, Audit, Clock, KEY, uniqueDraft, MemoryVectors, ScriptedModel, Spend, candidateJson, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, uniqueDraft, MemoryVectors, ScriptedModel, Spend, candidateJson, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings, allowAllAccess } from "./lesson-helpers.js";
 
 const DAY = 86_400_000;
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
@@ -242,7 +242,7 @@ describe("minors", () => {
 
     const store = new InMemoryLessonStore();
     const clock = new Clock();
-    const deps: ApproveDeps = {
+    const deps: ApproveDeps = { access: allowAllAccess,
       store, directory: directory({ groups: { sec: ["bob"], team: ["ann"] } }), audit: new Audit(), now: clock.now, newId: (() => { let n = 0; return () => `ap-${++n}`; })(),
       settings: settings({ companyApproval: { tier1: "two", requiredGroup: "sec" }, approval: { requiredGroup: "team" } }),
     };

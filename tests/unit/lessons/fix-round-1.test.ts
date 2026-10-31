@@ -37,7 +37,7 @@ function approveSetup(over: { audit?: LessonAuditSink; dir?: ReturnType<typeof d
   const clock = new Clock();
   const dir = over.dir ?? directory();
   if (over.identities !== undefined) dir.identity = async (_w: string, id: string) => over.identities![id] ?? { principals: [], groups: [] };
-  const deps: ApproveDeps = { store, directory: dir, settings: settings(), audit, now: clock.now, newId: (() => { let n = 0; return () => `ap-${++n}`; })() };
+  const deps: ApproveDeps = { access: allowAllAccess, store, directory: dir, settings: settings(), audit, now: clock.now, newId: (() => { let n = 0; return () => `ap-${++n}`; })() };
   return { deps, store, audit, clock };
 }
 const input = (approverId: string, id = "les_pend0001") => ({ ...KEY, lessonId: id, approverId });
@@ -209,10 +209,10 @@ describe("I2: restricted lessons are shown and decided only by people who can se
   it("the waiting list and the queue show a restricted lesson only to viewers who pass the ACL", async () => {
     const { store } = approveSetup();
     await seed(store, pending(), { ...pending(), id: "les_cand0001", status: "candidate" }, base({ id: "les_open0001" }));
-    expect((await listWaiting(store, KEY, outside)).map((l) => l.id)).toEqual(["les_open0001"]);
-    expect((await listWaiting(store, KEY, inACL)).map((l) => l.id).sort()).toEqual(["les_open0001", "les_pend0001"]);
-    expect((await listQueued(store, KEY, outside)).map((l) => l.id)).toEqual([]);
-    expect((await listQueued(store, KEY, inACL)).map((l) => l.id)).toEqual(["les_cand0001"]);
+    expect((await listWaiting(store, KEY, outside, allowAllAccess)).map((l) => l.id)).toEqual(["les_open0001"]);
+    expect((await listWaiting(store, KEY, inACL, allowAllAccess)).map((l) => l.id).sort()).toEqual(["les_open0001", "les_pend0001"]);
+    expect((await listQueued(store, KEY, outside, allowAllAccess)).map((l) => l.id)).toEqual([]);
+    expect((await listQueued(store, KEY, inACL, allowAllAccess)).map((l) => l.id)).toEqual(["les_cand0001"]);
   });
 
   it("the digest lists restricted waiting lessons for people allowed to see them, and counts them for everyone else", async () => {
@@ -387,7 +387,7 @@ describe("P6: a lesson about weakening review or auth needs two people, by words
     const clock = new Clock();
     let n = 0;
     const proc: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, now: clock.now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => `les_p6${++n}0000` };
-    const ap: ApproveDeps = { store, directory: directory(), settings: settings(), audit, now: clock.now, newId: () => `ap-${Math.random()}` };
+    const ap: ApproveDeps = { access: allowAllAccess, store, directory: directory(), settings: settings(), audit, now: clock.now, newId: () => `ap-${Math.random()}` };
     return { proc, ap, store };
   }
   it.each([
@@ -416,7 +416,7 @@ describe("P9: tenancy across the whole lane", () => {
     expect(await recordFeedback(counters, { ...B, taskId: "task-1", lessonId: "les_live0001", userId: "ann", kind: "wrong_here" })).toEqual({ ok: false, code: "not_loaded" });
     expect(await recordTaskOutcome(counters, { ...B, taskId: "task-1", outcome: "merged", sendBacks: 0, corrections: [] })).toEqual({ harmful: [], queuedHelpful: [] });
     expect((await s.store.get(KEY, "les_live0001"))!.counters.harmful).toBe(0);
-    expect(await listWaiting(s.store, B, inACL)).toEqual([]);
+    expect(await listWaiting(s.store, B, inACL, allowAllAccess)).toEqual([]);
     expect((await buildWeeklyDigest(s.store, B, s.clock.now(), inACL, allowAllAccess)).top).toEqual([]);
     const load = await loadLessonsForStage({ store: s.store, embedder, vectors: new MemoryVectors(), settings: settings(), audit: new Audit(), now: s.clock.now }, { workspaceId: "ws-B", project: PROJECT, taskId: "t", stage: "IMPLEMENT", round: 1, intent: "x", repos: ["api"], files: [], languages: [], taskAudience: { kind: "shared" } });
     expect(load.context).toBeUndefined();
@@ -448,7 +448,7 @@ describe("owner decision 'Lesson limits': ranking by value", () => {
   it("the waiting list and the digest lead with the most valuable lessons", async () => {
     const { store, clock } = approveSetup();
     await seed(store, rec("les_low00001", { type: "preference", createdAt: 9 }), rec("les_top00001", { type: "preference", createdAt: 1 }, { sourceKinds: ["send_back"], measured: true }), rec("les_mid00001", { type: "pitfall", createdAt: 5 }, { supportTasks: ["t1", "t2"] }));
-    expect((await listWaiting(store, KEY, inACL)).map((l) => l.id)).toEqual(["les_top00001", "les_mid00001", "les_low00001"]);
+    expect((await listWaiting(store, KEY, inACL, allowAllAccess)).map((l) => l.id)).toEqual(["les_top00001", "les_mid00001", "les_low00001"]);
     const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL, allowAllAccess);
     expect(digest.top.map((i) => i.id)).toEqual(["les_top00001", "les_mid00001", "les_low00001"]);
     expect(digest.queuedCount).toBe(0);

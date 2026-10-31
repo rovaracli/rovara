@@ -136,6 +136,12 @@ async function ensureHeader(table: TeamRecordTable, orgId: OrgId, header: Access
   }
 }
 
+/** Whether a unit's record already holds exactly this snapshot's list and groups (a comment that inherits its issue's list shares the issue's unit). */
+export async function unitHasList(table: TeamRecordTable, orgId: OrgId, scope: string, acl: AclSnapshot): Promise<boolean> {
+  const header = await getHeader(table, orgId, scope);
+  return header !== undefined && header.seeded && header.mode === "restricted" && header.snapshotHash === listHash(acl.principals ?? [], acl.groups ?? [], "restricted");
+}
+
 /** Whether the unit's full list was ever written (an unseeded unit is only an overlay of events). */
 export async function accessIsSeeded(table: TeamRecordTable, orgId: OrgId, scope: string): Promise<boolean> {
   return (await getHeader(table, orgId, scope))?.seeded === true;
@@ -177,6 +183,20 @@ async function entriesOf(table: TeamRecordTable, orgId: OrgId, scope: string): P
   return found.items.flatMap((item) => (typeof item.pk === "string" && typeof item.sk === "string" && typeof item.v === "string" ? [{ key: { pk: item.pk, sk: item.sk }, value: item.v }] : []));
 }
 
+/** Deletes a unit's person entries and their index items, keeping the header. */
+async function clearEntries(table: TeamRecordTable, orgId: OrgId, scope: string): Promise<void> {
+  const unitHash = recordAccessKey(orgId, scope).sk.slice("ACCESS#".length);
+  for (;;) {
+    const found = await queryPrefix(table, orgId, undefined, recordAccessMemberPrefix(orgId, scope), 500);
+    await inChunks(found.items, WRITE_PARALLEL, async (item) => {
+      if (typeof item.pk !== "string" || typeof item.sk !== "string") return;
+      await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: item.pk, sk: item.sk } }));
+      await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: item.pk, sk: `ACCESSP#${personHashOfEntry(item.sk)}#${unitHash}` } }));
+    });
+    if (!found.truncated) return;
+  }
+}
+
 const personHashOfEntry = (sk: string): string => sk.slice(sk.lastIndexOf("#M#") + 3);
 
 /**
@@ -188,6 +208,14 @@ export async function applyAudienceEvent(table: TeamRecordTable, orgId: OrgId, i
   const iso = isoOf(input.at);
   const existing = await getHeader(table, orgId, input.scope);
   const current = existing === undefined || existing.fed === "snapshot" || existing.modeTs <= iso;
+  if (input.audience.kind === "restricted" && (input.audience.acl.principals ?? []).length === 0 && (input.audience.acl.groups ?? []).length === 0) {
+    // The list could not be read (a conversion to private whose member list was unavailable, or a channel everyone left): nothing says who is in. The unit is cleared and left
+    // UNSEEDED, restricted, so the next full list (a row's snapshot, the tap's seed) seeds it. Writing "everyone removed" as events would lock the channel for good.
+    if (existing !== undefined && !current) return;
+    await clearEntries(table, orgId, input.scope);
+    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: headerItem(orgId, { scope: input.scope, source: input.audience.acl.source, mode: "restricted", groups: [], liveCheck: input.audience.acl.liveCheck, modeTs: iso, seeded: false, fed: "events" }) }));
+    return;
+  }
   if (input.audience.kind === "restricted") {
     const erased = await erasedAccessIds(table, orgId, input.audience.acl.principals ?? []);
     const principals = [...new Set(input.audience.acl.principals ?? [])].filter((id) => !erased.has(id));
@@ -308,28 +336,42 @@ export async function observeOpenRow(table: TeamRecordTable, orgId: OrgId, scope
 
 // ---- erasure and deletion
 
-/**
- * Removes a person's entries from every unit of the org and writes the erased marker first, so a later event or snapshot cannot put the id back. Returns false when the
- * budget ran out (the caller reports the erase as not complete and runs it again).
- */
-export async function eraseAccessOfPerson(table: TeamRecordTable, orgId: OrgId, ids: readonly string[], budget: { maxItems: number }): Promise<boolean> {
-  let left = budget.maxItems;
-  for (const id of new Set(ids)) {
-    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...recordAccessErasedKey(orgId, id), entityType: "TEAM_RECORD_ERASED", at: new Date().toISOString() } }));
-    const found = await queryPrefix(table, orgId, undefined, recordAccessPersonPrefix(id), Math.max(left, 1));
-    for (const index of found.items) {
-      if (typeof index.sk !== "string" || typeof index.pk !== "string") continue;
-      const prefix = recordAccessPersonPrefix(id);
-      const unitHash = index.sk.slice(prefix.length);
-      const personHash = prefix.slice("ACCESSP#".length, -1);
-      await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: index.pk, sk: `ACCESS#${unitHash}#M#${personHash}` } }));
-      await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: index.pk, sk: index.sk } }));
-      left -= 1;
-    }
-    if (found.truncated) return false;
-  }
-  return true;
+/** The erased marker for each id, written FIRST: from then on no event or snapshot puts the id back into any record. */
+export async function markAccessErased(table: TeamRecordTable, orgId: OrgId, ids: readonly string[], at: string): Promise<void> {
+  for (const id of new Set(ids)) await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...recordAccessErasedKey(orgId, id), entityType: "TEAM_RECORD_ERASED", at } }));
 }
+
+export interface PersonUnit {
+  unitHash: string;
+  /** The unit's scope as its header names it (absent if the header is gone). */
+  scope: string | undefined;
+}
+
+/** The units a person has an entry in, through the person index, with each unit's scope. `truncated`: more remain (the erase runs again). */
+export async function unitsOfPerson(table: TeamRecordTable, orgId: OrgId, id: string, max: number): Promise<{ units: PersonUnit[]; truncated: boolean }> {
+  const prefix = recordAccessPersonPrefix(id);
+  const found = await queryPrefix(table, orgId, undefined, prefix, Math.max(max, 1));
+  const units = found.items.flatMap((item) => (typeof item.sk === "string" ? [{ unitHash: item.sk.slice(prefix.length), scope: undefined as string | undefined }] : []));
+  for (let at = 0; at < units.length; at += BATCH_KEYS) {
+    const chunk = units.slice(at, at + BATCH_KEYS);
+    const keys = chunk.map((unit) => ({ pk: found.items[0]?.pk as string, sk: `ACCESS#${unit.unitHash}` }));
+    const headers = await batchGetAll(table, keys, sleepFor());
+    for (const [index, unit] of chunk.entries()) { const scope = headers.get((keys[index] as { sk: string }).sk)?.scope; unit.scope = typeof scope === "string" ? scope : undefined; }
+  }
+  return { units, truncated: found.truncated };
+}
+
+/** Removes one person's entry and index item from one unit. */
+export async function removePersonFromUnit(table: TeamRecordTable, orgId: OrgId, id: string, unitHash: string): Promise<void> {
+  const prefix = recordAccessPersonPrefix(id);
+  const personHash = prefix.slice("ACCESSP#".length, -1);
+  const pk = recordAccessMemberKey(orgId, "x", id).pk;
+  await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk, sk: `ACCESS#${unitHash}#M#${personHash}` } }));
+  await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk, sk: `${prefix}${unitHash}` } }));
+}
+
+/** The place a unit's rows keep as their `scope`: an item unit (`<place>/item:<hash>[/c:<hash>]`) belongs to its place. */
+export const placeOfUnit = (scope: string): string => { const at = scope.indexOf("/item:"); return at < 0 ? scope : scope.slice(0, at); };
 
 /** Deletes a unit's record (header, person entries and their index items), at most `maxItems` entries a call. True when nothing is left. */
 export async function purgeAccessOfScope(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number): Promise<boolean> {
@@ -483,7 +525,7 @@ export function judgeAccess(reader: AccessReader, viewer: AccessViewer | undefin
       // Overlay: only removals count, and only those newer than the snapshot the row carries.
       for (const id of ids) {
         const value = entries.get(id);
-        if (value !== undefined && !isMemberValue(value) && (units.capturedAt === undefined || timeOfValue(value) > units.capturedAt)) return "deny";
+        if (value !== undefined && !isMemberValue(value) && (units.capturedAt === undefined || timeOfValue(value) >= units.capturedAt)) return "deny"; // a removal at the same time as the snapshot beats it, as everywhere else
       }
       continue;
     }

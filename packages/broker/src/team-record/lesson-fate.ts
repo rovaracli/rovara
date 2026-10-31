@@ -41,6 +41,8 @@ export interface LessonDeletionPort {
   withdraw(orgId: string, project: string, lessonId: string, cause: string): Promise<void>;
   /** Removes the deleted ids from the lesson's sources and record citations (a new version). */
   forgetSources(orgId: string, project: string, lessonId: string, deleted: ReadonlySet<string>): Promise<void>;
+  /** Removes the source ids of an erased person from the audience snapshots (`provenance.audience.acl.principals`) of every version of every lesson of the project. */
+  scrubAudienceIds(orgId: string, project: string, ids: readonly string[]): Promise<void>;
 }
 
 /** For an install with no learning lane: nothing rests on the record. Deletion refuses to run with NO port at all (a missing port is not "no lessons"), so this is explicit. */
@@ -48,4 +50,5 @@ export const NO_LESSONS: LessonDeletionPort = {
   async affected() { return []; },
   async withdraw() { /* nothing to withdraw */ },
   async forgetSources() { /* nothing to forget */ },
+  async scrubAudienceIds() { /* no lessons */ },
 };

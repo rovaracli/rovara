@@ -17,6 +17,8 @@ export class FakeLessons implements LessonDeletionPort {
   async affected(_org: string, _project: string, deleted: ReadonlySet<string>) {
     return this.list.filter((lesson) => !this.withdrawn.includes(lesson.id) && (lesson.provenance.sourceEvents.some((id) => deleted.has(id)) || lesson.citations.some((c) => c.kind === "record" && deleted.has(c.eventId))));
   }
+  readonly audienceScrubs: Array<{ project: string; ids: readonly string[] }> = [];
+  async scrubAudienceIds(_org: string, project: string, ids: readonly string[]) { this.audienceScrubs.push({ project, ids }); }
   async withdraw(_org: string, _project: string, id: string) { this.withdrawn.push(id); }
   async forgetSources(_org: string, _project: string, id: string, deleted: ReadonlySet<string>) {
     this.trimmed.push(id);

@@ -152,9 +152,14 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     summary.rows += purged.rows; summary.facts += purged.facts; summary.redistilled += purged.redistilled; summary.vectors += purged.vectors;
     summary.lessonsWithdrawn += purged.lessonsWithdrawn; summary.lessonsKept += purged.lessonsKept; summary.blocked += purged.blocked;
     // The deleted place keeps no member list (the place stays closed, so nothing reads it again): its entries go a few thousand a run, and the request stays until they are gone.
-    const accessGone = entry.scope !== undefined && (entry.cause === "source_deleted" || entry.cause === "excluded") && purged.blocked === 0 && !found.truncated
-      ? await purgeAccessOfScope(deps.table, orgId, entry.scope, remaining.maxItems)
-      : true;
+    const scopeDeleted = entry.scope !== undefined && (entry.cause === "source_deleted" || entry.cause === "excluded");
+    // The units under the place (an issue, a comment, an MCP item: each has its own record) are named by the rows' own snapshots; they go with the rows, in the same run.
+    let unitsGone = true;
+    if (scopeDeleted) {
+      const units = new Set(found.items.flatMap((item) => { const scope = (item.audience as { acl?: { scope?: unknown } } | undefined)?.acl?.scope; return item.entityType === "TEAM_RECORD_EVENT" && typeof scope === "string" && scope !== entry.scope ? [scope] : []; }));
+      for (const unit of units) unitsGone = (await purgeAccessOfScope(deps.table, orgId, unit, remaining.maxItems)) && unitsGone;
+    }
+    const accessGone = scopeDeleted && purged.blocked === 0 && !found.truncated ? (await purgeAccessOfScope(deps.table, orgId, entry.scope as string, remaining.maxItems)) && unitsGone : unitsGone;
     if (purged.blocked === 0 && !found.truncated && accessGone) {
       await deps.audit?.(auditRecordTombstoned({ orgId, requestId: entry.requestId, at: new Date(now()).toISOString(), scopeOrSource: entry.scope ?? entry.system, cause: entry.cause ?? "source_deleted", count: purged.rows + purged.facts })).catch(() => undefined);
       await deleteItem(deps.table, key);

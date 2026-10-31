@@ -268,7 +268,7 @@ describe("N5-5 / N5-6: erasure is a fence", () => {
       if (event.action === "lesson.approved" && !erasing) { erasing = true; await port.erasePerson(WS, PROJECT, { developerId: "mallory" }, new Set(["A"])); }
       return emit(event);
     };
-    const deps: ApproveDeps = { store, directory: directory(), settings: settings(), audit, now: clock.now };
+    const deps: ApproveDeps = { access: allowAllAccess, store, directory: directory(), settings: settings(), audit, now: clock.now };
     await seed(store, kept());
     const result = await approveLesson(deps, { ...KEY, lessonId: "les_fence001", approverId: "bob" });
     expect(erasing).toBe(true);

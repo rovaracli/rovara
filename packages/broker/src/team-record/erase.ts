@@ -2,19 +2,23 @@
 // walks call (`learning/cleanup.ts`, which is not on this branch's base: see the lane report, "Wiring pending"). Each is bounded and resumable: a call does what its
 // budget allows and says whether it is complete, and the walk calls again until it is. Hot rows, vectors, facts, lessons and the lake queue follow the same
 // privacy order as a source delete (`purgeItems`): the lake first, a row only after its vector.
+import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { LESSON_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, teamRecordPk, type OrgId } from "@agentx/contracts";
 import type { Item } from "../agents/table-writes.js";
 import { auditRecordErased } from "./audit.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { addPurge, emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
-import { eraseAccessOfPerson } from "./access.js";
+import { markAccessErased, placeOfUnit, removePersonFromUnit, unitsOfPerson } from "./access.js";
 import { identitySystem, markPersonErased } from "./erased.js";
 import { changeScopePrincipals } from "./scope-work.js";
+import type { ScopeCursor } from "./store.js";
 import { bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
 
 export interface EraseBudget {
   /** The most items one call reads and removes. */
   maxItems: number;
+  /** The most milliseconds one call spends on the permission passes over places (default 20 s); the rest is left to the next run. */
+  maxMs?: number;
 }
 export const DEFAULT_ERASE_BUDGET: EraseBudget = { maxItems: 2_000 };
 
@@ -22,6 +26,8 @@ export interface EraseResult extends PurgeResult {
   /** The learned lessons, skills, manifests and settings removed with a project or a workspace. */
   other: number;
   complete: boolean;
+  /** For a person: whether each independent step finished (row snapshots, access records, lessons). A step that did not finish is resumed by the next run. */
+  steps?: { principals: boolean; access: boolean; lessons: boolean };
 }
 
 const finish = async (deps: PurgeDependencies, orgId: OrgId, cause: "person_erased" | "project_archived" | "org_closed", occurrence: string, result: EraseResult): Promise<void> => {
@@ -51,6 +57,7 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   if (who.developerId === undefined && identities.length === 0) throw new Error("erase: name a developer or a source identity");
   // The marker first: from now on no backfill, poller or edit can bring them back. Then the lake: their events and outcomes there are queued before anything hot is touched.
   await markPersonErased(deps.table, orgId, { developerId: who.developerId, identities }, new Date(now()).toISOString());
+  await markAccessErased(deps.table, orgId, identities.map((identity) => identity.sourceId), new Date(now()).toISOString());
   await queue.enqueue(orgId, [
     ...(who.developerId === undefined ? [] : [{ kind: "actor" as const, developerId: who.developerId }]),
     ...identities.map((identity) => ({ kind: "actor_source" as const, hash: recordActorSourceHash(identity.system, identity.sourceId) })),
@@ -78,27 +85,80 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   for (const item of allLinks) {
     if (typeof item.pk === "string" && typeof item.sk === "string") await tombstoneItem(deps.table, { pk: item.pk, sk: item.sk }, { at, cause: "person_erased" });
   }
-  // Their ids leave the permission snapshots of the places they were in, and the exclusion lists that named them.
-  const scopes = new Set<string>([...(who.scopes ?? []), ...rows.flatMap((row) => (typeof row.scope === "string" ? [row.scope] : [])), ...allLinks.flatMap((link) => (typeof link.scope === "string" ? [link.scope] : []))]);
+  // Their ids leave EVERYTHING, each step run on its own and recorded: one that cannot finish this run never stops the others, and the next run resumes it. The erased markers
+  // were written first, so no event, snapshot or join can put an id back while this runs.
   const ids = identities.map((identity) => identity.sourceId);
-  let scrubbed = true;
+  const steps = { principals: true, access: true, lessons: true };
   if (ids.length > 0) {
-    for (const scope of [...scopes].slice(0, 200)) {
-      const done = await changeScopePrincipals({ table: deps.table, now }, orgId, { scope, remove: ids, at }, { maxItems: budget.maxItems, maxMs: 8_000 });
-      scrubbed &&= done.complete;
-    }
-    scrubbed &&= scopes.size <= 200;
-    // Their ids leave EVERY access record of the org (not only the places they wrote in: a member who never posted has no rows there), and an erased marker stops any later
-    // event or snapshot from putting an id back.
-    scrubbed &&= await eraseAccessOfPerson(deps.table, orgId, ids, { maxItems: budget.maxItems });
+    // (1) Row snapshots: every place the person is in (the unit index names them all, including places they never posted in), the places of their own rows, and `who.scopes`.
+    const explicit = [...new Set([...(who.scopes ?? []), ...rows.flatMap((row) => (typeof row.scope === "string" ? [row.scope] : [])), ...allLinks.flatMap((link) => (typeof link.scope === "string" ? [link.scope] : []))])].sort();
+    steps.principals = await scrubExplicitPlaces(deps, orgId, explicit, ids, occurrence, at, budget);
+    // (2) The access records: for each unit the person is in, scrub the place's rows, then delete the person's entry and index item. An entry is deleted only after its place
+    // is clean, so a run that stops early leaves the index to name the rest; `access` is false until none is left.
+    steps.access = await scrubAccessUnits(deps, orgId, ids, at, budget);
     for (const project of who.projects ?? []) {
       for (const config of await listSourceConfigs(deps.table, orgId, project)) await removeFromExclude(deps.table, config, new Set(ids));
     }
+    // (3) Lessons: the ids leave the audience snapshots of every version, in every project the person touched.
+    const projects = [...new Set([...(who.projects ?? []), ...rows.flatMap((row) => (typeof row.project === "string" ? [row.project] : []))])];
+    if (deps.lessons === undefined) steps.lessons = projects.length === 0;
+    else for (const project of projects) { try { await deps.lessons.scrubAudienceIds(orgId, project, ids); } catch { steps.lessons = false; } }
   }
+  const scrubbed = steps.principals && steps.access && steps.lessons;
   const purged = await purgeItems(deps, orgId, [...rows, ...allLinks]);
-  const result: EraseResult = { ...purged, other: 0, complete: !found.truncated && purged.blocked === 0 && scrubbed };
+  const result: EraseResult = { ...purged, other: 0, complete: !found.truncated && purged.blocked === 0 && scrubbed, ...(ids.length === 0 ? {} : { steps }) };
   await finish(deps, orgId, "person_erased", occurrence, result);
   return result;
+}
+
+const ERASE_PROGRESS_PREFIX = "ERASEPROG#";
+
+/** The explicit list of places, scrubbed a budget at a time: where it stopped is kept on a progress item, so a person in thousands of places completes over several runs. */
+async function scrubExplicitPlaces(deps: PurgeDependencies, orgId: OrgId, places: readonly string[], ids: readonly string[], occurrence: string, at: string, budget: EraseBudget): Promise<boolean> {
+  const progressKey = { pk: teamRecordPk(orgId), sk: `${ERASE_PROGRESS_PREFIX}${occurrence}` };
+  const saved = await deps.table.documentClient.send(new GetCommand({ TableName: deps.table.tableName, Key: progressKey, ConsistentRead: true })) as { Item?: { next?: unknown } };
+  let next = typeof saved.Item?.next === "number" ? saved.Item.next : 0;
+  const stop = (deps.now ?? Date.now)() + (budget.maxMs ?? SCRUB_MS_PER_RUN);
+  while (next < places.length && (deps.now ?? Date.now)() < stop) {
+    if (!(await scrubPlace(deps, orgId, places[next] as string, ids, at, budget, stop))) break;
+    next += 1;
+  }
+  if (next >= places.length) { await deleteItem(deps.table, progressKey); return true; }
+  await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { ...progressKey, entityType: "TEAM_RECORD_ERASE_PROGRESS", next } }));
+  return false;
+}
+const SCRUB_MS_PER_RUN = 20_000;
+
+/** One place: its ids leave every row, walked from a cursor until the pass is complete or the run's time is spent. True when complete. */
+async function scrubPlace(deps: PurgeDependencies, orgId: OrgId, scope: string, ids: readonly string[], at: string, budget: EraseBudget, stop: number): Promise<boolean> {
+  let cursor: ScopeCursor | undefined;
+  for (;;) {
+    if ((deps.now ?? Date.now)() >= stop) return false;
+    const done = await changeScopePrincipals({ table: deps.table, ...(deps.now === undefined ? {} : { now: deps.now }) }, orgId, { scope, remove: ids, at }, { maxItems: budget.maxItems, maxMs: 8_000 }, cursor);
+    if (done.complete) return true;
+    cursor = done.cursor;
+    if (cursor === undefined) return false;
+  }
+}
+
+/** Each unit the person is in: the rows of its place lose the id, then the person's entry and index item go. Returns true when no unit is left. */
+async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: readonly string[], at: string, budget: EraseBudget): Promise<boolean> {
+  const stop = (deps.now ?? Date.now)() + (budget.maxMs ?? SCRUB_MS_PER_RUN);
+  for (const id of ids) {
+    for (;;) {
+      const { units, truncated } = await unitsOfPerson(deps.table, orgId, id, Math.min(budget.maxItems, 200));
+      if (units.length === 0) break;
+      for (const unit of units) {
+        if ((deps.now ?? Date.now)() >= stop) return false;
+        if (unit.scope !== undefined) {
+          if (!(await scrubPlace(deps, orgId, placeOfUnit(unit.scope), [id], at, budget, stop))) return false;
+        }
+        await removePersonFromUnit(deps.table, orgId, id, unit.unitHash);
+      }
+      if (!truncated && units.length < Math.min(budget.maxItems, 200)) break;
+    }
+  }
+  return true;
 }
 
 /** Everything that lives in a project's partition besides rows, derivation links, facts and source settings: the learning lane's lessons, skills, manifests, snapshots and settings. */

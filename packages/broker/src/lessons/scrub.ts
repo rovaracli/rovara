@@ -1,6 +1,13 @@
 // Learning v2: the pure rewrite of a lesson without deleted record ids and, when given, without erased people (ids compared by the one normaliser).
 import { ERASED_MARK, normId, type Lesson } from "./types.js";
 
+/** The lesson without the given source ids in its audience snapshot (an erased person's id leaves `provenance.audience.acl.principals`). Pure. */
+export function stripAudienceIds(lesson: Lesson, ids: ReadonlySet<string>): Lesson {
+  const audience = lesson.provenance.audience;
+  if (audience.kind !== "restricted" || audience.acl.principals === undefined || !audience.acl.principals.some((id) => ids.has(id))) return lesson;
+  return { ...lesson, provenance: { ...lesson.provenance, audience: { ...audience, acl: { ...audience.acl, principals: audience.acl.principals.filter((id) => !ids.has(id)) } } } };
+}
+
 /** The lesson without the deleted ids (sources and record citations), and, if given, without the person. Citation checks are re-indexed. Pure. */
 export function scrubLesson(lesson: Lesson, deleted: ReadonlySet<string>, dev?: string | ReadonlySet<string>): Lesson {
   const people = dev === undefined ? undefined : typeof dev === "string" ? new Set([normId(dev)]) : new Set([...dev].map(normId));
