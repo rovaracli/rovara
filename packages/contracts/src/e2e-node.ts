@@ -160,9 +160,20 @@ export const E2ELimitsSchema = z.object({
 
 export type E2ELimits = z.infer<typeof E2ELimitsSchema>;
 
-export const E2ECapturePolicySchema = z.object({ screenshots: z.boolean(), traces: z.boolean(), video: z.boolean(), downloads: z.boolean() }).strict();
+/**
+ * `screenshotMode` (proof and evidence B1) is absent unless a strip is asked for: "all" adds a screenshot at the end of each step of every case (a passing case's strip, at most six frames), "failed" is the
+ * default of one screenshot of each failed case. `apiSamples` (B2) records a redacted request/response sample of each API step. Both are optional so a policy written before it, and its digest, read exactly as before.
+ */
+export const E2ECapturePolicySchema = z.object({ screenshots: z.boolean(), traces: z.boolean(), video: z.boolean(), downloads: z.boolean(), screenshotMode: z.enum(["failed", "all"]).optional(), apiSamples: z.boolean().optional() }).strict();
 
 export type E2ECapturePolicy = z.infer<typeof E2ECapturePolicySchema>;
+
+/** The worker feature string of a worker that reads `screenshotMode` and `apiSamples` in the capture policy and writes strip frames and API samples (proof and evidence B1/B2). */
+export const E2E_CAPTURE_EXTRAS_FEATURE = "task.workflowE2ECaptureExtras.v1" as const;
+/** Whether a capture policy uses a field only a worker with `E2E_CAPTURE_EXTRAS_FEATURE` understands. The broker sets the admission reference's `captureExtras` from this, and never sets either field without it. */
+export function capturePolicyNeedsExtras(capture: Pick<E2ECapturePolicy, "screenshotMode" | "apiSamples">): boolean {
+  return capture.screenshotMode !== undefined || capture.apiSamples !== undefined;
+}
 
 const E2ETargetBaseSchema = z.object({ targetId: id(80), applicationId: id(120), runtimeProfileId: id(120), accountProfileId: id(120) }).strict();
 
@@ -227,7 +238,12 @@ export type E2EQualifiedRound = z.infer<typeof E2EQualifiedRoundSchema>;
 export const E2EWorkflowAdmissionRefSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal("application").optional(),
   /** True when a group of the round has an `agent` step: the dispatcher then hands the round only to a worker that lists `task.workflowE2EAgentSteps.v1` (M1.4). */
-  agentSteps: z.literal(true).optional(), taskId: z.string().uuid(), workflowRevision: positiveInt,
+  agentSteps: z.literal(true).optional(),
+  /**
+   * True when the signed capture policy carries `screenshotMode` or `apiSamples` (proof and evidence B1/B2). The dispatcher then hands the round only to a worker that lists `E2E_CAPTURE_EXTRAS_FEATURE`:
+   * a worker built before them parses the policy with a strict schema and would refuse the whole round after compute was spent (and an older host readback would drop the whole capture listing).
+   */
+  captureExtras: z.literal(true).optional(), taskId: z.string().uuid(), workflowRevision: positiveInt,
   candidateDigest: digest, roundId: z.string().uuid(), groupRunIds: z.array(z.string().uuid()).min(1).max(4).refine((values) => new Set(values).size === values.length), admissionRef: z.object({
     key: z.string().regex(/^workflow-e2e-admissions\/sha256\/[a-f0-9]{64}\.json$/), sha256: digest,
     byteLength: positiveInt.max(24 * 1024 * 1024),

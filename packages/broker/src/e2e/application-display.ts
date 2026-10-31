@@ -341,7 +341,7 @@ const SCREENSHOT_NAME = /^case-\d{1,4}-screenshot\.jpg$/u;
 
 /**
  * The screenshots a group's operator evidence lists (`captures.artifacts`) and carries (`captures.files`), kept only when they are what they say: for a case of the
- * group, not dropped, named as a case capture, base64 that decodes back to the same text, a JPEG, at most 512 KiB, of exactly the listed size and digest. The first
+ * group, not dropped, not a strip frame (those are read by `readCaptureStrips`), named as a case capture, base64 that decodes back to the same text, a JPEG, at most 512 KiB, of exactly the listed size and digest. The first
  * for a case wins. Anything of another shape is ignored; this never throws.
  */
 export function readCaptureScreenshots(operatorEvidence: unknown, caseIds: ReadonlySet<string>): Map<string, { sha256: string; data: Uint8Array }> {
@@ -350,7 +350,7 @@ export function readCaptureScreenshots(operatorEvidence: unknown, caseIds: Reado
     const captures = isRecord(operatorEvidence) ? operatorEvidence.captures : undefined;
     if (!isRecord(captures) || !Array.isArray(captures.artifacts) || !Array.isArray(captures.files)) return kept;
     for (const entry of captures.artifacts as unknown[]) {
-      if (!isRecord(entry) || entry.kind !== "screenshot" || entry.omitted !== undefined || typeof entry.caseId !== "string" || !caseIds.has(entry.caseId) || kept.has(entry.caseId)) continue;
+      if (!isRecord(entry) || entry.kind !== "screenshot" || entry.omitted !== undefined || entry.step !== undefined || typeof entry.caseId !== "string" || !caseIds.has(entry.caseId) || kept.has(entry.caseId)) continue;
       if (typeof entry.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(entry.sha256) || !Number.isInteger(entry.bytes) || (entry.bytes as number) <= 0 || (entry.bytes as number) > E2E_DISPLAY_SCREENSHOT_MAX_BYTES) continue;
       const file = (captures.files as unknown[]).find((candidate) => isRecord(candidate) && candidate.sha256 === entry.sha256);
       if (!isRecord(file) || typeof file.name !== "string" || !SCREENSHOT_NAME.test(file.name) || typeof file.base64 !== "string" || file.bytes !== entry.bytes) continue;

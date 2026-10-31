@@ -43,10 +43,13 @@ describe("the retention of workflow screenshots is a rule on the bucket the brok
   it("expires an object that carries the screenshot tag after 30 days on the bucket the broker is configured with, and only such an object", () => {
     expect(brokerBucketId, "the broker names its artifact bucket").toBeDefined();
     const rules = buckets[brokerBucketId!]?.Properties.LifecycleConfiguration?.Rules ?? [];
-    expect(rules).toHaveLength(1);
+    // The screenshot rule first; proof and evidence P6 adds one rule per evidence class (tests/unit/evidence-artifact-store.test.ts pins those), each on its own tag value.
+    expect(rules).toHaveLength(3);
     expect(rules[0]).toMatchObject({ Status: "Enabled", ExpirationInDays: E2E_ARTIFACT_RETENTION_DAYS,
       TagFilters: [{ Key: E2E_ARTIFACT_RETENTION_TAG_KEY, Value: E2E_ARTIFACT_RETENTION_TAG_VALUE }] });
-    expect(rules[0]!.Prefix).toBeUndefined();
+    expect(rules.map((rule) => rule.TagFilters?.[0]?.Value)).toEqual([E2E_ARTIFACT_RETENTION_TAG_VALUE, "evidence-short", "evidence-std"]);
+    // the screenshot rule is tag-only (as before); the evidence rules are prefix AND tag (an `And` filter), so a tagged object outside the private keys never matches
+    expect(rules.map((rule) => rule.Prefix)).toEqual([undefined, "private/", "private/"]);
     // The bucket is not versioned, so expiry deletes the object and no rule for old versions is needed.
     expect(buckets[brokerBucketId!]!.Properties.VersioningConfiguration).toBeUndefined();
   });
@@ -95,6 +98,13 @@ describe("the broker tags a screenshot, and only a screenshot, with that retenti
   it("names the tag nowhere else in the broker, so no other object can expire on it", () => {
     const found = execFileSync("grep", ["-rl", "E2E_ARTIFACT_RETENTION_TAG\\|Tagging:", "packages", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" })
       .trim().split("\n").filter((file) => file !== "");
-    expect(found.sort()).toEqual(["packages/broker/src/aws/workflow-e2e-artifacts.ts", "packages/contracts/src/e2e-view-node.ts"]);
+    // P6: the evidence store tags with the same KEY and the evidence classes' own values; it must never carry the screenshot tag.
+    expect(found.sort()).toEqual(["packages/broker/src/aws/evidence-artifacts.ts", "packages/broker/src/aws/workflow-e2e-artifacts.ts", "packages/contracts/src/e2e-view-node.ts"]);
+  });
+
+  it("keeps the evidence store off the screenshot's tag value, so an evidence object never expires as a screenshot", () => {
+    const evidence = readFileSync("packages/broker/src/aws/evidence-artifacts.ts", "utf8");
+    expect(evidence).not.toMatch(/E2E_ARTIFACT_RETENTION_TAG(?!_KEY)/u);
+    expect(evidence).not.toContain("e2e-screenshot");
   });
 });

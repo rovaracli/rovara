@@ -6,6 +6,7 @@ import {
   MODEL_ROUTE_FEATURE,
   E2E_AGENT_MODEL_CHOICE_FEATURE,
   E2E_AGENT_STEPS_FEATURE,
+  E2E_CAPTURE_EXTRAS_FEATURE,
   E2E_MODEL_SESSION_SYNC_FEATURE,
   E2E_AGENT_UNAVAILABLE_REASONS,
   E2E_MODEL_FREE_LIMITS_FEATURE,
@@ -320,6 +321,7 @@ async function forWorkerFeatures(
     || invocation.payload.workflowReviewPlan?.e2eIntent?.schemaVersion === 2);
   const carriesApplicationAdmission = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.kind === "application";
   const carriesAgentSteps = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.agentSteps === true;
+  const carriesCaptureExtras = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.captureExtras === true;
   const carriesReportChecks = invocation.kind === "publish" && invocation.payload.reportChecks !== undefined;
   const carriesCandidateTree = invocation.kind === "publish" && invocation.payload.candidateTreeSha !== undefined;
   const carriesPublicationMode = invocation.kind === "publish" && invocation.payload.publicationMode !== undefined;
@@ -341,7 +343,7 @@ async function forWorkerFeatures(
   const carriesMeta = invocation.kind === "prepare" && invocation.payload.meta !== undefined;
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -410,6 +412,11 @@ async function forWorkerFeatures(
   // sent one (and never a trimmed one): the attempt fails with this reason instead (Ruling BQ, mixed fleet).
   if (carriesApplicationAdmission && !features.includes("task.workflowE2EApplicationChecks")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "browser and API verification needs a worker that runs application admissions (it must list task.workflowE2EApplicationChecks); this worker predates it or has no executor image on its host, so no application round was sent to it");
+  }
+  // Proof and evidence B1/B2: a capture policy with a strip or API samples is read only by a worker that lists the feature. An older worker parses the policy strictly and refuses the whole round after
+  // compute was spent, so the round is never handed to it (and the fields are never trimmed away, since the signed admission fixes what the round proves).
+  if (carriesCaptureExtras && !features.includes(E2E_CAPTURE_EXTRAS_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", "This worker can't take screenshot strips or API samples yet; retry once it restarts on the new image");
   }
   // A round with AI navigation steps needs the model channel only a worker that lists the feature has, and the steps are never trimmed away: the attempt fails with this reason instead.
   if (carriesAgentSteps && !features.includes(E2E_AGENT_STEPS_FEATURE)) {
