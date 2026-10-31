@@ -251,6 +251,27 @@ describe("T7 lifecycle: crashes and backoff", () => {
     expect(w.runner.started("serve")).toHaveLength(4);
     expect(w.controller.recentStarts(ID)).toEqual({ failures: 0 });
   });
+  it("backs off a server that starts cleanly but dies under every call (found by the call, not by a pass)", async () => {
+    const w = await lifecycle();
+    for (let round = 0; round < 3; round += 1) {
+      expect((await mcp(w.brokerUrl, ID)).status).toBe(200);
+      await w.runner.crash(w.runner.started("serve")[round]!.taskId);
+      expect((await mcp(w.brokerUrl, ID)).status).toBe(503);
+    }
+    expect(w.controller.recentStarts(ID).backoffUntil).toBeGreaterThan(now());
+    const refused = await mcp(w.brokerUrl, ID);
+    expect(await refused.json()).toEqual({ error: "keeps_stopping" });
+    expect(w.runner.started("serve")).toHaveLength(3);
+  });
+  it("judges every task but those of a server whose start is in flight: steady start traffic for one server does not put off a leftover of another", async () => {
+    const w = await lifecycle({ runner: { startDelayMs: 300 } });
+    w.runner.extra.push(ghost());
+    const request = mcp(w.brokerUrl, ID);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await w.controller.reconcile();
+    expect(w.runner.stops.map((stop) => stop.taskId)).toEqual(["ghost-1"]);
+    expect((await request).status).toBe(200);
+  });
   it("counts only failures within ten minutes", async () => {
     const w = await lifecycle();
     for (let round = 0; round < 2; round += 1) { await mcp(w.brokerUrl, ID); await w.runner.crash(w.runner.started("serve")[round]!.taskId); await w.controller.reconcile(); }

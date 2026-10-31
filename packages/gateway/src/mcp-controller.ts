@@ -243,7 +243,7 @@ export interface McpController {
 // ---------------------------------------------------------------------------------------------
 
 export function createMcpController(options: McpControllerOptions): McpController {
-  if (options.token.length < 24) throw new Error("the MCP controller's token is too short");
+  if (options.token.length < 43) throw new Error("the MCP controller's token is too short (256 bits are needed)");
   const limits: ControllerLimits = { ...CONTROLLER_LIMITS, ...options.limits };
   const now = options.now ?? Date.now;
   const log = options.log ?? (() => undefined);
@@ -260,8 +260,8 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   /** Install and probe tasks this controller started and has not finished with. Serve tasks are the entries of `serving`. */
   const activeTaskIds = new Set<string>();
   const activeProbeIds = new Set<string>();
-  /** Starts that have been asked of the runner and not yet recorded: a task that exists but is not recorded yet is not a leftover. */
-  let startsInFlight = 0;
+  /** Starts that have been asked of the runner and not yet recorded, by server id: a task of that server that exists but is not recorded yet is not a leftover; every other task is judged. */
+  const startsInFlight = new Map<string, number>();
   let startedCount = 0;
   let closed = false;
   let sweeping = false;
@@ -270,14 +270,15 @@ export function createMcpController(options: McpControllerOptions): McpControlle
 
   /** Asks the runner for a task. The task is recorded (by `record`) before the start counts as finished, so reconcile never sees a task that exists and is not recorded. */
   async function startTask(spec: Parameters<TaskRunner["start"]>[0], record: (taskId: string) => void): Promise<string> {
-    startsInFlight += 1;
+    startsInFlight.set(spec.serverId, (startsInFlight.get(spec.serverId) ?? 0) + 1);
     try {
       const taskId = await runner.start(spec);
       startedCount += 1;
       record(taskId);
       return taskId;
     } finally {
-      startsInFlight -= 1;
+      const left = (startsInFlight.get(spec.serverId) ?? 1) - 1;
+      if (left <= 0) startsInFlight.delete(spec.serverId); else startsInFlight.set(spec.serverId, left);
     }
   }
 
@@ -325,7 +326,8 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     for (;;) {
       if (isCancelled()) throw new ControllerError("task_stopped");
       try {
-        const response = await fetch(`${base}/ready`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) });
+        // The bridge shares the package's uid, so it is untrusted: a redirect from it is an error, never followed (it would make the controller call any address its group reaches).
+        const response = await fetch(`${base}/ready`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000), redirect: "error" });
         if (response.status === 200) {
           const body = await response.json().catch(() => undefined) as { ready?: unknown; bundleHash?: unknown } | undefined;
           // The bridge says which bundle it verified and started. Anything but the approved one is stopped.
@@ -344,7 +346,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   async function listTools(base: string, token: string): Promise<ProbedTool[]> {
     const client = new Client({ name: "rovara-mcp-controller", version: "0.1.0" });
     try {
-      const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token}` } } }) as Transport;
+      const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${token}` }, redirect: "error" } }) as Transport;
       await client.connect(transport, { timeout: 30_000 });
       const tools: ProbedTool[] = [];
       let cursor: string | undefined;
@@ -609,11 +611,11 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     if (typeof version === "string" && /^[0-9-]{1,20}$/u.test(version)) headers["mcp-protocol-version"] = version;
     let response: Response;
     try {
-      response = await fetch(`${entry.base}/mcp`, { method: "POST", headers, body, signal: AbortSignal.timeout(limits.callMs + 5_000) });
+      response = await fetch(`${entry.base}/mcp`, { method: "POST", headers, body, signal: AbortSignal.timeout(limits.callMs + 5_000), redirect: "error" });
     } catch {
       // The task may have stopped under us: if the runner says so, it is dropped and counted.
       const status = entry.taskId === undefined ? undefined : await runner.describe(entry.taskId).catch(() => undefined);
-      if (status === undefined || status.state === "stopped") { if (serving.get(entry.serverId) === entry) { serving.delete(entry.serverId); revoke(entry.grantKey); failures.set(entry.serverId, [...(failures.get(entry.serverId) ?? []), now()]); } }
+      if (status === undefined || status.state === "stopped") { if (serving.get(entry.serverId) === entry) { serving.delete(entry.serverId); revoke(entry.grantKey); recordFailure(entry.serverId); } }
       send(res, 503, { error: "server_unavailable" });
       return;
     }
@@ -765,7 +767,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
           const known = task.purpose === "serve" ? entry !== undefined : activeTaskIds.has(task.taskId);
           if (!known) {
             // A start that is in flight may have made a task that is not recorded yet; it is judged on the next pass.
-            if (startsInFlight > 0) continue;
+            if ((startsInFlight.get(task.serverId) ?? 0) > 0) continue;
             await runner.stop(task.taskId, "leftover").catch(() => undefined);
             log("mcp_controller.task_stopped", { serverId: task.serverId, taskId: task.taskId, reason: "leftover" });
             continue;

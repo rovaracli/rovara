@@ -1,7 +1,8 @@
 // Stdio MCP host redesign, task T6: the controller against a fake task runner. What is promised here: the broker's token and a task's token are for different listeners and different
 // routes; a token is bound to one task and one purpose; an approved server gets one task however many first requests arrive; a task that is not exactly the approved one is stopped;
 // every size and wait is bounded; and the task's own text never reaches the broker.
-import { request as httpRequest } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { createMcpController, memoryProbeSlots, type McpControllerOptions } from "../../../packages/gateway/src/mcp-controller.js";
 import { directoryBundleStore } from "../../../packages/gateway/src/mcp-runner/bundle-store.js";
@@ -500,5 +501,37 @@ describe("T6 controller: probe", () => {
     expect((await post(w.brokerUrl, "/probe", BROKER, { spec: { ...proposal, bundleHash: BUNDLE } })).status).toBe(400);
     expect((await post(w.brokerUrl, "/probe", BROKER, {})).status).toBe(400);
     expect((await post(w.brokerUrl, "/probe", BROKER, "[")).status).toBe(400);
+  });
+});
+
+describe("fix round 1, I1: a redirect from the bridge is never followed", () => {
+  async function internal() {
+    const hits: string[] = [];
+    const server = createServer((req, res) => { hits.push(`${req.method} ${req.url}`); res.writeHead(200, { "content-type": "application/json" }); res.end('{"secret":"internal"}'); });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return { hits, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/internal-path`, close: () => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }) };
+  }
+  for (const on of ["ready", "list", "call"] as const) {
+    it(`does not call the address a bridge redirects its ${on} answer to, and does not return what is there`, async () => {
+      const target = await internal();
+      try {
+        const w = await world({ runner: { redirect: { to: target.url, on: [on] } }, controller: { limits: { startMs: 400 } } });
+        const answer = await mcp(w.brokerUrl, "mcpsim000001");
+        expect(answer.status).toBeGreaterThanOrEqual(502);
+        expect(await answer.text()).not.toContain("internal");
+        expect(target.hits).toEqual([]);
+        if (on === "call") expect(w.controller.running()).toBe(1);
+      } finally {
+        await target.close();
+      }
+    });
+  }
+});
+
+describe("fix round 1, m9: the broker's token has 256 bits", () => {
+  it("refuses 42 characters and accepts 43", () => {
+    const options = { registry: { approved: async () => undefined }, runner: new FakeRunner(), bundles: directoryBundleStore("/nowhere"), controllerUrl: "http://127.0.0.1:1", npmRegistry: "https://r.example/", toolsHashOf: toolsHashOfNames, sweepMs: 0 };
+    expect(() => createMcpController({ ...options, token: "t".repeat(42) })).toThrow(/too short/u);
+    expect(() => createMcpController({ ...options, token: "t".repeat(43) })).not.toThrow();
   });
 });

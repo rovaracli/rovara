@@ -14,7 +14,7 @@ export const sha256 = (value: string | Buffer): string => createHash("sha256").u
 /** A tools hash for the tests: the names, in order. */
 export const toolsHashOfNames = (tools: ProbedTool[]): string => sha256(tools.map((tool) => tool.name).join(","));
 
-export interface FakeBridgeOptions { token: string; bundleHash: string; tools: ProbedTool[]; reply?: (name: string) => string; replyStatus?: number; /** The status for a tool call only (the tools list answers normally). */ callStatus?: number }
+export interface FakeBridgeOptions { token: string; bundleHash: string; tools: ProbedTool[]; reply?: (name: string) => string; replyStatus?: number; /** Answer these requests with a 303 to this address (a hostile bridge). */ redirect?: { to: string; on: Array<"ready" | "list" | "call"> }; /** The status for a tool call only (the tools list answers normally). */ callStatus?: number }
 
 /** A bridge: GET /ready, POST /mcp (tools/list and tools/call). It records the bearer tokens it was shown. */
 export async function fakeBridge(options: FakeBridgeOptions): Promise<{ url: string; seen: string[]; calls: string[]; close(): Promise<void> }> {
@@ -24,12 +24,15 @@ export async function fakeBridge(options: FakeBridgeOptions): Promise<{ url: str
     const bearer = String(req.headers.authorization ?? "");
     seen.push(bearer);
     if (bearer !== `Bearer ${options.token}`) { res.writeHead(401); res.end(); return; }
+    if (options.redirect?.on.includes("ready") === true && req.url === "/ready") { res.writeHead(303, { location: options.redirect.to }); res.end(); return; }
     if (req.method === "GET" && req.url === "/ready") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ready: true, bundleHash: options.bundleHash })); return; }
     if (req.method !== "POST" || req.url !== "/mcp") { res.writeHead(404); res.end(); return; }
     if (options.replyStatus !== undefined) { res.writeHead(options.replyStatus); res.end("{}"); return; }
     const chunks: Buffer[] = [];
     for await (const chunk of req as AsyncIterable<Buffer>) chunks.push(chunk);
     const body = chunks.length === 0 ? undefined : JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+    const method = (body as { method?: unknown } | undefined)?.method;
+    if (options.redirect !== undefined && ((method === "tools/call" && options.redirect.on.includes("call")) || (method === "tools/list" && options.redirect.on.includes("list")))) { res.writeHead(303, { location: options.redirect.to }); res.end(); return; }
     if (options.callStatus !== undefined && (body as { method?: unknown } | undefined)?.method === "tools/call") { res.writeHead(options.callStatus); res.end("{}"); return; }
     const server = new McpServer({ name: "fake-bridge", version: "1.0.0" }, { capabilities: { tools: {} } });
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: options.tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: { type: "object" as const, ...tool.inputSchema }, annotations: tool.annotations })) }));
@@ -58,6 +61,7 @@ export interface FakeRunnerOptions {
   failStart?: boolean;
   replyStatus?: number;
   callStatus?: number;
+  redirect?: { to: string; on: Array<"ready" | "list" | "call"> };
   /** `start` takes this long to answer; the task already exists (and is listed) meanwhile, as an ECS task does. */
   startDelayMs?: number;
   reply?: (name: string) => string;
@@ -98,7 +102,7 @@ export class FakeRunner implements TaskRunner {
     const server = spec.containers.server ?? {};
     const bridge = await fakeBridge({
       token: server.MCP_RUNNER_TOKEN ?? "", bundleHash: this.options.reportedBundle?.(spec) ?? server.MCP_BUNDLE_HASH ?? "", tools: this.options.tools?.(spec) ?? [{ name: "echo", inputSchema: { type: "object" } }],
-      ...(this.options.replyStatus === undefined ? {} : { replyStatus: this.options.replyStatus }), ...(this.options.callStatus === undefined ? {} : { callStatus: this.options.callStatus }), ...(this.options.reply === undefined ? {} : { reply: this.options.reply }),
+      ...(this.options.replyStatus === undefined ? {} : { replyStatus: this.options.replyStatus }), ...(this.options.callStatus === undefined ? {} : { callStatus: this.options.callStatus }), ...(this.options.redirect === undefined ? {} : { redirect: this.options.redirect }), ...(this.options.reply === undefined ? {} : { reply: this.options.reply }),
     });
     task.bridge = bridge;
     task.state = { state: "running", endpoint: bridge.url };
