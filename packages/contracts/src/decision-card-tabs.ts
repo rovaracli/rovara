@@ -36,3 +36,18 @@ export type DecisionCardsView = z.infer<typeof DecisionCardsViewSchema>;
 /** `POST /v1/app/decisions/{id}/approve`. `tab` is required on a card with tabs (one approval per tab) and refused on one without. Not bulk: one card, one tab, one request. */
 export const DecisionApproveBodySchema = z.object({ requestId: z.string().uuid(), tab: DecisionTabIdSchema.optional() }).strict();
 export type DecisionApproveBody = z.infer<typeof DecisionApproveBodySchema>;
+
+/** What an approve or a reject answers: the card, what was recorded and, on a card with tabs, which documents are still waiting. */
+export const DecisionAnsweredSchema = z
+  .object({
+    cardId: DecisionCardIdSchema,
+    outcome: z.enum(["approved", "rejected"]),
+    tab: DecisionTabIdSchema.optional(),
+    remainingTabs: z.array(DecisionTabIdSchema).max(2),
+  })
+  .strict();
+export type DecisionAnswered = z.infer<typeof DecisionAnsweredSchema>;
+
+/** What `evidence-opened` answers. `recorded` is false for a card that needs no such record (a low-risk one). */
+export const DecisionEvidenceOpenedAnswerSchema = z.object({ cardId: DecisionCardIdSchema, opened: z.literal(true), recorded: z.boolean() }).strict();
+export type DecisionEvidenceOpenedAnswer = z.infer<typeof DecisionEvidenceOpenedAnswerSchema>;

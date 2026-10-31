@@ -9,7 +9,7 @@
 // Anything an item says in words (a title, a question, a path) is flattened to plain text and cut; fixed words come from this file.
 import {
   DECISION_REJECT_REASONS, DecisionCardIdSchema, DecisionCardSchema, DecisionTabsSchema, decisionFriction,
-  type CardAction, type DecisionCard, type DecisionKind, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type EvidenceChip,
+  type CardAction, type DecisionCard, type DecisionKind, type DecisionRejectReason, type DecisionRisk, type DecisionTab, type DecisionTabId, type EvidenceChip,
 } from "@agentx/contracts";
 import { DECISION_SPEND_LOW_MAX_USD, riskTierOf, type DecisionLocks, type TierInputs, type TierResult } from "./risk-tier.js";
 import { isSafeRelativePath, plainLine } from "./text.js";
@@ -65,6 +65,8 @@ export interface Projection {
   cards: DecisionCard[];
   /** The tabs of the cards that have them, by card id. */
   tabs: Record<string, DecisionTab[]>;
+  /** For a card with tabs: the pending item each tab approves (its `subjectId`), so the performer acts on the right document. */
+  tabSubjects: Record<string, Record<DecisionTabId, string>>;
   /** Items left out because they could not become a safe card (a bad id or path, a missing input), counted, never described. */
   dropped: number;
 }
@@ -264,6 +266,7 @@ export function projectDecisionCards(items: readonly DecisionItem[], options: Pr
   }
   const cards: DecisionCard[] = [];
   const tabs: Record<string, DecisionTab[]> = {};
+  const tabSubjects: Record<string, Record<DecisionTabId, string>> = {};
   const merged = new Set<string>();
   if (options.pairFullCards !== false) {
     for (const first of built) {
@@ -276,9 +279,10 @@ export function projectDecisionCards(items: readonly DecisionItem[], options: Pr
       merged.add(second.card.id);
       cards.push(pair.card);
       tabs[pair.card.id] = pair.tabs;
+      tabSubjects[pair.card.id] = { requirements: first.item.subjectId, design: second.item.subjectId };
     }
   }
   for (const entry of built) if (!merged.has(entry.card.id)) cards.push(entry.card);
   cards.sort((a, b) => RISK_RANK[a.risk] - RISK_RANK[b.risk] || b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
-  return { cards, tabs, dropped };
+  return { cards, tabs, tabSubjects, dropped };
 }
