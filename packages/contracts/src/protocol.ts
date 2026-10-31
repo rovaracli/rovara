@@ -403,6 +403,9 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
         if (payload.ownerRedirect !== undefined && payload.workflowMode !== "IMPLEMENT") {
           context.addIssue({ code: "custom", path: ["ownerRedirect"], message: "an owner redirect requires implementation mode" });
         }
+        if (payload.ownerRedirect !== undefined && payload.agentStep !== undefined) {
+          context.addIssue({ code: "custom", path: ["ownerRedirect"], message: "an owner redirect is for a coding step, not an agent step (the agent step would ignore it)" });
+        }
         if(payload.modelPolicy!==undefined&&payload.model===undefined)context.addIssue({code:"custom",path:["model"],message:"a governed task requires an explicit server-resolved model"});
         if ((payload.workflowMode === "FEEDBACK_REVIEW") !== (payload.workflowFeedbackReview !== undefined)) {
           context.addIssue({ code: "custom", path: ["workflowFeedbackReview"], message: "feedback review mode requires its exact task workflow binding" });

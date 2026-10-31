@@ -1264,7 +1264,15 @@ async function runTask(
           const repositoryId = repositoryInputs[0]!.repositoryId;
           execution = await runPartsInParallel({ common, maxParallel: workflowDependencies.parallel.max, repositoryDirectory, repositoryId, initialTreeSha });
         } else {
-          execution = await executeSerialWorkflowDependencies(serialInput);
+          try {
+            execution = await executeSerialWorkflowDependencies(serialInput);
+          } catch (error) {
+            // The owner's live message or redirect asked for a change outside the approved plan and an item stopped for it: the run ends with the fixed words (the broker blocks the step for the owner),
+            // as a part does above, not with the generic "paused after an uncertain item".
+            const cause = error instanceof Error ? error.cause : undefined;
+            if (cause instanceof Error && cause.message.includes(WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE)) throw cause;
+            throw error;
+          }
         }
         workflowDependencyProgressEvents.push(...execution.progress.filter((entry) => !workflowDependencyProgressEvents.some((stored) => stored.sequence === entry.sequence)));
         const resumedItems = new Set((workflowDependencies.resumeProgress ?? [])

@@ -138,6 +138,16 @@ describe("owner redirect, worker side", () => {
     expect(ownerRedirectPrompt("p", undefined, "PLAN", undefined, randomUUID())).toBe("p");
   });
 
+  it("is refused together with an agent step, which would ignore it", () => {
+    const base = { protocolVersion: 1, kind: "task", operationId: randomUUID(), workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64) };
+    const agentStep = { kind: "coding", agentId: "agt_aaaaaaaaaaaaaaaaaaaa", version: 3, stepId: "review", tools: ["read", "grep"] };
+    const withStep = WorkerInvocationSchema.safeParse({ ...base, payload: { conversationId: randomUUID(), prompt: "p", workflowMode: "IMPLEMENT", ownerRedirect: redirect(), agentStep } });
+    expect(withStep.success).toBe(false);
+    if (!withStep.success) expect(JSON.stringify(withStep.error.issues)).toMatch(/agent step/u);
+    // Positive control: the same payload without the redirect is accepted, so the refusal above is the redirect's.
+    expect(WorkerInvocationSchema.safeParse({ ...base, payload: { conversationId: randomUUID(), prompt: "p", workflowMode: "IMPLEMENT", agentStep } }).success).toBe(true);
+  });
+
   it("accepts only the message id, the sender label and the text: authority, tools or a budget cannot ride along", () => {
     const parse = (ownerRedirect: Record<string, unknown>) => WorkerInvocationSchema.safeParse({
       protocolVersion: 1, kind: "task", operationId: randomUUID(), workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
