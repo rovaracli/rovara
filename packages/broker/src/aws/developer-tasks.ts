@@ -3635,6 +3635,7 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   // Plan 6 Task 15: a CI fix that waited for a person (suggest), ran out of rounds or changed nothing goes on at the owner's Retry.
   if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED" && (isCiFixBlockReason(task.workflow.blockReason) || isBranchConflictAskReason(task.workflow.blockReason) || isBranchSyncGiveUpReason(task.workflow.blockReason))) return retryCiFix(deps, caller, access, request);
   // A lifecycle restart is new agent work, unlike Continue or an existing workflow decision.
+  // Contributor intentionally checks only archive here; authorizeTaskAction owns the live role check.
   await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") return retryWorkflowImplementation(deps, caller, access, request);
   if (task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "BLOCKED") return retryWorkflowUnderstand(deps, caller, access, request);
@@ -3946,6 +3947,7 @@ async function queueWorkflowCoding(
   const { task } = access;
   const { workflow } = task;
   // Send-back and coding retries start a new run; archiving must refuse before any task writes.
+  // Contributor intentionally checks only archive here; authorizeTaskAction owns the live role check.
   await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   // The same authority this restart asks for once it has committed (below), asked before anything commits: a person who is refused it must not have started a run first.
   await authorizeTaskAction(deps, caller, task.taskId, "work");
@@ -4433,6 +4435,7 @@ async function startTaskWorkflowReview(deps: DeveloperTaskRouteDependencies, cal
   if (!retrying && request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "the review request is stale; refresh the task and try again");
   }
+  // Contributor intentionally checks only archive here; authorizeTaskAction owns the live role check.
   await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   await actionableWorkspace(deps, task);
   try {

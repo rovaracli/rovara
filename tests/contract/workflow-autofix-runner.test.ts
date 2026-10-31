@@ -1,7 +1,7 @@
 // T8 AUTOFIX-WIRING, the unclear browser-and-API fault: each UNKNOWN scenario is settled by its OWN result on the original code (the baseline record of the approved plan). The system moves are
 // replaced by spies here, so this file shows what the runner decides and asks, not how the broker starts a coding run (workflow-autofix-flow.test.ts does that for real).
 import { describe, expect, it, vi } from "vitest";
-import type { WorkflowSnapshot } from "@agentx/contracts";
+import { agentXError, type WorkflowSnapshot } from "@agentx/contracts";
 
 const moves = vi.hoisted(() => ({ sendBack: vi.fn(async () => "STARTED" as const), retryChecks: vi.fn(async () => "STARTED" as const), retryReviews: vi.fn(async () => "STARTED" as const) }));
 vi.mock("../../packages/broker/src/aws/developer-tasks.js", () => ({
@@ -54,6 +54,27 @@ function deps(input: { baseline: Baseline; unknown: string[]; spent?: number; no
 const recorded = (rows: Array<ReturnType<typeof row>>, skipped: string[] = []) => ({ state: "RECORDED", baseline: { status: "PASSED", scenarios: rows, ...(skipped.length === 0 ? {} : { skippedAiScenarios: skipped.map((id) => ({ scenarioId: id, title: id })) }) } });
 const run = (d: AutofixDependencies, mutate?: (t: DeveloperTaskRecord) => DeveloperTaskRecord) => runWorkflowAutofix(d, mutate === undefined ? task() : mutate(task()), { expectedRevision: 9, startedAt: "2026-10-25T10:00:00.000Z" });
 const asked = (writes: Array<Record<string, unknown>>) => AutoFixAskSchema.parse((writes.at(-1)!.ExpressionAttributeValues as { ":ask": unknown })[":ask"]);
+
+describe("archived project automatic moves", () => {
+  it.each(["send-back", "retry-checks"] as const)("finishes %s on its first PROJECT_ARCHIVED refusal without retrying or asking", async (move) => {
+    const { deps: d, writes } = deps(move === "send-back"
+      ? { baseline: recorded([row("a", "PASSED")]), unknown: ["a"] }
+      : { baseline: { state: "REQUESTED" }, unknown: ["a"], sourceReady: true });
+    const action = move === "send-back" ? moves.sendBack : moves.retryChecks;
+    action.mockClear();
+    action.mockRejectedValueOnce(agentXError("PROJECT_ARCHIVED", "Project is archived."));
+    expect(await run(d)).toBe("NONE");
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(writes).toEqual([]);
+  });
+
+  it("still propagates transient failures for the caller's bounded retry", async () => {
+    const { deps: d } = deps({ baseline: recorded([row("a", "PASSED")]), unknown: ["a"] });
+    const error = new Error("temporary backend failure");
+    moves.sendBack.mockRejectedValueOnce(error);
+    await expect(run(d)).rejects.toBe(error);
+  });
+});
 
 describe("an unclear browser and API fault is settled by each UNKNOWN scenario's own result on the original code", () => {
   it("sends back when every UNKNOWN scenario passed on the original code", async () => {
