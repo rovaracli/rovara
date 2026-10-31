@@ -42,6 +42,12 @@ export interface TicketItem {
   edit?: boolean;
   /** The source marks the item as restricted inside its team or project (a Jira issue security level): maintainers only, whatever the admin widened. */
   restricted?: boolean;
+  /**
+   * A comment takes its parent issue's restriction (a Jira comment webhook carries a reduced `issue.fields`, usually without the security level). It is
+   * recorded as open only when the parent is recorded under the scope and was recorded as NOT restricted (`ParentLookupPort.isOpen`); a parent that is not
+   * known, a lookup that fails or a missing port all mean restricted (maintainers only). A comment's own visibility restriction is `restricted`.
+   */
+  inheritsRestriction?: boolean;
   /** The body could not prove which team or project the item belongs to (a Linear comment names only its issue): it is recorded only if its parent is already recorded under this scope. */
   needsParentProof?: boolean;
   occurredAt: string;
@@ -53,6 +59,8 @@ export interface TicketItem {
 /** Whether an item (a ticket) is already recorded under a scope: how a comment that names only its ticket proves which team it belongs to. */
 export interface ParentLookupPort {
   isRecorded(input: { workspaceId: string; system: string; id: string; scope: string }): Promise<boolean>;
+  /** The parent is recorded under the scope with `structured.restricted === false`. Absent on the port: no parent is known open. */
+  isOpen?(input: { workspaceId: string; system: string; id: string; scope: string }): Promise<boolean>;
 }
 
 export interface TicketRecorderDependencies extends GateDependencies {
@@ -116,6 +124,12 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
             && await deps.parents.isRecorded({ workspaceId: context.workspaceId, system: item.system, id: item.parentId, scope: item.scope }).catch(() => false);
           if (!proven) return "skipped";
         }
+        let restricted = item.restricted === true;
+        if (item.inheritsRestriction === true && !restricted) {
+          const open = item.parentId !== undefined && deps.parents?.isOpen !== undefined
+            && await deps.parents.isOpen({ workspaceId: context.workspaceId, system: item.system, id: item.parentId, scope: item.scope }).catch(() => false);
+          restricted = !open;
+        }
         // Trust follows the person who wrote the text. An author the source names but the company has not linked is an outsider; so is no author at all.
         // Whoever made this change can only lower it: an outsider who edits a member's ticket makes that version an outsider's.
         const resolve = (sourceId: string) => deps.actors.resolve({ workspaceId: context.workspaceId, project, system: item.system, sourceId });
@@ -136,8 +150,8 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
           workspaceId: context.workspaceId, ...(project === undefined ? {} : { project }), source: item.source, kind: item.kind, occurredAt: item.occurredAt,
           sourceRef: { system: item.system, id: item.id, nativeId: item.nativeId ?? item.id, ...(linksOf(item.url)[0] === undefined ? {} : { url: linksOf(item.url)[0]! }), ...(item.parentId === undefined ? {} : { parentId: item.parentId }), version: item.version },
           ...(item.authorId === undefined ? {} : { actor: { sourceId: item.authorId, ...(who.developerId === undefined ? {} : { developerId: who.developerId }), trust: who.trust } }),
-          trust, audience: ticketAudience(item, item.acl, config, item.occurredAt), ...(text === undefined ? {} : { text }),
-          structured: scalars({ state: item.state, labels: item.labels?.slice(0, 20).join(","), updatedBy: item.updaterId, restricted: item.restricted }), links: linksOf(item.url), retention: config.retention,
+          trust, audience: ticketAudience({ source: item.source, scope: item.scope, restricted }, item.acl, config, item.occurredAt), ...(text === undefined ? {} : { text }),
+          structured: scalars({ state: item.state, labels: item.labels?.slice(0, 20).join(","), updatedBy: item.updaterId, restricted }), links: linksOf(item.url), retention: config.retention,
         };
         const outcome = await deps.sink.put(withRetention(draft, config.retention));
         return outcome.status;

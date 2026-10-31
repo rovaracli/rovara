@@ -171,6 +171,70 @@ describe("trust never goes back up once an outsider has touched the text (R1)", 
   });
 });
 
+describe("a Jira comment inherits its issue's restriction (M-a)", () => {
+  const jiraTenant = { siteHost: "acme.atlassian.net", projectKey: "SHOP" };
+  const issueEvent = (id: string, security: unknown) => ({ webhookEvent: "jira:issue_created", timestamp: 1_761_800_000_000, user: { accountId: "acc-1" }, issue: { id, key: `SHOP-${id}`, self: `https://acme.atlassian.net/rest/api/3/issue/${id}`, fields: { summary: "s", project: { key: "SHOP" }, creator: { accountId: "acc-1" }, ...(security === undefined ? {} : { security }) } } });
+  // The comment webhook's issue has the reduced fields Jira really sends: no security level.
+  const commentEvent = (issueId: string, extra: Record<string, unknown> = {}) => ({
+    webhookEvent: "comment_created", timestamp: 1_761_800_100_000, user: { accountId: "acc-1" },
+    issue: { id: issueId, key: `SHOP-${issueId}`, self: `https://acme.atlassian.net/rest/api/3/issue/${issueId}`, fields: { project: { key: "SHOP" } } },
+    comment: { id: `c${issueId}`, body: "internal detail", author: { accountId: "acc-1" }, self: `https://acme.atlassian.net/rest/api/3/issue/${issueId}/comment/c`, ...extra },
+  });
+
+  function parentWorld() {
+    const { w } = recorderWorld();
+    w.config.set("jira", "jira:project/SHOP", { retention: "C", audienceDefault: "project" });
+    // The record's view of recorded parents: open only when stored with restricted === false.
+    const parents = {
+      isRecorded: async ({ id }: { id: string }) => w.sink.puts.some((draft) => draft.sourceRef.id === id),
+      isOpen: async ({ id }: { id: string }) => w.sink.puts.some((draft) => draft.sourceRef.id === id && draft.structured?.restricted === false),
+    };
+    const recorder = createTicketRecorder({ sink: w.sink, actors: w.actors, mode: w.mode, config: w.config, history: w.sink, parents });
+    const tap = createTicketWebhookTap({ recorder });
+    const send = (body: unknown) => tap({ source: "jira", orgId: WS, project: "shop", tenant: jiraTenant, body });
+    return { w, send, recorder };
+  }
+  const commentRow = (w: ReturnType<typeof world>) => w.sink.puts.find((draft) => draft.kind === "ticket.comment")!;
+
+  it("a comment on a restricted issue is maintainers-only, never project-wide, even under 'visible to all project members'", async () => {
+    const { w, send } = parentWorld();
+    await send(issueEvent("1", { id: "10", name: "Staff only" }));
+    await send(commentEvent("1"));
+    expect(w.sink.puts.find((draft) => draft.sourceRef.id === "issue:1")!.audience).toMatchObject({ kind: "restricted", acl: { groups: [MAINTAINERS_GROUP] } });
+    expect(commentRow(w).audience).toMatchObject({ kind: "restricted", acl: { groups: [MAINTAINERS_GROUP] } });
+    expect(commentRow(w).structured).toMatchObject({ restricted: true });
+  });
+
+  it("a comment on a known-open issue follows the project default", async () => {
+    const { w, send } = parentWorld();
+    await send(issueEvent("2", undefined));
+    await send(commentEvent("2"));
+    expect(commentRow(w).audience).toEqual({ kind: "project" });
+    expect(commentRow(w).structured).toMatchObject({ restricted: false });
+  });
+
+  it("fails closed when the parent's level is unknown: parent not recorded, lookup failing, or no way to look it up", async () => {
+    const unrecorded = parentWorld();
+    await unrecorded.send(commentEvent("3"));
+    expect(commentRow(unrecorded.w).audience).toMatchObject({ kind: "restricted", acl: { groups: [MAINTAINERS_GROUP] } });
+    const w = world();
+    w.config.set("jira", "jira:project/SHOP", { retention: "C", audienceDefault: "project" });
+    for (const parents of [undefined, { isRecorded: async () => true }, { isRecorded: async () => true, isOpen: async (): Promise<boolean> => { throw new Error("down"); } }]) {
+      const recorder = createTicketRecorder({ sink: w.sink, actors: w.actors, mode: w.mode, config: w.config, ...(parents === undefined ? {} : { parents }) });
+      await createTicketWebhookTap({ recorder })({ source: "jira", orgId: WS, project: "shop", tenant: jiraTenant, body: commentEvent(`9${String(w.sink.puts.length)}`) });
+    }
+    expect(w.sink.puts).toHaveLength(3);
+    for (const draft of w.sink.puts) expect(draft.audience).toMatchObject({ kind: "restricted", acl: { groups: [MAINTAINERS_GROUP] } });
+  });
+
+  it("a comment limited to a role or group is restricted even on an open issue", async () => {
+    const { w, send } = parentWorld();
+    await send(issueEvent("4", undefined));
+    await send(commentEvent("4", { visibility: { type: "group", value: "jira-administrators" } }));
+    expect(commentRow(w).audience).toMatchObject({ kind: "restricted", acl: { groups: [MAINTAINERS_GROUP] } });
+  });
+});
+
 describe("ticket scope proof and security levels (I8)", () => {
   it("a comment that names no team is recorded only when its ticket is already recorded under the scope", async () => {
     const { w, recorder } = recorderWorld();
@@ -265,7 +329,10 @@ describe("Linear and Jira webhooks", () => {
     expect(secret.changes[0]!.restricted).toBe(true);
     const noFields = { ...jiraIssue("comment_created"), comment: { id: "55", body: "x", author: { accountId: "a" }, self: "https://acme.atlassian.net/c" } };
     (noFields.issue as Record<string, unknown>).fields = undefined;
-    expect(ticketsOfWebhook({ source: "jira", tenant: { siteHost: "acme.atlassian.net" }, body: noFields })).toMatchObject({ changes: [{ restricted: true }] });
+    // A comment's reduced issue fields prove nothing either way: it inherits its parent's restriction at the recorder.
+    expect(ticketsOfWebhook({ source: "jira", tenant: { siteHost: "acme.atlassian.net" }, body: noFields })).toMatchObject({ changes: [{ inheritsRestriction: true }] });
+    const limited = { ...jiraIssue("comment_created"), comment: { id: "56", body: "x", author: { accountId: "a" }, visibility: { type: "role", value: "Developers" }, self: "https://acme.atlassian.net/c" } };
+    expect(ticketsOfWebhook({ source: "jira", tenant: jira, body: limited })).toMatchObject({ changes: [{ restricted: true, inheritsRestriction: true }] });
   });
 
   it("reads ADF safely and bounded", () => {

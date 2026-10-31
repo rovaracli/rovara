@@ -114,7 +114,8 @@ function jiraItems(body: unknown, tenant: { siteHost: string; projectKey?: strin
   const creatorOf = (fields.creator ?? fields.reporter) as { accountId?: unknown } | null | undefined;
   const creator = str(creatorOf?.accountId, 200) ?? str((fields.reporter as { accountId?: unknown } | null | undefined)?.accountId, 200);
   // Jira issue security levels: a restricted issue is never given the project-wide audience. An issue whose fields are missing cannot be known to be open.
-  const restricted = (fields.security !== undefined && fields.security !== null) || issue?.fields === undefined;
+  const securityLevel = fields.security !== undefined && fields.security !== null;
+  const restricted = securityLevel || issue?.fields === undefined;
   if (webhookEvent === "jira:issue_deleted") return issueId === undefined ? { ignored: "unreadable" } : { changes: [], removed: [`issue:${issueId}`], system };
   if (webhookEvent === "jira:issue_created" || webhookEvent === "jira:issue_updated") {
     if (issueId === undefined) return { ignored: "unreadable" };
@@ -135,10 +136,13 @@ function jiraItems(body: unknown, tenant: { siteHost: string; projectKey?: strin
     const commentAuthor = str((comment?.author as { accountId?: unknown } | undefined)?.accountId, 200);
     const commentUpdater = str((comment?.updateAuthor as { accountId?: unknown } | undefined)?.accountId, 200) ?? triggeredBy;
     const commentBody = adfText(comment?.body);
+    const commentVisibility = comment?.visibility !== undefined && comment.visibility !== null;
     return { system, removed: [], changes: [{
       source: "jira", system, id: `comment:${commentId}`, kind: "ticket.comment", scope, ...(issueId === undefined ? {} : { parentId: `issue:${issueId}` }),
       ...(commentBody === undefined ? {} : { body: commentBody }), ...(browse === undefined ? {} : { url: browse }), ...(commentAuthor === undefined ? {} : { authorId: commentAuthor }), ...(commentUpdater === undefined ? {} : { updaterId: commentUpdater }), nativeId: commentId,
-      ...(webhookEvent === "comment_updated" ? { edit: true } : {}), ...(restricted ? { restricted: true } : {}), occurredAt: at, version: `${webhookEvent}:${at}`, acl,
+      ...(webhookEvent === "comment_updated" ? { edit: true } : {}),
+      // The comment's own visibility (a role or group it is limited to) or the issue's security level restricts it; otherwise it takes the parent's.
+      ...(securityLevel || commentVisibility ? { restricted: true } : {}), inheritsRestriction: true, occurredAt: at, version: `${webhookEvent}:${at}`, acl,
     }] };
   }
   return { ignored: "event" };
