@@ -4,22 +4,25 @@
 //   specOwnerChoice         -- the task owner's Retry / Continue without spec on a held spec.
 // The pure parts (state, rendering, the link) are in ../../spec/; the effects here are the same ones the workflow already uses (a system-started run with its own conversation, the broker's publish).
 import { createHash } from "node:crypto";
-import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, SPEC_REVIEW_REQUIREMENTS_MAX, SpecReviewInputSchema, agentXError, metaRepositoryOf, specStripHidden, workflowRequestId, type SpecFile, type SpecKind, type SpecReviewInput, type WorkflowSnapshot } from "@agentx/contracts";
-import { developerTaskIdentity, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { developerTaskIdentity, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { specChoiceItemOf } from "../../spec/decision-item.js";
+import type { DecisionItem } from "../../decisions/project.js";
 import { isConditional, workflowDispatchItem } from "../broker-shared.js";
 import { createSpecHooks, type PlanApproval, type SpecTaskRef, type SpecWorld } from "../../spec/hooks.js";
 import { approvedPlanDigestOf } from "../../spec/plan.js";
 import { specTargetOf } from "../../spec/due.js";
 import { specRendererFor } from "../../spec/index.js";
 import { dynamoSpecStore } from "../../spec/store.js";
-import type { SpecGate, SpecState } from "../../spec/state.js";
+import { specGate, type SpecGate, type SpecState } from "../../spec/state.js";
 import type { TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { creatorGuard, get, iso, taskBaseOption } from "./common.js";
 import { accessFence, authorizeTaskAction, systemTaskAccess } from "./access.js";
 import { approvedCodingPlan } from "./workflow-inputs.js";
+import { replanForSpecChange } from "./spec-replan.js";
 
 const refOf = (task: DeveloperTaskRecord): SpecTaskRef => ({ taskId: task.taskId, title: task.title, knowledgeCommit: task.knowledgeCommit });
 
@@ -230,6 +233,8 @@ async function queueRepublish(deps: DeveloperTaskRouteDependencies, task: Develo
 export async function specOwnerChoice(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, action: "retry" | "continue_without_spec" | "keep" | "replan"): Promise<{ status: string }> {
   const access = await authorizeTaskAction(deps, caller, taskId, "publish");
   const task = access.task;
+  // Re-plan sends the task back to plan approval (wire lane D, MD-1): the workflow, the planning run and the spec's record move in one transaction.
+  if (action === "replan") { await replanForSpecChange(deps, caller, taskId); return { status: "replan" }; }
   const hooks = createSpecHooks(worldFor(deps, task, accessFence(deps, access)));
   // "Retry" on a task with no record (the check itself failed) has nothing to change: it makes the waiting step due again, which looks again.
   if (action === "retry" && (await dynamoSpecStore(deps).load(taskId)).state === undefined) { await queueRepublish(deps, task, accessFence(deps, access)); return { status: "retrying" }; }
@@ -239,3 +244,45 @@ export async function specOwnerChoice(deps: DeveloperTaskRouteDependencies, call
   return { status: next.status };
 }
 
+
+const HOLD_TITLES: Record<Extract<SpecGate, { action: "hold" }>["reason"], string> = {
+  edited: "Spec changed", failed: "Spec on hold", writing: "Spec in progress", publishing: "Spec in progress", waiting_approval: "Waiting for the spec to be approved",
+};
+const HOLD_ROUTE_NAMES = { retry: "retry", continue_without_spec: "continue", keep: "keep", replan: "replan" } as const;
+
+/**
+ * What the task page shows of a spec on hold (wire lane D, MD-1): the state's fixed words and the owner's choices, or nothing when no spec is on hold. A task with no spec state costs one read.
+ * `mayChoose` is whether this reader may press (the owner, who may also start work on the project). Nothing in it is a model's, a repository's or a person's text.
+ */
+export async function specHoldOf(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, mayChoose: boolean): Promise<{ title: string; message: string; choices: Array<"retry" | "continue" | "keep" | "replan">; canChoose: boolean } | undefined> {
+  if (task.closedAt !== undefined) return undefined;
+  const { state, corrupt } = await dynamoSpecStore(deps).load(task.taskId);
+  if (state === undefined && !corrupt) return undefined;
+  const gate = specGate(state, corrupt, iso(deps));
+  if (gate.action !== "hold" || gate.ownerActions.length === 0) return undefined;
+  return { title: HOLD_TITLES[gate.reason], message: gate.message, choices: gate.ownerActions.map((action) => HOLD_ROUTE_NAMES[action]), canChoose: mayChoose };
+}
+
+/** The most index rows one listing reads, and the most cards it makes. */
+const SPEC_CHOICE_ROWS_MAX = 50;
+
+/**
+ * The decision-card items for the caller's tasks whose spec is on hold (wire lane D, MD-1): the tasks they OWN now (the effective owner, not a co-reader), open, with a spec for them to choose on.
+ * This is what a decision source's `list(caller)` adds for the `spec_choice` kind; the card only opens the task page, where the choice is made (and re-checked) by the spec routes.
+ */
+export async function specChoiceItemsFor(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller): Promise<DecisionItem[]> {
+  const response = await deps.documentClient.send(new QueryCommand({
+    TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": `DEVELOPER#${caller.developerId}`, ":prefix": "TASK#" },
+    ScanIndexForward: false, Limit: SPEC_CHOICE_ROWS_MAX, ConsistentRead: true,
+  })) as { Items?: Array<{ taskId?: string; orgId?: string; status?: string }> };
+  const items: DecisionItem[] = [];
+  for (const row of response.Items ?? []) {
+    if (row.orgId !== caller.orgId || row.status === "CLOSED" || typeof row.taskId !== "string") continue;
+    const task = await get<DeveloperTaskRecord>(deps, taskKey(row.taskId));
+    if (task === undefined || task.closedAt !== undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) continue;
+    const { state, corrupt } = await dynamoSpecStore(deps).load(task.taskId);
+    const item = specChoiceItemOf({ taskId: task.taskId, project: task.project, title: task.title, state, corrupt, now: iso(deps) });
+    if (item !== undefined) items.push(item);
+  }
+  return items;
+}

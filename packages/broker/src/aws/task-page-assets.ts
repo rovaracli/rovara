@@ -247,6 +247,9 @@ export const TASK_PAGE_DECIDING_COPY = {
   revising: "Revising the plan…",
   revised: "Revised. AgentX is planning again with your change; the revised plan will wait here for your approval.",
   reviseOwnerOnly: "Only the task owner can revise the plan.",
+  specChoosing: "Sending your choice…",
+  specChosen: "Done. AgentX is on the next step.",
+  specOwnerOnly: "Only the task owner can choose what happens to the spec.",
   sending: "Sending…",
   sent: "Sent. AgentX is on the next step.",
   changed: "This task changed. Refresh the page and try again.",
@@ -340,6 +343,7 @@ var canComment=data.canComment===true,canDecide=data.canDecide===true,canSuggest
 var canRead=data.canRead===undefined?true:data.canRead===true,canManagePeople=data.canManagePeople===true,canTakeOwnership=data.canTakeOwnership===true;
 var canRetry=data.canRetry===true;
 var canRevise=data.canRevise===true;
+var canSpecChoose=data.canSpecChoose===true;
 var hasProjection=false,peopleRevision=null,accessGeneration=0;
 function validProjection(state){
   var keys=["canRead","canComment","canSuggest","canDecide","canAsk","canManagePeople","canTakeOwnership"];
@@ -447,6 +451,7 @@ function canPost(path,body){
   if(path==="decision")return canDecide;
   if(path==="retry")return canRetry;
   if(path==="revise-plan")return canRevise;
+  if(/^spec\/(retry|continue|keep|replan)$/.test(path))return canSpecChoose;
   if(path==="suggestions")return canSuggest;
   if(path==="comments"||path.indexOf("comments/")===0)return canComment&&!(body&&body.ask===true&&!canAsk);
   if(path==="people/role")return canManagePeople;
@@ -1275,6 +1280,32 @@ if(reviseButton&&canRevise){
     },function(){if(generation!==accessGeneration){revising=false;return;}reviseFail(COPY.unavailable);});
   });
 }
+
+/* ---------- A spec on hold: the owner's choice ---------- */
+var specChoiceIds={},specChoosing=false,specChoices=["retry","continue","keep","replan"];
+function specChoiceFail(text){var node=el("spec-error");if(node){node.textContent=text;node.hidden=false;}var status=el("spec-status");if(status)status.textContent="";specChoosing=false;}
+function specChoiceHide(){for(var i=0;i<specChoices.length;i++){var b=el("spec-choice-"+specChoices[i]);if(b)b.hidden=true;}}
+specChoices.forEach(function(choice){
+  var button=el("spec-choice-"+choice);
+  if(!button||!canSpecChoose)return;
+  button.hidden=false;
+  button.addEventListener("click",function(){
+    if(specChoosing||stopped||!canRead)return;
+    /* The same press again keeps its ID, so the broker treats it as a replay. */
+    if(!specChoiceIds[choice])specChoiceIds[choice]=uuid();
+    specChoosing=true;
+    var failure=el("spec-error");if(failure)failure.hidden=true;
+    var status=el("spec-status");if(status)status.textContent=COPY.specChoosing;
+    var generation=accessGeneration;
+    call("POST","spec/"+choice,{requestId:specChoiceIds[choice],expectedRevision:revision}).then(function(answer){
+      if(answer.status===403&&answer.body.error!=="request_refused"){canSpecChoose=false;specChoiceHide();specChoiceFail(COPY.specOwnerOnly);return;}
+      if(generation!==accessGeneration){specChoosing=false;return;}
+      if(answer.status===200){if(status)status.textContent=COPY.specChosen;location.reload();return;}
+      if(answer.status===409)specChoiceIds[choice]=null;
+      specChoiceFail(said(answer));
+    },function(){if(generation!==accessGeneration){specChoosing=false;return;}specChoiceFail(COPY.unavailable);});
+  });
+});
 
 /* ---------- People changes: server-made proposals and explicit confirmation ---------- */
 function peopleStatus(form){return form.querySelector(".task-people-status");}

@@ -11,7 +11,7 @@ import {
   egressDomainsKey, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, redactText,
   setupDraftKey, setupItemsOf, type GithubInstallationRecord, type SetupProposal,
 } from "../../packages/contracts/src/index.js";
-import { SETUP_APPLY_WORDS, SETUP_DRAFT_BUSY, SETUP_DRAFT_FAILURES, SETUP_DRAFT_NONE_TO_APPLY, SETUP_DRAFT_OLD, SETUP_DRAFT_PULL_REQUEST_ONCE, derivedRequestId } from "../../packages/broker/src/rovara-code/setup-draft.js";
+import { SETUP_APPLY_WORDS, SETUP_DRAFT_BUSY, SETUP_DRAFT_FAILURES, SETUP_DRAFT_NONE_TO_APPLY, SETUP_DRAFT_OLD, SETUP_DRAFT_PULL_REQUEST_ONCE, derivedRequestId, registerBuiltinSetupAppliers } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { SETUP_ITEM_WORDS, itemDigest, registerSetupItemApplier, unregisterSetupItemApplier } from "../../packages/broker/src/rovara-code/setup-items.js";
 import { createEc2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
@@ -1126,6 +1126,28 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(tasks);
   });
 
+  it("opens no second pull request when a press is repeated under one approval after its reply was lost: the pull request's request id comes from the approval, not from the press (MB-7, through the route)", async () => {
+    const t = await setup();
+    await t.drafted();
+    const asked = await t.apply([{ id: "devcontainer" }]);
+    const approvalId = outcomeOf(asked, "devcontainer")!.approval!.approvalId;
+    t.approve(approvalId);
+    const first = await t.apply([{ id: "devcontainer" }]);
+    expect(outcomeOf(first, "devcontainer")?.outcome, JSON.stringify(first.body)).toBe("applied");
+    const taskId = (outcomeOf(first, "devcontainer") as unknown as { pullRequest: { taskId: string } }).pullRequest.taskId;
+    const tasks = () => t.db.find((item) => item.entityType === "DEVELOPER_TASK" && item.purpose !== "setup_draft").length;
+    expect(tasks()).toBe(1);
+    // The start worked but its reply was lost, so the consent was given back and the claim released: undo what the route recorded of that press (the used mark and the claim)...
+    t.db.delete(setupDraftKey(TEST_ORG, NAME).pk, `USED#${approvalId}`);
+    const { pullRequestClaim: _claim, ...pointer } = t.pointer()! as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+    t.db.set({ ...setupDraftKey(TEST_ORG, NAME), ...pointer });
+    // ...and the person presses again, with a new request id of the press (the route makes a new one for every press).
+    const again = await t.apply([{ id: "devcontainer" }]);
+    expect(outcomeOf(again, "devcontainer")?.outcome, JSON.stringify(again.body)).toBe("applied");
+    expect((outcomeOf(again, "devcontainer") as unknown as { pullRequest: { taskId: string } }).pullRequest.taskId).toBe(taskId);
+    expect(tasks()).toBe(1);
+  });
+
   it("gives the claim back when the pull request could not start, so it can be asked for again", async () => {
     const t = await setup({ memberLimit: 1 });
     await t.drafted();
@@ -1143,8 +1165,8 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
   it("says an item whose lane has not registered how to set it up can't be set up from here yet, and makes no card for it", async () => {
     const t = await setup();
     await t.drafted({ ...NODE_ANSWER, sources: [{ name: "wiki", foundIn: "mcp_config", from: [cite("README.md", 1)] }], intake: [{ channel: "linear", hint: "tickets", from: [cite("README.md", 1)] }] });
-    const reply = await t.apply([{ id: "secret-database_url" }, { id: "source-wiki" }, { id: "intake-linear" }]);
-    for (const id of ["secret-database_url", "source-wiki", "intake-linear"]) expect(outcomeOf(reply, id)).toMatchObject({ outcome: "not_available", message: SETUP_ITEM_WORDS.noApplier });
+    const reply = await t.apply([{ id: "secret-database_url" }, { id: "source-wiki" }]);
+    for (const id of ["secret-database_url", "source-wiki"]) expect(outcomeOf(reply, id)).toMatchObject({ outcome: "not_available", message: SETUP_ITEM_WORDS.noApplier });
     expect(t.approvals()).toEqual([]);
   });
 
@@ -1168,7 +1190,88 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
       expect(applied).toEqual(["source-wiki"]);
     } finally {
       for (const kind of ["source", "intake", "secret"] as const) unregisterSetupItemApplier(kind);
+      registerBuiltinSetupAppliers();
     }
+  });
+
+  // Wire lane D (MF-2): the intake card's applier.
+  describe("an intake card (wire lane D)", () => {
+    const JIRA = { channel: "jira", hint: "tickets labelled rovara", label: "rovara", connection: "acme-jira", from: [cite("README.md", 1)] };
+    const intakeId = "intake-jira-rovara";
+
+    const withJiraConnection = (t: Setup) => withDefinition(t, { integrations: { connectors: [{ name: "acme-jira", type: "custom-tracker" }] } });
+
+    it("is asked for as its own card, approved by the org admin who asked (no second admin), and then makes one intake source of the project", async () => {
+      const t = await setup();
+      withJiraConnection(t);
+      await t.drafted({ ...NODE_ANSWER, intake: [JIRA] });
+      const asked = await t.apply([{ id: intakeId }]);
+      expect(outcomeOf(asked, intakeId)?.outcome, JSON.stringify(asked.body)).toBe("approval_needed");
+      const [card] = t.approvals();
+      expect(card).toMatchObject({ requestedBy: OMAR.developerId, approvers: { kind: "rule", rule: "org_admin" }, subject: { itemKind: "intake", itemId: intakeId } });
+      expect((card as unknown as { changes: string[] }).changes.join(" ")).toContain('the label "rovara"');
+      expect(t.db.find((item) => item.entityType === "INTAKE_SOURCE")).toEqual([]);
+      // The asker is an org owner and approves their own card.
+      t.approve(outcomeOf(asked, intakeId)!.approval!.approvalId, OMAR.developerId);
+      const done = await t.apply([{ id: intakeId }]);
+      expect(outcomeOf(done, intakeId)?.outcome, JSON.stringify(done.body)).toBe("applied");
+      const sources = t.db.find((item) => item.entityType === "INTAKE_SOURCE");
+      expect(sources).toHaveLength(1);
+      expect(sources[0]).toMatchObject({ orgId: TEST_ORG, project: NAME, setBy: OMAR.developerId, ref: { channel: "jira", connection: "acme-jira", when: { label: "rovara" } } });
+    });
+
+    it("uses the approval up: applying again needs a new card, and a card for a source already there changes nothing", async () => {
+      const t = await setup();
+      withJiraConnection(t);
+      await t.drafted({ ...NODE_ANSWER, intake: [JIRA] });
+      const first = outcomeOf(await t.apply([{ id: intakeId }]), intakeId)!.approval!.approvalId;
+      t.approve(first);
+      expect(outcomeOf(await t.apply([{ id: intakeId }]), intakeId)?.outcome).toBe("applied");
+      const again = outcomeOf(await t.apply([{ id: intakeId }]), intakeId)!;
+      expect(again.outcome).toBe("approval_needed");
+      expect(again.approval!.approvalId).not.toBe(first);
+      t.approve(again.approval!.approvalId);
+      const second = await t.apply([{ id: intakeId }]);
+      expect(outcomeOf(second, intakeId)?.outcome).toBe("applied");
+      expect(t.db.find((item) => item.entityType === "INTAKE_SOURCE")).toHaveLength(1);
+      expect((second.body.warnings as string[]).join(" ")).toContain("already set up");
+    });
+
+    it("does not overwrite a place a maintainer already set up with another label: the card fails in fixed words and the source is as it was", async () => {
+      const t = await setup();
+      withJiraConnection(t);
+      await t.drafted({ ...NODE_ANSWER, intake: [JIRA] });
+      const { replaceIntakeSources } = await import("../../packages/broker/src/intake/sources.js");
+      await replaceIntakeSources({ documentClient: t.db, tableName: "state", now: () => Date.now() }, { orgId: TEST_ORG, project: NAME, refs: [{ channel: "jira", connection: "acme-jira", when: { label: "ai-work" } }], setBy: MAYA.developerId });
+      const asked = await t.apply([{ id: intakeId }]);
+      t.approve(outcomeOf(asked, intakeId)!.approval!.approvalId);
+      const done = await t.apply([{ id: intakeId }]);
+      expect(outcomeOf(done, intakeId)?.outcome).toBe("failed");
+      expect(t.db.find((item) => item.entityType === "INTAKE_SOURCE").map((item) => (item as { ref: { when: { label: string } } }).ref.when.label)).toEqual(["ai-work"]);
+    });
+
+    it("refuses a connection the project does not have (a name from a README is not a connection), and makes no source", async () => {
+      const t = await setup();
+      await t.drafted({ ...NODE_ANSWER, intake: [JIRA] });
+      const asked = await t.apply([{ id: intakeId }]);
+      t.approve(outcomeOf(asked, intakeId)!.approval!.approvalId);
+      const done = await t.apply([{ id: intakeId }]);
+      expect(outcomeOf(done, intakeId)?.outcome).toBe("failed");
+      expect((done.body.warnings as string[]).join(" ")).toContain("connection the project does not have");
+      expect(t.db.find((item) => item.entityType === "INTAKE_SOURCE")).toEqual([]);
+    });
+
+    it("refuses, in fixed words, a channel that starts work another way and a suggestion with no label, and makes no source", async () => {
+      const t = await setup();
+      await t.drafted({ ...NODE_ANSWER, intake: [{ channel: "linear", hint: "tickets", label: "rovara", from: [cite("README.md", 1)] }, { channel: "jira", hint: "tickets", from: [cite("README.md", 1)] }] });
+      for (const id of ["intake-linear-rovara", "intake-jira"]) {
+        const asked = await t.apply([{ id }]);
+        t.approve(outcomeOf(asked, id)!.approval!.approvalId);
+        const done = await t.apply([{ id }]);
+        expect(outcomeOf(done, id)?.outcome, id).toBe("failed");
+      }
+      expect(t.db.find((item) => item.entityType === "INTAKE_SOURCE")).toEqual([]);
+    });
   });
 
   it("names what a card does in words, with where the item came from and no quote", async () => {

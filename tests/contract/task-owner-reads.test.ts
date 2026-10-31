@@ -43,6 +43,8 @@ const ROWS: readonly Row[] = [
   // a merge (Plan 5 Task 21): whether a person's task-list row is a taker's copy, which moves with them (it asks the owner functions)
   ["developer/task-records.ts", "holdsTaskByTakeOver", "index", ".developerId"],
   ["spend/payer.ts", "paymentOfTask", "money", ".developerId*2", ".startedBy"],
+  // Wiring A (LR-W1): who started the task, read to tell the initiator apart from a third party's send-back or revert in a lesson's evidence; it decides nothing about who owns the task now
+  ["lessons/task-subject.ts", "taskStartActor", "history", ".developerId", ".startedBy*2"],
   ["developer/task-person-identity.ts", "resolveTaskPickerPerson", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "registerTaskChannelPeople", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "checkTaskPersonIdentity", "history", ".developerId*3", ".provider*3", ".slackUserId*6", ".developerName"],

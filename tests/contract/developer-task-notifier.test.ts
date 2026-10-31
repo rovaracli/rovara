@@ -2570,3 +2570,25 @@ describe("a task-state card is not dropped after the hour (LIVEFIX-1 item 5)", (
     expect(h.logs).toContainEqual(expect.objectContaining({ event: "developer_notifier.delivery_failed", kind: "start", reason: "channel_not_found" }));
   });
 });
+
+describe("a spec on hold tells the owner (wire lane D, MD-1)", () => {
+  const taskId = "11111111-1111-4111-8111-111111111111";
+  const head = "d".repeat(40);
+  const state = (over: Record<string, unknown> = {}) => ({ entityType: "SPEC_STATE", taskId, status: "published", revision: 4, ...over });
+  const at = "2026-10-31T10:00:00.000Z";
+
+  it("makes one notice when people change the spec pull request, and none for the same change again", () => {
+    const edited = state({ revision: 5, editPrompt: { headSha: head, at, status: "open" } });
+    expect(noticesOf(state(), edited, at, "e1")).toEqual([{ id: `${taskId}:spec_changed:${head}`, kind: "spec_changed", taskId, at }]);
+    expect(noticesOf(edited, state({ revision: 6, editPrompt: { headSha: head, at, status: "kept" } }), at, "e2")).toEqual([]);
+    expect(noticesOf(edited, { ...edited, revision: 6, updatedAt: at }, at, "e3")).toEqual([]);
+    expect(noticesOf(edited, state({ revision: 6, editPrompt: { headSha: "e".repeat(40), at, status: "open" } }), at, "e4")).toEqual([expect.objectContaining({ kind: "spec_changed" })]);
+  });
+
+  it("makes one notice when the spec fails, and none while it stays failed", () => {
+    const failed = state({ status: "failed", revision: 5 });
+    expect(noticesOf(state({ status: "written" }), failed, at, "e1")).toEqual([{ id: `${taskId}:spec_hold:5`, kind: "spec_hold", taskId, at }]);
+    expect(noticesOf(failed, state({ status: "failed", revision: 6 }), at, "e2")).toEqual([]);
+    expect(noticesOf(undefined, state({ status: "due", revision: 1 }), at, "e3")).toEqual([]);
+  });
+});

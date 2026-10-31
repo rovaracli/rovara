@@ -46,7 +46,7 @@ describe("Jira: a label added or an assignment is an event", () => {
     expect(event).toMatchObject({
       source: "jira", type: "issue.labeled", eventKey: "jira:issue:10042:labeled:rovara:10124", project: "web",
       subject: { kind: "issue", id: "PAY-12", title: "Refunds fail", url: "https://acme.atlassian.net/browse/PAY-12", body: "Refunds over 100 fail." },
-      fields: { label: ["rovara"] }, actor: { kind: "external", id: "acct-dana", accountId: "acct-dana" },
+      fields: { label: ["rovara"], issueId: ["10042"] }, actor: { kind: "external", id: "acct-dana", accountId: "acct-dana" },
     });
   });
 

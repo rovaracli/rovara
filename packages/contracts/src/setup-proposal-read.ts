@@ -13,6 +13,7 @@
 import { isAllowedDomain } from "./app-projects.js";
 import { FILE_PROVENANCE_KINDS, PROVENANCE_NOTE_MAX, PROVENANCE_QUOTE_MAX, PROVENANCE_PER_ITEM_MAX, ProvenanceSchema, type Provenance, type ProposalRisk } from "./provenance.js";
 import { RelativeWorkspacePathSchema } from "./project.js";
+import { IntakeSystemSchema } from "./intake.js";
 import { redactText } from "./redaction.js";
 import {
   DEVCONTAINER_PATH_PATTERN, SETUP_COMMANDS_MAX, SETUP_DEVCONTAINER_MAX_BYTES, SETUP_INTAKE_CHANNELS, SETUP_ITEM_LIMITS, SETUP_KNOWLEDGE_ACTIVATIONS, SETUP_KNOWLEDGE_KINDS, SETUP_PROPOSAL_VERSION, SETUP_SOURCE_FOUND_IN,
@@ -274,7 +275,13 @@ export function sanitizeSetupProposal(raw: unknown, context: SetupProposalContex
   const intake = reader.collect(raw["intake"], "intake", SETUP_ITEM_LIMITS.intake, (entry) => {
     const channel = typeof entry["channel"] === "string" && (SETUP_INTAKE_CHANNELS as readonly string[]).includes(entry["channel"]) ? (entry["channel"] as (typeof SETUP_INTAKE_CHANNELS)[number]) : undefined;
     const hint = oneLineText(entry["hint"], 200);
-    return channel === undefined || hint === "" ? undefined : { key: channel, value: { channel, hint } };
+    if (channel === undefined || hint === "") return undefined;
+    // What an applier needs to make a source of it: each is kept only when it is plainly what it says (a lower-case system, a connection NAME, a label with no credential in it).
+    const system = typeof entry["system"] === "string" && IntakeSystemSchema.safeParse(entry["system"]).success ? entry["system"] : undefined;
+    const connection = typeof entry["connection"] === "string" && /^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/u.test(entry["connection"]) && redactText(entry["connection"]) === entry["connection"] ? entry["connection"] : undefined;
+    const labelText = oneLineText(entry["label"], 100);
+    const label = labelText !== "" && typeof entry["label"] === "string" && labelText === entry["label"].trim() && redactText(labelText) === labelText ? labelText : undefined;
+    return { key: [channel, system, label].filter((part) => part !== undefined).join("-"), value: { channel, hint, ...(system === undefined ? {} : { system }), ...(connection === undefined ? {} : { connection }), ...(label === undefined ? {} : { label }) } };
   });
 
   let rejectedDomains = 0;

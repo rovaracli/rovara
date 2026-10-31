@@ -39,7 +39,7 @@ import { blockWorkflowE2EReadiness, closeUncheckedPlanCheck, companyChoseCriticM
 import { refreshTaskFeedbackForOwnerDecision, refusalText, releaseIfFinished } from "./terminal-and-github-events.js";
 import { blockEndedOperationKeys, tellTaskStop } from "./terminal-result.js";
 import { loadWorkflowE2EScenarioResults, workflowE2EPresentation, workflowE2EPublicationChecks } from "./workflow-e2e-verification.js";
-import { publishSpecFilesOf, readMetaFileOf, readSpecPullRequestOf } from "./spec-wiring.js";
+import { specSeamsOf } from "./spec-wiring.js";
 
 /**
  * Plan 3, Task 22: the agent-step engine's row. It runs the engine for the task (the result of a step that ended, the next step, an end whose follow-up is not
@@ -252,9 +252,7 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
       taskAutonomyNow: (target) => target.orgId === undefined ? Promise.resolve("suggest" as const)
         : taskAutonomy(() => readTaskRecipe(dependencies, target.taskId, target.orgId!), undefined, () => companyAutonomyLimit(dependencies, target.orgId!)),
-      readMetaFile: readMetaFileOf(dependencies),
-      readSpecPullRequest: readSpecPullRequestOf(dependencies),
-      publishSpecFiles: publishSpecFilesOf(dependencies),
+      ...specSeamsOf(dependencies),
       currentPullRequestHead: async (target, pullRequest) => {
         const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
         if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
@@ -479,6 +477,7 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
       workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
       // AUTOREQUALIFY: the one automatic retry that approves the plan again after a mere renewal of the test machine needs the plan check (the retry itself refuses any other re-approval).
       validateWorkflowE2EApplicationPlan: workflowApplicationRouteDependencies(dependencies).validateWorkflowE2EApplicationPlan,
+      ...specSeamsOf(dependencies),
     }, caller, undefined, null);
     const deps: AutofixDependencies = {
       config, route, store: { documentClient: dependencies.documentClient, tableName: dependencies.tableName },

@@ -121,12 +121,12 @@ function normalizeUpdated(body: unknown, hook: HookRecord, tenant: { siteHost: s
       const before = new Set((textOf(item, "fromString", 10_000) ?? "").split(/\s+/u).filter((label) => label !== ""));
       const added = [...new Set((textOf(item, "toString", 10_000) ?? "").split(/\s+/u).filter((label) => label !== "" && label.length <= LABEL_MAX && !before.has(label) && !hasHiddenCharacters(label)))];
       for (const label of added.slice(0, LABELS_PER_UPDATE_MAX)) {
-        events.push({ source: "jira", type: "issue.labeled", eventKey: `jira:issue:${id}:labeled:${label}:${change}`, occurredAt, project: hook.project, subject, fields: { label: valuesOf([label]) }, actor });
+        events.push({ source: "jira", type: "issue.labeled", eventKey: `jira:issue:${id}:labeled:${label}:${change}`, occurredAt, project: hook.project, subject, fields: { label: valuesOf([label]), issueId: valuesOf([id]) }, actor });
       }
     } else if (field === "assignee") {
       const to = textOf(item, "to", LABEL_MAX);
       if (to === undefined || to === "" || hasHiddenCharacters(to)) continue;
-      events.push({ source: "jira", type: "issue.assigned", eventKey: `jira:issue:${id}:assigned:${to}:${change}`, occurredAt, project: hook.project, subject, fields: { assignee: valuesOf([to]) }, actor });
+      events.push({ source: "jira", type: "issue.assigned", eventKey: `jira:issue:${id}:assigned:${to}:${change}`, occurredAt, project: hook.project, subject, fields: { assignee: valuesOf([to]), issueId: valuesOf([id]) }, actor });
     }
   }
   return events.length === 0 ? { ignored: "an update that asks for nothing" } : { events };

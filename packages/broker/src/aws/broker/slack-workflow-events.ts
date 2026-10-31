@@ -31,6 +31,7 @@ import { validateWorkflowE2EApplicationPlan } from "./task-operations.js";
 import { refreshTaskFeedbackForOwnerDecision } from "./terminal-and-github-events.js";
 import { loadWorkflowE2EArtifact, loadWorkflowE2EScenarioResults, workflowE2EPresentation, workflowE2EPublicationChecks } from "./workflow-e2e-verification.js";
 import { getSlackBinding, sharedStopFences, sharedThread, sharedThreadOpen, verifiedSharedStopBinding } from "./workspace-preparation.js";
+import { specSeamsOf } from "./spec-wiring.js";
 import { recordSlackWorkflowRefusal } from "./workspace-routes.js";
 
 /**
@@ -373,6 +374,8 @@ export function workflowApplicationRouteDependencies(dependencies: AwsBrokerDepe
       validateWorkflowE2EApplicationPlan(dependencies, input.task, input.intent, input.artifact, input.reapproval === true ? { reapproval: true } : {}),
     registeredRepositoryIdentity: dependencies.githubPullRequests.getRepositoryIdentity === undefined ? undefined : (url: string, orgId: OrgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
     refreshTaskFeedback: (taskId: string) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
+    // Wire lane D (MD-1): the spec seams, so a publication or a review that needs the spec works on this path too.
+    ...specSeamsOf(dependencies),
   };
 }
 

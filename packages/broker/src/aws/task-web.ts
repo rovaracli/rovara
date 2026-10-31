@@ -69,6 +69,11 @@ export interface TaskDocumentView {
   applicationRetry?: { canRetry: boolean };
   /** Live steer: present while coding is blocked for the owner's live message that asked for a change outside the approved plan and the plan can take it in; `canRevise` is whether this reader (the owner) may press Revise the plan. */
   reviseOffer?: { canRevise: boolean };
+  /**
+   * Wire lane D (MD-1): present while the task's spec is on hold (people changed the spec pull request, or the spec could not be made). `title` and `message` are the broker's fixed words;
+   * `choices` are the owner's choices (a route each: `spec/<choice>`); `canChoose` is whether this reader (the owner) may press one.
+   */
+  specHold?: { title: string; message: string; choices: Array<"retry" | "continue" | "keep" | "replan">; canChoose: boolean };
   /** A coding run that ended with no code change: what the agent found (rebuilt, redacted and bounded again, when the page is written). Absent for any other stop; an older worker sent none, and the page then says only that no change was needed. */
   noChange?: { findings?: NoChangeFindings };
   /** AUTOFIX: what Rovara already tried on its own and why it asks, as plain sentences (nothing a worker or model said); absent when it did nothing on this task. */
@@ -372,6 +377,7 @@ function pageData(view: TaskDocumentView, csrf: string): Record<string, unknown>
     ...(current === undefined ? {} : { current }), commentSeq: view.commentSeq ?? 0,
     ...(view.applicationRetry?.canRetry === true ? { canRetry: true } : {}),
     ...(view.reviseOffer?.canRevise === true ? { canRevise: true } : {}),
+    ...(view.specHold?.canChoose === true ? { canSpecChoose: true } : {}),
   };
 }
 
@@ -429,6 +435,21 @@ function revisePlanSection(view: TaskDocumentView): string {
         + '<p><button type="button" id="revise-plan-button" hidden>Revise the plan</button> <span id="revise-status" role="status" aria-live="polite"></span></p>'
         + '<p id="revise-error" class="error" role="alert" hidden></p>'
       : '<p class="muted">Only the task owner can revise the plan.</p>')
+    + "</section>";
+}
+
+/** The labels of the owner's choices on a held spec (fixed words). */
+const SPEC_CHOICE_LABELS = { retry: "Try again", continue: "Continue without the spec", keep: "Keep the changes", replan: "Re-plan" } as const;
+
+/** Wire lane D (MD-1): a spec on hold: what the broker says, and the owner's buttons (on with the script, as the decide buttons are) or who may press them. */
+function specHoldSection(view: TaskDocumentView): string {
+  const hold = view.specHold;
+  if (hold === undefined) return "";
+  return `<section id="spec-hold" aria-label="Spec on hold"><h2>${escapeHtml(hold.title)}</h2><p>${escapeHtml(hold.message)}</p>`
+    + (hold.canChoose
+      ? "<p>" + hold.choices.map((choice) => `<button type="button" id="spec-choice-${choice}" hidden>${SPEC_CHOICE_LABELS[choice]}</button>`).join(" ")
+        + ' <span id="spec-status" role="status" aria-live="polite"></span></p><p id="spec-error" class="error" role="alert" hidden></p>'
+      : '<p class="muted">Only the task owner can choose what happens to the spec.</p>')
     + "</section>";
 }
 
@@ -508,6 +529,7 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
     + autofixSection(view)
     + applicationRetrySection(view)
     + revisePlanSection(view)
+    + specHoldSection(view)
     + `<section id="findings" aria-label="Review findings"><h2>Review findings</h2>${findings}</section>`
     + `<section id="pull-requests" aria-label="Pull requests"><h2>Pull requests</h2>${pullRequests}</section>`
     + (view.people === undefined ? renderTaskPeopleUnavailable() : renderTaskPeoplePanel(view.taskId, view.people))

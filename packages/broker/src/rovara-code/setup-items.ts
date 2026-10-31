@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 import {
   canonicalJson, codeRepositoriesOf, formatCommandLine, setupItemHandling, settingOriginOf,
-  type ProjectOriginField, type ProjectSettingsBody, type SetupItem, type SetupItemKind, type SetupProposal, type SetupReviewEntry, type StoredProjectDefinition,
+  type IntakeChannelRef, type ProjectOriginField, type ProjectSettingsBody, type SetupItem, type SetupItemKind, type SetupProposal, type SetupReviewEntry, type StoredProjectDefinition,
 } from "@agentx/contracts";
 
 /** What a person is told when an item cannot be applied from here (fixed words, never a model's or a repository's). */
@@ -43,14 +43,24 @@ export function githubFullNameOf(url: string): string | undefined {
   }
 }
 
-/** The project setting an item sets, by the name settings origins use; undefined for an item that is not a setting. */
+/**
+ * The project setting an item sets, by the name settings origins use; undefined for an item that is not a setting (a secret, and a test environment hint, which is kept with the
+ * test environment and not in the project's settings). Every origin field has exactly one kind, so a lane that adds an applier gets its setting's origin read like the built-in ones.
+ */
 export function settingFieldOf(item: Pick<SetupItem, "kind">): ProjectOriginField | undefined {
   switch (item.kind) {
+    case "repository": return "repositories";
     case "setup": return "setup";
     case "tests": return "readiness";
     case "devcontainer": return "devcontainer";
-    case "repository": return "repositories";
-    default: return undefined;
+    case "allowed_domain": return "network";
+    case "check": return "checks";
+    case "knowledge": return "knowledge";
+    case "spec_target": return "specTarget";
+    case "source": return "sources";
+    case "intake": return "intake";
+    case "test_environment": return undefined;
+    case "secret": return undefined;
   }
 }
 
@@ -132,6 +142,10 @@ export interface SetupItemApplyContext {
     /** One pull request per draft: claimed before it is started, given back when it could not be. */
     claimPullRequest(requestId: string): Promise<void>;
     releasePullRequestClaim(requestId: string): Promise<void>;
+    /** Adds one intake source to the project, as the maintainer applying (wire lane D, MF-2). Idempotent: a source already there is `already_set`. */
+    addIntakeSource(ref: IntakeChannelRef): Promise<"added" | "already_set" | "differs">;
+    /** Whether the project has a connection of this name now (one of its own connectors). A name that is not one is never used by an applier. */
+    connectionExists(name: string): Promise<boolean>;
   };
 }
 

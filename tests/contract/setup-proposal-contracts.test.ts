@@ -279,3 +279,33 @@ describe("reading an answer as a proposal: what is safe to keep", () => {
     expect(setupProposalAnswerOf(block("{not json"))).toBeUndefined();
   });
 });
+
+describe("intake suggestions carry what a source needs (wire lane D, MF-2)", () => {
+  const context = { basedOnRevision: 1, repositories: [{ name: "web" }] } as never;
+  const cited = { kind: "file", repo: "web", path: "README.md", commit: "a".repeat(40), line: 1 };
+  const read = (intake: unknown[]) => sanitizeSetupProposal({ intake }, context);
+
+  it("keeps a system, a connection name and a label, and tells two sources of one channel apart", () => {
+    const reading = read([
+      { channel: "tracker", hint: "the team's tracker", system: "sim", connection: "team-sim", label: "rovara", from: [cited] },
+      { channel: "tracker", hint: "the other", system: "sim", label: "ai", from: [cited] },
+    ]);
+    if (!reading.ok) throw new Error(JSON.stringify(reading));
+    expect(reading.proposal.intake.map((item) => item.value)).toEqual([
+      { channel: "tracker", hint: "the team's tracker", system: "sim", connection: "team-sim", label: "rovara" },
+      { channel: "tracker", hint: "the other", system: "sim", label: "ai" },
+    ]);
+    expect(new Set(reading.proposal.intake.map((item) => item.id)).size).toBe(2);
+  });
+
+  it("drops a system that is not a plain name, a connection that is an address or holds a credential, and a label with a credential in it", () => {
+    for (const host of ["acme.atlassian.net", "evil.example", "https://acme.atlassian.net", "10.0.0.1"]) {
+      const named = read([{ channel: "jira", hint: "tickets", connection: host, from: [cited] }]);
+      if (!named.ok) throw new Error(JSON.stringify(named));
+      expect(named.proposal.intake[0]!.value, host).toEqual({ channel: "jira", hint: "tickets" });
+    }
+    const reading = read([{ channel: "jira", hint: "tickets", system: "Not A System", connection: "https://evil.example/hook", label: "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB", from: [cited] }]);
+    if (!reading.ok) throw new Error(JSON.stringify(reading));
+    expect(reading.proposal.intake[0]!.value).toEqual({ channel: "jira", hint: "tickets" });
+  });
+});

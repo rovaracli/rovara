@@ -137,9 +137,10 @@ export type IntakeItemState = (typeof INTAKE_ITEM_STATES)[number];
  * Why an item waits instead of starting. Fixed codes; the words are the client's.
  *   outsider: the person who asked is not a member Rovara can tell (outside the company, or an account no member is linked to);
  *   bot: an automation asked; no_authority: a member asked but cannot start work on the project;
+ *   unverified: the act looks like a member's, but Rovara itself had just changed the ticket (or the tracker could not confirm who did it), so it is not taken for theirs;
  *   start_refused: a member's act tried to start it and the start was refused (the budget, the project); `lastRefusal` says the code.
  */
-export const INTAKE_WAIT_REASONS = ["outsider", "bot", "no_authority", "start_refused"] as const;
+export const INTAKE_WAIT_REASONS = ["outsider", "bot", "no_authority", "start_refused", "unverified"] as const;
 export type IntakeWaitReason = (typeof INTAKE_WAIT_REASONS)[number];
 
 /** One item that waits for a member to say "Start". The title is the ticket's own words (untrusted, shown as text only). */

@@ -1138,6 +1138,11 @@ export function intakeSourceKey(orgId: OrgId, project: string, sourceId: string)
   return { pk: "INTAKE_SOURCES", sk: `${orgId}#${keyPart(project, "a project name")}#${keyPart(sourceId, "a source id")}` };
 }
 
+/** How many sources a project holds, kept beside them so that the most a project may have is enforced in one conditional update (two applies at once cannot both take the last place). */
+export function intakeSourceCountKey(orgId: OrgId, project: string): OrgKey {
+  return { pk: orgScoped(orgId, "INTAKE_SOURCE_COUNT"), sk: keyPart(project, "a project name") };
+}
+
 /** What the poll counts a source's reads in, per hour (`hour` is `YYYY-MM-DDTHH`): the cap on reads an hour is a conditional count on this item. */
 export function intakeCallsKey(orgId: OrgId, sourceId: string, hour: string): OrgKey {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}$/u.test(hour)) throw new Error("an hour is YYYY-MM-DDTHH");
@@ -1160,4 +1165,18 @@ export function intakeEventKey(orgId: OrgId, project: string, itemId: string, ev
   if (!/^[a-f0-9]{32}$/u.test(itemId)) throw new Error("an intake item id is 32 hex characters");
   if (eventId.length === 0) throw new Error("an event id can't be empty");
   return { pk: orgScoped(orgId, `INTAKE_EVENT#${keyPart(project, "a project name")}`), sk: `${itemId}#${createHash("sha256").update(eventId, "utf8").digest("hex").slice(0, 32)}` };
+}
+
+/**
+ * A note that Rovara itself wrote to a ticket (a label, an assignment, or any other change), so that the event the tracker sends back for it is told apart from a member's act whatever
+ * account the write went through (a member's own key, an app acting as them). `kind` is what was written: `label` or `assignee` (with the value, hashed here) or `touch` (some other
+ * change to the ticket; no value). `ticketId` is the ticket's intake item id, or for a write that made a new ticket, the id of its scope (the repository).
+ */
+export const INTAKE_OWN_WRITE_KINDS = ["label", "assignee", "touch"] as const;
+export type IntakeOwnWriteKind = (typeof INTAKE_OWN_WRITE_KINDS)[number];
+export function intakeOwnWriteKey(orgId: OrgId, ticketItemId: string, kind: IntakeOwnWriteKind, value: string): OrgKey {
+  if (!/^[a-f0-9]{32}$/u.test(ticketItemId)) throw new Error("an intake item id is 32 hex characters");
+  if (!(INTAKE_OWN_WRITE_KINDS as readonly string[]).includes(kind)) throw new Error("an own write is a label, an assignee or a touch");
+  const part = kind === "touch" ? "-" : createHash("sha256").update(value.normalize("NFC").trim().toLowerCase(), "utf8").digest("hex").slice(0, 32);
+  return { pk: orgScoped(orgId, "INTAKE_OWN"), sk: `${ticketItemId}#${kind}#${part}` };
 }
