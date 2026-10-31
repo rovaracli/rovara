@@ -31,7 +31,7 @@ import { requireSessionLevel } from "../../agent-sessions/access.js";
 import { codeTask, codeShareItems } from "../../rovara-code/sharing.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { CLOSED_TASK, get, iso, parse, partyOfTaskActor, putNew, turnTable } from "./common.js";
-import { accessFence, type AuthorizedTask, authorizeLegacyTaskAction } from "./access.js";
+import { type AuthorizedTask, accessFence, authorizeLegacyTaskAction } from "./access.js";
 import { taskView } from "./task-view.js";
 import { shareFor } from "./start.js";
 import { ownerIndexRowOf, syncIndex } from "./task-index.js";

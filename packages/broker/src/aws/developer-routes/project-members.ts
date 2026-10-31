@@ -18,8 +18,8 @@ import {
 import { unbindProjectChannel, type ProjectSlackChannelDependencies } from "../../org/slack-binding.js";
 import { listProjectMembers, removeProjectMember, setProjectMember, survivorOf } from "../../org/project-members.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
-import { bodyError, PROJECT_NOT_FOUND_IN_APP, signInStoreOf } from "./common.js";
-import { latestDefinition, mapLimit, projectMembersDepsOf, REVISION_READS_AT_ONCE, visibleProjectRoles } from "./project-list.js";
+import { PROJECT_NOT_FOUND_IN_APP, bodyError, signInStoreOf } from "./common.js";
+import { REVISION_READS_AT_ONCE, latestDefinition, mapLimit, projectMembersDepsOf, visibleProjectRoles } from "./project-list.js";
 
 /** The caller's role in a project named in a route's path, or the same 404 PROJECT_NOT_FOUND as no access and no such project (never 403). */
 export async function projectRoleForRoute(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }> {

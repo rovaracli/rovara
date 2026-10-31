@@ -42,7 +42,7 @@ import { clearOrgConnections } from "../../connections/store.js";
 import { CLOSE_STOP_BUDGET_MS, type DeveloperCaller, type DeveloperRouteDependencies } from "./types.js";
 import { bodyError, signInStoreOf } from "./common.js";
 import { errorName } from "./identity-lambda.js";
-import { mapLimit, projectMembersOf, REVISION_READS_AT_ONCE } from "./project-list.js";
+import { REVISION_READS_AT_ONCE, mapLimit, projectMembersOf } from "./project-list.js";
 import { archiveDepsOf, egressDepsOf } from "./project-archive-setup.js";
 import { sessionReadDependencies } from "./dependencies.js";
 

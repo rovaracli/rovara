@@ -30,7 +30,7 @@ import { createProjectMembers, survivorOf, type ProjectMembers, type ProjectMemb
 import { setupStateOf, type SetupCheckDependencies } from "../../org/project-setup-check.js";
 import type { DeveloperCaller, DeveloperRouteDependencies, ProjectAccessCaller } from "./types.js";
 import { signInStoreOf } from "./common.js";
-import { errorName, SLACK_UNAVAILABLE } from "./identity-lambda.js";
+import { SLACK_UNAVAILABLE, errorName } from "./identity-lambda.js";
 
 /** Every item under `pk` with the sort key prefix, following LastEvaluatedKey through each page. */
 export async function queryAll<T>(deps: DeveloperRouteDependencies, pk: string, prefix: string, bound?: { max: number; onCut: () => void }): Promise<T[]> {

@@ -135,18 +135,18 @@ export { candidateChangedFiles, monthSlots, taskView } from "./developer-tasks/t
 export { ADMISSION_REFUSALS, startAlreadyMade, startTask } from "./developer-tasks/start.js";
 export { ownerIndexRowOf, syncIndex } from "./developer-tasks/task-index.js";
 export { RESUMED_WITH_ORIGINAL_INSTRUCTIONS } from "./developer-tasks/task-window.js";
-export { continueAsTask, resumeTaskAfterSpendApproval, type SpendResumeInput } from "./developer-tasks/continue.js";
+export { type SpendResumeInput, continueAsTask, resumeTaskAfterSpendApproval } from "./developer-tasks/continue.js";
 export { decideTaskWorkflow } from "./developer-tasks/decide.js";
 export { startTaskWorkflowPlanRevisionFromSystem } from "./developer-tasks/workflow-retry.js";
 export { planUnreadablePrompt, publicWorkflowDecision } from "./developer-tasks/workflow-inputs.js";
 export { resolveTaskWorkflowFindings, resumeAfterRunLimitApproval, sendTaskWorkflowBackToCoding } from "./developer-tasks/workflow-coding.js";
 export { laterProgramBuild, startTaskWorkflowImplementationFromSystem, startTaskWorkflowReviewFromSystem, understandWatchdogDueAt } from "./developer-tasks/workflow-review.js";
 export {
-  automaticCaller,
   type AutomaticRetry,
   autoRetryChecksFromSystem,
   autoRetryReviewsFromSystem,
   autoSendBackToCodingFromSystem,
+  automaticCaller,
   startTaskWorkflowCriticRevisionFromSystem,
   startTaskWorkflowE2EBaselineFromSystem,
   startTaskWorkflowE2EChecksFromSystem,
@@ -157,6 +157,7 @@ export {
   startTaskWorkflowUnderstandFromSystem,
 } from "./developer-tasks/workflow-starts.js";
 export {
+  type PageSuggestionListing,
   createPageComment,
   decideOnPage,
   deletePageComment,
@@ -165,28 +166,29 @@ export {
   getTaskFreshness,
   getTaskPageState,
   listPageComments,
-  type PageSuggestionListing,
   retryApplicationRoundOnPage,
   setPageSuggestion,
   taskPageStage,
   taskPageStep,
 } from "./developer-tasks/task-page.js";
 export {
+  type WorkflowPublicationAuthority,
   approvedPlanForPullRequest,
   proofContextOfTask,
-  type WorkflowPublicationAuthority,
   workflowPullRequestBody,
   workflowPullRequestStatusLines,
 } from "./developer-tasks/pull-request-body.js";
 export { currentWorkflowPublicationAuthorityForTask, currentWorkflowPublicationModeForTask, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowPublicationFromSystem } from "./developer-tasks/publication.js";
 export {
-  captureWorkflowFeedbackNote,
   FEEDBACK_REVIEW_RETRY_BUSY,
   FEEDBACK_REVIEW_RETRY_CHANGED,
+  captureWorkflowFeedbackNote,
   retryTaskWorkflowFeedbackReview,
   startTaskWorkflowFeedbackReviewFromWebhook,
 } from "./developer-tasks/feedback-capture.js";
 export {
+  type SessionNoteInput,
+  type SessionNoteRefusal,
   agentStepNotes,
   markWorkflowThreadNoteAnswered,
   planWhyEntries,
@@ -195,13 +197,11 @@ export {
   recordSessionNote,
   recordWorkflowThreadNote,
   sendBackProblemsPromptSection,
-  type SessionNoteInput,
   sessionNoteItems,
-  type SessionNoteRefusal,
   threadNotesPromptSection,
 } from "./developer-tasks/thread-notes.js";
 export { workflowTaskAnswerContext } from "./developer-tasks/task-answer-context.js";
-export { cancelTask, cancelTaskFor, retryTaskWorkflowFor, type TaskActor } from "./developer-tasks/cancel.js";
+export { type TaskActor, cancelTask, cancelTaskFor, retryTaskWorkflowFor } from "./developer-tasks/cancel.js";
 export {
   type EndTold,
   finishTaskClose,
@@ -212,18 +212,18 @@ export {
   workflowTaskFinished,
 } from "./developer-tasks/close.js";
 export {
-  enqueueFinishedTaskRelease,
   FINISHED_RELEASE_PK,
-  finishedReleaseMarkItem,
   type FinishedTaskRelease,
-  recordFinishedRunCost,
   type ReleaseDeps,
+  enqueueFinishedTaskRelease,
+  finishedReleaseMarkItem,
+  recordFinishedRunCost,
   releaseFinishedTask,
   releaseFinishedTaskQuietly,
   releaseFinishedTasksOf,
   releasePendingFinishedTasks,
 } from "./developer-tasks/release.js";
-export { adminShareMode, type ShareAdmin, type ShareModeDependencies } from "./developer-tasks/share.js";
+export { type ShareAdmin, type ShareModeDependencies, adminShareMode } from "./developer-tasks/share.js";
 
 /**
  * An AI tool's decision on the pending PR feedback proposal: the same owner-only transition, GitHub refresh and fences as

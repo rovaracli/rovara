@@ -40,13 +40,13 @@ import { isRuntimeRenewedBlock, requireRenewalOnlyReapproval } from "../../e2e/r
 import { understandPrompt } from "../../rovara-code/understand.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { creatorGuard, get, iso, parse, partyOfTaskActor, putNew, taskBaseOption, turnTable } from "./common.js";
-import { accessFence, type AuthorizedTask, authorizeTaskAction, systemTaskAccess } from "./access.js";
+import { type AuthorizedTask, accessFence, authorizeTaskAction, systemTaskAccess } from "./access.js";
 import { resumeParkedTaskDispatch } from "./access-resume.js";
 import { taskView } from "./task-view.js";
 import { syncIndex } from "./task-index.js";
 import {
-  actionableWorkspace,
   AUTOMATIC_KEEPS_WINDOW,
+  actionableWorkspace,
   busyOrClosing,
   capWindowBaseline,
   capWindowUpdate,
@@ -54,10 +54,10 @@ import {
   requireMayGoOn,
 } from "./task-window.js";
 import {
+  NO_PUBLISH_NOTE,
   approvedCodingPlan,
   approvedWorkflowDependencies,
   keptProposedIds,
-  NO_PUBLISH_NOTE,
   planUnreadablePrompt,
   retiredClaimIdList,
 } from "./workflow-inputs.js";

@@ -38,7 +38,7 @@ import { onlyTheEventCancelled, sessionRefOfTask, slackReplyEventItem } from "..
 import { answerIntentQuestions, cleanSessionName, IntentAnswerRefusal } from "@agentx/contracts";
 import { answeredEventItem, answersFromReply, intentAnswerItems, openQuestions } from "../../rovara-code/question-answers.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
-import { creatorGuard, cutText, get, iso, ownerLabel, PLANNER_WHY_AUTHOR, putNew, WHY_NOTE_MAX_CHARS, WHY_NOTES_MAX } from "./common.js";
+import { PLANNER_WHY_AUTHOR, WHY_NOTES_MAX, WHY_NOTE_MAX_CHARS, creatorGuard, cutText, get, iso, ownerLabel, putNew } from "./common.js";
 
 /**
  * The "why" of a stored plan: the owner's own request first, credited to the requester, then the thread replies that

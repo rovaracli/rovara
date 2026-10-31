@@ -2,7 +2,7 @@
 // It is a pure move: every statement keeps its text and its order inside its new module; the only edits are an `export ` keyword in front of a
 // declaration another module now needs, and import lines. The original file stays as a thin composition file: it re-exports exactly the names it
 // exported before and keeps what the config says stays. Used by scripts/split/split-developer.ts. Node runs this directly, so only erasable syntax.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 
@@ -23,6 +23,38 @@ export interface SplitConfig {
    * evaluated first and in the same order as before the split (the new modules then find them already evaluated).
    */
   preserveImportOrder: boolean;
+  /**
+   * Every declaration must be listed: a name in no list is an error (it says where the name would have gone) instead of being placed by use. The shared
+   * config is strict so the same name lands in the same file in every repository that carries it.
+   */
+  strict?: boolean;
+}
+
+/** Names a private checkout adds to the shared config (modules of its own, more names in shared modules, more `stay` names). */
+export interface ConfigOverlay {
+  modules: Readonly<Record<string, readonly string[]>>;
+  stay?: readonly string[];
+  /** The order of every module key in the merged config (it sets the order of the thin file's re-exports); default: shared keys, then the overlay's new keys. */
+  moduleOrder?: readonly string[];
+}
+
+/** The shared config with a private overlay added. Names are only ever added, so a name the shared config lists lands in the same module either way. */
+export function mergeConfig(shared: SplitConfig, overlay: ConfigOverlay | undefined): SplitConfig {
+  if (overlay === undefined) return shared;
+  const modules: Record<string, string[]> = {};
+  for (const [key, names] of Object.entries(shared.modules)) modules[key] = [...names];
+  for (const [key, names] of Object.entries(overlay.modules)) modules[key] = [...(modules[key] ?? []), ...names];
+  const order = overlay.moduleOrder ?? Object.keys(modules);
+  const missingKeys = Object.keys(modules).filter((key) => !order.includes(key));
+  if (missingKeys.length > 0) throw new Error(`moduleOrder lacks: ${missingKeys.join(", ")}`);
+  const ordered: Record<string, string[]> = {};
+  for (const key of order) if (modules[key] !== undefined) ordered[key] = modules[key];
+  return { ...shared, modules: ordered, stay: [...shared.stay, ...(overlay.stay ?? [])] };
+}
+
+/** Plain code-unit order: the same on every machine (localeCompare depends on ICU and the locale). */
+export function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 export interface Unit {
@@ -83,7 +115,12 @@ interface Chunk { start: number; end: number; blankBefore: boolean }
 
 const ORIGINAL = "";
 
-export function planSplit(rootDirectory: string, config: SplitConfig): Plan {
+export interface PlanOptions {
+  /** Downgrade "not listed" errors of a strict config to a report (the names are placed by use). */
+  allowPlacement?: boolean;
+}
+
+export function planSplit(rootDirectory: string, config: SplitConfig, options: PlanOptions = {}): Plan {
   const sourcePath = path.join(rootDirectory, config.source);
   const text = readFileSync(sourcePath, "utf8");
   const sourceFile = ts.createSourceFile(sourcePath, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -200,6 +237,9 @@ export function planSplit(rootDirectory: string, config: SplitConfig): Plan {
   // Placement.
   const { moduleOf, missing, placedByAffinity } = placeUnits(config, units, unitOfName, useOfUnit.map((use) => use.units), fail);
   const keptModule = ORIGINAL;
+  if (config.strict === true && !(options.allowPlacement ?? false)) {
+    for (const placed of placedByAffinity) fail(`${names(units, placed.unit)} is in no list (it would go to ${placed.module}: ${placed.why}); add it to the config`);
+  }
 
   // Which units another module needs, and what each module imports from the others.
   const neededOutside = new Set<number>();
@@ -246,23 +286,47 @@ export function planSplit(rootDirectory: string, config: SplitConfig): Plan {
   const outputs = new Map<string, string>();
   const exportMap = new Map<string, string>();
   units.forEach((unit, index) => { if (unit.exported) for (const name of unit.names) exportMap.set(name, moduleOf[index] as string); });
-  const context: EmitContext = { text, sourceFile, statements, chunks, units, moduleOf, importDeclarations, bindings, config, neededOutside, unitOfStatement, useOfUnit, useOfKept, keptStatements, moduleNames, exportMap };
+  const importComments = new Map<number, string>();
+  importDeclarations.forEach((declaration, index) => {
+    const statementIndex = statements.indexOf(declaration);
+    if (statementIndex === statements.findIndex((statement) => ts.isImportDeclaration(statement))) return;
+    const chunk = chunks[statementIndex] as Chunk;
+    const comment = text.slice(chunk.start, declaration.getStart()).trim();
+    if (comment !== "") importComments.set(index, comment);
+  });
+  const context: EmitContext = { text, sourceFile, statements, chunks, units, moduleOf, importDeclarations, bindings, config, neededOutside, unitOfStatement, useOfUnit, useOfKept, keptStatements, moduleNames, exportMap, importComments };
   for (const name of moduleNames) {
     const body = emitModule(context, name);
     if (body !== undefined) outputs.set(`${config.outDir}/${name}.ts`, body);
   }
   outputs.set(config.source, emitOriginal(context));
+  // A comment that sat on an import line must have been carried into some output file; say so when it was not.
+  for (const comment of importComments.values()) {
+    if (![...outputs.values()].some((body) => body.includes(comment))) warn(`a comment on an import line was not carried (nothing uses that import): ${comment.slice(0, 80).replace(/\s+/g, " ")}`);
+  }
   const lineCounts = new Map([...outputs].map(([file, body]) => [file, body.split("\n").length - 1] as const));
   return { config, fileLines: text.split("\n").length, units, moduleOf, missing, placedByAffinity, problems, moduleEdges, cycles, witnesses, outputs, exportMap, lineCounts };
 }
 
-/** Writes a plan's files under a checkout root. */
-export function writePlan(rootDirectory: string, plan: Plan): void {
+/**
+ * Writes a plan's files under a checkout root. It never overwrites a module file that already exists unless `force` is set (the original file is the one
+ * file it always rewrites): a re-run on a tree that is already split must not replace real modules with near-empty ones.
+ */
+export function writePlan(rootDirectory: string, plan: Plan, options: { force?: boolean } = {}): void {
+  const existing = [...plan.outputs.keys()].filter((file) => file !== plan.config.source && existsSync(path.join(rootDirectory, file)));
+  if (existing.length > 0 && options.force !== true) throw new Error(`refusing to overwrite existing module files without --force: ${existing.join(", ")}`);
   for (const [file, body] of plan.outputs) {
     const target = path.join(rootDirectory, file);
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, body);
   }
+}
+
+/** Module files in the output directory that the plan does not write (left behind by an earlier split of other groups). */
+export function staleModules(rootDirectory: string, plan: Plan): string[] {
+  const directory = path.join(rootDirectory, plan.config.outDir);
+  if (!existsSync(directory)) return [];
+  return readdirSync(directory).filter((name) => name.endsWith(".ts")).map((name) => `${plan.config.outDir}/${name}`).filter((file) => !plan.outputs.has(file)).sort(compareText);
 }
 
 /** Whether the file is already split: the new directory exists and no unit is left to move. */
@@ -471,7 +535,7 @@ function stronglyConnected(edges: ReadonlyMap<string, ReadonlySet<string>>): str
     }
   };
   for (const node of [...edges.keys()].sort()) if (!index.has(node)) visit(node);
-  return result.sort((a, b) => (a[0] as string).localeCompare(b[0] as string));
+  return result.sort((a, b) => compareText(a[0] as string, b[0] as string));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
@@ -493,6 +557,8 @@ interface EmitContext {
   keptStatements: readonly number[];
   moduleNames: readonly string[];
   exportMap: ReadonlyMap<string, string>;
+  /** Leading comment of each import declaration (by index), except the first, whose comment is the file header. */
+  importComments: ReadonlyMap<number, string>;
 }
 
 /** The text of one statement as it goes into a module: the original text, with `export ` in front of the declaration when another module needs it. */
@@ -519,7 +585,7 @@ function emitModule(context: EmitContext, moduleName: string): string | undefine
     for (const target of context.useOfUnit[index]?.units.keys() ?? []) if (!memberSet.has(target)) addForeign(context, foreign, target);
   }
   const lines: string[] = [];
-  lines.push(...importLines(context, importNames, false));
+  lines.push(...importLines(context, importNames, false, new Set()));
   lines.push(...foreignImportLines(context, foreign, moduleName));
   lines.push("");
   let first = true;
@@ -553,18 +619,26 @@ function emitOriginal(context: EmitContext): string {
     for (const [name, asValue] of use?.imports ?? []) importNames.set(name, (importNames.get(name) ?? false) || asValue);
     for (const target of use?.units.keys() ?? []) if (context.moduleOf[target] !== ORIGINAL) addForeign(context, foreign, target);
   }
+  const commentsDone = new Set<number>();
   if (config.preserveImportOrder) {
-    const ordered: string[] = [];
-    for (const declaration of context.importDeclarations) {
+    // One bare import per module, with the comments that sat on the original import lines of it.
+    const ordered = new Map<string, string[]>();
+    context.importDeclarations.forEach((declaration, index) => {
       const specifier = (declaration.moduleSpecifier as ts.StringLiteral).text;
       // Type-only imports are erased; Node's and npm's own modules take no part in the repository's evaluation order.
-      if (declaration.importClause?.isTypeOnly === true || !(specifier.startsWith(".") || specifier.startsWith("@agentx/"))) continue;
-      if (!ordered.includes(specifier)) ordered.push(specifier);
+      if (declaration.importClause?.isTypeOnly === true || !(specifier.startsWith(".") || specifier.startsWith("@agentx/"))) return;
+      const comments = ordered.get(specifier) ?? [];
+      const comment = context.importComments.get(index);
+      if (comment !== undefined) { comments.push(comment); commentsDone.add(index); }
+      ordered.set(specifier, comments);
+    });
+    if (ordered.size > 0) lines.push("// The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.");
+    for (const [specifier, comments] of ordered) {
+      lines.push(...comments);
+      lines.push(`import ${JSON.stringify(specifier)};`);
     }
-    if (ordered.length > 0) lines.push("// The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.");
-    for (const specifier of ordered) lines.push(`import ${JSON.stringify(specifier)};`);
   }
-  lines.push(...importLines(context, importNames, true));
+  lines.push(...importLines(context, importNames, true, commentsDone));
   lines.push(...foreignImportLines(context, foreign, ORIGINAL));
   // Re-export every name the file exported, by module, in the config's module order.
   const byModule = new Map<string, string[]>();
@@ -598,7 +672,7 @@ function emitOriginal(context: EmitContext): string {
 }
 
 function compareExport(left: string, right: string): number {
-  return left.replace(/^type /, "").localeCompare(right.replace(/^type /, ""));
+  return compareText(left.replace(/^type /, ""), right.replace(/^type /, ""));
 }
 
 /** An import specifier as seen from a module in the new directory (or, with `inOriginal`, from the original file, whose directory is unchanged). */
@@ -612,7 +686,7 @@ function rewriteSpecifier(context: EmitContext, specifier: string, inOriginal: b
 }
 
 /** The original file's import declarations, cut down to what a module uses, with paths made relative to the module's directory. */
-function importLines(context: EmitContext, used: ReadonlyMap<string, boolean>, inOriginal: boolean): string[] {
+function importLines(context: EmitContext, used: ReadonlyMap<string, boolean>, inOriginal: boolean, commentsDone: Set<number>): string[] {
   const lines: string[] = [];
   context.importDeclarations.forEach((declaration, index) => {
     const clause = declaration.importClause;
@@ -620,6 +694,8 @@ function importLines(context: EmitContext, used: ReadonlyMap<string, boolean>, i
     const wanted = [...context.bindings.values()].filter((binding) => binding.declaration === index && used.has(binding.local));
     if (wanted.length === 0) return;
     const specifier = JSON.stringify(rewriteSpecifier(context, (declaration.moduleSpecifier as ts.StringLiteral).text, inOriginal));
+    const comment = context.importComments.get(index);
+    if (comment !== undefined && !commentsDone.has(index)) { lines.push(comment); commentsDone.add(index); }
     // A binding is type-only here when the original import said so, or when this module only uses it in type positions.
     const typeOnly = (binding: ImportBinding): boolean => binding.typeOnly || used.get(binding.local) === false;
     const allTypes = wanted.every(typeOnly);
@@ -664,7 +740,7 @@ function foreignImportLines(context: EmitContext, foreign: ReadonlyMap<string, R
   for (const moduleName of context.moduleNames) {
     const bucket = foreign.get(moduleName);
     if (bucket === undefined || moduleName === ownModule) continue;
-    const elements = [...bucket].sort(([left], [right]) => left.localeCompare(right)).map(([name, typeOnly]) => (typeOnly ? `type ${name}` : name));
+    const elements = [...bucket].sort(([left], [right]) => compareText(left, right)).map(([name, typeOnly]) => (typeOnly ? `type ${name}` : name));
     const specifier = ownModule === ORIGINAL ? `./${path.basename(context.config.outDir)}/${moduleName}.js` : `./${moduleName}.js`;
     const allTypes = [...bucket.values()].every(Boolean);
     const shown = allTypes ? elements.map((element) => element.replace(/^type /, "")) : elements;

@@ -16,7 +16,7 @@ import { readTaskPlanDocument, type TaskPlanDocumentView } from "../task-plan-do
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { get } from "./common.js";
 import { loadOwnedTask } from "./access.js";
-import { taskView, workspaceReads, type WorkspaceReads } from "./task-view.js";
+import { type WorkspaceReads, taskView, workspaceReads } from "./task-view.js";
 import { syncIndex } from "./task-index.js";
 import { resumeClose } from "./close.js";
 

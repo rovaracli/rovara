@@ -42,7 +42,7 @@ import { resumeParkedTaskDispatch } from "./access-resume.js";
 import { candidateChangedFiles, taskView } from "./task-view.js";
 import { syncIndex } from "./task-index.js";
 import { actionableWorkspace, busyOrClosing, extraItemsCancelled } from "./task-window.js";
-import { approvedPlanForPullRequest, proofContextOfTask, type WorkflowPublicationAuthority, workflowPullRequestBody } from "./pull-request-body.js";
+import { type WorkflowPublicationAuthority, approvedPlanForPullRequest, proofContextOfTask, workflowPullRequestBody } from "./pull-request-body.js";
 
 type LoadedPublicationProject = NonNullable<Awaited<ReturnType<DeveloperTaskActions["latestProject"]>>>;
 

@@ -30,8 +30,8 @@ import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, type TaskEndOutcome } fr
 import { leaveTaskEndRow } from "../task-end-row.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { creatorGuard, get, iso, log, parse, partyOfTaskActor, putNew, turnTable } from "./common.js";
-import { accessFence, type AuthorizedTask, authorizeLegacyTaskAction, authorizeTaskAction, authorizeTaskActor } from "./access.js";
-import { taskView, unpublishedOf, workspaceReads, type WorkspaceReads } from "./task-view.js";
+import { type AuthorizedTask, accessFence, authorizeLegacyTaskAction, authorizeTaskAction, authorizeTaskActor } from "./access.js";
+import { type WorkspaceReads, taskView, unpublishedOf, workspaceReads } from "./task-view.js";
 import { ownerIndexRowOf, syncIndex } from "./task-index.js";
 import { actionableWorkspace, busy, busyOrClosing } from "./task-window.js";
 

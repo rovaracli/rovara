@@ -11,10 +11,15 @@ import "../model-selection/snapshot.js";
 import "../org/project-slack-browser-http.js";
 import "../org/project-allowed-domains-http.js";
 import "../org/second-person-evidence.js";
+// Lane A G1: catalog-bound project money source, no setter or lifecycle claim.
 import "../org/task-stop-project.js";
+// Lane A G1: existing agent money limit, no initialization or management.
 import "../org/task-stop-agent.js";
+// Lane A G1: configured company-default read, with no policy writer.
 import "../org/task-stop-company.js";
+// Lane A G1: narrow read of the existing company ceiling.
 import "../org/task-stop-ceiling.js";
+// Lane A: read-only monthly base settings; no legacy proxy sync.
 import "../org/admin-budget-settings.js";
 import "../org/invite-creation.js";
 import "../org/invite-status.js";
@@ -36,6 +41,10 @@ import "../agent-sessions/home.js";
 import "../agent-sessions/read.js";
 import "../agents/roster.js";
 import "../agents/access.js";
+// Spec 025 FR-009, FR-013, FR-014 and FR-016: GET projects, and the project access check the task
+// routes use. /v1/dev/* has no API Gateway authorizer (D17): the broker verifies the developer
+// access token itself, then checks the environment, the method and the sign-in session on every
+// request (R12, R13), so a revoked session stops at once.
 import "../rovara-code/task-view-compat.js";
 import "../triggers/hooks.js";
 import "../triggers/lifecycle.js";
@@ -168,7 +177,7 @@ import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from 
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
 import { getTaskE2EArtifact } from "./task-e2e-artifact.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./developer-routes/types.js";
-import { bodyError, PROJECT_NOT_FOUND_IN_APP } from "./developer-routes/common.js";
+import { PROJECT_NOT_FOUND_IN_APP, bodyError } from "./developer-routes/common.js";
 import { authenticateDeveloper, authenticateDeveloperSessionId } from "./developer-routes/authentication.js";
 import { listAppProjects, listProjects } from "./developer-routes/project-list.js";
 import { changeProjectArchive, egressDepsOf, getAppProject, startProjectSetupCheck } from "./developer-routes/project-archive-setup.js";
@@ -193,8 +202,8 @@ import {
   startAppRun,
 } from "./developer-routes/dependencies.js";
 import {
-  changeMemberRole,
   CHATGPT_CONNECTION_PATH,
+  changeMemberRole,
   createOrganizationInvite,
   createProject,
   getAppMe,
@@ -234,11 +243,11 @@ export {
   unlinkIdentityThroughLambda,
 } from "./developer-routes/identity-lambda.js";
 export {
+  type DeveloperTokenClaims,
   authenticateBearer,
   authenticateDeveloper,
   authenticateDeveloperSessionId,
   developerClaims,
-  type DeveloperTokenClaims,
 } from "./developer-routes/authentication.js";
 export { projectMembersOf, projectsWithPolicy } from "./developer-routes/project-list.js";
 export { checkProjectAccess } from "./developer-routes/project-access.js";

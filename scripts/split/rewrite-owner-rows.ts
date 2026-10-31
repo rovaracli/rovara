@@ -21,6 +21,9 @@ const next = original.replace(/\["(aws\/developer-(?:tasks|routes)\.ts)", "([A-Z
   rewritten += 1;
   return `["${target.slice(SRC.length)}", "${name}`;
 });
+if (missing.length > 0) {
+  console.log(`no new home found for: ${missing.join(", ")}; the test file was not changed`);
+  process.exit(1);
+}
 writeFileSync(testFile, next);
-console.log(`rewrote ${rewritten} rows${missing.length > 0 ? `; no new home found for: ${missing.join(", ")}` : ""}`);
-if (missing.length > 0) process.exit(1);
+console.log(`rewrote ${rewritten} rows`);

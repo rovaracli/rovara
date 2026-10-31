@@ -7,7 +7,7 @@ import type { DeveloperCaller } from "../developer-routes.js";
 import { resumeTaskDispatch } from "../task-dispatch-access.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { get, iso, partyOfTaskActor, putNew, taskPageUrl, turnTable } from "./common.js";
-import { accessFence, type AuthorizedTask, authorizeTaskAction } from "./access.js";
+import { type AuthorizedTask, accessFence, authorizeTaskAction } from "./access.js";
 import { taskView } from "./task-view.js";
 import { syncIndex } from "./task-index.js";
 import { keptProposedIds } from "./workflow-inputs.js";

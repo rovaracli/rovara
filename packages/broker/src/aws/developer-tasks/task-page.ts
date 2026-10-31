@@ -70,7 +70,7 @@ import { readDecisionDetail } from "../../developer/owner-answers.js";
 import type { MergeView } from "@agentx/contracts";
 import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
-import { get, log, OWNER_LABEL, ownerLabel, removedReasonOf, TASK_PAGE_DOCUMENTS } from "./common.js";
+import { OWNER_LABEL, TASK_PAGE_DOCUMENTS, get, log, ownerLabel, removedReasonOf } from "./common.js";
 import { taskView, workspaceReads } from "./task-view.js";
 import { decideTaskWorkflow } from "./decide.js";
 import { retryTaskWorkflow } from "./workflow-retry.js";

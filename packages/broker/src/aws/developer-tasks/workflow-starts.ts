@@ -36,9 +36,9 @@ import { accessFence, authorizeTaskAction, systemTaskAccess } from "./access.js"
 import { actionableWorkspace } from "./task-window.js";
 import { retryTaskWorkflow } from "./workflow-retry.js";
 import {
+  NO_PUBLISH_NOTE,
   approvedCodingPlan,
   approvedWorkflowDependencies,
-  NO_PUBLISH_NOTE,
   ownerConstraintsSection,
   previousMarkdownBlock,
   retiredClaimIdList,

@@ -4,7 +4,7 @@ import { loadWorkflowDocument, shortenMarkdown } from "../../developer/plan-arti
 import { inertReplyText } from "../../developer/prompt-text.js";
 import { listTaskComments } from "../../developer/page-comments.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
-import { get, removedReasonOf, TASK_PAGE_DOCUMENTS } from "./common.js";
+import { TASK_PAGE_DOCUMENTS, get, removedReasonOf } from "./common.js";
 import { publicationAttempts, taskPageStage, taskPageStep } from "./task-page.js";
 import { promptTagId } from "./thread-notes.js";
 

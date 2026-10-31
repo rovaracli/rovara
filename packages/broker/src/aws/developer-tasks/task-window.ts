@@ -5,7 +5,7 @@ import type { TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import { appendOperationEvent } from "../operation-events.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
-import { CLOSED_TASK, CLOSING_TASK, iso, log, NEVER_STARTED } from "./common.js";
+import { CLOSED_TASK, CLOSING_TASK, NEVER_STARTED, iso, log } from "./common.js";
 
 /**
  * What continue and a pull request need before they touch the workspace: an open task that got

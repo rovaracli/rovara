@@ -55,19 +55,19 @@ import { answeredMilestoneItems } from "../../rovara-code/answered.js";
 import { withTestRule } from "../../rovara-code/verification-report.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import {
+  OWNER_LABEL,
+  TASK_PAGE_DOCUMENTS,
   estimateDependencies,
   iso,
   log,
-  OWNER_LABEL,
   ownerLabel,
   parse,
   partyOfTaskActor,
   putNew,
-  TASK_PAGE_DOCUMENTS,
   taskBaseOption,
   turnTable,
 } from "./common.js";
-import { accessFence, type AuthorizedTask, authorizeTaskAction, authorizeTaskActor } from "./access.js";
+import { type AuthorizedTask, accessFence, authorizeTaskAction, authorizeTaskActor } from "./access.js";
 import { taskView } from "./task-view.js";
 import { syncIndex } from "./task-index.js";
 import { actionableWorkspace, busyOrClosing, capWindowBaseline } from "./task-window.js";
