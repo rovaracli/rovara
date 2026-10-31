@@ -215,8 +215,28 @@ describe("fails closed", () => {
     await requestTier0Change(b.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
     b.audit.emit = async () => { throw new Error("audit down"); };
     expect(await approveTier0Change(b.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "audit_unavailable" });
-    expect(b.settings.writes).toEqual([]);
-    expect(b.changes.rows.get("chg-1")?.state).toBe("pending");
+    // The audit comes after the claim and the write; when it cannot be written the loosening is taken back, so nothing loosened stays unaudited.
+    expect(b.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
+    expect(b.settings.writes.map((w) => w.value)).toEqual(["auto", "one"]);
+    expect(b.changes.rows.get("chg-1")?.state).toBe("cancelled");
+  });
+  it("a lost race leaves no \"changed\" event: not a lost claim, not a stale write", async () => {
+    const stale = world();
+    await requestTier0Change(stale.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    stale.settings.beforeWrite = () => stale.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    expect(await approveTier0Change(stale.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(stale.audit.actions()).toEqual(["lesson.tier0_setting_proposed"]);
+    const claimed = world();
+    await requestTier0Change(claimed.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    claimed.changes.transition = async () => false;
+    expect(await approveTier0Change(claimed.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "not_pending" });
+    expect(claimed.audit.actions()).toEqual(["lesson.tier0_setting_proposed"]);
+    expect(claimed.settings.writes).toEqual([]);
+    // and a clean approval writes it exactly once, after the write
+    const ok = world();
+    await requestTier0Change(ok.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    await approveTier0Change(ok.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" });
+    expect(ok.audit.actions()).toEqual(["lesson.tier0_setting_proposed", "lesson.tier0_setting_changed"]);
   });
   it("a failed settings write leaves the stricter value in force", async () => {
     const w = world();

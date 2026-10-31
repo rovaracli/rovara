@@ -125,10 +125,6 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   // The world moved since the proposal: the value, or the company floor.
   if ((await currentOf(deps, scope)) !== change.from) return { ok: false, code: "stale" };
   if (scope.kind === "project" && LEVEL[change.to] < LEVEL[await floorOf(deps, scope)]) return { ok: false, code: "below_company_floor" };
-  if (!(await requireAudit(deps.audit, {
-    action: "lesson.tier0_setting_changed", workspaceId: scope.workspaceId, project: projectOf(scope), actor: input.approverId,
-    facts: { scope: scope.kind, from: change.from, to: change.to, mode: "second_person", proposedBy: change.proposedBy, changeId: change.id },
-  }))) return { ok: false, code: "audit_unavailable" };
   // One claim: of two approvers at once, only one moves the change out of pending.
   if (!(await deps.changes.transition(scope, change.id, "pending", "applied"))) return { ok: false, code: "not_pending" };
   // The write is conditional on the value the change was made against: a stricter write made since is never overwritten. A failed write throws (or is refused): the stricter value
@@ -136,6 +132,17 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   if (!(await deps.settings.write(scope, change.to, { by: input.approverId, at }, change.from))) {
     await deps.changes.transition(scope, change.id, "applied", "cancelled").catch(() => false);
     return { ok: false, code: "stale" };
+  }
+  // The audit event is written only now, once the claim and the write have succeeded, so a lost race never leaves a "changed" event. If it cannot be written the loosening is taken back
+  // (conditionally: only if the value is still the one this approval wrote), and the change is closed: nothing loosened stays unaudited.
+  const audited = await requireAudit(deps.audit, {
+    action: "lesson.tier0_setting_changed", workspaceId: scope.workspaceId, project: projectOf(scope), actor: input.approverId,
+    facts: { scope: scope.kind, from: change.from, to: change.to, mode: "second_person", proposedBy: change.proposedBy, changeId: change.id },
+  });
+  if (!audited) {
+    await deps.settings.write(scope, change.from, { by: input.approverId, at }, change.to).catch(() => false);
+    await deps.changes.transition(scope, change.id, "applied", "cancelled").catch(() => false);
+    return { ok: false, code: "audit_unavailable" };
   }
   return { ok: true, value: change.to };
 }
