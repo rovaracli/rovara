@@ -105,6 +105,41 @@ describe("fix round 1: planted words that used to count as code", () => {
   });
 });
 
+describe("tidy round 2", () => {
+  const WORD = /planted/u;
+  const clean = (path: string, text: string): void => {
+    const found = lexIdentifiers(path, text, 1, text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
+    expect(found === undefined || found.every((t) => !WORD.test(t)), JSON.stringify(found)).toBe(true);
+  };
+  it("a regex after ) with a comment in between fails closed (the paren state survives comments)", () => {
+    expect(lexIdentifiers("a.js", "if (x) /**/ /plantedC/.test(y);\n", 1, 1)).toBeUndefined();
+    expect(lexIdentifiers("a.ts", "if (x) // c\n /plantedD/.test(y);\n", 1, 2)).toBeUndefined();
+    expect(lexIdentifiers("a.ts", "const r = (a) /* c */ / b;\n", 1, 1)).toEqual(["const", "r", "a", "b"]);
+  });
+  it("C: a backslash followed by trailing blanks before the newline still continues a line comment", () => {
+    clean("a.c", "int x; // note \\ \t\nplantedC continued\nint y;\n");
+    expect(lexIdentifiers("a.c", "int x; // note \\ \nplantedC continued\nint y;\n", 3, 3)).toEqual(["int", "y"]);
+  });
+  it("a hashbang line is skipped in JS and TS", () => {
+    expect(lexIdentifiers("a.ts", "#!/usr/bin/env plantedNode\nconst a = 1;\n", 1, 2)).toEqual(["const", "a"]);
+    expect(lexIdentifiers("a.mjs", "#!/usr/bin/env plantedNode\nconst a = 1;\n", 2, 2)).toEqual(["const", "a"]);
+  });
+  it("the HTML-style comments of JavaScript fail closed", () => {
+    expect(lexIdentifiers("a.js", "a = 1; <!-- plantedHtml\nb = 2;\n", 1, 2)).toBeUndefined();
+    expect(lexIdentifiers("a.js", "a = 1;\n  --> plantedHtml\nb = 2;\n", 1, 3)).toBeUndefined();
+    expect(lexIdentifiers("a.ts", "x = a<!--b;\n", 1, 1)).toBeUndefined();
+    expect(lexIdentifiers("a.js", "x = a-->b;\n", 1, 1)).toEqual(["x", "a", "b"]);
+  });
+  it("JSX is unknown: .tsx and .jsx are not lexed, and a .js file with an element where an expression starts fails; a comparison does not", () => {
+    expect(lexIdentifiers("a.tsx", "const e = 1;\n", 1, 1)).toBeUndefined();
+    expect(lexIdentifiers("a.jsx", "const e = 1;\n", 1, 1)).toBeUndefined();
+    expect(lexIdentifiers("a.js", "const e = <div>plantedJsx</div>;\n", 1, 1)).toBeUndefined();
+    expect(lexIdentifiers("a.js", "const e = <>plantedJsx</>;\n", 1, 1)).toBeUndefined();
+    expect(lexIdentifiers("a.js", "const e = a < b && c > d;\n", 1, 1)).toEqual(["const", "e", "a", "b", "c", "d"]);
+    clean("a.ts", "const e = f<T>(x);\n");
+  });
+});
+
 describe("Python", () => {
   it("drops # comments, docstrings (triple quotes of both kinds) and f-strings whole", () => {
     const text = ['def f(x):', '    """Docstring with hidden_doc', '    more_hidden"""', "    y = f\"{x} hidden_f\"  # trailing_comment", "    z = '''a", "b'''", "    return real_name"].join("\n");

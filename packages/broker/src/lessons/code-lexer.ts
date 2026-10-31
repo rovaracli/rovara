@@ -31,6 +31,8 @@ interface Cfg {
   continuation?: boolean;
   /** Unicode escapes are processed everywhere in the source (Java): a file that has one is not lexed. */
   unicodeEscapes?: boolean;
+  /** JavaScript: a `<` where an expression starts is JSX (not lexed), and the HTML-style comments `<!--` / `-->` are not lexed. */
+  jsx?: boolean;
   /** `$tag$ ... $tag$` quoting (PostgreSQL) is not lexed. */
   noDollarQuotes?: boolean;
 }
@@ -43,6 +45,8 @@ const JS: Cfg = {
     { open: '"', close: '"', escape: true, multiline: false }, { open: "'", close: "'", escape: true, multiline: false },
   ],
 };
+// JSX and the HTML-style comments are not lexed: TypeScript (.ts) has no JSX, so its `<` is a generic or a comparison; .js/.mjs/.cjs may hold JSX, so an element where an expression starts fails.
+const JS_PLAIN: Cfg = { ...JS, jsx: true };
 const JAVA: Cfg = {
   line: ["//"], block: slashes(false), unicodeEscapes: true,
   strings: [{ open: '"""', close: '"""', escape: true, multiline: true }, { open: '"', close: '"', escape: true, multiline: false }, { open: "'", close: "'", escape: true, multiline: false }],
@@ -83,7 +87,9 @@ const SQL: Cfg = {
 type Kind = { kind: "cfg"; cfg: Cfg } | { kind: "markup" };
 const BY_EXTENSION: Record<string, Kind> = {};
 const register = (extensions: string[], kind: Kind): void => { for (const e of extensions) BY_EXTENSION[e] = kind; };
-register(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"], { kind: "cfg", cfg: JS });
+// .tsx and .jsx are not lexed at all: JSX text is prose between tags.
+register(["ts", "mts", "cts"], { kind: "cfg", cfg: JS });
+register(["js", "mjs", "cjs"], { kind: "cfg", cfg: JS_PLAIN });
 register(["java"], { kind: "cfg", cfg: JAVA });
 register(["c", "h", "cc", "cpp", "cxx", "hpp", "hh"], { kind: "cfg", cfg: C });
 register(["go"], { kind: "cfg", cfg: GO });
@@ -181,7 +187,12 @@ function skipBlockComment(sc: Scanner, block: BlockCfg): void {
 function skipToLineEnd(sc: Scanner, continuation = false): void {
   while (sc.i < sc.s.length && sc.s[sc.i] !== "\n") {
     // A backslash right before the newline continues the comment on the next line.
-    if (continuation && sc.s[sc.i] === "\\" && sc.s[sc.i + 1] === "\n") sc.i += 1;
+    // (gcc and clang also take a backslash followed by blanks before the newline as a continuation.)
+    if (continuation && sc.s[sc.i] === "\\") {
+      let j = sc.i + 1;
+      while (sc.s[j] === " " || sc.s[j] === "\t" || sc.s[j] === "\f" || sc.s[j] === "\v") j += 1;
+      if (sc.s[j] === "\n") sc.i = j;
+    }
     sc.i += 1;
   }
 }
@@ -219,13 +230,22 @@ function lexCfg(sc: Scanner, cfg: Cfg): void {
   // For the JavaScript regex rule: whether a `/` here would be a division.
   let operand = false;
   let lastWasParen = false;
+  // A hashbang line is not code.
+  if (cfg.regex === true && s.startsWith("#!")) skipToLineEnd(sc);
   while (sc.i < s.length) {
     sc.tick();
     const ch = s[sc.i]!;
     if (isSpace(ch)) { sc.i += 1; continue; }
-    const wasParen = lastWasParen;
+    const wasParen: boolean = lastWasParen;
     lastWasParen = false;
     if (cfg.noDollarQuotes === true && ch === "$" && /^\$[A-Za-z_\u0080-\uffff]*\$/u.test(s.slice(sc.i, sc.i + 80))) fail("dollar quoting");
+    if (cfg.regex === true) {
+      // JavaScript's HTML-style comments (`<!--` anywhere, `-->` first on a line) are not lexed.
+      if (sc.startsWith("<!--")) fail("HTML-style comment");
+      if (sc.startsWith("-->") && /^[ \t]*$/u.test(s.slice(s.lastIndexOf("\n", sc.i - 1) + 1, sc.i))) fail("HTML-style comment");
+    }
+    // A `<` where an expression starts is JSX.
+    if (cfg.jsx === true && ch === "<" && !operand && !wasParen && /[A-Za-z_$>]/u.test(s[sc.i + 1] ?? "")) fail("JSX");
     // Comments.
     if (cfg.lua === true && sc.startsWith("--")) {
       const long = /^--\[(=*)\[/u.exec(s.slice(sc.i, sc.i + 40));
@@ -235,12 +255,13 @@ function lexCfg(sc: Scanner, cfg: Cfg): void {
         if (end === -1) fail("long comment not closed");
         sc.i = end + closer.length;
       } else skipToLineEnd(sc);
+      lastWasParen = wasParen;
       continue;
     }
     const lineComment = cfg.line.find((x) => sc.startsWith(x));
-    if (lineComment !== undefined) { skipToLineEnd(sc, cfg.continuation === true); continue; }
+    if (lineComment !== undefined) { skipToLineEnd(sc, cfg.continuation === true); lastWasParen = wasParen; continue; }
     const block = cfg.block.find((x) => sc.startsWith(x.open));
-    if (block !== undefined) { skipBlockComment(sc, block); continue; }
+    if (block !== undefined) { skipBlockComment(sc, block); lastWasParen = wasParen; continue; }
     // Lua long strings.
     if (cfg.lua === true && ch === "[") {
       const long = /^\[(=*)\[/u.exec(s.slice(sc.i, sc.i + 40));
