@@ -4,7 +4,7 @@ import { createHash, generateKeyPairSync, sign as cryptoSign, type KeyObject } f
 import { AdminCreateUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { GetPublicKeyCommand, SignCommand } from "@aws-sdk/client-kms";
 import { SignJWT, UnsecuredJWT, createLocalJWKSet, type JWTHeaderParameters, type JWTVerifyGetKey } from "jose";
-import type { OrgId } from "@agentx/contracts";
+import type { EditionPolicy, OrgId } from "@agentx/contracts";
 import type { HttpApiV2Event } from "../../packages/broker/src/aws/lambda.js";
 import { githubSignInProvider, oidcSignInProvider, slackSignInProvider } from "../../packages/broker/src/developer/providers.js";
 import { DecideStore } from "../../packages/broker/src/developer/decide-session.js";
@@ -410,6 +410,8 @@ export function identityHarness(options: {
   notice?: DeveloperIdentityDependencies["notice"];
   /** Plan 3, Task 21a-presence: the decide flow's dependencies (tickets, the approval kinds, Cognito's admin API). Absent: the decide routes do not exist. */
   decide?: { kinds?: DecideKinds; cognito?: ReturnType<typeof fakeCognito> };
+  /** Enterprise foundations E3: the edition's feature table. Absent: an install deployed before editions. */
+  editionPolicy?: EditionPolicy;
 } = {}) {
   let clock = T0;
   const now = () => clock;
@@ -453,6 +455,7 @@ export function identityHarness(options: {
     orgs,
     ...(options.notice === undefined ? {} : { notice: options.notice }),
     ...(options.singleOrg === false ? {} : { singleOrgId: TEST_ORG }),
+    ...(options.editionPolicy === undefined ? {} : { editionPolicy: options.editionPolicy }),
     ...(options.github === undefined ? {} : { onGithubSignIn: (input: { orgId: OrgId; githubUserId: string }) => unlockTrial({ documentClient: state, tableName: "state", now }, input) }),
     signer,
     providers,

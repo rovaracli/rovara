@@ -27,6 +27,8 @@ import { syncBudgets } from "../org/budget.js";
 import { duplicateMerger } from "../org/merge-members.js";
 import { OrgStore } from "../org/store.js";
 import { unlockTrial } from "../org/trial.js";
+import { trialAvailable } from "../org/trial-availability.js";
+import { installEditionPolicy } from "./broker/edition-wiring.js";
 import type { HttpApiV2Event } from "./lambda.js";
 
 const SECRET_CACHE_MS = 5 * 60 * 1000;
@@ -265,6 +267,8 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   const modelAccessFunction = env.MODEL_ACCESS_FUNCTION_NAME ?? "";
   const modelAccess = modelAccessFunction === "" ? undefined : new ModelAccessInvoker({ functionName: modelAccessFunction, lambda: new LambdaClient(region) });
   const singleOrg = singleOrgIdFor(config);
+  // Enterprise foundations E2/E3: the edition from the deploy stamp, read once; the hosted cloud method is the cross-check, as in the broker.
+  const editionPolicy = installEditionPolicy(env, config.cloud !== undefined);
   // Plan 2, Task 8: the notice of a newly linked sign-in method goes out through the cloud sign-in's SES sender (empty: no sender, no notice).
   // SES identities are regional, so the client sends in the region of the sender's identity ARN when the stack names one.
   const noticeFrom = env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";
@@ -286,6 +290,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
     config,
     store,
     notice,
+    ...(editionPolicy === undefined ? {} : { editionPolicy }),
     ...(decide === undefined ? {} : { decide }),
     // A duplicate member of one person (from before identity links) is merged into the member their email names, in one transaction over both tables.
     ...duplicateMerger({
@@ -304,7 +309,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
         await linkGithubMember({ documentClient, tableName: stateTableName, now }, input.orgId, input.developerId, input.githubUserId).catch((error: unknown) => {
           console.log(JSON.stringify({ component: "developer-identity", event: "github_member.link_failed", error: error instanceof Error ? error.name : "unknown" }));
         });
-        await unlockTrial({ documentClient, tableName: stateTableName, now }, { orgId: input.orgId, githubUserId: input.githubUserId });
+        if (trialAvailable(editionPolicy)) await unlockTrial({ documentClient, tableName: stateTableName, now }, { orgId: input.orgId, githubUserId: input.githubUserId });
       },
       onGithubUnlinked: async (input: { orgId: OrgId; developerId: string }) => { await unlinkGithubMember({ documentClient, tableName: stateTableName, now }, input.orgId, input.developerId); },
     }),

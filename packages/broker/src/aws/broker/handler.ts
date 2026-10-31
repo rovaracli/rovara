@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { requireStaffRouteAllowed } from "./staff-routes.js";
 import { isSlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { ProcessModelRefusal, processModelRefusalBody } from "../../model-selection/process-refusal.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION } from "../task-web.js";
@@ -719,6 +720,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         return developerReply(answer, request.requestId);
       }
 
+      // Enterprise foundations E3: everything from here is the admin pool's; Rovara staff routes are off in the Enterprise edition (a closed list of operator routes is served).
+      requireStaffRouteAllowed(dependencies.editionPolicy, url.pathname);
       const claimed = identityFromJwtClaims(request.jwtClaims, {
         issuer: dependencies.issuer,
         adminClaim: dependencies.adminClaim,

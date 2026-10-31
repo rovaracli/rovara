@@ -24,6 +24,7 @@ import { disconnectGithubInstallation, listGithubInstallations, listInstallation
 import { cancelInstallRequest, listInstallRequests } from "../../org/github-install-requests.js";
 import { sendGithubConnectedNotice, sendGithubRequestReminder } from "../../developer/identity-notice.js";
 import { unlockTrial } from "../../org/trial.js";
+import { trialAvailable } from "../../org/trial-availability.js";
 import { rovaraCodeV2LiveFromEnvironment } from "../../rovara-code/v2-switch.js";
 import { requireOrgId, resolveSlackOrgForInstall } from "../../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../../org/store.js";
@@ -295,7 +296,8 @@ export function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubC
       notifyGithubConnected: async (notice) => { await sendGithubConnectedNotice(dependencies.githubConnectedNotice!, notice); },
       remindGithubRequester: async (reminder) => { await sendGithubRequestReminder(dependencies.githubConnectedNotice!, reminder); },
     }),
-    unlockTrial: (input) => unlockTrial({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input),
+    // Enterprise foundations E3: no trial, and so no GitHub account claimed for one, where the edition has none.
+    unlockTrial: (input) => trialAvailable(dependencies.editionPolicy) ? unlockTrial({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input) : Promise.resolve(),
     ...(dependencies.githubFetch === undefined ? {} : { fetch: dependencies.githubFetch }),
   };
 }

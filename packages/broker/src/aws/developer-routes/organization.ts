@@ -2,6 +2,7 @@ import { logDeveloperEvent } from "../../developer/log.js";
 import { changeReviewedMemberRole } from "../../org/role-changes.js";
 import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
 import { navigationReadCache } from "../../app-nav/read-cache.js";
+import { trialAvailable } from "../../org/trial-availability.js";
 import { APP_NAV_CACHE_MS, appNav, orgTrial, type AppNavDependencies } from "../../app-nav/nav.js";
 import { navigationLive } from "../../agent-sessions/live.js";
 import { homeCards } from "../../agent-sessions/home.js";
@@ -98,7 +99,7 @@ export async function getAppNavigation(deps: DeveloperRouteDependencies, caller:
    org: async () => { const org = await orgs.getOrg(caller.orgId);if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");return org; },
   };
   // PLAN8: local-agent product capabilities are not part of this web launch.
-  cached = { at: deps.now(), deps: { sources, now: deps.now, webFeatures: features, localAgents: false }, release: cache.release };
+  cached = { at: deps.now(), deps: { sources, now: deps.now, webFeatures: features, localAgents: false, ...(trialAvailable(deps.editionPolicy) ? {} : { hideTrial: true as const }) }, release: cache.release };
   adapters.delete(key);adapters.set(key, cached);
   if (adapters.size > 256) { const first = adapters.keys().next().value;if (first !== undefined) adapters.delete(first); }
  }
@@ -115,7 +116,7 @@ export async function getAppMe(deps: DeveloperRouteDependencies, caller: Develop
   const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: deps.now });
   return {
     developer: { id: caller.developerId, name: caller.name, ...(caller.email === undefined ? {} : { email: caller.email }), orgRole: caller.orgRole, nameChosen: caller.nameChosen === true },
-    org: { orgId: org.orgId, name: org.name, plan: org.plan, nameIsDefault: org.nameIsDefault ?? org.createdBy !== "system", ...(orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },
+    org: { orgId: org.orgId, name: org.name, plan: org.plan, nameIsDefault: org.nameIsDefault ?? org.createdBy !== "system", ...(!trialAvailable(deps.editionPolicy) || orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },
     identities: await store.identitiesOf(caller.developerId),
   };
 }

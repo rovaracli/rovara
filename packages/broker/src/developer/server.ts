@@ -44,6 +44,7 @@ import {
   type TaskPeopleDisplayReadRequest,
   type TaskPeopleDisplayReadResponse,
   type DeveloperSignInMethod,
+  type EditionPolicy,
   type OrgId,
   type EndDeveloperSessionsRequest,
   type RealtimeTokenAnswer,
@@ -109,6 +110,12 @@ export interface DeveloperIdentityDependencies {
    * approval (who may decide now), and Cognito's admin API on the cloud pool. Absent, the decide routes answer not found.
    */
   decide?: DecideSignInDependencies;
+  /**
+   * Enterprise foundations E3: the edition's feature table. Where the edition has no `publicSignInMethods` (Enterprise) the only way in is the company's own sign-in
+   * (`oidc`), so a person taken out of the provider's groups cannot come back through a linked Slack, Google, GitHub or email-code account. Absent: an install deployed
+   * before editions, which keeps today's methods.
+   */
+  editionPolicy?: EditionPolicy;
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -148,14 +155,19 @@ const RETRYABLE_AWS_ERRORS = new Set([
   "ProvisionedThroughputExceededException", "RequestLimitExceeded", "InternalServerError", "ServiceUnavailable", "TimeoutError",
 ]);
 
-export function enabledMethods(deps: Pick<DeveloperIdentityDependencies, "config" | "providers">): DeveloperSignInMethod[] {
+/** Whether the edition allows a sign-in method: where it has no public sign-in methods, only the company's own (`oidc`). */
+export function methodAllowedByEdition(policy: EditionPolicy | undefined, method: DeveloperSignInMethod): boolean {
+  return policy === undefined || policy.features.publicSignInMethods || method === "oidc";
+}
+
+export function enabledMethods(deps: Pick<DeveloperIdentityDependencies, "config" | "providers" | "editionPolicy">): DeveloperSignInMethod[] {
   const methods: DeveloperSignInMethod[] = [];
   if (deps.config.slack.enabled && deps.config.slack.teamId !== undefined && deps.providers.slack !== undefined) methods.push("slack");
   if (deps.config.oidc !== undefined && deps.providers.oidc !== undefined) methods.push("oidc");
   if (deps.config.cloud !== undefined && deps.providers.cloud !== undefined) methods.push("cloud");
   // GitHub makes accounts the way the cloud method does, so it exists only where cloud does.
   if (deps.config.cloud !== undefined && deps.config.github !== undefined && deps.providers.github !== undefined) methods.push("github");
-  return methods;
+  return methods.filter((method) => methodAllowedByEdition(deps.editionPolicy, method));
 }
 
 const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -214,6 +226,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   const methodLabel = (method: DeveloperSignInMethod) =>
     method === "slack" ? "Slack" : method === "cloud" ? config.cloud?.displayName ?? "cloud sign-in" : method === "github" ? config.github?.displayName ?? "GitHub" : config.oidc?.displayName ?? "company sign-in";
   const provider = (method: DeveloperSignInMethod): SignInProvider => {
+    // Every flow that talks to a provider (sign-in, join, link, decide) comes through here: an edition that has no such method never reaches it.
+    if (!methodAllowedByEdition(deps.editionPolicy, method)) throw new ProviderNotConfiguredError(`${methodLabel(method)} sign-in is not available in this edition`);
     const found = deps.providers[method];
     if (found === undefined) throw new ProviderNotConfiguredError(`${methodLabel(method)} sign-in is not set up in this environment`);
     return found;
