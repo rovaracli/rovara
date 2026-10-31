@@ -112,6 +112,8 @@ export interface DeveloperTaskRouteDependencies {
    * there are no bindings (a private install). Called at a task's start, before any budget, limit or machine time.
    */
   requireRepositoriesConnected?(orgId: OrgId, definition: { repositories: ReadonlyArray<{ url: string; installationId?: number | undefined }> }): Promise<void>;
+  /** Enterprise foundations I3: the sign-in table, where a person's display name is read for the attribution a change request carries. Absent: the people it names are shown only by what the State table holds. */
+  signInTableName?: string;
   /** Enterprise foundations P7: the code hosts this install registers. A task start refuses a repository whose `host.kind` is not among them, before any work is spent. Absent: no check. */
   codeHost?: Pick<CodeHostRouter, "kinds">;
   /**

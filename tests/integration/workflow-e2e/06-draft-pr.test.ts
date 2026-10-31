@@ -26,11 +26,15 @@ describe("Suite 6: draft PR", () => {
     await published(e2e);
     const label = e2e.workflow().checkPolicy!.required[0]!.label;
     const body = (e2e.github.pullRequests[0]!.body ?? "").split("\n");
-    expect(body.slice(-10)).toEqual([
+    expect(body.slice(-13)).toEqual([
       "<!-- agentx:checks-and-reviews -->",
       `Checks: ${label} passed`,
       "Reviews: code review passed; security review passed",
       "<!-- /agentx:checks-and-reviews -->",
+      // Enterprise foundations I3: who asked and who approved the plan (names only), outside the marked block, then the audit link.
+      "Requested by: Maya Chen",
+      expect.stringMatching(/^Plan approved by: .+$/u),
+      expect.stringMatching(/^Audit record: https:\/\/[^ @]+\/v1\/app\/audit\/view\?action=pull_request\.opened$/u),
       `AgentX task: ${pageUrl(e2e)}`,
       "",
       "Opened as a draft by AgentX after the owner-approved plan, checks and reviews passed. Merge it on GitHub.",
@@ -40,6 +44,30 @@ describe("Suite 6: draft PR", () => {
       "Requested by the task owner via AgentX, started from Slack",
     ]);
     expect(said(e2e).at(-1)).toBe(OPENED(1));
+  }, 120_000);
+
+  it("6.2 the publication carries the attribution to the worker (a random reference, never a person id), stores the people it names for the audit event, and names no id in the description", async () => {
+    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
+    await published(e2e);
+    const workspaceId = (e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META") as { workspaceId: string }).workspaceId;
+    const operations = e2e.db.find((item) => item.entityType === "OPERATION" && item.kind === "publish" && item.workspaceId === workspaceId);
+    expect(operations).toHaveLength(1);
+    const operation = operations[0]!;
+    const outbox = e2e.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operation.id);
+    expect(outbox.length).toBeGreaterThan(0);
+    const payload = (outbox[0]!.invocation as { payload: { attribution?: { requester?: { state: string; name?: string; ref?: string }; auditUrl?: string } } }).payload;
+    expect(payload.attribution?.requester).toMatchObject({ state: "named", name: "Maya Chen", ref: expect.stringMatching(/^[a-f0-9]{16}$/u) });
+    expect(payload.attribution?.auditUrl).toMatch(/\/v1\/app\/audit\/view\?action=pull_request\.opened$/u);
+    // The operation records the full ids of those named (for the pull_request.opened event); the host's description and the worker's payload hold none.
+    const related = (operation.publication as { relatedIds?: string[] }).relatedIds ?? [];
+    expect(related.length).toBeGreaterThan(0);
+    for (const id of related) {
+      expect(id).toMatch(/^[a-f0-9]{64}$/u);
+      expect(JSON.stringify(payload)).not.toContain(id);
+      expect(e2e.github.pullRequests[0]!.body ?? "").not.toContain(id);
+    }
+    // The reference row that erasure will cut exists for the requester (the reference row and the person's own row, written together).
+    expect(e2e.db.find((item) => item.entityType === "ATTRIBUTION_LINK" && item.role === "requester" && item.taskId === e2e.taskId() && item.ref === payload.attribution?.requester?.ref)).toHaveLength(2);
   }, 120_000);
 
   it("6.2 a review-only PR says so first, with its reason, and how it was opened", async () => {

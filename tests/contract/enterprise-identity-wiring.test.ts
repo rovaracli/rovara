@@ -116,10 +116,12 @@ describe("a failed rewrite does not lose the list of descriptions to rewrite (re
 
 // ---- the call sites
 
-interface Site { file: string; calls: readonly string[]; why: string }
+interface Site { file: string; calls: readonly string[]; why: string; /** The file takes its data from a field the assembly fills, so it does not import the assembly itself. */ noImport?: true }
 const SITES: readonly Site[] = [
   { file: "packages/broker/src/aws/broker/handler.ts", calls: ["routeEditionDependencies(dependencies)"], why: "both builders of the route dependencies spread routeEditionDependencies (the edition itself is built once by installEditionPolicy in edition-wiring.ts)" },
   { file: "packages/broker/src/aws/broker/scope-helpers.ts", calls: ["routeEditionDependencies(dependencies)"], why: "the authenticateBearer dependencies" },
+  { file: "packages/broker/src/aws/developer-tasks/publication.ts", calls: ["attributionForPublication(", "attribution: resolvedAttribution"], why: "the publish payload's attribution and the pull request body context's attribution come from one attributionForPublication call" },
+  { file: "packages/broker/src/aws/broker/pull-request-reconcile.ts", calls: ["expected.relatedIds"], why: "the pull_request.opened audit event carries the people named, as related ids", noImport: true },
   { file: "packages/broker/src/aws/developer-tasks/start.ts", calls: ["assertRepositoryHostsKnown("], why: "a task start refuses a repository whose host kind is not registered" },
 ];
 const root = resolve(import.meta.dirname, "..", "..");
@@ -129,7 +131,7 @@ const IMPORTS_ASSEMBLY = /from\s+["'][^"']*wiring\/enterprise-identity\.js["']/u
 describe("the call sites of the assembly", () => {
   it("every site imports the assembly and makes its calls", () => {
     for (const site of SITES) {
-      expect(source(site.file), `${site.file} must import the assembly`).toMatch(IMPORTS_ASSEMBLY);
+      if (site.noImport !== true) expect(source(site.file), `${site.file} must import the assembly`).toMatch(IMPORTS_ASSEMBLY);
       for (const call of site.calls) expect(source(site.file), `${site.file} must contain ${call} (${site.why})`).toContain(call);
     }
   });

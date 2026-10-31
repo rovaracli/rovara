@@ -30,6 +30,10 @@ export interface AttributionTables { documentClient: DocumentClient; stateTable:
 
 /** The audit page, filtered to the events that open a change request. Lets an authorized person find the record; names no one. */
 export const auditLinkFor = (origin: string): string => `${new URL(origin).origin}/v1/app/audit/view?action=pull_request.opened`;
+const auditLinkOrUndefined = (origin: string | undefined): string | undefined => {
+  if (origin === undefined) return undefined;
+  try { return auditLinkFor(origin); } catch { return undefined; }
+};
 
 /**
  * The attribution for one publication, with its reference rows stored. `requesterId` is the task's requester; `plan` is the workflow's decisions (the approver comes from them).
@@ -37,12 +41,12 @@ export const auditLinkFor = (origin: string): string => `${new URL(origin).origi
  */
 export async function attributionForPublication(
   tables: AttributionTables,
-  input: { orgId: OrgId; taskId: string; requesterId: string | undefined; decisions: readonly unknown[]; origin: string; links?: AttributionLinkStore },
+  input: { orgId: OrgId; taskId: string; requesterId: string | undefined; decisions: readonly unknown[]; origin?: string | undefined; links?: AttributionLinkStore },
 ): Promise<ResolvedAttribution> {
   const reader = dynamoAttributionReader(tables);
   const links = input.links ?? dynamoAttributionLinkStore({ documentClient: tables.documentClient, tableName: tables.stateTable });
   const approverId = approverOfPlan(input.decisions);
-  return resolveActingAttribution(reader, links, { orgId: input.orgId, taskId: input.taskId, requesterId: input.requesterId, approverId, auditUrl: auditLinkFor(input.origin) });
+  return resolveActingAttribution(reader, links, { orgId: input.orgId, taskId: input.taskId, requesterId: input.requesterId, approverId, auditUrl: auditLinkOrUndefined(input.origin) });
 }
 
 /**

@@ -127,6 +127,8 @@ export interface OperationRecord extends Operation {
     admittedPlanArtifact?: { id: string; type: string; version: number; objectKey: string; sha256: string; format: "markdown" | "structured" };
     admittedOwnerApproval?: { requestId: string; workflowRevision: number; actorId: string; actorRole: "TASK_OWNER" | "PROJECT_ADMIN"; artifactDigest: string; workBreakdownDigest: string | null; at: string };
     admittedWorkflowAuthorityDigest?: string;
+    /** I3: the full ids of the people the change request names (requester, approver), for the `pull_request.opened` event's `related`: the link from the host's change request to the Rovara people. */
+    relatedIds?: string[];
     /** The checked candidate the tree belongs to (a workflow publication only). */
     candidateDigest?: string;
     /** The base commit the broker pinned for the task: the pushed commit's only parent (a workflow publication only). */
