@@ -68,6 +68,7 @@ import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderIden
 import type { SlackDirectory } from "./slack-directory.js";
 import { endedByAdmin, endedByUnlink, isFreshSignIn, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
 import { sendDecideSignInAddedNotice, sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
+import { methodAllowedByEdition, sessionWithinEditionCap } from "./edition-methods.js";
 import { decideCompanySignIn, type CompanySignIn, type SsoStores } from "./sso-sign-in.js";
 import { recordAuditEventDurably, recordAuditRead } from "../audit/flush.js";
 import type { AuditRuntime } from "../audit/outbox.js";
@@ -162,10 +163,7 @@ const RETRYABLE_AWS_ERRORS = new Set([
   "ProvisionedThroughputExceededException", "RequestLimitExceeded", "InternalServerError", "ServiceUnavailable", "TimeoutError",
 ]);
 
-/** Whether the edition allows a sign-in method: where it has no public sign-in methods, only the company's own (`oidc`). */
-export function methodAllowedByEdition(policy: EditionPolicy | undefined, method: DeveloperSignInMethod): boolean {
-  return policy === undefined || policy.features.publicSignInMethods || method === "oidc";
-}
+export { methodAllowedByEdition };
 
 export function enabledMethods(deps: Pick<DeveloperIdentityDependencies, "config" | "providers" | "editionPolicy">): DeveloperSignInMethod[] {
   const methods: DeveloperSignInMethod[] = [];
@@ -247,6 +245,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     return issueAccessToken(deps.signer, {
       issuer: config.issuer, subject: session.developerId, amr: session.amr, env: config.env, sessionId: session.sessionId, now: deps.now(),
       orgId: membership.orgId, orgRole: membership.role,
+      // The access token never outlives its session (the edition's cap included).
+      notAfter: session.endsAt,
     });
   }
   const tokens = (access: { token: string; expiresIn: number }, refreshToken: string): HttpResult =>
@@ -869,6 +869,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     // "active", or "recently_rotated": the same token presented again inside the grace window.
     const { session } = lookup;
+    // The edition's session cap holds for every session, old ones included.
+    if (!sessionWithinEditionCap(deps.editionPolicy, session.startedAt, deps.now())) {
+      await revoke(session.sessionId, "session_cap");
+      return ended;
+    }
     if (!methods.includes(session.amr)) {
       await revoke(session.sessionId, "method_disabled");
       return oauthError(400, "invalid_grant", `${methodLabel(session.amr)} sign-in was turned off in this environment; sign in another way with agentx login`);

@@ -93,14 +93,16 @@ describe("the trial", () => {
   async function trialWorld(extra: Record<string, unknown>) {
     const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, ...extra } });
     h.db.set({ ...orgMetaKey(TEST_ORG), orgId: TEST_ORG, name: "Maya's organization", plan: "trial", createdBy: MAYA.developerId, createdAt: "2026-10-23T12:00:00Z" });
+    // A company (oidc) session: the only kind an Enterprise install serves.
+    h.db.set({ ...h.db.get(`SESSION#${MAYA.sessionId}`, "META")!, amr: "oidc" });
     return h;
   }
 
   it("/v1/app/me and /v1/app/nav carry no trial state in Enterprise, and still do on Public and without an edition", async () => {
     for (const [extra, shown] of [[{}, true], [{ editionPolicy: publicPolicy }, true], [{ editionPolicy: enterprise }, false]] as const) {
       const h = await trialWorld(extra);
-      const me = await h.dev(MAYA, "GET", "/v1/app/me");
-      const nav = await h.dev(MAYA, "GET", "/v1/app/nav");
+      const me = await h.dev({ ...MAYA, provider: "oidc" }, "GET", "/v1/app/me");
+      const nav = await h.dev({ ...MAYA, provider: "oidc" }, "GET", "/v1/app/nav");
       expect(me.status).toBe(200);
       expect(nav.status).toBe(200);
       expect((me.body.org as Record<string, unknown>).trial !== undefined, JSON.stringify(extra)).toBe(shown);

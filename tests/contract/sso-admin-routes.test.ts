@@ -26,6 +26,9 @@ async function world(options: { policy?: ReturnType<typeof editionPolicy> | unde
   // The routes and the stores share one table.
   const stores = ssoStoresFor({ documentClient: h.db, tableName: "state", policy, audit: capture.audit });
   Object.assign(sso ?? {}, stores ?? {});
+  // Company (oidc) sessions: the only kind an Enterprise install serves.
+  for (const who of [MAYA, OMAR]) h.db.set({ ...h.db.get(`SESSION#${who.sessionId}`, "META")!, amr: "oidc" });
+  const dev: typeof h.dev = (who, ...rest) => h.dev({ ...who, provider: "oidc" }, ...rest);
   seedMembership(h.db, MAYA.developerId, { orgId: TEST_ORG, role: options.role ?? "admin" });
   seedMembership(h.db, OMAR.developerId, { orgId: TEST_ORG, role: "owner" });
   // A browser session is its own record: a copy of the person's sign-in session, with the review expiry that marks it as the cookie's.
@@ -48,7 +51,7 @@ async function world(options: { policy?: ReturnType<typeof editionPolicy> | unde
     });
     return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
   };
-  return { h, capture, web, sso: sso! };
+  return { h: { ...h, dev }, capture, web, sso: sso! };
 }
 
 describe("the group mapping routes", () => {
