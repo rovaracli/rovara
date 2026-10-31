@@ -195,7 +195,9 @@ export const recordIdsOf = (l: Pick<Lesson, "provenance" | "citations">): string
   [...l.provenance.sourceEvents, ...l.citations.flatMap((c) => (c.kind === "record" ? [c.eventId] : []))];
 
 /** THE id normaliser: ids are compared trimmed and without case, everywhere (the fence, erasure, forget, measured outcomes, corroboration, the author rule, eligibility). */
-export const normId = (id: string): string => id.trim().toLowerCase();
+// (NFC first: a canonical developer id is 64 lowercase hex characters, so no two real ids differ only by case or composition; the schemas still admit any 1 to 100 character string,
+// and an accented name typed two ways must be one person.)
+export const normId = (id: string): string => id.normalize("NFC").trim().toLowerCase();
 export const sameId = (a: string, b: string): boolean => normId(a) === normId(b);
 export const idIn = (list: readonly string[], id: string): boolean => list.some((x) => sameId(x, id));
 /**

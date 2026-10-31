@@ -8,12 +8,18 @@ import { sweepExpired } from "../../../packages/broker/src/lessons/expiry.js";
 import { loadLessonsForStage, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
 import { attributableSources, isHeldBySource, noteCandidateSources } from "../../../packages/broker/src/lessons/sources.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { memberOfSource, normSource, sameSource } from "../../../packages/broker/src/lessons/types.js";
+import { memberOfSource, normId, normSource, sameSource } from "../../../packages/broker/src/lessons/types.js";
 import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, WS, allowAllAccess, directory, draft, embedder, lessonRecord, seed, settings } from "./lesson-helpers.js";
 
 const DAY = 86_400_000;
 
 describe("LR-L1 one source-key normaliser", () => {
+  it("ids compare in NFC (an accented name typed two ways is one person), and canonical developer ids (64 lowercase hex) are untouched by case folding", () => {
+    expect(normId("Jos\u00e9")).toBe(normId("Jose\u0301"));
+    expect(sameSource("member:Jos\u00e9", "member:Jose\u0301")).toBe(true);
+    const hex = "ab".repeat(32);
+    expect(normId(hex)).toBe(hex);
+  });
   it("member keys ignore case, spaces and the prefix's case; other keys are only trimmed", () => {
     expect(normSource("member:Mallory")).toBe("member:mallory");
     expect(normSource(" Member: MALLORY ")).toBe("member:mallory");
