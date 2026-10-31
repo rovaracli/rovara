@@ -10,14 +10,17 @@ const Repository = z.object({ id: z.number().int().positive(), full_name: z.stri
 const Envelope = z.object({ action: z.string().max(64).optional(), installation: z.object({ id: z.number().int().positive() }).passthrough(), repository: Repository }).passthrough();
 const PullRequest = z.object({
   number: z.number().int().positive(), html_url: z.string().max(2048), title: z.string().max(1000).default(""), body: z.string().max(70_000).nullish(),
-  user: Person, head: z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/) }).passthrough(), base: z.object({ ref: z.string().max(250) }).passthrough(),
+  user: Person, head: z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/), ref: z.string().max(250).optional() }).passthrough(), base: z.object({ ref: z.string().max(250) }).passthrough(),
   merged: z.boolean().optional(), merge_commit_sha: z.string().regex(/^[0-9a-f]{40}$/).nullish(), updated_at: z.string().max(64),
 }).passthrough();
 const Review = z.object({ id: z.number().int().positive(), html_url: z.string().max(2048), state: z.string().max(40), body: z.string().max(70_000).nullish(), user: Person, submitted_at: z.string().max(64).nullish() }).passthrough();
 const Comment = z.object({ id: z.number().int().positive(), html_url: z.string().max(2048), body: z.string().max(70_000).nullish(), user: Person, path: z.string().max(1000).optional(), updated_at: z.string().max(64) }).passthrough();
 const CheckSuite = z.object({ id: z.number().int().positive(), conclusion: z.string().max(40).nullish(), head_sha: z.string().regex(/^[0-9a-f]{40}$/), pull_requests: z.array(z.object({ number: z.number().int().positive() }).passthrough()).max(50).default([]), updated_at: z.string().max(64).optional(), app: z.object({ name: z.string().max(100).optional() }).passthrough().nullish() }).passthrough();
 const WorkflowRun = z.object({ id: z.number().int().positive(), name: z.string().max(200).nullish(), conclusion: z.string().max(40).nullish(), head_sha: z.string().regex(/^[0-9a-f]{40}$/), html_url: z.string().max(2048).optional(), pull_requests: z.array(z.object({ number: z.number().int().positive() }).passthrough()).max(50).default([]), updated_at: z.string().max(64).optional() }).passthrough();
-const Push = z.object({ ref: z.string().max(300), commits: z.array(z.object({ id: z.string().regex(/^[0-9a-f]{40}$/), message: z.string().max(20_000) }).passthrough()).max(100).default([]), head_commit: z.object({ timestamp: z.string().max(64).optional() }).passthrough().nullish() }).passthrough();
+const Push = z.object({ ref: z.string().max(300), before: z.string().regex(/^[0-9a-f]{40}$/).optional(), after: z.string().regex(/^[0-9a-f]{40}$/).optional(), sender: Person.optional(), commits: z.array(z.object({ id: z.string().regex(/^[0-9a-f]{40}$/), message: z.string().max(20_000) }).passthrough()).max(100).default([]), head_commit: z.object({ timestamp: z.string().max(64).optional() }).passthrough().nullish() }).passthrough();
+
+/** GitHub's own committer account for edits made in the web UI. */
+const GITHUB_WEB_FLOW_ID = 19864447;
 
 const personOf = (person: z.infer<typeof Person>): CodeHostPerson => ({
   id: String(person.id), ...(person.login === undefined ? {} : { login: person.login }), isBot: person.type === "Bot" || /\[bot\]$/i.test(person.login ?? ""),
@@ -78,7 +81,7 @@ export function githubEventsOf(eventName: string, action: string | undefined, pa
       const at = isoOrUndefined(pr.data.updated_at) ?? fallbackAt;
       return [{
         type: "pr", repo, number: pr.data.number, url: pr.data.html_url, action, merged: pr.data.merged === true, title: pr.data.title, ...(pr.data.body ? { body: pr.data.body } : {}),
-        author: personOf(pr.data.user), headSha: pr.data.head.sha, ...(pr.data.merge_commit_sha ? { mergeCommitSha: pr.data.merge_commit_sha } : {}), baseRef: pr.data.base.ref, at, version: `${action}:${pr.data.updated_at}`,
+        author: personOf(pr.data.user), headSha: pr.data.head.sha, ...(pr.data.head.ref === undefined ? {} : { headRef: pr.data.head.ref }), ...(pr.data.merge_commit_sha ? { mergeCommitSha: pr.data.merge_commit_sha } : {}), baseRef: pr.data.base.ref, at, version: `${action}:${pr.data.updated_at}`,
       }];
     }
     case "pull_request_review": {
@@ -133,7 +136,7 @@ export function githubEventsOf(eventName: string, action: string | undefined, pa
     case "push": {
       const push = Push.safeParse(payload);
       if (!push.success) return [];
-      return [{ type: "push", repo, ref: push.data.ref, commits: push.data.commits.map((commit) => ({ sha: commit.id, message: commit.message })), at: isoOrUndefined(push.data.head_commit?.timestamp) ?? fallbackAt }];
+      return [{ type: "push", repo, ref: push.data.ref, ...(push.data.before === undefined ? {} : { before: push.data.before }), ...(push.data.after === undefined ? {} : { after: push.data.after }), ...(push.data.sender === undefined ? {} : { sender: personOf(push.data.sender) }), commits: push.data.commits.map((commit) => ({ sha: commit.id, message: commit.message })), at: isoOrUndefined(push.data.head_commit?.timestamp) ?? fallbackAt }];
     }
     case "repository":
       return action === "deleted" || action === "transferred" ? [{ type: "repository", repo, action, at: fallbackAt }] : [];
@@ -145,7 +148,7 @@ export function githubEventsOf(eventName: string, action: string | undefined, pa
 const Compare = z.object({
   status: z.enum(["identical", "ahead", "behind", "diverged"]),
   total_commits: z.number().int().nonnegative().optional(),
-  commits: z.array(z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/), author: Person.nullish(), commit: z.object({ verification: z.object({ verified: z.boolean().optional() }).passthrough().nullish() }).passthrough().optional() }).passthrough()).max(300).default([]),
+  commits: z.array(z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/), author: Person.nullish(), committer: Person.nullish(), commit: z.object({ verification: z.object({ verified: z.boolean().optional() }).passthrough().nullish() }).passthrough().optional() }).passthrough()).max(300).default([]),
   files: z.array(z.object({ filename: z.string().max(1000), additions: z.number().int().nonnegative().default(0), deletions: z.number().int().nonnegative().default(0), patch: z.string().max(200_000).optional() }).passthrough()).max(300).default([]),
 }).passthrough();
 
@@ -161,7 +164,7 @@ export function createGithubDiffReader(getJson: GithubGetJson): CodeHostDiffRead
       if (!parsed.success) return undefined;
       const diff: CodeHostDiff = {
         status: parsed.data.status,
-        commits: parsed.data.commits.map((commit) => ({ sha: commit.sha, verified: commit.commit?.verification?.verified === true, ...(commit.author ? { author: personOf(commit.author) } : {}) })),
+        commits: parsed.data.commits.map((commit) => ({ sha: commit.sha, verified: commit.commit?.verification?.verified === true, ...(commit.author ? { author: personOf(commit.author) } : {}), ...(commit.committer ? { committer: personOf(commit.committer) } : {}), ...(commit.committer?.login === "web-flow" && commit.committer.id === GITHUB_WEB_FLOW_ID ? { webFlow: true } : {}) })),
         files: parsed.data.files.map((file) => ({ path: file.filename, additions: file.additions, deletions: file.deletions, ...(file.patch === undefined ? {} : { patch: file.patch }) })),
         truncated: parsed.data.files.length >= 300 || (parsed.data.total_commits ?? 0) > parsed.data.commits.length,
       };

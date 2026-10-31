@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SendMessageCommand } from "@aws-sdk/client-sqs";
-import { createOpConsumer, createQueuedDistiller, createQueuedHumanEditJobs, createQueuedSink, createSqsOpQueue, OP_MAX_BYTES, TRANSIENT_MAX_RECEIVES, type RecordOp, type RecordOpQueue } from "../../packages/broker/src/team-record/sources/queue.js";
+import { QUEUE_REQUIREMENTS, createOpConsumer, createQueuedDistiller, createQueuedHumanEditJobs, createQueuedSink, createSqsOpQueue, OP_MAX_BYTES, TRANSIENT_MAX_RECEIVES, type RecordOp, type RecordOpQueue } from "../../packages/broker/src/team-record/sources/queue.js";
 import { createSlackRecordTap } from "../../packages/broker/src/team-record/sources/slack.js";
 import { createCodeHostTap, repoScope, type CodeHostRepo } from "../../packages/broker/src/team-record/sources/codehost.js";
 import type { RecordDraft } from "../../packages/broker/src/team-record/sources/ports.js";
@@ -145,5 +145,57 @@ describe("consumer", () => {
     expect((await consumer.processBatch([record(op, TRANSIENT_MAX_RECEIVES - 1)])).batchItemFailures).toHaveLength(1);
     expect((await consumer.processBatch([record(op, TRANSIENT_MAX_RECEIVES)])).batchItemFailures).toEqual([]);
     expect(logs).toContain("record.transient_dropped");
+  });
+});
+
+describe("sink contract under a queue: arrival order never brings text back (R4)", () => {
+  const slackDraft = (version: string, text: string, versionAt: string): RecordDraft => ({
+    workspaceId: WS, source: "slack", kind: "slack.message", occurredAt: "2026-10-30T10:00:00.000Z", sourceRef: { system: "T1", id: "C1/1.1", version, versionAt },
+    trust: "member", audience: { kind: "project" }, links: [], retention: "C", text,
+  });
+
+  it("a message posted and deleted within seconds: the delete lands first, the delayed put is refused, and the record stays empty (also on a dead-letter redrive)", async () => {
+    const w = world();
+    const queue = new FakeQueue();
+    const sink = createQueuedSink(queue, w.sink);
+    await sink.put(slackDraft("m:1.1", "oops a secret", "2026-10-30T10:00:00.000Z"));
+    await sink.tombstone({ workspaceId: WS, system: "T1", sourceIds: ["C1/1.1"], cause: "source_deleted" });
+    const consumer = createOpConsumer({ sink: w.sink, distiller: w.distiller });
+    await consumer.processBatch(queue.sent.map((op) => ({ messageId: "m", body: JSON.stringify(op), receiveCount: 1 })));
+    // A redrive of the same put later changes nothing.
+    await consumer.processBatch(queue.sent.map((op) => ({ messageId: "m", body: JSON.stringify(op), receiveCount: 6 })));
+    expect(w.sink.puts).toEqual([]);
+    expect(await w.sink.put(slackDraft("m:1.1", "oops a secret", "2026-10-30T10:00:00.000Z"))).toMatchObject({ status: "refused" });
+  });
+
+  it("versions are ordered by their own time: an older edit that arrives late is a no-op", async () => {
+    const w = world();
+    const newer = slackDraft("e:2.0", "final text", "2026-10-30T10:05:00.000Z");
+    const older = slackDraft("e:1.5", "first edit", "2026-10-30T10:02:00.000Z");
+    expect(await w.sink.put(newer)).toEqual({ status: "stored" });
+    expect(await w.sink.put(older)).toEqual({ status: "duplicate" });
+    expect(w.sink.puts.map((draft) => draft.text)).toEqual(["final text"]);
+  });
+
+  it("the sink remembers the lowest trust ever stored for an item", async () => {
+    const w = world();
+    await w.sink.put({ ...slackDraft("m:1.1", "a", "2026-10-30T10:00:00.000Z"), trust: "outsider" });
+    await w.sink.put({ ...slackDraft("e:2.0", "b", "2026-10-30T10:05:00.000Z"), trust: "member" });
+    expect(await w.sink.lowestTrust({ workspaceId: WS, source: "slack", system: "T1", id: "C1/1.1" })).toBe("outsider");
+  });
+});
+
+describe("queue requirements for the CDK (pinned)", () => {
+  it("the transient queue is a short, encrypted buffer: visibility timeout fits three receives in the retention, no dead-letter queue, partial-batch reporting, alarms", () => {
+    const t = QUEUE_REQUIREMENTS.transient;
+    expect(t.visibilityTimeoutSeconds).toBeLessThanOrEqual(180);
+    expect(t.visibilityTimeoutSeconds * TRANSIENT_MAX_RECEIVES).toBeLessThanOrEqual(t.retentionSeconds);
+    expect(t.retentionSeconds).toBeLessThanOrEqual(15 * 60);
+    expect(t.deadLetterQueue).toBe(false);
+    expect(t.redriveAllowPolicy).toBe("denyAll");
+    expect(t.reportBatchItemFailures).toBe(true);
+    expect(t.alarms.join(" ")).toContain("record.transient_dropped");
+    expect(t.alarms.join(" ")).toContain("ApproximateAgeOfOldestMessage");
+    expect(QUEUE_REQUIREMENTS.ops.deadLetterQueue).toBe(true);
   });
 });

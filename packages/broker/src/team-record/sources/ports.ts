@@ -53,7 +53,7 @@ export interface RecordDraft {
   repo?: string;
   source: SourceSystem;
   /** `system` names the source instance (a Slack team, a repo host, an MCP server id); `id` and `version` make the write idempotent. */
-  sourceRef: { system: string; id: string; url?: string; parentId?: string; version: string; /** The source's own id, for asking the source again (existence sweep). Absent: the same as `id`. */ nativeId?: string };
+  sourceRef: { system: string; id: string; url?: string; parentId?: string; version: string; /** When this VERSION was made (an edit's time). Absent: `occurredAt`. The sink orders versions by it, never by arrival. */ versionAt?: string; /** The source's own id, for asking the source again (existence sweep). Absent: the same as `id`. */ nativeId?: string };
   kind: RecordKind;
   occurredAt: string;
   actor?: { sourceId: string; developerId?: string; trust: TrustClass };
@@ -79,7 +79,14 @@ export type TombstoneCause = "source_deleted" | "person_erased" | "project_archi
  *  - `put` is idempotent on (workspace, source, system, id, version);
  *  - a `put` of a NEW version of an item that already exists replaces the earlier versions' text, vectors and derived facts: text a person edited
  *    away is not kept (design 4.4.3, "a delete at the source deletes everywhere" covers an edit's removed words);
- *  - a tombstone hides at once, and a tombstone for an item that was never stored (retention B) still hides the facts derived from it.
+ *  - a tombstone hides at once, and a tombstone for an item that was never stored (retention B) still hides the facts derived from it;
+ *  - a tombstone is STICKY: a `put` for a tombstoned (workspace, system, id) that arrives later is refused. The queue delivers in no fixed order and
+ *    redelivers (a message posted and deleted within seconds can reach the sink as tombstone first, put second; a dead-letter redrive is the same), so
+ *    arrival order must never bring deleted text back. (A scope tombstone hides what exists at that moment; only cause `excluded` also refuses later
+ *    puts under that scope, because a Slack Connect channel stays excluded.);
+ *  - versions are ordered by `sourceRef.versionAt ?? occurredAt`, not by arrival: a `put` older than the stored version is a no-op (answer `duplicate`),
+ *    so a late older version can never replace newer text;
+ *  - trust is read back through `RecordHistoryPort` (below), which must report the LOWEST trust any version of the item ever had.
  *
  * In production the taps are given `createQueuedSink` (queue.ts): every call is a durable, retried queue message, so a record outage never loses a delete.
  */
@@ -94,6 +101,32 @@ export interface RecordSinkPort {
   changePrincipals(input: { workspaceId: string; scope: string; add?: readonly string[]; remove?: readonly string[]; at: string }): Promise<void>;
   /** A channel that became private or public: every row of the scope takes the new audience. */
   replaceScopeAudience(input: { workspaceId: string; scope: string; audience: Audience; at: string }): Promise<void>;
+}
+
+/**
+ * Sticky trust. The lowest trust any stored version of an item has ever had (kept even after newer versions replace the text). A recorder takes the minimum of
+ * its own reading and this, so an outsider's edit to a member's ticket is never relabelled `member` by the next, innocent touch of the ticket.
+ */
+export interface RecordHistoryPort {
+  lowestTrust(input: { workspaceId: string; source: SourceSystem; system: string; id: string }): Promise<TrustClass | undefined>;
+}
+
+/** One authenticated push to a branch: the minimum needed to say who put a range of commits on it. No content. Held for a short time (30 days). */
+export interface PushRecord {
+  repo: string;
+  ref: string;
+  before: string;
+  after: string;
+  /** The account GitHub authenticated for the push (the signed webhook's `sender`), not anything written in a commit. */
+  senderId: string;
+  senderIsBot: boolean;
+  at: string;
+}
+
+export interface PushIndexPort {
+  record(input: { workspaceId: string; host: string; push: PushRecord; ttlSeconds: number }): Promise<void>;
+  /** The push whose `after` is `sha`, if the index has one. */
+  byAfter(input: { workspaceId: string; host: string; repo: string; after: string }): Promise<PushRecord | undefined>;
 }
 
 /** Retention B: the text is held in memory for the distiller only (R8); the pipeline stores no raw text. */

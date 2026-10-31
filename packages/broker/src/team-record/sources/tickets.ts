@@ -1,7 +1,7 @@
 // R7: the one place a tracker item (a Linear or Jira webhook, a backfill page, an MCP poller result) becomes a record draft. Everything
 // ticket-shaped goes through `createTicketRecorder`, so audience, trust and retention are decided once.
 import { cleanText, gate, isExcluded, linksOf, scalars, withRetention, type GateDependencies } from "./common.js";
-import { lowestTrust, MAINTAINERS_GROUP, type ActorResolverPort, type Audience, type RecordDraft, type RecordSinkPort, type SourceConfig, type SourceSystem, type TapLog } from "./ports.js";
+import { lowestTrust, MAINTAINERS_GROUP, type ActorResolverPort, type RecordHistoryPort, type TrustClass, type Audience, type RecordDraft, type RecordSinkPort, type SourceConfig, type SourceSystem, type TapLog } from "./ports.js";
 
 export interface TicketAcl {
   principals?: readonly string[];
@@ -59,6 +59,12 @@ export interface TicketRecorderDependencies extends GateDependencies {
   sink: RecordSinkPort;
   actors: ActorResolverPort;
   parents?: ParentLookupPort;
+  /**
+   * Sticky trust: the lowest trust any earlier version of the item ever had (the sink, `RecordHistoryPort`). Without it an outsider's edit to a member's ticket
+   * is relabelled `member` by the next innocent touch (a status change) that carries the same text with the member as creator. In production it is required; an
+   * edit whose history cannot be read is recorded as an outsider's.
+   */
+  history?: RecordHistoryPort;
   log?: TapLog;
 }
 
@@ -115,7 +121,16 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
         const resolve = (sourceId: string) => deps.actors.resolve({ workspaceId: context.workspaceId, project, system: item.system, sourceId });
         const who = item.authorId === undefined ? { trust: "outsider" as const } : await resolve(item.authorId);
         const updater = item.updaterId === undefined || item.updaterId === item.authorId ? undefined : await resolve(item.updaterId);
-        const trust = lowestTrust(who.trust, ...(updater === undefined ? [] : [updater.trust]));
+        let previous: TrustClass | undefined;
+        if (deps.history !== undefined) {
+          try {
+            previous = await deps.history.lowestTrust({ workspaceId: context.workspaceId, source: item.source, system: item.system, id: item.id });
+          } catch {
+            // A history that cannot be read is not "no history": the text may be someone else's.
+            previous = "outsider";
+          }
+        }
+        const trust = lowestTrust(who.trust, ...(updater === undefined ? [] : [updater.trust]), ...(previous === undefined ? [] : [previous]));
         const text = cleanText([item.title, item.body].filter((part): part is string => typeof part === "string" && part !== "").join("\n\n"));
         const draft: RecordDraft = {
           workspaceId: context.workspaceId, ...(project === undefined ? {} : { project }), source: item.source, kind: item.kind, occurredAt: item.occurredAt,

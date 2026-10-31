@@ -25,6 +25,34 @@ export interface RecordOpQueue {
 }
 
 export const OP_MAX_BYTES = 200_000;
+
+/**
+ * What the two queues must be created with (the CDK is the storage lane's `infra/lib/team-record.ts`; these are the values it must use, and a test pins them).
+ * The transient queue holds Public "notes with links" text, which is a persisted copy of Slack text for as long as it lives, so it is a short, encrypted
+ * processing buffer and nothing else: Q4's legal review must cover it under that name. Without that sign-off, B stays off.
+ */
+export const QUEUE_REQUIREMENTS = {
+  ops: {
+    encryption: "SSE-KMS (customer key; the customer's key in Enterprise)",
+    retentionSeconds: 4 * 86_400,
+    deadLetterQueue: true,
+    maxReceiveCount: 5,
+    reportBatchItemFailures: true,
+    alarms: ["dead-letter queue depth > 0", "ApproximateAgeOfOldestMessage > 15 minutes"],
+  },
+  transient: {
+    encryption: "SSE-KMS (SSE-SQS at the least)",
+    retentionSeconds: 15 * 60,
+    /** Three receives must fit inside the retention period, so the visibility timeout is at most three minutes. */
+    visibilityTimeoutSeconds: 180,
+    deadLetterQueue: false,
+    /** Denies the queue being named as any other queue's dead-letter target. */
+    redriveAllowPolicy: "denyAll",
+    reportBatchItemFailures: true,
+    alarms: ["metric filter on the log event record.transient_dropped > 0", "ApproximateAgeOfOldestMessage > 5 minutes"],
+    consumerNeverLogsBody: true,
+  },
+} as const;
 /** After this many deliveries a transient (retention B) message is dropped, not dead-lettered: its text must not outlive the queue's retention. */
 export const TRANSIENT_MAX_RECEIVES = 3;
 

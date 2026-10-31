@@ -193,6 +193,8 @@ describe("Slack tap: edits, deletes and membership", () => {
     // The same item id with a new version: the sink replaces the old text with the new.
     expect(w.sink.puts.map((draft) => [draft.sourceRef.id, draft.sourceRef.version])).toEqual([[`${CH}/${TS}`, "e:1758657900.000000"]]);
     expect(w.sink.puts[0]!.structured).toMatchObject({ edited: true });
+    // The edit is ordered by its own time (the edit's ts), not by the original message's: the sink needs it to refuse a late, older version.
+    expect(w.sink.puts[0]!.sourceRef.versionAt).toBe(new Date(1758657900000).toISOString());
   });
 
   it("propagates a delete, and a channel delete, whatever the mode or the row says now", async () => {
@@ -251,7 +253,8 @@ describe("Slack tap: deletions, edits and uninstall", () => {
     const outcome = await tap({ type: "event_callback", team_id: TEAM, event: { type: "message", subtype: "message_changed", channel: CH, ts: "1758658200.000100", message: { type: "message", subtype: "tombstone", user: "USLACKBOT", text: "This message was deleted.", ts: TS, thread_ts: TS } } });
     expect(outcome).toEqual({ outcome: "deleted" });
     expect(w.sink.tombstones).toMatchObject([{ sourceIds: [`${CH}/${TS}`], cause: "source_deleted" }]);
-    expect(w.sink.puts).toHaveLength(1);
+    // The stored original is gone, and no "This message was deleted." version replaced it.
+    expect(w.sink.puts).toEqual([]);
   });
 
   it("an edit leaves only the edited text in the record (a new version replaces the old one's text)", async () => {

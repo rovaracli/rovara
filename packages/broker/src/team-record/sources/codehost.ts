@@ -6,7 +6,7 @@
 // learning extractor, and dropped. Only the lesson the extractor makes, and a link to the pull request, are ever kept (by the learning lane).
 import { cleanText, gate, isExcluded, linksOf, scalars, withRetention, MAX_DRAFTS_PER_DELIVERY, type GateDependencies } from "./common.js";
 import type {
-  ActorResolverPort, Audience, OnceClaimPort, RecordDraft, RecordSinkPort, RovaraPullRequest, RovaraPullRequestIndexPort,
+  ActorResolverPort, Audience, OnceClaimPort, PushIndexPort, PushRecord, RecordDraft, RecordSinkPort, RovaraPullRequest, RovaraPullRequestIndexPort,
   SourceSystem, TapLog, TrackRecordPort,
 } from "./ports.js";
 
@@ -31,20 +31,25 @@ export interface CodeHostRepo {
 
 export type CodeHostEvent =
   | { type: "pr"; repo: CodeHostRepo; number: number; url: string; action: "opened" | "closed" | "reopened" | "edited"; merged: boolean; title: string; body?: string;
-      author: CodeHostPerson; headSha: string; mergeCommitSha?: string; baseRef: string; at: string; version: string }
+      author: CodeHostPerson; headSha: string; headRef?: string; mergeCommitSha?: string; baseRef: string; at: string; version: string }
   | { type: "review"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "submitted" | "edited" | "dismissed"; state: string; body?: string; author: CodeHostPerson; at: string; version: string }
   | { type: "comment"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "created" | "edited" | "deleted"; surface: "review_comment" | "discussion";
       body?: string; author: CodeHostPerson; path?: string; at: string; version: string }
   | { type: "ci"; repo: CodeHostRepo; id: string; name: string; conclusion: string; headSha: string; prNumbers: readonly number[]; url?: string; at: string }
-  | { type: "push"; repo: CodeHostRepo; ref: string; commits: ReadonlyArray<{ sha: string; message: string }>; at: string }
+  | { type: "push"; repo: CodeHostRepo; ref: string; commits: ReadonlyArray<{ sha: string; message: string }>; at: string;
+      /** The pushed range and the account the host authenticated for the push (the signed delivery's sender): the second way a human commit is vouched for. */
+      before?: string; after?: string; sender?: CodeHostPerson }
   | { type: "repository"; repo: CodeHostRepo; action: "deleted" | "transferred"; at: string };
 
 /** The compare of two commits, read live from the host. */
 export interface CodeHostDiff {
   /** `ahead`: base is an ancestor of head. Anything else is not a clean human delta and is dropped. */
   status: "identical" | "ahead" | "diverged" | "behind";
-  /** `verified`: the host verified the commit's signature (GitHub signs web-UI commits itself). An author's name or email on a commit proves nothing. */
-  commits: ReadonlyArray<{ sha: string; author?: CodeHostPerson; verified: boolean }>;
+  /**
+   * `verified`: the host verified the signature, which proves the COMMITTER's key, not who wrote the commit. `author` is only the account the host matched to
+   * the author email, which anyone with push access can set. `webFlow`: the host itself committed it (a web-UI edit, signed as the logged-in author).
+   */
+  commits: ReadonlyArray<{ sha: string; author?: CodeHostPerson; committer?: CodeHostPerson; verified: boolean; webFlow?: boolean }>;
   files: ReadonlyArray<{ path: string; additions: number; deletions: number; patch?: string }>;
   truncated: boolean;
 }
@@ -89,6 +94,8 @@ export interface HumanEditJob {
   pullRequest: { number: number; url: string };
   candidateHeadSha: string;
   headSha: string;
+  /** The pull request's head branch, to match pushes against. */
+  headRef?: string;
 }
 
 export interface CodeHostTapDependencies extends GateDependencies {
@@ -100,6 +107,8 @@ export interface CodeHostTapDependencies extends GateDependencies {
   extractor?: HumanEditExtractorPort;
   /** Makes "once" true across redeliveries: the human-edit hand-off and the revert re-score each run once per task. Absent: no dedupe (tests only). */
   claims?: OnceClaimPort;
+  /** Authenticated pushes (sender, before, after) for the push-chain rule of human-edit authorship. Absent: only the verified-committer rule can accept a commit. */
+  pushes?: PushIndexPort;
   /** Where a human-edit read is queued so the compare and the extractor never run inside the webhook's answer. Absent: it runs inline. */
   humanEditJobs?: { enqueue(job: HumanEditJob): Promise<void> };
   log?: TapLog;
@@ -116,6 +125,9 @@ export const HUMAN_EDIT_MAX_FILES = 40;
 export const HUMAN_EDIT_MAX_LINES_PER_FILE = 200;
 const HUMAN_EDIT_LINE_MAX_CHARS = 400;
 const SHA = /^[0-9a-f]{40}$/;
+/** How long the push index keeps a push: a range of commits and who pushed it, no content. */
+export const PUSH_INDEX_TTL_SECONDS = 30 * 86_400;
+const PUSH_CHAIN_MAX = 50;
 const REVERTS_COMMIT = /This reverts commit ([0-9a-f]{40})\b/gi;
 
 export function sourceOf(repo: CodeHostRepo): SourceSystem {
@@ -211,8 +223,18 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           });
           break;
         }
-        case "push":
+        case "push": {
+          // A tiny index of who pushed which range, for human-edit authorship. Branch pushes only; nothing of the commits is kept.
+          if (deps.pushes !== undefined && event.sender !== undefined && event.ref.startsWith("refs/heads/") && event.before !== undefined && event.after !== undefined && SHA.test(event.before) && SHA.test(event.after)) {
+            try {
+              await deps.pushes.record({ workspaceId: event.repo.workspaceId, host: event.repo.host, ttlSeconds: PUSH_INDEX_TTL_SECONDS,
+                push: { repo: event.repo.fullName, ref: event.ref, before: event.before, after: event.after, senderId: event.sender.id, senderIsBot: event.sender.isBot, at: event.at } });
+            } catch {
+              log("record.push_index_failed", { host: event.repo.host });
+            }
+          }
           break;
+        }
       }
       for (const draft of drafts.slice(0, MAX_DRAFTS_PER_DELIVERY)) await write(draft, result);
       await revertsOf(event, config.retention, result);
@@ -303,7 +325,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
     if (rovara === undefined || !SHA.test(rovara.candidateHeadSha) || !SHA.test(event.headSha)) return;
     // Nothing was pushed after Rovara's last push: no human edit, and no call to the host.
     if (rovara.candidateHeadSha === event.headSha) return;
-    const job: HumanEditJob = { repo: event.repo, project: rovara.project, taskId: rovara.taskId, pullRequest: { number: event.number, url: rovara.url }, candidateHeadSha: rovara.candidateHeadSha, headSha: event.headSha };
+    const job: HumanEditJob = { repo: event.repo, project: rovara.project, taskId: rovara.taskId, pullRequest: { number: event.number, url: rovara.url }, candidateHeadSha: rovara.candidateHeadSha, headSha: event.headSha, ...(event.headRef === undefined ? {} : { headRef: event.headRef }) };
     if (deps.humanEditJobs !== undefined) await deps.humanEditJobs.enqueue(job);
     else await runHumanEdit(deps, job);
   }
@@ -313,10 +335,9 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
 
 /**
  * Reads, live from the host, what people changed after Rovara's last push and hands it to the extractor, once per task and head. Hands nothing on unless
- * the whole picture is checked: the compare is a clean "ahead" and not cut short, and every human commit is signature-verified and by a linked company
- * member (a commit's author name or email proves nothing: anyone with push access can set it). Never writes to the record.
+ * the whole picture is checked: the compare is a clean "ahead" and not cut short, and authorship is proved (see below). Never writes to the record.
  */
-export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" | "diffs" | "extractor" | "claims" | "mode" | "config" | "log">, job: HumanEditJob): Promise<"handed_on" | "skipped"> {
+export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" | "diffs" | "extractor" | "claims" | "pushes" | "mode" | "config" | "log">, job: HumanEditJob): Promise<"handed_on" | "skipped"> {
   const log: TapLog = deps.log ?? (() => undefined);
   if (deps.diffs === undefined || deps.extractor === undefined) return "skipped";
   const config = await gate(deps, { workspaceId: job.repo.workspaceId, project: job.project, source: sourceOf(job.repo), scope: repoScope(job.repo) });
@@ -328,22 +349,39 @@ export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" 
     log("human_edit.skipped", { reason: diff.truncated ? "compare_truncated" : "not_a_clean_delta" });
     return "skipped";
   }
-  const authors = new Map<string, CodeHostPerson>();
-  for (const commit of diff.commits) {
-    if (!commit.verified || commit.author === undefined || commit.author.isBot) {
-      log("human_edit.skipped", { reason: "commit_not_verified_member" });
-      return "skipped";
-    }
-    authors.set(commit.author.id, commit.author);
-  }
-  if (authors.size === 0) return "skipped";
-  for (const person of authors.values()) {
+  // Who wrote these commits is proved in one of two ways, never by a name or email on a commit and never by whoever merged the pull request:
+  //  (1) the host verified the signature AND the committer is the author, a linked member (or the host itself committed it, as for a web-UI edit); or
+  //  (2) the commits reached the branch in pushes the host authenticated (the signed delivery's `sender`), the chain of pushes from Rovara's last commit to
+  //      the head is complete, and every sender is a linked non-bot member. A gap in the chain, or a push by anyone else, fails closed.
+  const memberOf = async (person: CodeHostPerson | undefined): Promise<boolean> => {
+    if (person === undefined || person.isBot) return false;
     const who = await deps.actors.resolve({ workspaceId: job.repo.workspaceId, project: job.project, system: job.repo.host, sourceId: person.id });
-    if (who.trust !== "member") {
-      log("human_edit.skipped", { reason: "author_not_member" });
+    return who.trust === "member";
+  };
+  let vouching = new Map<string, CodeHostPerson>();
+  let byCommits = diff.commits.length > 0;
+  for (const commit of diff.commits) {
+    const sameCommitter = commit.webFlow === true || (commit.committer !== undefined && commit.author !== undefined && commit.committer.id === commit.author.id);
+    if (!commit.verified || !sameCommitter || !await memberOf(commit.author)) { byCommits = false; break; }
+    vouching.set(commit.author!.id, commit.author!);
+  }
+  if (!byCommits) {
+    vouching = new Map();
+    const chain = deps.pushes === undefined ? undefined : await pushChain(deps.pushes, job);
+    if (chain === undefined) {
+      log("human_edit.skipped", { reason: "authorship_not_proved" });
       return "skipped";
     }
+    for (const push of chain) {
+      if (push.senderIsBot || !await memberOf({ id: push.senderId, isBot: false })) {
+        log("human_edit.skipped", { reason: "author_not_member" });
+        return "skipped";
+      }
+      vouching.set(push.senderId, { id: push.senderId, isBot: false });
+    }
   }
+  if (vouching.size === 0) return "skipped";
+  const authors = vouching;
   const key = `human_edit#${job.taskId}#${job.headSha}`;
   if (deps.claims !== undefined && !await deps.claims.claim(key)) return "skipped";
   try {
@@ -359,6 +397,20 @@ export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" 
     log("human_edit.extractor_failed", {});
     return "skipped";
   }
+}
+
+/** The pushes from Rovara's last commit to the head, newest first, or undefined when any link is missing. */
+async function pushChain(index: PushIndexPort, job: HumanEditJob): Promise<PushRecord[] | undefined> {
+  const chain: PushRecord[] = [];
+  let current = job.headSha;
+  for (let step = 0; step < PUSH_CHAIN_MAX; step += 1) {
+    if (current === job.candidateHeadSha) return chain.length === 0 ? undefined : chain;
+    const push = await index.byAfter({ workspaceId: job.repo.workspaceId, host: job.repo.host, repo: job.repo.fullName, after: current }).catch(() => undefined);
+    if (push === undefined || (job.headRef !== undefined && push.ref !== `refs/heads/${job.headRef}`)) return undefined;
+    chain.push(push);
+    current = push.before;
+  }
+  return undefined;
 }
 
 function commentId(event: Extract<CodeHostEvent, { type: "comment" }>): string {

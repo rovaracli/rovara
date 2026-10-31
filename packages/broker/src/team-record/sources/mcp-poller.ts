@@ -231,7 +231,9 @@ export interface JsonListMapping {
 }
 
 const DEFAULT_NOT_FOUND = ["not found", "not_found", "notfound", "does not exist", "no such", "404"];
-const FORBIDDEN_TEXT = ["forbidden", "permission", "unauthorized", "unauthorised", "access denied", "not authorized", "not authorised", "401", "403", "insufficient"];
+const FORBIDDEN_TEXT = ["forbidden", "permission", "unauthorized", "unauthorised", "access denied", "not authorized", "not authorised", "insufficient"];
+/** An HTTP status as its own word, so an id such as SIM-4031 is not read as a refusal. */
+const FORBIDDEN_STATUS = /(^|[^a-z0-9-])(401|403)([^a-z0-9-]|$)/;
 const pathOf = (value: unknown, path: string): unknown => (path === "" ? value : path.split(".").reduce<unknown>((current, key) => (current !== null && typeof current === "object" ? (current as Record<string, unknown>)[key] : undefined), value));
 
 function answerJson(result: PollToolResult): unknown {
@@ -297,7 +299,7 @@ export function createJsonListAdapter(mapping: JsonListMapping): McpPollAdapter 
       if (result.isError !== true) return answerJson(result) === undefined && (result.content ?? []).length === 0 ? "unknown" : "exists";
       const message = (result.content ?? []).map((block) => block.text ?? "").join(" ").slice(0, 2000).toLowerCase();
       // A refusal is checked first: "403 not found for this user" is the server hiding the item, not the item being gone.
-      if (FORBIDDEN_TEXT.some((phrase) => message.includes(phrase))) return "forbidden";
+      if (FORBIDDEN_TEXT.some((phrase) => message.includes(phrase)) || FORBIDDEN_STATUS.test(message)) return "forbidden";
       const phrases = (mapping.exists.notFoundText ?? DEFAULT_NOT_FOUND).slice(0, 20).map((phrase) => phrase.toLowerCase());
       return phrases.some((phrase) => phrase !== "" && message.includes(phrase)) ? "missing" : "unknown";
     },

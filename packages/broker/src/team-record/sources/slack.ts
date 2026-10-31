@@ -121,7 +121,7 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     const bound = await deps.resolveWorkspace(teamId);
     if (bound === undefined) return ignored("unbound_team");
     // A team that is no longer bound: only removals are honoured.
-    const removal = bound.unbound !== true;
+    const active = bound.unbound !== true;
 
     switch (event.type) {
       case "channel_deleted": {
@@ -156,10 +156,10 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
       }
       case "member_joined_channel":
       case "member_left_channel":
-        return removal ? membership(bound.workspaceId, teamId, event) : ignored("team_unbound_deletes_only");
+        return active ? membership(bound.workspaceId, teamId, event) : ignored("team_unbound_deletes_only");
       case "channel_convert_to_private":
       case "channel_convert_to_public":
-        return removal ? conversion(bound, teamId, event, event.type === "channel_convert_to_private") : ignored("team_unbound_deletes_only");
+        return active ? conversion(bound, teamId, event, event.type === "channel_convert_to_private") : ignored("team_unbound_deletes_only");
       case "message":
         return message(bound, teamId, body, event);
       default:
@@ -232,13 +232,16 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
 
     let source: Record<string, unknown>;
     let version: string;
+    let versionAt: string | undefined;
     if (subtype === undefined || subtype === "thread_broadcast" || subtype === "file_share") {
       source = event;
       version = typeof event.ts === "string" ? `m:${event.ts}` : "";
     } else if (subtype === "message_changed") {
       source = edited;
       const editInfo = asRecord(source.edited);
-      version = `e:${typeof editInfo.ts === "string" ? editInfo.ts : typeof event.ts === "string" ? event.ts : ""}`;
+      const editTs = typeof editInfo.ts === "string" ? editInfo.ts : typeof event.ts === "string" ? event.ts : "";
+      version = `e:${editTs}`;
+      versionAt = isoOfSlackTs(editTs);
     } else {
       return ignored("unsupported_subtype");
     }
@@ -287,7 +290,7 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     const project = bound.project ?? config.project;
     const draft: RecordDraft & { text: string } = {
       workspaceId: bound.workspaceId, ...(project === undefined ? {} : { project }), source: "slack", kind: "slack.message", occurredAt: at,
-      sourceRef: { system: teamId, id: messageId(channelId, ts), url: link, ...(threadTs === undefined ? {} : { parentId: messageId(channelId, threadTs) }), version },
+      sourceRef: { system: teamId, id: messageId(channelId, ts), url: link, ...(threadTs === undefined ? {} : { parentId: messageId(channelId, threadTs) }), version, ...(versionAt === undefined ? {} : { versionAt }) },
       actor: { sourceId: userId, ...(who.developerId === undefined ? {} : { developerId: who.developerId }), trust: isBot ? "system" : who.trust },
       trust: isBot ? "system" : who.trust, audience: audienceOf(teamId, channelId, info, config, at), text,
       structured: scalars({ channelKind: info.kind, edited: subtype === "message_changed", threadReply: threadTs !== undefined }),
