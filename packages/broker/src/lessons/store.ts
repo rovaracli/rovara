@@ -6,8 +6,8 @@
 //   - counters and expiry bookkeeping change in place (`mutate`) without a new version.
 // Every key carries the workspace and the project, so one workspace's call can never read or change another's lessons.
 import { CHANGE_APPROVAL_TTL_DAYS } from "@agentx/contracts";
-import { scrubLesson } from "./scrub.js";
-import { LessonSchema, normId, peopleOf, recordIdsOf, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
+import { scrubLesson, stripAudienceIds } from "./scrub.js";
+import { LessonSchema, normId, normSource, peopleOf, recordIdsOf, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
 import type { LessonStage } from "@agentx/contracts";
 
 export interface ScopeKey { workspaceId: string; project: string }
@@ -81,7 +81,7 @@ export interface LessonStore {
    * person or a deleted id is refused (a writer that read before the scrub cannot put them back). The Dynamo store does this with a conditional write on the
    * project's fence item.
    */
-  fence(key: ScopeKey, fence: { people?: readonly string[]; ids?: readonly string[] }): Promise<void>;
+  fence(key: ScopeKey, fence: { people?: readonly string[]; ids?: readonly string[]; /** An erased person's SOURCE ids (a Slack or GitHub user id): they may sit in a lesson's audience snapshot, and no commit may carry them. */ sourceIds?: readonly string[] }): Promise<void>;
   /** Whether a person is fenced (erased). Ids are compared case-insensitively. */
   isErased(key: ScopeKey, person: string): Promise<boolean>;
   putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void>;
@@ -94,6 +94,8 @@ export interface LessonStore {
 }
 
 const DAY = 86_400_000;
+/** Statuses a write may carry under the fence: each one takes the lesson out of use (never into it). */
+const NARROWING_STATUSES: ReadonlySet<Lesson["status"]> = new Set(["retired", "rejected", "withdrawn", "expired", "stale"]);
 /** Bookkeeping about use: carried from the head into every new version, so a commit never rewinds a counter. */
 const USAGE_FIELDS = ["counters", "staleAt", "lastValidatedAt", "lastHelpfulAt"] as const;
 const scopeId = (k: ScopeKey): string => `${k.workspaceId}\u0001${k.project}`;
@@ -104,7 +106,7 @@ interface ProjectState {
   manifests: Map<string, LoadManifest>; once: Set<string>; pending: Map<string, PendingOutcome>; flags: ProjectFlags;
   sourceEvents: Array<{ at: number; source: string }>;
   gone: Map<string, "withdrawn" | "purged">;
-  erased: Set<string>; deletedIds: Set<string>; intents: Map<string, DeletionIntent>;
+  erased: Set<string>; erasedSources: Set<string>; deletedIds: Set<string>; intents: Map<string, DeletionIntent>;
 }
 
 export class InMemoryLessonStore implements LessonStore {
@@ -114,7 +116,7 @@ export class InMemoryLessonStore implements LessonStore {
     const id = scopeId(key);
     let value = this.state.get(id);
     if (value === undefined) {
-      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map(), erased: new Set(), deletedIds: new Set(), intents: new Map() };
+      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map(), erased: new Set(), erasedSources: new Set(), deletedIds: new Set(), intents: new Map() };
       this.state.set(id, value);
     }
     return value;
@@ -150,14 +152,17 @@ export class InMemoryLessonStore implements LessonStore {
     for (const raw of writes) {
       let lesson = LessonSchema.parse(raw);
       if (lesson.workspaceId !== key.workspaceId || lesson.project !== key.project) throw new Error("lesson is outside the scope it is written to");
+      // An erased person's source ids never ride in a lesson's audience snapshot, whatever the writer read earlier: they are taken out (the lesson itself stays).
+      if (s.erasedSources.size > 0) lesson = stripAudienceIds(lesson, s.erasedSources);
       const existing = s.versions.get(lesson.id)?.at(-1);
       if (lesson.version !== (existing?.version ?? 0) + 1) return { ok: false, reason: "conflict" };
       if (staged.some((x) => x.id === lesson.id)) throw new Error("one commit writes a lesson once");
       // The fence: nothing that names an erased person or a deleted record may be written back, whatever the writer read earlier.
       if (s.gone.get(lesson.id) === "purged") return { ok: false, reason: "erased" };
       if (peopleOf(lesson).some((p) => s.erased.has(normId(p))) || recordIdsOf(lesson).some((id) => s.deletedIds.has(id))) {
-        // A write that only NARROWS (retire, reject, withdraw: the kill switches) is never refused; what it carries from a stale read is scrubbed against the fence.
-        if (lesson.status !== "retired" && lesson.status !== "rejected" && lesson.status !== "withdrawn") return { ok: false, reason: "erased" };
+        // A write that only NARROWS (retire, reject, withdraw: the kill switches; expire and stale: a lesson leaving use) is never refused; what it carries from a stale read is
+        // scrubbed against the fence. So `sweepExpired` and the staleness check still reach a lesson that names an erased person.
+        if (!NARROWING_STATUSES.has(lesson.status)) return { ok: false, reason: "erased" };
         lesson = LessonSchema.parse(scrubLesson(lesson, s.deletedIds, s.erased));
       }
       staged.push(lesson);
@@ -203,7 +208,7 @@ export class InMemoryLessonStore implements LessonStore {
       const openIntent = [...s.intents.values()].some((i) => !i.finished && i.lessonId === m.id);
       if (head !== undefined && (openIntent || peopleOf(content).some((p) => s.erased.has(normId(p))) || recordIdsOf(content).some((id) => s.deletedIds.has(id)))) { members.set(m.id, head.version); continue; }
       const current = s.heads.get(m.id);
-      const restored = clone(content);
+      const restored = s.erasedSources.size > 0 ? stripAudienceIds(clone(content), s.erasedSources) : clone(content);
       // Counters and expiry are bookkeeping about use, not content: a rollback does not rewind them.
       if (current !== undefined) for (const field of [...USAGE_FIELDS, "expiresAt"]) (restored as Record<string, unknown>)[field] = clone((current as Record<string, unknown>)[field]);
       // A rollback never restores approval. Automatic approval is dropped and the lesson comes back needing a person; without a person's approval it is pending, so it
@@ -264,15 +269,17 @@ export class InMemoryLessonStore implements LessonStore {
   }
   async forgetSource(key: ScopeKey, source: string): Promise<void> {
     const s = this.of(key);
-    s.sourceEvents = s.sourceEvents.filter((e) => e.source !== source);
-    if (s.flags.pausedSources?.[source] !== undefined) {
-      const rest = { ...s.flags.pausedSources };
-      delete rest[source];
-      s.flags = { ...s.flags, pausedSources: rest };
+    const wanted = normSource(source);
+    s.sourceEvents = s.sourceEvents.filter((e) => normSource(e.source) !== wanted);
+    // Every spelling of the key goes: a pause stored as `member:Mallory` is forgotten when `mallory` is erased.
+    const paused = s.flags.pausedSources;
+    if (paused !== undefined && Object.keys(paused).some((name) => normSource(name) === wanted)) {
+      s.flags = { ...s.flags, pausedSources: Object.fromEntries(Object.entries(paused).filter(([name]) => normSource(name) !== wanted)) };
     }
   }
-  async fence(key: ScopeKey, fence: { people?: readonly string[]; ids?: readonly string[] }): Promise<void> {
+  async fence(key: ScopeKey, fence: { people?: readonly string[]; ids?: readonly string[]; sourceIds?: readonly string[] }): Promise<void> {
     const s = this.of(key);
+    for (const id of fence.sourceIds ?? []) s.erasedSources.add(id);
     for (const p of fence.people ?? []) s.erased.add(normId(p));
     for (const id of fence.ids ?? []) s.deletedIds.add(id);
   }
@@ -312,11 +319,12 @@ export class InMemoryLessonStore implements LessonStore {
   async removePending(key: ScopeKey, pendingKey: string): Promise<void> { this.of(key).pending.delete(pendingKey); }
   async flags(key: ScopeKey): Promise<ProjectFlags> { return clone(this.of(key).flags); }
   async setFlags(key: ScopeKey, flags: ProjectFlags): Promise<void> { this.of(key).flags = clone(flags); }
-  async recordSourceEvent(key: ScopeKey, event: { at: number; source: string }): Promise<void> { this.of(key).sourceEvents.push(clone(event)); }
+  async recordSourceEvent(key: ScopeKey, event: { at: number; source: string }): Promise<void> { this.of(key).sourceEvents.push({ at: event.at, source: normSource(event.source) }); }
   async sourceDays(key: ScopeKey, source: string, days: number, now: number): Promise<number[]> {
     const counts = new Array<number>(days).fill(0);
+    const wanted = normSource(source);
     for (const e of this.of(key).sourceEvents) {
-      if (e.source !== source) continue;
+      if (normSource(e.source) !== wanted) continue;
       const age = Math.floor((now - e.at) / DAY);
       if (age >= 0 && age < days) counts[age]! += 1;
     }

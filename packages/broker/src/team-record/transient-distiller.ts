@@ -14,7 +14,8 @@ import { hasQuotedOrForwarded } from "./quoted.js";
 import { trustRank } from "./taint.js";
 import type { TrustClass } from "./shared-types.js";
 import { supersedeItem } from "./scope-work.js";
-import { putDerivationLinks, putRecordFact } from "./store.js";
+import { putFactClean } from "./fact-write.js";
+import { putDerivationLinks } from "./store.js";
 
 export interface TransientDistillerDependencies {
   ingest: IngestDependencies;
@@ -52,11 +53,13 @@ export function createTransientDistiller(deps: TransientDistillerDependencies): 
       if (outcome.facts.length === 0) return { accepted: outcome.failed === undefined || outcome.failed === "no_input" };
       for (const fact of outcome.facts) {
         // The fact is hidden by its place and by its source item while any delete or permission change on them is pending.
-        await putRecordFact(deps.ingest.table, fact, [item.scope]);
+        // The links go BEFORE the fact: an erase finds a fact through its links, so whenever it lands after the fact exists, the link already does (and a fact written after the erase
+        // is caught by the marker re-read in `putFactClean`). A link whose fact never arrives is removed with the batch by the next purge.
         await putDerivationLinks(deps.ingest.table, {
           orgId: item.orgId, project: item.project, factId: fact.id, at: deps.distill.now(),
           sources: [{ system: draft.sourceRef.system, sourceId: draft.sourceRef.id, scope: item.scope, ...(draft.actor === undefined ? {} : { actor: { sourceId: draft.actor.sourceId, ...(draft.actor.developerId === undefined ? {} : { developerId: draft.actor.developerId }) } }) }],
         });
+        await putFactClean(deps.ingest.table, item.orgId, fact, [item.scope]);
         if (deps.embedFact !== undefined) {
           await deps.embedFact({ id: fact.id, text: fact.text, project: item.project, scope: item.scope, trust: fact.trust, audienceKind: fact.audience.kind }).catch(() => undefined);
         }

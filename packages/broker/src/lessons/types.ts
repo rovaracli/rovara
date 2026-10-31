@@ -187,7 +187,7 @@ export type LessonAuditAction = (typeof LESSON_AUDIT_ACTIONS)[number];
 export const ERASED_MARK = "erased";
 /** Every person a version names: its authors, `member:` source keys, and anyone who approved or asked to promote it. System and erased marks are not people. */
 export const peopleOf = (l: Pick<Lesson, "provenance" | "approvals" | "promotionApprovals">): string[] => [
-  ...l.provenance.authors, ...[...l.provenance.sources, ...l.provenance.inputSources].filter((s) => s.startsWith("member:")).map((s) => s.slice("member:".length)),
+  ...l.provenance.authors, ...[...l.provenance.sources, ...l.provenance.inputSources].flatMap((s) => { const member = memberOfSource(s); return member === undefined ? [] : [member]; }),
   ...l.approvals.map((a) => a.by), ...(l.promotionApprovals ?? []).map((a) => a.by),
 ].filter((p) => p !== ERASED_MARK && !p.startsWith("system:"));
 /** Every record row a version rests on: its source events and the record citations. */
@@ -195,8 +195,20 @@ export const recordIdsOf = (l: Pick<Lesson, "provenance" | "citations">): string
   [...l.provenance.sourceEvents, ...l.citations.flatMap((c) => (c.kind === "record" ? [c.eventId] : []))];
 
 /** THE id normaliser: ids are compared trimmed and without case, everywhere (the fence, erasure, forget, measured outcomes, corroboration, the author rule, eligibility). */
-export const normId = (id: string): string => id.trim().toLowerCase();
+// (NFC first: a canonical developer id is 64 lowercase hex characters, so no two real ids differ only by case or composition; the schemas still admit any 1 to 100 character string,
+// and an accented name typed two ways must be one person.)
+export const normId = (id: string): string => id.normalize("NFC").trim().toLowerCase();
 export const sameId = (a: string, b: string): boolean => normId(a) === normId(b);
 export const idIn = (list: readonly string[], id: string): boolean => list.some((x) => sameId(x, id));
+/**
+ * THE source-key normaliser (LR-L1). A person's source key is `member:<id>`: its prefix and the id compare without case and spaces (the id by `normId`), so erasing `mallory`
+ * also reaches `member:Mallory`. Any other key (a channel, `ci`, a span kind) is only trimmed: those ids are exact. Counters, pauses, holds, forgetting and the digest all go
+ * through this, so no site can spell the same source two ways.
+ */
+const MEMBER_PREFIX = /^\s*member:/iu;
+export const memberOfSource = (source: string): string | undefined => (MEMBER_PREFIX.test(source) ? normId(source.replace(MEMBER_PREFIX, "")) : undefined);
+export const normSource = (source: string): string => { const member = memberOfSource(source); return member === undefined ? source.trim() : `member:${member}`; };
+export const sameSource = (a: string, b: string): boolean => normSource(a) === normSource(b);
+
 /** Distinct ids (by `normId`), keeping the first spelling. */
 export const distinctIds = (ids: readonly string[]): string[] => { const seen = new Set<string>(); return ids.filter((i) => { const n = normId(i); if (seen.has(n)) return false; seen.add(n); return true; }); };

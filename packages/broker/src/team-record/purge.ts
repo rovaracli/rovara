@@ -21,7 +21,8 @@ import { auditLessonWithdrawn, type RecordAuditSink } from "./audit.js";
 import { tableLakeDeleteQueue, type LakeDeleteQueue, type LakeDeleteTarget } from "./lake-queue.js";
 import { lessonFate, type LessonDeletionPort } from "./lesson-fate.js";
 import { wasDeletedAtSource, projectOfPk } from "./scope-work.js";
-import { deleteItem, putDerivationLinks, putRecordFact } from "./store.js";
+import { putFactClean } from "./fact-write.js";
+import { deleteItem, putDerivationLinks } from "./store.js";
 import { cleanRecordText } from "./text.js";
 import type { RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
 
@@ -206,7 +207,7 @@ export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: r
   for (const plan of plans.values()) {
     if (!vectors.gone.has(factVectorKey(plan.factId))) { result.blocked += 1; continue; }
     if (plan.replacement !== undefined) {
-      await putRecordFact(deps.table, {
+      await putFactClean(deps.table, orgId, {
         id: plan.replacement.factId, workspaceId: orgId, ...(plan.project === undefined ? {} : { project: plan.project }), kind: plan.kind as never, text: plan.replacement.text,
         links: plan.replacement.links.slice(0, 10), derivedFrom: plan.remaining.map((ref) => `${ref.system}:${ref.sourceId}`), trust: plan.trust, audience: plan.audience, createdAt: new Date((deps.now ?? Date.now)()).toISOString(),
       }, plan.remaining.flatMap((ref) => (ref.scope === undefined ? [] : [ref.scope])));

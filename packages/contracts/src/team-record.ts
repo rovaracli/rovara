@@ -91,7 +91,7 @@ export const LEARNING_MODE_DEFAULT: LearningMode = "suggest";
 
 export const RECORD_EVENT_KINDS = [
   "slack.message", "ticket.created", "ticket.updated", "ticket.comment", "github.pr", "github.review", "github.review_comment", "github.ci", "github.revert",
-  "rovara.task", "rovara.plan", "rovara.send_back", "rovara.review", "rovara.human_edit", "rovara.merged", "rovara.closed", "rovara.remembered", "rovara.ask",
+  "rovara.task", "rovara.plan", "rovara.send_back", "rovara.review", "rovara.human_edit", "rovara.merged", "rovara.closed", "rovara.reverted_by", "rovara.remembered", "rovara.ask",
 ] as const;
 export const RecordEventKindSchema = z.enum(RECORD_EVENT_KINDS);
 export type RecordEventKind = z.infer<typeof RecordEventKindSchema>;

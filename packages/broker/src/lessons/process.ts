@@ -13,7 +13,7 @@ import { isMeaningfulAnchor } from "@agentx/contracts";
 import type { LessonDraft } from "./reflect.js";
 import { nextVersion, type ScopeKey } from "./store.js";
 import { classifyTier, type TierContext } from "./tier.js";
-import type { Lesson } from "./types.js";
+import { sameSource, type Lesson } from "./types.js";
 
 export interface ProcessDeps extends CurateDeps { verifier: CitationVerifier; facts: CodeFacts; settings: LearningSettingsReader }
 const VERIFY_TIMEOUT_MS = 3000;
@@ -140,7 +140,7 @@ export const RESUME_RESETTLE_LIMIT = 200;
 export async function resumeAndResettle(deps: ProcessDeps, key: ScopeKey, source: string, actor: string): Promise<{ resumed: boolean; settled: string[] }> {
   if (!(await clearSourcePause(deps, deps.store, key, source, actor))) return { resumed: false, settled: [] };
   const held = (await deps.store.list(key, { statuses: ["candidate"] }))
-    .filter((l) => attributableSources(l.provenance).includes(source))
+    .filter((l) => attributableSources(l.provenance).some((s) => sameSource(s, source)))
     .sort((a, b) => lessonValue(b) - lessonValue(a) || a.id.localeCompare(b.id))
     .slice(0, RESUME_RESETTLE_LIMIT);
   const settled: string[] = [];

@@ -6,6 +6,7 @@
 import { SPIKE, emitAudit } from "./policy.js";
 import type { AlertSink, LessonDeps } from "./ports.js";
 import type { LessonStore, ProjectFlags, ScopeKey } from "./store.js";
+import { memberOfSource, normSource } from "./types.js";
 
 /** The most a source's learned baseline may grow in one day. A steady source is followed; an exponential ramp outruns its baseline and is caught. */
 export const BASELINE_DAILY_GROWTH = 1.25;
@@ -29,16 +30,17 @@ export async function noteCandidateSources(deps: LessonDeps, store: LessonStore,
   const paused: string[] = [];
   const now = deps.now();
   await noteProjectVolume(deps, store, key, alerts);
-  for (const source of new Set(sources)) {
-    // A late event of a person who was erased is not recorded, and cannot start a pause for them.
-    if (source.startsWith("member:") && (await store.isErased(key, source.slice("member:".length)))) continue;
+  for (const source of new Set(sources.map(normSource))) {
+    // A late event of a person who was erased is not recorded, and cannot start a pause for them (whatever the spelling of the key).
+    const member = memberOfSource(source);
+    if (member !== undefined && (await store.isErased(key, member))) continue;
     await store.recordSourceEvent(key, { at: now, source });
     const days = await store.sourceDays(key, source, SPIKE.baselineDays + 1, now);
     const today = days[0] ?? 0;
     const baseline = baselineOf(days.slice(1));
     if (today < Math.max(SPIKE.multiple * baseline, SPIKE.minimum)) continue;
     const flags = await store.flags(key);
-    if (flags.pausedSources?.[source] !== undefined) continue;
+    if (pausedKey(flags, source) !== undefined) continue;
     await store.setFlags(key, { ...flags, pausedSources: { ...(flags.pausedSources ?? {}), [source]: { at: now, reason: "spike" } } });
     paused.push(source);
     await emitAudit(deps.audit, { action: "lesson.source_paused", workspaceId: key.workspaceId, project: key.project, facts: { source, today, baseline: Math.round(baseline * 10) / 10 } });
@@ -74,17 +76,24 @@ async function noteProjectVolume(deps: LessonDeps, store: LessonStore, key: Scop
  * prompt (a channel, CI, a tracker feed). A member who merely appears in the prompt, without being cited, is not blamed for a flood around them.
  */
 export const attributableSources = (provenance: { sources: readonly string[]; inputSources: readonly string[] }): string[] =>
-  [...new Set([...provenance.sources, ...provenance.inputSources.filter((s) => !s.startsWith("member:"))])];
+  [...new Set([...provenance.sources, ...provenance.inputSources.filter((s) => memberOfSource(s) === undefined)])];
 
 /** True when any of a lesson\'s attributable sources is paused: the lesson is held. */
-export const isHeldBySource = (flags: ProjectFlags, sources: readonly string[]): boolean => sources.some((s) => flags.pausedSources?.[s] !== undefined);
+export const isHeldBySource = (flags: ProjectFlags, sources: readonly string[]): boolean => sources.some((s) => pausedKey(flags, s) !== undefined);
+
+/** The key a source is paused under, in whatever spelling it was stored (a pause written before the one normaliser may be `member:Mallory`). */
+export const pausedKey = (flags: ProjectFlags, source: string): string | undefined => {
+  const wanted = normSource(source);
+  return Object.keys(flags.pausedSources ?? {}).find((name) => normSource(name) === wanted);
+};
 
 /** Clears one source's pause and nothing else. Internal: callers use `resumeAndResettle`, which also re-settles the lessons that were held. */
 export async function clearSourcePause(deps: LessonDeps, store: LessonStore, key: ScopeKey, source: string, actor: string): Promise<boolean> {
   const flags = await store.flags(key);
-  if (flags.pausedSources?.[source] === undefined) return false;
+  const stored = pausedKey(flags, source);
+  if (stored === undefined) return false;
   const rest = { ...flags.pausedSources };
-  delete rest[source];
+  delete rest[stored];
   await store.setFlags(key, { ...flags, pausedSources: rest });
   await emitAudit(deps.audit, { action: "lesson.source_resumed", workspaceId: key.workspaceId, project: key.project, actor, facts: { source } });
   return true;

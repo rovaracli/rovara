@@ -237,7 +237,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
         }
       }
       for (const draft of drafts.slice(0, MAX_DRAFTS_PER_DELIVERY)) await write(draft, result);
-      await revertsOf(event, config.retention, result);
+      await revertsOf(event, config, result);
       if (event.type === "pr" && event.action === "closed" && event.merged) await humanEdit(event);
     } catch {
       result.failed += 1;
@@ -259,31 +259,45 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
   }
 
   /** A merged revert pull request, or a default-branch push whose commits say "This reverts commit <sha>". Only a Rovara pull request's merge commit counts. */
-  async function revertsOf(event: CodeHostEvent, retention: RecordDraft["retention"], result: TapResult): Promise<void> {
-    let targets: Array<{ target: RovaraPullRequest; via: string; at: string }> = [];
+  async function revertsOf(event: CodeHostEvent, source: NonNullable<Awaited<ReturnType<typeof gate>>>, result: TapResult): Promise<void> {
+    const retention = source.retention;
+    let targets: Array<{ target: RovaraPullRequest; via: string; at: string; by: CodeHostPerson | undefined }> = [];
     const repo = event.repo;
     if (event.type === "push") {
       if (repo.defaultBranch === undefined || event.ref !== `refs/heads/${repo.defaultBranch}`) return;
       for (const commit of event.commits.slice(0, 100)) {
         for (const sha of revertedCommits(commit.message)) {
           const target = await deps.rovaraPrs.byMergeCommit({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, sha });
-          if (target !== undefined) targets.push({ target, via: commit.sha, at: event.at });
+          if (target !== undefined) targets.push({ target, via: commit.sha, at: event.at, by: event.sender });
         }
       }
     } else if (event.type === "pr" && event.action === "closed" && event.merged && repo.defaultBranch !== undefined && event.baseRef === repo.defaultBranch && /^revert\s+["“']/i.test(event.title.trim())) {
       for (const number of revertedPullRequests(event.body ?? "", repo.fullName)) {
         const target = await deps.rovaraPrs.byNumber({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, number });
-        if (target !== undefined) targets.push({ target, via: event.mergeCommitSha ?? prId(repo, event.number), at: event.at });
+        if (target !== undefined) targets.push({ target, via: event.mergeCommitSha ?? prId(repo, event.number), at: event.at, by: event.author });
       }
       for (const sha of revertedCommits(event.body ?? "")) {
         const target = await deps.rovaraPrs.byMergeCommit({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, sha });
-        if (target !== undefined) targets.push({ target, via: event.mergeCommitSha ?? prId(repo, event.number), at: event.at });
+        if (target !== undefined) targets.push({ target, via: event.mergeCommitSha ?? prId(repo, event.number), at: event.at, by: event.author });
       }
     }
     // One revert per Rovara pull request, however many deliveries or ways tell us of it.
     const seen = new Set<string>();
     targets = targets.filter(({ target }) => !seen.has(target.taskId) && seen.add(target.taskId));
-    for (const { target, via, at } of targets.slice(0, 20)) {
+    for (const { target, via, at, by } of targets.slice(0, 20)) {
+      // Who reverted it (LR-W1): the reverting pull request's author, or the account that pushed the revert commit. The TASK's outcome ("reverted") is task data and is always recorded
+      // with no person on it. The reverter is kept on a SEPARATE person-link row (`rovara.reverted_by`, the person as that row's `actor`, never in a structured field), which an
+      // erase of that person deletes with their other rows. Only a company member counts: a bot, an excluded account, an outsider, an unknown account, an erased one, or a resolver
+      // that fails leaves the revert without a person (an outcome nobody measured), and the outcome rows are recorded anyway.
+      let reverter: NonNullable<RecordDraft["actor"]> | undefined;
+      if (by !== undefined && !by.isBot && !isExcluded(source, by.id, by.login)) {
+        try {
+          const resolved = await deps.actors.resolve({ workspaceId: repo.workspaceId, project: target.project, system: repo.host, sourceId: by.id });
+          if (resolved.developerId !== undefined && resolved.trust === "member") reverter = { sourceId: resolved.developerId, developerId: resolved.developerId, trust: "member" };
+        } catch {
+          log("record.reverter_unresolved", { host: repo.host });
+        }
+      }
       const common = {
         workspaceId: repo.workspaceId, project: target.project, repo: repo.fullName, source: sourceOf(repo), scope: repoScope(repo), occurredAt: at, retention: retention,
         audience: audienceOf(repo, at), links: linksOf(target.url),
@@ -298,6 +312,13 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
         sourceRef: { system: "rovara", id: `task:${target.taskId}:closed`, url: target.url, version: "reverted" },
         structured: scalars({ taskId: target.taskId, outcome: "reverted", revertedBy: via }),
       }, result);
+      if (reverter !== undefined) {
+        await write({
+          ...common, kind: "rovara.reverted_by", trust: "member", source: "rovara", actor: reverter,
+          sourceRef: { system: "rovara", id: `task:${target.taskId}:reverted_by`, url: target.url, version: "1" },
+          structured: scalars({ taskId: target.taskId }),
+        }, result);
+      }
       if (deps.trackRecord !== undefined) {
         // Once per task, however many deliveries tell of the revert; a failure gives the claim back so the next delivery retries.
         const key = `revert#${target.taskId}`;

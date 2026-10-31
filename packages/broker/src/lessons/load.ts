@@ -11,7 +11,7 @@ import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { readVisible } from "./read-visible.js";
-import { isRestricted, type IdentitySet, type Lesson } from "./types.js";
+import { isRestricted, normId, type IdentitySet, type Lesson } from "./types.js";
 
 export const LOAD_MAX_LESSONS = LEARNED_CONTEXT_MAX_LESSONS;
 export const LOAD_MAX_BYTES = LEARNED_CONTEXT_MAX_BYTES;
@@ -67,7 +67,7 @@ export function wilsonLower(helpful: number, loaded: number): number {
   return Math.max(0, (p + (z * z) / (2 * n) - z * Math.sqrt((p * (1 - p) + (z * z) / (4 * n)) / n)) / (1 + (z * z) / n));
 }
 
-const isTierTwoApproved = (lesson: Lesson): boolean => lesson.tier === 2 && (new Set(lesson.approvals.filter((a) => a.mode !== "auto").map((a) => a.by)).size >= 2 || lesson.approvals.some((a) => a.mode === "sole_owner_exception"));
+const isTierTwoApproved = (lesson: Lesson): boolean => lesson.tier === 2 && (new Set(lesson.approvals.filter((a) => a.mode !== "auto").map((a) => normId(a.by))).size >= 2 || lesson.approvals.some((a) => a.mode === "sole_owner_exception"));
 
 /** Which lesson types a stage may load (design §4.7). Reviewer stages get only tier-2-approved review checks. */
 function stageAllows(lesson: Lesson, stage: LessonStage): boolean {

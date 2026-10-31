@@ -2,7 +2,7 @@
 // lane imports another's files). `put` is the pipeline in ingest.ts. `tombstone` hides at once, then leaves a queue item the delete worker finishes (D1).
 // `changePrincipals` and `replaceScopeAudience` keep a private scope's permission snapshot current. A workspace id that is not an org id is refused.
 import { OrgIdSchema, recordDeleteQueueKey, recordScopeHash, type OrgId, type RecordSystem, type Audience } from "@agentx/contracts";
-import { accessIsSeeded, withoutErasedPrincipals, applyAudienceEvent, applyMemberEvents, observeRowAccess } from "./access.js";
+import { accessIsSeeded, erasedAccessIds, applyAudienceEvent, applyMemberEvents, observeRowAccess } from "./access.js";
 import { tableLakeDeleteQueue, type LakeDeleteQueue } from "./lake-queue.js";
 import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
@@ -94,6 +94,7 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
       const queued = applied.remove.length > 0 ? await queueScopeWork(work, orgId, item) : undefined;
       const result = await changeScopePrincipals(work, orgId, { scope: input.scope, ...(applied.add.length === 0 ? {} : { add: applied.add }), ...(applied.remove.length === 0 ? {} : { remove: applied.remove }), at: input.at }, budget);
       await settle(deps.table, orgId, queued, result, item);
+      await scrubLateErased(work, orgId, input.scope, applied.add, budget);
     },
 
     async ensureAccessSeed(input) {
@@ -107,8 +108,10 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 
     async replaceScopeAudience(rawInput) {
       const orgId = orgOf(rawInput.workspaceId);
-      const input = { ...rawInput, audience: await withoutErasedPrincipals(deps.table, orgId, rawInput.audience) }; // an erased person is not written back into a list
-      await applyAudienceEvent(deps.table, orgId, { scope: input.scope, audience: input.audience, at: input.at }); // the access record first (see changePrincipals)
+      // ONE read of the erased markers decides the list for the access record AND the rows: the access write returns the list it used (an id it saw as erased is out of it; an id it
+      // missed got its index item first, so an erase that lands later finds the place). The access record goes first (see changePrincipals).
+      const used = await applyAudienceEvent(deps.table, orgId, { scope: rawInput.scope, audience: rawInput.audience, at: rawInput.at });
+      const input = { ...rawInput, audience: used };
       const item = { type: "audience" as const, system: "scope", scope: input.scope, audience: input.audience, changeAt: input.at, hidePending: true };
       const behind = await olderChange(deps.table, orgId, input.scope);
       if (behind.waiting) { await queueScopeWork(work, orgId, item, behind.latestAt); return; }
@@ -118,8 +121,23 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
       if (input.audience.kind === "restricted") await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(input.scope) }]);
       const result = await replaceScopeAudience(work, orgId, { scope: input.scope, audience: input.audience, at: input.at }, budget);
       await settle(deps.table, orgId, queued, result, item);
+      await scrubLateErased(work, orgId, input.scope, input.audience.kind === "restricted" ? input.audience.acl.principals ?? [] : [], budget);
     },
   };
+}
+
+/**
+ * After a member or audience change has rewritten the rows: the markers are read once more for the ids it wrote. An id erased in the meantime (the erase finished before this read,
+ * and its scrub ran before the rewrite put the id back) is taken out of the place's rows now. If the erase comes after this read instead, the rows and the access index this change
+ * wrote already existed when it ran, so the erase's own passes find them. A pass that cannot finish here is queued for the delete worker.
+ */
+async function scrubLateErased(work: { table: TeamRecordTable; now?: () => number }, orgId: OrgId, scope: string, ids: readonly string[], budget: WorkBudget): Promise<void> {
+  if (ids.length === 0) return;
+  const erased = [...(await erasedAccessIds(work.table, orgId, ids))];
+  if (erased.length === 0) return;
+  const at = new Date((work.now ?? Date.now)()).toISOString();
+  const result = await changeScopePrincipals(work, orgId, { scope, remove: erased, at }, budget);
+  if (!result.complete) await queueScopeWork(work, orgId, { type: "principals", system: "scope", scope, remove: erased, changeAt: at, hidePending: true, ...(result.cursor === undefined ? {} : { walkCursor: result.cursor }) });
 }
 
 const OLDER_CHANGES_READ = 500;

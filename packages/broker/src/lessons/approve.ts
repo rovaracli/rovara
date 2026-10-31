@@ -144,7 +144,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     const given = { approvalId: (deps.newId ?? randomUUID)(), by: input.approverId, at: now, mode };
     approvals = [...approvals, given];
     const complete = mode === "sole_owner_exception" || approvals.length >= Math.max(required, 1);
-    const inGroup = resolved.requiredGroups.every((name) => approvals.some((a) => (group.groups?.[name] ?? []).includes(a.by)));
+    const inGroup = resolved.requiredGroups.every((name) => approvals.some((a) => idIn(group.groups?.[name] ?? [], a.by)));
     // The approval is recorded before it takes effect; if the record cannot be written, nothing changes.
     if (!(await requireAudit(deps.audit, { action: "lesson.approved", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { tier, mode, count: approvals.length } }))) return { ok: false, code: "audit_unavailable" };
     if (mode === "sole_owner_exception" && !(await requireAudit(deps.audit, { action: "lesson.sole_owner_exception", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { tier } }))) return { ok: false, code: "audit_unavailable" };
@@ -260,12 +260,16 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
     const kept = await deps.store.commit(key, setVersion, [{ ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: countable, updatedAt: deps.now() }], deps.now());
     if (!kept.ok) return;
   }
-  const enough = sole || new Set(countable.map((a) => normId(a.by))).size >= required;
-  const groupsOk = resolved.requiredGroups.every((name) => countable.some((a) => (group.groups?.[name] ?? []).some((m) => sameId(m, a.by))));
-  if (countable.length === 0 || !enough || !groupsOk) return;
+  // A team of one: the author's own approval (made when a person deciding anyway was accepted under "auto") is the sole-owner exception in all but name, so it needs the same
+  // cool-off as a new one. An approval that does not pass the shared rule does not count; it stays on the record, and the lesson waits for a person.
+  const soloAuthored = (a: Lesson["approvals"][number]): boolean => group.eligibleIds.length === 1 && a.mode !== "second_person" && idIn(lesson.provenance.authors, a.by);
+  const standing = countable.filter((a) => !soloAuthored(a) || trySecondPerson(group, a.by, a.by, deps.now()).ok);
+  const enough = sole || new Set(standing.map((a) => normId(a.by))).size >= required;
+  const groupsOk = resolved.requiredGroups.every((name) => standing.some((a) => idIn(group.groups?.[name] ?? [], a.by)));
+  if (standing.length === 0 || !enough || !groupsOk) return;
   const fresh = await deps.store.get(key, id);
   if (fresh === undefined) return;
-  try { await activateLesson(deps, key, fresh, countable, resolved.expiryDays, "lesson.activated"); } catch (error) { if (!(error instanceof AuditUnavailable)) throw error; }
+  try { await activateLesson(deps, key, fresh, standing, resolved.expiryDays, "lesson.activated"); } catch (error) { if (!(error instanceof AuditUnavailable)) throw error; }
 }
 
 /**

@@ -16,6 +16,7 @@ import {
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import { bySource, putScopeWork, scopePage, tombstoneItem, type ScopeCursor, type ScopeWork } from "./store.js";
 import { clearSupersedes } from "./item-head.js";
+import { erasedAccessIds, withoutErasedPrincipals } from "./access.js";
 import type { TeamRecordTable, TombstoneCause } from "./types.js";
 
 export interface WorkBudget {
@@ -168,6 +169,32 @@ async function rewriteAudience(table: TeamRecordTable, key: { pk: string; sk: st
   return false;
 }
 
+/**
+ * Takes the given ids out of ONE stored row's list (a late write that named a person who was erased while it was being written). Reads the row fresh, rewrites only the list,
+ * and reads it back: true when the row no longer names any of them (or no longer exists), false when it still does, so the caller can fail and let the queue redeliver.
+ */
+export async function removePrincipalsFromRow(table: TeamRecordTable, key: { pk: string; sk: string }, ids: ReadonlySet<string>): Promise<boolean> {
+  const named = async (): Promise<Audience | undefined | "gone"> => {
+    const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item };
+    if (response.Item === undefined) return "gone";
+    const audience = AudienceSchema.safeParse(response.Item.audience);
+    return audience.success ? audience.data : undefined;
+  };
+  const read = await named();
+  if (read === "gone") return true;
+  // A row whose audience cannot be read is not rewritten here; it cannot be trusted as clean either.
+  if (read === undefined) return false;
+  if (!principalsOf(read).some((id) => ids.has(id))) return true;
+  await rewriteAudience(table, key, read, (current) => {
+    if (current.kind !== "restricted") return undefined;
+    const before = principalsOf(current);
+    const after = before.filter((id) => !ids.has(id));
+    return after.length === before.length ? undefined : { kind: "restricted", acl: { ...current.acl, principals: after } };
+  });
+  const after = await named();
+  return after === "gone" || (after !== undefined && !principalsOf(after).some((id) => ids.has(id)));
+}
+
 async function eachInScope(dependencies: WorkDependencies, orgId: OrgId, scope: string, budget: WorkBudget, visit: (item: Item, key: { pk: string; sk: string }) => Promise<boolean>, resume?: ScopeCursor): Promise<WorkResult> {
   const expired = clock(dependencies).deadline(budget);
   // An audience or a member list belongs to ONE place: not the places under it. A place bigger than the budget is walked a page-run at a time from a cursor; the changes
@@ -199,7 +226,10 @@ async function factOf(table: TeamRecordTable, orgId: OrgId, link: Item): Promise
  * a present principal or removing an absent one changes nothing. More than 500 principals after the change keeps the first 500 (fewer people see the rows).
  */
 export async function changeScopePrincipals(dependencies: WorkDependencies, orgId: OrgId, input: { scope: string; add?: readonly string[]; remove?: readonly string[]; at: string }, budget: WorkBudget = DEFAULT_WORK_BUDGET, resume?: ScopeCursor): Promise<WorkResult> {
-  const add = input.add ?? [];
+  // The markers are read AGAIN here, at the time of the pass, so a change that waited in the queue (or was built from an earlier read) never writes an erased person back: this
+  // is the one place every caller of the rewrite goes through.
+  const erased = await erasedAccessIds(dependencies.table, orgId, input.add ?? []);
+  const add = (input.add ?? []).filter((id) => !erased.has(id));
   const remove = new Set(input.remove ?? []);
   const mutate = (current: Audience): Audience | undefined => {
     // The place's own rows, and the rows of the item units under it (a tracker issue keeps its list in a unit `<place>/item:<hash>`): both belong to this place.
@@ -230,7 +260,7 @@ export async function changeScopePrincipals(dependencies: WorkDependencies, orgI
  * or project-wide); it is never widened here, because it may rest on other sources.
  */
 export async function replaceScopeAudience(dependencies: WorkDependencies, orgId: OrgId, input: { scope: string; audience: Audience; at: string }, budget: WorkBudget = DEFAULT_WORK_BUDGET, resume?: ScopeCursor): Promise<WorkResult> {
-  const next = AudienceSchema.parse(input.audience);
+  const next = AudienceSchema.parse(await withoutErasedPrincipals(dependencies.table, orgId, AudienceSchema.parse(input.audience)));
   const sameScope = (current: Audience): boolean => current.kind === "restricted" && current.acl.scope === input.scope;
   // A row captured after the event is rewritten only when that takes access away (a replay of an older, wider list must not grant again).
   const stale = (current: Audience): boolean => capturedAfter(current, input.at) && widens(current, next);

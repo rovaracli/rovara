@@ -130,7 +130,7 @@ async function filterDependencies(deps: RecordQueryDependencies, orgId: OrgId): 
 const KIND_TITLES: Record<string, string> = {
   "slack.message": "Slack message", "ticket.created": "Ticket created", "ticket.updated": "Ticket updated", "ticket.comment": "Ticket comment", "github.pr": "Pull request",
   "github.review": "Review", "github.review_comment": "Review comment", "github.ci": "CI result", "github.revert": "Revert", "rovara.task": "Rovara task", "rovara.plan": "Rovara plan",
-  "rovara.send_back": "Send-back", "rovara.review": "Rovara review", "rovara.human_edit": "Human edit", "rovara.merged": "Merged", "rovara.closed": "Closed", "rovara.remembered": "Remembered note",
+  "rovara.send_back": "Send-back", "rovara.review": "Rovara review", "rovara.human_edit": "Human edit", "rovara.merged": "Merged", "rovara.closed": "Closed", "rovara.reverted_by": "Reverted by", "rovara.remembered": "Remembered note",
   "rovara.ask": "Question to Rovara", fact: "Team note",
 };
 
