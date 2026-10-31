@@ -1,8 +1,10 @@
 // R3 (review I-8): per-workspace credentials for the vector index. The broker role may assume a data role; each session carries a SESSION
 // POLICY that reaches the one index of one workspace (`index/ws-<hash>`), so a bug that builds the wrong index name still cannot read or
 // delete another workspace's vectors. The AWS adapter (STS AssumeRole with `Policy`) is pending; this file is the policy and the cache.
+import { createHash } from "node:crypto";
+import { AssumeRoleCommand, type STSClient } from "@aws-sdk/client-sts";
 import { teamRecordVectorIndexName } from "@agentx/contracts";
-import type { S3VectorsPort } from "./s3-vectors-index.js";
+import { S3VectorsIndex, type S3VectorsPort } from "./s3-vectors-index.js";
 
 export interface SessionPolicyInput {
   partition?: string;
@@ -63,4 +65,60 @@ export class WorkspaceVectorPorts {
     while (this.cache.size > (this.options.maxEntries ?? 200)) this.cache.delete(this.cache.keys().next().value as string);
     return assumed.port;
   }
+}
+
+// ---- The STS adapter and the way to open an index (review I-8: scoping per workspace is the default) -------------------------------------
+
+export interface VectorCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+}
+
+/** STS AssumeRole with an inline session policy. */
+export interface StsAssumePort {
+  assumeRole(request: { roleArn: string; sessionName: string; policy: string; durationSeconds: number }): Promise<{ credentials: VectorCredentials; expiresAtMs: number }>;
+}
+
+/** The real port over `@aws-sdk/client-sts`. Errors carry no text (the caller sees a fixed message). */
+export function createStsAssumePort(client: Pick<STSClient, "send">): StsAssumePort {
+  return {
+    async assumeRole(request) {
+      let output;
+      try {
+        output = await client.send(new AssumeRoleCommand({ RoleArn: request.roleArn, RoleSessionName: request.sessionName, Policy: request.policy, DurationSeconds: request.durationSeconds }));
+      } catch {
+        throw new Error("team-record: could not assume the vector data role");
+      }
+      const c = output.Credentials;
+      if (c?.AccessKeyId === undefined || c.SecretAccessKey === undefined || c.SessionToken === undefined || c.Expiration === undefined) {
+        throw new Error("team-record: the vector data role session has no credentials");
+      }
+      return { credentials: { accessKeyId: c.AccessKeyId, secretAccessKey: c.SecretAccessKey, sessionToken: c.SessionToken }, expiresAtMs: c.Expiration.getTime() };
+    },
+  };
+}
+
+/** Builds the `assume` function of WorkspaceVectorPorts: one STS session per workspace, carrying that workspace's session policy. */
+export function createAssume(options: {
+  sts: StsAssumePort;
+  /** `TEAM_RECORD_VECTORS_ROLE_ARN` from the stack. */
+  roleArn: string;
+  /** Makes the S3 Vectors port that signs with these credentials. The SDK adapter (`@aws-sdk/client-s3vectors`) is pending. */
+  portFromCredentials: (credentials: VectorCredentials) => S3VectorsPort;
+  durationSeconds?: number;
+}): WorkspaceVectorPortsOptions["assume"] {
+  return async ({ workspaceId, sessionPolicy }) => {
+    const sessionName = `team-record-${createHash("sha256").update(workspaceId).digest("hex").slice(0, 24)}`;
+    const session = await options.sts.assumeRole({ roleArn: options.roleArn, sessionName, policy: sessionPolicy, durationSeconds: options.durationSeconds ?? 3600 });
+    return { port: options.portFromCredentials(session.credentials), expiresAtMs: session.expiresAtMs };
+  };
+}
+
+/**
+ * The way to get a workspace's vector index: its port comes from a session scoped to that workspace's one index. Use this, not
+ * `new S3VectorsIndex(...)` with a shared port, anywhere outside tests.
+ */
+export async function openWorkspaceIndex(input: { ports: WorkspaceVectorPorts; workspaceId: string; bucket: string; dimension: number }): Promise<S3VectorsIndex> {
+  return new S3VectorsIndex({ port: await input.ports.get(input.workspaceId, input.bucket), bucket: input.bucket, workspaceId: input.workspaceId, dimension: input.dimension });
 }

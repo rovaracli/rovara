@@ -121,13 +121,15 @@ export interface HotStatsSource {
 export interface StatsDeps {
   lake: LakeClient;
   tableBucket: string;
-  hot?: HotStatsSource;
+  /** REQUIRED (review I-9): without the recent side the default window (the last 90 days) would be empty, because the lake holds archived rows only. */
+  hot: HotStatsSource;
 }
 
 export interface StatsResult extends LakeRows {
   /** `unavailable`: the lake failed and only recent data is shown ("history unavailable right now", design 4.11). */
   lake: "ok" | "unavailable";
-  hot: boolean;
+  /** Always true: the recent side was read. Kept so callers can see both sides took part. */
+  hot: true;
 }
 
 /** Builds (without running) the statement of a template. Exposed for tests and for the Ask tool's dry run. */
@@ -147,12 +149,7 @@ export async function runStats(deps: StatsDeps, caller: StatsCaller, templateNam
   const base = { workspaceId: caller.workspaceId, project: caller.project, ...first.range };
   const grouped = templateName !== "rovara_merge_rate";
 
-  if (deps.hot === undefined) {
-    const lake = await deps.lake.query(first.sql, first.parameters);
-    return { ...lake, lake: "ok", hot: false };
-  }
-
-  // Both sides, then merge. A lake failure leaves the recent side (flagged); a failure of the recent side is an error.
+  // Both sides always, then merge. A lake failure leaves the recent side (flagged); a failure of the recent side is an error.
   const lakeBuilt = grouped ? buildStats(deps.tableBucket, caller, templateName, params, nowMs, GROUP_FETCH_LIMIT) : first;
   const [hotResult, lakeResult] = await Promise.all([
     grouped ? deps.hot.groupedCounts({ ...base, template: templateName as StatsTemplateName }) : deps.hot.mergeTotals(base),

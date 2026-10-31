@@ -13,7 +13,7 @@ const MAX_ATHENA_USERS = 20;
 /**
  * The key-policy statements the customer's KMS key needs so S3 Tables maintenance (compaction, snapshot expiry, unreferenced-file removal)
  * and S3 Vectors indexing can use it (review I-6). The key is imported by ARN, so CDK cannot add them: the install emits them (stack output
- * `TeamRecordKmsKeyPolicyStatements`) for the customer to add to the key policy. Without them maintenance fails quietly, which also breaks the
+ * `KmsKeyPolicyStatements`) for the customer to add to the key policy. Without them maintenance fails quietly, which also breaks the
  * deletion promise. [verify] the exact service principal names, the actions and the aws:SourceAccount condition against the S3 Tables and
  * S3 Vectors encryption pages, then run the post-deploy check (table maintenance status healthy) in the test environment.
  */

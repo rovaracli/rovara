@@ -55,7 +55,8 @@ describe("stats templates", () => {
       stopQuery: async () => undefined,
     };
     const lake = createLakeClient({ athena, workGroup: "wg", now: () => NOW });
-    expect(await runStats({ lake, tableBucket: "rovara-lake" }, caller, "send_backs_by_stage", {})).toEqual({ rows: [{ group: "plan", count: "4" }], truncated: false, lake: "ok", hot: false });
+    const hot: HotStatsSource = { groupedCounts: async () => [], mergeTotals: async () => ({ tasks: 0, merged: 0, reverted: 0, send_backs: 0 }) };
+    expect(await runStats({ lake, tableBucket: "rovara-lake", hot }, caller, "send_backs_by_stage", {})).toEqual({ rows: [{ group: "plan", count: "4" }], truncated: false, lake: "ok", hot: true });
     expect(seen[0]!.workGroup).toBe("wg");
     expect(seen[0]!.executionParameters[0]).toBe("'ws1'");
   });
@@ -79,10 +80,14 @@ describe("recent and archived data together (I-9)", () => {
     ...over,
   });
 
-  it("without the recent side an empty lake gives an empty answer (the gap the review found)", async () => {
-    const out = await runStats({ lake: lakeReturning([], ["group", "count"]), tableBucket: "rovara-lake" }, caller, "send_backs_by_stage", {});
-    expect(out.rows).toEqual([]);
-    expect(out.hot).toBe(false);
+  it("I-9: the recent side is read by default: an empty lake still shows what happened in the last 90 days", async () => {
+    const out = await runStats({ lake: lakeReturning([], ["group", "count"]), tableBucket: "rovara-lake", hot: hot() }, caller, "send_backs_by_stage", {});
+    expect(out.rows).toEqual([{ group: "plan", count: "3" }, { group: "build", count: "1" }]);
+    expect(out.hot).toBe(true);
+  });
+  it("I-9: a call without the recent side is a type error and fails at run time (no lake-only path)", async () => {
+    // @ts-expect-error hot is required
+    await expect(runStats({ lake: lakeReturning([], ["group", "count"]), tableBucket: "rovara-lake" }, caller, "send_backs_by_stage", {})).rejects.toThrow();
   });
   it("adds the recent counts to the archived ones, per group, and orders and limits the result", async () => {
     const out = await runStats({ lake: lakeReturning([["plan", "10"], ["review", "2"]], ["group", "count"]), tableBucket: "rovara-lake", hot: hot() }, caller, "send_backs_by_stage", { limit: 2 });

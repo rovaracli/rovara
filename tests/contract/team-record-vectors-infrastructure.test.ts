@@ -15,7 +15,7 @@ function stackWith(build: (stack: Stack) => void): Template {
 
 describe("team record vector buckets", () => {
   it("creates a retained vector bucket, KMS-encrypted when a key is given", () => {
-    const template = stackWith((stack) => new TeamRecordVectors(stack, "V", { bucketNames: ["rovara-record-vectors-a"], kmsKeyArn: KMS }));
+    const template = stackWith((stack) => new TeamRecordVectors(stack, "V", { brokerPrincipal: new iam.AccountRootPrincipal(), bucketNames: ["rovara-record-vectors-a"], kmsKeyArn: KMS }));
     template.resourceCountIs("AWS::S3Vectors::VectorBucket", 1);
     template.hasResourceProperties("AWS::S3Vectors::VectorBucket", {
       VectorBucketName: "rovara-record-vectors-a",
@@ -27,12 +27,12 @@ describe("team record vector buckets", () => {
   });
 
   it("uses S3-managed keys without a customer key", () => {
-    const template = stackWith((stack) => new TeamRecordVectors(stack, "V", { bucketNames: ["rovara-record-vectors"] }));
+    const template = stackWith((stack) => new TeamRecordVectors(stack, "V", { brokerPrincipal: new iam.AccountRootPrincipal(), bucketNames: ["rovara-record-vectors"] }));
     template.hasResourceProperties("AWS::S3Vectors::VectorBucket", { EncryptionConfiguration: { SseType: "AES256" } });
   });
 
   it("Enterprise pins its one workspace index: cosine, 1024 float32, ref the only non-filterable key", () => {
-    const template = stackWith((stack) => new TeamRecordVectors(stack, "V", { bucketNames: ["rovara-record-vectors"], enterpriseWorkspaceId: "acme", kmsKeyArn: KMS }));
+    const template = stackWith((stack) => new TeamRecordVectors(stack, "V", { brokerPrincipal: new iam.AccountRootPrincipal(), bucketNames: ["rovara-record-vectors"], enterpriseWorkspaceId: "acme", kmsKeyArn: KMS }));
     template.hasResourceProperties("AWS::S3Vectors::Index", {
       IndexName: teamRecordVectorIndexName("acme"),
       DataType: "float32",
@@ -51,6 +51,14 @@ describe("team record vector buckets", () => {
     expect(build({ bucketNames: ["aaa-bucket", "bbb-bucket"], enterpriseWorkspaceId: "acme" })).toThrow(/exactly one vector bucket/);
   });
 
+  it("I-8: the default is per-workspace: no broker principal is an error, and the broker role never gets index/* unless a test opts in", () => {
+    const stack = new Stack(new App(), "T", { env: { account: "111122223333", region: "us-west-2" } });
+    expect(() => new TeamRecordVectors(stack, "V", { bucketNames: ["rovara-record-vectors"] })).toThrow(/brokerPrincipal is required/);
+    const safe = new TeamRecordVectors(new Stack(new App(), "U"), "V", { bucketNames: ["rovara-record-vectors"], brokerPrincipal: new iam.AccountRootPrincipal() });
+    expect(JSON.stringify(safe.brokerStatements().map((s) => statementJson(s)))).not.toContain("index/*");
+    expect(actionsOf(safe.brokerStatements()).some((a) => a.startsWith("s3vectors:"))).toBe(false);
+  });
+
   it("I-8: with a broker principal the data rights sit on a role the broker assumes, and the broker role itself gets only AssumeRole", () => {
     const stack = new Stack(new App(), "T", { env: { account: "111122223333", region: "us-west-2" } });
     const vectors = new TeamRecordVectors(stack, "V", { bucketNames: ["rovara-record-vectors"], brokerPrincipal: new iam.AccountRootPrincipal() });
@@ -66,7 +74,7 @@ describe("team record vector buckets", () => {
 
   it("grants the broker data actions on index ARNs only; index creation is a separate grant", () => {
     const stack = new Stack(new App(), "T", { env: { account: "111122223333", region: "us-west-2" } });
-    const vectors = new TeamRecordVectors(stack, "V", { bucketNames: ["rovara-record-vectors"] });
+    const vectors = new TeamRecordVectors(stack, "V", { unsafeTenantWideBrokerAccess: true, bucketNames: ["rovara-record-vectors"] });
     const data = actionsOf(vectors.brokerStatements());
     expect(data).toEqual(expect.arrayContaining(["s3vectors:QueryVectors", "s3vectors:GetVectors", "s3vectors:PutVectors", "s3vectors:DeleteVectors"]));
     expect(data).not.toContain("s3vectors:CreateIndex");

@@ -14,8 +14,10 @@ export interface TeamRecordStorageProps {
   readonly context: TeamRecordContext;
   /** Only 1 is allowed until each workspace stores its assigned vector bucket (review I-7). */
   readonly publicVectorBucketCount?: number;
-  /** The broker role or principal. When given, vector access goes through a data role with per-workspace session policies (review I-8). */
+  /** The broker role or principal. Vector access goes through a data role with per-workspace session policies (review I-8). */
   readonly brokerPrincipal?: iam.IPrincipal;
+  /** Tests only: see TeamRecordVectors. */
+  readonly unsafeTenantWideBrokerAccess?: boolean;
   readonly bytesScannedCutoffPerQuery?: number;
 }
 
@@ -37,6 +39,7 @@ export class TeamRecordStorage extends Construct {
       ...(params.kmsKeyArn === undefined ? {} : { kmsKeyArn: params.kmsKeyArn }),
       dimension: params.dimension,
       ...(props.brokerPrincipal === undefined ? {} : { brokerPrincipal: props.brokerPrincipal }),
+      ...(props.unsafeTenantWideBrokerAccess === true ? { unsafeTenantWideBrokerAccess: true } : {}),
       ...(params.enterpriseWorkspaceId === undefined ? {} : { enterpriseWorkspaceId: params.enterpriseWorkspaceId }),
     });
 
@@ -93,10 +96,10 @@ export class TeamRecordStorage extends Construct {
     ];
   }
 
-  /** The vector buckets use the key for server-side encryption of vectors written by the broker. */
+  /** The vector buckets use the key for server-side encryption of vectors written by the broker. With a data role the role holds this right, not the broker. */
   private kmsStatements(): iam.PolicyStatement[] {
     const arn = this.parameters.kmsKeyArn;
-    return arn === undefined ? [] : [new iam.PolicyStatement({ sid: "TeamRecordVectorsKms", actions: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"], resources: [arn] })];
+    return arn === undefined || this.vectors.dataRole !== undefined ? [] : [new iam.PolicyStatement({ sid: "TeamRecordVectorsKms", actions: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"], resources: [arn] })];
   }
 
   /** Names for the broker environment. These are not secrets. */
@@ -107,6 +110,9 @@ export class TeamRecordStorage extends Construct {
       TEAM_RECORD_EMBEDDING_MODEL_ID: this.parameters.embeddingModelId,
       TEAM_RECORD_EMBEDDING_DIMENSION: String(this.parameters.dimension),
       TEAM_RECORD_LAKE_ENABLED: String(this.lake !== undefined),
+      // The role the broker assumes, with a per-workspace session policy, for every vector call.
+      ...(this.vectors.dataRole === undefined ? {} : { TEAM_RECORD_VECTORS_ROLE_ARN: this.vectors.dataRole.roleArn }),
+      ...(this.parameters.kmsKeyArn === undefined ? {} : { TEAM_RECORD_KMS_KEY_ARN: this.parameters.kmsKeyArn }),
       ...(this.lake === undefined ? {} : { TEAM_RECORD_TABLE_BUCKET: this.lake.tableBucketName, TEAM_RECORD_ATHENA_WORKGROUP: this.lake.workGroupName }),
     };
   }

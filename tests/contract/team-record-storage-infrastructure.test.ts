@@ -1,4 +1,4 @@
-import { App, Stack } from "aws-cdk-lib";
+import { App, Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { actionsOf, policiesOf, statementJson } from "../support/team-record-cdk.js";
@@ -36,7 +36,7 @@ describe("team record install parameters", () => {
 describe("team record storage per edition", () => {
   const build = (context: Record<string, unknown>, extra: Partial<ConstructorParameters<typeof TeamRecordStorage>[2]> = {}) => {
     const stack = new Stack(new App(), "T", { env: { account: "111122223333", region: "us-west-2" } });
-    const storage = new TeamRecordStorage(stack, "S", { namePrefix: "rovara-test", context, ...extra });
+    const storage = new TeamRecordStorage(stack, "S", { namePrefix: "rovara-test", context, brokerPrincipal: new iam.AccountRootPrincipal(), ...extra });
     return { stack, storage, template: Template.fromStack(stack) };
   };
   const actions = (b: ReturnType<typeof build>) => actionsOf(b.storage.brokerStatements());
@@ -46,8 +46,13 @@ describe("team record storage per edition", () => {
     b.template.resourceCountIs("AWS::S3Vectors::VectorBucket", 1);
     b.template.resourceCountIs("AWS::S3Vectors::Index", 0);
     b.template.resourceCountIs("AWS::S3Tables::Table", 4);
-    b.template.resourceCountIs("AWS::IAM::Policy", 0);
-    expect(actions(b)).toContain("s3vectors:CreateIndex");
+    // I-8: the broker holds only AssumeRole for vectors; the data role (one policy) holds the index rights, including run-time index creation.
+    expect(actions(b)).toContain("sts:AssumeRole");
+    expect(actions(b).some((a) => a.startsWith("s3vectors:"))).toBe(false);
+    const rolePolicies = policiesOf(b.template);
+    expect(rolePolicies).toHaveLength(1);
+    expect(rolePolicies[0]!.Properties.PolicyDocument.Statement.flatMap((s) => [s.Action].flat())).toContain("s3vectors:CreateIndex");
+    expect(b.storage.environment.TEAM_RECORD_VECTORS_ROLE_ARN).toBeDefined();
     expect(b.storage.environment).toMatchObject({ ROVARA_EDITION: "public", TEAM_RECORD_LAKE_ENABLED: "true", TEAM_RECORD_VECTOR_BUCKETS: "rovara-test-record-vectors" });
   });
 
@@ -57,13 +62,14 @@ describe("team record storage per edition", () => {
     b.template.resourceCountIs("AWS::S3Vectors::Index", 1);
     expect(actions(b)).not.toContain("s3vectors:CreateIndex");
     const policies = policiesOf(b.template);
-    expect(policies).toHaveLength(1);
-    const analystActions = policies[0]!.Properties.PolicyDocument.Statement.flatMap((s) => [s.Action].flat());
+    expect(policies).toHaveLength(2); // the vector data role's policy and the analysts' policy
+    const analyst = policies.find((policy) => policy.Properties.Roles.includes("analyst"))!;
+    const analystActions = analyst.Properties.PolicyDocument.Statement.flatMap((s) => [s.Action].flat());
     expect(analystActions).toContain("athena:StartQueryExecution");
     expect(analystActions).not.toContain("s3tables:PutTableData");
     expect(analystActions).not.toContain("s3tables:UpdateTableMetadataLocation");
     expect(analystActions.some((a) => a.startsWith("s3vectors:"))).toBe(false);
-    expect(policies[0]!.Properties.Roles).toEqual(["analyst"]);
+    expect(analyst.Properties.Roles).toEqual(["analyst"]);
   });
 
   it("I-6: with a customer key the stack prints the key-policy statements for S3 Tables maintenance and S3 Vectors indexing; without one it prints nothing", () => {
@@ -77,9 +83,17 @@ describe("team record storage per edition", () => {
     expect(build({}).template.toJSON().Outputs).toBeUndefined();
   });
 
+  it("I-8: the default stack needs a broker principal; only an explicit test flag gives the broker role index/* on every workspace", () => {
+    const stack = new Stack(new App(), "T", { env: { account: "111122223333", region: "us-west-2" } });
+    expect(() => new TeamRecordStorage(stack, "S", { namePrefix: "rovara-test", context: {} })).toThrow(/brokerPrincipal is required/);
+    const unsafe = build({}, { brokerPrincipal: undefined, unsafeTenantWideBrokerAccess: true });
+    expect(actions(unsafe)).toContain("s3vectors:QueryVectors");
+    expect(build({}).storage.vectors.dataRole).toBeDefined();
+  });
+
   it("M-14: analysts cannot stop the broker's queries", () => {
     const b = build({ edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme", athenaUsers: [ROLE] });
-    const analystActions = policiesOf(b.template)[0]!.Properties.PolicyDocument.Statement.flatMap((s) => [s.Action].flat());
+    const analystActions = policiesOf(b.template).find((policy) => policy.Properties.Roles.includes("analyst"))!.Properties.PolicyDocument.Statement.flatMap((s) => [s.Action].flat());
     expect(analystActions).not.toContain("athena:StopQueryExecution");
   });
 

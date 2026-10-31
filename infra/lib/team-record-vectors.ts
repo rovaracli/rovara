@@ -19,10 +19,12 @@ export interface TeamRecordVectorsProps {
   readonly enterpriseWorkspaceId?: string;
   readonly tags?: readonly CfnTag[];
   /**
-   * The broker's principal. When given, the data rights live on a role the broker assumes with a per-workspace SESSION POLICY (review I-8):
-   * each session can reach only `index/ws-<hash>` of one workspace. Without it the broker role gets `index/*` directly (all workspaces).
+   * The broker's principal. REQUIRED: the data rights live on a role the broker assumes with a per-workspace SESSION POLICY (review I-8),
+   * so each session reaches only `index/ws-<hash>` of one workspace. The broker role itself never holds `index/*`.
    */
   readonly brokerPrincipal?: iam.IPrincipal;
+  /** Tests only: give the broker role `index/*` on every workspace directly. Synth refuses a stack with neither this nor `brokerPrincipal`. */
+  readonly unsafeTenantWideBrokerAccess?: boolean;
 }
 
 export class TeamRecordVectors extends Construct {
@@ -73,6 +75,9 @@ export class TeamRecordVectors extends Construct {
       this.indexes = [index];
     }
 
+    if (props.brokerPrincipal === undefined && props.unsafeTenantWideBrokerAccess !== true) {
+      throw new Error("team-record vectors: brokerPrincipal is required (vector access is scoped to one workspace per session)");
+    }
     if (props.brokerPrincipal !== undefined) {
       this.dataRole = new iam.Role(this, "DataRole", {
         assumedBy: props.brokerPrincipal,

@@ -22,7 +22,10 @@ export const UNREFERENCED_DAYS = 2;
 export const NONCURRENT_DAYS = 3;
 export const DELETE_JOB_DAYS = 1;
 export const COMPACTION_ALLOWANCE_DAYS = 7;
-/** Worst-case days from a source delete to the bytes being gone, with the allowance above. The DPA line quotes this. */
+/**
+ * Worst-case days from a source delete to the bytes being gone, with the allowance above. This is a DESIGN TARGET, not a measurement: the
+ * 7-day compaction allowance is an assumption until the test environment shows the real lag (review N-5). The DPA quotes it as a target.
+ */
 export const PHYSICAL_DELETE_BOUND_DAYS = DELETE_JOB_DAYS + COMPACTION_ALLOWANCE_DAYS + SNAPSHOT_MAX_AGE_HOURS / 24 + UNREFERENCED_DAYS + NONCURRENT_DAYS;
 export const ATHENA_RESULTS_EXPIRY_DAYS = 7;
 /** Athena's lowest bytes-scanned limit is 10 MB. The default here is 2 GB per query: the stats templates scan megabytes. */
