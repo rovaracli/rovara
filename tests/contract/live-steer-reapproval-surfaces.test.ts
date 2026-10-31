@@ -112,13 +112,13 @@ describe("Revise the plan is offered, and described truthfully, where coding sto
 
   const task = (workflow: unknown) => ({ taskId, slackUserId: owner, share: thread, workflow });
 
-  it("Slack press: the owner, at the exact revision, on a coding step blocked with the revise reason, hands the broker a revise-plan request through the existing send-back event; anyone else, a stale card or another block is refused and sends nothing", async () => {
+  it("Slack press: the owner, at the exact revision, on a coding step blocked with the revise reason, hands the broker a revise-plan request (its own event kind); anyone else, a stale card or another block is refused and sends nothing", async () => {
     const workflow = blocked("IMPLEMENT", REVISE);
     let loaded: Record<string, unknown> = task(workflow);
     const sent: Array<Record<string, unknown>> = [];
-    const handlers = workflowSlackHandlers({ loadTask: async () => loaded, openView: async () => undefined, submit: async () => undefined, sendBack: async (input) => { sent.push(input); } });
+    const handlers = workflowSlackHandlers({ loadTask: async () => loaded, openView: async () => undefined, submit: async () => undefined, revisePlan: async (input) => { sent.push(input); } });
     await handlers.handleAction(press("agentx_workflow_revise_plan", { taskId, revision: workflow.revision }));
-    expect(sent).toEqual([{ taskId, userId: owner, thread, expectedRevision: workflow.revision, revisePlan: true, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown }]);
+    expect(sent).toEqual([{ taskId, userId: owner, thread, expectedRevision: workflow.revision, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown }]);
     await expect(handlers.handleAction(press("agentx_workflow_revise_plan", { taskId, revision: workflow.revision }, stranger))).rejects.toThrow(/Only .* can revise the plan/u);
     await expect(handlers.handleAction(press("agentx_workflow_revise_plan", { taskId, revision: workflow.revision - 1 }))).rejects.toThrow(/out of date/u);
     for (const other of [blocked("IMPLEMENT", WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding), blocked("PLAN", REVISE), blocked("IMPLEMENT", "Coding stopped")]) {
@@ -128,5 +128,13 @@ describe("Revise the plan is offered, and described truthfully, where coding sto
     loaded = task({ ...workflow, state: "RUNNING", blockReason: undefined });
     await expect(handlers.handleAction(press("agentx_workflow_revise_plan", { taskId, revision: workflow.revision }))).rejects.toThrow(/out of date/u);
     expect(sent).toHaveLength(1);
+    // A deployment that did not wire it never claims to have started it, and sends nothing.
+    const unwired = workflowSlackHandlers({ loadTask: async () => task(workflow), openView: async () => undefined, submit: async () => undefined, sendBack: async (input) => { sent.push(input); } });
+    await expect(unwired.handleAction(press("agentx_workflow_revise_plan", { taskId, revision: workflow.revision }))).rejects.toThrow(/not configured/u);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("the reason says where the action is (so a client without it is not told of a button it lacks), and the worker's frame only says the owner may be able to", () => {
+    expect(REVISE).toMatch(/\(in the task's Slack thread or on the task page\)/u);
   });
 });

@@ -8,6 +8,7 @@
 // Only the owner may press; the request id makes a repeat the same press; every unusual input is refused with fixed words and writes nothing. The message's text goes into the planning prompt only (the
 // same place the words of a Request changes go): never into a log, an event, an error, a decision or the workflow. The press changes no budget, tool or permission: it starts a planning run exactly as a
 // person's Retry starts a coding run (`requireMayGoOn`, the new cap window). The task's own helpers are handed in (`RevisePlanHost`), so this module never reaches into the task module.
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
   LIVE_STEER_REAPPROVAL_REASON,
@@ -18,6 +19,8 @@ import {
   agentXError,
   redactText,
   revisePlanWithLiveChange,
+  liveSteerCodingBlockReason,
+  workflowOwnerAuthorized,
   workflowReviseOffered,
   type DeveloperTaskView,
   type WorkflowOwnerAuthority,
@@ -29,6 +32,7 @@ import { loadWorkflowDocument, type LoadedDocument } from "../developer/plan-art
 import { developerTaskIdentity, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
+import { reapprovalMessageIds } from "./live-steer-reapproval.js";
 import { markSteerRevised, readSteerMessage } from "./steer.js";
 
 /** What a press carries: the same two values every owner button sends (the request's id, the revision the owner saw). Nothing else rides along. */
@@ -63,12 +67,36 @@ export interface RevisePlanHost<A extends RevisePlanAccess = RevisePlanAccess> {
   /** The planning prompt of a request for changes to a structured plan, and the data block a legacy Markdown plan is given as. */
   structuredPrompt(loaded: Extract<LoadedDocument, { format: "structured" }>, reason: string, phase: WorkflowSnapshot["reviewPhase"], comments: string): string;
   markdownBlock(markdown: string): string;
+  /**
+   * Runs `accept` as every other person-started planning run does (`withCurrentThreadNotes`): the removed-owner guard (Ruling R60) first, then the thread replies no step has been given, which the
+   * planner reads after the request, and the update that moves the task's mark past them (`fed`), retried when a reply is saved meanwhile.
+   */
+  withNotes<T>(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, requestId: string,
+    accept: (current: DeveloperTaskRecord, notes: { suffix: string; fed: { clause: string; condition: string; values: Record<string, string | number> } }) => Promise<T>): Promise<T>;
   /** The turn record and the access fence that go in the one transaction. */
   acceptItems(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: A, input: { request: string; response: string; operationId: string; at: string }): TransactItems;
   /** Turns a refused acceptance into the words the task module says (busy workspace, closing). */
   refuse(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, error: unknown): Promise<never>;
   /** The task as the caller sees it now (and its index kept current). */
   view(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<{ task: DeveloperTaskView }>;
+}
+
+/** Where the stop keeps the owner's message ids for the press: one item per task, written in the transaction that blocks coding, so a card that offers Revise always has its record. */
+export const liveSteerChangeKey = (taskId: string) => ({ pk: `DEVTASK#${taskId}`, sk: "LIVE_STEER_CHANGE" });
+
+/**
+ * The block reason coding stops with when the owner's live message asked for a change outside the approved plan: the one that offers Revise the plan only when the plan can take the change in AND
+ * the owner's message ids are known (they are what the press plans with); otherwise the round-2 words.
+ */
+export function liveSteerCodingStop(workflow: Parameters<typeof liveSteerCodingBlockReason>[0], error: string | undefined): string {
+  return reapprovalMessageIds(error).length === 0 ? WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding : liveSteerCodingBlockReason(workflow);
+}
+
+/** The record item, to go in the same transaction as the block (`next` is the blocked workflow being stored); nothing for any other block. Ids only, never text. */
+export function liveSteerChangeItems(tableName: string, taskId: string, next: Pick<WorkflowSnapshot, "stage" | "state" | "blockReason" | "revision">, error: string | undefined, at: string): TransactItems {
+  const messageIds = reapprovalMessageIds(error);
+  if (next.stage !== "IMPLEMENT" || next.state !== "BLOCKED" || next.blockReason !== WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise || messageIds.length === 0) return [];
+  return [{ Put: { TableName: tableName, Item: { ...liveSteerChangeKey(taskId), entityType: "LIVE_STEER_CHANGE", taskId, workflowRevision: next.revision, messageIds, at } } }];
 }
 
 /** The owner's words as the planner reads them: redacted, on one line, cut. */
@@ -89,8 +117,6 @@ async function requestedChange(deps: DeveloperTaskRouteDependencies, task: Devel
   return parts.length === 1 ? parts[0] : parts.map((part) => `\n- ${part}`).join("");
 }
 
-/** `REMOVE liveSteerChange` after the cap window's own clause, whichever clause it is (a REMOVE of its own already, or none). */
-const withChangeRemoved = (clause: string): string => (clause.includes(" REMOVE ") ? `${clause}, liveSteerChange` : `${clause} REMOVE liveSteerChange`);
 
 const transitionRefusal = (error: unknown): never => {
   if (error instanceof WorkflowTransitionError) {
@@ -113,20 +139,29 @@ export async function reviseTaskPlan<A extends RevisePlanAccess>(deps: Developer
   const { task } = access;
   const workflow = task.workflow;
   if (workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
-  // A repeat of a press that was taken is that press: it answers as it did and starts nothing.
+  // The owner, first: anyone else hears "owners only" and nothing about the task's state.
+  if (!workflowOwnerAuthorized(workflow.ownerId, access.actorId, access.authority)) {
+    throw Object.assign(agentXError("FORBIDDEN", "only the task owner can revise the plan with this change"), { pageReason: "owners_only" });
+  }
+  const recordItem = async () => ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: liveSteerChangeKey(taskId), ConsistentRead: true }))) as { Item?: { workflowRevision?: unknown; messageIds?: unknown; usedBy?: unknown } }).Item;
+  const idsOf = (item: { messageIds?: unknown } | undefined): string[] => (Array.isArray(item?.messageIds) ? item.messageIds.filter((id): id is string => typeof id === "string") : []);
+  // A repeat of a press that was taken is that press: it answers as it did and starts nothing. If the first answer lost the messages' own mark, the repeat makes it (it is idempotent).
   const prior = workflow.decisions.find((decision) => decision.requestId === request.requestId);
   if (prior !== undefined) {
     if (prior.reason !== WORKFLOW_REVISE_PLAN_DECISION_REASON || prior.decision !== "REQUEST_CHANGES" || prior.actorId !== access.actorId) {
       throw agentXError("IDEMPOTENCY_CONFLICT", "this request ID was already used for another decision on this task; use a new one");
     }
+    const used = await recordItem();
+    if (used?.usedBy === request.requestId) for (const id of idsOf(used)) await markSteerRevised(deps, task.orgId as OrgId, task.sessionId as SessionId, id);
     return host.view(deps, caller, taskId);
   }
   if (request.expectedRevision !== workflow.revision) throw agentXError("IDEMPOTENCY_CONFLICT", REVISE_PLAN_REFUSALS.stale);
   await host.requireMayGoOn(deps, caller, task);
   if (!workflowReviseOffered(workflow)) throw agentXError("CONFIG_INVALID", REVISE_PLAN_REFUSALS.notOffered);
-  const recorded = task.liveSteerChange;
-  if (recorded === undefined || recorded.workflowRevision !== workflow.revision) throw agentXError("CONFIG_INVALID", REVISE_PLAN_REFUSALS.noChange);
-  const change = await requestedChange(deps, task, recorded.messageIds);
+  const recorded = await recordItem();
+  const messageIds = idsOf(recorded);
+  if (recorded === undefined || recorded.workflowRevision !== workflow.revision || recorded.usedBy !== undefined || messageIds.length === 0) throw agentXError("CONFIG_INVALID", REVISE_PLAN_REFUSALS.noChange);
+  const change = await requestedChange(deps, task, messageIds);
   if (change === undefined) throw agentXError("CONFIG_INVALID", REVISE_PLAN_REFUSALS.noChange);
   const receivedAt = new Date(deps.now()).toISOString();
   let returned: WorkflowSnapshot;
@@ -149,16 +184,22 @@ export async function reviseTaskPlan<A extends RevisePlanAccess>(deps: Developer
   const cap = await host.capWindow(deps, task);
   const next: WorkflowSnapshot = { ...returned, revision: returned.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   try {
-    await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, { requestId: request.requestId, conversationId: task.conversationId, prompt }, (operation) => [
-      { Update: {
-        TableName: deps.tableName, Key: taskKey(taskId),
-        UpdateExpression: `SET workflow = :workflow, updatedAt = :now${withChangeRemoved(cap.clause)}`,
-        ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :blocked AND workflow.blockReason = :reason AND liveSteerChange.workflowRevision = :revision AND attribute_not_exists(closedAt)",
-        ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-        ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":reason": WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise, ...cap.values },
-      } },
-      ...host.acceptItems(deps, caller, access, { request: "Revise the plan with the owner's live message", response: `Planning the revised plan started as operation ${operation.id}`, operationId: operation.id, at: receivedAt }),
-    ], { sharedTask: task.shared === true, workflowMode: "PLAN", ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(workflow.reviewPhase === undefined ? {} : { workflowPhase: workflow.reviewPhase }) });
+    await host.withNotes(deps, task, request.requestId, (current, notes) => deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId,
+      { requestId: request.requestId, conversationId: current.conversationId, prompt: prompt + notes.suffix }, (operation) => [
+        { Update: {
+          TableName: deps.tableName, Key: taskKey(taskId),
+          UpdateExpression: `SET workflow = :workflow, updatedAt = :now${notes.fed.clause}${cap.clause}`,
+          ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :blocked AND workflow.blockReason = :reason AND attribute_not_exists(closedAt)${notes.fed.condition}`,
+          ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+          ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":reason": WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise, ...notes.fed.values, ...cap.values },
+        } },
+        // The record is spent by this press (and only by it): a second press, even a newer request, finds it used.
+        { Update: {
+          TableName: deps.tableName, Key: liveSteerChangeKey(taskId), UpdateExpression: "SET usedBy = :request",
+          ConditionExpression: "workflowRevision = :revision AND attribute_not_exists(usedBy)", ExpressionAttributeValues: { ":request": request.requestId, ":revision": workflow.revision },
+        } },
+        ...host.acceptItems(deps, caller, access, { request: "Revise the plan with the owner's live message", response: `Planning the revised plan started as operation ${operation.id}`, operationId: operation.id, at: receivedAt }),
+      ], { sharedTask: current.shared === true, workflowMode: "PLAN", ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(workflow.reviewPhase === undefined ? {} : { workflowPhase: workflow.reviewPhase }) }));
   } catch (error) {
     // Another press, or anything else that moved the task, got there first: the same request is that press; any other is out of date.
     const fresh = await host.authorize(deps, caller, taskId);
@@ -166,7 +207,18 @@ export async function reviseTaskPlan<A extends RevisePlanAccess>(deps: Developer
     if (fresh.task.workflow !== undefined && fresh.task.workflow.revision !== workflow.revision) throw agentXError("IDEMPOTENCY_CONFLICT", REVISE_PLAN_REFUSALS.stale);
     return host.refuse(deps, task, error);
   }
-  // The messages say what became of them (best effort and after the commit: the revised plan is already being written whatever happens here).
-  for (const id of recorded.messageIds) await markSteerRevised(deps, task.orgId as OrgId, task.sessionId as SessionId, id);
+  // The messages say what became of them (best effort and after the commit: the revised plan is already being written whatever happens here; a repeat of this request makes the mark again).
+  for (const id of messageIds) await markSteerRevised(deps, task.orgId as OrgId, task.sessionId as SessionId, id);
   return host.view(deps, caller, taskId);
+}
+
+/** The owner's Revise the plan press from Slack. Its own event kind (not a flag on Send back), so a broker that does not know it drops it instead of sending the work back to coding. */
+export interface SlackWorkflowRevisePlanEvent { source: "agentx.slack-ingress"; action: "workflow-revise-plan"; taskId: string; userId: string; thread: { teamId: string; channelId: string; threadTs: string }; requestId: string; expectedRevision: number }
+
+export function isSlackWorkflowRevisePlanEvent(event: unknown): event is SlackWorkflowRevisePlanEvent {
+  if (!event || typeof event !== "object") return false;
+  const value = event as Record<string, unknown>;
+  return value.source === "agentx.slack-ingress" && value.action === "workflow-revise-plan" && value.requestContext === undefined
+    && typeof value.taskId === "string" && typeof value.userId === "string" && typeof value.requestId === "string"
+    && Number.isInteger(value.expectedRevision) && typeof value.thread === "object" && value.thread !== null;
 }

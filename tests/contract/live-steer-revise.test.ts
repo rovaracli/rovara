@@ -23,32 +23,6 @@ async function blockedWorld(reason: string = WORKFLOW_BLOCK_REASONS.liveSteerRea
   return { f, message, deps, messageRow, task };
 }
 
-describe("what a re-approval stop records for Revise the plan", () => {
-  it("records the owner's message ids with the blocked revision, for a coding step blocked with the revise reason, and never the text", async () => {
-    const s = await blockedWorld();
-    await settleLiveSteerReapproval(s.deps, s.f.made.taskId, stop(s.message.messageId));
-    expect(s.task()["liveSteerChange"]).toEqual({ workflowRevision: 4, messageIds: [s.message.messageId], at: new Date(s.f.w.clock.now).toISOString() });
-    expect(JSON.stringify(s.task()["liveSteerChange"])).not.toContain("LIVE-TEXT-4471");
-    // A repeat is the same record.
-    await settleLiveSteerReapproval(s.deps, s.f.made.taskId, stop(s.message.messageId));
-    expect((s.task()["liveSteerChange"] as { messageIds: string[] }).messageIds).toEqual([s.message.messageId]);
-  });
-
-  it("records nothing for any other block: the round-2 coding reason (the plan cannot take the change), Understand, Plan, or a workflow that moved on", async () => {
-    for (const [reason, stage] of [[WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding, "IMPLEMENT"], [WORKFLOW_BLOCK_REASONS.liveSteerReapproval, "PLAN"], [WORKFLOW_BLOCK_REASONS.liveSteerReapproval, "UNDERSTAND"]] as const) {
-      const s = await blockedWorld(reason, stage);
-      await settleLiveSteerReapproval(s.deps, s.f.made.taskId, stop(s.message.messageId));
-      expect(s.task()["liveSteerChange"], `${stage} ${reason}`).toBeUndefined();
-      // The message is still marked: the stop's own mark does not depend on the record.
-      expect(s.messageRow()["delivery"]).toMatchObject({ reason: LIVE_STEER_REAPPROVAL_REASON });
-    }
-    const moved = await blockedWorld();
-    moved.f.w.db.set({ ...moved.task(), workflow: { revision: 5, stage: "IMPLEMENT", state: "RUNNING" } });
-    await settleLiveSteerReapproval(moved.deps, moved.f.made.taskId, stop(moved.message.messageId));
-    expect(moved.task()["liveSteerChange"]).toBeUndefined();
-  });
-});
-
 describe("the message's own mark when its owner chose Revise the plan", () => {
   it("a message that stopped coding becomes 'plan being revised' once, the timeline says so without the text, and any other message is left alone", async () => {
     const s = await blockedWorld();
@@ -73,10 +47,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { vi } from "vitest";
 import { WORKFLOW_REVISE_PLAN_DECISION_REASON, createCandidateManifest, type WorkflowSnapshot } from "../../packages/contracts/src/index.js";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
-import { MAYA, OMAR, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, type Developer } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/index.js";
+import { reviseTaskPlan, type RevisePlanHost } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";
 import { REVISE_PLAN_REFUSALS } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
 import { createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
@@ -93,14 +70,27 @@ const operations = (harness: Harness, workspaceId: string) => harness.db.find((i
 const taskRow = (harness: Harness, taskId: string) => harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot; orgId: string };
 const workflowOf = (harness: Harness, taskId: string) => taskRow(harness, taskId).workflow;
 const outboxPrompt = (harness: Harness, operationId: string) => String((harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]?.invocation as { payload: { prompt?: string } }).payload.prompt);
+const changeRecord = (harness: Harness, taskId: string) => harness.db.get(`DEVTASK#${taskId}`, "LIVE_STEER_CHANGE") as Record<string, unknown> | undefined;
 const messageKey = (orgId: string, id = MESSAGE_ID) => agentSessionKey(orgId, SESSION_ID, `MESSAGE#${id}`);
 
 /**
  * A Quick task whose coding plan was approved, with the owner's (or `author`'s) live message given to the running coding step, which then stopped for re-approval. `seed: false` leaves the session
  * and message unwritten (a stop that recorded nothing usable).
  */
-async function codingStoppedForLiveChange(options: { author?: Developer; messageReason?: string | null; pullRequest?: boolean; slack?: boolean } = {}) {
-  const harness = await createSingleAnswerPlanBroker();
+const CO_SLACK = "U0COOWNER01";
+const CO: Developer = { developerId: developerIdForSlackUser(CO_SLACK), name: "Co Owner", provider: "slack", sessionId: "s-co-owner", slackUserId: CO_SLACK };
+async function codingStoppedForLiveChange(options: { author?: Developer; messageReason?: string | null; pullRequest?: boolean; slack?: boolean; people?: boolean } = {}) {
+  const harness = await createSingleAnswerPlanBroker(options.people !== true ? undefined : {
+    channelMembers: async (request) => ({ ok: true, memberOf: [...request.channelIds] }),
+    developerExtra: { taskPeopleConfiguration: { peopleChangesEnabled: true },
+      taskPersonProof: async (request: { slackUserId: string; channelIds: string[] }) => ({ ok: true as const, user: { id: request.slackUserId, teamId: SLACK_TEAM, name: request.slackUserId === CO_SLACK ? CO.name : MAYA.name }, memberOf: [...request.channelIds] }) },
+  });
+  if (options.people === true) {
+    harness.db.set({ pk: `SESSION#${CO.sessionId}`, sk: "META", sessionId: CO.sessionId, developerId: CO.developerId, amr: "slack", slackUserId: CO.slackUserId, startedAt: new Date(Date.now() - 1_000).toISOString(), endsAt: Math.floor(Date.now() / 1_000) + 3_600 });
+    harness.db.set({ pk: `DEVELOPER#${CO.developerId}`, sk: "META", developerId: CO.developerId, provider: "slack", issuer: "https://slack.com", subject: CO.slackUserId, displayName: CO.name, slackUserId: CO.slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    await harness.orgOf(CO);
+    grantProject(harness.db, CO);
+  }
   const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000087" };
   const started = options.slack === true
     ? await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() })
@@ -148,7 +138,9 @@ describe("Revise the plan, pressed by the owner on the real broker", () => {
       const s = await codingStoppedForLiveChange();
       expect(workflowOf(s.harness, s.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise });
       expect(s.messageRow()["delivery"]).toMatchObject({ reason: LIVE_STEER_REAPPROVAL_REASON });
-      expect(taskRow(s.harness, s.taskId)["liveSteerChange"]).toMatchObject({ messageIds: [MESSAGE_ID] });
+      // The record the press plans with was written in the same transaction as the block, bound to the blocked revision, ids only.
+      expect(changeRecord(s.harness, s.taskId)).toMatchObject({ messageIds: [MESSAGE_ID], workflowRevision: workflowOf(s.harness, s.taskId).revision });
+      expect(JSON.stringify(changeRecord(s.harness, s.taskId))).not.toContain("LIVE-TEXT-4471");
       const blocked = workflowOf(s.harness, s.taskId);
       const requestId = randomUUID();
       const answered = await s.press(MAYA, { requestId });
@@ -170,7 +162,7 @@ describe("Revise the plan, pressed by the owner on the real broker", () => {
       // No coding is running or queued.
       expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toHaveLength(1);
       // The record the press used is spent, and the message says what became of it.
-      expect(taskRow(s.harness, s.taskId)["liveSteerChange"]).toBeUndefined();
+      expect(changeRecord(s.harness, s.taskId)).toMatchObject({ usedBy: requestId });
       expect(s.messageRow()["delivery"]).toMatchObject({ state: "delivered", reason: LIVE_STEER_REVISED_REASON });
       // The words are in the planner's prompt and the message's own row, and nowhere else: not the workflow, its decisions, the task's events or notes, the turn records, or a log line. Every stored
       // item that holds them is named: the message's own row and the planning run's outbox item (its prompt), nothing more.
@@ -227,8 +219,9 @@ describe("Revise the plan, pressed by the owner on the real broker", () => {
 
   it("fails closed when the message cannot be vouched for: none recorded, a change recorded for another block, a message that is not the owner's, not marked as stopping coding, or gone", async () => {
     const cases: Array<[string, (s: Awaited<ReturnType<typeof codingStoppedForLiveChange>>) => void | Promise<void>, Parameters<typeof codingStoppedForLiveChange>[0]?]> = [
-      ["no recorded change", (s) => { const { liveSteerChange: _gone, ...rest } = taskRow(s.harness, s.taskId); void _gone; s.harness.db.set(rest); }],
-      ["a change recorded for another revision", (s) => { s.harness.db.set({ ...taskRow(s.harness, s.taskId), liveSteerChange: { workflowRevision: 1, messageIds: [MESSAGE_ID], at: "2026-10-30T09:00:00.000Z" } }); }],
+      ["no recorded change", (s) => { s.harness.db.delete({ pk: `DEVTASK#${s.taskId}`, sk: "LIVE_STEER_CHANGE" }); }],
+      ["a change recorded for another revision", (s) => { s.harness.db.set({ ...changeRecord(s.harness, s.taskId)!, workflowRevision: 1 }); }],
+      ["a change already used by another press", (s) => { s.harness.db.set({ ...changeRecord(s.harness, s.taskId)!, usedBy: randomUUID() }); }],
       ["a message that is not the owner's", () => undefined, { author: OMAR }],
       ["a message that was never marked as stopping coding", (s) => { s.harness.db.set({ ...s.messageRow(), delivery: { state: "delivered", at: "2026-10-30T09:00:00.000Z" } }); }],
       ["a message that is gone", (s) => { s.harness.db.delete(messageKey(s.orgId)); }],
@@ -282,12 +275,12 @@ describe("Revise the plan, pressed by the owner on the real broker", () => {
 
 describe("Revise the plan, pressed in Slack", () => {
   const slackPress = (s: Awaited<ReturnType<typeof codingStoppedForLiveChange>>, extra: Record<string, unknown> = {}) => ({
-    source: "agentx.slack-ingress", action: "workflow-send-back", taskId: s.taskId, thread: s.thread, userId: MAYA.slackUserId, requestId: randomUUID(), expectedRevision: workflowOf(s.harness, s.taskId).revision, ...extra,
+    source: "agentx.slack-ingress", action: "workflow-revise-plan", taskId: s.taskId, thread: s.thread, userId: MAYA.slackUserId, requestId: randomUUID(), expectedRevision: workflowOf(s.harness, s.taskId).revision, ...extra,
   });
 
-  it("the owner's press (the send-back event with revisePlan) plans again with their message; a teammate's is refused privately and starts nothing", async () => {
+  it("the owner's press (its own workflow-revise-plan event) plans again with their message; a teammate's is refused privately and starts nothing", async () => {
     const s = await codingStoppedForLiveChange({ slack: true });
-    const event = slackPress(s, { revisePlan: true });
+    const event = slackPress(s);
     expect(JSON.parse((await s.harness.handler({ ...event, userId: "U0TEAMMATE1" })).body)).toMatchObject({ refused: true });
     expect(operations(s.harness, s.workspaceId).find((item) => item.requestId === event.requestId)).toBeUndefined();
     expect(workflowOf(s.harness, s.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
@@ -301,13 +294,14 @@ describe("Revise the plan, pressed in Slack", () => {
     expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(2);
   });
 
-  it("without revisePlan the event is the plain Send back, and a revisePlan that is not exactly true is not an event at all (it can never turn into a send-back)", async () => {
+  it("M6: it is its own event kind, so a send-back event can never become a revise (a revisePlan flag is ignored: it is the plain Send back, which keeps the approved plan), and a malformed revise event is no event at all", async () => {
     const plain = await codingStoppedForLiveChange({ slack: true });
-    expect((await plain.harness.handler(slackPress(plain))).statusCode).toBe(200);
+    expect((await plain.harness.handler({ ...slackPress(plain), action: "workflow-send-back", revisePlan: true })).statusCode).toBe(200);
     expect(workflowOf(plain.harness, plain.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+    expect(operations(plain.harness, plain.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
     const malformed = await codingStoppedForLiveChange({ slack: true });
     const before = malformed.everything();
-    await malformed.harness.handler(slackPress(malformed, { revisePlan: "yes" }));
+    await malformed.harness.handler(slackPress(malformed, { expectedRevision: "7" }));
     expect(malformed.everything()).toBe(before);
   });
 });
@@ -379,11 +373,120 @@ describe("Revise the plan, on the task page", () => {
   });
 });
 
+describe("Revise the plan, as every other planning start behaves", () => {
+  it("I1/R60: when the task's owner has been removed from the organization, the press is refused, nothing is planned, and the task ends creator_removed (the mark only the removed-owner guard writes)", async () => {
+    const s = await codingStoppedForLiveChange();
+    await s.harness.db.send(new (await import("@aws-sdk/lib-dynamodb")).DeleteCommand({ TableName: "state", Key: orgMemberKey(TEST_ORG, MAYA.developerId) }));
+    s.harness.db.set({ ...orgRemovedKey(TEST_ORG, MAYA.developerId), entityType: "ORG_REMOVED", removedAt: "2026-10-21T00:00:00.000Z" });
+    const refused = await s.press(MAYA);
+    expect(refused.status).toBeGreaterThanOrEqual(400);
+    expect(workflowOf(s.harness, s.taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
+    expect(taskRow(s.harness, s.taskId)).toMatchObject({ outcome: "creator_removed" });
+  });
+
+  it("I1: replies posted in the task's thread while coding ran go to the planner, once; a later planning start does not get them again", async () => {
+    const s = await codingStoppedForLiveChange({ slack: true });
+    const saved = await s.harness.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId: s.taskId, thread: s.thread, userId: "U0TEAMMATE1", messageTs: "1695500009.000001", eventId: "EvRevise", text: "Keep the parser streaming (TEAMMATE-NOTE-9921)." });
+    expect(JSON.parse(saved.body)).toEqual({ outcome: "captured" });
+    const note = s.harness.db.get(`DEVTASK#${s.taskId}`, "NOTE#1695500009.000001") as { receivedAt: string };
+    const event = { source: "agentx.slack-ingress", action: "workflow-revise-plan", taskId: s.taskId, thread: s.thread, userId: MAYA.slackUserId, requestId: randomUUID(), expectedRevision: workflowOf(s.harness, s.taskId).revision };
+    expect((await s.harness.handler(event)).statusCode).toBe(200);
+    const revision = operations(s.harness, s.workspaceId).find((item) => item.requestId === event.requestId)!;
+    expect(outboxPrompt(s.harness, String(revision.id))).toContain("TEAMMATE-NOTE-9921");
+    expect(taskRow(s.harness, s.taskId)).toMatchObject({ threadNotesFedThrough: note.receivedAt });
+  });
+
+  it("M1: someone who is not the owner hears 'owners only' first, whatever the task's state: a stale revision, a pause or a missing message tells them nothing", async () => {
+    const s = await codingStoppedForLiveChange();
+    const owner = String(taskRow(s.harness, s.taskId)["developerId"]);
+    const stranger = "f".repeat(64);
+    const touched: string[] = [];
+    const note = (name: string) => async () => { touched.push(name); return undefined as never; };
+    const task = taskRow(s.harness, s.taskId) as never;
+    const host = { authorize: async () => ({ task, actorId: stranger, authority: { actorId: stranger, ownerIds: [owner] } }), requireMayGoOn: note("gate"), capWindow: note("cap"), actionableWorkspace: note("ws"),
+      retiredClaimIds: note("retired"), acceptItems: note("items"), refuse: note("refuse"), view: note("view"), withNotes: note("notes"), structuredPrompt: () => "", markdownBlock: () => "" } as unknown as RevisePlanHost;
+    const deps = { documentClient: s.harness.db, tableName: "state", orgId: TEST_ORG, actions: {}, now: () => Date.now() } as never;
+    const before = s.everything();
+    await expect(reviseTaskPlan(deps, { developerId: stranger } as never, s.taskId, { requestId: randomUUID(), expectedRevision: 1 }, host)).rejects.toMatchObject({ pageReason: "owners_only" });
+    expect(touched).toEqual([]);
+    expect(s.everything()).toBe(before);
+  });
+
+  it("M2: coding blocks with the revise reason only when the owner's message ids are known; an error that names none gets the round-2 words and no record, and the card offers no Revise", async () => {
+    const s = await codingStoppedForLiveChange({ pullRequest: true });
+    expect(workflowOf(s.harness, s.taskId)).toMatchObject({ blockReason: WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding });
+    expect(changeRecord(s.harness, s.taskId)).toBeUndefined();
+    const harness = await createSingleAnswerPlanBroker();
+    void harness;
+  });
+
+  it("M4: if the messages' own mark was lost after the press committed, the same request again makes it, and starts nothing", async () => {
+    const s = await codingStoppedForLiveChange();
+    const requestId = randomUUID();
+    const expectedRevision = workflowOf(s.harness, s.taskId).revision;
+    expect((await s.press(MAYA, { requestId, expectedRevision })).status).toBe(200);
+    // The mark is lost.
+    s.harness.db.set({ ...s.messageRow(), delivery: { state: "delivered", at: "2026-10-30T09:00:00.000Z", reason: LIVE_STEER_REAPPROVAL_REASON } });
+    expect((await s.press(MAYA, { requestId, expectedRevision })).status).toBe(200);
+    expect(s.messageRow()["delivery"]).toMatchObject({ reason: LIVE_STEER_REVISED_REASON });
+    expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(2);
+  });
+
+  it("T2: two presses at once with different ids commit once, and a press racing Retry coding leaves exactly one of them standing", async () => {
+    const s = await codingStoppedForLiveChange();
+    const expectedRevision = workflowOf(s.harness, s.taskId).revision;
+    const both = await Promise.all([s.press(MAYA, { requestId: randomUUID(), expectedRevision }), s.press(MAYA, { requestId: randomUUID(), expectedRevision })]);
+    expect(both.filter((answer) => answer.status === 200)).toHaveLength(1);
+    expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(2);
+    expect(workflowOf(s.harness, s.taskId).decisions.filter((decision) => decision.reason === WORKFLOW_REVISE_PLAN_DECISION_REASON)).toHaveLength(1);
+
+    const r = await codingStoppedForLiveChange();
+    const revision = workflowOf(r.harness, r.taskId).revision;
+    const retry = r.harness.dev(MAYA, "POST", `/v1/dev/tasks/${r.taskId}/workflow/retry`, { requestId: randomUUID(), expectedRevision: revision, instructions: "Retry the coding step." });
+    const results = await Promise.all([r.press(MAYA, { requestId: randomUUID(), expectedRevision: revision }), retry]);
+    expect(results.filter((answer) => answer.status === 200)).toHaveLength(1);
+    const planStarted = operations(r.harness, r.workspaceId).filter((item) => item.workflowMode === "PLAN").length - 1;
+    const codingStarted = operations(r.harness, r.workspaceId).filter((item) => item.workflowMode === "IMPLEMENT").length - 1;
+    expect(planStarted + codingStarted).toBe(1);
+  });
+});
+
+describe("Revise the plan starts its planning run only through the shared guarded start", () => {
+  it("I1: acceptTask runs inside withNotes (where the removed-owner guard runs), with the notes appended and their mark in the same update; a guard that refuses lets nothing start", async () => {
+    const s = await codingStoppedForLiveChange();
+    const owner = String(taskRow(s.harness, s.taskId)["developerId"]);
+    const task = taskRow(s.harness, s.taskId) as never;
+    const order: string[] = [];
+    let update: Record<string, unknown> | undefined;
+    let prompt = "";
+    const actions = { readArtifact: s.harness.actions.readArtifact.bind(s.harness.actions), workspace: s.harness.actions.workspace.bind(s.harness.actions),
+      acceptTask: async (_identity: unknown, _ws: string, request: { prompt: string }, build: (operation: { id: string }) => Array<{ Update?: Record<string, unknown> }>) => { order.push("accept"); prompt = request.prompt; update = build({ id: "op" })[0]!.Update; return { operation: {}, duplicate: false }; } };
+    const base = { authorize: async () => ({ task, actorId: owner, authority: { actorId: owner, ownerIds: [owner] } }), requireMayGoOn: async () => undefined, capWindow: async () => ({ clause: "", values: {} }),
+      actionableWorkspace: async () => undefined, retiredClaimIds: async () => [], acceptItems: () => [], refuse: async () => { throw new Error("refused"); }, view: async () => ({ task: {} as never }),
+      structuredPrompt: () => "STRUCTURED", markdownBlock: (m: string) => m };
+    const deps = { documentClient: s.harness.db, tableName: "state", orgId: TEST_ORG, actions, now: () => Date.now() } as never;
+    const request = { requestId: randomUUID(), expectedRevision: workflowOf(s.harness, s.taskId).revision };
+    const fed = { clause: ", threadNotesFedThrough = :fedThrough", condition: " AND threadNoteCount = :noteCount", values: { ":fedThrough": "T", ":noteCount": 3 } };
+    const guarded = { ...base, withNotes: async (_d: unknown, _t: unknown, _r: string, accept: (current: unknown, notes: unknown) => Promise<unknown>) => { order.push("guard"); return accept(task, { suffix: "\n\nNOTES-SUFFIX", fed }); } } as unknown as RevisePlanHost;
+    await reviseTaskPlan(deps, { developerId: owner } as never, s.taskId, request, guarded);
+    expect(order).toEqual(["guard", "accept"]);
+    expect(prompt).toContain("NOTES-SUFFIX");
+    expect(String(update?.["UpdateExpression"])).toContain("threadNotesFedThrough = :fedThrough");
+    expect(String(update?.["ConditionExpression"])).toContain("threadNoteCount = :noteCount");
+    // A guard that refuses (a removed owner): nothing is accepted.
+    order.length = 0;
+    s.harness.db.set({ ...s.messageRow(), delivery: { state: "delivered", at: "2026-10-30T09:00:00.000Z", reason: LIVE_STEER_REAPPROVAL_REASON } });
+    const refusing = { ...base, withNotes: async () => { order.push("guard"); throw new Error("TASK_ACCESS_DENIED"); } } as unknown as RevisePlanHost;
+    await expect(reviseTaskPlan(deps, { developerId: owner } as never, s.taskId, { ...request, requestId: randomUUID() }, refusing)).rejects.toThrow();
+    expect(order).toEqual(["guard"]);
+  });
+});
+
 void createCandidateManifest;
 void developerTaskIdentity;
 
 // requireMayGoOn is the person's-go-on gate (a pause waiting for an approval is never skipped): the press asks it before it reads or writes anything.
-import { reviseTaskPlan, type RevisePlanHost } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";
 describe("Revise the plan does not skip a pause that waits for someone's approval", () => {
   it("stops at the go-on gate before reading the message, planning or writing anything", async () => {
     const s = await codingStoppedForLiveChange();

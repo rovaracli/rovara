@@ -2,8 +2,8 @@
 // `WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE` followed by the ids of the owner's messages it had been given (server-made ids, never text). The step's own result blocks the workflow with a fixed
 // reason (the owner decides: Understand and Plan retry with the message and the new plan is approved; Coding retries the approved plan without the change, or a new task asks for it); this marks each of those messages `needs re-approval` on its row and says so on the session's timeline. It never
 // throws (the block is already committed) and no log line, event or row holds a message's text.
-import { WORKFLOW_BLOCK_REASONS, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE } from "@agentx/contracts";
-import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE } from "@agentx/contracts";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { markSteerNeedsReapproval, type SteerDependencies } from "./steer.js";
 
@@ -25,7 +25,6 @@ export async function settleLiveSteerReapproval(deps: SteerDependencies, taskId:
     if (task?.orgId === undefined || task.sessionId === undefined) return 0;
     let marked = 0;
     for (const messageId of ids) if (await markSteerNeedsReapproval(deps, task.orgId, task.sessionId, messageId)) marked += 1;
-    await recordLiveSteerChange(deps, task, ids);
     return marked;
   } catch (failure) {
     deps.log?.({ event: "agent_session.steer_reapproval_failed", taskId, error: failure instanceof Error ? failure.name : "unknown" });
@@ -33,23 +32,3 @@ export async function settleLiveSteerReapproval(deps: SteerDependencies, taskId:
   }
 }
 
-/**
- * Coding blocked with the revise reason keeps the owner's message ids on the task, bound to the blocked revision, so the owner's "Revise the plan" press plans again with exactly those messages and
- * only for this block (the update is conditional on the workflow still being that block). Ids only, never text. Any other block records nothing. Never throws: without the record the press is refused
- * and Retry coding and Close still work.
- */
-async function recordLiveSteerChange(deps: SteerDependencies, task: DeveloperTaskRecord, messageIds: readonly string[]): Promise<void> {
-  const workflow = task.workflow;
-  if (workflow === undefined || workflow.stage !== "IMPLEMENT" || workflow.state !== "BLOCKED" || workflow.blockReason !== WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise) return;
-  try {
-    await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET liveSteerChange = :change",
-      ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :blocked AND attribute_not_exists(closedAt)",
-      ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-      ExpressionAttributeValues: { ":change": { workflowRevision: workflow.revision, messageIds: [...messageIds], at: new Date(deps.now()).toISOString() }, ":revision": workflow.revision, ":stage": "IMPLEMENT", ":blocked": "BLOCKED" },
-    }));
-  } catch (failure) {
-    // The workflow moved on meanwhile (nothing to record), or the write failed: only the error's name is logged.
-    if (!(failure instanceof Error && failure.name === "ConditionalCheckFailedException")) deps.log?.({ event: "agent_session.steer_change_record_failed", taskId: task.taskId, error: failure instanceof Error ? failure.name : "unknown" });
-  }
-}

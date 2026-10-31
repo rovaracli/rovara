@@ -50,7 +50,7 @@ export const WORKFLOW_BLOCK_REASONS = {
    * The same stop at Coding for a task whose plan can take the change in (`workflowReviseOffered`): the card and the page offer Revise the plan, which plans again with the owner's message and asks the
    * owner to approve the revised plan before coding continues; Retry coding still builds the approved plan without it.
    */
-  liveSteerReapprovalRevise: "A live message from the owner asks for a change outside the approved plan, so coding stopped and this run's work was not kept. Choose Revise the plan: Rovara plans again with that change, and you approve the revised plan before coding continues. Or choose Retry coding to build the approved plan without that change.",
+  liveSteerReapprovalRevise: "A live message from the owner asks for a change outside the approved plan, so coding stopped and this run's work was not kept. Choose Revise the plan (in the task's Slack thread or on the task page): Rovara plans again with that change, and you approve the revised plan before coding continues. Or choose Retry coding to build the approved plan without that change.",
   /** A step that only reads the code could not first stop the programs earlier work left running (WORKFLOW_LEFTOVER_PROCESSES_MESSAGE). */
   leftoverProcesses: "AgentX couldn't stop the programs left running from earlier work, so this step did not run.",
   /** The checks' fresh dev container ran its setup commands and they changed the project's files (WORKFLOW_SETUP_CHANGED_FILES_MESSAGE); the files are left as they are. */

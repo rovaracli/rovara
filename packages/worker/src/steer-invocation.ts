@@ -25,7 +25,7 @@ const inertText = (text: string): string => Array.from(text, (character) => {
  * built without the change; understanding and planning have no approved plan yet, so the owner has the planning done again with the change and approves the new plan.
  */
 const scopeAsk = (step: LiveSteerPayload["step"]): string => `make no change for it, and end your final message with one line that starts with "${LIVE_STEER_REAPPROVAL_MARKER}" and says the change that was asked; your step then stops and nothing is built for it; the owner decides what happens next: ${step === "IMPLEMENT"
-  ? "they can have the plan revised with that change and approve the revised plan before anything is built for it, or have the approved plan built without it"
+  ? "they may be able to have the plan revised with that change (and approve the revised plan before anything is built for it), or can have the approved plan built without it"
   : "they can have the plan made again with that change and approve the new plan before anything is built"}`;
 
 /**
