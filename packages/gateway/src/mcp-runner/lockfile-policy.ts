@@ -3,14 +3,17 @@
 //   1. Registry only. Every `resolved` is https on the install's one registry (host, port and path prefix). git, github:, file:, link:, http:, another host and an alias that
 //      resolves elsewhere are refused.
 //   2. Integrity everywhere. Every package has exactly one `sha512-` integrity. sha1, several hashes and a missing value are refused.
-//   3. Install scripts are never run (the install passes --ignore-scripts at every npm call). A package that has them is allowed and LISTED, so the admin is told.
+//   3. Install steps are refused (owner decision, 2026-10-31: packages needing install scripts or native builds are refused in v1). A package whose lockfile entry says
+//      `hasInstallScript` (npm sets it for install, preinstall, postinstall and for a binding.gyp) is refused, naming it. Nothing is ever run either way: --ignore-scripts holds at
+//      every npm call.
 //   4. Bounds: at most `maxPackages` packages, and a lockfile of at most `maxLockfileBytes`.
 //
+// Every entry is held to the registry and integrity rules, development-only ones included (they are not installed, but a flag in the file is not trusted to say so).
 // Only npm lockfile versions 2 and 3 (they carry the flat `packages` map) are read. Version 1 has no such map, and anything this code does not understand is refused: the rule is
 // to fail closed.
 import { createHash } from "node:crypto";
 
-export type LockfileRule = "lockfile_format" | "registry_only" | "integrity" | "bounds";
+export type LockfileRule = "lockfile_format" | "registry_only" | "integrity" | "bounds" | "install_scripts";
 
 export const LOCKFILE_LIMITS = { maxPackages: 1_500, maxLockfileBytes: 16 * 1_048_576 } as const;
 
@@ -22,7 +25,7 @@ export interface LockfilePolicyOptions {
 }
 
 export type LockfileVerdict =
-  | { ok: true; packageCount: number; installScriptPackages: string[] }
+  | { ok: true; packageCount: number }
   | { ok: false; rule: LockfileRule; /** A package name that is safe to show, when the rule is about one package. */ package?: string; /** A fixed sentence for the admin. It holds nothing from the lockfile except a checked package name. */ sentence: string };
 
 /** sha256 of the lockfile bytes, as 64 lower-case hex characters. This is the `lockfileHash` the approval binds. */
@@ -34,6 +37,9 @@ const NPM_NAME = /^(?:@[a-z0-9][a-z0-9._-]{0,60}\/)?[a-z0-9][a-z0-9._-]{0,60}$/u
 const INTEGRITY = /^sha512-[A-Za-z0-9+/]{86}==$/u;
 /** The path of a package in a lockfile: `node_modules/a`, `node_modules/@s/a`, `node_modules/a/node_modules/b`. Anything else (`../x`, `packages/x`, `/x`) is not inside the tree. */
 const PACKAGE_PATH = /^node_modules\/(?:@[^/]+\/)?[^/]+(?:\/node_modules\/(?:@[^/]+\/)?[^/]+)*$/u;
+
+/** The sentence for a package that needs install steps or a native build. */
+export const INSTALL_STEPS_SENTENCE = (name: string | undefined): string => `${name === undefined ? "A dependency" : `The dependency ${name}`} needs install steps or a native build. Rovara does not run install steps, so this package cannot be used yet.`;
 
 const FORMAT_SENTENCE = "Rovara could not read this package's dependency list.";
 
@@ -118,7 +124,7 @@ export function checkLockfile(lockfile: string | Uint8Array, options: LockfilePo
     entries.push({ path, value: value as Record<string, unknown> });
   }
   entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  // Development-only packages are not installed (`--omit=dev`); every other package is checked, optional ones included.
+  // Only packages that are installed (not development-only) count against the limit; all of them are checked for the registry and integrity rules, optional ones included.
   const installed = entries.filter((entry) => entry.value.dev !== true);
   if (installed.length > maxPackages) return refusal("bounds", `This package has too many dependencies (${installed.length}). Rovara allows at most ${maxPackages}.`);
 
@@ -132,8 +138,7 @@ export function checkLockfile(lockfile: string | Uint8Array, options: LockfilePo
     return parent.value.inBundle === true ? covered(parent, depth + 1) : typeof parent.value.integrity === "string" && INTEGRITY.test(parent.value.integrity);
   };
 
-  const withScripts = new Set<string>();
-  for (const entry of installed) {
+  for (const entry of entries) {
     const { path, value } = entry;
     const name = shownName(path);
     if (!PACKAGE_PATH.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..")) return refusal("registry_only", `This package needs ${subject(name)} from outside your registry. Rovara installs only from your registry.`, name);
@@ -150,7 +155,7 @@ export function checkLockfile(lockfile: string | Uint8Array, options: LockfilePo
         return refusal("integrity", `${Subject(name)} has no sha512 checksum in the dependency list. Rovara installs only checksummed packages.`, name);
       }
     }
-    if (value.hasInstallScript === true && name !== undefined) withScripts.add(name);
+    if (value.hasInstallScript !== undefined && value.hasInstallScript !== false && value.dev !== true) return refusal("install_scripts", INSTALL_STEPS_SENTENCE(name), name);
   }
-  return { ok: true, packageCount: installed.length, installScriptPackages: [...withScripts].sort().slice(0, 100) };
+  return { ok: true, packageCount: installed.length };
 }

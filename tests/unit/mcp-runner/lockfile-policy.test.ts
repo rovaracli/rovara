@@ -12,7 +12,7 @@ const pkg = (name: string, over: Pkg = {}): Pkg => ({ version: "1.0.0", resolved
 function lock(packages: Record<string, Pkg>, over: Record<string, unknown> = {}): string {
   return JSON.stringify({ name: "root", version: "1.4.2", lockfileVersion: 3, requires: true, packages: { "": { name: "root", version: "1.4.2" }, ...packages }, ...over });
 }
-const good = { "node_modules/left-pad": pkg("left-pad"), "node_modules/@scope/util": pkg("@scope/util", { hasInstallScript: true }), "node_modules/left-pad/node_modules/inner": pkg("inner") };
+const good = { "node_modules/left-pad": pkg("left-pad"), "node_modules/@scope/util": pkg("@scope/util"), "node_modules/left-pad/node_modules/inner": pkg("inner") };
 const check = (text: string, over: Partial<Parameters<typeof checkLockfile>[1]> = {}) => checkLockfile(text, { registry: REGISTRY, ...over });
 const refused = (text: string, rule: string) => {
   const verdict = check(text);
@@ -22,17 +22,22 @@ const refused = (text: string, rule: string) => {
 };
 
 describe("T2 lockfile policy: a clean lockfile", () => {
-  it("is accepted, and the packages with install steps are listed (their steps are skipped, not run)", () => {
-    expect(check(lock(good))).toEqual({ ok: true, packageCount: 3, installScriptPackages: ["@scope/util"] });
+  it("is accepted", () => {
+    expect(check(lock(good))).toEqual({ ok: true, packageCount: 3 });
   });
   it("hashes the exact bytes (sha256 hex)", () => {
     expect(lockfileHash("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     expect(lockfileHash(Buffer.from("abc"))).toBe(lockfileHash("abc"));
     expect(lockfileHash(lock(good))).not.toBe(lockfileHash(`${lock(good)} `));
   });
-  it("does not check development-only packages, which `npm ci --omit=dev` never installs, and does not count them", () => {
-    const withDev = { ...good, "node_modules/devtool": pkg("devtool", { dev: true, resolved: "git+ssh://git@github.com/x/y.git#abc", integrity: undefined }) };
+  it("does not count development-only packages, which `npm ci --omit=dev` never installs, and does not refuse their install steps", () => {
+    const withDev = { ...good, "node_modules/devtool": pkg("devtool", { dev: true, hasInstallScript: true }) };
     expect(check(lock(withDev))).toMatchObject({ ok: true, packageCount: 3 });
+  });
+  it("still holds development-only packages to the registry and integrity rules: a `dev` flag in the file is not trusted to say nothing is fetched", () => {
+    refused(lock({ ...good, "node_modules/devtool": pkg("devtool", { dev: true, resolved: "git+ssh://git@github.com/x/y.git#abc" }) }), "registry_only");
+    refused(lock({ ...good, "node_modules/devtool": pkg("devtool", { dev: true, resolved: "https://registry.npmjs.org/devtool/-/devtool-1.0.0.tgz" }) }), "registry_only");
+    refused(lock({ ...good, "node_modules/devtool": pkg("devtool", { dev: true, integrity: "sha1-xx" }) }), "integrity");
   });
   it("accepts optional platform packages (the common prebuilt pattern)", () => {
     expect(check(lock({ ...good, "node_modules/@esbuild/darwin-arm64": pkg("@esbuild/darwin-arm64", { optional: true }) }))).toMatchObject({ ok: true, packageCount: 4 });
@@ -143,16 +148,24 @@ describe("T2 lockfile policy: packages bundled inside another package's tarball"
   });
 });
 
-describe("T2 lockfile policy rule 3: install steps are listed, never run", () => {
-  it("lists every package that has install steps, once, sorted", () => {
-    const verdict = check(lock({
-      "node_modules/b": pkg("b", { hasInstallScript: true }), "node_modules/a": pkg("a", { hasInstallScript: true }),
-      "node_modules/c": pkg("c"), "node_modules/a/node_modules/b": pkg("b", { hasInstallScript: true }),
-    }));
-    expect(verdict).toEqual({ ok: true, packageCount: 4, installScriptPackages: ["a", "b"] });
+describe("T2 lockfile policy rule 3: install steps and native builds are refused (owner decision, v1)", () => {
+  it("refuses a package whose entry says it has install steps, naming the rule and the package", () => {
+    const verdict = refused(lock({ ...good, "node_modules/native": pkg("native", { hasInstallScript: true }) }), "install_scripts");
+    if (!verdict.ok) {
+      expect(verdict.package).toBe("native");
+      expect(verdict.sentence).toBe("The dependency native needs install steps or a native build. Rovara does not run install steps, so this package cannot be used yet.");
+    }
   });
-  it("is the only effect: a package with install steps is not refused", () => {
-    expect(check(lock({ "node_modules/native": pkg("native", { hasInstallScript: true }) }))).toMatchObject({ ok: true });
+  it("refuses it at any depth, scoped or not, optional or not, and without a name it can show", () => {
+    refused(lock({ ...good, "node_modules/a/node_modules/b": pkg("b", { hasInstallScript: true }), "node_modules/a": pkg("a") }), "install_scripts");
+    refused(lock({ "node_modules/@scope/native": pkg("@scope/native", { hasInstallScript: true }) }), "install_scripts");
+    refused(lock({ "node_modules/@esbuild/darwin-arm64": pkg("@esbuild/darwin-arm64", { optional: true, hasInstallScript: true }) }), "install_scripts");
+    const verdict = refused(lock({ "node_modules/<b>": pkg("x", { hasInstallScript: true }) }), "install_scripts");
+    expect(!verdict.ok && verdict.package).toBeUndefined();
+  });
+  it("refuses any value but an explicit false (a flag the file writes in another form is not read as 'no')", () => {
+    for (const value of [true, "true", 1, "yes", {}, []]) refused(lock({ "node_modules/x": pkg("x", { hasInstallScript: value }) }), "install_scripts");
+    for (const value of [false, undefined]) expect(check(lock({ "node_modules/x": pkg("x", { hasInstallScript: value }) }))).toMatchObject({ ok: true });
   });
 });
 

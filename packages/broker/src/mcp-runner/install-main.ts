@@ -21,7 +21,7 @@ import { request as httpsRequest } from "node:https";
 import { dirname, isAbsolute, join } from "node:path";
 import { McpStdioProposalSchema, type McpStdioProposal } from "@agentx/contracts";
 import {
-  BUNDLE_LIMITS, BundleError, LOCKFILE_LIMITS, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
+  BUNDLE_LIMITS, BundleError, INSTALL_STEPS_SENTENCE, LOCKFILE_LIMITS, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
   type LockfileRule, type LockfileVerdict,
 } from "@agentx/gateway";
 
@@ -37,6 +37,7 @@ export const INSTALL_FAILURES = {
   bad_package: "The package file is not one Rovara can unpack.",
   wrong_package: "Your registry returned a different package from the one asked for.",
   git_dependency: "This package needs a git dependency. Rovara installs only from your registry.",
+  install_scripts: "This package needs install steps or a native build. Rovara does not run install steps, so this package cannot be used yet.",
   lockfile_policy: "This package's dependencies are not allowed.",
   resolve_failed: "Rovara could not work out this package's dependencies from your registry.",
   install_failed: "Rovara could not install this package's dependencies from your registry.",
@@ -59,8 +60,6 @@ export interface InstallReport {
   packageCount: number;
   unpackedBytes: number;
   tarBytes: number;
-  /** The packages whose install steps were skipped (never run). */
-  scriptsSkipped: string[];
   /** The program the server runs, relative to the bundle's top folder, run as `node <bin>`. */
   bin: string;
 }
@@ -180,6 +179,18 @@ async function readJson(path: string, maxBytes = 1_048_576): Promise<Record<stri
   } catch { return undefined; }
 }
 
+const NPM_NAME = /^(?:@[a-z0-9][a-z0-9._-]{0,60}\/)?[a-z0-9][a-z0-9._-]{0,60}$/u;
+
+/** The lifecycle scripts that run when a package is installed (or prepared). Any one of them makes a package one Rovara refuses in this version. */
+const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall", "prepare"] as const;
+
+/** Whether a package's manifest, or a binding.gyp beside it, says it needs an install step or a native build. */
+export function needsInstallSteps(manifest: Record<string, unknown>, hasBindingGyp: boolean): boolean {
+  const scripts = manifest.scripts;
+  if (typeof scripts === "object" && scripts !== null && !Array.isArray(scripts) && INSTALL_SCRIPTS.some((name) => Object.hasOwn(scripts, name))) return true;
+  return manifest.gypfile === true || hasBindingGyp;
+}
+
 async function exists(path: string): Promise<boolean> {
   try { await lstat(path); return true; } catch { return false; }
 }
@@ -252,6 +263,8 @@ export async function runInstall(requested: unknown, options: InstallOptions): P
   const manifest = await readJson(join(pkg, "package.json"));
   if (manifest === undefined) return failure("bad_package");
   if (manifest.name !== request.name || manifest.version !== request.version) return failure("wrong_package");
+  // A package that needs install steps or a native build is refused (owner decision for v1): the package itself here, every package it brings after `npm ci` below.
+  if (needsInstallSteps(manifest, await exists(join(pkg, "binding.gyp")))) return failure("install_scripts", { sentence: INSTALL_STEPS_SENTENCE(undefined).replace("A dependency", "This package"), package: request.name });
   // The folder npm runs in must be only what the lockfile says: no author-supplied lock beside the one we check, no npmrc (dropped when unpacking).
   await rm(join(pkg, "package-lock.json"), { force: true });
 
@@ -280,13 +293,24 @@ export async function runInstall(requested: unknown, options: InstallOptions): P
   if (!installed.ok) return installed.result;
   // npm writes `node_modules/.package-lock.json` when it installs anything. A package with no dependencies installs nothing and leaves no such file; any other lockfile that
   // leaves none is a failed install, not a package with nothing in it.
-  let after: LockfileVerdict = { ok: true, packageCount: 0, installScriptPackages: [] };
+  let after: LockfileVerdict = { ok: true, packageCount: 0 };
   const hiddenPath = join(pkg, "node_modules", ".package-lock.json");
   if (verdict.packageCount > 0 || await exists(hiddenPath)) {
     let hidden: Buffer;
     try { hidden = await readFile(hiddenPath); } catch { return failure("install_failed"); }
     after = checkLockfile(hidden, { registry, maxPackages: limits.maxPackages });
     if (!after.ok) return failure("lockfile_policy", { sentence: after.sentence, rule: after.rule, ...(after.package === undefined ? {} : { package: after.package }) });
+    // The lockfile's `hasInstallScript` comes from the registry's metadata; the installed package.json files are read too, so a registry that does not say is not believed.
+    const paths = Object.keys((JSON.parse(hidden.toString("utf8")) as { packages?: Record<string, unknown> }).packages ?? {}).filter((key) => key !== "");
+    for (const path of paths) {
+      const folder = join(pkg, ...path.split("/"));
+      const installedManifest = await readJson(join(folder, "package.json"));
+      if (installedManifest !== undefined && needsInstallSteps(installedManifest, await exists(join(folder, "binding.gyp")))) {
+        const name = path.slice(path.lastIndexOf("node_modules/") + "node_modules/".length);
+        const shown = NPM_NAME.test(name) ? name : undefined;
+        return failure("install_scripts", { sentence: INSTALL_STEPS_SENTENCE(shown), ...(shown === undefined ? {} : { package: shown }) });
+      }
+    }
   }
   if (!after.ok) return failure("install_failed");
 
@@ -304,7 +328,7 @@ export async function runInstall(requested: unknown, options: InstallOptions): P
       ok: true, bundlePath,
       report: {
         integrity, lockfileHash: lockfileHash(lockfileBytes), bundleHash: info.bundleHash, packageCount: after.packageCount + 1, unpackedBytes: info.unpackedBytes, tarBytes: info.tarBytes,
-        scriptsSkipped: [...new Set([...verdict.installScriptPackages, ...after.installScriptPackages])].sort(), bin,
+        bin,
       },
     };
   } catch (error) {

@@ -25,8 +25,24 @@ const sha512 = (text: string): string => `sha512-${createHash("sha512").update(t
 function packages(): FixturePackage[] {
   const touch = `node -e "require('fs').writeFileSync('${marker}','ran')"`;
   return [
-    { name: NAME, version: "1.4.2", bin: { "sim-mcp": "bin/sim.js" }, dependencies: { "dep-a": "^1.0.0" }, files: { "bin/sim.js": { content: "#!/usr/bin/env node\nconsole.log('sim')\n", mode: 0o755 }, "lib/x.js": "module.exports = 1\n" }, scripts: { postinstall: touch, prepare: touch }, devDependencies: { "dev-only": "1.0.0" } },
-    { name: "dep-a", version: "1.0.0", dependencies: { "dep-b": "^1.0.0" }, files: { "index.js": "module.exports = 'a'\n" }, scripts: { postinstall: touch }, hasInstallScript: true },
+    // devDependencies may carry a build script (`prepare`); only what is installed counts, and the dev dependency is never fetched
+    { name: NAME, version: "1.4.2", bin: { "sim-mcp": "bin/sim.js" }, dependencies: { "dep-a": "^1.0.0" }, files: { "bin/sim.js": { content: "#!/usr/bin/env node\nconsole.log('sim')\n", mode: 0o755 }, "lib/x.js": "module.exports = 1\n" }, devDependencies: { "dev-only": "1.0.0" } },
+    { name: "dep-a", version: "1.0.0", dependencies: { "dep-b": "^1.0.0" }, files: { "index.js": "module.exports = 'a'\n" } },
+    // packages that need install steps or a native build: the package itself, and a dependency (flagged by the registry, or not flagged)
+    ...(["preinstall", "install", "postinstall", "prepare"] as const).map((script): FixturePackage => ({ name: `root-${script}`, version: "1.0.0", bin: "i.js", files: { "i.js": "x" }, scripts: { [script]: touch } })),
+    { name: "root-gyp", version: "1.0.0", bin: "i.js", files: { "i.js": "x", "binding.gyp": "{}" } },
+    { name: "root-gypfile", version: "1.0.0", bin: "i.js", files: { "i.js": "x" }, manifest: { gypfile: true } },
+    { name: "root-flagged-dep", version: "1.0.0", bin: "i.js", dependencies: { "flagged-dep": "^1.0.0" }, files: { "i.js": "x" } },
+    { name: "flagged-dep", version: "1.0.0", files: { "index.js": "x" }, scripts: { postinstall: touch }, hasInstallScript: true },
+    { name: "root-quiet-dep", version: "1.0.0", bin: "i.js", dependencies: { "quiet-dep": "^1.0.0", "quiet-gyp": "^1.0.0" }, files: { "i.js": "x" } },
+    { name: "quiet-dep", version: "1.0.0", files: { "index.js": "x" }, scripts: { postinstall: touch } },
+    { name: "quiet-gyp", version: "1.0.0", files: { "index.js": "x", "binding.gyp": "{}" } },
+    { name: "root-quiet-only-gyp", version: "1.0.0", bin: "i.js", dependencies: { "quiet-gyp": "^1.0.0" }, files: { "i.js": "x" } },
+    // a shipped shrinkwrap that does not say its dependencies have install steps (it is the package author's file, not npm's): only the installed files give them away
+    ...(["quiet-dep", "quiet-gyp"] as const).map((dep): FixturePackage => ({ name: `lying-${dep}`, version: "1.0.0", bin: "i.js", dependencies: { [dep]: "1.0.0" }, files: { "i.js": "x" }, shrinkwrap: (url, integrityOf) => ({
+      name: `lying-${dep}`, version: "1.0.0", lockfileVersion: 3, requires: true,
+      packages: { "": { name: `lying-${dep}`, version: "1.0.0", dependencies: { [dep]: "1.0.0" } }, [`node_modules/${dep}`]: { version: "1.0.0", resolved: `${url}${dep}/-/${dep}-1.0.0.tgz`, integrity: integrityOf(dep, "1.0.0") } },
+    }) })),
     { name: "dep-b", version: "1.0.0", files: { "index.js": "module.exports = 'b'\n" } },
     { name: "dev-only", version: "1.0.0", files: { "index.js": "x" } },
     // a package whose own bin is missing
@@ -105,9 +121,8 @@ describe("T3 install: a package and its dependencies", () => {
     expect(paths.some((path) => path.startsWith("node_modules/dev-only"))).toBe(false);
     expect(paths.every((path) => !path.startsWith("cache") && !path.startsWith("home"))).toBe(true);
   });
-  it("lists the packages whose install steps were skipped, and never ran one (neither theirs nor the package's own postinstall or prepare)", async () => {
+  it("ran no script (the marker that every script fixture would write is not there)", async () => {
     if (!first.result.ok) throw new Error("install failed");
-    expect(first.result.report.scriptsSkipped).toEqual(["dep-a"]);
     expect(await exists(marker)).toBe(false);
   });
   it("does not fetch the dev dependency at all", async () => {
@@ -121,6 +136,46 @@ describe("T3 install: a package and its dependencies", () => {
     if (!first.result.ok || !again.result.ok) throw new Error("install failed");
     expect(again.result.report.bundleHash).toBe(first.result.report.bundleHash);
     expect(again.result.report.lockfileHash).toBe(first.result.report.lockfileHash);
+  });
+});
+
+describe("T3 install: packages that need install steps or a native build are refused, and nothing runs", () => {
+  const sentence = INSTALL_FAILURES.install_scripts;
+  it("refuses the package itself when it has a preinstall, install, postinstall or prepare script, a binding.gyp or gypfile, before any lockfile or dependency", async () => {
+    for (const name of ["root-preinstall", "root-install", "root-postinstall", "root-prepare", "root-gyp", "root-gypfile"]) {
+      registry.requests.length = 0;
+      const { result, dir } = await install(proposal(name));
+      expect(failed(result), name).toMatchObject({ code: "install_scripts", package: name });
+      expect(failed(result).sentence, name).toContain("Rovara does not run install steps");
+      expect(await exists(join(dir, "pkg", "package-lock.json")), name).toBe(false);
+      expect(await exists(join(dir, "pkg", "node_modules")), name).toBe(false);
+      expect(await exists(marker), name).toBe(false);
+    }
+    expect(sentence).toContain("install steps");
+  });
+  it("refuses a dependency the registry says has install steps, from the lockfile, before `npm ci` fetches anything", async () => {
+    const { result, dir } = await install(proposal("root-flagged-dep"));
+    expect(failed(result)).toMatchObject({ code: "lockfile_policy", rule: "install_scripts", package: "flagged-dep" });
+    expect(await exists(join(dir, "pkg", "node_modules"))).toBe(false);
+    expect(await exists(marker)).toBe(false);
+  });
+  it("sees install steps that npm itself records (a dependency with a postinstall script or a binding.gyp is flagged in npm's lockfile even if the registry did not say) and refuses by the lockfile rule", async () => {
+    for (const name of ["root-quiet-dep", "root-quiet-only-gyp"]) {
+      const { result } = await install(proposal(name));
+      expect(failed(result), name).toMatchObject({ code: "lockfile_policy", rule: "install_scripts" });
+    }
+    expect(await exists(marker)).toBe(false);
+  });
+  it("reads the installed files too: a shipped shrinkwrap that hides a dependency's install step does not get it through, and nothing runs", async () => {
+    for (const dep of ["quiet-dep", "quiet-gyp"]) {
+      const { result } = await install(proposal(`lying-${dep}`));
+      // npm records a binding.gyp itself when it installs (so the installed-lockfile check refuses); a script in package.json is found by reading the installed files
+      expect(failed(result), dep).toMatchObject(dep === "quiet-dep" ? { code: "install_scripts", package: dep } : { code: "lockfile_policy", rule: "install_scripts", package: dep });
+    }
+    expect(await exists(marker)).toBe(false);
+  });
+  it("does not refuse a development dependency that has a prepare script (it is never installed)", async () => {
+    expect((await install(proposal(NAME, "1.4.2"))).result.ok).toBe(true);
   });
 });
 
@@ -291,8 +346,9 @@ describe("T3 install: handing the bundle to the controller", () => {
     const code = await main({ env: env({ MCP_INSTALL_WORKDIR: dir }), getuid: () => 10_002, write: (line) => lines.push(line) });
     expect(code).toBe(0);
     expect(lines).toHaveLength(1);
-    const report = JSON.parse(lines[0]!.replace("ROVARA_MCP_INSTALL_RESULT ", "")) as { ok: boolean; bundleHash: string; lockfileHash: string; scriptsSkipped: string[] };
-    expect(report).toMatchObject({ ok: true, scriptsSkipped: ["dep-a"] });
+    const report = JSON.parse(lines[0]!.replace("ROVARA_MCP_INSTALL_RESULT ", "")) as { ok: boolean; bundleHash: string; lockfileHash: string };
+    expect(report).toMatchObject({ ok: true });
+    expect(report).not.toHaveProperty("scriptsSkipped");
     expect(received).toMatchObject({ method: "PUT", url: `/bundles/${report.bundleHash}`, auth: `Bearer ${"t".repeat(40)}` });
     expect(createHash("sha256").update(received!.body).digest("hex")).toBe(report.bundleHash);
     expect(lines.join("\n")).not.toContain("t".repeat(40));
