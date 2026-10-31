@@ -260,7 +260,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "spending.policy_change_decided": ["scopeKind", "revision", "requestId", "proposalId", "beforeKind", "afterKind", "beforeMicrousd", "afterMicrousd", "decision", "outcomeCode"],
   "spending.stop_admitted": ["effectiveStopMicrousd", "approvalCapMicrousd", "policyDigest", "workKind", "admissionId"],
   "spending.stop_exempted": ["sourceId", "sourceKind", "sourcesRevision", "payerDeveloperId", "connectionRevision"],
-  "spending.stop_refused": ["outcomeCode", "workKind", "admissionId"],
+  "spending.stop_refused": ["outcomeCode", "workKind", "admissionId", "sourceId", "sourceKind", "sourcesRevision"],
   "spending.stop_reached": ["effectiveStopMicrousd", "approvalCapMicrousd", "policyDigest", "workKind", "admissionId"],
   "spending.policy_seeded": ["mode", "source", "revision", "ceilingMicrousd", "outcome"],
   "pull_request.opened": ["number"],

@@ -2743,3 +2743,9 @@ it("funding review: an exempt task pauses at its customer agent max per run of f
  const reply = await f.modelAccess();expect(reply.body.error).toMatchObject({ code: "BUDGET_EXCEEDED" });
  expect(f.t.access.mintKey).not.toHaveBeenCalled();expect(f.t.meta(f.taskId)).toMatchObject({ budgetPause: { scope: { kind: "max_per_run", taskId: f.taskId } } });
 });
+
+it("funding review: an exempt key receives only the remaining customer limit", async () => {
+ const f = await ownSourceOperation();f.t.db.set({ ...f.t.meta(f.taskId), budgetUsd: 10, maxPerRunUsd: 5 });f.t.access.keySpend.mockResolvedValue(2);
+ const reply = await f.modelAccess();expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+ expect(f.t.access.mintKey).toHaveBeenCalledWith(expect.objectContaining({ maxBudgetUsd: 3 }));
+});

@@ -2109,13 +2109,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     project: request.project, asWorkflow: asWorkflow || settingUpDraft, workflowPath, prepared,
   });
   if (prepared !== undefined && startLimitUsd !== undefined) prepared = { ...prepared, ...runLimitsOf(startLimitUsd, run?.runLimitUsd, prepared.maxPerRunUsd) };
-  const fundingProof = prepared?.modelPolicyPin === undefined || deps.agentRuns?.modelRouting === undefined ? undefined : await captureTaskFundingProof({ documentClient: deps.documentClient, tableName: deps.tableName, routing: deps.agentRuns.modelRouting, chatgpt: deps.agentRuns.stageChatgpt, now: () => deps.now() }, {
-    orgId: deps.orgId, project: request.project, models: taskFundingModelPool(prepared.modelPolicyPin, deps.agentRuns.modelRouting.rovaraGeography), ...(prepared.payer.kind === "member" ? { payerDeveloperId: prepared.payer.developerId } : {}),
-  });
-  if (fundingProof !== undefined && prepared !== undefined) {
-    if (prepared.modelPolicyPin?.sourcesRevision !== fundingProof.sourcesRevision) return refused(agentXError("TASK_STOP_CONFIG_INVALID", "The funding sources changed during admission."));
-    prepared = { ...prepared, fundingProof };
-  }
+  let fundingProof: ReturnType<typeof TaskFundingProofSchema.parse> | undefined;
   let spendingStop: CapturedTaskStop | undefined;
   let spendingScopeChecks: TransactItem[] = [];
   // Every task captures once after its existing live principal checks and
@@ -2129,6 +2123,13 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       } else await requireAgentAccess(deps.agentRuns, caller, agentId, prepared?.ref.version === "draft" ? "edit" : "use");
     };
     try {
+      fundingProof = prepared?.modelPolicyPin === undefined || deps.agentRuns?.modelRouting === undefined ? undefined : await captureTaskFundingProof({ documentClient: deps.documentClient, tableName: deps.tableName, routing: deps.agentRuns.modelRouting, chatgpt: deps.agentRuns.stageChatgpt, now: () => deps.now() }, {
+    orgId: deps.orgId, project: request.project, models: taskFundingModelPool(prepared.modelPolicyPin, deps.agentRuns.modelRouting.rovaraGeography), ...(prepared.payer.kind === "member" ? { payerDeveloperId: prepared.payer.developerId } : {}),
+  }).catch(() => { throw agentXError("TASK_STOP_CONFIG_MISSING", "The funding sources could not be read. Try again."); });
+  if (fundingProof !== undefined && prepared !== undefined) {
+    if (prepared.modelPolicyPin?.sourcesRevision !== fundingProof.sourcesRevision) return refused(agentXError("TASK_STOP_CONFIG_INVALID", "The funding sources changed during admission."));
+    prepared = { ...prepared, fundingProof };
+  }
       const pathLimitMicrousd = usdToWholeMicrodollars(startLimitUsd ?? prepared?.runLimitUsd ?? PER_TASK_BUDGET_USD);
       const requestedMicrousd = run?.runLimitUsd === undefined ? undefined : usdToWholeMicrodollars(run.runLimitUsd);
       const captured = fundingProof === undefined ? await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(),
@@ -3154,14 +3155,16 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
       const agent = task.agent;
       const agentChecks = await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId: agent.agentId, draft: agent.version === "draft", frozenRecipe: true, process: agent.process === true, developerId: caller.developerId, role: caller.orgRole }, authorize,
         async () => { if (deps.agentRuns === undefined) throw budgetActorRefused();return deps.agentRuns.store.listShares(deps.orgId, agent.agentId); });
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      const fundingItems: TransactItem[] = [
         { Update: update },
         { Update: { TableName: deps.tableName, Key: taskRecipeKey(taskId), UpdateExpression: "SET fundingProof = :nextFunding", ConditionExpression: "orgId = :fundingOrg AND fundingProof = :priorFunding", ExpressionAttributeValues: { ":fundingOrg": deps.orgId, ":priorFunding": task.fundingProof, ":nextFunding": fundingTransition } } },
         fundingRevisionCheck(deps.tableName, fundingTransition),
         ...fundingAuditItems(deps.tableName, fundingTransition, { taskId, occurrence: request.requestId, actor: { kind: "member", id: caller.developerId }, at: deps.now() }),
         ...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }),
         ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project }, authorize), ...agentChecks,
-      ] }));
+      ];
+      if (fundingItems.length > 100) throw agentXError("TASK_STOP_CONFIG_INVALID", "The funding transition exceeds the transaction limit.");
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: fundingItems }));
     }
   } catch (error) {
     if (!isConditional(error)) throw error;

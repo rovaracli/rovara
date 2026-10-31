@@ -797,6 +797,8 @@ interface CodeBuildRecord {
 }
 
 interface AwsBrokerDependencies {
+  /** Injectable clock for funding evidence and its durable audit. */
+  now?: () => number;
   documentClient: DynamoDBDocumentClient;
   /** The Audit Ledger's outbox (named environments only); absent on a legacy install, where every audit function does nothing. */
   audit?: AuditRuntime;
@@ -6947,10 +6949,10 @@ async function chatGptTaskToken(dependencies: AwsBrokerDependencies, operation: 
   if (task !== undefined && (task.fundingProof !== undefined || pinnedFunding !== undefined)) {
     const proof = TaskFundingProofSchema.parse(task.fundingProof ?? pinnedFunding), source = proof.sources.find(source => source.sourceId === "personal-chatgpt");
     const routing = routingOf(dependencies, true);
-    const evidence = routing === undefined || operation.model === undefined ? undefined : await readStageModelEvidence({ ...dependencies, routing, chatgpt: dependencies.chatgpt, now: Date.now }, { orgId: proof.orgId, project: proof.project, models: [operation.model], payerDeveloperId: operation.chatgptDeveloperId });
+    const evidence = routing === undefined || operation.model === undefined ? undefined : await readStageModelEvidence({ ...dependencies, routing, chatgpt: dependencies.chatgpt, now: () => dependencies.now?.() ?? Date.now() }, { orgId: proof.orgId, project: proof.project, models: [operation.model], payerDeveloperId: operation.chatgptDeveloperId });
     if (task.fundingProof === undefined || pinnedFunding === undefined || canonicalJson(task.fundingProof) !== canonicalJson(pinnedFunding) || operation.fundingSourceId === undefined || operation.modelPolicy === undefined || source === undefined || evidence === undefined || source.payerDeveloperId !== operation.chatgptDeveloperId || evidence.connectionRevision !== source.connectionRevision || evidence.sourcesRevision !== proof.sourcesRevision || !evidence.candidates.some(candidate => candidate.sourceId === "personal-chatgpt")) {
-      const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", `${operation.id}:chatgpt-funding`), orgId: task.orgId, action: "spending.stop_refused", actor: { kind: "system", id: "rovara" }, target: { kind: "task", id: task.taskId }, occurredAt: new Date().toISOString(), facts: { outcomeCode: "TASK_STOP_CONFIG_MISSING", workKind: "chatgpt-funding-changed", admissionId: operation.id } });
-      try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, Date.now()), ConditionExpression: "attribute_not_exists(pk)" } }] })); } catch (error) { if (!failedIndexes(error)?.size) throw error; }
+      const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", `${operation.id}:chatgpt-funding`), orgId: task.orgId, action: "spending.stop_refused", actor: { kind: "system", id: "rovara" }, target: { kind: "task", id: task.taskId }, occurredAt: new Date(dependencies.now?.() ?? Date.now()).toISOString(), facts: { outcomeCode: "TASK_STOP_CONFIG_MISSING", workKind: "chatgpt-funding-changed", admissionId: operation.id, ...(source === undefined ? {} : { sourceId: source.sourceId, sourceKind: source.kind, sourcesRevision: evidence?.sourcesRevision ?? proof.sourcesRevision }) } });
+      try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, dependencies.now?.() ?? Date.now()), ConditionExpression: "attribute_not_exists(pk)" } }] })); } catch (error) { if (!failedIndexes(error)?.size) throw error; }
       throw agentXError("TASK_STOP_CONFIG_MISSING", "The admitted ChatGPT funding connection changed. Start again with the current connection.");
     }
   }
@@ -7376,16 +7378,16 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
         const proof = TaskFundingProofSchema.parse(task.fundingProof ?? pinnedFunding);
         if (task.fundingProof !== undefined && pinnedFunding !== undefined && canonicalJson(task.fundingProof) === canonicalJson(pinnedFunding) && proof.orgId === task.orgId && proof.project === task.project && routing !== undefined && route !== undefined && current.modelRoute !== undefined && current.modelRoute !== null
           && current.fundingSourceId === route.sourceId && current.modelPolicy !== undefined && current.workflowMode !== "CHECKS" && payment !== undefined) {
-          funding = await actualCompanyFunding({ ...dependencies, routing, now: Date.now, chatgpt: dependencies.chatgpt }, proof, { sourceId: route.sourceId, model: current.modelRoute.model });
+          funding = await actualCompanyFunding({ ...dependencies, routing, now: () => dependencies.now?.() ?? Date.now(), chatgpt: dependencies.chatgpt }, proof, { sourceId: route.sourceId, model: current.modelRoute.model });
         }
         if (funding === undefined) {
-          const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", `${current.id}:funding`), orgId: task.orgId, action: "spending.stop_refused", actor: { kind: "system", id: "rovara" }, target: { kind: "task", id: task.taskId }, occurredAt: new Date().toISOString(), facts: { outcomeCode: "TASK_STOP_CONFIG_MISSING", workKind: "funding-changed", admissionId: current.id } });
-          try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, Date.now()), ConditionExpression: "attribute_not_exists(pk)" } }] })); }
+          const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", `${current.id}:funding`), orgId: task.orgId, action: "spending.stop_refused", actor: { kind: "system", id: "rovara" }, target: { kind: "task", id: task.taskId }, occurredAt: new Date(dependencies.now?.() ?? Date.now()).toISOString(), facts: { outcomeCode: "TASK_STOP_CONFIG_MISSING", workKind: "funding-changed", admissionId: current.id, ...(route === undefined ? {} : { sourceId: route.sourceId }), ...(route?.sourceId === "rovara" ? { sourceKind: "rovara_catalog" } : proof.sources.find(source => source.sourceId === route?.sourceId) === undefined ? {} : { sourceKind: proof.sources.find(source => source.sourceId === route?.sourceId)!.kind, sourcesRevision: proof.sourcesRevision }) } });
+          try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, dependencies.now?.() ?? Date.now()), ConditionExpression: "attribute_not_exists(pk)" } }] })); }
           catch (error) { if (!failedIndexes(error)?.size) throw error; }
           throw agentXError("TASK_STOP_CONFIG_MISSING", "This operation no longer has verified own-source funding. Review Spending before continuing.");
         }
       }
-      const fundingChecks: TransactItem[] = funding === undefined ? [] : [{ ConditionCheck: { TableName: dependencies.tableName, Key: taskRecipeKey(task.taskId), ConditionExpression: "orgId = :fundingOrg AND fundingProof = :fundingProof", ExpressionAttributeValues: { ":fundingOrg": task.orgId, ":fundingProof": pinnedFunding } } }, fundingRevisionCheck(dependencies.tableName, funding), ...fundingAuditItems(dependencies.tableName, funding, { taskId: task.taskId, occurrence: `${current.id}:${task.modelKeyIds?.length ?? 0}`, actor: { kind: "system", id: "rovara" }, at: Date.now() })];
+      const fundingChecks: TransactItem[] = funding === undefined ? [] : [{ ConditionCheck: { TableName: dependencies.tableName, Key: taskRecipeKey(task.taskId), ConditionExpression: "orgId = :fundingOrg AND fundingProof = :fundingProof", ExpressionAttributeValues: { ":fundingOrg": task.orgId, ":fundingProof": pinnedFunding } } }, fundingRevisionCheck(dependencies.tableName, funding), ...fundingAuditItems(dependencies.tableName, funding, { taskId: task.taskId, occurrence: `${current.id}:${task.modelKeyIds?.length ?? 0}`, actor: { kind: "system", id: "rovara" }, at: dependencies.now?.() ?? Date.now() })];
       const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
       const taskKeyIds = task.modelKeyIds ?? [];
@@ -7403,7 +7405,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
         ...(task.spendingStop === undefined ? {} : { guardRecord: items => [...guardModelKeyOperation(current, withAdmittedTaskSource(dependencies.tableName, task, items).items), ...keyAuthority] }),
         ...(funding === undefined ? {} : { taskStopExempt: true, guardRecord: (items: readonly TransactItem[]) => {
           const guarded = guardModelKeyOperation(current, [...items]), key = taskKey(task.taskId);
-          const source = nativeSnapshotConditions(dependencies.tableName, [key], [task as unknown as Record<string, unknown>], ["modelKeyIds"])[0]?.ConditionCheck;
+          const source = nativeSnapshotConditions(dependencies.tableName, [key], [Object.fromEntries(["pk", "sk", "orgId", "project", "developerId", "payer", "origin", "startedBy", "agent", "fundingProof", "budgetUsd", "maxPerRunUsd", "budgetBaselineUsd", "modelKeyIds", "budgetPause", "status", "releasedAt", "spendingStop", "spendingAdmission"].map(field => [field, (task as unknown as Record<string, unknown>)[field]]))], ["modelKeyIds"])[0]?.ConditionCheck;
           if (source === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The funding source is unavailable.");
           const index = guarded.findIndex(item => item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk), update = guarded[index]?.Update;
           if (update === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The funding task record is unavailable.");

@@ -315,7 +315,7 @@ async function planCap(deps: MintOperationDependencies, input: MintOperationKeyI
     await pauseAt(taskId === undefined ? undefined : { kind: "test", taskId });
     throw runLimitReached(taskSpent, input.testCapUsd);
   }
-  if (input.taskStopExempt !== true && left(stopAtUsd, windowSpent) <= 0) {
+  if (left(stopAtUsd, windowSpent) <= 0) {
     // The agent's max per run is what stopped it when that is lower than the run limit; during planning the run limit is the planning limit.
     const kind = stopAtUsd < input.runLimitUsd ? "max_per_run" : input.planning === true ? "planning" : "task";
     await pauseAt(taskId === undefined ? undefined : { kind, taskId });
@@ -323,7 +323,7 @@ async function planCap(deps: MintOperationDependencies, input: MintOperationKeyI
   }
   if (input.stepBudgetUsd !== undefined && left(input.stepBudgetUsd, stepSpent) <= 0) throw runLimitReached(stepSpent, input.stepBudgetUsd);
   const capUsd = clean(Math.min(
-    input.taskStopExempt === true ? input.runLimitUsd : left(stopAtUsd, windowSpent), smallestRoom(read.levels),
+    left(stopAtUsd, windowSpent), smallestRoom(read.levels),
     input.testCapUsd === undefined ? Infinity : left(input.testCapUsd, taskSpent),
     input.stepBudgetUsd === undefined ? Infinity : left(input.stepBudgetUsd, stepSpent),
   ));
