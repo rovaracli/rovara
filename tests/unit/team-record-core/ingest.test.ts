@@ -20,7 +20,7 @@ describe("ingest: the stored row", () => {
     expect(outcome).toEqual({ status: "stored" });
     const [item] = rows(w, "TEAM_RECORD_EVENT");
     const id = deterministicEventId(ORG_A, "github", "github.com", "c-1", "1");
-    expect(item).toMatchObject({ ...recordEventKey(ORG_A, "web", "2026-10-30T10:00:00.000Z", id), source: "github", trust: "member", retention: "D", rowScope: GITHUB_SCOPE });
+    expect(item).toMatchObject({ ...recordEventKey(ORG_A, "web", "2026-10-30T10:00:00.000Z", id), source: "github", trust: "member", retention: "D", scope: GITHUB_SCOPE });
     expect(item!.gsi1pk).toBe(recordSourceIndexValue(ORG_A, "github.com", "c-1"));
     expect(item!.gsi3pk).toBe(recordScopeIndexValue(ORG_A, GITHUB_SCOPE));
     expect(item!.gsi2pk).toBe(`WS#${ORG_A}#ACTOR#dev-1`);
@@ -95,15 +95,15 @@ describe("ingest: retention routing", () => {
     expect(w.embedder.calls).toHaveLength(0);
   });
 
-  it("C keeps text 30 days (row leaves hot with it); D keeps the row 90 days with text", async () => {
+  it("C drops the text at 30 days but the row stays 90 days (the archiver takes it at 90); D keeps the row 90 days with text", async () => {
     const w = world();
     await addSource(w, { source: "github", scope: GITHUB_SCOPE, retention: "D" });
     await w.sink.put(githubDraft({ retention: "C", sourceRef: { system: "github.com", id: "c", version: "1" }, occurredAt: new Date(T0).toISOString() }));
     await w.sink.put(githubDraft({ retention: "D", sourceRef: { system: "github.com", id: "d", version: "1" }, occurredAt: new Date(T0).toISOString() }));
     const [c, d] = ["c", "d"].map((id) => eventFromItem(rows(w, "TEAM_RECORD_EVENT").find((item) => (item.sourceRef as { id: string }).id === id))!);
     expect(c!.textExpiresAt).toBe(seconds + 30 * DAY);
-    expect(c!.hotExpiresAt).toBe(seconds + 30 * DAY);
-    expect(c!.indexExpiresAt).toBe(seconds + 37 * DAY);
+    expect(c!.hotExpiresAt).toBe(seconds + 90 * DAY);
+    expect(c!.indexExpiresAt).toBe(seconds + 97 * DAY);
     expect(d!.textExpiresAt).toBeUndefined();
     expect(d!.hotExpiresAt).toBe(seconds + 90 * DAY);
     expect(d!.indexExpiresAt).toBe(seconds + 97 * DAY);

@@ -13,7 +13,7 @@ const ID = "5b8e9f4c-2b1a-4c1e-9a53-3f2d3d1a0001";
 
 function event(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: ID, workspaceId: ORG_A, project: "web", source: "github", sourceRef: { system: "github", id: "pr/12#c1" }, kind: "github.review_comment",
+    id: ID, workspaceId: ORG_A, project: "web", source: "github", sourceRef: { system: "github", id: "pr/12#c1" }, scope: "github:repo/9", kind: "github.review_comment",
     occurredAt: "2026-10-30T10:00:00.000Z", actor: { sourceId: "123", developerId: "dev-1", trust: "member" }, trust: "member", audience: { kind: "project" },
     text: "Use withRetry here.", links: ["https://github.com/acme/web/pull/12#c1"], retention: "D", hotExpiresAt: 1_800_000_000, indexExpiresAt: 1_800_600_000, ...extra,
   };
@@ -60,6 +60,10 @@ describe("record event", () => {
   it("never lets a row's trust exceed the actor's", () => {
     expect(parses(event({ trust: "member", actor: { sourceId: "9", trust: "outsider" } }))).toBe(false);
     expect(parses(event({ trust: "outsider", actor: { sourceId: "9", trust: "member" } }))).toBe(true);
+  });
+  it("needs the place on every row, so the lake can erase by place", () => {
+    expect(parses(event({ scope: undefined }))).toBe(false);
+    expect(parses(event({ scope: "" }))).toBe(false);
   });
   it("refuses a source that does not fit the kind", () => {
     expect(parses(event({ source: "slack" }))).toBe(false);

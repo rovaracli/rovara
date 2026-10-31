@@ -142,6 +142,11 @@ export const RecordEventSchema = z.object({
   repo: z.string().min(1).max(200).optional(),
   source: RecordSourceKindSchema,
   sourceRef: RecordSourceRefSchema,
+  /**
+   * The place the row came from (`slack:T1/C9`, `github:repo/123`, `rovara:project/web`). Required on every row: the lake erases by place (a deleted channel or
+   * repository, a channel that turned private), and a row with no place could not be erased there. A restricted audience's snapshot names the same place.
+   */
+  scope: z.string().min(1).max(300),
   kind: RecordEventKindSchema,
   occurredAt: z.string().datetime(),
   actor: z.object({ sourceId: z.string().min(1).max(200), developerId: DeveloperIdSchema.optional(), trust: TrustClassSchema }).strict().optional(),

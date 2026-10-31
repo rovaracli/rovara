@@ -881,6 +881,8 @@ export const TEAM_RECORD_NO_PROJECT = "_workspace";
 /** The two indexes of the TeamRecord table: GSI1 finds rows by their source (delete at the source), GSI2 by the person (erase). */
 export const TEAM_RECORD_GSI1 = { index: "gsi1", partition: "gsi1pk" } as const;
 export const TEAM_RECORD_GSI2 = { index: "gsi2", partition: "gsi2pk" } as const;
+/** GSI4 finds rows by the source identity of their actor (a person with no developer id). */
+export const TEAM_RECORD_GSI4 = { index: "gsi4", partition: "gsi4pk" } as const;
 /** GSI3 finds rows by their scope (a Slack channel, a repository): a deleted channel, a membership change, a channel that turned private. */
 export const TEAM_RECORD_GSI3 = { index: "gsi3", partition: "gsi3pk" } as const;
 
@@ -932,6 +934,24 @@ export function recordDeletedMarkerKey(orgId: OrgId, system: string, sourceId: s
 /** The GSI1 partition value of the one source row (`SOURCE#`) of a scope: how a tap finds a scope's retention and audience without knowing its project. */
 export function recordSourceConfigIndexValue(orgId: OrgId, source: string, scope: string): string {
   return `WS#${OrgIdSchema.parse(orgId)}#CFG#${teamRecordSourceHash(source, scope)}`;
+}
+/**
+ * The hashes the lake keeps beside a row so it can be erased without free text in SQL (the lake's `actor_source_hash` and `scope_hash` columns). A person with no
+ * developer id (an outsider, an unmapped Slack user) is erased by `recordActorSourceHash`; a place (a deleted channel or repository) by `recordScopeHash`.
+ */
+export function recordActorSourceHash(system: string, actorSourceId: string): string {
+  return createHash("sha256").update(`actor\u0000${system}\u0000${actorSourceId}`).digest("hex");
+}
+export function recordScopeHash(scope: string): string {
+  return createHash("sha256").update(`scope\u0000${scope}`).digest("hex");
+}
+/** The GSI4 partition value of every row made by one source identity (erase a person who has no developer id). */
+export function recordActorSourceIndexValue(orgId: OrgId, system: string, actorSourceId: string): string {
+  return `WS#${OrgIdSchema.parse(orgId)}#ACTORSRC#${recordActorSourceHash(keyPart(system, "a source system"), actorSourceId)}`;
+}
+/** Which vector bucket holds a workspace's index, written once when the workspace gets its index and read back from then on (a second bucket must never remap a workspace). */
+export function workspaceVectorBucketKey(orgId: OrgId): OrgKey {
+  return { pk: teamRecordPk(orgId), sk: "VECBUCKET" };
 }
 /** The GSI3 partition value of every row of one scope (`slack:T1/C9`, `github:repo/123`; a scope is already prefixed with its source). */
 export function recordScopeIndexValue(orgId: OrgId, scope: string): string {

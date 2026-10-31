@@ -10,6 +10,10 @@ import type { TeamRecordTable } from "./types.js";
 export type LakeDeleteTarget =
   | { kind: "source"; sourceHash: string }
   | { kind: "actor"; developerId: string }
+  /** A person with no developer id (an outsider, an unmapped Slack user): `recordActorSourceHash(system, sourceId)`. */
+  | { kind: "actor_source"; hash: string }
+  /** A whole place (a deleted channel or repository, a channel that turned private): `recordScopeHash(scope)`. */
+  | { kind: "scope"; hash: string }
   | { kind: "project"; project: string }
   | { kind: "fact"; factId: string };
 
@@ -32,6 +36,8 @@ export function validTarget(target: LakeDeleteTarget): boolean {
   switch (target.kind) {
     case "source": return HASH.test(target.sourceHash);
     case "actor": return ID.test(target.developerId);
+    case "actor_source": return HASH.test(target.hash);
+    case "scope": return HASH.test(target.hash);
     case "project": return ID.test(target.project);
     case "fact": return ID.test(target.factId);
   }

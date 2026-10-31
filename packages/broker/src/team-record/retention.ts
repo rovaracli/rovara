@@ -2,7 +2,8 @@
 //
 //   A live only      : an outside source stores nothing. Rovara's own events keep their structured fields only (never text).
 //   B process, drop  : an outside source stores no row (its text goes to the distiller in memory). Rovara's own events keep structured fields only.
-//   C raw text 30 d  : text for 30 days (the row leaves the hot table with it, its structured fields go on to the lake); event vectors die with the text.
+//   C raw text 30 d  : the text and the event's vector go after 30 days (text-expiry.ts); the row itself stays like D's and reaches the lake with its structured
+//                      fields only, because the archiver takes rows older than 90 days.
 //   D full history   : the row stays hot for 90 days, then the archiver writes it to the lake.
 //
 // `hotExpiresAt` is when the row is due to leave the hot table; `indexExpiresAt` (the TTL attribute) is a grace period later so the archiver has time to copy it
@@ -66,8 +67,9 @@ export function retentionPlan(input: { retention: RetentionMode; source: RecordS
       return { store: own, keepText: false, embed: false, distillTransient: retention === "B" && input.hasText, ...times };
     }
     case "C": {
-      const times = hot(RECORD_RAW_TEXT_DAYS_C);
-      return { store: true, keepText: true, embed: input.hasText, distillTransient: false, textExpiresAt: times.hotExpiresAt, ...times };
+      const times = hot(RECORD_HOT_DAYS);
+      const textExpiresAt = Math.max(base + RECORD_RAW_TEXT_DAYS_C * DAY, input.nowSeconds + DAY);
+      return { store: true, keepText: true, embed: input.hasText, distillTransient: false, textExpiresAt, ...times };
     }
     case "D": {
       const times = hot(RECORD_HOT_DAYS);

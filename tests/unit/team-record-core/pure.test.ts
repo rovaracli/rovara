@@ -18,14 +18,14 @@ describe("retention plan", () => {
     expect(plan("A", "rovara")).toMatchObject({ store: true, keepText: false, embed: false });
     expect(plan("B", "rovara")).toMatchObject({ store: true, keepText: false });
   });
-  it("C is 30 days of text, D is 90 days, and the TTL waits a grace period after", () => {
-    expect(plan("C")).toMatchObject({ store: true, keepText: true, embed: true, textExpiresAt: NOW + 30 * DAY, hotExpiresAt: NOW + 30 * DAY, indexExpiresAt: NOW + (30 + ARCHIVE_GRACE_DAYS) * DAY });
+  it("C is 30 days of text on a row kept 90 days, D is 90 days, and the TTL waits a grace period after", () => {
+    expect(plan("C")).toMatchObject({ store: true, keepText: true, embed: true, textExpiresAt: NOW + 30 * DAY, hotExpiresAt: NOW + 90 * DAY, indexExpiresAt: NOW + (90 + ARCHIVE_GRACE_DAYS) * DAY });
     expect(plan("D")).toMatchObject({ keepText: true, hotExpiresAt: NOW + 90 * DAY, indexExpiresAt: NOW + (90 + ARCHIVE_GRACE_DAYS) * DAY });
     expect(plan("D").textExpiresAt).toBeUndefined();
     expect(plan("D", "github", false).embed).toBe(false);
   });
   it("an old item counts from its date but keeps at least a day; a future date counts from now", () => {
-    expect(retentionPlan({ retention: "C", source: "github", hasText: true, occurredAtSeconds: NOW - 29 * DAY, nowSeconds: NOW }).hotExpiresAt).toBe(NOW + DAY);
+    expect(retentionPlan({ retention: "C", source: "github", hasText: true, occurredAtSeconds: NOW - 29 * DAY, nowSeconds: NOW }).textExpiresAt).toBe(NOW + DAY);
     expect(retentionPlan({ retention: "D", source: "github", hasText: true, occurredAtSeconds: NOW - 10 * DAY, nowSeconds: NOW }).hotExpiresAt).toBe(NOW + 80 * DAY);
     expect(retentionPlan({ retention: "D", source: "github", hasText: true, occurredAtSeconds: NOW + 50 * DAY, nowSeconds: NOW }).hotExpiresAt).toBe(NOW + 90 * DAY);
   });

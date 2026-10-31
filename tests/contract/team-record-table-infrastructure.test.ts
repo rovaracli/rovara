@@ -29,17 +29,18 @@ describe("TeamRecord table", () => {
     }
   });
 
-  it("has the three indexes, each keyed by one attribute and projecting everything", () => {
+  it("has the four indexes, each keyed by one attribute and projecting everything", () => {
     const { template } = build();
     template.hasResourceProperties("AWS::DynamoDB::Table", {
       GlobalSecondaryIndexes: Match.arrayWith([
         Match.objectLike({ IndexName: "gsi1", KeySchema: [{ AttributeName: "gsi1pk", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" } }),
         Match.objectLike({ IndexName: "gsi2", KeySchema: [{ AttributeName: "gsi2pk", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" } }),
         Match.objectLike({ IndexName: "gsi3", KeySchema: [{ AttributeName: "gsi3pk", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" } }),
+        Match.objectLike({ IndexName: "gsi4", KeySchema: [{ AttributeName: "gsi4pk", KeyType: "HASH" }], Projection: { ProjectionType: "ALL" } }),
       ]),
     });
     const table = Object.values(template.findResources("AWS::DynamoDB::Table"))[0] as { Properties: { GlobalSecondaryIndexes: unknown[] } };
-    expect(table.Properties.GlobalSecondaryIndexes).toHaveLength(3);
+    expect(table.Properties.GlobalSecondaryIndexes).toHaveLength(4);
   });
 
   it("uses the customer's KMS key when given one, and an AWS-managed key otherwise", () => {

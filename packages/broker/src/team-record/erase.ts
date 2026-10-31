@@ -2,12 +2,12 @@
 // walks call (`learning/cleanup.ts`, which is not on this branch's base: see the lane report, "Wiring pending"). Each is bounded and resumable: a call does what its
 // budget allows and says whether it is complete, and the walk calls again until it is. Hot rows, vectors, facts, lessons and the lake queue follow the same
 // privacy order as a source delete (`purgeItems`): the lake first, a row only after its vector.
-import { LESSON_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { LESSON_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, teamRecordPk, type OrgId } from "@agentx/contracts";
 import type { Item } from "../agents/table-writes.js";
 import { auditRecordErased } from "./audit.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { addPurge, emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
-import { bySource, byActor, deleteItem, queryPrefix, tombstoneItem } from "./store.js";
+import { bySource, byActor, byActorSource, deleteItem, queryPrefix, tombstoneItem } from "./store.js";
 
 export interface EraseBudget {
   /** The most items one call reads and removes. */
@@ -26,19 +26,35 @@ const finish = async (deps: PurgeDependencies, orgId: OrgId, cause: "person_eras
   await deps.audit?.(auditRecordErased({ orgId, occurrence, at: new Date((deps.now ?? Date.now)()).toISOString(), cause, rows: result.rows, facts: result.facts, lessons: result.lessonsWithdrawn + result.other, vectors: result.vectors })).catch(() => undefined);
 };
 
+/** Who is erased: their developer id, and every source identity they have (a Slack user id, a GitHub numeric id) so rows made before they were mapped go too. */
+export interface ErasedPerson {
+  developerId?: string;
+  identities?: ReadonlyArray<{ system: string; sourceId: string }>;
+}
+
 /**
- * A person is erased: every row their actions made is hidden and then deleted with its vector, the facts built from those rows are deleted or re-distilled from the sources
- * that are left, the lessons that rested on them are withdrawn (unless a valid code citation alone supports them), and the lake is told to forget their events and outcomes.
- * `occurrence` makes the audit event of this erase unique (the erase request's id).
+ * A person is erased: every row their actions made is hidden and then deleted with its vector, the facts built from those rows are deleted or re-distilled from the
+ * sources that are left, the lessons that rested on them are withdrawn (unless a valid code citation alone supports them), and the lake is told to forget them: by
+ * developer id, and by each source identity for rows that never had a developer id. `occurrence` makes the audit event unique (the erase request's id).
  */
-export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, developerId: string, occurrence: string, budget: EraseBudget = DEFAULT_ERASE_BUDGET): Promise<EraseResult> {
+export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: ErasedPerson, occurrence: string, budget: EraseBudget = DEFAULT_ERASE_BUDGET): Promise<EraseResult> {
   const now = deps.now ?? Date.now;
   const queue = deps.lakeQueue ?? tableLakeDeleteQueue(deps.table, now);
+  const identities = (who.identities ?? []).slice(0, 50);
+  if (who.developerId === undefined && identities.length === 0) throw new Error("erase: name a developer or a source identity");
   // The lake first: their events and outcomes there are queued before anything hot is touched.
-  await queue.enqueue(orgId, [{ kind: "actor", developerId }]);
-  const found = await byActor(deps.table, orgId, developerId, budget.maxItems);
+  await queue.enqueue(orgId, [
+    ...(who.developerId === undefined ? [] : [{ kind: "actor" as const, developerId: who.developerId }]),
+    ...identities.map((identity) => ({ kind: "actor_source" as const, hash: recordActorSourceHash(identity.system, identity.sourceId) })),
+  ]);
+  const found: { items: Item[]; truncated: boolean } = who.developerId === undefined ? { items: [], truncated: false } : await byActor(deps.table, orgId, who.developerId, budget.maxItems);
+  for (const identity of identities) {
+    const more = await byActorSource(deps.table, orgId, identity.system, identity.sourceId, budget.maxItems);
+    found.items.push(...more.items);
+    found.truncated ||= more.truncated;
+  }
   const at = new Date(now()).toISOString();
-  const rows = found.items.filter((item) => item.entityType === "TEAM_RECORD_EVENT");
+  const rows = [...new Map(found.items.filter((item) => item.entityType === "TEAM_RECORD_EVENT").map((item) => [`${item.pk as string}|${item.sk as string}`, item])).values()];
   for (const row of rows) {
     if (typeof row.pk === "string" && typeof row.sk === "string") await tombstoneItem(deps.table, { pk: row.pk, sk: row.sk }, { at, cause: "person_erased" });
   }
@@ -64,7 +80,7 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, develop
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE"] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
 /** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK"] as const;
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET"] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts

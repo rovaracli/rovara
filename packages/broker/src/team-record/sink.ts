@@ -1,7 +1,8 @@
 // The record sink: the object the source taps call (the ingest lane's `RecordSinkPort`, `SourceConfigPort` and `CaptureModePort`, implemented structurally so no
 // lane imports another's files). `put` is the pipeline in ingest.ts. `tombstone` hides at once, then leaves a queue item the delete worker finishes (D1).
 // `changePrincipals` and `replaceScopeAudience` keep a private scope's permission snapshot current. A workspace id that is not an org id is refused.
-import { OrgIdSchema, type OrgId, type RecordSourceKind, type Audience } from "@agentx/contracts";
+import { OrgIdSchema, recordScopeHash, type OrgId, type RecordSourceKind, type Audience } from "@agentx/contracts";
+import { tableLakeDeleteQueue, type LakeDeleteQueue } from "./lake-queue.js";
 import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
 import { DEFAULT_WORK_BUDGET, changeScopePrincipals, queueScopeWork, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
@@ -17,17 +18,22 @@ export interface RecordSink {
 
 export interface SinkOptions {
   budget?: WorkBudget;
+  /** Where lake deletes are queued. Default: the TeamRecord table's own queue. */
+  lakeQueue?: LakeDeleteQueue;
 }
 
 export function createRecordSink(deps: IngestDependencies, options: SinkOptions = {}): RecordSink {
   const budget = options.budget ?? DEFAULT_WORK_BUDGET;
   const work = { table: deps.table, ...(deps.now === undefined ? {} : { now: deps.now }) };
   const orgOf = (workspaceId: string): OrgId => OrgIdSchema.parse(workspaceId);
+  const lake = options.lakeQueue ?? tableLakeDeleteQueue(deps.table, deps.now);
   return {
     put: (draft) => ingestRecord(deps, draft),
 
     async tombstone(input) {
       const orgId = orgOf(input.workspaceId);
+      // The lake first: a deleted place is queued for the lake before any hot row is touched, so a crash cannot lose it.
+      if (input.scope !== undefined) await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(input.scope) }]);
       const result = await tombstoneRows(work, orgId, { system: input.system, ...(input.scope === undefined ? {} : { scope: input.scope }), ...(input.sourceIds === undefined ? {} : { sourceIds: input.sourceIds }), cause: input.cause }, budget);
       // The queue item always exists: the delete worker removes the rows, vectors, lake rows and facts. While the hide is unfinished the scope reads as hidden.
       await queueScopeWork(work, orgId, {
@@ -47,6 +53,8 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 
     async replaceScopeAudience(input) {
       const orgId = orgOf(input.workspaceId);
+      // A place that turned private: its lake rows still carry the old, wider audience (the lake cannot update it), so they are forgotten.
+      if (input.audience.kind === "restricted") await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(input.scope) }]);
       const result = await replaceScopeAudience(work, orgId, { scope: input.scope, audience: input.audience, at: input.at }, budget);
       if (!result.complete) await queueScopeWork(work, orgId, { type: "audience", system: "scope", scope: input.scope, audience: input.audience, hidePending: true });
     },

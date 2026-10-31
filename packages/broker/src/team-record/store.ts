@@ -10,11 +10,13 @@ import {
   TEAM_RECORD_GSI1,
   TEAM_RECORD_GSI2,
   TEAM_RECORD_GSI3,
+  TEAM_RECORD_GSI4,
   RECORD_DELETE_QUEUE_SK_PREFIX,
   RECORD_EVENT_SK_PREFIX,
   RECORD_FACT_SK_PREFIX,
   RECORD_SOURCE_SK_PREFIX,
   recordActorIndexValue,
+  recordActorSourceIndexValue,
   recordDeleteQueueKey,
   recordDerivationKey,
   recordEventKey,
@@ -34,11 +36,11 @@ import {
 import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "./types.js";
 
-const KEY_ATTRIBUTES = ["pk", "sk", "entityType", TEAM_RECORD_GSI1.partition, TEAM_RECORD_GSI2.partition, TEAM_RECORD_GSI3.partition, "rowScope", "sourceHash"] as const;
+const KEY_ATTRIBUTES = ["pk", "sk", "entityType", TEAM_RECORD_GSI1.partition, TEAM_RECORD_GSI2.partition, TEAM_RECORD_GSI3.partition, TEAM_RECORD_GSI4.partition, "rowScope", "sourceHash", "archivedAt"] as const;
 const dropKeys = (item: Item): Item => Object.fromEntries(Object.entries(item).filter(([name]) => !(KEY_ATTRIBUTES as readonly string[]).includes(name)));
 
-/** A record row with the scope it was stored under (a row of a project-wide audience may carry one the audience does not). */
-export type StoredEvent = RecordEvent & { scope?: string | undefined };
+/** A record row as stored. */
+export type StoredEvent = RecordEvent;
 
 /**
  * The same item always has the same id: a UUID built from the hash of the source item and its version, so a retried delivery writes the same row.
@@ -50,23 +52,18 @@ export function deterministicEventId(orgId: OrgId, source: string, system: strin
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** The scope a row is indexed under: the snapshot's, else the explicit one, else none. */
-export function scopeOfEvent(event: RecordEvent, explicit?: string): string | undefined {
-  return event.audience.kind === "restricted" ? event.audience.acl.scope : explicit;
-}
-
-export function eventItem(event: RecordEvent, explicitScope?: string): Item {
+export function eventItem(event: RecordEvent): Item {
   const key = recordEventKey(event.workspaceId, event.project, event.occurredAt, event.id);
-  const scope = scopeOfEvent(event, explicitScope);
   return withoutUndefined({
     ...key,
     entityType: "TEAM_RECORD_EVENT",
     ...event,
-    rowScope: scope,
     sourceHash: teamRecordSourceHash(event.sourceRef.system, event.sourceRef.id),
     [TEAM_RECORD_GSI1.partition]: recordSourceIndexValue(event.workspaceId, event.sourceRef.system, event.sourceRef.id),
     [TEAM_RECORD_GSI2.partition]: event.actor?.developerId === undefined ? undefined : recordActorIndexValue(event.workspaceId, event.actor.developerId),
-    [TEAM_RECORD_GSI3.partition]: scope === undefined ? undefined : recordScopeIndexValue(event.workspaceId, scope),
+    [TEAM_RECORD_GSI3.partition]: recordScopeIndexValue(event.workspaceId, event.scope),
+    // A person with no developer id is found by their source identity.
+    [TEAM_RECORD_GSI4.partition]: event.actor === undefined || event.actor.developerId !== undefined ? undefined : recordActorSourceIndexValue(event.workspaceId, event.sourceRef.system, event.actor.sourceId),
     [INDEX_EXPIRY_ATTRIBUTE]: event.indexExpiresAt,
   });
 }
@@ -75,18 +72,16 @@ export function eventItem(event: RecordEvent, explicitScope?: string): Item {
 export function eventFromItem(item: Item | undefined): StoredEvent | undefined {
   if (item?.entityType !== "TEAM_RECORD_EVENT") return undefined;
   const parsed = RecordEventSchema.safeParse(dropKeys(item));
-  if (!parsed.success) return undefined;
-  const scope = typeof item.rowScope === "string" ? item.rowScope : undefined;
-  return scope === undefined ? parsed.data : { ...parsed.data, scope };
+  return parsed.success ? parsed.data : undefined;
 }
 
 export type PutResult = "stored" | "duplicate";
 
 /** Writes a row once. A second write of the same item version is a no-op. */
-export async function putRecordEvent(table: TeamRecordTable, event: RecordEvent, explicitScope?: string): Promise<PutResult> {
+export async function putRecordEvent(table: TeamRecordTable, event: RecordEvent): Promise<PutResult> {
   const parsed = RecordEventSchema.parse(event);
   try {
-    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: eventItem(parsed, explicitScope), ConditionExpression: NOT_EXISTS }));
+    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: eventItem(parsed), ConditionExpression: NOT_EXISTS }));
     return "stored";
   } catch (error) {
     if (errorName(error) === "ConditionalCheckFailedException") return "duplicate";
@@ -132,12 +127,13 @@ export async function queryRecordEvents(table: TeamRecordTable, orgId: OrgId, pr
 }
 
 /** Every item (rows, derivation links) on one index value, including tombstoned ones: the delete worker needs them. Bounded by `maxItems`. */
-export async function queryIndex(table: TeamRecordTable, index: typeof TEAM_RECORD_GSI1 | typeof TEAM_RECORD_GSI2 | typeof TEAM_RECORD_GSI3, value: string, maxItems: number): Promise<{ items: Item[]; truncated: boolean }> {
+export async function queryIndex(table: TeamRecordTable, index: typeof TEAM_RECORD_GSI1 | typeof TEAM_RECORD_GSI2 | typeof TEAM_RECORD_GSI3 | typeof TEAM_RECORD_GSI4, value: string, maxItems: number): Promise<{ items: Item[]; truncated: boolean }> {
   return queryAll(table, { IndexName: index.index, KeyConditionExpression: `${index.partition} = :v`, ExpressionAttributeValues: { ":v": value } }, maxItems);
 }
 
 export const bySource = (table: TeamRecordTable, orgId: OrgId, system: string, sourceId: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI1, recordSourceIndexValue(orgId, system, sourceId), maxItems);
 export const byActor = (table: TeamRecordTable, orgId: OrgId, developerId: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI2, recordActorIndexValue(orgId, developerId), maxItems);
+export const byActorSource = (table: TeamRecordTable, orgId: OrgId, system: string, actorSourceId: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI4, recordActorSourceIndexValue(orgId, system, actorSourceId), maxItems);
 export const byScope = (table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI3, recordScopeIndexValue(orgId, scope), maxItems);
 
 /** Every item of one sort-key kind in one project partition (`FACT#`, `SOURCE#`, `LESSON#`...). Bounded. */

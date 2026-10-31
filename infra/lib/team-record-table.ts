@@ -1,11 +1,11 @@
 // The hot table of the Team record (design 4.2, task R2): `TeamRecord`, one table per install (Enterprise: the customer's account) or per cell (Public).
 // On-demand, point-in-time recovery, TTL on `indexExpiresAt`, encryption with the install's KMS key when it has one, retained when the stack goes, deletion protection.
 // Why its own table and not the State table: the State table's TTL only works in named environments, and the deletion guarantees here are central.
-// Three indexes: GSI1 by source item (a delete at the source), GSI2 by person (erase), GSI3 by scope (a deleted channel, a membership change).
+// Four indexes: GSI1 by source item (a delete at the source), GSI2 by developer (erase), GSI3 by scope (a deleted channel, a membership change), GSI4 by source identity (erase a person with no developer id).
 // The vector bucket and the lake are the storage lane's constructs (`team-record-storage.ts`); the stack that wires them also instantiates this one.
 import { RemovalPolicy, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { INDEX_EXPIRY_ATTRIBUTE, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3 } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4 } from "@agentx/contracts";
 
 const TABLE_NAME = /^[A-Za-z0-9_.-]{3,255}$/;
 
@@ -36,7 +36,7 @@ export class TeamRecordTable extends Construct {
       deletionProtection: true,
       removalPolicy: RemovalPolicy.RETAIN,
     });
-    for (const index of [TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3]) {
+    for (const index of [TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4]) {
       this.table.addGlobalSecondaryIndex({ indexName: index.index, partitionKey: { name: index.partition, type: dynamodb.AttributeType.STRING }, projectionType: dynamodb.ProjectionType.ALL });
     }
   }

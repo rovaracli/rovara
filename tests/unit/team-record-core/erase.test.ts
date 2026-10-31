@@ -38,7 +38,7 @@ describe("erase a person", () => {
     await addFact(w, FACT_B, [{ system: "github.com", sourceId: "c-2" }, { system: "github.com", sourceId: "c-3" }]);   // c-3 by dev-2
     d.lessons.list.push({ id: "les_a", version: 1, status: "active", citations: [], provenance: { sourceEvents: [ids["c-1"]!, ids["c-2"]!] }, counters: { citationStale: 0 } });
     d.lessons.list.push({ id: "les_b", version: 1, status: "active", citations: [], provenance: { sourceEvents: [ids["c-3"]!] }, counters: { citationStale: 0 } });
-    const result = await erasePerson(d.deps, ORG_A, "dev-1", "erase-1");
+    const result = await erasePerson(d.deps, ORG_A, { developerId: "dev-1" }, "erase-1");
     expect(result).toMatchObject({ rows: 2, facts: 2, complete: true, blocked: 0 });
     expect(idsOf(w)).toEqual(["c-3"]);
     expect(rows(w, "TEAM_RECORD_FACT")).toHaveLength(0);
@@ -56,8 +56,8 @@ describe("erase a person", () => {
     await addSource(w, { orgId: ORG_B, source: "github", scope: GITHUB_SCOPE });
     await w.sink.put(githubDraft({ workspaceId: ORG_B, sourceRef: { system: "github.com", id: "b-1", version: "1" }, links: [] }));
     const d = deleteDeps(w);
-    await erasePerson(d.deps, ORG_A, "dev-1", "e1");
-    const again = await erasePerson(d.deps, ORG_A, "dev-1", "e2");
+    await erasePerson(d.deps, ORG_A, { developerId: "dev-1" }, "e1");
+    const again = await erasePerson(d.deps, ORG_A, { developerId: "dev-1" }, "e2");
     expect(again).toMatchObject({ rows: 0, complete: true });
     expect(rows(w, "TEAM_RECORD_EVENT").map((item) => item.pk)).toEqual(expect.arrayContaining([teamRecordPk(ORG_B, "web")]));
     expect(idsOf(w)).toEqual(["b-1", "c-3"]);
@@ -68,15 +68,15 @@ describe("erase a person", () => {
     await seedComments(w);
     const d = deleteDeps(w);
     w.vectors.delete = async (keys: string[]) => ({ done: 0, failed: keys });
-    expect(await erasePerson(d.deps, ORG_A, "dev-1", "e1")).toMatchObject({ complete: false, blocked: 2, rows: 0 });
+    expect(await erasePerson(d.deps, ORG_A, { developerId: "dev-1" }, "e1")).toMatchObject({ complete: false, blocked: 2, rows: 0 });
     // the rows are hidden, text removed, even though not yet gone
     expect(rows(w, "TEAM_RECORD_EVENT").filter((item) => item.tombstone !== undefined && item.text === undefined)).toHaveLength(2);
     expect(d.audit).toEqual([]);
     w.vectors.delete = async (keys: string[]) => ({ done: keys.length, failed: [] });
-    expect(await erasePerson(d.deps, ORG_A, "dev-1", "e1")).toMatchObject({ complete: true, rows: 2 });
+    expect(await erasePerson(d.deps, ORG_A, { developerId: "dev-1" }, "e1")).toMatchObject({ complete: true, rows: 2 });
     const cut = world();
     await seedComments(cut);
-    expect((await erasePerson(deleteDeps(cut).deps, ORG_A, "dev-1", "e3", { maxItems: 1 })).complete).toBe(false);
+    expect((await erasePerson(deleteDeps(cut).deps, ORG_A, { developerId: "dev-1" }, "e3", { maxItems: 1 })).complete).toBe(false);
   });
 });
 

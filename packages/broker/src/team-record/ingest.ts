@@ -19,7 +19,7 @@ import { Aliases } from "../agents/table-writes.js";
 import { captureIsOn, type LearningModeReader } from "./mode.js";
 import { exceedsRetention, retentionPlan, retentionRefusal } from "./retention.js";
 import { wasDeletedAtSource } from "./scope-work.js";
-import { deterministicEventId, getSourceConfigByScope, putRecordEvent, scopeOfEvent } from "./store.js";
+import { deterministicEventId, getSourceConfigByScope, putRecordEvent } from "./store.js";
 import { cleanRecordText } from "./text.js";
 import type { Edition, IngestOutcome, RecordDraft, RecordEmbedder, RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
 
@@ -125,6 +125,9 @@ export async function ingestRecord(deps: IngestDependencies, draft: RecordDraft)
   const text = plan.keepText && trust !== "rovara" ? cleanRecordText(draft.text, { keepCode: draft.kind === "rovara.human_edit" }) : undefined;
   const embed = plan.embed && text !== undefined;
   const structured = cleanStructured(draft.structured);
+  // Every row carries the place it came from. Rovara's own rows without one belong to the project's own place.
+  const eventScope = scope ?? (draft.source === "rovara" && project !== undefined ? `rovara:project/${project}` : undefined);
+  if (eventScope === undefined) return refused("no_scope");
   const id = deterministicEventId(orgId, draft.source, draft.sourceRef.system, draft.sourceRef.id, draft.sourceRef.version);
   const candidate = {
     id,
@@ -133,6 +136,7 @@ export async function ingestRecord(deps: IngestDependencies, draft: RecordDraft)
     ...(draft.repo === undefined ? {} : { repo: draft.repo }),
     source: draft.source,
     sourceRef: draft.sourceRef,
+    scope: eventScope,
     kind: draft.kind,
     occurredAt,
     ...(draft.actor === undefined ? {} : { actor: draft.actor }),
@@ -158,12 +162,12 @@ export async function ingestRecord(deps: IngestDependencies, draft: RecordDraft)
   if (await wasDeletedAtSource(deps.table, orgId, draft.sourceRef.system, draft.sourceRef.id)) return refused("deleted_at_source");
 
   // 6. The idempotent write.
-  const result = await putRecordEvent(deps.table, event, scope);
+  const result = await putRecordEvent(deps.table, event);
   if (result === "duplicate") return { status: "duplicate" };
 
   // 7. The vector. A failure leaves the row with `embedPending`, which the nightly retry picks up; it never loses the row or blocks the tap.
   if (embed && deps.embedder !== undefined && deps.vectors !== undefined && text !== undefined) {
-    await embedRow(deps, event, text, scopeOfEvent(event, scope), log);
+    await embedRow(deps, event, text, log);
   }
   return { status: "stored" };
 }
@@ -183,7 +187,7 @@ export function parseEventVectorRef(ref: string): { id: string; occurredAt: stri
   return match === null ? undefined : { id: match[1] as string, occurredAt: match[2] as string };
 }
 
-async function embedRow(deps: IngestDependencies, event: RecordEvent, text: string, scope: string | undefined, log: RecordLog): Promise<void> {
+async function embedRow(deps: IngestDependencies, event: RecordEvent, text: string, log: RecordLog): Promise<void> {
   const embedder = deps.embedder;
   const vectors = deps.vectors;
   if (embedder === undefined || vectors === undefined) return;
@@ -195,7 +199,7 @@ async function embedRow(deps: IngestDependencies, event: RecordEvent, text: stri
       vector,
       metadata: {
         audience_kind: event.audience.kind,
-        scope: (scope ?? `project:${event.project ?? "_workspace"}`).slice(0, 200),
+        scope: event.scope.slice(0, 200),
         project: event.project ?? "_workspace",
         trust: event.trust,
         tier: "hot",
