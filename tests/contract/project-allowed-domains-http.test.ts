@@ -82,7 +82,8 @@ it("owned request status hides a different actor's receipt exactly like absence"
 it("the trusted cookie dispatcher serves audited cancellation and owned request status", async () => {
  const { loadSlackBroker } = await import("../support/slack-broker.js");await loadSlackBroker();const { routeDeveloperRequest } = await import("../../packages/broker/src/aws/developer-routes.js");
  const f = await fixture();await f.propose();const requestId = randomUUID(), deps = { ...f.deps, developer: { signInTableName: "signin", issuer: "https://app.example.test" } };
- const auth = { caller: f.caller, csrf: "trusted-cookie-fixture" };
+ // The dispatcher holds a caller with no company role to the Auditor allow-list (I2); a real caller always has one.
+ const auth = { caller: { ...f.caller, orgRole: "owner" as const }, csrf: "trusted-cookie-fixture" };
  const result = await routeDeveloperRequest(deps as never, { method: "POST", headers: {}, body: JSON.stringify({ requestId, expectedOrgId: orgId }) } as never, new URL(`/v1/app/projects/${project}/allowed-websites/proposals/${f.body.requestId}/cancel`, "https://app.example.test"), auth as never);
  expect(result).toMatchObject({ status: "cancelled", receipt: { requestId } });
  const status = await routeDeveloperRequest(deps as never, { method: "GET", headers: {} } as never, new URL(`/v1/app/projects/${project}/allowed-websites/requests/${requestId}?expectedOrgId=${orgId}`, "https://app.example.test"), auth as never);

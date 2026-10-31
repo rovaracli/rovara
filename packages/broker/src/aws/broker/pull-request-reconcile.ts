@@ -378,6 +378,8 @@ export async function reconcilePullRequest(
       actor: requester === undefined ? { kind: "system", id: "rovara" } : { kind: "member", id: "kind" in requester ? requester.developerId : developerIdForSlackUser(requester.userId) },
       occurredAt: openedAt, occurrence: operation.id,
       pullRequestId: auditPullRequestId(repositoryFullName, pullRequest.number), number: pullRequest.number,
+      // I3: the people the change request names (full ids), so an auditor can go from the host's change request to the Rovara people behind it.
+      ...(expected.relatedIds === undefined || expected.relatedIds.length === 0 ? {} : { related: [...expected.relatedIds] }),
       details: [{ subject: "org", fields: { repository: repositoryFullName } }],
     });
   });

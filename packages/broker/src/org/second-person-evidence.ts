@@ -22,6 +22,8 @@ const stale = () => agentXError("CHANGE_STALE", "Approval membership evidence mu
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "Complete approval eligibility evidence is unavailable.");
 const personId = /^[a-f0-9]{64}$/;
 const roleValid = (role: unknown): role is "owner" | "admin" | "member" => role === "owner" || role === "admin" || role === "member";
+/** The roster lists every role that exists, the Auditor included; only `roleValid` roles can be a proposer, an approver or a second person. */
+const rosterRoleValid = (role: unknown): boolean => roleValid(role) || role === "auditor";
 async function read(deps: SecondPersonEvidenceDependencies, key: Key, tableName = deps.tableName): Promise<Row | undefined> {
  return (await deps.documentClient.send(new GetCommand({ TableName: tableName, Key: key, ConsistentRead: true })) as { Item?: Row }).Item;
 }
@@ -67,7 +69,7 @@ async function members(deps: SecondPersonEvidenceDependencies, orgId: OrgId): Pr
    ConsistentRead: true, Limit: 100, ...(cursor === undefined ? {} : { ExclusiveStartKey: cursor }),
   })) as { Items?: Row[]; LastEvaluatedKey?: Row };
   for (const row of result.Items ?? []) {
-   if (row.pk !== orgPk(orgId) || typeof row.developerId !== "string" || !personId.test(row.developerId) || row.sk !== orgMemberKey(orgId, row.developerId).sk || row.orgId !== orgId || !roleValid(row.role) || rows.some(previous => previous.developerId === row.developerId)) throw unavailable();
+   if (row.pk !== orgPk(orgId) || typeof row.developerId !== "string" || !personId.test(row.developerId) || row.sk !== orgMemberKey(orgId, row.developerId).sk || row.orgId !== orgId || !rosterRoleValid(row.role) || rows.some(previous => previous.developerId === row.developerId)) throw unavailable();
    rows.push(row);if (rows.length > 500) throw unavailable();
   }
   cursor = result.LastEvaluatedKey;if (cursor === undefined) return rows;
@@ -116,6 +118,8 @@ export async function readSecondPersonApprovalEvidence(deps: SecondPersonEvidenc
   for (let offset = 0; offset < roster.length; offset += 8) {
    await Promise.all(roster.slice(offset, offset + 8).map(async row => {
     const id = String(row.developerId);if (row.role === "owner") ownerIds.push(id);
+    // I2: only these three roles can be a second person; the Auditor (or any role this release does not know) is never counted, and is not an incomplete roster either.
+    if (row.role !== "owner" && row.role !== "admin" && row.role !== "member") return;
     if (row.role === "member") {
      if (scope.project === undefined) return;
      const grant = await read(deps, projectMemberKey(scope.orgId, id, scope.project));

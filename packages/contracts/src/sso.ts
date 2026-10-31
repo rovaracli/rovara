@@ -16,7 +16,8 @@ export type MappableOrgRole = z.infer<typeof MappableOrgRoleSchema>;
  * Which mapped org role wins when a person is in several mapped groups, strongest first. Every mappable role must be listed (a test pins it), so adding a role
  * to the org roles without deciding where it ranks fails a test instead of silently ranking last.
  */
-export const MAPPED_ORG_ROLE_PRECEDENCE: readonly MappableOrgRole[] = ["admin", "member"];
+export const MAPPED_ORG_ROLE_PRECEDENCE: readonly MappableOrgRole[] = ["admin", "member", "auditor"];
+// Auditor ranks last, but it never loses to a writer's role quietly: a person who matches an Auditor rule and an admin or member rule is refused (`auditor_and_writer`), not made the writer.
 export const PROJECT_ROLE_PRECEDENCE = ["maintainer", "contributor", "viewer"] as const;
 
 const NO_CONTROL = /^[^\p{Cc}\p{Cf}]*$/u;
@@ -100,7 +101,7 @@ export function breakGlassKey(orgId: OrgId): OrgKey {
 }
 
 /** Why a sign-in was refused by the mapping: a fixed list, never the provider's words. */
-export const GROUP_MAPPING_REFUSALS = ["edition_off", "not_configured", "config_invalid", "claim_missing", "claim_invalid", "no_group"] as const;
+export const GROUP_MAPPING_REFUSALS = ["edition_off", "not_configured", "config_invalid", "claim_missing", "claim_invalid", "no_group", "auditor_and_writer"] as const;
 export type GroupMappingRefusal = (typeof GROUP_MAPPING_REFUSALS)[number];
 
 /** The sentence for a break-glass owner whose sign-in at the provider is too old (or says no time): fixed, and not a mapping refusal. */
@@ -118,6 +119,8 @@ export const GROUP_MAPPING_MESSAGES: Readonly<Record<GroupMappingRefusal, string
   claim_missing: "Your company sign-in did not say which groups you belong to. Ask your administrator to check the sign-in settings.",
   claim_invalid: "Your company sign-in gave group information Rovara cannot read. Ask your administrator to check the sign-in settings.",
   no_group: "Your company sign-in did not put you in a group that is allowed to use Rovara. Ask your administrator.",
+  // Owner default, pending: one person is never both an Auditor and someone who works in Rovara (separation of duties); the sign-in is refused rather than choosing one of the two.
+  auditor_and_writer: "Your company groups make you both an auditor and a member or admin of Rovara, and one person cannot be both. Ask your administrator to put you in only one of them.",
 };
 
 export interface MappedAccess {

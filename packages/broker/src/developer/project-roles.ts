@@ -63,6 +63,8 @@ export interface ProjectMetaItem {
  */
 export function effectiveProjectRole(caller: { orgRole: OrgRole; developerId: string }, grant: GrantItem | undefined, channelAccess: boolean): ProjectRole | undefined {
   if (caller.orgRole === "owner" || caller.orgRole === "admin") return "maintainer";
+  // The Auditor has no project role, whatever grant or channel it may also hold: it reads the audit log and writes nothing.
+  if (caller.orgRole === "auditor") return undefined;
   const granted = grantRoleOf(grant);
   if (granted !== undefined) return granted;
   return channelAccess ? "contributor" : undefined;

@@ -36,7 +36,7 @@ import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
 import { prHeadItems } from "./head-index.js";
 import type { TaskOwnerSource } from "../developer/task-records.js";
 import { readCodeSettings } from "./code-settings.js";
-import { humanApprovalOf, latestReviewers, linkedAmong, requesterGithubIds, type RepositoryPermission } from "./approval.js";
+import { humanApprovalOf, latestReviewers, linkedAmong, nonWritersAmong, requesterGithubIds, type RepositoryPermission } from "./approval.js";
 import { runReviewNudges } from "./nudges.js";
 
 /** The definition version whose tasks are tracked (Rovara Code version 2). Version 1 tasks keep their kind-less merge-recovery rows and today's behaviour. */
@@ -700,6 +700,7 @@ async function trackOne(
     const counted = humanApprovalOf({
       reviews: status.reviews, headSha: status.headSha, syncedFrom: pullRequest.syncedFrom, ciPassingOnHead: ci.ci === "passing" || ci.ci === "none", permissions: known,
       requesterGithubUserIds: await requesterGithubIds(members, task.orgId, task), linkedGithubUserIds: await linkedAmong(members, task.orgId, reviewers.map((reviewer) => reviewer.githubUserId)),
+      excludedGithubUserIds: await nonWritersAmong(members, task.orgId, reviewers.map((reviewer) => reviewer.githubUserId)),
       allowSelfApproval: settings.allowSelfApproval,
     });
     if (counted.approved) {

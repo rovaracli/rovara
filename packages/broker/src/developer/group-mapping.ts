@@ -11,7 +11,7 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { auditTransact, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import {
-  agentXError, featureEnabled, requireFeature, BREAK_GLASS_FRESH_AUTH_SECONDS, BREAK_GLASS_SESSION_MAX_SECONDS, BROKEN_MAPPING_REFUSALS, BreakGlassOwnersSchema, GROUP_CLAIM_MAX_GROUPS, GROUP_MAPPING_MESSAGES, GROUP_NAME_MAX_CHARS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE,
+  agentXError, featureEnabled, isWriterOrgRole, requireFeature, BREAK_GLASS_FRESH_AUTH_SECONDS, BREAK_GLASS_SESSION_MAX_SECONDS, BROKEN_MAPPING_REFUSALS, BreakGlassOwnersSchema, GROUP_CLAIM_MAX_GROUPS, GROUP_MAPPING_MESSAGES, GROUP_NAME_MAX_CHARS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE,
   PROJECT_ROLE_PRECEDENCE, BREAK_GLASS_MAX_DAYS, BreakGlassRecordSchema, breakGlassKey, groupMappingKey,
   type BreakGlassOwner, type BreakGlassRecord, type AuditEventInput, type EditionPolicy, type GroupMappingConfig, type GroupMappingEvaluation, type GroupMappingRefusal, type MappedAccess, type OrgId, type OrgRole, type SignInDecision,
 } from "@agentx/contracts";
@@ -50,9 +50,14 @@ export function evaluateGroupMapping(input: { policy: EditionPolicy; config: unk
   const present = new Set(found.groups);
   const matched = config.rules.filter((rule) => present.has(rule.group));
   if (matched.length === 0) return { ok: false, reason: "no_group" };
+  // Separation of duties (owner default, pending): a person who matches an Auditor rule AND a rule for a role that works in Rovara is refused. They are not made the writer (the precedence
+  // below would do that), because an auditor who also works in the system audits their own work. The refusal is not a broken mapping, so break-glass does not answer it.
+  if (matched.some((rule) => rule.orgRole === "auditor") && matched.some((rule) => isWriterOrgRole(rule.orgRole))) return { ok: false, reason: "auditor_and_writer" };
   const orgRole = MAPPED_ORG_ROLE_PRECEDENCE.find((role) => matched.some((rule) => rule.orgRole === role));
   // Every mappable role is in the precedence list (pinned by a test); a role that is not is refused, never ranked last.
   if (orgRole === undefined) return { ok: false, reason: "config_invalid" };
+  // A mapping that grants the Auditor in an edition without it is a broken mapping, not a member: it is refused.
+  if (orgRole === "auditor" && !featureEnabled(input.policy, "auditorRole")) return { ok: false, reason: "config_invalid" };
   const byProject = new Map<string, (typeof PROJECT_ROLE_PRECEDENCE)[number]>();
   for (const rule of matched) {
     for (const { project, role } of rule.projectRoles) {
@@ -138,6 +143,7 @@ export function dynamoGroupMappingStore(input: { documentClient: DocumentClient;
       requireFeature(policy, "sso");
       if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) throw agentXError("CONFIG_INVALID", "the mapping version is invalid");
       const next = GroupMappingConfigSchema.parse({ ...config, version: expectedVersion + 1 });
+      if (next.rules.some((rule) => rule.orgRole === "auditor")) requireFeature(policy, "auditorRole");
       try {
         // The save and its audit record commit together (or, with no ledger, the save alone).
         await auditTransact(deps, { Put: {

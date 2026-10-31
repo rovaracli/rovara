@@ -1,5 +1,5 @@
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, OrgRoleSchema, agentXError, orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, OrgRoleSchema, agentXError, orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, isWriterOrgRole } from "@agentx/contracts";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { taskOpen } from "../developer/task-access.js";
 import { effectiveProjectRole } from "../developer/project-roles.js";
@@ -330,7 +330,7 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
  * Whether the task's owner (the effective one: the person who took it over, else its creator) is, now, a project viewer: the effective project role (their org role first,
  * so an owner or admin who still holds an old viewer row maintains every project, then their grant), read live in the task's own org. Same rule as `checkProjectAccess`.
  */
-async function creatorIsProjectViewer(deps: TaskDispatchAccessDependencies, task: DeveloperTaskRecord): Promise<boolean> {
+export async function creatorIsProjectViewer(deps: TaskDispatchAccessDependencies, task: DeveloperTaskRecord): Promise<boolean> {
   const named = OrgIdSchema.safeParse((task as unknown as Record<string, unknown>).orgId);
   const orgId = named.success ? named.data : deps.orgId;
   if (orgId === undefined) return false;
@@ -340,6 +340,8 @@ async function creatorIsProjectViewer(deps: TaskDispatchAccessDependencies, task
     get<{ role?: unknown }>(deps, orgMemberKey(orgId, developerId)),
   ]);
   const orgRole = OrgRoleSchema.safeParse(member?.role);
+  // I2: an Auditor (or a role that is not a writer's) is held like a viewer: the task of a person who can no longer write is parked, not dispatched.
+  if (member !== undefined && !isWriterOrgRole(member.role)) return true;
   return effectiveProjectRole({ developerId, orgRole: orgRole.success ? orgRole.data : "member" }, grant, false) === "viewer";
 }
 

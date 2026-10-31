@@ -449,6 +449,38 @@ describe("the target of a role change", () => {
     }
   });
 
+  it("the Auditor holds no project access: a role on one is CONFIG_INVALID, and nothing is written (I2)", async () => {
+    const h = await team();
+    seedMembership(h.db, LENA.developerId, { orgId: TEST_ORG, role: "auditor" });
+    for (const role of ["viewer", "contributor", "maintainer"]) {
+      const refused = await put(h, PRIYA, LENA, role);
+      expect(refused.status, role).toBe(400);
+      expect(refused.body.error).toMatchObject({ code: "CONFIG_INVALID", message: "the Auditor role holds no project access" });
+    }
+    expect(grantOf(h.db, LENA)).toBeUndefined();
+  });
+
+  it("the member list shows an Auditor with a leftover grant as no one (I2 fix round 1)", async () => {
+    const h = await team();
+    seedMembership(h.db, KIT.developerId, { orgId: TEST_ORG, role: "auditor" });
+    grantRole(h.db, KIT, "maintainer");
+    const members = projectMembersOf({ documentClient: h.db, tableName: "state", developer: h.brokerInput.developer as never, now: Date.now });
+    expect((await members.list(TEST_ORG, "payments")).map((row) => row.developerId)).not.toContain(KIT.developerId);
+    seedMembership(h.db, KIT.developerId, { orgId: TEST_ORG, role: "member" });
+    expect((await members.list(TEST_ORG, "payments")).map((row) => row.developerId)).toContain(KIT.developerId);
+  });
+
+  it("an Auditor who holds an old grant or channel access still has no project and no role on one (I2)", async () => {
+    const h = await team();
+    seedMembership(h.db, KIT.developerId, { orgId: TEST_ORG, role: "auditor" });
+    grantRole(h.db, KIT, "maintainer");
+    const members = projectMembersOf({ documentClient: h.db, tableName: "state", developer: h.brokerInput.developer as never, now: Date.now });
+    expect(await members.projectsOf(TEST_ORG, { developerId: KIT.developerId, orgRole: "auditor" })).toEqual([]);
+    expect(await members.roleOf(TEST_ORG, "payments", { developerId: KIT.developerId, orgRole: "auditor" })).toBeUndefined();
+    // The control: the same grant, held by a member, is a role.
+    expect(await members.roleOf(TEST_ORG, "payments", { developerId: KIT.developerId, orgRole: "member" })).toBe("maintainer");
+  });
+
   it("removing an owner or admin is refused the same way", async () => {
     const h = await team();
     const refused = await remove(h, PRIYA, LENA);

@@ -2,7 +2,7 @@
 // code is, between markers that Rovara rewrites after every fix or sync, and it ends with the line that says a person approves and a person merges. The description is public to the repository's
 // readers: every line that a model, a file name or a branch name wrote goes through `inertLine` (redacted, one line, no mention, link, image, cross-reference or hidden comment), every list is bounded,
 // and the whole body stays under the byte cap with its markers, risk and closing line intact so it can always be regenerated in place.
-import type { RiskAssessment, VerificationReport, WorkflowSnapshot } from "@agentx/contracts";
+import { attributionBodyLines, type ActingAttribution, type RiskAssessment, type VerificationReport, type WorkflowSnapshot } from "@agentx/contracts";
 import { ROVARA_STATUS_END, ROVARA_STATUS_START } from "../developer/pull-request-feedback-section.js";
 import { inertLine } from "./inert-text.js";
 import { reviewModelLines } from "./review-model-lines.js";
@@ -47,6 +47,8 @@ export interface PullRequestBodyContext {
   reviewSameModel?: boolean | undefined;
   /** The approved plan, the browser/API rows and the test proof for the Proof section (Playbook P1). Absent, or without a plan with claims: the description has no Proof section. */
   proof?: ProofContext | undefined;
+  /** I3: who asked for the work and who approved its plan, built by the broker from its own records (`broker/src/attribution`). Lines outside the marked block, so a status rewrite leaves them. */
+  attribution?: ActingAttribution | undefined;
 }
 
 const byteLength = (text: string) => Buffer.byteLength(text, "utf8");
@@ -247,7 +249,8 @@ export function rovaraPullRequestBody(input: {
   const summary = summaryOf(input.summary, read !== undefined && read.complete && read.files.length > 0 ? read.files.length : undefined);
   const quoted = (summary.length > 0 ? summary : [inertLine(input.fallbackTitle, SUMMARY_LINE_MAX)]).map((line) => `> ${neutralizeLinearWords(line)}`);
   const head = ["## Plan summary", ...quoted];
-  const tail = [...(input.pageUrl === undefined ? [] : [`Rovara session: ${input.pageUrl}`, ""]), ROVARA_PULL_REQUEST_CLOSING];
+  const who = attributionBodyLines(input.context.attribution);
+  const tail = [...(who.length === 0 ? [] : [...who, ""]), ...(input.pageUrl === undefined ? [] : [`Rovara session: ${input.pageUrl}`, ""]), ROVARA_PULL_REQUEST_CLOSING];
   const assemble = (headLines: readonly string[], block: readonly string[]) => [...headLines, "", ROVARA_STATUS_START, ...block, ROVARA_STATUS_END, ...tail].join("\n");
   const fixed = byteLength(assemble(head, []));
   const block = rovaraStatusLines(input.workflow, input.context, input.reviewLines, PULL_REQUEST_BODY_MAX_BYTES - fixed);

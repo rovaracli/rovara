@@ -135,6 +135,15 @@ describe("sign-in", () => {
 });
 
 describe("who may see it", () => {
+  it("serves the page to an Auditor, who reads the log and starts an export (I2)", async () => {
+    const b = await world();
+    const { get, post } = pageOf(b, { current: memberOf(A, "auditor") });
+    const shown = await get(AUDIT_VIEW_PATH);
+    expect(shown.statusCode).toBe(200);
+    expect(shown.body).toContain("Person of");
+    expect((await post(exportForm())).statusCode).not.toBe(403);
+  });
+
   it("answers a contributor 403 with the exact text and reads and records nothing", async () => {
     const b = await world();
     const before = b.h.operations.length;

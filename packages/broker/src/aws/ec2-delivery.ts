@@ -328,6 +328,7 @@ async function forWorkerFeatures(
   const carriesPublicationMode = invocation.kind === "publish" && invocation.payload.publicationMode !== undefined;
   const carriesPublicationContextDigest = invocation.kind === "publish" && invocation.payload.publicationContextDigest !== undefined;
   const carriesPublishBase = invocation.kind === "publish" && invocation.payload.workflowBaseCommit !== undefined;
+  const carriesAttribution = invocation.kind === "publish" && invocation.payload.attribution !== undefined;
   // Meta repo lane D: the spec write mode and the spec publication's files.
   const carriesSpec = (invocation.kind === "task" && (invocation.payload.workflowMode === "SPEC_WRITE" || invocation.payload.specWrite !== undefined || invocation.payload.workflowReviewSpec !== undefined));
   const carriesPullRequestUpdate = invocation.kind === "maintain" && invocation.payload.workflowCandidateTreeSha !== undefined;
@@ -348,7 +349,7 @@ async function forWorkerFeatures(
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
   const carriesContextSources = invocation.kind === "task" && invocation.payload.contextSources === true;
   const carriesOwnerRedirect = invocation.kind === "task" && invocation.payload.ownerRedirect !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy && !carriesSpec) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy && !carriesSpec) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -510,6 +511,13 @@ async function forWorkerFeatures(
   if (carriesPublishBase && !features.includes("publish.workflowBase")) {
     throw agentXError("RUNTIME_UNAVAILABLE", "publishing the checked code needs a worker that builds it on the task's pinned base commit");
   }
+  // I3: rolling deploys put a new broker in front of an old worker, so an old worker must not fail the publication. It is sent no attribution and publishes as before, with no trailer on
+  // the commit; the broker wrote the requester and approver lines into the description itself (it owns that text) and recorded the audit link and the people on the operation.
+  const attributionUnsupported = carriesAttribution && !features.includes("publish.attribution");
+  const withAttribution = attributionUnsupported ? withoutAttribution(invocation) : invocation;
+  if (attributionUnsupported) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.attribution_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
+  }
   // A reviewed fix is pushed only as exactly its reviewed tree; an older worker would push the workspace as it is, so it gets nothing.
   if (carriesPullRequestUpdate && !features.includes("task.workflowPullRequestUpdate")) {
     throw agentXError("RUNTIME_UNAVAILABLE", WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED);
@@ -519,8 +527,8 @@ async function forWorkerFeatures(
     throw agentXError("RUNTIME_UNAVAILABLE", WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED);
   }
   const reason = workerFeatures === undefined ? "no-probe" : "worker-lacks-feature";
-  const leveled = withoutUnparsedFields(invocation, features);
-  if (leveled !== invocation) {
+  const leveled = withoutUnparsedFields(withAttribution, features);
+  if (leveled !== withAttribution) {
     console.log(JSON.stringify({
       component: "dispatcher",
       event: "dispatch.thinking_level_omitted",
@@ -876,6 +884,14 @@ function withoutUnparsedFields(invocation: WorkerInvocation, features: readonly 
   if (invocation.kind === "prepare") return { ...invocation, payload: { ...invocation.payload, project } };
   if (invocation.kind === "publish") return { ...invocation, payload: { ...invocation.payload, project } };
   return { ...invocation, payload: { ...invocation.payload, project } };
+}
+
+/** A publication without the attribution field (and the very object back for anything else). */
+function withoutAttribution(invocation: WorkerInvocation): WorkerInvocation {
+  if (invocation.kind !== "publish" || invocation.payload.attribution === undefined) return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.attribution;
+  return { ...invocation, payload };
 }
 
 /** The same invocation with every project model's stored check result dropped (and the very object back when it carries none). */

@@ -845,7 +845,7 @@ describe("the broker's handler", () => {
     };
     const { handler } = await createAdminBroker({ developer, extra: { documentClient: b.h.deps.documentClient, tableName: STATE, auditLedger: b.deps, audit: b.deps.audit } });
     seedMembership(b.h.db, developerId, { orgId: A, role });
-    b.h.db.set({ pk: "SESSION#s-1", sk: "META", sessionId: "s-1", developerId, amr: "slack", slackUserId: "U0MAYA001", startedAt: new Date(T0).toISOString(), endsAt: T0 / 1000 + 604_800 });
+    b.h.db.set({ pk: "SESSION#s-1", sk: "META", sessionId: "s-1", developerId, amr: "slack", slackUserId: "U0MAYA001", startedAt: new Date(T0).toISOString(), authTime: new Date(T0).toISOString(), endsAt: T0 / 1000 + 604_800 });
     b.h.db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId, provider: "slack", issuer: "https://slack.com", subject: "U0MAYA001", displayName: "Maya Chen", slackUserId: "U0MAYA001", firstSignInAt: "x", lastSignInAt: "x" });
     const dev = async (method: string, path: string, body?: unknown) => {
       const response = await handler({ rawPath: path.split("?")[0], rawQueryString: path.split("?")[1] ?? "", headers: { authorization: await bearer(role) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), requestContext: { requestId: nextRequestId(), http: { method } } });
@@ -881,6 +881,17 @@ describe("the broker's handler", () => {
     expect(started.status).toBe(202);
     expect(started.body).toMatchObject({ exportId: auditExportId(A, "wired-1"), status: "running" });
     expect(owner.b.invocations).toHaveLength(1);
+  });
+
+  it("starting an export needs a fresh sign-in (controller default, pending the owner), reading does not", async () => {
+    const { b, dev } = await wired("owner");
+    // Eleven minutes after the sign-in: reads still work, an export is not started.
+    vi.setSystemTime(T0 + 11 * 60_000);
+    expect((await dev("GET", "/v1/dev/org/audit/status")).status).toBe(200);
+    const refused = await dev("POST", "/v1/dev/org/audit/exports", { requestId: "stale-1", fromSeq: 1, toSeq: 12 });
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "REAUTH_REQUIRED" });
+    expect(b.invocations).toHaveLength(0);
   });
 
   it("passes an unavailable download signer through as 503", async () => {

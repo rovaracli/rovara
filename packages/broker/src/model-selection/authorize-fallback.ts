@@ -1,7 +1,7 @@
 // Server-only transaction preparation. The HTTP handler must first verify its operation capability.
 import {createHash} from "node:crypto";
 import {GetCommand,TransactWriteCommand} from "@aws-sdk/lib-dynamodb";
-import {TaskModelFallbackRequestSchema,TaskModelFallbackAuthorizationSchema,TaskModelPolicyBindingSchema,ModelSelectionSchema,OrgRoleSchema,STAGE_OPERATION_MAPPING,canonicalJson,agentXError,orgMemberKey,type OrgId,type InvocationModelRoute} from "@agentx/contracts";
+import {TaskModelFallbackRequestSchema,TaskModelFallbackAuthorizationSchema,TaskModelPolicyBindingSchema,ModelSelectionSchema,OrgRoleSchema,STAGE_OPERATION_MAPPING,canonicalJson,agentXError,orgMemberKey,type OrgId,type InvocationModelRoute, isWriterOrgRole } from "@agentx/contracts";
 import {taskKey,taskPointerKey,taskRecipeKey,effectiveTaskOwner,ownerFenceOf,type DeveloperTaskRecord} from "../developer/task-records.js";
 import {type CallbackClaims,operationKey} from "../aws/cancellation.js";
 import {budgetActorChecks} from "../agents/budget-authority.js";
@@ -33,7 +33,7 @@ export async function prepareTaskModelAuthorization(deps:TaskModelAuthorizationD
  if(!(mode in STAGE_OPERATION_MAPPING)||!(STAGE_OPERATION_MAPPING[mode as keyof typeof STAGE_OPERATION_MAPPING].stages as readonly string[]).includes(binding.data.stage))throw refused();
  const task=rawTask as unknown as DeveloperTaskRecord,owner=effectiveTaskOwner(task),ownerFence=ownerFenceOf(task);
  const member=await read(deps,orgMemberKey(input.orgId,owner.developerId)),role=OrgRoleSchema.safeParse(member?.role);
- if(!role.success||member?.orgId!==input.orgId||member.developerId!==owner.developerId)throw refused();
+ if(!role.success||!isWriterOrgRole(role.data)||member?.orgId!==input.orgId||member.developerId!==owner.developerId)throw refused();
  const identity=await modelIdentityChecks(deps,{signedInId:owner.developerId,developerId:owner.developerId});
  const requestDigest=createHash("sha256").update(canonicalJson(request)).digest("hex");
  const checks:TransactItem[]=[...context.checks,...budgetActorChecks(deps.tableName,input.orgId,{developerId:owner.developerId,role:role.data}),...identity,

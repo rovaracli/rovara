@@ -18,6 +18,7 @@ import { SERVER_PAGE_ICON } from "@agentx/design-tokens";
 import { AUDIT_ERROR_MESSAGES, AUDIT_LIMITS_COPY, type OrgId, type OrgRole } from "@agentx/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { CSRF_COOKIE, SESSION_COOKIE, csrfCookie, escapeHtml, isCsrfToken, parseCookie, safeResponse, safeText, signInLocation, type WebResponse } from "../aws/web-session.js";
+import { canReadAuditLog } from "../org/auditor.js";
 import { auditOccurrence, auditRead } from "./events.js";
 import { type AuditExportClientDeps, type AuditExportView, isAuditExportId, startAuditExport } from "./export.js";
 import { recordAuditRead } from "./flush.js";
@@ -247,7 +248,7 @@ export function createAuditViewPage(deps: AuditViewPageDependencies): (request: 
 
   /** The refusal that comes before anything is read: not an owner or admin, or no ledger here. The role is checked first. */
   const notAllowed = (caller: AuditViewCaller): WebResponse | undefined => {
-    if (caller.orgRole !== "owner" && caller.orgRole !== "admin") return messagePage(403, "Not allowed", AUDIT_ORG_FORBIDDEN);
+    if (!canReadAuditLog(caller.orgRole)) return messagePage(403, "Not allowed", AUDIT_ORG_FORBIDDEN);
     if (deps.ledger === undefined) return messagePage(404, "Not set up", NOT_SET_UP);
     return undefined;
   };

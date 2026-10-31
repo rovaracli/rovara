@@ -37,7 +37,8 @@ export interface OrgInviteRecord {
   orgId: OrgId;
   tokenHash: string;
   email?: string;
-  role: Exclude<OrgRole, "owner">;
+  /** An invite makes an admin or a member. An owner is never invited, and the Auditor is set by a role change or a group mapping, never by an invite link. */
+  role: Exclude<OrgRole, "owner" | "auditor">;
   createdBy: string;
   /** The request that created it (POST /v1/dev/org/invites); a replay of that request is refused. */
   requestId?: string;
@@ -333,4 +334,4 @@ export function orgRenameRequestKey(orgId: OrgId, requestId: string): OrgKey {
   return { pk: orgPk(orgId), sk: `RENAME_REQUEST#${requestId}` };
 }
 
-export { OrgIdSchema, type OrgId, OrgRoleSchema, type OrgRole } from "./org.js";
+export { OrgIdSchema, type OrgId, OrgRoleSchema, type OrgRole, WriterOrgRoleSchema, type WriterOrgRole, isWriterOrgRole } from "./org.js";

@@ -253,6 +253,16 @@ describe("reminders on the tracking pass", () => {
     expect(itemOf(nobody).nudges.count).toBe(1);
   });
 
+  it("does not remind a linked person who has become an Auditor, and still reminds the member beside them (I2 re-check)", async () => {
+    const heard = hear();
+    const w = await waiting({ ids: ["1001", "6006"] });
+    const AUDITOR = "auditor-dev";
+    w.db.set({ ...orgMemberKey(TEST_ORG, AUDITOR), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: AUDITOR, role: "auditor", joinedAt: "2026-10-01T00:00:00.000Z" });
+    await link(w, AUDITOR, "6006");
+    await pass(w, MON + DAY);
+    expect(heard).toEqual([{ kind: "review_nudge", text: "payments #7 has been waiting for your review for 1 day", to: [ALICE], sessionId: undefined }]);
+  });
+
   it("does not remind a GitHub account whose link is only half there, and takes the reminder from someone who unlinked since", async () => {
     const heard = hear();
     const w = await waiting({ ids: ["1001", "3003", "6006"] });

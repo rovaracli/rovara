@@ -4,6 +4,7 @@
 import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import type { OrgId, RunCheckout, ChannelTurn, E2EWorkflowAdmissionRef, Operation, OperationRequest, ProjectCommand, PullRequestLifecycleRequest, PullRequestRequest, WorkflowDependencyInvocation, WorkflowFeedbackApprovalBinding, WorkflowFixPayload, WorkflowReviewBase, WorkflowReviewChecks, WorkflowReviewFeedback, WorkflowReviewNote, WorkflowReviewPlan, WorkspaceInstance } from "@agentx/contracts";
 import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
+import type { ResolvedAttribution } from "../attribution/resolve.js";
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { DeveloperTaskRecord, StoredEvent } from "../developer/task-records.js";
 import type { RegisteredProjectRecord } from "./broker.js";
@@ -70,7 +71,7 @@ export interface DeveloperTaskActions {
    * pull request a workflow task's workspace accepts. The worker refuses a workspace that no longer has that tree, and
    * the broker checks the pushed commit's tree before opening the pull request.
    */
-  acceptPullRequest(identity: AuthenticatedIdentity, workspaceId: string, request: PullRequestRequest, extra: ExtraItems, options?: { workflowCandidate?: { repositoryId: string; treeSha: string; commitSha?: string; candidateDigest: string; baseCommitSha?: string; publicationMode: "COMMITTED_HEAD" | "CHECKED_TREE"; admittedPinnedRevision: number; admittedLatestRevision: number; admittedMaterialDigest: string; admittedWorkflowRevision: number; admittedPlanArtifact: { id: string; type: string; version: number; objectKey: string; sha256: string; format: "markdown" | "structured" }; admittedOwnerApproval: { requestId: string; workflowRevision: number; actorId: string; actorRole: "TASK_OWNER" | "PROJECT_ADMIN"; artifactDigest: string; workBreakdownDigest: string | null; at: string }; admittedWorkflowAuthorityDigest: string } }): Promise<{ operation: Operation; duplicate: boolean }>;
+  acceptPullRequest(identity: AuthenticatedIdentity, workspaceId: string, request: PullRequestRequest, extra: ExtraItems, options?: { workflowCandidate?: { repositoryId: string; treeSha: string; commitSha?: string; candidateDigest: string; baseCommitSha?: string; publicationMode: "COMMITTED_HEAD" | "CHECKED_TREE"; admittedPinnedRevision: number; admittedLatestRevision: number; admittedMaterialDigest: string; admittedWorkflowRevision: number; admittedPlanArtifact: { id: string; type: string; version: number; objectKey: string; sha256: string; format: "markdown" | "structured" }; admittedOwnerApproval: { requestId: string; workflowRevision: number; actorId: string; actorRole: "TASK_OWNER" | "PROJECT_ADMIN"; artifactDigest: string; workBreakdownDigest: string | null; at: string }; admittedWorkflowAuthorityDigest: string }; attribution?: ResolvedAttribution }): Promise<{ operation: Operation; duplicate: boolean }>;
   /**
    * The workflow's push of a fix whose checks and reviews passed to its existing pull request: an append of exactly the
    * reviewed tree (on the task's pinned base) onto the head the workflow recorded. STALE_FENCE when the pull request

@@ -23,6 +23,7 @@ import type { AgentRunDependencies } from "../../agents/runs.js";
 import type { SessionAccessDependencies } from "../../agent-sessions/access.js";
 import type { AgentRunEngineDependencies } from "../../agents/run-engine.js";
 import type { MergeTrackingItem, MergeView } from "@agentx/contracts";
+import type { CodeHostRouter } from "../../plugins/registry.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -111,6 +112,10 @@ export interface DeveloperTaskRouteDependencies {
    * there are no bindings (a private install). Called at a task's start, before any budget, limit or machine time.
    */
   requireRepositoriesConnected?(orgId: OrgId, definition: { repositories: ReadonlyArray<{ url: string; installationId?: number | undefined }> }): Promise<void>;
+  /** Enterprise foundations I3: the sign-in table, where a person's display name is read for the attribution a change request carries. Absent: the people it names are shown only by what the State table holds. */
+  signInTableName?: string;
+  /** Enterprise foundations P7: the code hosts this install registers. A task start refuses a repository whose `host.kind` is not among them, before any work is spent. Absent: no check. */
+  codeHost?: Pick<CodeHostRouter, "kinds">;
   /**
    * Plan 3, Task 15: what choosing the agent a task runs needs (the roster, the guardrails, the frozen recipe). Absent where agents are not set
    * up: a start then names no agent, and the task is the plain task it always was, with no recipe stored.

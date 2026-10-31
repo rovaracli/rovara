@@ -5,7 +5,7 @@ import { writeProjectModelSelection } from "../../model-selection/selection-writ
 import { survivorOf } from "../../org/project-members.js";
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { ProjectModelOptionsSchema, ProjectModelSelectionRequestSchema, WorkspaceInstanceSchema, agentXError, workspaceRecordFields, type Operation, type ProjectDefinition, type WorkspaceInstance, modelKey, type ModelRef, type ModelSelection, type ProjectModelOptions, OrgRoleSchema, type OrgRole, PROJECT_REVISION_SK_PREFIX, orgMemberKey, projectMemberKey, defaultWorkspaceKey, projectPk, projectSelectionKey, type OrgId } from "@agentx/contracts";
+import { ProjectModelOptionsSchema, ProjectModelSelectionRequestSchema, WorkspaceInstanceSchema, agentXError, workspaceRecordFields, type Operation, type ProjectDefinition, type WorkspaceInstance, modelKey, type ModelRef, type ModelSelection, type ProjectModelOptions, OrgRoleSchema, isWriterOrgRole, type OrgRole, PROJECT_REVISION_SK_PREFIX, orgMemberKey, projectMemberKey, defaultWorkspaceKey, projectPk, projectSelectionKey, type OrgId } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { authorizeWorkspace } from "../../authorization.js";
 import type { GitHubAppCredentialProvider } from "../../github-app.js";
@@ -353,10 +353,16 @@ export async function requireProjectAuthority(
   options: { taskCreator?: () => Promise<string | undefined> } = {},
 ): Promise<{ kind: "grant"; membership: MembershipRecord } | { kind: "org-role"; role: "owner" | "admin" }> {
   const membership = await getMembership(dependencies, orgId, ownerKey, projectName);
+  // I2: a person who has become an Auditor writes nothing, whatever grant or task they still hold: the task paths stop for them here, so their open tasks stop publishing too.
+  // The record read is the task creator's when there is one (the person the work runs for), else the key's; a missing record is left to the branches below.
+  const creator = await options.taskCreator?.();
+  const holder = await readOrgMember(dependencies, orgId, creator ?? ownerKey);
+  // The raw role is read too: a record whose role does not parse (a role this release does not know) is no writer either, so it is refused, not waved through by its grant.
+  const rawRole = (await getItem<{ role?: unknown }>(dependencies, orgMemberKey(orgId, creator ?? ownerKey)))?.role;
+  if (rawRole !== undefined && !isWriterOrgRole(rawRole)) throw agentXError("TASK_ACCESS_DENIED", "your company role can no longer work on tasks");
   // A viewer's row is no authority to work on a project's task paths (Plan 2, Task 21): it falls through to the org role, then NOT_FOUND.
   if (membership && grantRoleOf(membership) !== "viewer") return { kind: "grant", membership };
-  const creator = await options.taskCreator?.();
-  const member = await readOrgMember(dependencies, orgId, creator ?? ownerKey);
+  const member = holder;
   if (member?.role === "owner" || member?.role === "admin") return { kind: "org-role", role: member.role };
   // R60 has already ended the task at its call sites; this only keeps the words right when the creator's record is gone.
   if (member === undefined && creator !== undefined && dependencies.cloud === true) {

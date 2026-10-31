@@ -11,6 +11,7 @@ import { ConnectorsSchema, StoredConnectorsSchema, type GitHubConnectorConfig } 
 import { E2E_PROJECT_CHECK_ID } from "./e2e.js";
 import { SettingOriginSchema, type SettingOrigin } from "./provenance.js";
 import { SpecTargetSchema } from "./spec-target.js";
+import { ExternalIdSchema, PluginKindSchema } from "./plugins/common.js";
 
 export const OCI_DIGEST_PATTERN = /@sha256:[a-f0-9]{64}$/;
 
@@ -98,6 +99,17 @@ export const CodeBuildGateDefinitionSchema = z
   })
   .strict();
 
+/**
+ * Enterprise foundations, task P7: where a repository lives, by plug-in kind. A GitHub host carries the installation and the immutable repository id that
+ * `installationId` / `githubRepositoryId` carried at the top of the record (both stay readable for one release: see `repositoryHostOf`). Any other kind
+ * is a plug-in registered at build time; it carries one opaque reference of its own. Control-plane only, like the pins: a worker never reads it.
+ */
+export const RepositoryHostSchema = z.union([
+  z.object({ kind: z.literal("github"), installationId: z.number().int().positive().optional(), repositoryId: z.number().int().positive().optional() }).strict(),
+  z.object({ kind: PluginKindSchema.refine((kind) => kind !== "github", "github is the other variant"), ref: ExternalIdSchema.optional() }).strict(),
+]);
+export type RepositoryHost = z.infer<typeof RepositoryHostSchema>;
+
 export const RepositoryDefinitionSchema = z
   .object({
     name: AgentXNameSchema,
@@ -120,9 +132,27 @@ export const RepositoryDefinitionSchema = z
      */
     role: z.enum(["code", "meta"]).optional(),
     alsoCode: z.boolean().optional(),
+    /** P7: the code host this repository lives on. Absent means GitHub, as every repository that predates it (`repositoryHostOf`). */
+    host: RepositoryHostSchema.optional(),
   })
   .strict()
   .superRefine((repository, context) => {
+    // Dual read: while both spellings exist they must agree, so a record can never say two things about where its repository lives.
+    if (repository.host !== undefined) {
+      const host: { kind: string; installationId?: number | undefined; repositoryId?: number | undefined } = repository.host;
+      if (host.kind !== "github") {
+        for (const field of ["installationId", "githubRepositoryId"] as const) {
+          if (repository[field] !== undefined) context.addIssue({ code: "custom", path: [field], message: "a repository on another code host has no GitHub pins" });
+        }
+      } else {
+        if (repository.installationId !== undefined && host.installationId !== repository.installationId) {
+          context.addIssue({ code: "custom", path: ["installationId"], message: "installationId must match host.installationId" });
+        }
+        if (repository.githubRepositoryId !== undefined && host.repositoryId !== repository.githubRepositoryId) {
+          context.addIssue({ code: "custom", path: ["githubRepositoryId"], message: "githubRepositoryId must match host.repositoryId" });
+        }
+      }
+    }
     if (repository.alsoCode !== undefined && repository.role !== "meta") {
       context.addIssue({ code: "custom", path: ["alsoCode"], message: "alsoCode is only for the meta repository" });
     }
@@ -361,6 +391,14 @@ export const ProjectDefinitionSchema = projectDefinitionObject(ConnectorsSchema)
       context.addIssue({ code: "custom", path: ["e2e", "targets"], message: "project-e2e is a reserved check identity, not a target ID" });
     }
   })
+  // P7 / Opus review I5: this release READS a repository's `host` (a record written by a later release, or by the lazy rewrite in a later release) but does not WRITE one. Two reasons:
+  // the release before this one parses a repository strictly and would refuse the whole project, so a rollback would take it dark; and nothing routes by `host` yet, so a save that
+  // said a repository lives elsewhere would still be cloned and pushed through GitHub. A later release turns writes on, for the kinds an install has registered.
+  .superRefine((project, context) => {
+    project.repositories.forEach((repository, index) => {
+      if (repository.host !== undefined) context.addIssue({ code: "custom", path: ["repositories", index, "host"], message: "a repository's code host is not set by this release; leave host out" });
+    });
+  })
   // Registration and settings saves: the Public Suffix List is consulted when a domain is written, never when a stored revision is read.
   .superRefine((project, context) => {
     const index = firstRefusedDomainIndex(project.network?.allowedDomains ?? []);
@@ -439,6 +477,7 @@ export function workerProjectDefinition<Definition extends object>(definition: D
         const repository: Record<string, unknown> = { ...(entry as Record<string, unknown>) };
         delete repository.installationId;
         delete repository.githubRepositoryId;
+        delete repository.host;
         delete repository.role;
         delete repository.alsoCode;
         return repository;
@@ -464,6 +503,28 @@ export type DevcontainerDefinition = z.infer<typeof DevcontainerDefinitionSchema
 export type CodeBuildGateDefinition = z.infer<typeof CodeBuildGateDefinitionSchema>;
 
 export type RepositoryDefinition = z.infer<typeof RepositoryDefinitionSchema>;
+
+/**
+ * P7 dual read: the host of a repository record. The explicit `host` wins; a record without one (every record written before P7) is a GitHub repository with
+ * the pins it carried. Never throws, never returns a kind the record did not name or imply.
+ */
+export function repositoryHostOf(repository: Pick<RepositoryDefinition, "host" | "installationId" | "githubRepositoryId">): RepositoryHost {
+  if (repository.host !== undefined) return repository.host;
+  return {
+    kind: "github",
+    ...(repository.installationId === undefined ? {} : { installationId: repository.installationId }),
+    ...(repository.githubRepositoryId === undefined ? {} : { repositoryId: repository.githubRepositoryId }),
+  };
+}
+
+/**
+ * The lazy rewrite of a record on its way to storage. A GitHub repository is NOT given a `host` in this release: its old pins say the same thing, the release before this one reads only
+ * those, and a rewrite that added `host` would make the project unreadable after a rollback (the exact step if a later release has written it: save the project again with this
+ * release, which drops `host`). So this returns the record unchanged; it exists so the day writes are turned on there is one place that decides, and a test that fails if it starts writing early.
+ */
+export function withRepositoryHost<Repository extends Pick<RepositoryDefinition, "host" | "installationId" | "githubRepositoryId">>(repository: Repository): Repository {
+  return repository;
+}
 
 export interface ResolvedGitHubConnector {
   name: string;

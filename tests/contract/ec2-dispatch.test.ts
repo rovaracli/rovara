@@ -1436,6 +1436,31 @@ describe("ec2-ebs delivery", () => {
       expect(postedPayload(accepted.post).workflowBaseCommit).toBe("c".repeat(40));
     });
 
+    it("sends the attribution only to a worker that lists publish.attribution; an older worker gets the publication without it, never a failure (I3, rolling deploys)", async () => {
+      const attribution = { requester: { state: "named", name: "Maya Chen", ref: "0123456789abcdef" } };
+      const record = publishRecord({ attribution, body: "Requested by: Maya Chen\n" });
+      for (const features of [[], ["publish.reportChecks"], ["publish.candidateTree"]]) {
+        const old = delivery({ workerFeatures: async () => features });
+        expect(await old.deliver(record, record.invocation), JSON.stringify(features)).toBe("DELIVERED");
+        const sent = postedPayload(old.post);
+        expect(sent).not.toHaveProperty("attribution");
+        // Nothing else changes: the description the broker wrote (with the attribution lines) is what the old worker publishes.
+        expect(sent.body).toBe("Requested by: Maya Chen\n");
+        expect(JSON.stringify(sent)).not.toContain("0123456789abcdef");
+      }
+      // A worker whose ping cannot be read at all is an old worker too.
+      const unprobed = delivery({});
+      expect(await unprobed.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(unprobed.post)).not.toHaveProperty("attribution");
+      const accepted = delivery({ workerFeatures: async () => ["publish.attribution"] });
+      expect(await accepted.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(accepted.post).attribution).toEqual(attribution);
+      // A publication that carries none is not touched by the feature.
+      const plain = publishRecord({});
+      const unaffected = delivery({ workerFeatures: async () => [] });
+      expect(await unaffected.deliver(plain, plain.invocation)).toBe("DELIVERED");
+    });
+
     it("keeps reportChecks for a worker whose /ping lists it", async () => {
       const { deliver, post } = delivery({ workerFeatures: async () => ["publish.reportChecks"] });
       const record = publishRecord({ reportChecks: true });

@@ -6,6 +6,9 @@ import {
   AgentXError,
   WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE,
   agentXError,
+  commitSubject,
+  withAttributionTrailers,
+  type ActingAttribution,
   type CheckEntry,
   type ProjectCommand,
   type PublicationCheckResult,
@@ -185,6 +188,7 @@ export async function publishWorkspace(
         title: invocation.payload.title,
         candidateTreeSha,
         retrying: retryingCommittedPublication,
+        attribution: invocation.payload.attribution,
       });
     } else {
       const candidateCommitSha = invocation.payload.candidateCommitSha;
@@ -237,6 +241,7 @@ export async function publishWorkspace(
       preparationCommit: manifestRepository.resolvedCommit,
       headBranch: invocation.payload.headBranch,
       title: invocation.payload.title,
+      attribution: invocation.payload.attribution,
       credential: await fetchCredential(),
     });
   }
@@ -324,14 +329,18 @@ export async function publishWorkspace(
   });
 }
 
-/** Legacy, server-selected checked-tree protocol: preserve the exact verified tree on the pinned base. */
-async function prepareCandidatePublicationCommit(input: {
+/**
+ * Legacy, server-selected checked-tree protocol: preserve the exact verified tree on the pinned base. Exported for its own test (the trailers it writes); the worker calls it from
+ * `publishWorkspace` only.
+ */
+export async function prepareCandidatePublicationCommit(input: {
   git: RepositoryGit;
   preparationCommit: string;
   headBranch: string;
   title: string;
   candidateTreeSha: string;
   retrying: boolean;
+  attribution?: ActingAttribution | undefined;
 }): Promise<string> {
   await input.git(["cat-file", "-e", `${input.preparationCommit}^{commit}`]).catch(() => {
     throw agentXError("WORKSPACE_NOT_READY", "the task's base commit is missing from the workspace");
@@ -354,7 +363,7 @@ async function prepareCandidatePublicationCommit(input: {
   if (workspaceTree === preparedTree) throw agentXError("CONFIG_INVALID", "repository has no changes to publish");
   const commit = (await input.git([
     "-c", `user.name=${AGENTX_GIT_NAME}`, "-c", `user.email=${AGENTX_GIT_EMAIL}`,
-    "commit-tree", workspaceTree, "-p", input.preparationCommit, "-m", `AgentX: ${input.title}`,
+    "commit-tree", workspaceTree, "-p", input.preparationCommit, "-m", withAttributionTrailers(`AgentX: ${commitSubject(input.title)}`, input.attribution),
   ])).trim();
   await input.git(["checkout", "--force", "-B", input.headBranch, commit]);
   return commit;
@@ -453,6 +462,7 @@ async function prepareCleanPublicationCommit(input: {
   preparationCommit: string;
   headBranch: string;
   title: string;
+  attribution?: ActingAttribution | undefined;
   credential: Awaited<ReturnType<RepositoryCredentialProvider>>;
 }): Promise<string> {
   try {
@@ -498,7 +508,7 @@ async function prepareCleanPublicationCommit(input: {
     "-p",
     baseCommit,
     "-m",
-    `AgentX: ${input.title}`,
+    withAttributionTrailers(`AgentX: ${commitSubject(input.title)}`, input.attribution),
   ])).trim();
   await input.git(["checkout", "--force", "-B", input.headBranch, commit]);
   return commit;
@@ -659,12 +669,12 @@ async function missingCommandDirectory(rootPath: string, cwd: string): Promise<b
  * Git in one repository, each command in a throwaway repository that never reads the workspace repository's config, hooks or attributes files (see
  * isolated-repository.ts): the agent may write those at any moment, so a read of them made once, or just before, would not hold.
  */
-interface RepositoryGit {
+export interface RepositoryGit {
   (args: readonly string[]): Promise<string>;
   readonly directory: string;
 }
 
-function repositoryGit(directory: string): RepositoryGit {
+export function repositoryGit(directory: string): RepositoryGit {
   const run = async (args: readonly string[]): Promise<string> => {
     try {
       // `remote get-url` reads one value of the repository's config, from a private copy of the file; nothing in it is run.

@@ -50,7 +50,7 @@ import { parseGitHubRepository } from "../github-app.js";
 import type { PullRequestStatus } from "../github-pull-status.js";
 import { readCodeSettings } from "./code-settings.js";
 import { codeOwnerVerdict, type CodeOwnerVerdict } from "./code-owners.js";
-import { humanApprovalOf, latestReviewers, linkedAmong, requesterGithubIds, type HumanApproval, type ApprovalRefusal, type RepositoryPermission } from "./approval.js";
+import { humanApprovalOf, latestReviewers, linkedAmong, nonWritersAmong, requesterGithubIds, type HumanApproval, type ApprovalRefusal, type RepositoryPermission } from "./approval.js";
 import { githubUserOfMember } from "./github-members.js";
 import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
 import { PERMISSION_LOOKUPS_MAX, readBranch, readCi, readMergeTracking, tracksMerge } from "./merge-tracking.js";
@@ -236,6 +236,7 @@ async function approvalOfItem(
     reviews: [{ githubUserId, login, userType: "User", state: "APPROVED", commitId, submittedAt: item.observedAt }],
     headSha: item.headSha, syncedFrom: pullRequest?.syncedFrom, ciPassingOnHead: item.ci === "passing" || item.ci === "none",
     permissions: new Map([[login, "write" as const]]), requesterGithubUserIds: ctx.requesters, linkedGithubUserIds: await linkedAmong(deps, orgId, [githubUserId]),
+    excludedGithubUserIds: await nonWritersAmong(deps, orgId, [githubUserId]),
     allowSelfApproval: ctx.allowSelfApproval,
   });
 }
@@ -517,7 +518,7 @@ async function approvalFromStatus(
   }
   return humanApprovalOf({
     reviews: status.reviews, headSha: status.headSha, syncedFrom: ctx.syncedFrom, ciPassingOnHead: ctx.ciPassing, permissions,
-    requesterGithubUserIds: ctx.requesters, linkedGithubUserIds: await linkedAmong(deps, ctx.orgId, reviewers.map((review) => review.githubUserId)), allowSelfApproval: ctx.allowSelfApproval,
+    requesterGithubUserIds: ctx.requesters, linkedGithubUserIds: await linkedAmong(deps, ctx.orgId, reviewers.map((review) => review.githubUserId)), excludedGithubUserIds: await nonWritersAmong(deps, ctx.orgId, reviewers.map((review) => review.githubUserId)), allowSelfApproval: ctx.allowSelfApproval,
   });
 }
 

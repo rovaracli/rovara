@@ -94,7 +94,7 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   // others, and the next run resumes it. The erased markers were written first, so no event, snapshot or join can put an id back while this runs.
   const ids = identities.map((identity) => identity.sourceId);
   const context: EraseContext = { deps, orgId, who, ids, identities, rows, links: allLinks, at, occurrence, budget, queue, lessonsPurged: 0 };
-  const done: Record<EraseStep, boolean> = { lake: true, principals: true, access: true, config: true, lessons: true, asks: true, rows: true };
+  const done: Record<EraseStep, boolean> = { lake: true, principals: true, access: true, config: true, lessons: true, asks: true, attribution: true, rows: true };
   for (const step of REQUIRED_ERASE_STEPS) {
     try {
       if (step === "rows") continue; // last: the rows go only after the lessons that rest on them are settled
@@ -220,6 +220,13 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
       if (result.complete) return true;
     }
     return false;
+  },
+  // Enterprise foundations I3: the change requests that name the person (their commits carry only a random reference, cut here) are rewritten to "a former member". A person with no
+  // developer id (a source identity only) is named on no change request. A failure leaves the step unfinished: the person's attribution rows are still there for the next run.
+  async attribution(context) {
+    if (context.who.developerId === undefined || context.deps.attribution === undefined) return true;
+    await context.deps.attribution.erase(context.orgId, context.who.developerId);
+    return true;
   },
 };
 

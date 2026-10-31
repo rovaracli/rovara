@@ -32,6 +32,7 @@ import type { TaskAccess } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { branchSyncRequestId } from "../../rovara-code/branch-sync.js";
 import { inertPlanLine } from "../../rovara-code/inert-text.js";
+import { attributionForPublication } from "../../wiring/enterprise-identity.js";
 import { recomputeRisk, type PullRequestBodyContext } from "../../rovara-code/pull-request-body.js";
 import { breakLinearKeys, linearIssueKeyOfTask } from "../../rovara-code/linear-close.js";
 import { loadTestProofLines } from "../../developer/test-proof-lines.js";
@@ -229,7 +230,15 @@ export async function startTaskWorkflowPublicationFromSystem(
   const linearIssueKey = rovaraV2 ? await linearIssueKeyOfTask({ documentClient: deps.documentClient, tableName: deps.tableName }, task) : undefined;
   // Playbook P1: the Proof section's inputs (the approved plan, the browser/API rows, the test proof); each one that cannot be read is left out.
   const proof = rovaraV2 ? await proofContextOfTask(deps, task, workflow, approvedPlan, "owner") : undefined;
-  const bodyContext: PullRequestBodyContext | undefined = rovaraV2 ? { changedFiles: await candidateChangedFiles(deps, task), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }) } : undefined;
+  // Enterprise foundations I3: who asked for the work and who approved its plan, from the very workflow snapshot this publication is conditioned on (the transaction below checks its revision).
+  // The same resolved attribution goes into the description, the worker's publish payload (and so the commit) and the audit event's `related`; the host never sees an id.
+  const resolvedAttribution = await attributionForPublication(
+    { documentClient: deps.documentClient, stateTable: deps.tableName, signInTable: deps.signInTableName ?? deps.tableName, teamRecordTable: deps.tableName },
+    { orgId: deps.orgId, taskId, requesterId: task.developerId, decisions: workflow.decisions, origin: origin.taskPageUrl ?? deps.issuer },
+  );
+  const bodyContext: PullRequestBodyContext | undefined = rovaraV2
+    ? { changedFiles: await candidateChangedFiles(deps, task), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), attribution: resolvedAttribution.attribution }
+    : { attribution: resolvedAttribution.attribution };
   const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}) : workflow;
   // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.
   const title = `${rovaraV2 ? "Rovara" : "AgentX"}: ${rovaraV2 ? breakLinearKeys(inertTaskTitle(task.title)) : inertTaskTitle(task.title)}`.slice(0, 256);
@@ -279,7 +288,7 @@ export async function startTaskWorkflowPublicationFromSystem(
       admittedPinnedRevision: publication.authority.pinnedRevision, admittedLatestRevision: publication.authority.latestRevision,
       admittedMaterialDigest: publication.authority.materialDigest, admittedWorkflowRevision: publication.authority.workflowRevision,
       admittedPlanArtifact: publication.authority.planArtifact, admittedOwnerApproval: publication.authority.ownerApproval,
-      admittedWorkflowAuthorityDigest: publication.authority.workflowAuthorityDigest } });
+      admittedWorkflowAuthorityDigest: publication.authority.workflowAuthorityDigest }, attribution: resolvedAttribution });
   } catch (error) {
     // The task moved on (or closed) between the read and the commit: nothing was started, and nothing is due.
     const failedExtras = extraItemsCancelled(error);

@@ -1,5 +1,6 @@
 import { logDeveloperEvent } from "../../developer/log.js";
 import { changeReviewedMemberRole } from "../../org/role-changes.js";
+import { requireAuditorEdition } from "../../org/auditor.js";
 import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
 import { navigationReadCache } from "../../app-nav/read-cache.js";
 import { trialAvailable } from "../../org/trial-availability.js";
@@ -219,6 +220,8 @@ export async function changeMemberRole(deps: DeveloperRouteDependencies, caller:
   if (!parsed.success) throw reviewed ? agentXError("CONFIG_INVALID", "Review a valid company role change before submitting.") : bodyError(parsed.error);
   if (parsed.data.expectedRole !== undefined) return changeReviewedMemberRole(deps, caller, developerId, { ...parsed.data, expectedRole: parsed.data.expectedRole });
   if (caller.orgRole !== "owner") throw agentXError("FORBIDDEN", "only an owner can change roles");
+  // I2: the Auditor is given only where the edition has it.
+  if (parsed.data.role === "auditor") requireAuditorEdition(deps.editionPolicy);
   await deps.orgs.setRole({ orgId: caller.orgId, developerId, role: parsed.data.role, by: { kind: "member", id: caller.developerId }, requestId: parsed.data.requestId });
   logDeveloperEvent({ event: "developer.org_role_changed", orgId: caller.orgId, role: parsed.data.role });
   return { developerId, role: parsed.data.role };

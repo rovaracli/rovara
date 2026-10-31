@@ -1,7 +1,7 @@
 // Rovara Code (Plan 6 Task 19): whose approval on GitHub counts toward a merge (Finding 1), and who the requesters of a task are. Rovara's rules govern only its own Merge button: merging
 // on GitHub is governed by the repository's own branch protection. Pure except for the lookups of who is a member, which the callers pass in already read.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, orgMemberKey, type OrgId } from "@agentx/contracts";
+import { isWriterOrgRole, orgMemberKey, type OrgId } from "@agentx/contracts";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type TaskOwnerSource } from "../developer/task-records.js";
 import type { PullRequestReview } from "../github-pull-status.js";
 import { githubUserOfMember, memberForGithubUser, type GithubMemberDependencies } from "./github-members.js";
@@ -28,6 +28,11 @@ export interface ApprovalInput {
   /** The App's own GitHub user: never counts, whatever its type says. */
   appUserId?: string | undefined;
   allowSelfApproval: boolean;
+  /**
+   * GitHub accounts (among the reviewers) that are linked to a person whose company role is not a writer's (the Auditor). Their approval never counts, in either mode: with self-approval on,
+   * any account with write access would otherwise count, linked or not (I2). Absent: none known, which is how a caller built before this field behaves.
+   */
+  excludedGithubUserIds?: ReadonlySet<string> | undefined;
 }
 
 const permissionOf = (permissions: ReadonlyMap<string, RepositoryPermission>, login: string): RepositoryPermission => permissions.get(login) ?? permissions.get(login.toLowerCase()) ?? "none";
@@ -54,7 +59,7 @@ export function humanApprovalOf(input: ApprovalInput): HumanApproval {
   const withWrite = people.filter((review) => writes(permissionOf(input.permissions, review.login)));
   if (withWrite.some((review) => review.state === "CHANGES_REQUESTED")) return { approved: false, reason: "changes_requested" };
   if (!people.some((review) => review.state === "APPROVED")) return { approved: false, reason: "none" };
-  const writeApprovals = withWrite.filter((review) => review.state === "APPROVED");
+  const writeApprovals = withWrite.filter((review) => review.state === "APPROVED" && input.excludedGithubUserIds?.has(review.githubUserId) !== true);
   if (writeApprovals.length === 0) return { approved: false, reason: "no_write" };
   const fresh = writeApprovals.filter((review) => review.commitId === input.headSha || (input.syncedFrom !== undefined && review.commitId === input.syncedFrom && input.ciPassingOnHead));
   if (fresh.length === 0) return { approved: false, reason: "stale" };
@@ -107,7 +112,20 @@ export async function linkedAmong(deps: GithubMemberDependencies, orgId: OrgId, 
     const developerId = await memberForGithubUser(deps, orgId, id);
     if (developerId === undefined) continue;
     const member = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(orgId, developerId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
-    if (member.Item !== undefined && OrgRoleSchema.safeParse(member.Item["role"]).success) linked.add(id);
+    // Only a writer counts as the human whose review opens the merge: an Auditor reads the audit log and its approval is no one's (I2).
+    if (member.Item !== undefined && isWriterOrgRole(member.Item["role"])) linked.add(id);
   }
   return linked;
+}
+
+/** Which of these GitHub accounts are linked to a person who is in the org now but is not a writer (the Auditor, or a role this release does not know): their approval counts for nothing. */
+export async function nonWritersAmong(deps: GithubMemberDependencies, orgId: OrgId, githubUserIds: readonly string[]): Promise<Set<string>> {
+  const excluded = new Set<string>();
+  for (const id of new Set(githubUserIds)) {
+    const developerId = await memberForGithubUser(deps, orgId, id);
+    if (developerId === undefined) continue;
+    const member = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(orgId, developerId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+    if (member.Item !== undefined && !isWriterOrgRole(member.Item["role"])) excluded.add(id);
+  }
+  return excluded;
 }

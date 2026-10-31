@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AuditIndexedQuerySchema, AuditIndexedResultSchema, agentXError, auditCanonicalJson, recordHash, type AuditIndexedQuery, type AuditIndexedResult } from "@agentx/contracts";
 import type { AuditExportClientDeps } from "./export.js";
 import type { AuditOrgCaller } from "./routes.js";
+import { canReadAuditLog } from "../org/auditor.js";
 import { auditSeqSortKey } from "./appender.js";
 import { AUDIT_INDEX_COVERAGE, auditIndexDigest, auditIndexPostings, auditIndexPrefix } from "./search-index.js";
 import { firstSeqAtOrAfter, lastSeqAtOrBefore, recordOfItem } from "./reader.js";
@@ -14,7 +15,7 @@ const forbidden = () => agentXError("FORBIDDEN", "Only your organization's curre
 const integer = z.number().int().min(0).max(999999999999);
 const PostingSchema = z.object({ pk: z.string(), sk: z.string(), v: z.literal(1), orgId: z.string(), dimension: z.enum(["action", "actor", "target"]), digest: z.string().regex(/^[0-9a-f]{64}$/), seq: integer.min(1), hash: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 const CoverageSchema = z.object({ pk: z.string(), sk: z.literal(AUDIT_INDEX_COVERAGE), v: z.literal(1), orgId: z.string(), fromSeq: z.literal(1), throughSeq: integer.min(1) }).strict();
-const CursorSchema = z.object({ v: z.literal(1), orgId: z.string(), developerId: z.string(), role: z.enum(["owner", "admin"]), query: z.string(), fromSeq: integer.min(1), throughSeq: integer, after: integer, coverageVersion: z.literal(1), tag: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
+const CursorSchema = z.object({ v: z.literal(1), orgId: z.string(), developerId: z.string(), role: z.enum(["owner", "admin", "auditor"]), query: z.string(), fromSeq: integer.min(1), throughSeq: integer, after: integer, coverageVersion: z.literal(1), tag: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 export function indexedQueryOf(params: URLSearchParams): AuditIndexedQuery {
   const input = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of params) {
@@ -29,7 +30,7 @@ export function indexedQueryOf(params: URLSearchParams): AuditIndexedQuery {
   return parsed.data;
 }
 async function authority(deps: AuditExportClientDeps, caller: AuditOrgCaller): Promise<void> {
-  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw forbidden();
+  if (!canReadAuditLog(caller.orgRole)) throw forbidden();
   const get = async (pk: string, sk: string): Promise<Record<string, unknown> | undefined> => (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: { pk, sk }, ConsistentRead: true }))).Item;
   const [org, member, pointer] = await Promise.all([get(`ORG#${caller.orgId}`, "META"), get(`ORG#${caller.orgId}`, `MEMBER#${caller.developerId}`), get(`DEVELOPER_ORG#${caller.developerId}`, "ORG")]);
   if (org?.orgId !== caller.orgId || org.closedAt !== undefined || org.closingAt !== undefined || member?.orgId !== caller.orgId || member.developerId !== caller.developerId || member.role !== caller.orgRole || pointer?.orgId !== caller.orgId || pointer.role !== caller.orgRole) throw forbidden();

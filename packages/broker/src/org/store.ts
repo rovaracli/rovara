@@ -289,7 +289,7 @@ export class OrgStore {
    * replay of the same request is refused with IDEMPOTENCY_CONFLICT: only the token's hash is stored, so the
    * first answer cannot be given again.
    */
-  async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner">; email?: string; requestId?: string; ttlSeconds?: number; reviewed?: boolean }): Promise<{ token: string }> {
+  async createInvite(input: { orgId: OrgId; createdBy: string; role: Exclude<OrgRole, "owner" | "auditor">; email?: string; requestId?: string; ttlSeconds?: number; reviewed?: boolean }): Promise<{ token: string }> {
     try {
       const forbidden = () => coded("FORBIDDEN", "Only a current company owner or admin can create this invite.");
       if (input.role !== "admin" && input.role !== "member") throw coded("CONFIG_INVALID", "Choose a valid invite role.");
@@ -505,7 +505,7 @@ export class OrgStore {
         },
         ...guard,
         ...this.pendingFor(event),
-        ...await this.approvalMembershipChange(orgId, at, (current === "owner" || current === "admin") && role === "member"),
+        ...await this.approvalMembershipChange(orgId, at, (current === "owner" || current === "admin") && (role === "member" || role === "auditor")),
       ],
       (failed) => (guard.length > 0 && failed.has(2) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : coded("CHANGE_STALE", "the organization's members changed; try again")),
     );

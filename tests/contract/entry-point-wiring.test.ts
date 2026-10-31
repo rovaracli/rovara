@@ -46,7 +46,8 @@ describe("the sign-in Lambda hands its handler the edition, the stores, the ledg
 describe("handler.ts puts the edition and the stores into the route dependencies", () => {
   const handler = source("broker/handler.ts");
   it("both route-dependency builders carry the edition policy, and the main one the stores", () => {
-    expect(handler.match(/editionPolicy: dependencies\.editionPolicy/g)?.length).toBe(2);
+    // Spread from the one function that passes the broker's edition on (wiring/enterprise-identity.ts routeEditionDependencies; its own test pins what it returns).
+    expect(handler.match(/\.\.\.routeEditionDependencies\(dependencies\)/g)?.length).toBe(2);
     expect(handler).toMatch(/sso: dependencies\.sso/);
     expect(handler).toMatch(/requireStaffRouteAllowed\(dependencies\.editionPolicy, url\.pathname\);/);
     expect(handler).toMatch(/await dependencies\.editionGuard\?\.\(\);/);

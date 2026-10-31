@@ -4,8 +4,8 @@
 // today GitHub, for every repository (the repository `host` field and the choice by `host.kind` are task P7). A kind with no adapter is refused with a fixed sentence.
 // The edition decides what may be registered: GitHub, GitHub Actions and CodeBuild are the install's own; any other kind is an Enterprise plug-in.
 import {
-  ENTERPRISE_ONLY_MESSAGE, PluginKindSchema, agentXError, requireFeature,
-  type CheckRunner, type CodeHost, type EditionPolicy, type PluginKind, type RepositoryRef,
+  ENTERPRISE_ONLY_MESSAGE, PluginKindSchema, agentXError, repositoryHostOf, requireFeature,
+  type CheckRunner, type CodeHost, type EditionPolicy, type PluginKind, type RepositoryDefinition, type RepositoryHost, type RepositoryRef,
 } from "@agentx/contracts";
 
 /** The code host every install has. */
@@ -14,12 +14,20 @@ export const BUILT_IN_CODE_HOST_KIND: PluginKind = "github";
 export const BUILT_IN_CHECK_RUNNER_KINDS: readonly PluginKind[] = ["github-actions", "codebuild"];
 
 export const NO_CODE_HOST_MESSAGE = "No code host is set up for this repository.";
+/** P7: said when a repository record names a code host this install has not registered (the kind is not echoed). */
+export const NO_HOST_MESSAGE = "This repository's code host is not available in this install.";
+const AMBIGUOUS_HOST_MESSAGE = "This install registers more than one code host of the same kind.";
 export const NO_CHECK_RUNNER_MESSAGE = "No check runner is set up for this kind of build.";
 
 export interface CodeHostRouter {
   /** The code host that serves a repository; throws (CONFIG_INVALID, a fixed sentence) when there is none. */
   forRepository(repository: RepositoryRef): CodeHost;
   forKind(kind: PluginKind): CodeHost;
+  /**
+   * P7: the code host for a repository RECORD, by its `host.kind` (a record without one is GitHub). For callers that hold the project's repository record; a caller that
+   * holds only an address uses `forRepository`. Throws CONFIG_INVALID with a fixed sentence when the kind has no registered host; never falls back to another host.
+   */
+  forRecord(repository: Pick<RepositoryDefinition, "host" | "installationId" | "githubRepositoryId">): CodeHost;
   /** The kinds of code host registered, sorted. */
   kinds(): readonly PluginKind[];
 }
@@ -84,6 +92,11 @@ export function createPluginRegistry(input: PluginRegistryInput): PluginRegistry
     codeHost: {
       forRepository: (repository) => forKind(hostKindOf(repository)),
       forKind,
+      forRecord: (repository) => {
+        const host = hosts.get(repositoryHostOf(repository).kind);
+        if (host === undefined) throw agentXError("CONFIG_INVALID", NO_HOST_MESSAGE);
+        return host;
+      },
       kinds: () => [...hosts.keys()].sort(),
     },
     checkRunner(kind, context) {
@@ -94,4 +107,37 @@ export function createPluginRegistry(input: PluginRegistryInput): PluginRegistry
       return runner;
     },
   };
+}
+
+// ---- P7: the same registry, as pure functions over registered entries (used by the start check and the tests) ----
+
+/** The one registered entry for a kind; throws CONFIG_INVALID (fixed sentence, the kind is not echoed) when there is none or more than one. */
+export function selectCodeHost(host: Pick<RepositoryHost, "kind">, entries: readonly CodeHost[]): CodeHost {
+  const matches = entries.filter((entry) => entry.kind === host.kind);
+  if (matches.length > 1) throw agentXError("CONFIG_INVALID", AMBIGUOUS_HOST_MESSAGE);
+  const [entry] = matches;
+  if (entry === undefined) throw agentXError("CONFIG_INVALID", NO_HOST_MESSAGE);
+  return entry;
+}
+
+/** The kinds a registration holds, refusing a registration that names one kind twice. The source is the entries, or a built registry's router. */
+export function registeredCodeHostKinds(source: readonly Pick<CodeHost, "kind">[] | Pick<CodeHostRouter, "kinds">): ReadonlySet<PluginKind> {
+  const kinds = new Set<PluginKind>();
+  const list = Array.isArray(source) ? (source as readonly Pick<CodeHost, "kind">[]).map((entry) => entry.kind) : (source as Pick<CodeHostRouter, "kinds">).kinds();
+  for (const kind of list) {
+    if (kinds.has(kind)) throw agentXError("CONFIG_INVALID", AMBIGUOUS_HOST_MESSAGE);
+    kinds.add(kind);
+  }
+  return kinds;
+}
+
+/** At task start: every repository of the project must have a registered code host, or the start is refused before any work is spent. */
+export function assertRepositoryHostsKnown(
+  repositories: readonly Pick<RepositoryDefinition, "host" | "installationId" | "githubRepositoryId">[],
+  source: readonly Pick<CodeHost, "kind">[] | Pick<CodeHostRouter, "kinds">,
+): void {
+  const kinds = registeredCodeHostKinds(source);
+  for (const repository of repositories) {
+    if (!kinds.has(repositoryHostOf(repository).kind)) throw agentXError("CONFIG_INVALID", NO_HOST_MESSAGE);
+  }
 }

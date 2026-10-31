@@ -13,7 +13,7 @@ const MemberSchema = z.object({
   developerId: z.string(),
   name: z.string(),
   email: z.string().optional(),
-  role: z.enum(["owner", "admin", "member", "unknown"]),
+  role: z.enum(["owner", "admin", "member", "auditor", "unknown"]),
   joinedAt: z.string().optional(),
   identities: z.array(DeveloperSignInMethodSchema).optional(),
 });
@@ -67,7 +67,7 @@ export async function orgSetRole(deps: DeveloperSessionDeps, env: string | undef
   return { env: listed.env, url: listed.url, member, role: body.role };
 }
 
-const ROLE_PHRASE = { owner: "an owner", admin: "an admin", member: "a member" } as const;
+const ROLE_PHRASE = { owner: "an owner", admin: "an admin", member: "a member", auditor: "an auditor" } as const;
 export const orgRoleText = (result: { member: OrgMember; role: OrgRole }) => `${sanitizeServerText(result.member.name)} is now ${ROLE_PHRASE[result.role]}.\n`;
 
 export async function orgRemove(deps: DeveloperSessionDeps, env: string | undefined, who: string): Promise<{ env: string; url: string; member: OrgMember; message: string }> {

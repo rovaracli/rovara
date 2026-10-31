@@ -144,6 +144,8 @@ export async function listProjectMembers(deps: ProjectMembersDependencies, orgId
   if (!await projectExists(deps, orgId, project)) return [];
   const rows = await mapLimit(await orgMembers(deps, orgId), async (member): Promise<ProjectMemberRow | undefined> => {
     if (member.role === "owner" || member.role === "admin") return { developerId: member.developerId, role: "maintainer", source: "org_role" };
+    // Only a member holds a project role by grant. An Auditor (or a role this release does not know) is not listed whatever grant it was left with (I2).
+    if (member.role !== "member") return undefined;
     const grant = await readGrant(deps, orgId, member.developerId, project);
     const role = grantRoleOf(grant);
     return role === undefined ? undefined : { developerId: member.developerId, role, source: "grant", grantedBy: grantedByOf(grant) };
@@ -173,6 +175,7 @@ export function createProjectMembers(deps: ProjectMembersDependencies): ProjectM
 
     async projectsOf(orgId, caller) {
       const roles = new Map<string, ProjectRole>();
+      if (caller.orgRole === "auditor") return [];
       if (caller.orgRole === "owner" || caller.orgRole === "admin") {
         for (const entry of await queryAll(deps, orgProjectCatalogPk(orgId), "PROJECT#")) {
           if (typeof entry.name === "string") roles.set(entry.name, "maintainer");
@@ -331,6 +334,8 @@ async function resolveTarget(deps: ProjectMembersDependencies, orgId: OrgId, raw
   const role = OrgRoleSchema.safeParse(member?.role);
   if (!role.success) throw agentXError("NOT_FOUND", "that person isn't in your organization");
   if (role.data === "owner" || role.data === "admin") throw agentXError("CONFIG_INVALID", "owners and admins already maintain every project");
+  // The Auditor reads the audit log and nothing else; a project grant would say nothing it could use, so none is written.
+  if (role.data === "auditor") throw agentXError("CONFIG_INVALID", "the Auditor role holds no project access");
   return developerId;
 }
 

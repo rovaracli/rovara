@@ -55,7 +55,8 @@ describe("the Slack ingress", () => {
 
   it("both Slack entry points ask: the workflow caller and the service identity", () => {
     const wiring = readFileSync(new URL("../../packages/broker/src/aws/broker/dependency-wiring.ts", import.meta.url), "utf8");
-    expect(wiring).toMatch(/await requireSlackAllowedByEdition\(dependencies, userId, orgId\);\n {2}return slackWorkflowCaller/);
+    // The company sign-in's allowance is asked first; the person's live role (I2) is read after it, and the caller carries that role.
+    expect(wiring).toMatch(/await requireSlackAllowedByEdition\(dependencies, userId, orgId\);[\s\S]*?liveWriterRole\([\s\S]*?return requireWriterCaller\(\{ \.\.\.slackWorkflowCaller/);
     const preparation = readFileSync(new URL("../../packages/broker/src/aws/broker/workspace-preparation.ts", import.meta.url), "utf8");
     expect(preparation).toMatch(/await requireSlackAllowedByEdition\(dependencies, context\.requester\.userId, orgId\);/);
   });

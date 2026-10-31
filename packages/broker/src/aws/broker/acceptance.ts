@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { type AgentXError, blockWorkflow, OperationRequestSchema, PullRequestRequestSchema, PullRequestLifecycleRequestSchema, PullRequestLifecycleResultSchema, agentXError, type Operation, type OperationRequester, type OperationStatus, type ProjectCommand, type WorkflowFeedbackApprovalBinding, type WorkflowFixPayload, type WorkflowDependencyInvocation, type WorkflowReviewBase, type WorkflowReviewChecks, type WorkflowReviewPlan, type WorkflowReviewFeedback, type WorkflowReviewNote, type PullRequestLifecycleResult, type WorkerInvocation, type WorkspaceInstance, type E2EWorkflowAdmissionRef, workerProjectDefinition, workflowPublicationContext, workflowPublicationContextDigest, codeRepositoriesOf } from "@agentx/contracts";
 import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
+import type { ResolvedAttribution } from "../../attribution/resolve.js";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { assertNoUntrustedRoutingFields } from "../../authorization.js";
@@ -193,7 +194,7 @@ export async function acceptPullRequest(
   workspaceId: string,
   value: unknown,
   extra: ExtraItems = () => [],
-  options: { workflowCandidate?: { repositoryId: string; treeSha: string; commitSha?: string; candidateDigest: string; baseCommitSha?: string; publicationMode: "COMMITTED_HEAD" | "CHECKED_TREE"; admittedPinnedRevision: number; admittedLatestRevision: number; admittedMaterialDigest: string; admittedWorkflowRevision: number; admittedPlanArtifact: { id: string; type: string; version: number; objectKey: string; sha256: string; format: "markdown" | "structured" }; admittedOwnerApproval: { requestId: string; workflowRevision: number; actorId: string; actorRole: "TASK_OWNER" | "PROJECT_ADMIN"; artifactDigest: string; workBreakdownDigest: string | null; at: string }; admittedWorkflowAuthorityDigest: string } } = {},
+  options: { workflowCandidate?: { repositoryId: string; treeSha: string; commitSha?: string; candidateDigest: string; baseCommitSha?: string; publicationMode: "COMMITTED_HEAD" | "CHECKED_TREE"; admittedPinnedRevision: number; admittedLatestRevision: number; admittedMaterialDigest: string; admittedWorkflowRevision: number; admittedPlanArtifact: { id: string; type: string; version: number; objectKey: string; sha256: string; format: "markdown" | "structured" }; admittedOwnerApproval: { requestId: string; workflowRevision: number; actorId: string; actorRole: "TASK_OWNER" | "PROJECT_ADMIN"; artifactDigest: string; workBreakdownDigest: string | null; at: string }; admittedWorkflowAuthorityDigest: string }; attribution?: ResolvedAttribution } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestRequestSchema.parse(value);
   // Ruling R60: before any access check, so a removed creator's task says why instead of "project not found".
@@ -285,6 +286,8 @@ export async function acceptPullRequest(
       admittedWorkflowRevision: candidate.admittedWorkflowRevision, admittedPlanArtifact: candidate.admittedPlanArtifact, admittedOwnerApproval: candidate.admittedOwnerApproval,
       admittedWorkflowAuthorityDigest: candidate.admittedWorkflowAuthorityDigest }),
     ...(candidate?.baseCommitSha === undefined ? {} : { expectedBaseCommit: candidate.baseCommitSha }),
+    // I3: whose change this is, for the audit event the opening records (the full ids; the host sees only names and a random reference).
+    ...(options.attribution === undefined || options.attribution.relatedIds.length === 0 ? {} : { relatedIds: [...options.attribution.relatedIds] }),
   };
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
@@ -319,6 +322,8 @@ export async function acceptPullRequest(
       ...(candidate === undefined ? {} : { publicationMode: candidate.publicationMode }),
       // The task's pinned base, as the published commit's parent, in place of the workspace's own record of it.
       ...(candidate?.baseCommitSha === undefined ? {} : { workflowBaseCommit: candidate.baseCommitSha }),
+      // I3: sent only to a worker that lists "publish.attribution"; ec2-delivery drops it for an older worker, which publishes as before (no trailer) with the description the broker wrote.
+      ...(options.attribution === undefined ? {} : { attribution: options.attribution.attribution }),
     },
   };
   const publicationContext = workflowPublicationContext(invocation);
@@ -328,6 +333,8 @@ export async function acceptPullRequest(
     operation.publication.publicationContextDigest = publicationContextDigest;
   }
   const outbox = outboxRecord(workspace, invocation);
+  // I3: the operation says which outbox item carries its description and attribution, so erasing a person can rewrite that copy too.
+  if (options.attribution !== undefined) operation.publication.outboxId = outbox.id;
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Update: {
