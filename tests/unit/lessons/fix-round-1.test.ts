@@ -174,7 +174,7 @@ describe("I1: a refinement is never lower than what it replaces, and never appli
     const old = lessonRecord({ id: "les_old00001", tier: 2, tierReasons: ["reviewer_stage"], title: "Retries", description: "", body: a, approvals: [{ approvalId: "x", by: "ann", at: 1, mode: "one" }, { approvalId: "y", by: "bob", at: 2, mode: "second_person" }] });
     await seed(store, old);
     await vectors.upsert(WS, PROJECT, old.id, await embedder.embed(`${old.title}\n${old.description}\n${old.body}`), { status: "active" });
-    const out = await processDraft(deps, KEY, draft({ title: "Retries", description: "", body: b, provenance: { ...draft().provenance, sourceKinds: ["send_back"] } }));
+    const out = await processDraft(deps, KEY, draft({ title: "Retries", description: "", body: b, provenance: { ...draft().provenance, sourceKinds: ["send_back"], measured: true } }));
     expect(out.outcome.outcome).toBe("updated");
     expect(out.lesson).toMatchObject({ status: "pending", tier: 2, supersedes: "les_old00001" });
     expect(out.lesson!.tierReasons).toContain("supersedes_higher_tier");
@@ -292,7 +292,7 @@ describe("I5: audit that grants something is written first and fails closed", ()
     const audit = new FailingAudit();
     const store = new InMemoryLessonStore();
     const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, now: new Clock().now, verifier: verifier("valid"), settings: settings(), newId: () => "les_auto0001" };
-    const out = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, sourceKinds: ["send_back"] } }));
+    const out = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, sourceKinds: ["send_back"], measured: true } }));
     expect(out.lesson).toMatchObject({ status: "pending", tier: 0 });
     expect(out.lesson!.approvals).toEqual([]);
   });
@@ -395,7 +395,7 @@ describe("P6: a lesson about weakening review or auth needs two people, by words
     ["path", { type: "fact" as const, body: "The console config lives in one place.", scope: { repos: ["api"], paths: [".github/workflows/**"] } }],
   ])("by %s", async (_name, over) => {
     const { proc, ap, store } = pipeline();
-    const out = await processDraft(proc, KEY, draft({ ...over, provenance: { ...draft().provenance, authors: ["carl"], sourceKinds: ["send_back"] } }));
+    const out = await processDraft(proc, KEY, draft({ ...over, provenance: { ...draft().provenance, authors: ["carl"], sourceKinds: ["send_back"], measured: true } }));
     expect(out.lesson).toMatchObject({ status: "pending", tier: 2 });
     expect(await approveLesson(ap, input("ann", out.lesson!.id))).toMatchObject({ ok: true, status: "pending", needs: "second_person" });
     expect((await store.get(KEY, out.lesson!.id))!.status).toBe("pending");
@@ -427,7 +427,7 @@ describe("owner decision 'Lesson limits': ranking by value", () => {
   const rec = (id: string, over: Partial<Lesson> = {}, prov: Partial<Lesson["provenance"]> = {}) => lessonRecord({ id, status: "pending", approvals: [], provenance: { ...lessonRecord().provenance, sourceKinds: ["human_edit"], supportTasks: ["t1"], authors: ["a"], ...prov }, ...over });
 
   it("measured outcomes outrank recurrence, recurrence outranks severity", () => {
-    const measured = rec("les_meas0001", { type: "preference" }, { sourceKinds: ["send_back"] });
+    const measured = rec("les_meas0001", { type: "preference" }, { sourceKinds: ["send_back"], measured: true });
     const recurring = rec("les_recr0001", { type: "preference" }, { supportTasks: ["t1", "t2", "t3", "t4"], authors: ["a", "b", "c"] });
     const severe = rec("les_sev00001", { type: "pitfall", tier: 2 });
     expect(lessonValue(measured)).toBeGreaterThan(lessonValue(recurring));
@@ -438,15 +438,16 @@ describe("owner decision 'Lesson limits': ranking by value", () => {
   it("harmful marks reduce value; corroboration needs a measured outcome or two tasks", () => {
     const l = rec("les_x0000001");
     expect(lessonValue({ ...l, counters: { loaded: 5, helpful: 0, harmful: 3, citationStale: 0 } })).toBeLessThan(lessonValue(l));
-    expect(isCorroborated({ sourceKinds: ["human_edit"], supportTasks: ["t1"] })).toBe(false);
-    expect(isCorroborated({ sourceKinds: ["human_edit"], supportTasks: ["t1", "t1"] })).toBe(false);
-    expect(isCorroborated({ sourceKinds: ["human_edit"], supportTasks: ["t1", "t2"] })).toBe(true);
-    expect(isCorroborated({ sourceKinds: ["ci_failure"], supportTasks: ["t1"] })).toBe(true);
+    const one = { measured: false, supportTasks: ["t1"], sources: ["member:a"] };
+    expect(isCorroborated(one)).toBe(false);
+    expect(isCorroborated({ ...one, supportTasks: ["t1", "t1"], sources: ["member:a", "member:b"] })).toBe(false);
+    expect(isCorroborated({ ...one, supportTasks: ["t1", "t2"], sources: ["member:a", "member:b"] })).toBe(true);
+    expect(isCorroborated({ ...one, measured: true })).toBe(true);
   });
 
   it("the waiting list and the digest lead with the most valuable lessons", async () => {
     const { store, clock } = approveSetup();
-    await seed(store, rec("les_low00001", { type: "preference", createdAt: 9 }), rec("les_top00001", { type: "preference", createdAt: 1 }, { sourceKinds: ["send_back"] }), rec("les_mid00001", { type: "pitfall", createdAt: 5 }, { supportTasks: ["t1", "t2"] }));
+    await seed(store, rec("les_low00001", { type: "preference", createdAt: 9 }), rec("les_top00001", { type: "preference", createdAt: 1 }, { sourceKinds: ["send_back"], measured: true }), rec("les_mid00001", { type: "pitfall", createdAt: 5 }, { supportTasks: ["t1", "t2"] }));
     expect((await listWaiting(store, KEY, inACL)).map((l) => l.id)).toEqual(["les_top00001", "les_mid00001", "les_low00001"]);
     const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL);
     expect(digest.top.map((i) => i.id)).toEqual(["les_top00001", "les_mid00001", "les_low00001"]);

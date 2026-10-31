@@ -1,5 +1,5 @@
 // Learning v2 text guards (controls C6, C7, C12). Pure code: what a lesson may never ask for, and what always sends a lesson to two people.
-import { cleanLessonText, redactText } from "@agentx/contracts";
+import { cleanLessonText, foldForMatching, redactText } from "@agentx/contracts";
 
 /** Free text from a person or a system, made safe for a model and for storage: secrets redacted, hidden characters and markup removed, bounded. */
 export function cleanForLearning(text: string, maxChars: number): string {
@@ -20,7 +20,7 @@ const CAPABILITY_REQUESTS: readonly RegExp[] = [
   /^\s*(tools|grants|commands|allowedDomains|permissions|allowed-tools)\s*:/imu,
 ];
 export function requestsCapabilityChange(...texts: readonly string[]): boolean {
-  return texts.some((text) => CAPABILITY_REQUESTS.some((pattern) => pattern.test(text)));
+  return texts.map(foldForMatching).some((text) => CAPABILITY_REQUESTS.some((pattern) => pattern.test(text)));
 }
 
 /**
@@ -38,35 +38,50 @@ const ESCALATION: readonly RegExp[] = [
   /\b(approv\w*|reviewers?|code\s+review|sign-?offs?|rubber-?stamp\w*)\b/iu,
 ];
 export function hasEscalationWords(...texts: readonly string[]): boolean {
-  return texts.some((text) => ESCALATION.some((pattern) => pattern.test(text)));
+  return texts.map(foldForMatching).some((text) => ESCALATION.some((pattern) => pattern.test(text)));
 }
 
 /**
- * Text that tells someone what to RUN or where to fetch from: URLs, downloads, shell pipes and commands, package installs, privileged or destructive
- * commands, environment variables. A tier-0 fact says where something is, not what to run, so any of these sends a lesson to two people.
+ * Tier 0 is a positive shape: a plain statement of where something is or what it is called. Anything that tells the agent to run, install, fetch,
+ * download, execute, pipe, source or change something goes to people. A list of known commands is always one spelling behind, so this is a list of the
+ * KINDS of instruction: verbs, script-shaped tokens, make targets, hosts with or without a scheme, shell syntax, environment assignments.
  */
 const COMMANDS: readonly RegExp[] = [
-  /\bhttps?:\/\//iu, /\b(curl|wget|scp|rsync|nc|ncat|telnet)\b/iu, /\|\s*(sh|bash|zsh|python3?|node|perl|ruby)\b/iu, /\b(bash|sh|zsh|pwsh|powershell)\s+(-c|-e)\b/iu,
-  /\b(pip3?|npm|npx|pnpm|yarn|brew|apt(-get)?|yum|gem|cargo|go)\s+(install|add|i|run|exec|dlx|get|x)\b/iu, /\bnpx\s+\S+/iu, /\b(sudo|chmod|chown|eval|exec|source)\b/iu,
-  /\brm\s+-/iu, /\bgit\s+(push|reset|checkout|clone|remote|config|apply|am)\b/iu, /\b(export\s+)?[A-Z][A-Z0-9_]{2,}=\S+/u, /&&|\$\(|`[^`\n]*\s[^`\n]*`/u, /\bdocker\s+(run|exec|build|pull)\b/iu,
+  // Verbs that make a sentence an instruction to act on the machine.
+  /\b(run|runs|running|execute|executes|executing|invoke|invokes|invoking|install|installs|installing|reinstall|download|downloads|downloading|fetch|fetches|fetching|bootstrap|bootstraps|provision|deploy|launch|spawn|restart|kill|pipe|piped|pipes|sourcing|curl|wget|scp|rsync|ncat|telnet|sudo|chmod|chown|eval|exec|iwr|iex|invoke-expression|invoke-webrequest)\b/iu,
+  /\b(put|add|append|prepend)\b[^.\n]{0,30}\b(on|to|in)\s+(the\s+)?(path|ld_library_path|pythonpath)\b/iu,
+  // Package managers and runners, any verb after them.
+  /\b(pip3?|pipx|uvx|poetry|conda|npm|npx|pnpm|yarn|deno|brew|apt(-get)?|yum|dnf|apk|gem|cargo|dotnet|nuget|choco|winget|scoop|helm|kubectl|terraform|docker|podman|cmake|gradle|mvn|rake|bazel|git)\s+[a-z-]+/iu,
+  /\b(go\s+(run|install|get|build|test|generate)|uv\s+(tool|pip|run|sync|add|venv)|bun\s+(run|install|add|x)|make\s+(?!sure\b|it\b|the\b|a\b|an\b|this\b|that\b|them\b|your\b|our\b|no\b|any\b)[a-z][\w-]*)\b/iu,
+  /\b(python3?|node|ruby|perl|php|bash|sh|zsh|pwsh|powershell|java)\s+(-[a-zA-Z-]+\b|[\w-]*[./][\w./-]*)/iu,
+  /\|\s*(sh|bash|zsh|python3?|node|perl|ruby|iex)\b/iu,
+  // Script-shaped tokens and paths.
+  /(^|[\s`'"(])\.{1,2}\/[\w.-]+/u, /\b[\w.-]+\.(sh|ps1|bat|cmd|zsh|bash|run|bin|exe|msi|pkg|deb|rpm)\b/iu, /(^|\/)scripts?\//iu,
+  // URLs with or without a scheme, and IP addresses.
+  /\bhttps?:\/\//iu, /\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|dev|xyz|sh|app|cloud|info|biz|ru|cn|tk|ml|ga|cf|gq|top|site|online|link|zip|mov|ai|ly|gl|gd)(?:\/\S*)?\b/iu, /\b\d{1,3}(?:\.\d{1,3}){3}\b/u,
+  // Shell syntax and environment.
+  /\brm\s+-/iu, /\b(export\s+)?[A-Z][A-Z0-9_]{2,}=\S+/u, /&&|\|\||;\s*\w+\s+-|\$\(|\$\{|`[^`\n]*\s[^`\n]*`|>\s*\/|\/dev\//u,
 ];
 export function hasCommandOrUrl(...texts: readonly string[]): boolean {
-  return texts.some((text) => COMMANDS.some((pattern) => pattern.test(text)));
+  return texts.map(foldForMatching).some((text) => COMMANDS.some((pattern) => pattern.test(text)));
 }
 
 /**
- * Paths where a wrong lesson weakens what protects the project: tests, CI, auth and security code, lockfiles and manifests, container and infra files.
- * A lesson scoped to, or citing, any of them needs two people whatever its text says. Globs are matched as plain strings, so `tests/**` matches.
+ * Paths where a wrong lesson weakens what protects the project: tests, CI, test-runner and lint configs, git hooks, code owners, scripts, auth and security
+ * code, lockfiles and manifests, container and infra files. A lesson scoped to, or citing, any of them needs two people whatever its text says.
+ * Globs are matched as plain strings, so `tests/**` matches. Paths are folded for look-alike letters first.
  */
 const RISKY_PATHS: readonly RegExp[] = [
-  /(^|\/)(tests?|__tests__|specs?|e2e|fixtures|cypress|playwright)(\/|$)/iu, /\.(test|spec)\.[A-Za-z0-9]+/iu, /(^|\/)\*?[A-Za-z0-9_-]*(test|spec)[A-Za-z0-9_-]*\*?(\.|\/|$)/iu,
-  /(^|\/)\.github(\/|$)/iu, /(^|\/)\.gitlab-ci/iu, /(^|\/)(Jenkinsfile|\.circleci|\.buildkite|azure-pipelines|buildspec)/iu, /(^|\/)ci(\/|$)/iu,
-  /(^|\/)\*?(auth|authn|authz|security|secrets?|iam|crypto|permissions?|acl)[A-Za-z0-9_-]*\*?(\/|\.|$)/iu,
-  /(^|\/)(package-lock\.json|package\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|Pipfile\.lock|Cargo\.lock|go\.sum|go\.mod|requirements[A-Za-z0-9_.-]*\.txt)$/iu,
-  /(^|\/)(Dockerfile[A-Za-z0-9_.-]*|docker-compose[A-Za-z0-9_.-]*|Makefile|\.env[A-Za-z0-9_.-]*|\.npmrc|\.pypirc|terraform|infra|deploy|helm|k8s)(\/|$|\.)/iu,
+  /(^|\/)(tests?|__tests__|specs?|e2e|fixtures|cypress|playwright|mocks?|__mocks__|testing|qa)(\/|$)/iu, /\.(test|spec)\.[A-Za-z0-9]+/iu, /(^|\/)\*?[A-Za-z0-9_-]*(test|spec)[A-Za-z0-9_-]*\*?(\.|\/|$)/iu,
+  /(^|\/)\.github(\/|$)/iu, /(^|\/)\.gitlab-ci/iu, /(^|\/)(Jenkinsfile|\.circleci|\.buildkite|azure-pipelines|buildspec|\.travis)/iu, /(^|\/)ci(\/|$)/iu,
+  /(^|\/)(jest|vitest|karma|mocha|cypress|playwright|pytest|tox|nox|coverage|nyc|codecov|sonar|eslint|prettier|stylelint|tslint|babel|webpack|rollup|vite|tsconfig|pyproject|setup|noxfile|conftest|lefthook|commitlint|renovate|dependabot)[\w.-]*(\.(js|cjs|mjs|ts|json|ya?ml|toml|cfg|ini|rc))?$/iu,
+  /(^|\/)(\.husky|\.pre-commit-config|\.eslintrc|\.prettierrc|\.babelrc|\.editorconfig|CODEOWNERS|\.git[a-z]*|hooks|githooks)(\/|\.|$)/iu, /(^|\/)scripts?(\/|$)/iu, /(^|\/)(bin|tools|tooling|build)(\/|$)/iu,
+  /(^|\/)\*?[\w-]*(auth|authn|authz|oauth|oidc|saml|sso|login|logout|signin|signup|session|jwt|token|password|passwd|credential|cred|secret|security|sanitiz|csrf|cors|rbac|policy|policies|permission|privilege|crypto|cipher|keys?|cert|tls|ssl|iam|acl|admin|guard|middleware)[\w-]*\*?(\/|\.|$)/iu,
+  /(^|\/)(package-lock\.json|package\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|Pipfile(\.lock)?|Cargo\.(lock|toml)|go\.(sum|mod)|requirements[A-Za-z0-9_.-]*\.txt|Gemfile(\.lock)?)$/iu,
+  /(^|\/)(Dockerfile[A-Za-z0-9_.-]*|docker-compose[A-Za-z0-9_.-]*|Makefile|\.env[A-Za-z0-9_.-]*|\.npmrc|\.pypirc|\.netrc|terraform|infra|deploy|helm|k8s|kubernetes|ansible|cdk)(\/|$|\.)/iu,
 ];
 export function touchesRiskyPath(paths: readonly string[]): boolean {
-  return paths.some((path) => RISKY_PATHS.some((pattern) => pattern.test(path)));
+  return paths.map(foldForMatching).some((path) => RISKY_PATHS.some((pattern) => pattern.test(path)));
 }
 
 /** Words that flip a rule's direction, for the curator's "opposite polarity" check. */

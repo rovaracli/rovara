@@ -84,7 +84,7 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
 
     const flags = await deps.store.flags(key);
     // A lesson from a source that spiked is collected but held: it is not queued for people or applied until a maintainer resumes the source.
-    const held = isHeldBySource(flags, verified.provenance.sources);
+    const held = isHeldBySource(flags, [...verified.provenance.sources, ...verified.provenance.inputSources]);
     const earned = earnedAttention(verified, decision.tier) && (!held || current.status === "pending");
     // A higher tier than before means earlier approvals were for less risk: they no longer count.
     const approvals = decision.tier > current.tier ? [] : current.approvals;

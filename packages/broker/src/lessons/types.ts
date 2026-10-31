@@ -112,6 +112,10 @@ export const LessonProvenanceSchema = z.object({
   supportTasks: z.array(z.string().max(100)).max(50),
   /** Where the evidence came from, for per-source spike detection: `member:<id>`, `slack:<channel>`, `ci`, or a span kind. */
   sources: z.array(z.string().max(120)).max(20),
+  /** Every source present in the reflector's input (not only the cited ones), for spike detection and holds. Never used for corroboration. */
+  inputSources: z.array(z.string().max(120)).max(40),
+  /** Set by code, from structured facts of the task (a member send-back with its reason, a revert, a CI failure recorded by Rovara), never from what the model cited. */
+  measured: z.boolean(),
   minTrust: TrustClassSchema, audience: AudienceSchema, reflectorRun: z.string().max(100), model: z.string().max(100),
   /** Set when a person asked for the lesson with "remember this" or a member's edit made it (a strong signal). */
   memberSignal: z.boolean(),
@@ -157,7 +161,7 @@ export const isRestricted = (lesson: Pick<Lesson, "provenance">): boolean => les
 export const LESSON_AUDIT_ACTIONS = [
   "lesson.candidate_created", "lesson.merged", "lesson.updated", "lesson.pending", "lesson.auto_applied", "lesson.approved", "lesson.activated",
   "lesson.rejected", "lesson.retired", "lesson.auto_retired", "lesson.retire_proposed", "lesson.refused", "lesson.stale", "lesson.expired",
-  "lesson.rolled_back", "lesson.promoted", "lesson.wrong_here", "lesson.helpful", "lesson.source_paused", "lesson.source_resumed",
+  "lesson.rolled_back", "lesson.promoted", "lesson.wrong_here", "lesson.helpful", "lesson.source_paused", "lesson.source_resumed", "lesson.volume_spike",
   "lesson.sole_owner_exception", "lesson.citation_moved", "lesson.contradiction", "lesson.withdrawn", "lesson.promote_failed", "lesson.held_source_paused",
 ] as const;
 export type LessonAuditAction = (typeof LESSON_AUDIT_ACTIONS)[number];

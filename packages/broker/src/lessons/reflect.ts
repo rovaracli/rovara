@@ -109,8 +109,10 @@ async function toDraft(
     if (span === undefined || span.trust === "outsider") return undefined;
     cited.push(span);
   }
-  // A lesson the model was shown cannot be its own evidence: citing only `loaded_lesson` spans would let a lesson re-derive itself and collect support.
-  if (cited.every((s) => s.kind === "loaded_lesson")) return undefined;
+  // A lesson the model was shown can never be evidence for itself, whatever else is cited: loaded_lesson spans are dropped from the evidence, and a candidate
+  // with nothing else behind it is dropped. They still count for trust and audience below (they were read).
+  const evidence = cited.filter((s) => s.kind !== "loaded_lesson");
+  if (evidence.length === 0) return undefined;
   const title = cleanForLearning(candidate.title, 80);
   const description = cleanForLearning(candidate.description, 160);
   const body = cleanForLearning(candidate.body, 600);
@@ -122,7 +124,7 @@ async function toDraft(
   }
 
   const citations: LessonCitation[] = [];
-  const events = new Set(cited.flatMap((s) => (s.eventId === undefined ? [] : [s.eventId])));
+  const events = new Set(evidence.flatMap((s) => (s.eventId === undefined ? [] : [s.eventId])));
   for (const citation of candidate.citations) {
     if (citation.kind === "code") {
       // C8: base or merged commit only, in the task's own repositories, never the pull request branch head.
@@ -144,14 +146,19 @@ async function toDraft(
   const trust: TrustClass = minTrust(everything.map((s) => s.trust));
   if (trust === "outsider") return undefined;
   const audience: Audience = narrowestAudience([...everything.flatMap((s) => (s.audience === undefined ? [] : [s.audience])), ...(subject.audience === undefined ? [] : [subject.audience])]);
-  const sources = [...new Set(cited.map((s) => s.sourceKey ?? (s.authorId === undefined ? `kind:${s.kind}` : `member:${s.authorId}`)))].slice(0, 20);
-  const authors = [...new Set(cited.flatMap((s) => (s.trust === "member" && s.authorId !== undefined ? [s.authorId] : [])))];
+  const sourceOf = (s: MarkedSpan): string => s.sourceKey ?? (s.authorId === undefined ? `kind:${s.kind}` : `member:${s.authorId}`);
+  const sources = [...new Set(evidence.map(sourceOf))].slice(0, 20);
+  // Spike detection counts every source the model read, so flood text it chose not to cite is still seen.
+  const inputSources = [...new Set(everything.filter((s) => s.kind !== "loaded_lesson").map(sourceOf))].slice(0, 40);
+  // Measured outcomes come from structured facts in the input, never from which spans the model cited.
+  const measured = subject.outcome === "reverted" || everything.some((s) => (s.kind === "send_back" && s.trust === "member") || (s.kind === "ci_failure" && s.trust === "rovara"));
+  const authors = [...new Set(evidence.flatMap((s) => (s.trust === "member" && s.authorId !== undefined ? [s.authorId] : [])))];
   return {
     type: candidate.type, title, description, body, scope: candidate.scope, stages: [...new Set(candidate.stages)], citations,
     provenance: {
-      sourceEvents: [...events], sourceKinds: [...new Set(cited.map((s) => s.kind))], authors, supportTasks: subject.kind === "task" ? [subject.id] : [], sources,
+      sourceEvents: [...events], sourceKinds: [...new Set(evidence.map((s) => s.kind))], authors, supportTasks: subject.kind === "task" ? [subject.id] : [], sources, inputSources, measured,
       minTrust: trust, audience, reflectorRun: runId, model: model.slice(0, 100),
-      memberSignal: cited.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit")),
+      memberSignal: evidence.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit")),
     },
   };
 }

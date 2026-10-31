@@ -48,7 +48,7 @@ export function learningCaps(edition: Edition, override?: LearningCaps): Learnin
  * is per-source spike detection: a source whose daily count reaches SPIKE_MULTIPLE times its own learned baseline (and at least SPIKE_MINIMUM that day) is
  * paused alone, and the maintainer is alerted. Other sources carry on.
  */
-export const SPIKE = { multiple: 10, minimum: 10, baselineDays: 14, baselineFloor: 1 } as const;
+export const SPIKE = { multiple: 10, minimum: 10, baselineDays: 14, baselineFloor: 1, projectMinimum: 30 } as const;
 
 export const MIN_EXPIRY_DAYS = 14;
 export const MAX_EXPIRY_DAYS = 365;
@@ -58,22 +58,41 @@ export const PREFERENCE_EXPIRY_DAYS = 180;
 export interface LearningSettings {
   /** The project's own choice; absent means the default. */
   mode?: LearningMode;
-  /** The company's lock: when set, it wins over the project's mode. */
+  /** The company's lock (owner decision M8): it can only make the project stricter. The effective mode is the more restrictive of the lock and the project's own choice. */
   companyLock?: LearningMode;
+  /** The company's approval floor: a project can ask for more approvers than this, never fewer, and cannot drop a required group set here. */
+  companyApproval?: Partial<ApprovalPolicy>;
   approval?: Partial<ApprovalPolicy>;
   expiryDays?: number;
 }
 export interface LearningSettingsReader { read(workspaceId: string, project: string): Promise<LearningSettings> }
 
 export interface ResolvedLearning { mode: LearningMode; approval: ApprovalPolicy; expiryDays: number | undefined }
+const MODE_ORDER: readonly LearningMode[] = ["Off", "Collect", "Suggest", "On"];
+/** The more restrictive mode: Off is the strictest, On the loosest. */
+export const stricterMode = (a: LearningMode, b: LearningMode): LearningMode => (MODE_ORDER.indexOf(a) <= MODE_ORDER.indexOf(b) ? a : b);
+const LEVEL: Record<ApprovalPolicy["tier0"], number> = { auto: 0, one: 1, two: 2 };
+const NAMES = ["auto", "one", "two"] as const;
+function stricterApproval(project: ApprovalPolicy, floor: ApprovalPolicy, hasFloor: boolean): ApprovalPolicy {
+  if (!hasFloor) return project;
+  const tier0 = NAMES[Math.max(LEVEL[project.tier0], LEVEL[floor.tier0])]!;
+  const tier1 = NAMES[Math.max(LEVEL[project.tier1], LEVEL[floor.tier1], 1)] as ApprovalPolicy["tier1"];
+  const requiredGroup = floor.requiredGroup ?? project.requiredGroup;
+  return { tier0, tier1, ...(requiredGroup === undefined ? {} : { requiredGroup }) };
+}
 /** Reads the settings and fails closed: a reader that throws, or settings that do not parse, give mode Off. */
 export async function resolveLearning(reader: LearningSettingsReader, workspaceId: string, project: string): Promise<ResolvedLearning> {
   const off: ResolvedLearning = { mode: "Off", approval: DEFAULT_APPROVAL_POLICY, expiryDays: undefined };
   let settings: LearningSettings;
   try { settings = await reader.read(workspaceId, project); } catch { return off; }
-  const mode = LearningModeSchema.safeParse(settings.companyLock ?? settings.mode ?? DEFAULT_LEARNING_MODE);
-  const approval = ApprovalPolicySchema.safeParse({ ...DEFAULT_APPROVAL_POLICY, ...(settings.approval ?? {}) });
-  if (!mode.success || !approval.success) return off;
+  const own = LearningModeSchema.safeParse(settings.mode ?? DEFAULT_LEARNING_MODE);
+  const lock = settings.companyLock === undefined ? undefined : LearningModeSchema.safeParse(settings.companyLock);
+  if (!own.success || (lock !== undefined && !lock.success)) return off;
+  const mode = { success: true as const, data: lock === undefined ? own.data : stricterMode(own.data, lock.data) };
+  const projectApproval = ApprovalPolicySchema.safeParse({ ...DEFAULT_APPROVAL_POLICY, ...(settings.approval ?? {}) });
+  const floor = ApprovalPolicySchema.safeParse({ ...DEFAULT_APPROVAL_POLICY, ...(settings.companyApproval ?? {}) });
+  if (!projectApproval.success || !floor.success) return off;
+  const approval = { success: true as const, data: stricterApproval(projectApproval.data, floor.data, settings.companyApproval !== undefined) };
   const days = settings.expiryDays;
   if (days !== undefined && (!Number.isInteger(days) || days < MIN_EXPIRY_DAYS || days > MAX_EXPIRY_DAYS)) return off;
   return { mode: mode.data, approval: approval.data, expiryDays: days };

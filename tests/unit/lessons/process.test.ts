@@ -23,7 +23,7 @@ const text = (title: string, body: string, over: Partial<LessonDraft> = {}): Les
 
 const DAY = 86_400_000;
 const unique = (i: number, sources: string[], over: Partial<LessonDraft["provenance"]> = {}): LessonDraft =>
-  draft({ title: `Topic ${i}`, description: "", body: Array.from({ length: 12 }, (_, j) => `w${i}x${j}q${i * 31 + j}`).join(" "), provenance: { ...draft().provenance, sources, authors: [], memberSignal: false, sourceKinds: ["send_back"], ...over } });
+  draft({ title: `Topic ${i}`, description: "", body: Array.from({ length: 12 }, (_, j) => `w${i}x${j}q${i * 31 + j}`).join(" "), provenance: { ...draft().provenance, sources, inputSources: sources, authors: [], memberSignal: false, sourceKinds: ["send_back"], measured: true, ...over } });
 
 describe("per-source spike detection (owner decision 'Lesson limits': no flat caps)", () => {
   async function history(store: InMemoryLessonStore, clock: Clock, source: string, perDay: number, days = 14): Promise<void> {
@@ -98,17 +98,15 @@ describe("corroboration for tier-0 auto-apply (owner decision 'Lesson limits')",
   });
 
   it("a measured outcome backs it up: it goes live", async () => {
-    for (const kind of ["send_back", "ci_failure", "outcome"] as const) {
-      const { deps } = setup();
-      expect((await processDraft(deps, KEY, fact({ sourceKinds: [kind] }))).lesson).toMatchObject({ status: "active" });
-    }
+    const { deps } = setup();
+    expect((await processDraft(deps, KEY, fact({ sourceKinds: ["send_back"], measured: true }))).lesson).toMatchObject({ status: "active" });
   });
 
   it("two independent tasks back it up: the second one corroborates, and the merged fact goes live", async () => {
     const { deps } = setup();
     const first = await processDraft(deps, KEY, fact({ sourceKinds: ["human_edit"] }));
     expect(first.lesson!.status).toBe("candidate");
-    const second = await processDraft(deps, KEY, fact({ sourceKinds: ["human_edit"], supportTasks: ["task-2"], sourceEvents: ["ev-2"] }));
+    const second = await processDraft(deps, KEY, fact({ sourceKinds: ["human_edit"], supportTasks: ["task-2"], sourceEvents: ["ev-2"], authors: ["bob"], sources: ["member:bob"], inputSources: ["member:bob"] }));
     expect(second.outcome.outcome).toBe("merged");
     expect(second.lesson).toMatchObject({ status: "active" });
   });
@@ -140,7 +138,7 @@ describe("promotion to pending (design §4.5.2 step 5) and tier-0 routing", () =
     expect(result.lesson).toMatchObject({ status: "pending", tier: 1 });
   });
 
-  const measured = (over: Partial<LessonDraft["provenance"]> = {}) => ({ ...draft().provenance, memberSignal: false, sourceKinds: ["send_back" as const], ...over });
+  const measured = (over: Partial<LessonDraft["provenance"]> = {}) => ({ ...draft().provenance, memberSignal: false, sourceKinds: ["send_back" as const], measured: true, ...over });
 
   it("a cited fact backed by a measured outcome goes live by itself in mode On (decisions Q2 and Lesson limits), audited", async () => {
     const { deps, audit } = setup();

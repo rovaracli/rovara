@@ -13,6 +13,7 @@ const mean = (values: readonly number[]): number => (values.length === 0 ? 0 : v
 export async function noteCandidateSources(deps: LessonDeps, store: LessonStore, key: ScopeKey, sources: readonly string[], alerts?: AlertSink): Promise<string[]> {
   const paused: string[] = [];
   const now = deps.now();
+  await noteProjectVolume(deps, store, key, alerts);
   for (const source of new Set(sources)) {
     await store.recordSourceEvent(key, { at: now, source });
     const days = await store.sourceDays(key, source, SPIKE.baselineDays + 1, now);
@@ -27,6 +28,28 @@ export async function noteCandidateSources(deps: LessonDeps, store: LessonStore,
     try { await alerts?.alert(key.workspaceId, key.project, "source_spike_paused"); } catch { /* the pause already holds */ }
   }
   return paused;
+}
+
+/** The key under which the whole project's candidate volume is counted. */
+export const PROJECT_VOLUME_KEY = "*project*";
+const DAY = 86_400_000;
+
+/**
+ * A project-wide signal: when the day's total candidates reach ten times the project's own baseline (and at least 30), the maintainer is alerted, once a day.
+ * Nothing is paused: only a source that spikes on its own is paused (owner decision). This catches a flood spread thinly across many sources.
+ */
+async function noteProjectVolume(deps: LessonDeps, store: LessonStore, key: ScopeKey, alerts?: AlertSink): Promise<void> {
+  const now = deps.now();
+  await store.recordSourceEvent(key, { at: now, source: PROJECT_VOLUME_KEY });
+  const days = await store.sourceDays(key, PROJECT_VOLUME_KEY, SPIKE.baselineDays + 1, now);
+  const today = days[0] ?? 0;
+  const baseline = Math.max(mean(days.slice(1)), SPIKE.baselineFloor);
+  if (today < Math.max(SPIKE.multiple * baseline, SPIKE.projectMinimum)) return;
+  const flags = await store.flags(key);
+  if (flags.volumeAlertedAt !== undefined && now - flags.volumeAlertedAt < DAY) return;
+  await store.setFlags(key, { ...flags, volumeAlertedAt: now });
+  await emitAudit(deps.audit, { action: "lesson.volume_spike", workspaceId: key.workspaceId, project: key.project, facts: { today, baseline: Math.round(baseline * 10) / 10 } });
+  try { await alerts?.alert(key.workspaceId, key.project, "project_volume_spike"); } catch { /* the audit record holds */ }
 }
 
 /** True when any of a lesson's sources is paused: the lesson is held. */

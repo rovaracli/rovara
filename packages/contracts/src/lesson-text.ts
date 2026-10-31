@@ -22,6 +22,21 @@ export function neutraliseMarkup(text: string): string {
     .replace(/\n{3,}/gu, "\n\n");
 }
 
+/** Look-alike letters (Cyrillic, Greek, fullwidth after NFKC) that people use to dodge a word list, mapped to the Latin letter they imitate. */
+const CONFUSABLES: Record<string, string> = {
+  "\u0430": "a", "\u0435": "e", "\u043E": "o", "\u0440": "p", "\u0441": "c", "\u0445": "x", "\u0443": "y", "\u0456": "i", "\u0458": "j", "\u0455": "s", "\u0501": "d", "\u051B": "q",
+  "\u04BB": "h", "\u0432": "b", "\u043A": "k", "\u043C": "m", "\u043D": "h", "\u0442": "t", "\u0433": "r",
+  "\u0410": "A", "\u0412": "B", "\u0415": "E", "\u041A": "K", "\u041C": "M", "\u041D": "H", "\u041E": "O", "\u0420": "P", "\u0421": "C", "\u0422": "T", "\u0425": "X", "\u0406": "I", "\u0408": "J", "\u0405": "S",
+  "\u03B1": "a", "\u03BF": "o", "\u03BD": "v", "\u03C1": "p", "\u03B9": "i", "\u03BA": "k", "\u03C4": "t", "\u03C5": "u", "\u03B5": "e", "\u03C7": "x", "\u0391": "A", "\u0392": "B", "\u0395": "E", "\u039F": "O", "\u03A1": "P", "\u03A4": "T",
+  "\u0131": "i", "\u0269": "i", "\u0261": "g", "\u1D00": "a", "\u2113": "l",
+};
+/** Text folded for matching word lists: hidden characters out, NFKC, look-alikes to Latin. Never used for storage or display. */
+export function foldForMatching(text: string): string {
+  let out = "";
+  for (const ch of stripHiddenCharacters(text)) out += CONFUSABLES[ch] ?? ch;
+  return out;
+}
+
 /** Hidden characters out, then markup out, then trimmed and cut to `maxChars` (code points). */
 export function cleanLessonText(text: string, maxChars: number): string {
   const cleaned = neutraliseMarkup(stripHiddenCharacters(text)).trim();

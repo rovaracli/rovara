@@ -21,7 +21,7 @@ export interface LoadManifest {
 }
 export interface PendingOutcome { key: string; workspaceId: string; project: string; lessonId: string; taskId: string; dueAt: number }
 /** A source paused by spike detection: its lessons are collected but held until a maintainer resumes the source. */
-export interface ProjectFlags { pausedSources?: Record<string, { at: number; reason: string }> }
+export interface ProjectFlags { pausedSources?: Record<string, { at: number; reason: string }>; volumeAlertedAt?: number }
 export interface SetSnapshot { setVersion: number; at: number; members: Array<{ id: string; version: number }> }
 
 export interface LessonStore {

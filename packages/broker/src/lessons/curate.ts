@@ -102,7 +102,7 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
     provenance: {
       ...target.provenance,
       sourceEvents: union(target.provenance.sourceEvents, draft.provenance.sourceEvents, 50), sourceKinds: union(target.provenance.sourceKinds, draft.provenance.sourceKinds, 20),
-      authors: union(target.provenance.authors, draft.provenance.authors, 20), sources: union(target.provenance.sources, draft.provenance.sources, 20), supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
+      authors: union(target.provenance.authors, draft.provenance.authors, 20), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: union(target.provenance.inputSources, draft.provenance.inputSources, 40), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
       memberSignal: target.provenance.memberSignal || draft.provenance.memberSignal,
       minTrust: minTrust([target.provenance.minTrust, draft.provenance.minTrust]), audience: narrowestAudience([target.provenance.audience, draft.provenance.audience]),
     },
@@ -125,7 +125,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   if (!z.array(LessonCitationSchema).max(6).safeParse(draft.citations).success || !LessonProvenanceSchema.safeParse(draft.provenance).success || !LessonScopeSchema.safeParse(draft.scope).success) return drop("invalid");
 
   // Every candidate is collected (no flat caps). It is counted against its sources; a spiking source is paused alone and its lessons are held, not dropped.
-  await noteCandidateSources(deps, deps.store, key, draft.provenance.sources, deps.alerts);
+  await noteCandidateSources(deps, deps.store, key, [...draft.provenance.sources, ...draft.provenance.inputSources], deps.alerts);
 
   let vector: number[];
   try { vector = await deps.embedder.embed(lessonText(draft)); } catch { deps.metrics?.count("learning.embed_failed"); return drop("embed_failed"); }
