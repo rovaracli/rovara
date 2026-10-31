@@ -50,6 +50,7 @@ export * from "./meta-project.js";
 export * from "./project-commands.js";
 export * from "./protocol.js";
 export * from "./live-steer.js";
+export * from "./live-interaction.js";
 export * from "./redaction.js";
 export * from "./review-output.js";
 export * from "./release.js";
