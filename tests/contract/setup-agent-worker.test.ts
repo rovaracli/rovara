@@ -163,6 +163,20 @@ describe("the scan (plain code)", () => {
     expect(scan.setup[0]?.confidence).toBe("low");
   });
 
+  it("stops listing folders when its overall budget of entries is spent, says so, and keeps what it found before that", async () => {
+    const files: Files = { meta: { "AGENTS.md": "# rules\n", ...Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`.agents/skills/s${String(index).padStart(2, "0")}/x/y/note.txt`, "n"])), "runbooks/oncall.md": "# On call\n" } };
+    const rootPath = await workspace(files);
+    const pathsOf = (scan: { knowledge: unknown[] }) => scan.knowledge.map((entry) => (entry as { path: string }).path);
+    const full = await scanRepositories(rootPath, repositoriesOf(["meta"]), { metaRepo: "meta" });
+    expect(pathsOf(full)).toEqual(expect.arrayContaining(["AGENTS.md", "runbooks"]));
+    expect(full.notes.join(" ")).not.toContain("too large");
+    const tight = await scanRepositories(rootPath, repositoriesOf(["meta"]), { metaRepo: "meta", entriesBudget: 6 });
+    expect(tight.notes.join(" ")).toContain("too large to list in full");
+    // Root files are looked at without listing, so they are still found; the listing of later folders is what ran out.
+    expect(pathsOf(tight)).toContain("AGENTS.md");
+    expect(pathsOf(tight)).not.toContain("runbooks");
+  });
+
   it("notes a repository that already has .rovara/project.yaml instead of proposing its values", async () => {
     const rootPath = await workspace({ meta: { ".rovara/project.yaml": "version: 1\n" } });
     const scan = await scanRepositories(rootPath, repositoriesOf(["meta"]), { metaRepo: "meta" });
@@ -245,6 +259,28 @@ describe("reading the answer with the scan", () => {
     const missing = proposalOf(await read(block({ ...NODE_ANSWER, devcontainer: { repository: "web", configPath: ".devcontainer/devcontainer.json", exists: true, proposedContent: "{\"image\":\"node:22\"}", from } })));
     expect(missing.devcontainer!.value).toMatchObject({ exists: false, proposedContent: "{\"image\":\"node:22\"}" });
     expect(missing.devcontainer!.risk).toBe("needs_admin");
+  });
+
+  it("does not count a dev container file that is a link (or inside a linked folder) as there, and never looks at a path outside the allowed places", async () => {
+    const rootPath = await workspace({ meta: KIRO_META, web: NODE_CODE, secrets: { "devcontainer.json": "{\"leak\":true}" } }, { repositories: ["meta", "web"] });
+    await mkdir(join(rootPath, "repo/web/.devcontainer"), { recursive: true });
+    await symlink(join(rootPath, "repo/secrets/devcontainer.json"), join(rootPath, "repo/web/.devcontainer/devcontainer.json"));
+    const from = [{ kind: "file", repo: "web", path: "package.json" }];
+    const proposedContent = "{\"image\":\"node:22\"}";
+    const answer = (configPath: string) => block({ ...NODE_ANSWER, devcontainer: { repository: "web", configPath, exists: true, proposedContent, from } });
+    const read1 = async (configPath: string) => {
+      const outcome = await readSetupProposalAnswer(answer(configPath), { basedOnRevision: 4, rootPath, repositories: repositoriesOf(["meta", "web"]), metaRepo: "meta" });
+      if (!outcome.ok) throw new Error(outcome.errors.join("; "));
+      return outcome.proposal;
+    };
+    // A link to a file is not a file there.
+    expect((await read1(".devcontainer/devcontainer.json")).devcontainer!.value).toMatchObject({ exists: false });
+    // A folder that is a link is not looked into.
+    await rm(join(rootPath, "repo/web/.devcontainer"), { recursive: true, force: true });
+    await symlink(join(rootPath, "repo/secrets"), join(rootPath, "repo/web/.devcontainer"));
+    expect((await read1(".devcontainer/devcontainer.json")).devcontainer!.value).toMatchObject({ exists: false });
+    // A path outside the allowed places is dropped by the reader whatever is on disk.
+    expect((await read1("../secrets/devcontainer.json")).devcontainer).toBeUndefined();
   });
 
   it("still returns what the scan found when the model gave no block, and says so; it has nothing to return when the scan found nothing either", async () => {

@@ -6,10 +6,10 @@
 // configs, hooks, other tools' project files), reads the lot with `sanitizeSetupProposal` (bounded, redacted, cited, secrets by name only, commands as the executor will run
 // them, every download-and-run command flagged and never an item), puts the commit it actually cloned on every file citation, and checks for itself, in the repository, whether the
 // dev container file the proposal names is already there. The broker reads the proposal again and re-reads every citation from GitHub; the worker's copy is never trusted.
-import { stat } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  SETUP_COMMANDS_MAX, SETUP_PROPOSAL_INFO_STRING, SETUP_SECRETS_MAX, sanitizeSetupProposal, setupProposalAnswerOf, type SetupProposal,
+  DEVCONTAINER_PATH_PATTERN, SETUP_COMMANDS_MAX, SETUP_PROPOSAL_INFO_STRING, SETUP_SECRETS_MAX, sanitizeSetupProposal, setupProposalAnswerOf, type SetupProposal,
 } from "@agentx/contracts";
 import { scanRepositories, type SetupScan } from "./setup-scan.js";
 
@@ -60,9 +60,26 @@ export function setupProposalRetryPrompt(errors: readonly string[]): string {
   return `Your answer could not be read as a setup proposal (${errors.join("; ")}). Answer again with exactly one block labelled ${SETUP_PROPOSAL_INFO_STRING} holding the JSON proposal, following the rules above, with a \`from\` on every item, and nothing after it.`;
 }
 
-/** Whether the file exists in the repository's directory. The path is one the reader accepts (a devcontainer.json at a fixed place, no `..`), so it cannot leave the repository. */
+/**
+ * Whether the dev container file is a real file in the repository's directory. The model's path is checked against the allowed places FIRST (a devcontainer.json at a fixed
+ * place, no `..`), so nothing outside the repository is ever looked at; then every part of the path is looked at with `lstat`, and a link anywhere on it (the file or a folder)
+ * means it is not there, so a link cannot make a file outside the repository read as part of it.
+ */
 async function exists(rootPath: string, repository: { path: string }, configPath: string): Promise<boolean> {
-  try { return (await stat(join(rootPath, repository.path, configPath))).isFile(); } catch { return false; }
+  if (!DEVCONTAINER_PATH_PATTERN.test(configPath)) return false;
+  try {
+    const parts = configPath.split("/");
+    let current = join(rootPath, repository.path);
+    for (const [index, part] of parts.entries()) {
+      current = join(current, part);
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) return false;
+      if (index === parts.length - 1 ? !info.isFile() : !info.isDirectory()) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** `answered`: the model gave a block that could be read; false means the proposal holds only what the scan found. */

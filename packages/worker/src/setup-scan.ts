@@ -29,6 +29,11 @@ export interface SetupScan {
 
 const FILE_READ_MAX = 65_536;
 const WALK_ENTRIES_MAX = 200;
+/** All the folder entries one scan may list, across every folder and repository: one default folder could otherwise cost 200 x 200 listings, and there are many default folders. */
+export const SCAN_ENTRIES_BUDGET = 2_000;
+
+/** What is left of a scan's listing budget; `spent` is set when a listing was cut short for want of it. */
+interface Budget { left: number; spent: boolean }
 const SERVER_NAMES_MAX = 16;
 const NAME_LIKE = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/u;
 
@@ -83,28 +88,33 @@ async function readText(root: string, relative: string, max = FILE_READ_MAX): Pr
   }
 }
 
-async function names(root: string, relative: string): Promise<Array<{ name: string; kind: Kind }>> {
+async function names(root: string, relative: string, budget: Budget): Promise<Array<{ name: string; kind: Kind }>> {
+  if (budget.left <= 0) { budget.spent = true; return []; }
   if (!await plain(root, relative, "directory")) return [];
   try {
     const entries = await readdir(join(root, relative), { withFileTypes: true });
-    return entries
+    const listed = entries
       .filter((entry) => !entry.isSymbolicLink() && (entry.isFile() || entry.isDirectory()))
       .map((entry) => ({ name: entry.name, kind: entry.isDirectory() ? "directory" as const : "file" as const }))
-      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
-      .slice(0, WALK_ENTRIES_MAX);
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    // Each listing costs one, plus one for each entry it returns.
+    const kept = listed.slice(0, Math.min(WALK_ENTRIES_MAX, Math.max(0, budget.left - 1)));
+    if (kept.length < listed.length) budget.spent = true;
+    budget.left -= kept.length + 1;
+    return kept;
   } catch {
     return [];
   }
 }
 
 /** The first document file under a folder (shallowest first, then by name), at most three levels deep; undefined for an empty folder. */
-async function firstDocument(root: string, relative: string, depth = 0): Promise<string | undefined> {
-  const entries = await names(root, relative);
+async function firstDocument(root: string, relative: string, budget: Budget, depth = 0): Promise<string | undefined> {
+  const entries = await names(root, relative, budget);
   for (const entry of entries) if (entry.kind === "file" && DOC_FILE.test(entry.name)) return `${relative}/${entry.name}`;
   if (depth >= 2) return undefined;
   for (const entry of entries) {
     if (entry.kind !== "directory") continue;
-    const found = await firstDocument(root, `${relative}/${entry.name}`, depth + 1);
+    const found = await firstDocument(root, `${relative}/${entry.name}`, budget, depth + 1);
     if (found !== undefined) return found;
   }
   return undefined;
@@ -119,27 +129,29 @@ function parseJson(text: string | undefined): unknown {
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Everything the scan finds in the meta repository (knowledge, specs) and in every repository (MCP configs, hooks, project files). */
-export async function scanRepositories(rootPath: string, repositories: readonly ScanRepository[], options: { metaRepo?: string | undefined } = {}): Promise<SetupScan> {
+export async function scanRepositories(rootPath: string, repositories: readonly ScanRepository[], options: { metaRepo?: string | undefined; entriesBudget?: number } = {}): Promise<SetupScan> {
   const scan: SetupScan = { repositories: [], setup: [], tests: [], checks: [], knowledge: [], sources: [], foundNotUsed: [], notes: [] };
   const metaName = options.metaRepo ?? (repositories.length === 1 ? repositories[0]!.name : undefined);
   if (options.metaRepo !== undefined && !repositories.some((repository) => repository.name === options.metaRepo)) {
     scan.notes.push("The meta repository was not among the repositories Rovara could read, so its rules, skills and specs were not looked at.");
   }
+  const budget: Budget = { left: options.entriesBudget ?? SCAN_ENTRIES_BUDGET, spent: false };
   for (const repository of repositories) {
     const root = join(rootPath, repository.path);
-    if (repository.name === metaName) await scanKnowledge(root, repository.name, scan);
-    await scanConfigs(root, repository.name, scan);
+    if (repository.name === metaName) await scanKnowledge(root, repository.name, scan, budget);
+    await scanConfigs(root, repository.name, scan, budget);
   }
+  if (budget.spent) scan.notes.push("The folders were too large to list in full, so some rules, skills or specs may not be listed.");
   return scan;
 }
 
-async function scanKnowledge(root: string, repo: string, scan: SetupScan): Promise<void> {
+async function scanKnowledge(root: string, repo: string, scan: SetupScan, budget: Budget): Promise<void> {
   for (const path of ROOT_RULE_FILES) {
     if (await plain(root, path, "file")) scan.knowledge.push({ path, kind: "rule", activation: "always", confidence: "high", from: [cite(repo, path)] });
   }
   for (const group of KNOWLEDGE_DIRS) {
     for (const path of group.paths) {
-      const first = await firstDocument(root, path);
+      const first = await firstDocument(root, path, budget);
       if (first !== undefined) scan.knowledge.push({ path, kind: group.kind, confidence: "high", from: [cite(repo, first)] });
     }
   }
@@ -147,7 +159,7 @@ async function scanKnowledge(root: string, repo: string, scan: SetupScan): Promi
     if (await plain(root, path, "file")) scan.knowledge.push({ path, kind: "keyDoc", confidence: "medium", from: [cite(repo, path)] });
   }
   // Spec formats. Kiro keeps a folder per feature with requirements (or bugfix), design and tasks; Spec Kit keeps `specs/<number>-<name>/spec.md`.
-  for (const feature of await names(root, ".kiro/specs")) {
+  for (const feature of await names(root, ".kiro/specs", budget)) {
     if (feature.kind !== "directory") continue;
     for (const file of ["requirements.md", "bugfix.md", "design.md", "tasks.md"]) {
       const path = `.kiro/specs/${feature.name}/${file}`;
@@ -156,7 +168,7 @@ async function scanKnowledge(root: string, repo: string, scan: SetupScan): Promi
     if (scan.specTarget !== undefined) break;
   }
   if (scan.specTarget === undefined) {
-    for (const feature of await names(root, "specs")) {
+    for (const feature of await names(root, "specs", budget)) {
       if (feature.kind !== "directory") continue;
       const path = `specs/${feature.name}/spec.md`;
       if (await plain(root, path, "file")) { scan.specTarget = { format: "spec_kit", path: "specs", confidence: "medium", from: [cite(repo, path)] }; break; }
@@ -170,7 +182,7 @@ async function scanKnowledge(root: string, repo: string, scan: SetupScan): Promi
   }
 }
 
-async function scanConfigs(root: string, repo: string, scan: SetupScan): Promise<void> {
+async function scanConfigs(root: string, repo: string, scan: SetupScan, budget: Budget): Promise<void> {
   for (const path of MCP_CONFIG_PATHS) {
     const config = parseJson(await readText(root, path));
     if (!isObject(config)) continue;
@@ -182,7 +194,7 @@ async function scanConfigs(root: string, repo: string, scan: SetupScan): Promise
       if (NAME_LIKE.test(name)) scan.sources.push({ name, foundIn: "mcp_config", confidence: "high", from: [cite(repo, path)] });
     }
   }
-  if ((await names(root, ".kiro/hooks")).length > 0) scan.foundNotUsed.push({ kind: "hook", repo, path: ".kiro/hooks" });
+  if ((await names(root, ".kiro/hooks", budget)).length > 0) scan.foundNotUsed.push({ kind: "hook", repo, path: ".kiro/hooks" });
   const claudeSettings = parseJson(await readText(root, ".claude/settings.json"));
   if (isObject(claudeSettings) && isObject(claudeSettings["hooks"]) && Object.keys(claudeSettings["hooks"]).length > 0) scan.foundNotUsed.push({ kind: "hook", repo, path: ".claude/settings.json" });
   for (const importer of PROJECT_FILE_IMPORTERS) {
