@@ -102,7 +102,7 @@ describe("resolvePayer", () => {
       resolved[origin] = resolvePayer(input).kind;
     }
     expect(resolved).toEqual({
-      app: "member", cli: "member", mcp: "member", slack: "member", linear: "member", offer: "member",
+      app: "member", cli: "member", mcp: "member", slack: "member", linear: "member", jira: "member", github_issue: "member", tracker: "member", offer: "member",
       test_run: "project", event: "agent", schedule: "agent", chain: "project",
     });
     // And with the project paying, only the origins above projectPays in the order keep their payer.
@@ -111,7 +111,7 @@ describe("resolvePayer", () => {
       paying[origin] = resolvePayer(base({ origin, projectPays: true, chainPayer: { kind: "member", developerId: OMAR }, assignedBy: { developerId: OMAR, bot: false }, acceptedBy: { developerId: KIT } })).kind;
     }
     expect(paying).toEqual({
-      app: "project", cli: "project", mcp: "project", slack: "project", linear: "project", offer: "project",
+      app: "project", cli: "project", mcp: "project", slack: "project", linear: "project", jira: "project", github_issue: "project", tracker: "project", offer: "project",
       test_run: "project", event: "agent", schedule: "agent", chain: "member",
     });
   });
