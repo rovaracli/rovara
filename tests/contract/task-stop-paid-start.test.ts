@@ -2456,3 +2456,16 @@ it("a reached stop commits its pause and required audit together", async () => {
  const transaction = f.t.db.transactions().find(items => items.some(item => (item.Put as { Item?: { event?: { action?: string } } } | undefined)?.Item?.event?.action === "spending.stop_reached"));
  expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Update: expect.objectContaining({ Key: taskKey(task.taskId) }) })]));
 });
+
+it("setup check is a paid start and refuses missing model admission basis before preparation", async () => {
+ const f = await fixture(); f.t.grantRole(MAYA, "maintainer");
+ const reply = await f.t.dev(MAYA, "POST", "/v1/app/projects/payments/setup-check", { requestId: randomUUID() });
+ expect(reply.status, JSON.stringify(reply.body)).toBe(409);expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
+ expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
+for (const path of ["/v1/admin/e2e/model-checks", "/v1/admin/projects/setup-proposals"]) it(`paid admin path ${path} refuses an unpriced admission before work`, async () => {
+ const f = await fixture();
+ const reply = await call(f.t.handler, { method: "POST", path, user: { subject: "admin-subject", admin: true }, body: {} });
+ expect(reply.status, JSON.stringify(reply.body)).toBe(409);expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
+ expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
