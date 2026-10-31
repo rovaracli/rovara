@@ -1,4 +1,5 @@
 import { MODEL_PROVIDERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS } from "@agentx/contracts";
+import { enterpriseHttpsEgress } from "./vpc-endpoints.js";
 import { providerKeyParameters } from "./model-keys.js";
 import { openRouterRoutingParameter } from "./openrouter.js";
 import {
@@ -29,6 +30,8 @@ export const AGENTX_SLACK_ORCHESTRATOR_REPOSITORY = "agentx-slack-orchestrator";
 
 export interface SlackOrchestratorStackProps extends StackProps {
   naming?: AgentXNaming;
+  /** Enterprise installs: the ranges the orchestrator may reach over HTTPS. Absent: HTTPS to the whole internet, as before. */
+  privateEgressCidrs?: readonly string[];
 }
 
 // The task role and every queue, table, bucket, and secret it uses belong to AgentXControlPlane,
@@ -103,13 +106,13 @@ export class SlackOrchestratorStack extends Stack {
     const securityGroup = new ec2.CfnSecurityGroup(this, "SecurityGroup", {
       groupDescription: "AgentX Slack orchestrator: no ingress and HTTPS-only egress",
       vpcId: vpcId.valueAsString,
-      securityGroupEgress: [{
+      securityGroupEgress: props?.privateEgressCidrs === undefined ? [{
         ipProtocol: "tcp",
         fromPort: 443,
         toPort: 443,
         cidrIp: "0.0.0.0/0",
         description: "HTTPS to Slack, Amazon Bedrock, the AgentX control plane, and AWS APIs",
-      }],
+      }] : enterpriseHttpsEgress(props.privateEgressCidrs, "HTTPS to the approved ranges"),
       tags: [{ key: "Application", value: "AgentX" }],
     });
     if (modelProxySecurityGroupId !== undefined) {

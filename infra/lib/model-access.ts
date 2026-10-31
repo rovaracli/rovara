@@ -7,6 +7,7 @@ import {
 import { Construct } from "constructs";
 import { MODEL_PROXY_MANAGEMENT_PORT, assumeOrgBedrockRoles, type ModelProxy } from "./model-proxy.js";
 import type { AgentXNaming } from "./naming.js";
+import { enterpriseHttpsEgress } from "./vpc-endpoints.js";
 
 export interface ModelAccessProps {
   naming: AgentXNaming;
@@ -16,6 +17,8 @@ export interface ModelAccessProps {
   proxy: ModelProxy;
   /** The bundled handler (packages/broker/src/model-proxy/handler.ts); this construct puts it in the VPC and wires it to the proxy. */
   handler: lambda.Function;
+  /** Enterprise installs: the ranges the function may reach over HTTPS. Absent: HTTPS to the whole internet, as before. */
+  privateEgressCidrs?: readonly string[];
 }
 
 /**
@@ -37,10 +40,10 @@ export class ModelAccess extends Construct {
     this.securityGroup = new ec2.CfnSecurityGroup(this, "SecurityGroup", {
       groupDescription: `AgentX model access function: management port ${port} to the model proxy and HTTPS to Secrets Manager`,
       vpcId: props.vpcId,
-      securityGroupEgress: [{
+      securityGroupEgress: props.privateEgressCidrs === undefined ? [{
         ipProtocol: "tcp", fromPort: 443, toPort: 443, cidrIp: "0.0.0.0/0",
         description: "HTTPS to Secrets Manager",
-      }],
+      }] : enterpriseHttpsEgress(props.privateEgressCidrs, "HTTPS to Secrets Manager"),
       tags,
     });
     new ec2.CfnSecurityGroupEgress(this, "ToModelProxy", {

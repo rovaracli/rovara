@@ -27,6 +27,11 @@ export interface Ec2WorkerFoundationProps {
   privateSubnets: readonly ec2.CfnSubnet[];
   workspaceKey: kms.IKey;
   instanceType: string;
+  /**
+   * Enterprise installs (task N1): the address ranges the workers, the dispatcher and the session manager may reach over HTTPS: the VPC's own range (the interface
+   * endpoints) and the ranges the customer approved. Absent: the HTTPS egress to the whole internet every other install has, unchanged.
+   */
+  privateEgressCidrs?: readonly string[];
 }
 
 /**
@@ -58,15 +63,15 @@ export class Ec2WorkerFoundation extends Construct {
     this.workerSecurityGroup = new ec2.CfnSecurityGroup(this, "WorkerSecurityGroup", {
       groupDescription: `AgentX EC2 workers: port ${EC2_WORKER_PORT} from the dispatcher and session manager only, HTTPS egress`,
       groupName: names.workerSecurityGroupName,
-      securityGroupEgress: [httpsEgress("HTTPS to ECR, Bedrock, CloudWatch, the control plane, package repositories and Git providers")],
+      securityGroupEgress: egressRules(props.privateEgressCidrs, "HTTPS to ECR, Bedrock, CloudWatch, the control plane, package repositories and Git providers"),
       tags: tags(names.workerSecurityGroupName),
       vpcId: props.vpcId,
     });
     // The dispatcher (#84) posts signed invocations; the session manager's Lambdas (#83, #85, #86) probe /ping.
     this.dispatcherSecurityGroup = this.callerSecurityGroup("DispatcherSecurityGroup", names.dispatcherSecurityGroupName,
-      "AgentX dispatcher: signed invocations to EC2 workers, HTTPS to AWS APIs", props.vpcId, tags);
+      "AgentX dispatcher: signed invocations to EC2 workers, HTTPS to AWS APIs", props.vpcId, tags, props.privateEgressCidrs);
     this.sessionManagerSecurityGroup = this.callerSecurityGroup("SessionManagerSecurityGroup", names.sessionManagerSecurityGroupName,
-      "AgentX session manager Lambdas: health probes to EC2 workers, HTTPS to AWS APIs", props.vpcId, tags);
+      "AgentX session manager Lambdas: health probes to EC2 workers, HTTPS to AWS APIs", props.vpcId, tags, props.privateEgressCidrs);
 
     const logGroup = new logs.LogGroup(this, "WorkerLogs", {
       logGroupName: names.workerLogGroupName,
@@ -184,11 +189,12 @@ export class Ec2WorkerFoundation extends Construct {
     description: string,
     vpcId: string,
     tags: (name: string) => CfnTag[],
+    privateEgressCidrs?: readonly string[],
   ): ec2.CfnSecurityGroup {
     const group = new ec2.CfnSecurityGroup(this, id, {
       groupDescription: description,
       groupName: name,
-      securityGroupEgress: [httpsEgress("HTTPS to DynamoDB, SQS, KMS, EC2 and Step Functions APIs")],
+      securityGroupEgress: egressRules(privateEgressCidrs, "HTTPS to DynamoDB, SQS, KMS, EC2 and Step Functions APIs"),
       tags: tags(name),
       vpcId,
     });
@@ -215,4 +221,11 @@ export class Ec2WorkerFoundation extends Construct {
 
 function httpsEgress(description: string): ec2.CfnSecurityGroup.EgressProperty {
   return { ipProtocol: "tcp", fromPort: 443, toPort: 443, cidrIp: "0.0.0.0/0", description };
+}
+
+/** HTTPS to the whole internet (every install but an Enterprise one), or HTTPS to the listed ranges only. */
+function egressRules(privateCidrs: readonly string[] | undefined, description: string): ec2.CfnSecurityGroup.EgressProperty[] {
+  if (privateCidrs === undefined) return [httpsEgress(description)];
+  if (privateCidrs.some((cidr) => cidr === "0.0.0.0/0" || cidr.endsWith("/0"))) throw new Error("an Enterprise install's security groups never allow the whole internet");
+  return privateCidrs.map((cidr) => ({ ipProtocol: "tcp", fromPort: 443, toPort: 443, cidrIp: cidr, description: `HTTPS to ${cidr} only` }));
 }
