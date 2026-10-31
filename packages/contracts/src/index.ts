@@ -19,6 +19,7 @@ export * from "./credentials.js";
 export * from "./developer.js";
 export * from "./developer-tasks-node.js";
 export * from "./task-workflow-node.js";
+export * from "./task-workflow-revise.js";
 export * from "./no-change-findings.js";
 export * from "./workflow-autofix.js";
 export * from "./rovara-code.js";
@@ -43,8 +44,11 @@ export * from "./github-mcp.js";
 export * from "./oauth-profiles.js";
 export * from "./operation.js";
 export * from "./project-node.js";
+export * from "./provenance.js";
+export * from "./meta-project.js";
 export * from "./project-commands.js";
 export * from "./protocol.js";
+export * from "./live-steer.js";
 export * from "./redaction.js";
 export * from "./review-output.js";
 export * from "./release.js";
@@ -217,6 +221,10 @@ export * from "./knowledge-skills.js";
 
 // K1 C5a: what the agent loaded (references only).
 export * from "./loaded-knowledge.js";
+export * from "./test-environment-prod-deny.js";
+export * from "./service-mock-additions.js";
+export * from "./test-env-nightly.js";
+export * from "./e2e-model-spend.js";
 
 // Learning v2: the Team record and lessons (R1).
 export * from "./team-record.js";

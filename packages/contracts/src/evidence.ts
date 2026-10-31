@@ -186,6 +186,9 @@ export const EvidenceEnvironmentSchema = z
             recordedAt: z.string().datetime().optional(),
             /** Requests a mock answered without a recording (`schema_synth`): counted, never hidden. */
             unrecordedAnswered: CountSchema.optional(),
+            /** New mock answers made in this task for cases the change introduced (owner decision Q9), and the digest the broker pinned them by: listed, never silent. */
+            newAnswers: CountSchema.optional(),
+            newAnswersDigest: Sha256Schema.optional(),
           })
           .strict(),
       )

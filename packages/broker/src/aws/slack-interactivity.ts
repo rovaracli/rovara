@@ -25,6 +25,7 @@ import {
   workflowResolveFindingsOffered,
   workflowSelectedChecks,
   workflowSendBackOffered,
+  workflowReviseOffered,
   workflowReadmitsApplicationRound,
   answeredConfirmationBlocks,
   confirmationClickEventId,
@@ -509,6 +510,7 @@ export function createSlackInteractivityHandler(dependencies: SlackInteractivity
             : action.actionId === "agentx_workflow_retry_reviews" ? "I couldn't start the review retry. Use the latest AgentX task update and try again."
             : action.actionId === "agentx_workflow_retry_publish" ? "I couldn't retry opening the pull request. Use the latest AgentX task update and try again."
             : action.actionId === "agentx_workflow_send_back" ? "I couldn't send the task back to coding. Use the latest AgentX task update and try again."
+            : action.actionId === "agentx_workflow_revise_plan" ? "I couldn't start revising the plan. Use the latest AgentX task update and try again."
             : action.actionId === "agentx_workflow_resolve_findings" ? "I couldn't open the findings form. Use the latest AgentX task update and try again."
             : action.actionId === "agentx_workflow_retry_plan" || action.actionId === "agentx_workflow_retry_implementation" || action.actionId === "agentx_workflow_retry_plan_check" ? "I couldn't start the retry. Use the latest AgentX task update and try again."
             : action.actionId === "agentx_workflow_close" ? "I couldn't open the close confirmation. Use the latest AgentX task update and try again."
@@ -858,6 +860,9 @@ export function createAwsSlackInteractivityHandler() {
     async sendBack(input) {
       await invokeWorkflowDecision(lambda, brokerFunctionName, { source: "agentx.slack-ingress", action: "workflow-send-back", ...input });
     },
+    async revisePlan(input) {
+      await invokeWorkflowDecision(lambda, brokerFunctionName, { source: "agentx.slack-ingress", action: "workflow-revise-plan", ...input });
+    },
     async resolveFindings(input) {
       await invokeWorkflowDecision(lambda, brokerFunctionName, { source: "agentx.slack-ingress", action: "workflow-resolve-findings", ...input });
     },
@@ -1140,6 +1145,8 @@ export function workflowSlackHandlers(deps: {
   retryFeedbackReview?(input: Record<string, unknown>): Promise<void>;
   /** Task 16: Send back to coding, with the problems found as the coder's instructions. */
   sendBack?(input: Record<string, unknown>): Promise<void>;
+  /** Live steer: hands the owner's Revise the plan press to the broker (its own event kind). */
+  revisePlan?(input: Record<string, unknown>): Promise<void>;
   /** The owner's answer to each blocking review finding (Fix or Accept, with a note), handed to the broker. */
   resolveFindings?(input: Record<string, unknown>): Promise<void>;
   /** Task 16: retry blocked planning. */
@@ -1445,6 +1452,17 @@ export function workflowSlackHandlers(deps: {
         if (deps.sendBack === undefined) throw new Error("send back to coding is not configured");
         await deps.sendBack({ taskId, userId: action.userId, thread: action.thread, expectedRevision: workflow.revision, requestId: slackActionRequestId(action) });
         await acknowledged(action, "Sending this back to coding.");
+        return;
+      }
+      // Live steer: Revise the plan with the owner's live message. The press is the owner's, at the revision the card showed, on coding blocked with the revise reason; it rides its own event kind
+      // (`workflow-revise-plan`), and only a deployment that wired `revisePlan` takes it (otherwise the owner is told it could not be started, never that it was). The hand-off is asynchronous, so the
+      // answer claims only what was done: the request was sent.
+      if (action.actionId === "agentx_workflow_revise_plan") {
+        const { taskId, revision } = exitButton(action);
+        const workflow = await currentOwnedWorkflow({ ...action, taskId, revision }, "revise the plan", workflowReviseOffered);
+        if (deps.revisePlan === undefined) throw new Error("revising the plan is not configured");
+        await deps.revisePlan({ taskId, userId: action.userId, thread: action.thread, expectedRevision: workflow.revision, requestId: slackActionRequestId(action) });
+        await acknowledged(action, "Asked Rovara to revise the plan with that change. If it can, the revised plan is posted here for your approval; nothing is coded until you approve it.");
         return;
       }
       if (action.actionId === "agentx_workflow_resolve_findings") {

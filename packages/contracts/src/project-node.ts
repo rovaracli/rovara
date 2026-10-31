@@ -9,6 +9,7 @@ import { ActionPolicySchema, actionPolicyProblems } from "./action-policy-node.j
 import { E2EPolicySchema } from "./e2e-node.js";
 import { ConnectorsSchema, StoredConnectorsSchema, type GitHubConnectorConfig } from "./connectors-node.js";
 import { E2E_PROJECT_CHECK_ID } from "./e2e.js";
+import { SettingOriginSchema, type SettingOrigin } from "./provenance.js";
 
 export const OCI_DIGEST_PATTERN = /@sha256:[a-f0-9]{64}$/;
 
@@ -111,9 +112,19 @@ export const RepositoryDefinitionSchema = z
      */
     installationId: z.number().int().positive().optional(),
     githubRepositoryId: z.number().int().positive().optional(),
+    /**
+     * Meta repo lane A: what the repository is to the project. Absent means `code`, as every repository of a project that predates it. The one `meta` repository holds
+     * the project's config and knowledge (see `metaRepositoryOf`). `alsoCode` marks a one-repository project whose only repository is its own meta repo.
+     * Control-plane only, like the pins above: a worker never reads either (`workerProjectDefinition`).
+     */
+    role: z.enum(["code", "meta"]).optional(),
+    alsoCode: z.boolean().optional(),
   })
   .strict()
   .superRefine((repository, context) => {
+    if (repository.alsoCode !== undefined && repository.role !== "meta") {
+      context.addIssue({ code: "custom", path: ["alsoCode"], message: "alsoCode is only for the meta repository" });
+    }
     const names = new Set<string>();
     const projects = new Set<string>();
     for (const [index, gate] of (repository.codeBuildGates ?? []).entries()) {
@@ -232,6 +243,17 @@ export function developerTaskPolicy(definition: { developerTasks?: unknown }): D
   return parsed.success ? parsed.data : { ...DEFAULT_DEVELOPER_TASK_POLICY, enabled: false, channelMembersMayUse: false };
 }
 
+/** The settings a person, an agent or a meta repo's config file can set, by the name the project record gives them (see `ProjectOriginsSchema`). */
+export const PROJECT_ORIGIN_FIELDS = ["repositories", "setup", "readiness", "devcontainer", "network", "checks", "knowledge", "specTarget", "sources", "intake"] as const;
+export type ProjectOriginField = (typeof PROJECT_ORIGIN_FIELDS)[number];
+
+/**
+ * Meta repo lane A: who last set each setting. A field with no entry was set by a person (a project that predates origins). Control-plane only
+ * (`workerProjectDefinition` leaves it out). Only fields that were set by an agent or a file are worth an entry; a person's edit removes the entry.
+ */
+export const ProjectOriginsSchema = z.partialRecord(z.enum(PROJECT_ORIGIN_FIELDS), SettingOriginSchema);
+export type ProjectOrigins = z.infer<typeof ProjectOriginsSchema>;
+
 function projectDefinitionObject<Connectors extends z.ZodTypeAny>(connectorsSchema: Connectors) {
   return z
     .object({
@@ -252,6 +274,7 @@ function projectDefinitionObject<Connectors extends z.ZodTypeAny>(connectorsSche
       developerTasks: DeveloperTaskPolicySchema.optional(),
       /** Optional trusted-scenario policy. Absence preserves the legacy workflow. */
       e2e: E2EPolicySchema.optional(),
+      origins: ProjectOriginsSchema.optional(),
     })
     .strict();
 }
@@ -264,7 +287,7 @@ function projectDefinitionObject<Connectors extends z.ZodTypeAny>(connectorsSche
  */
 function checkProjectDefinition(
   project: {
-    repositories: ReadonlyArray<{ name: string; path: string }>;
+    repositories: ReadonlyArray<{ name: string; path: string; role?: "code" | "meta" | undefined; alsoCode?: boolean | undefined }>;
     devcontainer?: { repository: string } | undefined;
     integrations?: {
       githubMcp?: unknown;
@@ -294,6 +317,24 @@ function checkProjectDefinition(
   }
   if (project.devcontainer && !names.has(project.devcontainer.repository)) {
     context.addIssue({ code: "custom", path: ["devcontainer", "repository"], message: `devcontainer names unregistered repository ${project.devcontainer.repository}` });
+  }
+  // Meta repo lane A: at most one meta repository (a project that predates meta repos has none). A meta repository that is not also code needs a code
+  // repository beside it; one that is also code is the whole project. The devcontainer runs code, so it never names a pure meta repository.
+  const metas = project.repositories.map((repository, index) => ({ repository, index })).filter(({ repository }) => repository.role === "meta");
+  if (metas.length > 1) {
+    context.addIssue({ code: "custom", path: ["repositories", metas[1]!.index, "role"], message: "a project has at most one meta repository" });
+  }
+  const meta = metas[0]?.repository;
+  if (meta !== undefined) {
+    if (meta.alsoCode === true && project.repositories.length !== 1) {
+      context.addIssue({ code: "custom", path: ["repositories", metas[0]!.index, "alsoCode"], message: "a repository that is both meta and code must be the project's only repository; make the meta repository a separate one first" });
+    }
+    if (meta.alsoCode !== true && project.repositories.length < 2) {
+      context.addIssue({ code: "custom", path: ["repositories"], message: "a meta repository that is not also code needs at least one code repository" });
+    }
+    if (meta.alsoCode !== true && project.devcontainer?.repository === meta.name) {
+      context.addIssue({ code: "custom", path: ["devcontainer", "repository"], message: "the devcontainer cannot be in a meta repository that is not also code" });
+    }
   }
   if (project.integrations?.githubMcp && project.integrations.connectors) {
     context.addIssue({ code: "custom", path: ["integrations"], message: "use either integrations.githubMcp or integrations.connectors, not both" });
@@ -375,20 +416,34 @@ export type ProjectDefinition = z.infer<typeof ProjectDefinitionSchema>;
  * Workers of an earlier release parse the definition with a strict schema that does not know the fields, and they are the control plane's
  * alone (the DNS firewall enforces `network`, the broker's start check the pins).
  */
-export function workerProjectDefinition<Definition extends object>(definition: Definition): Omit<Definition, "network"> {
+export function workerProjectDefinition<Definition extends object>(definition: Definition): Omit<Definition, "network" | "origins"> {
   const rest: Record<string, unknown> = { ...(definition as Record<string, unknown>) };
   delete rest.network;
-  // The same for the repository pins (`installationId`, `githubRepositoryId`): the repository entry of an earlier worker is strict too.
+  // Meta repo lane A: who set each setting is the control plane's too.
+  delete rest.origins;
+  // The same for the repository pins (`installationId`, `githubRepositoryId`) and the meta role: the repository entry of an earlier worker is strict too.
   if (Array.isArray(rest.repositories)) {
-    rest.repositories = rest.repositories.map((entry: unknown) => {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
-      const repository: Record<string, unknown> = { ...(entry as Record<string, unknown>) };
-      delete repository.installationId;
-      delete repository.githubRepositoryId;
-      return repository;
-    });
+    rest.repositories = rest.repositories
+      // A meta repository that is not also code is not code to a worker: it is never cloned as a checkout, changed or published. A worker that can read one is
+      // sent it beside the project (the prepare payload's `meta`, lane A task A3).
+      .filter((entry: unknown) => !(isPureMetaRepository(entry)))
+      .map((entry: unknown) => {
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
+        const repository: Record<string, unknown> = { ...(entry as Record<string, unknown>) };
+        delete repository.installationId;
+        delete repository.githubRepositoryId;
+        delete repository.role;
+        delete repository.alsoCode;
+        return repository;
+      });
   }
-  return rest as Omit<Definition, "network">;
+  return rest as Omit<Definition, "network" | "origins">;
+}
+
+function isPureMetaRepository(entry: unknown): boolean {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return false;
+  const repository = entry as { role?: unknown; alsoCode?: unknown };
+  return repository.role === "meta" && repository.alsoCode !== true;
 }
 
 /** A project definition as `StoredProjectDefinitionSchema` parses it: its connectors may include
@@ -424,6 +479,50 @@ export function githubConnectorOf(project: Pick<ProjectDefinition, "repositories
     ? project.repositories
     : project.repositories.filter((repository) => scopes.includes(repository.name));
   return { name: connector.name, repositories, policy: { tools: connector.tools }, attribution: connector.attribution ?? true };
+}
+
+/** How a project relates to its meta repo: `separate` (a meta repository beside the code), `self` (its one repository is its own meta repo), `none` (a project that predates meta repos). */
+export type ProjectMetaShape = "separate" | "self" | "none";
+
+type RepositoryRoleFields = { role?: "code" | "meta" | undefined; alsoCode?: boolean | undefined };
+
+/** The project's meta repository, or undefined when it has none. */
+export function metaRepositoryOf<Repository extends RepositoryRoleFields>(project: { repositories: readonly Repository[] }): Repository | undefined {
+  return project.repositories.find((repository) => repository.role === "meta");
+}
+
+export function projectMetaShape(project: { repositories: readonly RepositoryRoleFields[] }): ProjectMetaShape {
+  const meta = metaRepositoryOf(project);
+  if (meta === undefined) return "none";
+  return meta.alsoCode === true ? "self" : "separate";
+}
+
+/** The repositories that hold code: every one but a meta repository that is not also code. */
+export function codeRepositoriesOf<Repository extends RepositoryRoleFields>(project: { repositories: readonly Repository[] }): Repository[] {
+  return project.repositories.filter((repository) => repository.role !== "meta" || repository.alsoCode === true);
+}
+
+/** Who last set a setting: a field with no entry was set by a person. */
+export function settingOriginOf(project: { origins?: ProjectOrigins | undefined }, field: ProjectOriginField): SettingOrigin {
+  return project.origins?.[field] ?? "person";
+}
+
+/** The settings a meta repo's config file manages (read-only in the app; changed by changing the file). */
+export function fileManagedFields(project: { origins?: ProjectOrigins | undefined }): ProjectOriginField[] {
+  return PROJECT_ORIGIN_FIELDS.filter((field) => project.origins?.[field] === "file");
+}
+
+/**
+ * The origins after `fields` were set by `origin`. A person's edit removes the entry (no entry means a person), so the record only holds what an agent or a
+ * file set; an empty record is left out.
+ */
+export function withSettingOrigins(origins: ProjectOrigins | undefined, fields: readonly ProjectOriginField[], origin: SettingOrigin): ProjectOrigins | undefined {
+  const next: Record<string, SettingOrigin> = { ...(origins ?? {}) };
+  for (const field of fields) {
+    if (origin === "person") delete next[field];
+    else next[field] = origin;
+  }
+  return Object.keys(next).length === 0 ? undefined : next;
 }
 
 export { AGENTX_NAME_PATTERN } from "./names.js";

@@ -2875,6 +2875,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Complete Secrets Manager ARN containing the GitHub App private key PEM",
       "Type": "String",
     },
+    "LiveSteerEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: a person's message to a running step is given to it live (only after the dispatcher, publisher, broker and worker image that carry live steer are deployed); 0: every message waits as a note for the next step (agentx config set liveSteer.enabled 1)",
+      "Type": "String",
+    },
     "McpConfirmElicitation": {
       "AllowedValues": [
         "enabled",
@@ -3368,6 +3377,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "fx=",
                   {
                     "Ref": "AutofixEnabled",
+                  },
+                  ",ls=",
+                  {
+                    "Ref": "LiveSteerEnabled",
                   },
                   ",mc=",
                   {

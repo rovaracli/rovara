@@ -11,6 +11,7 @@ import {
   type TaskPeopleChangeResult, type TaskPeopleRoleRequest, type TaskPeopleTakeOwnershipRequest, type TaskPeopleView,
 } from "@agentx/contracts";
 import type { DeveloperTaskView } from "@agentx/contracts";
+import { REVISE_PLAN_REFUSALS } from "../agent-sessions/live-steer-revise.js";
 import { PROJECT_RECORD_NEEDS_ADMIN } from "./broker-shared.js";
 import type { DeveloperCaller } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
@@ -19,7 +20,7 @@ import type { PlanAnchor } from "./plan-page/render-plan.js";
 import { CSRF_COOKIE, PRIVATE_HEADERS, SESSION_COOKIE, csrfCookie, isCsrfToken, parseCookie, safeResponse, type WebResponse } from "./web-session.js";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-export const TASK_PAGE_API = new RegExp(`^/review/(${UUID})/task/api/(state|comments|comments/(${UUID})/(edit|delete)|suggestions|decision|retry|people|people/role|people/take-ownership|people/requests/(${UUID})(/confirm)?|e2e/artifacts/([0-9a-f]{64}))$`, "i");
+export const TASK_PAGE_API = new RegExp(`^/review/(${UUID})/task/api/(state|comments|comments/(${UUID})/(edit|delete)|suggestions|decision|retry|revise-plan|people|people/role|people/take-ownership|people/requests/(${UUID})(/confirm)?|e2e/artifacts/([0-9a-f]{64}))$`, "i");
 /** Any path under the task page's API, known or not: it is the API's to answer, never the PR feedback page's. */
 export const TASK_PAGE_API_PREFIX = new RegExp(`^/review/(${UUID})/task/api(/|$)`, "i");
 
@@ -105,6 +106,8 @@ export interface TaskWebApiDependencies {
   decide(caller: DeveloperCaller, taskId: string, input: PageDecisionInput): Promise<{ revision: number }>;
   /** Retries a blocked application round (the owner only; any other block is refused) and answers the new revision. Without it, the retry path is not found. */
   retryApplicationRound?(caller: DeveloperCaller, taskId: string, input: PageRetryInput): Promise<{ revision: number }>;
+  /** Live steer: the owner's Revise the plan press (coding stopped for a change outside the approved plan; only the owner, only then) and the new revision. Without it, the path is not found. */
+  revisePlan?(caller: DeveloperCaller, taskId: string, input: PageRetryInput): Promise<{ revision: number }>;
   /**
    * The screenshot behind a row of the task's results (M1.3 Task 3.7), by its SHA-256: undefined for a digest the task's current display does not name. It must refuse a caller
    * who may not read the task (the page's own access rule) with an error carrying the code TASK_NOT_FOUND, TASK_ACCESS_DENIED, FORBIDDEN or NOT_FOUND. Without it the path is not found.
@@ -120,7 +123,7 @@ export interface TaskWebApiDependencies {
 const NOT_FOUND = { error: "not_found", message: "You don't have access to this task." };
 const HIDDEN = new Set(["FORBIDDEN", "TASK_NOT_FOUND", "TASK_ACCESS_DENIED", "NOT_FOUND"]);
 /** Messages the page may show as they are: written for it, in plain words. */
-const PAGE_SAFE_MESSAGES = new Set(["Include at least one comment or write a note."]);
+const PAGE_SAFE_MESSAGES = new Set(["Include at least one comment or write a note.", REVISE_PLAN_REFUSALS.noChange, REVISE_PLAN_REFUSALS.notOffered]);
 const TASK_CHANGED = "This task changed. Refresh the page and try again.";
 
 const json = (statusCode: number, body: unknown): WebResponse => safeResponse(statusCode, body);
@@ -309,6 +312,12 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
         if (!parsed.success) return invalid();
         await deps.setSuggestion(caller, taskId, parsed.data);
         return json(200, { ok: true });
+      }
+      if (endpoint === "revise-plan") {
+        if (deps.revisePlan === undefined) return json(404, { error: "not_found" });
+        const parsedRevise = PageRetryInputSchema.safeParse(value);
+        if (!parsedRevise.success) return invalid();
+        return json(200, await deps.revisePlan(caller, taskId, parsedRevise.data));
       }
       if (endpoint === "retry") {
         if (deps.retryApplicationRound === undefined) return json(404, { error: "not_found" });

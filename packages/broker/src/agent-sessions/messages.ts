@@ -52,10 +52,13 @@ import { anchorKey, anchorTargetsFor, anchoredOn, presentMessages, withoutExcerp
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 import { announceDeviceCommand, deviceCommandItems } from "../devices/local-sessions.js";
 import { planSteer, queuedSteersItem, steerNotDeliveredEvent, type SteerDependencies } from "./steer.js";
+import { enqueueLiveSteer } from "./live-steer.js";
 import { safeDisplayName } from "../developer/person-name.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
 export interface SessionMessageDependencies extends SessionAccessDependencies, Pick<SteerDependencies, "chainSteer">, Pick<AnchorDependencies, "taskView"> {
+  /** Live steer: with the broker's signing key, a message to a task whose step is running is also given to that step's session within seconds (`live-steer.ts`). Without it every message is a note only. */
+  liveSteer?: { callbackSigningKey: string } | undefined;
   /** The events API a comment's `session.updated` notice is posted to; without it nothing is posted. */
   realtimePublish?: RealtimeConfig | undefined;
   log?: ((entry: Record<string, unknown>) => void) | undefined;
@@ -403,6 +406,8 @@ export async function sendSessionMessage(
       throw error;
     }
     await tellSession(deps, session);
+    // The note is saved; a message to a task whose step is running goes to that step's session as well (never throws; the note is the fallback).
+    if (plan?.kind === "note" && deps.liveSteer !== undefined) await enqueueLiveSteer({ ...deps, ...deps.liveSteer }, session, message, plan.task, access.owner);
     if (plan?.kind === "device" && deviceSeq !== undefined) await announceDeviceCommand(deps, session.orgId, session.owner.developerId, plan.deviceId, deviceSeq);
     // A pinned comment answers with its state: the part was read for this write, so it is not read again.
     return (await presentMessages(deps, session, access, [message], anchorInput === undefined ? undefined : targets))[0]!;

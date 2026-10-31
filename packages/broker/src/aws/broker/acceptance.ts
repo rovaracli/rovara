@@ -3,7 +3,7 @@
 import { joinTaskModelFallback } from "../../model-selection/fallback-record.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { type AgentXError, blockWorkflow, OperationRequestSchema, PullRequestRequestSchema, PullRequestLifecycleRequestSchema, PullRequestLifecycleResultSchema, agentXError, type Operation, type OperationRequester, type OperationStatus, type ProjectCommand, type WorkflowFeedbackApprovalBinding, type WorkflowFixPayload, type WorkflowDependencyInvocation, type WorkflowReviewBase, type WorkflowReviewChecks, type WorkflowReviewPlan, type WorkflowReviewFeedback, type WorkflowReviewNote, type PullRequestLifecycleResult, type WorkerInvocation, type WorkspaceInstance, type E2EWorkflowAdmissionRef, workerProjectDefinition, workflowPublicationContext, workflowPublicationContextDigest } from "@agentx/contracts";
+import { type AgentXError, blockWorkflow, OperationRequestSchema, PullRequestRequestSchema, PullRequestLifecycleRequestSchema, PullRequestLifecycleResultSchema, agentXError, type Operation, type OperationRequester, type OperationStatus, type ProjectCommand, type WorkflowFeedbackApprovalBinding, type WorkflowFixPayload, type WorkflowDependencyInvocation, type WorkflowReviewBase, type WorkflowReviewChecks, type WorkflowReviewPlan, type WorkflowReviewFeedback, type WorkflowReviewNote, type PullRequestLifecycleResult, type WorkerInvocation, type WorkspaceInstance, type E2EWorkflowAdmissionRef, workerProjectDefinition, workflowPublicationContext, workflowPublicationContextDigest, codeRepositoriesOf } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { assertNoUntrustedRoutingFields } from "../../authorization.js";
@@ -242,7 +242,7 @@ export async function acceptPullRequest(
     );
   }
   const { project, settingsRevision } = await publicationProject(dependencies, workspace);
-  const repository = project.definition.repositories.find((candidate) => candidate.name === request.repository);
+  const repository = codeRepositoriesOf(project.definition).find((candidate) => candidate.name === request.repository);
   if (!repository) throw agentXError("CONFIG_INVALID", "repository is not registered for this project");
   const body = await attributedBody(dependencies, identity, request.body);
   const draft = candidate === undefined ? request.draft : true;
@@ -432,7 +432,7 @@ export async function acceptPullRequestLifecycle(
   // The workflow's own push of its reviewed fix is the one change it makes, and only its dispatch asks for it.
   if (!workflowBound && await gatedTaskWorkspace(dependencies, workspaceId)) throw agentXError("CONFIG_INVALID", GATED_TASK_PULL_REQUEST_ACTION_REFUSAL);
   const { project, settingsRevision } = await publicationProject(dependencies, workspace);
-  const repository = project.definition.repositories.find((candidate) => candidate.name === request.repository);
+  const repository = codeRepositoriesOf(project.definition).find((candidate) => candidate.name === request.repository);
   if (!repository) throw agentXError("CONFIG_INVALID", "repository is not registered for this project");
   const existingRecord = await getItem<PullRequestRecord>(
     dependencies,

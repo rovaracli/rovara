@@ -10,7 +10,7 @@ import { flushAuditEvents } from "../../audit/flush.js";
 import { auditOccurrence, auditSlackChannelBound, auditSlackChannelUnbound, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../../audit/events.js";
 import { requireOrgId } from "../../org/resolve.js";
 import { listTeamChannels, readSlackBinding, slackBindingItem } from "../../org/slack-binding.js";
-import { getItem, issueCapability, operationOrg, operationRecord, outboxRecord, requireOperation } from "../cancellation.js";
+import { getItem, issueCapability, operationKey, operationOrg, operationRecord, outboxRecord, requireOperation } from "../cancellation.js";
 import { effectiveProjectRole, viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
 import { effectiveTaskOwner, taskKey, taskOwnerKey, taskOwnerSubject, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { hashJson } from "../broker-shared.js";
@@ -32,6 +32,20 @@ import { getMembership, readOrgMember, requireAdministrator, requireLatestProjec
 import { ensureInstallOrg } from "./scope-helpers.js";
 import { slackTaskAccess } from "./slack-workflow-events.js";
 import { requesterOf } from "./thread-workspaces.js";
+import { metaPrepareFor, type MetaHeadReader } from "../../meta-repo/prepare-meta.js";
+import { githubScope } from "./scope-helpers.js";
+
+/** Meta repo lane A: reads a meta repository's default-branch head through the org's GitHub connection. Undefined where GitHub cannot be asked (a project with a meta repo is then refused). */
+export function metaHeadReaderOf(dependencies: AwsBrokerDependencies): MetaHeadReader | undefined {
+  const github = dependencies.githubPullRequests;
+  if (github.getDefaultBranchHead === undefined) return undefined;
+  return { getHead: ({ orgId, repositoryUrl, branch }) => github.getDefaultBranchHead!(repositoryUrl, branch, githubScope(dependencies, orgId)) };
+}
+
+/** The `meta` request and the commit the broker pinned for it, for a project whose meta repository is a separate one; nothing otherwise. */
+export function metaPrepareOf(dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, orgId: OrgId | undefined) {
+  return metaPrepareFor(project.definition, metaHeadReaderOf(dependencies), orgId);
+}
 
 /** Attempts to create a workspace around a project membership that another request keeps changing; the registration retry style. */
 export const MEMBERSHIP_PREPARATION_ATTEMPTS = 3;
@@ -91,6 +105,8 @@ export async function newWorkspacePreparation(
 ): Promise<{ workspace: WorkspaceInstance; operationId: string; items: TransactItems; membership: MembershipRecord | undefined }> {
   const projectName = project.definition.name;
   const projectRevision = project.definition.revision;
+  // Meta repo lane A: read before anything is written, so a meta repo that cannot be read refuses the start.
+  const metaPrepare = await metaPrepareOf(dependencies, project, requireOrgId(identity.orgId));
   const now = new Date().toISOString();
   const workspaceId = randomUUID();
   const operationId = randomUUID();
@@ -121,6 +137,7 @@ export async function newWorkspacePreparation(
     updatedAt: now,
     ...requesterOf(identity),
   });
+  if (metaPrepare.knowledgeCommit !== undefined) operation.knowledgeCommit = metaPrepare.knowledgeCommit;
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
     kind: "prepare",
@@ -142,6 +159,7 @@ export async function newWorkspacePreparation(
       ...(options.checkout === undefined || options.checkout.length === 0 ? {} : { checkout: [...options.checkout] }),
       // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
+      ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
     },
   };
   const outbox = outboxRecord(workspace, invocation, project.runtimeBinding);
@@ -216,6 +234,7 @@ export async function heldPreparationDispatch(
   if (workspace.status !== "PREPARING" || workspace.activeOperationId !== operationId || operation.kind !== "prepare" || operation.status !== "ACCEPTED" || operation.fence !== workspace.fence) {
     throw agentXError("STALE_FENCE", "the held preparation is no longer this workspace's");
   }
+  const metaPrepare = await metaPrepareOf(dependencies, project, workspace.orgId);
   const invocation: WorkerInvocation = {
     protocolVersion: 1, kind: "prepare", operationId, workspaceId, fence: workspace.fence, projectRevision: project.definition.revision,
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence),
@@ -225,9 +244,14 @@ export async function heldPreparationDispatch(
       ...(options.checkout === undefined || options.checkout.length === 0 ? {} : { checkout: [...options.checkout] }),
       // An agent-step run's preparation clones and checks out only; none of the repository's code runs (final fix wave, runs I-2).
       ...(options.readOnly === true ? { readOnly: true as const } : {}),
+      ...(metaPrepare.meta === undefined ? {} : { meta: metaPrepare.meta }),
     },
   };
-  return { workspace, items: [{ Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
+  const pinKnowledge: TransactItems = metaPrepare.knowledgeCommit === undefined ? [] : [{ Update: {
+    TableName: dependencies.tableName, Key: operationKey(workspaceId, operationId), UpdateExpression: "SET knowledgeCommit = :commit",
+    ConditionExpression: "attribute_exists(pk)", ExpressionAttributeValues: { ":commit": metaPrepare.knowledgeCommit },
+  } }];
+  return { workspace, items: [...pinKnowledge, { Put: { TableName: dependencies.tableName, Item: outboxRecord(workspace, invocation, project.runtimeBinding), ConditionExpression: "attribute_not_exists(pk)" } }] };
 }
 
 /**

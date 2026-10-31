@@ -1,3 +1,4 @@
+import { META_FEATURE_MISSING } from "../meta-repo/prepare-meta.js";
 import {
   AGENT_RUN_FEATURE,
   AGENT_STEP_FEATURE,
@@ -336,9 +337,11 @@ async function forWorkerFeatures(
   // A preparation that checks a pull request's head out is the agent-step engine's: only a worker that runs agent steps does it.
   // Its read-only form (clone and checkout, nothing of the repository run) is the same: a worker that does not know the field would run the setup.
   const carriesCheckout = invocation.kind === "prepare" && (invocation.payload.checkout !== undefined || invocation.payload.readOnly === true);
+  // Meta repo lane A: a preparation that brings the project's meta repository. A worker that does not know the field would refuse it (strict payload) or run without the team's rules.
+  const carriesMeta = invocation.kind === "prepare" && invocation.payload.meta !== undefined;
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout && !carriesModelPolicy) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -387,6 +390,9 @@ async function forWorkerFeatures(
   }
   if (carriesCheckout && !features.includes(AGENT_RUN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  if (carriesMeta && !features.includes("prepare.metaRepo")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", META_FEATURE_MISSING);
   }
   if(carriesModelPolicy&&!features.includes("task.modelPolicy"))throw agentXError("RUNTIME_UNAVAILABLE",AGENT_WORKER_OUTDATED);
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {
