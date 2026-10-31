@@ -11,7 +11,7 @@ export const WORKFLOW_ACTION_IDS: ReadonlySet<string> = new Set([
   "agentx_workflow_approve", "agentx_workflow_changes", "agentx_feedback_review_recommended", "agentx_feedback_review_changes", "agentx_feedback_review_dismiss",
   "agentx_workflow_retry_checks", "agentx_workflow_retry_reviews", "agentx_workflow_retry_publish", "agentx_feedback_review_retry",
   // Task 16: an exit from every blocked state.
-  "agentx_workflow_send_back", "agentx_workflow_resolve_findings", "agentx_workflow_retry_plan", "agentx_workflow_retry_plan_check", "agentx_workflow_retry_implementation", "agentx_workflow_close",
+  "agentx_workflow_send_back", "agentx_workflow_revise_plan", "agentx_workflow_resolve_findings", "agentx_workflow_retry_plan", "agentx_workflow_retry_plan_check", "agentx_workflow_retry_implementation", "agentx_workflow_close",
   // An approved PR feedback fix that changed nothing: wait for the merge again, the pull request as it is.
   "agentx_workflow_keep_pull_requests",
   WORKFLOW_PATH_QUICK_ACTION, WORKFLOW_PATH_FULL_ACTION, WORKFLOW_PATH_ANSWER_ACTION,

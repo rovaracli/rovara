@@ -15,6 +15,8 @@ const MAX_INVOCATION_BYTES = 1_048_576;
 
 export interface WorkerExecutor {
   execute(invocation: WorkerInvocation): Promise<unknown>;
+  /** Live steer (steer-invocation.ts): answers a `steer` invocation on the same request. Absent: the invocation is refused (the worker does not list the feature). */
+  steer?(invocation: Extract<WorkerInvocation, { kind: "steer" }>): Promise<Record<string, unknown>>;
   /** Explicitly implemented invocation extensions; never inferred from parser acceptance alone. */
   invocationFeatures?: readonly WorkerInvocationFeature[];
   /** Feature-specific optional runtime gates are reported independently of ordinary worker health. */
@@ -120,6 +122,11 @@ export async function handleWorkerRequest(request: Request, state: WorkerServerS
       }
       const invocation = WorkerInvocationSchema.parse(JSON.parse(text) as unknown);
       if (verified && !invocationMatchesClaims(invocation, verified.claims)) return unauthorized("invocation_mismatch");
+      // A live steer is answered on this request and is not an operation: no journal record of its own here, no background run, no terminal callback.
+      if (invocation.kind === "steer") {
+        if (state.executor.steer === undefined) return response(400, { error: "live steer is not supported by this worker" });
+        return response(200, await state.executor.steer(invocation));
+      }
       const accepted = await state.journal.accept(invocation);
       if (!accepted.duplicate) {
         state.activeOperations.add(invocation.operationId);
