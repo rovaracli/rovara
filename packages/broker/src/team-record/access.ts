@@ -219,21 +219,25 @@ const personHashOfEntry = (sk: string): string => sk.slice(sk.lastIndexOf("#M#")
  * removal, under the same per-person rule; then the mode and groups change if the event is not older than the last one, and the unit is marked seeded. Entries first, header
  * last, so a reader never sees a seeded unit with half a list.
  */
-export async function applyAudienceEvent(table: TeamRecordTable, orgId: OrgId, input: { scope: string; audience: Audience; at: string }): Promise<void> {
+export async function applyAudienceEvent(table: TeamRecordTable, orgId: OrgId, input: { scope: string; audience: Audience; at: string }): Promise<Audience> {
   const iso = isoOf(input.at);
   const existing = await getHeader(table, orgId, input.scope);
   const current = existing === undefined || existing.fed === "snapshot" || existing.modeTs <= iso;
   if (input.audience.kind === "restricted" && (input.audience.acl.principals ?? []).length === 0 && (input.audience.acl.groups ?? []).length === 0) {
     // The list could not be read (a conversion to private whose member list was unavailable, or a channel everyone left): nothing says who is in. The unit is cleared and left
     // UNSEEDED, restricted, so the next full list (a row's snapshot, the tap's seed) seeds it. Writing "everyone removed" as events would lock the channel for good.
-    if (existing !== undefined && !current) return;
+    if (existing !== undefined && !current) return input.audience;
     await clearEntries(table, orgId, input.scope);
     await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: headerItem(orgId, { scope: input.scope, source: input.audience.acl.source, mode: "restricted", groups: [], liveCheck: input.audience.acl.liveCheck, modeTs: iso, seeded: false, fed: "events" }) }));
-    return;
+    return input.audience;
   }
+  // The list the entries are written from is the list the caller must use for the rows too (ONE read of the erased markers decides both): an id this read misses gets its index
+  // item first (`putEntry`), so an erase that lands afterwards finds the place; an id this read sees is left out of both.
+  let used: Audience = input.audience;
   if (input.audience.kind === "restricted") {
     const erased = await erasedAccessIds(table, orgId, input.audience.acl.principals ?? []);
     const principals = [...new Set(input.audience.acl.principals ?? [])].filter((id) => !erased.has(id));
+    used = { kind: "restricted", acl: { ...input.audience.acl, principals: (input.audience.acl.principals ?? []).filter((id) => !erased.has(id)) } };
     const wanted = new Set(principals.map((id) => recordAccessMemberKey(orgId, input.scope, id).sk));
     await inChunks(principals, WRITE_PARALLEL, async (id) => { await putEntry(table, orgId, input.scope, id, eventValue(iso, false)); });
     // Present members the list leaves out are removed (the unit's entries are listed by the unit's own prefix).
@@ -258,7 +262,7 @@ export async function applyAudienceEvent(table: TeamRecordTable, orgId: OrgId, i
   };
   if (existing === undefined || current) {
     await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: headerItem(orgId, { ...next, ...(existing?.snapshotTs === undefined ? {} : { snapshotTs: existing.snapshotTs }) }) }));
-    return;
+    return used;
   }
   // An older audience event: the entries above followed the per-person rule; the mode and groups stay as the newer event left them. It still marks the unit seeded.
   const aliases = new Aliases();
@@ -266,6 +270,7 @@ export async function applyAudienceEvent(table: TeamRecordTable, orgId: OrgId, i
     TableName: table.tableName, Key: recordAccessKey(orgId, input.scope), UpdateExpression: `SET ${aliases.name("seeded")} = ${aliases.value(true)}, ${aliases.name("fed")} = ${aliases.value("events")}`,
     ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
   }));
+  return used;
 }
 
 /**
