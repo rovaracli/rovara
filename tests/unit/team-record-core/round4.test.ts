@@ -75,12 +75,12 @@ describe("N-5 a busy place can always be deleted", () => {
 
   it("the lake targets of the child places are all queued BEFORE any row is purged: a worker that runs out of time keeps the rows and the cursor", async () => {
     const w = world();
-    for (let i = 0; i < 2001; i += 1) await addSource(w, { source: "slack", scope: `slack:T1/C${String(i).padStart(5, "0")}` });
+    for (let i = 0; i < 2601; i += 1) await addSource(w, { source: "slack", scope: `slack:T1/C${String(i).padStart(5, "0")}` });
     await w.sink.put(slackRow("m1", "slack:T1/C00007"));
     await createRecordSink(w.deps, { budget: { maxItems: 500, maxMs: 8_000 } }).tombstone({ workspaceId: ORG_A, system: "T1", scope: "slack:T1", cause: "source_deleted" });
     const [queued] = await listScopeWork(w.table, ORG_A, 10);
     expect(queued!.childCursor).toBeDefined();
-    // a clock that runs 400 ms per reading: the worker has time to start but not to list the rest of the places
+    // a clock that runs 400 ms per reading: the worker has time to start and to read a page of places (progress is guaranteed), but not to list them all
     let tick = 0;
     const starved = { ...deleteDeps(w).deps, now: () => (tick += 400) };
     const summary = await runDeleteWorker(starved, ORG_A, { maxRequests: 5, maxItems: 500, maxMs: 1_000 });
@@ -88,9 +88,9 @@ describe("N-5 a busy place can always be deleted", () => {
     expect(rows(w, "TEAM_RECORD_EVENT")).toHaveLength(1);
     expect((await listScopeWork(w.table, ORG_A, 10))[0]!.childCursor).toBeDefined();
     expect(await runUntilDone(w)).toBeGreaterThan(0);
-    expect(new Set(await lakeScopes(w)).size).toBe(2002);
+    expect(new Set(await lakeScopes(w)).size).toBe(2602);
     expect(rows(w, "TEAM_RECORD_EVENT")).toHaveLength(0);
-  }, 180_000);
+  }, 240_000);
 
   it("finding the places below a place reads only place rows, pages with a cursor and never throws", async () => {
     const w = world();

@@ -49,6 +49,8 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
         const scope = index === 0 ? input.scope : undefined;
         const queued = await queueScopeWork(work, orgId, {
           type: "tombstone", system: input.system, ...(scope === undefined ? {} : { scope }), ...(chunk === undefined ? {} : { sourceIds: [...chunk] }), cause: input.cause, hidePending: true,
+          // From the very first write: the children of this place are not queued for the lake yet. A crash anywhere below leaves this standing, so no worker purges a row first.
+          ...(scope === undefined ? {} : { childPending: true }),
         });
         // The queue item above already hides the place and everything under it from every read. The places below get their own lake targets, a few pages here (the rest are
         // queued by the delete worker from the cursor kept on the item): a place with thousands of places under it never makes the delete fail.
@@ -65,7 +67,7 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
         const result = await tombstoneRows(work, orgId, { system: input.system, ...(scope === undefined ? {} : { scope }), ...(chunk === undefined ? {} : { sourceIds: chunk }), cause: input.cause }, budget);
         hidden += result.changed;
         await putScopeWork(deps.table, orgId, {
-          ...queued, hidden: result.changed, hidePending: !result.complete, hideDone: result.complete,
+          ...queued, hidden: result.changed, hidePending: !result.complete, hideDone: result.complete, ...(scope === undefined ? {} : { childPending: childCursor !== undefined }),
           ...(result.cursor === undefined ? {} : { hideCursor: result.cursor }), ...(childCursor === undefined ? {} : { childCursor }),
         });
       }
@@ -77,7 +79,7 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
       const orgId = orgOf(input.workspaceId);
       const result = await changeScopePrincipals(work, orgId, { scope: input.scope, ...(input.add === undefined ? {} : { add: input.add }), ...(input.remove === undefined ? {} : { remove: input.remove }), at: input.at }, budget);
       if (!result.complete) {
-        await queueScopeWork(work, orgId, { type: "principals", system: "scope", scope: input.scope, ...(input.add === undefined ? {} : { add: [...input.add] }), ...(input.remove === undefined ? {} : { remove: [...input.remove] }), hidePending: true });
+        await queueScopeWork(work, orgId, { type: "principals", system: "scope", scope: input.scope, ...(input.add === undefined ? {} : { add: [...input.add] }), ...(input.remove === undefined ? {} : { remove: [...input.remove] }), hidePending: true, ...(result.cursor === undefined ? {} : { walkCursor: result.cursor }) });
       }
     },
 
@@ -86,7 +88,7 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
       // A place that turned private: its lake rows still carry the old, wider audience (the lake cannot update it), so they are forgotten.
       if (input.audience.kind === "restricted") await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(input.scope) }]);
       const result = await replaceScopeAudience(work, orgId, { scope: input.scope, audience: input.audience, at: input.at }, budget);
-      if (!result.complete) await queueScopeWork(work, orgId, { type: "audience", system: "scope", scope: input.scope, audience: input.audience, hidePending: true });
+      if (!result.complete) await queueScopeWork(work, orgId, { type: "audience", system: "scope", scope: input.scope, audience: input.audience, hidePending: true, ...(result.cursor === undefined ? {} : { walkCursor: result.cursor }) });
     },
   };
 }

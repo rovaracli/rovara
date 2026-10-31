@@ -50,6 +50,11 @@ export interface FakeDynamoDbOptions {
    * as an eventually consistent read may. Default "strong".
    */
   consistency?: "strong" | "eventual";
+  /**
+   * The key attributes of each index by name (`{ gsi3: { partition: "gsi3pk", sort: "gsi3sk" } }`). With them, a key condition that uses `begins_with` on anything but the
+   * index's sort key is refused with a ValidationException, as DynamoDB does (the partition key takes only `=`, and a non-key attribute is no key at all).
+   */
+  indexKeys?: Record<string, { partition: string; sort?: string }>;
   /** Seeds the map order; two tables with different seeds order the same key set differently. Default: from the test's name. */
   seed?: number;
 }
@@ -88,6 +93,7 @@ export class FakeDynamoDb {
   private readonly validateExpressions: boolean;
   private readonly eventual: boolean;
   private readonly seed: number;
+  private readonly indexKeys: Record<string, { partition: string; sort?: string }>;
   /** For eventual consistency: each written item's previous version (undefined: it did not exist), read once. */
   private readonly staleOnce = new Map<string, Item | undefined>();
 
@@ -96,6 +102,7 @@ export class FakeDynamoDb {
     this.validateExpressions = options.realism?.validateExpressions ?? true;
     this.eventual = options.consistency === "eventual";
     this.seed = options.seed ?? testSeed();
+    this.indexKeys = options.indexKeys ?? {};
   }
 
   /** `value` with every map's attributes in this table's order (unchanged when map reordering is off). */
@@ -341,6 +348,11 @@ export class FakeDynamoDb {
       const begins = INDEX_BEGINS.exec(String(input.KeyConditionExpression));
       if (begins) {
         const [partition, sort] = [name(begins[1]!), name(begins[3]!)];
+        const declared = this.indexKeys[input.IndexName as string];
+        // DynamoDB: begins_with is for the SORT key only. The partition key takes `=`, and a non-key attribute is no key at all.
+        if (sort === partition || (declared !== undefined && (sort !== declared.sort || partition !== declared.partition))) {
+          throw Object.assign(new Error("Query key condition not supported: begins_with is allowed on the sort key of the index only"), { name: "ValidationException", $metadata: {} });
+        }
         const prefix = values[begins[4]!] as string;
         const found = this.find((item) => item[partition] === values[begins[2]!] && typeof item[sort] === "string" && item[sort].startsWith(prefix))
           .sort((left, right) => compareTuples(indexOrder(left, sort), indexOrder(right, sort)));

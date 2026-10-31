@@ -14,7 +14,7 @@ import {
   type OrgId,
 } from "@agentx/contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
-import { bySource, byScope, putScopeWork, scopePage, tombstoneItem, type ScopeCursor, type ScopeWork } from "./store.js";
+import { bySource, putScopeWork, scopePage, tombstoneItem, type ScopeCursor, type ScopeWork } from "./store.js";
 import { clearSupersedes } from "./item-head.js";
 import type { TeamRecordTable, TombstoneCause } from "./types.js";
 
@@ -151,18 +151,20 @@ async function rewriteAudience(table: TeamRecordTable, key: { pk: string; sk: st
   return false;
 }
 
-async function eachInScope(dependencies: WorkDependencies, orgId: OrgId, scope: string, budget: WorkBudget, visit: (item: Item, key: { pk: string; sk: string }) => Promise<boolean>): Promise<WorkResult> {
+async function eachInScope(dependencies: WorkDependencies, orgId: OrgId, scope: string, budget: WorkBudget, visit: (item: Item, key: { pk: string; sk: string }) => Promise<boolean>, resume?: ScopeCursor): Promise<WorkResult> {
   const expired = clock(dependencies).deadline(budget);
-  // An audience or a member list belongs to ONE place: not the places under it.
-  const found = await byScope(dependencies.table, orgId, scope, budget.maxItems, { exact: true });
+  // An audience or a member list belongs to ONE place: not the places under it. A place bigger than the budget is walked a page-run at a time from a cursor; the changes
+  // are idempotent, so a page that is repeated (the clock ran out in the middle of it) does no harm.
+  const page = await scopePage(dependencies.table, orgId, scope, budget.maxItems, { exact: true, ...(resume === undefined ? {} : { cursor: resume }) });
   let changed = 0;
-  let complete = !found.truncated;
-  for (const item of found.items) {
-    if (expired()) { complete = false; break; }
+  let complete = page.cursor === undefined;
+  let cursor = page.cursor;
+  for (const item of page.items) {
+    if (expired()) { complete = false; cursor = resume; break; }
     if (typeof item.pk !== "string" || typeof item.sk !== "string" || item.tombstone !== undefined) continue;
     if (await visit(item, { pk: item.pk, sk: item.sk })) changed += 1;
   }
-  return { changed, complete };
+  return { changed, complete, ...(complete || cursor === undefined ? {} : { cursor }) };
 }
 
 /** The audience of the fact a derivation link names, when it is the same scope's own snapshot (so a fact built from several scopes is never rewritten by one of them). */
@@ -179,7 +181,7 @@ async function factOf(table: TeamRecordTable, orgId: OrgId, link: Item): Promise
  * People joined or left a private scope: the principals of every restricted row of the scope (and of the facts distilled from it) change. Idempotent: adding
  * a present principal or removing an absent one changes nothing. More than 500 principals after the change keeps the first 500 (fewer people see the rows).
  */
-export async function changeScopePrincipals(dependencies: WorkDependencies, orgId: OrgId, input: { scope: string; add?: readonly string[]; remove?: readonly string[]; at: string }, budget: WorkBudget = DEFAULT_WORK_BUDGET): Promise<WorkResult> {
+export async function changeScopePrincipals(dependencies: WorkDependencies, orgId: OrgId, input: { scope: string; add?: readonly string[]; remove?: readonly string[]; at: string }, budget: WorkBudget = DEFAULT_WORK_BUDGET, resume?: ScopeCursor): Promise<WorkResult> {
   const add = input.add ?? [];
   const remove = new Set(input.remove ?? []);
   const mutate = (current: Audience): Audience | undefined => {
@@ -199,14 +201,14 @@ export async function changeScopePrincipals(dependencies: WorkDependencies, orgI
       return fact === undefined ? false : rewriteAudience(dependencies.table, fact.key, fact.audience, mutate);
     }
     return false;
-  });
+  }, resume);
 }
 
 /**
  * A scope turned private or public: every row of it takes the new audience. A fact is only ever narrowed (to the new restricted snapshot, when it was this scope's own
  * or project-wide); it is never widened here, because it may rest on other sources.
  */
-export async function replaceScopeAudience(dependencies: WorkDependencies, orgId: OrgId, input: { scope: string; audience: Audience; at: string }, budget: WorkBudget = DEFAULT_WORK_BUDGET): Promise<WorkResult> {
+export async function replaceScopeAudience(dependencies: WorkDependencies, orgId: OrgId, input: { scope: string; audience: Audience; at: string }, budget: WorkBudget = DEFAULT_WORK_BUDGET, resume?: ScopeCursor): Promise<WorkResult> {
   const next = AudienceSchema.parse(input.audience);
   const sameScope = (current: Audience): boolean => current.kind === "restricted" && current.acl.scope === input.scope;
   return eachInScope(dependencies, orgId, input.scope, budget, async (item, key) => {
@@ -221,7 +223,7 @@ export async function replaceScopeAudience(dependencies: WorkDependencies, orgId
       return rewriteAudience(dependencies.table, fact.key, fact.audience, (current) => (current.kind === "project" || sameScope(current) ? next : undefined));
     }
     return false;
-  });
+  }, resume);
 }
 
 // ---- queueing

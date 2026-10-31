@@ -359,6 +359,10 @@ export interface ScopeWork {
   hideDone?: boolean;
   /** The lake targets of the places below the place are queued page by page: where that stopped (absent: all queued). */
   childCursor?: PlaceCursor;
+  /** True from the very first write of a request with a place, until every child place has its lake target queued: a worker purges no row while it is true. */
+  childPending?: boolean;
+  /** Audience and member changes walk a big place a budget at a time: where the last run stopped (the changes are idempotent, so a repeated page is harmless). */
+  walkCursor?: ScopeCursor;
   cause?: "source_deleted" | "person_erased" | "project_archived" | "excluded";
   add?: string[];
   remove?: string[];

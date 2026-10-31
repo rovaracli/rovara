@@ -66,9 +66,13 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
 
     if (entry.type === "principals" || entry.type === "audience") {
       const done = entry.type === "principals"
-        ? await changeScopePrincipals(work0, orgId, { scope: entry.scope ?? "", ...(entry.add === undefined ? {} : { add: entry.add }), ...(entry.remove === undefined ? {} : { remove: entry.remove }), at: new Date(now()).toISOString() }, remaining)
-        : await replaceScopeAudience(work0, orgId, { scope: entry.scope ?? "", audience: entry.audience as never, at: new Date(now()).toISOString() }, remaining);
-      if (done.complete) { await deleteItem(deps.table, key); summary.finished += 1; } else summary.stillHidden += 1;
+        ? await changeScopePrincipals(work0, orgId, { scope: entry.scope ?? "", ...(entry.add === undefined ? {} : { add: entry.add }), ...(entry.remove === undefined ? {} : { remove: entry.remove }), at: new Date(now()).toISOString() }, remaining, entry.walkCursor)
+        : await replaceScopeAudience(work0, orgId, { scope: entry.scope ?? "", audience: entry.audience as never, at: new Date(now()).toISOString() }, remaining, entry.walkCursor);
+      if (done.complete) { await deleteItem(deps.table, key); summary.finished += 1; } else {
+        // Go on from here next time, not from the start of the place.
+        await putScopeWork(deps.table, orgId, { ...entry, hidePending: true, ...(done.cursor === undefined ? {} : { walkCursor: done.cursor }) });
+        summary.stillHidden += 1;
+      }
       continue;
     }
 
@@ -104,17 +108,28 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
       entry = { ...rest, hideDone: true };
       await putScopeWork(deps.table, orgId, entry);
     }
-    if (entry.scope !== undefined && entry.childCursor !== undefined) {
+    if (entry.scope !== undefined && (entry.childPending === true || entry.childCursor !== undefined)) {
+      // "Pending with no cursor" means no page was queued yet (the sink may have stopped before its first): start from the first page. The scan is done only when a page
+      // comes back with no cursor, and only then is childPending cleared; until then no row of this request is purged.
       let cursor: PlaceCursor | undefined = entry.childCursor;
-      while (cursor !== undefined && now() - started < budget.maxMs) {
-        const page = await childScopes(deps.table, orgId, entry.scope, { limit: 500, cursor });
-        if (page.scopes.length > 0) await (deps.lakeQueue ?? tableLakeDeleteQueue(deps.table, deps.now)).enqueue(orgId, page.scopes.map((place) => ({ kind: "scope" as const, hash: recordScopeHash(place) })));
-        cursor = page.cursor;
+      let finished: boolean;
+      try {
+        do {
+          const page = await childScopes(deps.table, orgId, entry.scope, { limit: 500, ...(cursor === undefined ? {} : { cursor }) });
+          if (page.scopes.length > 0) await (deps.lakeQueue ?? tableLakeDeleteQueue(deps.table, deps.now)).enqueue(orgId, page.scopes.map((place) => ({ kind: "scope" as const, hash: recordScopeHash(place) })));
+          cursor = page.cursor;
+          finished = cursor === undefined;
+        } while (!finished && now() - started < budget.maxMs);
+      } catch {
+        // The lake queue or the index cannot be reached: nothing is purged, the item and its flag stay, and the next run starts again from the cursor.
+        deps.log?.("record.delete_children_unavailable", {});
+        summary.stillHidden += 1;
+        continue;
       }
       const { childCursor: _gone, ...rest } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
-      entry = cursor === undefined ? rest : { ...entry, childCursor: cursor };
+      entry = finished ? { ...rest, childPending: false } : { ...entry, childPending: true, ...(cursor === undefined ? {} : { childCursor: cursor }) };
       await putScopeWork(deps.table, orgId, entry);
-      if (cursor !== undefined) { summary.stillHidden += 1; continue; }
+      if (!finished) { summary.stillHidden += 1; continue; }
     }
     // Source ids that never had a row in the hot table may still have lake rows: their hashes are queued first, before any hot row goes.
     if (entry.sourceIds !== undefined) await queueNamedSources(deps, orgId, entry);

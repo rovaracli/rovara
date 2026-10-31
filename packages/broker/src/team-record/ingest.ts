@@ -101,7 +101,7 @@ export interface AdmittedTransient {
   scope: string;
   /** The lowest trust of the row, its actor, and every quoted or forwarded piece. */
   trust: TrustClass;
-  /** The trust of the author's own words (quoted pieces are split off by the distiller's own span rules). */
+  /** The trust of the author's own words: the row's trust without the quote terms (the tap's piece trusts and the item's history included). Quoted pieces are split off span by span. */
   baseTrust: TrustClass;
   /** The text after the same hygiene as a stored row. */
   text: string;
@@ -206,7 +206,9 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
       const moved = await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt: versionTimeOf(draft), trust, indexExpiresAt: plan.indexExpiresAt });
       if (moved.status === "stale") return refused("stale_version");
       const owedRows = moved.status === "advanced" ? (moved.previous === undefined ? undefined : [moved.previous.row, moved.previous.supersedes?.row]) : moved.owed === undefined ? undefined : [moved.owed.row];
-      const baseTrust = minTrust(draft.trust, ...(draft.actor === undefined ? [] : [draft.actor.trust]), ...(draft.actor === undefined && draft.source !== "rovara" ? ["system" as const] : []));
+      // The trust of the author's OWN words: every reason the row was lowered except the quote terms (those are applied span by span, where the splitter finds the quote). The tap's
+      // piece trusts and the item's history lower the own words too.
+      const baseTrust = minTrust(draft.trust, ...(draft.actor === undefined ? [] : [draft.actor.trust]), ...(draft.pieceTrusts ?? []), ...(head === undefined ? [] : [head.lowestTrust]), ...(draft.actor === undefined && draft.source !== "rovara" ? ["system" as const] : []));
       return { admitted: true, item: { orgId, project, scope: transientScope, trust, baseTrust, text: clean, audience: draft.audience, links: draft.links.filter(validLink).slice(0, LINKS_MAX), occurredAt, ...(owedRows === undefined ? {} : { supersedes: { rows: owedRows.flatMap((row) => (row === undefined ? [] : [row])), version: draft.sourceRef.version } }) } };
     }
     return refused("retention_not_stored");

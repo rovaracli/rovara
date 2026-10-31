@@ -26,7 +26,7 @@ export interface World {
 }
 
 export function world(options: Partial<Pick<IngestDependencies, "edition" | "rovaraDefaultRetention">> = {}): World {
-  const db = new FakeDynamoDb();
+  const db = new FakeDynamoDb({ indexKeys: { gsi1: { partition: "gsi1pk" }, gsi2: { partition: "gsi2pk" }, gsi3: { partition: "gsi3pk", sort: "gsi3sk" }, gsi4: { partition: "gsi4pk" }, gsi5: { partition: "gsi5pk", sort: "textDueAt" } } });
   const table: TeamRecordTable = { documentClient: db, tableName: "TeamRecord" };
   const clock = { ms: T0 };
   const logs: World["logs"] = [];
