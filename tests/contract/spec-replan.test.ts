@@ -4,7 +4,7 @@ import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { SpecState } from "../../packages/broker/src/spec/state.js";
 import { projectMemberKey } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
-import { MAYA } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, grantProject } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { HEAD, META, NOW, editedSpecTask } from "../support/spec-replan-world.js";
 import { specReplanRequestId } from "../../packages/broker/src/aws/developer-tasks/spec-replan.js";
@@ -113,5 +113,27 @@ describe("the decision source for held specs (review round 1)", () => {
     const { state } = await t.store.load(t.taskId);
     await t.db.send(new PutCommand({ TableName: "state", Item: { ...state!, revision: state!.revision + 1, editPrompt: { ...state!.editPrompt!, status: "kept" } } }));
     expect(await specChoiceItemsFor(deps(MAYA), caller(MAYA))).toEqual([]);
+  });
+});
+
+describe("through the real access check, unmocked (fix round 2)", () => {
+  it("a project developer who is in the shared task's channel but is not an owner cannot Re-plan, and nothing moves", async () => {
+    const t = await editedSpecTask({ everyoneInChannel: true });
+    const teammate = { ...OMAR, provider: "slack" as const, sessionId: "s-omar-slack", slackUserId: "U0OMAR001" };
+    t.db.set({ pk: `SESSION#${teammate.sessionId}`, sk: "META", sessionId: teammate.sessionId, developerId: teammate.developerId, amr: "slack", startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 3600 });
+    t.db.set({ pk: `DEVELOPER#${teammate.developerId}`, sk: "META", developerId: teammate.developerId, provider: "slack", displayName: OMAR.name, slackUserId: teammate.slackUserId, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    grantProject(t.db, teammate, "payments");
+    expect((await t.dev(MAYA, "POST", `/v1/dev/tasks/${t.taskId}/share`, { requestId: "11111111-1111-4111-8111-111111111111" })).status).toBe(200);
+    // The teammate CAN open the shared task's page (so the refusal below is about authority, not visibility), and is not offered the choices.
+    const seen = await t.page(teammate);
+    expect(seen.specHold).toMatchObject({ canChoose: false });
+    const before = t.record();
+    const reply = await t.press(teammate);
+    // Whatever code the real path answers, it refuses, and nothing moves.
+    expect(reply.status, JSON.stringify(reply.body)).toBeGreaterThanOrEqual(400);
+    expect(reply.status).toBeLessThan(500);
+    expect(t.record().workflow.revision).toBe(before.workflow.revision);
+    expect((await t.store.load(t.taskId)).state?.editPrompt?.status).toBe("open");
+    expect(t.db.find((item) => item.entityType === "OUTBOX" && JSON.stringify(item).includes("People edited the spec pull request"))).toEqual([]);
   });
 });
