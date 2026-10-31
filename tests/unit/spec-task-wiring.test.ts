@@ -123,8 +123,17 @@ describe("the code pull request", () => {
     const t = await setup();
     await specAfterPlanApproval(t.deps, TASK);
     await t.db.send(new PutCommand({ TableName: "t", Item: { ...orgRemovedKey("org-1", "dev-1"), removedAt: NOW } }));
-    const gate = await specPublicationGate(t.deps, t.task, t.task.workflow!);
-    expect(gate).toMatchObject({ proceed: false });
+    await expect(specPublicationGate(t.deps, t.task, t.task.workflow!)).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED", message: expect.stringContaining("no longer a member") as string });
+    expect(t.startedWrites).toHaveLength(0);
+    // The guard is the first thing the launch does: no conversation row is written for the removed creator, and the task records why it ended.
+    expect(t.db.find((item) => item.entityType === "CONVERSATION")).toEqual([]);
+    expect(t.db.get(`DEVTASK#${TASK}`, "META")).toMatchObject({ outcome: "creator_removed" });
+  });
+  it("tells the review path the removal too, not that the spec is being written", async () => {
+    const t = await setup();
+    await specAfterPlanApproval(t.deps, TASK);
+    await t.db.send(new PutCommand({ TableName: "t", Item: { ...orgRemovedKey("org-1", "dev-1"), removedAt: NOW } }));
+    await expect(specReviewGate(t.deps, t.task, t.task.workflow!)).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
     expect(t.startedWrites).toHaveLength(0);
   });
   it("fails the write for good, with Retry and Continue, when the workspace is closed or never got ready (it does not wait as busy)", async () => {

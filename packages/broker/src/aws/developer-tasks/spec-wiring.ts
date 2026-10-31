@@ -5,7 +5,7 @@
 // The pure parts (state, rendering, the link) are in ../../spec/; the effects here are the same ones the workflow already uses (a system-started run with its own conversation, the broker's publish).
 import { createHash } from "node:crypto";
 import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { SPEC_REVIEW_REQUIREMENTS_MAX, SpecReviewInputSchema, agentXError, metaRepositoryOf, specStripHidden, workflowRequestId, type SpecFile, type SpecKind, type SpecReviewInput, type WorkflowSnapshot } from "@agentx/contracts";
+import { AgentXError, SPEC_REVIEW_REQUIREMENTS_MAX, SpecReviewInputSchema, agentXError, metaRepositoryOf, specStripHidden, workflowRequestId, type SpecFile, type SpecKind, type SpecReviewInput, type WorkflowSnapshot } from "@agentx/contracts";
 import { developerTaskIdentity, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional, workflowDispatchItem } from "../broker-shared.js";
 import { createSpecHooks, type PlanApproval, type SpecTaskRef, type SpecWorld } from "../../spec/hooks.js";
@@ -50,6 +50,8 @@ function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecor
       return operation !== undefined && ["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(operation.status);
     },
     startWrite: async ({ request, attemptKey, items }) => {
+      // Ruling R60: the spec write is a task launch, so the owner is read as a member again first thing at the launch itself (before any read or write), whichever path (publication, review, an owner's Retry) reached the gate.
+      await creatorGuard(deps, task);
       // The spec writer reads rule files at the base commit the broker pinned for the task, as the reviewers do, never the working tree a build wrote; without a base it does not run.
       const workflow = task.workflow;
       const base = workflow === undefined ? {} : taskBaseOption(task, workflow);
@@ -64,8 +66,6 @@ function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecor
         TableName: deps.tableName, ConditionExpression: "attribute_not_exists(pk)",
         Item: { pk: `WORKSPACE#${task.workspaceId}`, sk: `CONVERSATION#${conversationId}`, entityType: "CONVERSATION", id: conversationId, workspaceId: task.workspaceId, createdAt: receivedAt, updatedAt: receivedAt },
       })).catch((error: unknown) => { if (!isConditional(error)) throw error; });
-      // Ruling R60: the spec write is a task launch, so the owner is read as a member again here, at the launch itself, whichever path (publication, review, an owner's Retry) reached the gate.
-      await creatorGuard(deps, task);
       try {
         await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
           requestId: workflowRequestId("agentx-spec-write", task.taskId, Number(attemptKey)), conversationId, prompt: request.prompt,
@@ -138,6 +138,8 @@ export async function specPublicationGate(deps: DeveloperTaskRouteDependencies, 
       task: refOf(task), approvedPlanDigest: plan?.sha256 ?? "", planMarkdown: () => plan?.text, metaRepositoryUrl: meta?.url, derive: () => deriveApproval(deps, task),
     });
   } catch (error) {
+    // A removed creator is not a failed check: the refusal (the removal's words) reaches the caller (ruling R60).
+    if (error instanceof AgentXError && error.code === "TASK_ACCESS_DENIED") throw error;
     deps.log?.({ event: "spec.gate_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
     return { proceed: false, hold: { action: "hold", reason: "failed", message: "The spec could not be checked just now.", ownerActions: ["retry", "continue_without_spec"] } };
   }
@@ -205,6 +207,7 @@ export async function specReviewGate(deps: DeveloperTaskRouteDependencies, task:
     const input = SpecReviewInputSchema.safeParse({ specPath: commonFolder(published.files.map((file) => file.path)) || published.files[0]!.path, specCommit: commit, requirements: unique, truncated: found.length > SPEC_REVIEW_REQUIREMENTS_MAX });
     return input.success ? { proceed: true, input: input.data } : hold("The spec could not be read for the review.");
   } catch (error) {
+    if (error instanceof AgentXError && error.code === "TASK_ACCESS_DENIED") throw error;
     deps.log?.({ event: "spec.review_gate_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
     return hold("The spec could not be checked just now.");
   }
