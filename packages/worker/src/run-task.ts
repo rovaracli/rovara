@@ -34,6 +34,7 @@ import { consoleWorkerLog, type WorkerLogSink } from "./worker-log.js";
 import { ToolLoopGuard } from "./tool-loop-guard.js";
 import { assistantOutcome, eventType, failedTurn, type AssistantOutcome } from "./session-events.js";
 import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step.js";
+import { loadedKnowledgePayload } from "./knowledge/manifest.js";
 import { runAgentStep, type AgentStepResult, type RunAgentStepInput } from "./agent-run/run-agent-step.js";
 import {
   createWorkspacePiSession,
@@ -609,6 +610,15 @@ async function runTask(
    * checks on someone else's words in a workspace a coding session may have written, so they read the base commit as well (A5).
    */
   const reviewerRuleBases = { contextFilesAt: "base-commit" as const, baseCommits: invocation.payload.workflowBase ?? [] };
+  /**
+   * The Plan stage reads the base commit too when the broker sent one (workflowBase on the PLAN operation), so a working tree an earlier build
+   * round wrote cannot steer which rules the plan, and through it the plan check, sees. A broker that sends no base leaves Plan reading the
+   * working tree as before, and says so once.
+   */
+  const planningOnly = invocation.payload.workflowMode === "PLAN";
+  const planReadsBase = planningOnly && (invocation.payload.workflowBase?.length ?? 0) > 0;
+  if (planningOnly && !planReadsBase) onDiagnostic("the plan read the repositories' rule files from the working tree: no base commit was sent for this planning run");
+  const ruleBases = reviewing || planCritique || understanding ? reviewerRuleBases : planReadsBase ? { ...reviewerRuleBases, knowledge: { stage: "plan" as const } } : {};
   let graphFinalItemReady = workflowDependencies === undefined;
   const recorder = new CommandRecorder({
     fingerprint: (signal) => recorderFingerprint(
@@ -679,7 +689,7 @@ async function runTask(
         sessionFile: registered.sessionFile,
         onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
-        ...(reviewing || planCritique || understanding ? reviewerRuleBases : {}),
+        ...ruleBases,
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
@@ -692,7 +702,7 @@ async function runTask(
       {
         rootPath: dependencies.rootPath, model: dependencies.model, workflowMode: piMode, conversationId, onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
-        ...(reviewing || planCritique || understanding ? reviewerRuleBases : {}),
+        ...ruleBases,
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
@@ -709,6 +719,14 @@ async function runTask(
     session.dispose();
     throw error;
   }
+  // K1 C5a: what this stage's session loaded, as references only; sent again at the end with anything loaded during the run.
+  const reportLoadedKnowledge = async (): Promise<void> => {
+    try {
+      const loaded = session.loadedKnowledge?.();
+      if (loaded !== undefined) await emit("progress", loadedKnowledgePayload(loaded));
+    } catch { /* a record that cannot be made is left out; the stage goes on */ }
+  };
+  await reportLoadedKnowledge();
 
   const limits = dependencies.modelCallLimits ?? {};
   const stallLimitMs = limits.stallMs ?? PLANNING_STALL_MS;
@@ -1353,6 +1371,7 @@ async function runTask(
           ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }),
           ...(fileTools === undefined ? {} : { fileTools }),
           onProgress: (message) => { void events.append("progress", { message }).catch(() => undefined); },
+          onLoadedKnowledge: (manifest) => { void emit("progress", loadedKnowledgePayload(manifest)); },
           onUsage: async ({ role, stats, model, outcome }) => {
             const usage = createTaskUsageTelemetry(stats, { ...model, ...(dependencies.model.cacheRetention === undefined ? {} : { cacheRetention: dependencies.model.cacheRetention }) }, outcome);
             const redactedUsage = redactCredentials(usage);
@@ -1552,6 +1571,7 @@ async function runTask(
     } catch (error) {
       telemetryFailure = error;
     }
+    await reportLoadedKnowledge();
     await flushEvents();
     // Ruling Y: a task that ends failed or cancelled still tells the broker about a regression, so it stays standing.
     const withChecks = (error: Error): Error => {

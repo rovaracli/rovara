@@ -209,3 +209,9 @@ export * from "./decision-cards.js";
 export * from "./test-environment.js";
 export * from "./service-mocks.js";
 export * from "./team-record-storage.js";
+
+// K1 C4: skills in the meta repo.
+export * from "./knowledge-skills.js";
+
+// K1 C5a: what the agent loaded (references only).
+export * from "./loaded-knowledge.js";

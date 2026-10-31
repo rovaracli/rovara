@@ -113,3 +113,6 @@ export * from "./app-service-status.js";
 export * from "./evidence.js";
 export * from "./decision-cards.js";
 export * from "./test-environment.js";
+// K1 C5b: what the agent loaded (browser-safe readers).
+export * from "./knowledge-skills.js";
+export * from "./loaded-knowledge.js";
