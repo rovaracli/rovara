@@ -768,7 +768,7 @@ it("an allowed run-limit approval commits its newly calculated stop envelope wit
 for (const scope of ["company", "project", "agent"] as const) it(`a new run-limit approval cannot lift its explicit ${scope} stop`, async () => {
   const f = await approvalWindow(scope), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
   expect(f.spendRequest.newLimitUsd).toBe(7);
-  const decision = f.t.decide(MAYA, f.spendRequest.spendRequestId);
+  const decision = f.t.decide(BEN, f.spendRequest.spendRequestId);
   await expect(decision).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
   await expect(decision).rejects.toThrow("Spending rules changed; ask again.");
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
@@ -2487,5 +2487,27 @@ it("a monthly-only project revision does not expire complete run-limit terms", a
  f.t.db.set({ ...row, revision: Number(row.revision) + 1, monthlyBudgetUsd: 999 });
  f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
  expect(await spendRequests.reviewTaskStopCutoverApproval(f.t.deps(), f.t.caller(ADA, "owner"), f.spendRequest)).toMatchObject({ kind: "retain" });
+ expect(f.t.requestOf(f.task.taskId, "run_limit")[0]?.status).toBe("PENDING");
+});
+
+for (const drift of ["at_read", "at_commit"] as const) it(`a reached stop with task drift ${drift} returns the financial refusal without minting`, async () => {
+ const f = await fixture(), task = await f.t.plainTask(), plan = f.t.taskOps(task.workspaceId).at(-1)!;
+ const headers = { "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability };
+ expect((await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers })).status).toBe(200);
+ f.t.access.keySpend.mockResolvedValue(1.234567);
+ const send = f.t.db.send.bind(f.t.db);let raced = false;
+ f.t.db.send = async command => {
+  if (!raced && ((drift === "at_read" && command instanceof GetCommand && command.input.Key?.pk === `DEVTASK#${task.taskId}`) || (drift === "at_commit" && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => (item.Put?.Item?.event as { action?: string } | undefined)?.action === "spending.stop_reached")))) {
+   raced = true; f.t.db.set({ ...f.t.meta(task.taskId), budgetUsd: 0.5 });
+  }
+  return send(command);
+ };
+ const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers });
+ expect(raced).toBe(true);expect(reply.body.error).toMatchObject({ code: "BUDGET_EXCEEDED" });
+});
+it("a member payer cannot self-decide a raise beyond the final company stop", async () => {
+ const f = await approvalWindow("company"), before = f.t.meta(f.task.taskId);
+ await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "FORBIDDEN" });
+ expect(f.t.meta(f.task.taskId)).toEqual(before);
  expect(f.t.requestOf(f.task.taskId, "run_limit")[0]?.status).toBe("PENDING");
 });
