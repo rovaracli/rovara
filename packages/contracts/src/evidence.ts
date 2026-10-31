@@ -360,6 +360,24 @@ export function evidenceIsFor(pack: Pick<EvidencePack, "candidateDigest"> | unde
   return pack !== undefined && pack.candidateDigest === candidateDigest;
 }
 
+/** Every artifact link in a view, in a fixed order. */
+export function evidenceViewLinks(view: EvidenceView): ArtifactLink[] {
+  return [
+    ...view.checks.flatMap((entry) => (entry.outputTailRef === undefined ? [] : [entry.outputTailRef])),
+    ...view.api.flatMap((scenario) => scenario.samples),
+    ...view.browser.flatMap((scenario) => [...scenario.strip.before, ...scenario.strip.after, ...(scenario.video === undefined ? [] : [scenario.video]), ...(scenario.trace === undefined ? [] : [scenario.trace])]),
+  ];
+}
+
+/**
+ * The download contract: an artifact is served only when it is named by the CURRENT pack of the task (the one for the candidate's digest now) and is `available` there. A hash the store happens to hold (a withheld
+ * video, a file of an older candidate, another task's file) is never served by this answer. Retention is part of `available`: the view says `expired` once the period has passed.
+ */
+export function servableEvidenceArtifact(view: EvidenceView | undefined, candidateDigest: string | undefined, sha256: string): ArtifactLink | undefined {
+  if (view === undefined || candidateDigest === undefined || view.candidateDigest !== candidateDigest) return undefined;
+  return evidenceViewLinks(view).find((link) => link.sha256 === sha256 && link.state === "available");
+}
+
 // ---- the proof table's extra words and the pull request's evidence mode
 
 /** The fixed words a proof row's evidence may add after its label (the Proof table's `detail`). Never a test's or a repository's own words. */

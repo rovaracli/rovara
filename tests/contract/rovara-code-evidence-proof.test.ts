@@ -50,13 +50,22 @@ const pack = (over: Record<string, unknown> = {}): EvidencePack => EvidencePackS
   ],
   ...over,
 });
-const context = (over: Partial<ProofEvidenceContext> = {}): ProofEvidenceContext => ({ pack: pack(), mode: "link", taskUrl: URL, ...over });
+const ORIGIN = "https://rovara.example";
+const context = (over: Partial<ProofEvidenceContext> = {}): ProofEvidenceContext => ({ pack: pack(), mode: "link", taskUrl: URL, origin: ORIGIN, ...over });
 const section = (evidence: ProofEvidenceContext | undefined, level = 0) => proofSection(workflow(), { plan: plan(), ...(evidence === undefined ? {} : { evidence }) })!(level).join("\n");
 
 describe("the evidence lines", () => {
   const at0 = evidenceLines(context(), CODE.digest, 0);
   it("give counts per kind, new tests and what they prove, never a test's output", () => {
-    expect(at0.lines[0]).toBe("Checks by kind: pytest -q: 36 passed, 3 skipped; 2 new, 2 fail on the original code · lint ✓ · type check ✓ · security scan: 0 new findings · 37 of 1,240 tests selected (coverage map)");
+    expect(at0.lines[0]).toBe("Checks by kind: pytest -q ✓: 36 passed, 3 skipped; 2 new · lint ✓ · type check ✓ · security scan ✓: 0 new findings · 37 of 1,240 tests selected (coverage map)");
+  });
+  it("say how many new tests fail on the original code only from the broker's own proof, never from the worker's per-test verdict", () => {
+    const proven = (names: string[]) => evidenceLines(context(), CODE.digest, 0, { proven: new Set(names) }).lines[0]!;
+    expect(proven(["test_no_region", "test_other"])).toContain("2 new, 2 fail on the original code");
+    expect(proven(["test_no_region"])).toContain("2 new, 1 fail on the original code");
+    expect(proven([])).toContain("2 new, 0 fail on the original code");
+    // The pack's own names say "proves_change", but with no broker proof the clause is absent.
+    expect(at0.lines[0]).not.toContain("fail on the original code");
   });
   it("give the changed-line coverage", () => {
     expect(at0.lines[1]).toBe("Changed lines covered by tests: 41 of 48 (85%)");
@@ -87,6 +96,14 @@ describe("what the evidence never says", () => {
     const line = evidenceLines(context({ pack: pack({ checks: [checkEntry({ after: "failed", class: "regression" })], selection: { method: "full", selected: 0, total: 0 } }) }), CODE.digest, 0).lines[0]!;
     expect(line).toBe("Checks by kind: pytest -q ✗ (test details not read)");
   });
+  it("puts the outcome word on a failed test check even when its counts look clean, and on a failed scan", () => {
+    const clean = { total: 120, passed: 120, failed: 0, skipped: 0, errored: 0, names: [], newTests: [] };
+    const line = evidenceLines(context({ pack: pack({ checks: [checkEntry({ after: "failed", class: "regression", tests: clean }), checkEntry({ checkId: "readiness:1", kind: "security", label: "bandit", after: "failed", class: "regression", findings: { tool: "bandit", newCount: 0, bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, items: [] } })], selection: { method: "full", selected: 120, total: 120 } }) }), CODE.digest, 0).lines[0]!;
+    expect(line).toBe("Checks by kind: pytest -q ✗: 120 passed · security scan ✗: 0 new findings");
+    for (const after of ["timed_out", "unknown", "not_run"] as const) {
+      expect(evidenceLines(context({ pack: pack({ checks: [checkEntry({ after, class: "not_rerun", tests: clean })], selection: { method: "full", selected: 120, total: 120 } }) }), CODE.digest, 0).lines[0], after).not.toMatch(/✓/);
+    }
+  });
   it("says coverage was not measured when a test check ran and no check measured it, and says nothing without a test check", () => {
     const noCoverage = pack({ checks: [checkEntry({ tests: { total: 1, passed: 1, failed: 0, skipped: 0, errored: 0, names: [], newTests: [] } })], selection: { method: "full", selected: 1, total: 1 } });
     expect(evidenceLines(context({ pack: noCoverage }), CODE.digest, 0).lines).toContain("Changed lines covered by tests: not measured");
@@ -95,7 +112,7 @@ describe("what the evidence never says", () => {
   });
   it("shows a new security finding by severity, and migrations that did not roll back cleanly as such", () => {
     const scan = pack({ checks: [checkEntry({ kind: "security", label: "semgrep", findings: { tool: "semgrep", newCount: 3, bySeverity: { critical: 0, high: 1, medium: 2, low: 0, info: 0 }, items: [] } }), checkEntry({ checkId: "readiness:1", kind: "migration", label: "migrate", migrations: { applied: ["001", "002"], rolledBack: false, schemaChanges: [] } })], selection: { method: "full", selected: 0, total: 0 } });
-    expect(evidenceLines(context({ pack: scan }), CODE.digest, 0).lines[0]).toBe("Checks by kind: security scan: 3 new (1 high or critical) · migrations: 2 applied, rollback failed");
+    expect(evidenceLines(context({ pack: scan }), CODE.digest, 0).lines[0]).toBe("Checks by kind: security scan ✓: 3 new (1 high or critical) · migrations: 2 applied, rollback failed");
   });
   it("shows nothing for a pack that is for other code, or none", () => {
     expect(evidenceLines(context({ pack: pack({ candidateDigest: "f".repeat(64) }) }), CODE.digest, 0)).toEqual({ lines: [], notTested: [] });
@@ -129,8 +146,10 @@ describe("the evidence mode", () => {
     expect(evidenceLinkLine(context({ mode: "summary" }))).not.toContain("http");
     expect(evidenceLinkLine(context({ mode: "embed" }))).toContain(URL);
   });
-  it("leaves out an address that is not https, or has spaces, angle brackets or quotes, and still says where to look", () => {
-    for (const taskUrl of ["http://rovara.example/x", "javascript:alert(1)", "https://x.example/a b", "https://x.example/<b>", 'https://x.example/"x', undefined]) {
+  it("leaves out an address that is not https, is on another origin, has spaces, angle brackets or quotes, or has no configured origin, and still says where to look", () => {
+    expect(evidenceLinkLine(context({ origin: undefined }))).toBe("Full evidence (screenshots, API samples, video, logs): Rovara task page (sign-in needed)");
+    expect(evidenceLinkLine(context({ origin: "http://rovara.example" }))).not.toContain("http");
+    for (const taskUrl of ["http://rovara.example/x", "javascript:alert(1)", "https://rovara.example/a b", "https://rovara.example/<b>", 'https://rovara.example/"x', "https://evil.example/x", "https://rovara.example.evil.example/x", "https://rovara.example@evil.example/x", undefined]) {
       expect(evidenceLinkLine(context({ taskUrl })), String(taskUrl)).toBe("Full evidence (screenshots, API samples, video, logs): Rovara task page (sign-in needed)");
     }
   });
@@ -151,6 +170,19 @@ describe("in the Proof section", () => {
     expect(text.indexOf("- Mocked service partner-scorer")).toBeGreaterThan(untested);
     expect(text).toContain("- Full evidence (screenshots, API samples, video, logs)");
   });
+  it("says a new test fails on the original code only when the broker's TestProof, bound to this code, says so", () => {
+    const testProof = (digest: string, verdict: "proves_change" | "does_not_prove") => ({
+      schemaVersion: 1, candidateDigest: digest, status: "checked", note: "completed", changedTests: { added: 2, changed: 0, deleted: 0 }, durationMs: 5,
+      items: [{ checkId: "readiness:0", label: "Unit tests", granularity: "test", test: "test_no_region", verdict, reason: verdict === "proves_change" ? "assertion_failed_on_old" : "passed_on_old" }],
+    });
+    const at = (proof: unknown) => proofSection(workflow(), { plan: plan(), evidence: context(), ...(proof === undefined ? {} : { testProof: proof as never }) })!(0).join("\n");
+    expect(at(testProof(CODE.digest, "proves_change"))).toContain("2 new, 1 fail on the original code");
+    expect(at(testProof(CODE.digest, "does_not_prove"))).toContain("2 new, 0 fail on the original code");
+    // Another candidate's proof, or none: the pack's own per-test "proves_change" is the worker's word and is not repeated.
+    expect(at(testProof("f".repeat(64), "proves_change"))).not.toContain("fail on the original code");
+    expect(at(undefined)).not.toContain("fail on the original code");
+    expect(at({ nonsense: true })).not.toContain("fail on the original code");
+  });
   it("is the section as it was without evidence", () => {
     expect(section(undefined)).toBe(section(context({ pack: undefined })));
     expect(section(undefined)).not.toContain("Environment:");
@@ -168,6 +200,12 @@ describe("in the Proof section", () => {
   });
   it("shortens the Environment line at levels 3 and 4 without dropping the mocked service", () => {
     expect(section(context(), 3)).toContain("- Environment: sandbox. partner-scorer: mocked. Test data: synthetic.");
+  });
+  it("lists a not-tested item once when the table already has it", () => {
+    const dupe = pack({ notTested: [{ kind: "check", id: "unit", text: "Unit tests", reason: "more tests skipped than before" }, { kind: "mocked_service", id: "partner-scorer", text: "partner-scorer is mocked", reason: "answered from recorded responses" }] });
+    const lines = evidenceLines(context({ pack: dupe }), CODE.digest, 0, { alreadyListed: new Set(["check:unit"]) }).notTested;
+    expect(lines).toEqual(["- Mocked service partner-scorer is mocked (answered from recorded responses)"]);
+    expect(evidenceLines(context({ pack: dupe }), CODE.digest, 0).notTested).toHaveLength(2);
   });
   it("bounds the not-tested bullets to ten and counts the rest", () => {
     const many = pack({ notTested: Array.from({ length: 25 }, (_, index) => ({ kind: "mocked_service", id: `svc${String(index)}`, text: `svc${String(index)} is mocked`, reason: "answered from recorded responses" })) });
