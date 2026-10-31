@@ -12,14 +12,17 @@
 //   - more than 40% of the tests would be selected, or the selected ids cannot be passed safely (`over_selected`).
 // A check listed in `alwaysRun` is never selected down; it runs in full and carries no selection.
 import { posix } from "node:path";
+import type { z } from "zod";
 import {
+  type EvidenceSelectionSchema,
   TEST_ENV_SELECT_PLACEHOLDER,
   TEST_ENV_ROUND_BUDGET_MIN,
-  type EvidenceSelection,
   type ProjectCommand,
   type TestEnvironmentBody,
 } from "@agentx/contracts";
 import { isTestPath } from "./test-paths.js";
+
+type EvidenceSelection = z.infer<typeof EvidenceSelectionSchema>;
 
 export const SELECTION_MAP_MAX_AGE_HOURS = 7 * 24;
 export const SELECTION_OVER_FRACTION = 0.4;
@@ -274,4 +277,39 @@ export function checkRoundBudgetMs(env: Pick<TestEnvironmentBody, "roundBudgetMi
 /** One check's time: its own limit, cut to what the round has left. (The round loop in `checks.ts` applies the same rule; this is the figure the estimate and the worker's time limit use.) */
 export function checkTimeLimitMs(commandTimeoutSeconds: number, roundRemainingMs: number): number {
   return Math.max(0, Math.min(Math.floor(commandTimeoutSeconds) * 1_000, roundRemainingMs));
+}
+
+// ---- one environment, every check
+
+export interface CheckSelectionPlan {
+  /** The command to run: the customer's own, with the selected tests added in the approved place when the check was selected down. */
+  command: ProjectCommand;
+  /** Absent for a check that always runs in full or is not a test check. */
+  selection?: EvidenceSelection;
+}
+
+/**
+ * For each test check of the environment: the command to run and the selection to show. A non-test check is never selected down. The caller supplies the inventory and the nightly inputs per check; a check with
+ * no inventory entry runs in full with `map_missing` (nothing is known about its tests).
+ */
+export function planSelections(
+  env: Pick<TestEnvironmentBody, "selection" | "repos">,
+  inputs: { changes: readonly ChangedPath[]; now: Date; inventoryOf(checkId: string): readonly string[] | undefined; coverageMap?: CoverageMap | undefined; importGraph?: ImportGraph | undefined; lastNightlyFailures?: readonly string[] | undefined },
+): Map<string, CheckSelectionPlan> {
+  const plans = new Map<string, CheckSelectionPlan>();
+  for (const repo of env.repos) {
+    for (const check of repo.checks) {
+      if (check.kind !== "test" || env.selection.alwaysRun.includes(check.id)) { plans.set(check.id, { command: check.command }); continue; }
+      const inventory = inputs.inventoryOf(check.id);
+      if (inventory === undefined) {
+        plans.set(check.id, { command: check.command, selection: { method: "full", selected: 0, total: 0, fallbackReason: "map_missing" } });
+        continue;
+      }
+      const result = selectTests({ config: env.selection, check, changes: inputs.changes, inventory, coverageMap: inputs.coverageMap, importGraph: inputs.importGraph, lastNightlyFailures: inputs.lastNightlyFailures, now: inputs.now });
+      if (result.mode === "always_full") plans.set(check.id, { command: check.command });
+      else if (result.mode === "full") plans.set(check.id, { command: check.command, selection: result.selection });
+      else plans.set(check.id, { command: commandWithSelection(check.command, check.selectArgs ?? [], result.tests), selection: result.selection });
+    }
+  }
+  return plans;
 }
