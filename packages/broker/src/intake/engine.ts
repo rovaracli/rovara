@@ -204,7 +204,7 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
   if (candidate.actor?.kind === "rovara") return { outcome: "skipped", reason: "caused_by_rovara" };
   const { orgId, project, eventId } = candidate;
   // Rovara's own writes, whatever account they went through: an event for a label or assignment Rovara wrote itself starts nothing. (A read that fails throws, and the delivery is made again.)
-  const own = await ownWriteVerdictOf(ports.table, { orgId, externalRef: ref.data, alternateIds: candidate.alternateIds, act: candidate.act, occurredAt: candidate.occurredAt });
+  const own = await ownWriteVerdictOf(ports.table, { orgId, project, externalRef: ref.data, alternateIds: candidate.alternateIds, act: candidate.act, occurredAt: candidate.occurredAt });
   if (own === "own") {
     ports.log("intake.own_write", { orgId, project, system: ref.data.system });
     return { outcome: "skipped", reason: "caused_by_rovara" };

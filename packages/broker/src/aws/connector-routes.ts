@@ -155,7 +155,7 @@ export async function callConnector(input: {
     };
   }
   // Wire lane D (MF-4): what Rovara writes to a ticket is noted BEFORE it is sent, so the tracker's event for it is never taken for a member's act. A note that can't be made stops the call.
-  await recordOwnWriteOfCall({ orgId: context.orgId, connectorType: connector.type, tool: request.tool, args: request.arguments });
+  await recordOwnWriteOfCall({ orgId: context.orgId, project: workspace.projectName, connectorType: connector.type, tool: request.tool, args: request.arguments });
   return executeTool(
     { requestId: request.requestId, scope: scope.alias, tool: request.tool, schemaHash: request.schemaHash, arguments: request.arguments },
     definition,

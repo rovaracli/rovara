@@ -10,7 +10,7 @@
 //
 // What a tool call writes is read by an extractor per connector type (`registerOwnWriteExtractor`): the built-in ones know GitHub, Jira and Linear, and a tracker plug-in registers its own.
 // The call path (`callConnector`) asks `recordOwnWriteOfCall`; a note that cannot be written stops the call (fail closed).
-import { UpdateCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, agentXError, intakeItemIdOf, intakeOwnWriteKey, type IntakeOwnWriteKind, type OrgId } from "@agentx/contracts";
 import type { IntakeTable } from "./store.js";
 
@@ -20,6 +20,8 @@ export const OWN_WRITE_SKEW_MS = 60_000;
 export const OWN_WRITE_LABEL_WINDOW_MS = 6 * 60 * 60_000;
 /** How long after Rovara's change to a ticket a label or assignment on it is not taken for a member's act. */
 export const OWN_WRITE_TOUCH_WINDOW_MS = 10 * 60_000;
+/** The longest repeated wide notes can keep one hold going: this long after the first, the hold ends even if writes continue (a quiet gap of one window starts a new one). */
+export const OWN_WRITE_WIDE_CAP_MS = 60 * 60_000;
 const VALUES_MAX = 50;
 const VALUE_MAX = 200;
 
@@ -37,10 +39,12 @@ export interface OwnWriteNote {
    * `*`) shortly after it is not taken for a member's act.
    */
   wide?: true | undefined;
+  /** With `wide`: the project the write came from. Only that project's events are held; absent (a write from nowhere in particular) holds the org. */
+  project?: string | undefined;
 }
 
 const ticketItemId = (system: string, ticket: string): string => intakeItemIdOf(system, ticket.normalize("NFC").trim().toLowerCase());
-const wideItemId = (system: string): string => intakeItemIdOf(system, "*wide*");
+const wideItemId = (system: string, project: string | undefined): string => intakeItemIdOf(system, `*wide*${project ?? "*"}`);
 const scopeItemId = (system: string, scope: string): string => intakeItemIdOf(system, `scope:${scope.normalize("NFC").trim().toLowerCase()}`);
 /** The scope a ticket id is in, when its id says (`owner/repo/7` is in `owner/repo`). */
 const scopeOfTicket = (ticket: string): string | undefined => (ticket.includes("/") ? ticket.slice(0, ticket.lastIndexOf("/")) : undefined);
@@ -57,11 +61,32 @@ async function putNote(table: IntakeTable, orgId: OrgId, itemId: string, kind: I
   }));
 }
 
+/**
+ * A wide note: held for the project the write came from, one window after the last write, but never past `OWN_WRITE_WIDE_CAP_MS` after the first (writes that keep coming do not keep a
+ * project waiting for ever). Past the cap a write does not extend the hold (and says so in the log); after a quiet gap of one window the next write starts a new hold.
+ */
+async function putWideNote(table: IntakeTable, orgId: OrgId, note: OwnWriteNote, log?: (event: string, fields: Record<string, unknown>) => void): Promise<void> {
+  const itemId = wideItemId(note.system, note.project);
+  const now = table.now();
+  const existing = await readNote(table, orgId, itemId, "touch", "");
+  if (existing !== undefined && now >= existing.first + OWN_WRITE_WIDE_CAP_MS) {
+    if (Math.max(existing.last, existing.seen ?? 0) + OWN_WRITE_TOUCH_WINDOW_MS > now) {
+      // Writes keep coming: the hold is not extended (it ends at the cap), but the write is seen, so the project is not held afresh until they stop for a window.
+      log?.("intake.own_write_wide_cap", { orgId, system: note.system, ...(note.project === undefined ? {} : { project: note.project }) });
+      await table.documentClient.send(new UpdateCommand({ TableName: table.tableName, Key: intakeOwnWriteKey(orgId, itemId, "touch", ""), UpdateExpression: "SET #seen = :now", ExpressionAttributeNames: { "#seen": "seenAtMs" }, ExpressionAttributeValues: { ":now": now } }));
+      return;
+    }
+    // The hold has lapsed and writes begin again: a fresh hold.
+    await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: intakeOwnWriteKey(orgId, itemId, "touch", "") }));
+  }
+  await putNote(table, orgId, itemId, "touch", "", OWN_WRITE_TOUCH_WINDOW_MS + OWN_WRITE_WIDE_CAP_MS);
+}
+
 /** Notes what Rovara is about to write. Throws when it can't (the write must not be made then). */
-export async function noteOwnWrite(table: IntakeTable, orgId: OrgId, note: OwnWriteNote): Promise<void> {
+export async function noteOwnWrite(table: IntakeTable, orgId: OrgId, note: OwnWriteNote, log?: (event: string, fields: Record<string, unknown>) => void): Promise<void> {
   const labels = clean(note.labels);
   const assignees = clean(note.assignees);
-  if (note.wide === true) await putNote(table, orgId, wideItemId(note.system), "touch", "", OWN_WRITE_TOUCH_WINDOW_MS);
+  if (note.wide === true) await putWideNote(table, orgId, note, log);
   const ids: string[] = [];
   if (note.ticket !== undefined && note.ticket.trim() !== "") ids.push(ticketItemId(note.system, note.ticket));
   else if (note.scope !== undefined && note.scope.trim() !== "") ids.push(scopeItemId(note.system, note.scope));
@@ -78,6 +103,8 @@ export type OwnWriteVerdict = "own" | "touched" | "none";
 /** What an event is, as intake sees it: the ticket, and the label or assignee the act is about. */
 export interface OwnWriteQuestion {
   orgId: OrgId;
+  /** The project the event is for: a wide note holds only its own project. */
+  project?: string | undefined;
   externalRef: { system: string; id: string };
   /** Other spellings of the same ticket (a Jira issue has a key and a numeric id): a note under any of them is the ticket's. */
   alternateIds?: readonly string[] | undefined;
@@ -85,13 +112,14 @@ export interface OwnWriteQuestion {
   occurredAt?: string | undefined;
 }
 
-async function readNote(table: IntakeTable, orgId: OrgId, itemId: string, kind: IntakeOwnWriteKind, value: string): Promise<{ first: number; last: number } | undefined> {
+async function readNote(table: IntakeTable, orgId: OrgId, itemId: string, kind: IntakeOwnWriteKind, value: string): Promise<{ first: number; last: number; seen?: number } | undefined> {
   const found = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: intakeOwnWriteKey(orgId, itemId, kind, value), ConsistentRead: true })) as { Item?: Record<string, unknown> };
   const item = found.Item;
   if (item === undefined || item["entityType"] !== "INTAKE_OWN_WRITE" || item["orgId"] !== orgId) return undefined;
   const first = item["firstAtMs"];
   const last = item["lastAtMs"];
-  return typeof first === "number" && typeof last === "number" && Number.isFinite(first) && Number.isFinite(last) ? { first, last } : undefined;
+  const seen = item["seenAtMs"];
+  return typeof first === "number" && typeof last === "number" && Number.isFinite(first) && Number.isFinite(last) ? { first, last, ...(typeof seen === "number" && Number.isFinite(seen) ? { seen } : {}) } : undefined;
 }
 
 /** How long after Rovara's write an event may be RECEIVED and still be taken for its echo, whatever time the vendor stamped on it (a vendor clock behind ours). */
@@ -131,8 +159,11 @@ export async function ownWriteVerdictOf(table: IntakeTable, question: OwnWriteQu
     if (touch !== undefined && covers(touch, stamped, received, OWN_WRITE_TOUCH_WINDOW_MS)) touched = true;
   }
   for (const system of new Set([externalRef.system, "*"])) {
-    const wide = await readNote(table, orgId, wideItemId(system), "touch", "");
-    if (wide !== undefined && covers(wide, stamped, received, OWN_WRITE_TOUCH_WINDOW_MS)) touched = true;
+    for (const project of new Set([question.project, undefined])) {
+      const wide = await readNote(table, orgId, wideItemId(system, project), "touch", "");
+      // The hold ends one window after the last write, and never later than the cap after the first.
+      if (wide !== undefined && covers({ first: wide.first, last: Math.min(wide.last, wide.first + OWN_WRITE_WIDE_CAP_MS - OWN_WRITE_TOUCH_WINDOW_MS) }, stamped, received, OWN_WRITE_TOUCH_WINDOW_MS)) touched = true;
+    }
   }
   return touched ? "touched" : "none";
 }
@@ -259,9 +290,10 @@ export function registerOwnWriteRecorder(next: OwnWriteRecorder | undefined): vo
  * Called by the connector call path before a call is sent. A read does nothing. A write is noted first; a note that can't be written throws, and so does a write when no recorder is
  * registered (fail closed: a deployment that cannot note its writes does not make them).
  */
-export async function recordOwnWriteOfCall(input: { orgId: OrgId; connectorType: string; tool: string; args: Record<string, unknown> }): Promise<void> {
-  const note = ownWriteNoteOf(input.connectorType, input.tool, input.args);
-  if (note === undefined) return;
+export async function recordOwnWriteOfCall(input: { orgId: OrgId; project?: string | undefined; connectorType: string; tool: string; args: Record<string, unknown> }): Promise<void> {
+  const made = ownWriteNoteOf(input.connectorType, input.tool, input.args);
+  if (made === undefined) return;
+  const note = made.wide === true && input.project !== undefined ? { ...made, project: input.project } : made;
   if (recorder === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "writes to trackers can't be recorded in this deployment, so this call was not made");
   await recorder(input.orgId, note);
 }

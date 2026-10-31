@@ -11,7 +11,7 @@ import { callConnector, discoverConnector, type ScopeDiscovery } from "../../pac
 import type { ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { ingestIntake, type IntakeCandidate, type IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import {
-  OWN_WRITE_DELIVERY_LAG_MS, OWN_WRITE_LABEL_WINDOW_MS, OWN_WRITE_SKEW_MS, OWN_WRITE_TOUCH_WINDOW_MS, noteOwnWrite, ownWriteNoteOf, ownWriteVerdictOf, recordOwnWriteOfCall, registerOwnWriteExtractor, registerOwnWriteRecorder,
+  OWN_WRITE_DELIVERY_LAG_MS, OWN_WRITE_WIDE_CAP_MS, OWN_WRITE_LABEL_WINDOW_MS, OWN_WRITE_SKEW_MS, OWN_WRITE_TOUCH_WINDOW_MS, noteOwnWrite, ownWriteNoteOf, ownWriteVerdictOf, recordOwnWriteOfCall, registerOwnWriteExtractor, registerOwnWriteRecorder,
   unregisterOwnWriteExtractor,
 } from "../../packages/broker/src/intake/own-writes.js";
 import { intakeCandidateOf } from "../../packages/broker/src/triggers/intake-dispatch.js";
@@ -379,3 +379,32 @@ async function recordWith(w: ReturnType<typeof world>, call: Parameters<typeof r
   registerOwnWriteRecorder((orgId, note) => noteOwnWrite(w.ports.table, orgId, note));
   await recordOwnWriteOfCall(call);
 }
+
+describe("wide notes are held per project and capped (fix round 2)", () => {
+  it("a write through a connector with no reader holds only the project the call came from", async () => {
+    const w = world();
+    await recordWith(w, { orgId: ORG, project: "web", connectorType: "mcp", tool: "update_ticket", args: { id: "T-1" } });
+    expect(await ingestIntake(w.ports, jiraLabel())).toEqual({ outcome: "waiting", reason: "unverified" });
+    expect((await ingestIntake(w.ports, jiraLabel({ project: "api", eventId: "other-project" }))).outcome).toBe("started");
+  });
+
+  it("repeated writes cannot keep a project waiting past the cap: the hold ends 60 minutes after the first note, and the cap is logged", async () => {
+    const w = world();
+    const logs: string[] = [];
+    const note = () => noteOwnWrite(w.ports.table, ORG, { system: "*", wide: true, project: "web" }, (event) => { logs.push(event); });
+    await note();
+    // A write every 5 minutes (each inside the 10 minute window) for 70 minutes.
+    for (let minute = 5; minute <= 70; minute += 5) { w.clock.now = T0 + minute * 60_000; await note(); }
+    expect(logs).toContain("intake.own_write_wide_cap");
+    // Still held just inside the cap, free just past it, though the last write was only 0 minutes ago.
+    w.clock.now = T0 + 70 * 60_000;
+    const stamped = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString();
+    expect(await ownWriteVerdictOf(w.ports.table, { orgId: ORG, project: "web", externalRef: { system: "jira", id: "PAY-12" }, occurredAt: stamped(59) })).toBe("touched");
+    expect(await ownWriteVerdictOf(w.ports.table, { orgId: ORG, project: "web", externalRef: { system: "jira", id: "PAY-12" }, occurredAt: stamped(66) })).toBe("none");
+    // After a quiet gap a new write starts a new hold.
+    w.clock.now = T0 + 120 * 60_000;
+    await note();
+    expect(await ownWriteVerdictOf(w.ports.table, { orgId: ORG, project: "web", externalRef: { system: "jira", id: "PAY-12" }, occurredAt: new Date(w.clock.now).toISOString() })).toBe("touched");
+    expect(OWN_WRITE_WIDE_CAP_MS).toBe(60 * 60_000);
+  });
+});

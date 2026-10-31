@@ -832,5 +832,5 @@ export function serviceStatusRouteDependencies(dependencies: AwsBrokerDependenci
  * Registered once per handler; the note is the intake engine's to read (`intake/own-writes.ts`).
  */
 export function installOwnWriteRecorder(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): void {
-  registerOwnWriteRecorder((orgId, note) => noteOwnWrite({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, note));
+  registerOwnWriteRecorder((orgId, note) => noteOwnWrite({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, note, (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields }))));
 }
