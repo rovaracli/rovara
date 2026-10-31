@@ -165,6 +165,21 @@ describe("adding a server is easy: paste, test, see, approve", () => {
     await removeMcpServer(deps, admin(), entry.serverId);
     expect(vault.has(entry.serverId)).toBe(false);
   });
+  it("fix round: when the retry in remove also cannot delete the token, the entry stays (nothing is orphaned) and the error is shown; a later retry finishes", async () => {
+    const { deps, vault } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "A", transport: HTTP, secret: "tok-a" });
+    await approveMcpServer(deps, admin(), entry.serverId);
+    const secrets = deps.secrets, remove = secrets.remove.bind(secrets);
+    secrets.remove = async () => { throw new Error("secrets are down"); };
+    await expect(disableMcpServer(deps, admin(), entry.serverId)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(removeMcpServer(deps, admin(), entry.serverId)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect((await deps.store.get(ORG, entry.serverId))?.status).toBe("disabled");
+    expect(vault.has(entry.serverId)).toBe(true);
+    secrets.remove = remove;
+    await removeMcpServer(deps, admin(), entry.serverId);
+    expect(await deps.store.get(ORG, entry.serverId)).toBeUndefined();
+    expect(vault.has(entry.serverId)).toBe(false);
+  });
   it("ME-16: closing an org removes every server and token of that org and no other org's, and can be run again", async () => {
     const { deps, vault } = world();
     const a = await proposeMcpServer(deps, admin(), { label: "A", transport: HTTP, secret: "tok-a" });

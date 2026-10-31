@@ -307,9 +307,11 @@ export async function removeMcpServer(deps: McpServerDependencies, actor: McpSer
   const entry = await deps.store.get(actor.orgId, serverId);
   if (entry === undefined) throw agentXError("NOT_FOUND", "no MCP server has that id");
   if (entry.status === "approved") throw agentXError("CONFIG_INVALID", "Turn the server off first, then remove it.");
+  // Its token goes first. A failed delete keeps the entry (which still points at the token), so the admin can try again; the entry is never removed while its token may remain.
+  if (entry.hasSecret === true) {
+    try { await deps.secrets.remove(actor.orgId, serverId); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "The server's token could not be deleted just now, so the server was kept. Try removing it again."); }
+  }
   await deps.store.remove(actor.orgId, serverId);
-  // Its token goes with it.
-  if (entry.hasSecret === true) await deps.secrets.remove(actor.orgId, serverId).catch(() => undefined);
   await told(deps, { action: "mcp_server.removed", actor, serverId, label: entry.label });
 }
 
