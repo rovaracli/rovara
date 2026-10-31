@@ -72,7 +72,7 @@ export type E2EWebMediaPorts = Readonly<{
   record(input: { caseId: string; kind: "video" | "trace"; bytes: Uint8Array }): Promise<unknown>;
 }>;
 
-/** Starts the trace of a case on its owned context. Best effort. Returns whether a trace is running. */
+/** Starts the trace of a case on its owned context. Call it only after the case's authentication is applied (see the call site). Best effort. Returns whether a trace is running. */
 export async function startWebCaseTrace(input: { media: E2EWebMediaPorts | undefined; context: Pick<BrowserContext, "tracing"> | null }): Promise<boolean> {
   if (!input.media?.trace || !input.context) return false;
   try { await input.context.tracing.start({ screenshots: true, snapshots: true }); return true; } catch { return false; }
@@ -621,8 +621,10 @@ export function createWebApplicationCliHost(input: { launchContext: E2EApplicati
         const context = surface.context();
         const page = surface.page();
         ownedContext = context;
-        tracing = await startWebCaseTrace({ media: ports.media, context });
         await ports.applyToOwnedBrowserContext(session.sessionRef, context, operationSignal);
+        // The trace starts only AFTER the approved authentication is applied (Opus review C2): applying it adds the session's cookies and its localStorage entries as an init script, and a trace records the
+        // arguments of every call made while it runs, so a trace started first would hold every session token in the clear.
+        tracing = await startWebCaseTrace({ media: ports.media, context });
         ownedPage = page;
         const protectedObservation = await readValidatedE2EApplicationCaseObservation({ reader: ports.caseObservations,
           launchContext, plan, ownedClientRef: session.sessionRef, expectedSubjectKind: "browser", signal: operationSignal });

@@ -1,19 +1,44 @@
 import { crc32 as zlibCrc32, deflateRawSync, inflateRawSync } from "node:zlib";
+import { e2eSecretSpellings } from "@agentx/contracts";
 
 /**
- * Proof and evidence B4: a Playwright trace is a ZIP of JSON-lines files (`trace.trace`, `trace.network`, ...) and blobs (`resources/`). Before one is kept, its network entries are rewritten so that no
- * cookie, `set-cookie` or `authorization` value survives, and every entry is scanned for the run's credentials. This is defence in depth: the accounts in a kept trace are already dead (run-scoped and revoked),
- * and the page's own text on screen cannot be scrubbed at all (design 3.4). Fail closed: a zip that cannot be read whole (encryption, zip64, an unknown method, a bad name, a bomb, a line that is not JSON)
- * is `null`, and the caller keeps no trace.
+ * Proof and evidence B4 (and fix round 1, Opus review C2): a Playwright trace is a ZIP of JSON-lines files (`trace.trace`, `trace.network`, `trace.stacks`), screencast images and blobs (`resources/`: response
+ * bodies, request bodies, the page source). It holds far more than headers: DOM snapshots, the login response with its tokens, URLs with tokens in the query, the page's own text. So the scrub is an ALLOW-LIST
+ * over what it keeps, and it learns the round's secrets from the trace itself before it decides what to drop:
+ *
+ *   1. Headers: only an allow-list of benign names keeps its value (the B2 rule, a little wider for what a viewer shows); every other header value, `cookies` array value, and `set-cookie` is blanked.
+ *   2. URLs: every value in a query string is blanked, the fragment and any userinfo are dropped, in every string of every line.
+ *   3. Harvest: the values of sensitive headers, cookies, query parameters and token-named fields of JSON bodies are collected as round secrets (alongside the secrets the caller already knows: the run's account
+ *      credentials, every cookie and localStorage value of the round). Every spelling of each is searched for (raw, JSON-escaped, percent-encoded, base64 and so on).
+ *   4. A DOM snapshot (`frame-snapshot`) that contains a round secret is DROPPED. Any other string that contains one is blanked. A resource blob that contains one is replaced by a blank. If a secret is still in a
+ *      line afterwards (it was split across strings), the whole trace is refused.
+ *
+ * This is defence in depth: the accounts in a kept trace are already dead and their sessions ended (run-scoped, revoked and proved), and the page's own text on screen cannot be scrubbed at all (design 3.4,
+ * and a screencast image is a picture). Fail closed: a zip that cannot be read whole (encryption, zip64, an unknown method, a bad or duplicate or overlapping entry, a size or checksum that disagrees, a bomb, a
+ * line that is not JSON, too many secrets) is `null`, and the caller keeps no trace.
  */
 export const TRACE_MAX_ENTRIES = 4_096;
-export const TRACE_MAX_ENTRY_BYTES = 64 * 1024 * 1024;
-export const TRACE_MAX_TOTAL_BYTES = 256 * 1024 * 1024;
+export const TRACE_MAX_ENTRY_BYTES = 32 * 1024 * 1024;
+export const TRACE_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 export const TRACE_BLANKED = "<blanked>";
+/** The most round secrets one trace may harvest before it is refused outright (a trace of a page full of tokens is not one we scrub). */
+export const TRACE_MAX_SECRETS = 300;
+const MIN_SECRET_LENGTH = 8;
+const MAX_SECRET_LENGTH = 2_048;
 
-/** Header and cookie names whose values never survive. */
-const BLANK_NAMES = new Set(["cookie", "set-cookie", "authorization", "proxy-authorization", "x-api-key", "x-auth-token", "x-csrf-token", "x-xsrf-token"]);
+/** Header names whose value survives. Everything else is blanked (the name stays, so a reader sees a header was sent). */
+export const TRACE_HEADER_ALLOW: ReadonlySet<string> = new Set([
+  "content-type", "content-length", "content-encoding", "cache-control", "x-request-id", "x-amzn-requestid",
+  "accept", "accept-encoding", "accept-language", "user-agent", "host", "date", "vary", "connection", "keep-alive", "transfer-encoding",
+]);
+const HEADER_CONTAINERS = new Set(["headers", "requestheaders", "responseheaders", "extrahttpheaders"]);
+/** A header whose value is a secret by its name: its value (and, for Authorization, the part after the scheme) is harvested. */
+const SENSITIVE_HEADER = /auth|token|session|key|secret|cookie|csrf|xsrf|credential|jwt|bearer|signature|^x-(?!request-id$|amzn-requestid$|forwarded|frame|content-type|powered)/iu;
+/** A field of a JSON body whose string value is harvested as a secret. */
+const SENSITIVE_FIELD = /token|secret|password|passwd|session|credential|api[_-]?key|authorization|jwt|bearer|csrf|xsrf|signature|code$/iu;
+const SNAPSHOT_TYPES = new Set(["frame-snapshot"]);
 const LINE_FILES = /(?:^|\/)[^/]*\.(?:trace|network|stacks)$|(?:^|\/)(?:trace|network)$/u;
+const RESOURCE = /^resources\//u;
 
 const SIG_EOCD = 0x06054b50;
 const SIG_CD = 0x02014b50;
@@ -59,93 +84,244 @@ function crc32(bytes: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function dataOf(zip: Uint8Array, entry: ZipEntry): Buffer | null {
+/** The entry's data and the byte range it occupies in the file (local header included), or null when the local header disagrees with the central directory or the data is not what it claims. */
+function dataOf(zip: Uint8Array, entry: ZipEntry): { data: Buffer; start: number; end: number } | null {
   const view = Buffer.from(zip.buffer, zip.byteOffset, zip.byteLength);
   const at = entry.localOffset;
   if (at + 30 > view.byteLength || view.readUInt32LE(at) !== SIG_LOCAL) return null;
-  const start = at + 30 + view.readUInt16LE(at + 26) + view.readUInt16LE(at + 28);
+  const nameLength = view.readUInt16LE(at + 26);
+  // The name in the local header must be the one the central directory lists, or two readers would see two different archives.
+  if (nameLength !== Buffer.byteLength(entry.name, "utf8") || at + 30 + nameLength > view.byteLength || view.toString("utf8", at + 30, at + 30 + nameLength) !== entry.name) return null;
+  const start = at + 30 + nameLength + view.readUInt16LE(at + 28);
   const end = start + entry.compressedSize;
   if (end > view.byteLength) return null;
   const raw = view.subarray(start, end);
   try {
     // The inflated bytes must be exactly the size and checksum the archive claims: a trace that disagrees with itself is not one we scrubbed.
     const out = entry.method === 0 ? Buffer.from(raw) : entry.method === 8 ? inflateRawSync(raw, { maxOutputLength: TRACE_MAX_ENTRY_BYTES }) : null;
-    return out !== null && out.byteLength === entry.size && crc32(out) === entry.crc ? out : null;
+    return out !== null && out.byteLength === entry.size && crc32(out) === entry.crc ? { data: out, start: at, end } : null;
   } catch { /* a bomb or a broken stream */ }
   return null;
 }
 
-const SAFE_NAME = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\\\0]{1,255}$/u;
+/** No parent directories, no absolute or drive-lettered names, no backslashes, no control characters, no trailing slash. */
+// eslint-disable-next-line no-control-regex -- refusing control characters in a name is the point
+const SAFE_NAME = /^(?![A-Za-z]:)(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))(?!.*\/$)[^\\\0-\x1f\x7f]{1,255}$/u;
 
-function blank(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(blank);
-  if (value === null || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  const headerName = typeof record.name === "string" ? record.name.toLowerCase() : undefined;
-  for (const [key, child] of Object.entries(record)) {
-    const lower = key.toLowerCase();
-    // A header held as an object key (`{"authorization": "..."}`): the value goes, whatever its shape.
-    if (BLANK_NAMES.has(lower)) { out[key] = child === null ? null : Array.isArray(child) ? child.map(() => TRACE_BLANKED) : TRACE_BLANKED; continue; }
-    if (key === "value" && headerName !== undefined && BLANK_NAMES.has(headerName)) { out[key] = TRACE_BLANKED; continue; }
-    if (lower === "cookies" && Array.isArray(child)) { out[key] = (child as unknown[]).map((cookie): unknown => (cookie !== null && typeof cookie === "object" ? { ...(blank(cookie) as object), value: TRACE_BLANKED } : cookie)); continue; }
-    out[key] = blank(child);
+// ---- urls and headers
+
+/** A URL with every query value blanked, no fragment, no userinfo; a string that only looks like a URL and does not parse is blanked whole. */
+export function blankUrl(text: string): string {
+  try {
+    const url = new URL(text);
+    url.username = ""; url.password = ""; url.hash = "";
+    for (const key of [...new Set(url.searchParams.keys())]) url.searchParams.set(key, TRACE_BLANKED);
+    return url.toString().replace(/%3Cblanked%3E/gu, TRACE_BLANKED);
+  } catch {
+    return TRACE_BLANKED;
   }
-  return out;
+}
+const looksLikeUrl = (text: string) => /^https?:\/\//iu.test(text);
+
+type Secrets = { add(value: unknown): void; size: number };
+
+function harvestHeader(name: string, value: string, into: Secrets): void {
+  const lower = name.toLowerCase();
+  if (TRACE_HEADER_ALLOW.has(lower) || !SENSITIVE_HEADER.test(name)) return;
+  into.add(value);
+  const scheme = /^(?:bearer|basic|token|digest)\s+(.+)$/iu.exec(value);
+  if (scheme?.[1] !== undefined) into.add(scheme[1]);
+  if (lower === "cookie" || lower === "set-cookie") for (const piece of value.split(/;\s*/u)) { const eq = piece.indexOf("="); if (eq > 0) into.add(piece.slice(eq + 1)); }
 }
 
-/** The lines of a JSON-lines file with their cookie, set-cookie and authorization values blanked, or null when a line is not JSON. */
-export function scrubTraceLines(text: string): string | null {
-  const lines = text.split("\n");
+function harvestUrl(text: string, into: Secrets): void {
+  try { for (const value of new URL(text).searchParams.values()) into.add(value); } catch { /* not a URL */ }
+}
+
+/** Walks a parsed JSON line (or body) and collects the round's secrets. `body` means keys are judged as a JSON body's fields, not as trace structure. */
+function harvest(node: unknown, into: Secrets, parentKey: string, body: boolean): void {
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      if (item !== null && typeof item === "object" && !Array.isArray(item)) {
+        const entry = item as Record<string, unknown>;
+        if (typeof entry.name === "string" && typeof entry.value === "string") {
+          if (parentKey === "cookies") into.add(entry.value);
+          else if (HEADER_CONTAINERS.has(parentKey.toLowerCase())) harvestHeader(entry.name, entry.value, into);
+        }
+      }
+      harvest(item, into, parentKey, body);
+    }
+    return;
+  }
+  if (node !== null && typeof node === "object") {
+    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+      if (HEADER_CONTAINERS.has(parentKey.toLowerCase()) && typeof child === "string") harvestHeader(key, child, into);
+      else if (body && typeof child === "string" && SENSITIVE_FIELD.test(key)) into.add(child);
+      harvest(child, into, key, body);
+    }
+    return;
+  }
+  if (typeof node === "string" && looksLikeUrl(node)) harvestUrl(node, into);
+}
+
+function newSecrets(known: readonly string[]): Secrets & { list(): string[] } {
+  const set = new Set<string>();
+  const add = (value: unknown) => { if (typeof value === "string" && value.length >= MIN_SECRET_LENGTH && value.length <= MAX_SECRET_LENGTH && value !== TRACE_BLANKED) set.add(value); };
+  for (const value of known) add(value);
+  return { add, get size() { return set.size; }, list: () => [...set] };
+}
+
+/** A search for the round's secrets, every spelling, in bytes or text. */
+function searcher(secrets: readonly string[], contains: (bytes: Uint8Array) => boolean): (data: Uint8Array | string) => boolean {
+  const needles = secrets.flatMap((secret) => e2eSecretSpellings(secret)).filter((form) => form.length >= MIN_SECRET_LENGTH).map((form) => Buffer.from(form, "utf8"));
+  return (data) => {
+    const bytes = typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    return contains(bytes) || needles.some((needle) => bytes.includes(needle));
+  };
+}
+
+// ---- rewriting a line
+
+function blankNode(node: unknown, parentKey: string, hit: (text: string) => boolean, stats: ScrubStats): unknown {
+  if (Array.isArray(node)) {
+    const inHeaders = HEADER_CONTAINERS.has(parentKey.toLowerCase());
+    return node.map((item) => {
+      if (item !== null && typeof item === "object" && !Array.isArray(item) && typeof (item as Record<string, unknown>).name === "string" && typeof (item as Record<string, unknown>).value === "string") {
+        const entry = item as Record<string, unknown>;
+        const keep = inHeaders && TRACE_HEADER_ALLOW.has((entry.name as string).toLowerCase());
+        const { value, ...rest } = entry;
+        if (parentKey === "cookies" || inHeaders) return { ...(blankNode(rest, "", hit, stats) as Record<string, unknown>), value: keep ? blankString(value as string, hit, stats) : TRACE_BLANKED };
+      }
+      return blankNode(item, parentKey, hit, stats);
+    });
+  }
+  if (node !== null && typeof node === "object") {
+    const out: Record<string, unknown> = {};
+    const inHeaders = HEADER_CONTAINERS.has(parentKey.toLowerCase());
+    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+      if (child === undefined) continue;
+      // A header held as an object key: the allow-list decides, whatever the value's shape.
+      if (inHeaders && !TRACE_HEADER_ALLOW.has(key.toLowerCase())) { out[key] = child === null ? null : Array.isArray(child) ? child.map(() => TRACE_BLANKED) : TRACE_BLANKED; stats.blankedValues += 1; continue; }
+      out[key] = blankNode(child, key, hit, stats);
+    }
+    return out;
+  }
+  return typeof node === "string" ? blankString(node, hit, stats) : node;
+}
+
+function blankString(text: string, hit: (text: string) => boolean, stats: ScrubStats): string {
+  const shown = looksLikeUrl(text) ? blankUrl(text) : text;
+  if (shown !== text) stats.blankedValues += 1;
+  if (hit(shown)) { stats.blankedValues += 1; return TRACE_BLANKED; }
+  return shown;
+}
+
+export interface ScrubStats { droppedSnapshots: number; blankedValues: number; blankedResources: number; secrets: number }
+export interface ScrubOptions {
+  /** Secrets the caller already knows beyond the redactor's account credentials: every cookie and localStorage value the round held. */
+  secrets?: readonly string[];
+}
+
+/**
+ * The lines of a JSON-lines file, rewritten: header allow-list, query values blanked, strings that contain a secret blanked, DOM snapshots that contain one dropped. `null` when a line is not JSON.
+ */
+export function scrubTraceLinesWith(text: string, hit: (text: string) => boolean, stats: ScrubStats = { droppedSnapshots: 0, blankedValues: 0, blankedResources: 0, secrets: 0 }): string | null {
   const out: string[] = [];
-  for (const line of lines) {
+  for (const line of text.split("\n")) {
     if (line.trim() === "") { out.push(line); continue; }
     let parsed: unknown;
     try { parsed = JSON.parse(line); } catch { return null; }
-    out.push(JSON.stringify(blank(parsed)));
+    const type = parsed !== null && typeof parsed === "object" ? (parsed as { type?: unknown }).type : undefined;
+    if (typeof type === "string" && SNAPSHOT_TYPES.has(type) && hit(line)) { stats.droppedSnapshots += 1; continue; }
+    const rewritten = JSON.stringify(blankNode(parsed, "", hit, stats));
+    // A secret split across strings survives the string-level blanking; the line is not kept, and neither is the trace.
+    if (hit(rewritten)) return null;
+    out.push(rewritten);
   }
   return out.join("\n");
 }
 
+/** The same with no secrets known: the structural scrub only (headers, URLs). */
+export function scrubTraceLines(text: string): string | null {
+  return scrubTraceLinesWith(text, () => false);
+}
+
+const asText = (data: Buffer): string | null => { try { return new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { return null; } };
+
 /**
- * The trace with its network entries scrubbed, re-zipped, or null when it cannot be made safe. `contains` is the run's credential scan (every spelling): it runs over every entry's inflated bytes, scrubbed
- * ones included, because the compressed bytes of a zip hide a secret from a byte scan. A match is null too.
+ * The trace scrubbed and re-zipped, with what was done, or null when it cannot be made safe. `contains` is the run's credential scan (every spelling). The output zip writes no external attributes, so no mode
+ * or symlink survives, and entries keep the archive's order.
  */
-export function scrubTraceZip(zip: Uint8Array, contains: (bytes: Uint8Array) => boolean): Uint8Array | null {
+export function scrubTrace(zip: Uint8Array, contains: (bytes: Uint8Array) => boolean, options: ScrubOptions = {}): { zip: Uint8Array; stats: ScrubStats } | null {
   const entries = readEntries(zip);
   if (entries === null) return null;
   const names = new Set<string>();
-  const parts: Buffer[] = [];
-  const central: Buffer[] = [];
-  let offset = 0;
+  const inflated: Array<{ entry: ZipEntry; data: Buffer; text: string | null }> = [];
+  const extents: Array<[number, number]> = [];
   let total = 0;
   for (const entry of entries) {
     if (!SAFE_NAME.test(entry.name) || names.has(entry.name) || (entry.method !== 0 && entry.method !== 8)) return null;
     names.add(entry.name);
-    if (entry.name.endsWith("/")) return null;
-    let data = dataOf(zip, entry);
-    if (data === null) return null;
-    total += data.byteLength;
+    const found = dataOf(zip, entry);
+    if (found === null) return null;
+    total += found.data.byteLength;
     if (total > TRACE_MAX_TOTAL_BYTES) return null;
-    if (LINE_FILES.test(entry.name)) {
-      const text = (() => { try { return new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { return null; } })();
-      if (text === null) return null;
-      const scrubbed = scrubTraceLines(text);
+    extents.push([found.start, found.end]);
+    inflated.push({ entry, data: found.data, text: LINE_FILES.test(entry.name) || RESOURCE.test(entry.name) ? asText(found.data) : null });
+  }
+  // Entries may not overlap: several names over the same bytes would let one scan stand for many.
+  extents.sort((a, b) => a[0] - b[0]);
+  for (let index = 1; index < extents.length; index += 1) if (extents[index]![0] < extents[index - 1]![1]) return null;
+
+  // Pass 1: learn the round's secrets from the trace itself.
+  const secrets = newSecrets(options.secrets ?? []);
+  for (const item of inflated) {
+    if (LINE_FILES.test(item.entry.name)) {
+      if (item.text === null) return null;
+      for (const line of item.text.split("\n")) {
+        if (line.trim() === "") continue;
+        let parsed: unknown;
+        try { parsed = JSON.parse(line); } catch { return null; }
+        harvest(parsed, secrets, "", false);
+      }
+    } else if (RESOURCE.test(item.entry.name) && item.text !== null) {
+      try { harvest(JSON.parse(item.text), secrets, "", true); } catch { /* a resource that is not JSON has no fields to read */ }
+    }
+  }
+  if (secrets.size > TRACE_MAX_SECRETS) return null;
+  const known = secrets.list();
+  const hitBytes = searcher(known, contains);
+  const stats: ScrubStats = { droppedSnapshots: 0, blankedValues: 0, blankedResources: 0, secrets: known.length };
+
+  // Pass 2: rewrite.
+  const parts: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const item of inflated) {
+    let data = item.data;
+    if (LINE_FILES.test(item.entry.name)) {
+      const scrubbed = scrubTraceLinesWith(item.text!, (text) => hitBytes(text), stats);
       if (scrubbed === null) return null;
       data = Buffer.from(scrubbed, "utf8");
+    } else if (RESOURCE.test(item.entry.name) && hitBytes(data)) {
+      // A blob (a response body, the page source) that contains a round secret keeps its place and loses its content.
+      data = Buffer.from(TRACE_BLANKED, "utf8");
+      stats.blankedResources += 1;
+    } else if (hitBytes(data)) {
+      // Anything else (an image) that carries the run's credentials as bytes is not kept.
+      return null;
     }
-    if (contains(data)) return null;
     const packed = deflateRawSync(data);
     const [stored, method] = packed.byteLength < data.byteLength ? [packed, 8] : [data, 0];
-    const name = Buffer.from(entry.name, "utf8");
+    const name = Buffer.from(item.entry.name, "utf8");
     const crc = crc32(data);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(SIG_LOCAL, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6); local.writeUInt16LE(method, 8);
-    local.writeUInt16LE(entry.time, 10); local.writeUInt16LE(entry.date, 12); local.writeUInt32LE(crc, 14);
+    local.writeUInt16LE(item.entry.time, 10); local.writeUInt16LE(item.entry.date, 12); local.writeUInt32LE(crc, 14);
     local.writeUInt32LE(stored.byteLength, 18); local.writeUInt32LE(data.byteLength, 22); local.writeUInt16LE(name.byteLength, 26);
     const header = Buffer.alloc(46);
     header.writeUInt32LE(SIG_CD, 0); header.writeUInt16LE(20, 4); header.writeUInt16LE(20, 6); header.writeUInt16LE(0x0800, 8); header.writeUInt16LE(method, 10);
-    header.writeUInt16LE(entry.time, 12); header.writeUInt16LE(entry.date, 14); header.writeUInt32LE(crc, 16);
+    header.writeUInt16LE(item.entry.time, 12); header.writeUInt16LE(item.entry.date, 14); header.writeUInt32LE(crc, 16);
     header.writeUInt32LE(stored.byteLength, 20); header.writeUInt32LE(data.byteLength, 24); header.writeUInt16LE(name.byteLength, 28); header.writeUInt32LE(offset, 42);
     parts.push(local, name, stored);
     central.push(header, name);
@@ -153,6 +329,11 @@ export function scrubTraceZip(zip: Uint8Array, contains: (bytes: Uint8Array) => 
   }
   const directory = Buffer.concat(central);
   const end = Buffer.alloc(22);
-  end.writeUInt32LE(SIG_EOCD, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(directory.byteLength, 12); end.writeUInt32LE(offset, 16);
-  return new Uint8Array(Buffer.concat([...parts, directory, end]));
+  end.writeUInt32LE(SIG_EOCD, 0); end.writeUInt16LE(inflated.length, 8); end.writeUInt16LE(inflated.length, 10); end.writeUInt32LE(directory.byteLength, 12); end.writeUInt32LE(offset, 16);
+  return { zip: new Uint8Array(Buffer.concat([...parts, directory, end])), stats };
+}
+
+/** The scrubbed trace, or null when it cannot be made safe (see `scrubTrace`). */
+export function scrubTraceZip(zip: Uint8Array, contains: (bytes: Uint8Array) => boolean, options: ScrubOptions = {}): Uint8Array | null {
+  return scrubTrace(zip, contains, options)?.zip ?? null;
 }

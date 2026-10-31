@@ -14,7 +14,7 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission",
   // M1.2 to M1.4: the application plan, application and baseline rounds, AI navigation steps, replay, and the model-free time limits and model choice (mainline's worker implements each).
   "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource",
-  "task.workflowE2EAgentSteps.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1",
+  "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1",
   "model.route", "task.agentStep", "task.agentRun", "task.agentGrounding.v1",
   // Rovara Code version 2 (Plan 6): Understand runs read-only and answers with a `rovara-intent` block.
   "task.workflowUnderstand",

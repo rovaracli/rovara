@@ -97,8 +97,7 @@ const refOf = (frame: StripFrame): ArtifactRef => ({ kind: "jpeg", sha256: frame
 
 /**
  * The pack's browser rows for a candidate round and its baseline round: one row per scenario that has candidate frames, `strip.before` from the baseline and `strip.after` from the candidate, paired by step.
- * Scenario ids are the approved ones the broker holds, never text from the worker. `consoleErrors` is 0 here because no console capture exists yet: a reader must not take it as "no errors" (it is not
- * measured), which the evidence page words as such until a capture feeds it.
+ * Scenario ids are the approved ones the broker holds, never text from the worker. `consoleErrors` is left out: no console capture exists yet, so it is NOT MEASURED and is never written as 0.
  */
 export function browserEvidenceOf(input: { candidate: readonly ScenarioStrip[]; baseline?: readonly ScenarioStrip[] | undefined }): BrowserEvidenceResult {
   const baseline = new Map((input.baseline ?? []).map((item) => [item.scenarioId, item.frames] as const));
@@ -112,7 +111,7 @@ export function browserEvidenceOf(input: { candidate: readonly ScenarioStrip[]; 
   for (const scenario of input.candidate) {
     if (scenario.frames.length === 0) continue;
     const paired = pairStrips({ after: scenario.frames, before: baseline.get(scenario.scenarioId) });
-    browser.push({ scenarioId: scenario.scenarioId, strip: { before: paired.before.map(take), after: paired.after.map(take) }, consoleErrors: 0 });
+    browser.push({ scenarioId: scenario.scenarioId, strip: { before: paired.before.map(take), after: paired.after.map(take) } });
   }
   return { browser, artifacts: [...artifacts.values()] };
 }

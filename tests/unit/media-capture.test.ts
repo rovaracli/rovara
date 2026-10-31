@@ -8,12 +8,12 @@ import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32 as zlibCrc32, deflateRawSync, inflateRawSync } from "node:zlib";
-import { evaluateMediaGate, type MediaGateInput, type EvidenceEnvironment, type EvidenceRaw } from "../../packages/contracts/src/index.js";
+import { evaluateMediaGate, evaluatePublicationGate, type MediaGateInput, type EvidenceEnvironment, type EvidenceRaw } from "../../packages/contracts/src/index.js";
 import { MEDIA_DIR, MEDIA_LISTING_FILE, MEDIA_VIDEO_MAX_BYTES, MEDIA_TRACE_MAX_BYTES, admittedMediaPolicy, createMediaRecorder, finalizeMedia, mediaFileName } from "../../packages/verifier/src/executor/media.js";
 import { TRACE_BLANKED, scrubTraceLines, scrubTraceZip } from "../../packages/verifier/src/executor/trace-scrub.js";
 import { createCredentialRedactor } from "../../packages/verifier/src/executor/redact.js";
 import { finishWebCaseMedia, startWebCaseTrace, type E2EWebMediaPorts } from "../../packages/verifier/src/web-runtime.js";
-import { attachMedia, mediaInputFor, prepareMediaArtifacts } from "../../packages/broker/src/e2e/media-evidence.js";
+import { attachMedia, prepareMediaArtifacts, publicationMediaFor } from "../../packages/broker/src/e2e/media-evidence.js";
 import { buildEvidencePack } from "../../packages/broker/src/rovara-code/evidence-pack.js";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -80,11 +80,15 @@ describe("the media gate", () => {
   it("refuses an environment with no account at all, as it cannot show the accounts are run-scoped", () => {
     expect(evaluateMediaGate({ ...ok, accounts: [] }).reasons.video).toBe("account_not_run_scoped");
   });
-  it("refuses a shared tier unless every account is made by a provisioner that deletes it", () => {
-    expect(evaluateMediaGate({ ...ok, tier: "shared" }).reasons.trace).toBe("tier_not_allowed");
-    expect(evaluateMediaGate({ ...ok, tier: "shared", accounts: [{ provisioner: "cognito_test_pool", profileId: "a" }, { provisioner: "seed_command", profileId: "b" }] }).reasons.trace).toBe("tier_not_allowed");
-    expect(evaluateMediaGate({ ...ok, tier: "shared", accounts: [{ provisioner: "cognito_test_pool", profileId: "a" }, { provisioner: "http_hook", profileId: "b" }] }).allowed).toEqual({ video: true, trace: true });
-    expect(evaluateMediaGate({ ...ok, tier: "preview" }).tierAllowed).toBe(true);
+  it("allows media only in a sandbox or a per-task preview, never on a shared pre-prod, whatever its accounts (I1)", () => {
+    for (const accounts of [ok.accounts, [{ provisioner: "cognito_test_pool" as const, profileId: "a" }], [{ provisioner: "cognito_test_pool" as const, profileId: "a" }, { provisioner: "http_hook" as const, profileId: "b" }]]) {
+      const result = evaluateMediaGate({ ...ok, tier: "shared", accounts });
+      expect(result.allowed).toEqual({ video: false, trace: false });
+      expect(result.reasons).toEqual({ video: "tier_not_allowed", trace: "tier_not_allowed" });
+      expect(result.tierAllowed).toBe(false);
+    }
+    expect(evaluateMediaGate({ ...ok, tier: "preview" })).toMatchObject({ allowed: { video: true, trace: true }, tierAllowed: true });
+    expect(evaluateMediaGate({ ...ok, tier: "sandbox" }).tierAllowed).toBe(true);
   });
   it("refuses data that is not known to be synthetic", () => {
     for (const data of ["unknown", "real"] as const) expect(evaluateMediaGate({ ...ok, data }).reasons).toEqual({ video: "data_not_synthetic", trace: "data_not_synthetic" });
@@ -97,6 +101,13 @@ describe("the media gate", () => {
   it("refuses at publication until the revocation is confirmed, and allows at admission when it is not yet known", () => {
     expect(evaluateMediaGate({ ...ok, revocationConfirmed: false }).reasons.video).toBe("revocation_not_confirmed");
     expect(evaluateMediaGate({ ...ok, revocationConfirmed: true }).allowed.video).toBe(true);
+    expect(evaluateMediaGate({ ...ok, revocationConfirmed: undefined }).allowed.video).toBe(true);
+  });
+  it("at publication the revocation proof must be exactly true: undefined and false both refuse (I2)", () => {
+    const publication = (revocationConfirmed: boolean | undefined) => evaluatePublicationGate({ capture: ok.capture, tier: ok.tier, accounts: ok.accounts, data: ok.data, companyAllows: ok.companyAllows, revocationConfirmed });
+    expect(publication(true).allowed).toEqual({ video: true, trace: true });
+    for (const value of [false, undefined]) expect(publication(value)).toMatchObject({ allowed: { video: false, trace: false }, reasons: { video: "revocation_not_confirmed", trace: "revocation_not_confirmed" } });
+    // admission, by contrast, may leave the proof open
     expect(evaluateMediaGate({ ...ok, revocationConfirmed: undefined }).allowed.video).toBe(true);
   });
   it("names the first failing condition in the design's order", () => {
@@ -151,12 +162,21 @@ describe("scrubbing a trace", () => {
   it("finds a credential INSIDE a compressed entry, which a scan of the zip bytes would miss", () => {
     const hiding = zip([{ name: "trace.trace", data: `${JSON.stringify({ type: "log", text: `typed ${PASSWORD} into the form` })}\n` }]);
     expect(redactor().contains(hiding)).toBe(false);
-    expect(scrubTraceZip(hiding, (bytes) => redactor().contains(bytes))).toBeNull();
-    expect(scrubTraceZip(hiding, () => false)).not.toBeNull();
+    const scrubbed = scrubTraceZip(hiding, (bytes) => redactor().contains(bytes));
+    expect(scrubbed).not.toBeNull();
+    expect(unzipEntries(scrubbed!).get("trace.trace")).not.toContain(PASSWORD);
+    expect(unzipEntries(scrubbed!).get("trace.trace")).toContain(TRACE_BLANKED);
+    // with no scan, nothing is found and nothing changes: the positive control that the blanking above is the scan's doing
+    expect(unzipEntries(scrubTraceZip(hiding, () => false)!).get("trace.trace")).toContain(PASSWORD);
   });
-  it("finds a credential in a blob entry too", () => {
+  it("blanks a blob entry that carries a credential, and keeps the entry's place", () => {
     const blob = zip([{ name: "trace.trace", data: "{}\n" }, { name: "resources/body.txt", data: `hello ${EMAIL}` }]);
-    expect(scrubTraceZip(blob, (bytes) => redactor().contains(bytes))).toBeNull();
+    const scrubbed = unzipEntries(scrubTraceZip(blob, (bytes) => redactor().contains(bytes))!);
+    expect([...scrubbed.keys()]).toEqual(["trace.trace", "resources/body.txt"]);
+    expect(scrubbed.get("resources/body.txt")).toBe(TRACE_BLANKED);
+  });
+  it("refuses a credential that is in an image entry (it cannot be blanked and the entry is not text)", () => {
+    expect(scrubTraceZip(zip([{ name: "trace.trace", data: "{}\n" }, { name: "screencast/p.jpeg", data: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.from(PASSWORD)]) }]), (bytes) => redactor().contains(bytes))).toBeNull();
   });
   it("refuses what it cannot read whole: encrypted, unknown method, duplicate or unsafe names, truncation, a wrong size or checksum, no entries, not a zip", () => {
     const good = goodTrace();
@@ -182,6 +202,70 @@ describe("scrubbing a trace", () => {
     expect(scrubTraceZip(z64, () => false)).toBeNull();
     const far = Buffer.from(zip([{ name: "a", data: "x" }])); far.writeUInt32LE(far.length + 100, far.length - 22 + 16);
     expect(scrubTraceZip(far, () => false)).toBeNull();
+  });
+});
+
+describe("the zip structure and the new scrub rules (C2, M3, M4)", () => {
+  it("refuses a drive-lettered name and a name with a control character", () => {
+    for (const name of ["C:evil.txt", "a\u0001b", "dir/\u007fx"]) expect(scrubTraceZip(zip([{ name, data: "x" }]), () => false), JSON.stringify(name)).toBeNull();
+  });
+  it("refuses an archive whose local header names another file than the central directory does", () => {
+    const bytes = Buffer.from(zip([{ name: "trace.trace", data: "{}\n" }]));
+    bytes.write("trace.tracX", 30); // the local header's name
+    expect(scrubTraceZip(bytes, () => false)).toBeNull();
+  });
+  it("refuses entries that overlap: a second entry whose local header sits inside the first entry's data (a zip within a zip)", () => {
+    const inner = zip([{ name: "b.bin", data: "y".repeat(40), method: 0 }]);
+    const innerLocal = inner.subarray(0, 30 + "b.bin".length + 40);
+    const nameA = Buffer.from("a.bin");
+    const crcOf = (data: Uint8Array) => zlibCrc32(data) >>> 0;
+    const localA = Buffer.alloc(30); localA.writeUInt32LE(0x04034b50, 0); localA.writeUInt16LE(20, 4); localA.writeUInt32LE(crcOf(innerLocal), 14);
+    localA.writeUInt32LE(innerLocal.length, 18); localA.writeUInt32LE(innerLocal.length, 22); localA.writeUInt16LE(nameA.length, 26);
+    const centralOf = (name: Buffer, crc: number, size: number, offset: number) => {
+      const head = Buffer.alloc(46); head.writeUInt32LE(0x02014b50, 0); head.writeUInt16LE(20, 4); head.writeUInt16LE(20, 6);
+      head.writeUInt32LE(crc, 16); head.writeUInt32LE(size, 20); head.writeUInt32LE(size, 24); head.writeUInt16LE(name.length, 28); head.writeUInt32LE(offset, 42);
+      return Buffer.concat([head, name]);
+    };
+    const bData = Buffer.from("y".repeat(40));
+    const directory = Buffer.concat([centralOf(nameA, crcOf(innerLocal), innerLocal.length, 0), centralOf(Buffer.from("b.bin"), crcOf(bData), bData.length, 30 + nameA.length)]);
+    const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(2, 8); end.writeUInt16LE(2, 10); end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(30 + nameA.length + innerLocal.length, 16);
+    const nested = Buffer.concat([localA, nameA, innerLocal, directory, end]);
+    expect(scrubTraceZip(nested, () => false)).toBeNull();
+    // positive control: the same two entries side by side, not nested, are read
+    const side = zip([{ name: "a.bin", data: innerLocal, method: 0 }, { name: "b.bin", data: bData, method: 0 }]);
+    expect(scrubTraceZip(side, () => false)).not.toBeNull();
+  });
+  it("writes zero external attributes and no extra field, so a mode or a symlink in the input is dropped (M3)", () => {
+    const bytes = Buffer.from(zip([{ name: "trace.trace", data: "{}\n" }]));
+    const eocd = bytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+    const dir = bytes.readUInt32LE(eocd + 16);
+    bytes.writeUInt32LE(0xa1ff0000, dir + 38); // a symlink with mode 0777 in the input's external attributes
+    const out = Buffer.from(scrubTraceZip(bytes, () => false)!);
+    const outDir = out.readUInt32LE(out.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06])) + 16);
+    expect(out.readUInt32LE(outDir + 38)).toBe(0);
+    expect(out.readUInt16LE(outDir + 30)).toBe(0);
+  });
+  it("refuses an archive that inflates past the total cap even when each entry is under the entry cap", () => {
+    const entries = Array.from({ length: 3 }, (_, index) => ({ name: `resources/z${index}.bin`, data: Buffer.alloc(30 * 1024 * 1024) }));
+    expect(scrubTraceZip(zip(entries), () => false)).toBeNull();
+  });
+  it("blanks every query value and fragment in a URL anywhere in a line, keeping scheme, host and path", () => {
+    const line = JSON.stringify({ type: "before", params: { url: "https://app.test/cb?code=abc123def456&state=x&code=again99#frag-tok", note: "see https://other.test/p?a=1" } });
+    const out = JSON.parse(scrubTraceLines(`${line}\n`)!) as { params: { url: string; note: string } };
+    expect(out.params.url).toBe(`https://app.test/cb?code=${TRACE_BLANKED}&state=${TRACE_BLANKED}`);
+    expect(out.params.note).toBe("see https://other.test/p?a=1");
+    expect(scrubTraceLines(`${JSON.stringify({ u: "https://user:pw@app.test/x?y=1" })}\n`)).toBe(`${JSON.stringify({ u: `https://app.test/x?y=${TRACE_BLANKED}` })}\n`);
+  });
+  it("keeps only allow-listed header values in a request, whatever the header is called", () => {
+    const line = JSON.stringify({ request: { headers: [{ name: "X-Goog-Api-Key", value: "AIzaSyplanted-0123456789" }, { name: "x-session", value: "sess-planted-0123456789" }, { name: "Content-Type", value: "application/json" }, { name: "Referer", value: "https://app.test/?t=1" }] } });
+    const headers = (JSON.parse(scrubTraceLines(`${line}\n`)!) as { request: { headers: Array<{ name: string; value: string }> } }).request.headers;
+    expect(headers.map((header) => [header.name, header.value])).toEqual([["X-Goog-Api-Key", TRACE_BLANKED], ["x-session", TRACE_BLANKED], ["Content-Type", "application/json"], ["Referer", TRACE_BLANKED]]);
+  });
+  it("refuses a trace where a secret was split across strings and so survives the string-level blanking", () => {
+    const secret = "split-secret-value-0123456789";
+    const parts = zip([{ name: "trace.trace", data: `${JSON.stringify({ type: "log", text: ["split-secret-val", "ue-0123456789"] })}\n` }]);
+    const hit = (bytes: Uint8Array) => Buffer.from(bytes).toString("utf8").replace(/["[\],]/gu, "").includes(secret);
+    expect(scrubTraceZip(parts, hit)).toBeNull();
   });
 });
 
@@ -239,12 +323,14 @@ describe("the executor's media recorder", () => {
     expect((await recorder.record({ caseId: "b", kind: "video", bytes: WEBM }))?.omitted).toBeUndefined();
     expect((await readdir(join(root, MEDIA_DIR))).filter((name) => name !== "entries")).toEqual([mediaFileName(1, "video")]);
   });
-  it("drops a trace with a credential inside it, and one it cannot scrub", async () => {
+  it("keeps a trace with a credential inside it only with the credential blanked, and drops one it cannot scrub", async () => {
     const root = await temp();
     const recorder = createMediaRecorder({ root, policy: { video: false, trace: true }, caseIds: ["a", "b"], redactor: redactor() });
-    expect(await recorder.record({ caseId: "a", kind: "trace", bytes: zip([{ name: "trace.trace", data: `${JSON.stringify({ text: PASSWORD })}\n` }]) })).toMatchObject({ omitted: "unsafe_content" });
+    const kept = await recorder.record({ caseId: "a", kind: "trace", bytes: zip([{ name: "trace.trace", data: `${JSON.stringify({ text: PASSWORD })}\n` }]) });
+    expect(kept?.omitted).toBeUndefined();
+    expect(unzipEntries(await readFile(join(root, MEDIA_DIR, mediaFileName(0, "trace")))).get("trace.trace")).not.toContain(PASSWORD);
     expect(await recorder.record({ caseId: "b", kind: "trace", bytes: zip([{ name: "trace.network", data: "garbage line\n" }]) })).toMatchObject({ omitted: "unsafe_content" });
-    expect((await readdir(join(root, MEDIA_DIR))).filter((name) => name !== "entries")).toEqual([]);
+    expect((await readdir(join(root, MEDIA_DIR))).filter((name) => name !== "entries")).toEqual([mediaFileName(0, "trace")]);
   });
 });
 
@@ -310,9 +396,19 @@ describe("the web case hooks", () => {
 
 describe("the broker keeps its own bytes and the pack applies the gate", () => {
   const contains = (bytes: Uint8Array) => redactor().contains(bytes);
+  const OPEN_GATE = { allowed: { video: true, trace: true } };
+  it("reads, scrubs and returns NOTHING of a kind the gate refuses, so a withheld video is never stored (I4)", () => {
+    const refused = prepareMediaArtifacts([{ scenarioId: "a", kind: "video", bytes: WEBM }, { scenarioId: "a", kind: "trace", bytes: goodTrace() }], { contains, gate: { allowed: { video: false, trace: true } } });
+    expect(refused.problems).toEqual([{ scenarioId: "a", kind: "video", problem: "gate_refused" }]);
+    expect(refused.artifacts.map((item) => item.ref.kind)).toEqual(["trace_zip"]);
+    expect(refused.rows).toEqual([{ scenarioId: "a", trace: refused.artifacts[0]!.ref }]);
+    const none = prepareMediaArtifacts([{ scenarioId: "a", kind: "video", bytes: WEBM }, { scenarioId: "a", kind: "trace", bytes: goodTrace() }], { contains, gate: { allowed: { video: false, trace: false } } });
+    expect(none).toMatchObject({ rows: [], artifacts: [] });
+    expect(none.problems.map((item) => item.problem)).toEqual(["gate_refused", "gate_refused"]);
+  });
   it("scrubs a worker's trace again and stores the broker's copy under the digest of what it stores", () => {
     const dirty = zip([{ name: "trace.network", data: `${networkLine()}\n` }]);
-    const prepared = prepareMediaArtifacts([{ scenarioId: "checkout", kind: "trace", bytes: dirty }], { contains });
+    const prepared = prepareMediaArtifacts([{ scenarioId: "checkout", kind: "trace", bytes: dirty }], { contains, gate: OPEN_GATE });
     expect(prepared.problems).toEqual([]);
     const stored = prepared.artifacts[0]!;
     expect(stored.ref.sha256).toBe(sha(stored.data));
@@ -320,14 +416,14 @@ describe("the broker keeps its own bytes and the pack applies the gate", () => {
     expect(unzipEntries(stored.data).get("trace.network")).not.toContain(SESSION);
     expect(prepared.rows).toEqual([{ scenarioId: "checkout", trace: stored.ref }]);
   });
-  it("leaves out a trace with a credential, a video with one, the wrong kind, an over-cap file and a second of a kind", () => {
+  it("leaves out a trace it cannot scrub, a video with a credential, the wrong kind, an over-cap file and a second of a kind", () => {
     const prepared = prepareMediaArtifacts([
-      { scenarioId: "a", kind: "trace", bytes: zip([{ name: "trace.trace", data: `${JSON.stringify({ t: PASSWORD })}\n` }]) },
+      { scenarioId: "a", kind: "trace", bytes: zip([{ name: "trace.network", data: "not json\n" }]) },
       { scenarioId: "b", kind: "video", bytes: Buffer.concat([WEBM, Buffer.from(EMAIL)]) },
       { scenarioId: "c", kind: "video", bytes: goodTrace() },
       { scenarioId: "d", kind: "video", bytes: Buffer.concat([WEBM, Buffer.alloc(MEDIA_VIDEO_MAX_BYTES)]) },
       { scenarioId: "e", kind: "video", bytes: WEBM }, { scenarioId: "e", kind: "video", bytes: Buffer.concat([WEBM, Buffer.from("x")]) },
-    ], { contains });
+    ], { contains, gate: OPEN_GATE });
     expect(prepared.problems.map((item) => [item.scenarioId, item.problem])).toEqual([["a", "unsafe_content"], ["b", "unsafe_content"], ["c", "not_that_kind"], ["d", "over_cap"], ["e", "duplicate"]]);
     expect(prepared.rows.map((row) => row.scenarioId)).toEqual(["e"]);
     expect(prepared.artifacts).toHaveLength(1);
@@ -342,12 +438,13 @@ describe("the broker keeps its own bytes and the pack applies the gate", () => {
   const DIGEST = "c".repeat(64);
   const env = (kind: "run_scoped" | "registered"): EvidenceEnvironment => ({ tier: "sandbox", envRevision: 1, services: [], data: "synthetic", accounts: [{ profileId: "buyer", kind }] });
   const gateInput = { capture: { video: true, traces: true }, tier: "sandbox" as const, accounts: [{ provisioner: "seed_command" as const, profileId: "buyer" }], data: "synthetic" as const, companyAllows: { video: true, trace: true } };
-  function pack(kind: "run_scoped" | "registered", revocationConfirmed: boolean, companyAllows = { video: true, trace: true }) {
-    const prepared = prepareMediaArtifacts([{ scenarioId: "checkout", kind: "video", bytes: WEBM }, { scenarioId: "checkout", kind: "trace", bytes: goodTrace() }], { contains });
+  function pack(kind: "run_scoped" | "registered", revocationConfirmed: boolean | undefined, companyAllows = { video: true, trace: true }, over: { data?: "synthetic" | "unknown" } = {}) {
+    // The caller here stored both kinds (a gate that said yes at that moment); the pack builder applies the publication gate again, so what it keeps never depends on the earlier call.
+    const prepared = prepareMediaArtifacts([{ scenarioId: "checkout", kind: "video", bytes: WEBM }, { scenarioId: "checkout", kind: "trace", bytes: goodTrace() }], { contains, gate: OPEN_GATE });
     const browser = attachMedia([], prepared.rows);
     const built = buildEvidencePack({ candidateDigest: DIGEST, checks: [], environment: env(kind), rawText: JSON.stringify({ schemaVersion: 1, candidateDigest: DIGEST, checks: [], browser }),
       storedArtifacts: new Map(prepared.artifacts.map((item) => [item.ref.sha256, { kind: item.ref.kind, bytes: item.ref.bytes }])),
-      media: mediaInputFor({ ...gateInput, companyAllows, revocationConfirmed }) });
+      media: publicationMediaFor({ ...gateInput, companyAllows, revocationConfirmed, ...(over.data === undefined ? {} : { data: over.data }) }).media });
     return { built, prepared };
   }
   it("keeps the video and the trace only with run-scoped accounts, the company's switch and the revocation proof", () => {
@@ -361,6 +458,27 @@ describe("the broker keeps its own bytes and the pack applies the gate", () => {
     expect(built.pack?.browser[0]?.video).toBeUndefined();
     expect(built.pack?.browser[0]?.withheld).toEqual([{ artifact: "video", reason: "revocation_not_confirmed" }, { artifact: "trace", reason: "revocation_not_confirmed" }]);
     expect(built.withheldArtifacts.map((ref) => ref.sha256).sort()).toEqual(prepared.artifacts.map((item) => item.ref.sha256).sort());
+  });
+  it("withholds both when the revocation proof is missing (undefined), not only when it is false (I2)", () => {
+    const { built } = pack("run_scoped", undefined);
+    expect(built.pack?.browser[0]?.video).toBeUndefined();
+    expect(built.pack?.browser[0]?.withheld?.map((item) => item.reason)).toEqual(["revocation_not_confirmed", "revocation_not_confirmed"]);
+  });
+  it("re-applies the data check at publication: data not known to be synthetic withholds both, though the pack's own schema says synthetic (I2)", () => {
+    const { built, prepared } = pack("run_scoped", true, { video: true, trace: true }, { data: "unknown" });
+    expect(built.pack?.browser[0]?.video).toBeUndefined();
+    expect(built.pack?.browser[0]?.trace).toBeUndefined();
+    expect(built.pack?.browser[0]?.withheld?.map((item) => item.reason)).toEqual(["data_not_synthetic", "data_not_synthetic"]);
+    expect(built.withheldArtifacts).toHaveLength(prepared.artifacts.length);
+  });
+  it("never keeps a kind when the gate result says no, whatever the other three inputs say", () => {
+    const prepared = prepareMediaArtifacts([{ scenarioId: "checkout", kind: "video", bytes: WEBM }], { contains, gate: OPEN_GATE });
+    const media = publicationMediaFor({ ...gateInput, companyAllows: { video: true, trace: true }, revocationConfirmed: true }).media;
+    const built = buildEvidencePack({ candidateDigest: DIGEST, checks: [], environment: env("run_scoped"), rawText: JSON.stringify({ schemaVersion: 1, candidateDigest: DIGEST, checks: [], browser: attachMedia([], prepared.rows) }),
+      storedArtifacts: new Map(prepared.artifacts.map((item) => [item.ref.sha256, { kind: item.ref.kind, bytes: item.ref.bytes }])),
+      media: { ...media, gate: { allowed: { video: false, trace: true }, reasons: { video: "data_not_synthetic" } } } });
+    expect(built.pack?.browser[0]?.video).toBeUndefined();
+    expect(built.pack?.browser[0]?.withheld).toEqual([{ artifact: "video", reason: "data_not_synthetic" }]);
   });
   it("withholds for a registered account and for a company that has not switched the kind on", () => {
     expect(pack("registered", true).built.pack?.browser[0]?.withheld?.map((item) => item.reason)).toEqual(["account_not_run_scoped", "account_not_run_scoped"]);

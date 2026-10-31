@@ -48,7 +48,8 @@ describe("the retention of workflow screenshots is a rule on the bucket the brok
     expect(rules[0]).toMatchObject({ Status: "Enabled", ExpirationInDays: E2E_ARTIFACT_RETENTION_DAYS,
       TagFilters: [{ Key: E2E_ARTIFACT_RETENTION_TAG_KEY, Value: E2E_ARTIFACT_RETENTION_TAG_VALUE }] });
     expect(rules.map((rule) => rule.TagFilters?.[0]?.Value)).toEqual([E2E_ARTIFACT_RETENTION_TAG_VALUE, "evidence-short", "evidence-std"]);
-    for (const rule of rules) expect(rule.Prefix).toBeUndefined();
+    // the screenshot rule is tag-only (as before); the evidence rules are prefix AND tag (an `And` filter), so a tagged object outside the private keys never matches
+    expect(rules.map((rule) => rule.Prefix)).toEqual([undefined, "private/", "private/"]);
     // The bucket is not versioned, so expiry deletes the object and no rule for old versions is needed.
     expect(buckets[brokerBucketId!]!.Properties.VersioningConfiguration).toBeUndefined();
   });

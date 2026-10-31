@@ -20,7 +20,7 @@ const WEBM = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(
 const ZIP = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(500, 5)]);
 const SAMPLE = Buffer.from(buildApiSample({ method: "GET", path: "/o", status: 200, responseHeaders: { "content-type": "application/json" }, responseBody: Buffer.from('{"a":1}') }).bytes!);
 const TAIL = Buffer.from("3 failed\nAssertionError: expected 1 to be 2\n");
-const OWNER = { ownerKey: "owner-1", workspaceId: "ws-1" };
+const OWNER = { ownerKey: "owner-1", workspaceId: "ws-1", taskId: "t-1" };
 
 /** An in-memory S3 that records tags and metadata, as the calls the store makes need. */
 function memoryS3() {
@@ -57,11 +57,11 @@ describe("what the store keeps", () => {
     const memory = memoryS3();
     const stored = await storeEvidenceArtifacts({ s3: memory.s3, artifactBucketName: "bucket" }, OWNER, [{ kind: "jpeg", bytes: JPEG }, { kind: "webm", bytes: WEBM }, { kind: "trace_zip", bytes: ZIP }, { kind: "api_sample_json", bytes: SAMPLE }, { kind: "log_txt", bytes: TAIL }]);
     expect(stored.size).toBe(5);
-    expect(memory.objects.get(`private/owner-1/ws-1/evidence/${sha(JPEG)}`)).toMatchObject({ contentType: "image/jpeg", tagging: "rovara-retention=evidence-std", metadata: { sha256: sha(JPEG), kind: "jpeg" } });
-    expect(memory.objects.get(`private/owner-1/ws-1/evidence/${sha(WEBM)}`)).toMatchObject({ contentType: "video/webm", tagging: "rovara-retention=evidence-short" });
-    expect(memory.objects.get(`private/owner-1/ws-1/evidence/${sha(ZIP)}`)).toMatchObject({ contentType: "application/zip", tagging: "rovara-retention=evidence-short" });
-    expect(memory.objects.get(`private/owner-1/ws-1/evidence/${sha(SAMPLE)}`)?.tagging).toBe("rovara-retention=evidence-std");
-    expect(memory.objects.get(`private/owner-1/ws-1/evidence/${sha(TAIL)}`)?.tagging).toBe("rovara-retention=evidence-std");
+    expect(memory.objects.get(`private/owner-1/ws-1/evidence/t-1/${sha(JPEG)}`)).toMatchObject({ contentType: "image/jpeg", tagging: "rovara-retention=evidence-std", metadata: { sha256: sha(JPEG), kind: "jpeg" } });
+    expect(memory.objects.get(`private/owner-1/ws-1/evidence/t-1/${sha(WEBM)}`)).toMatchObject({ contentType: "video/webm", tagging: "rovara-retention=evidence-short" });
+    expect(memory.objects.get(`private/owner-1/ws-1/evidence/t-1/${sha(ZIP)}`)).toMatchObject({ contentType: "application/zip", tagging: "rovara-retention=evidence-short" });
+    expect(memory.objects.get(`private/owner-1/ws-1/evidence/t-1/${sha(SAMPLE)}`)?.tagging).toBe("rovara-retention=evidence-std");
+    expect(memory.objects.get(`private/owner-1/ws-1/evidence/t-1/${sha(TAIL)}`)?.tagging).toBe("rovara-retention=evidence-std");
     expect(stored.get(sha(WEBM))).toEqual({ kind: "webm", sha256: sha(WEBM), bytes: WEBM.length, retentionClass: "evidence-short" });
     expect(evidenceTagging("evidence-short")).toBe(`${E2E_ARTIFACT_RETENTION_TAG_KEY}=evidence-short`);
   });
@@ -86,7 +86,7 @@ describe("what the store keeps", () => {
     await storeEvidenceArtifacts({ s3: memory.s3, artifactBucketName: "b" }, OWNER, [{ kind: "jpeg", bytes: JPEG }]);
     const held = await statEvidenceArtifacts({ s3: memory.s3, artifactBucketName: "b" }, OWNER, [sha(JPEG), "e".repeat(64), "not a digest", sha(JPEG)]);
     expect([...held.entries()]).toEqual([[sha(JPEG), { kind: "jpeg", bytes: JPEG.length }]]);
-    expect((await statEvidenceArtifacts({ s3: memory.s3, artifactBucketName: "b" }, { ownerKey: "other", workspaceId: "ws-1" }, [sha(JPEG)])).size).toBe(0);
+    expect((await statEvidenceArtifacts({ s3: memory.s3, artifactBucketName: "b" }, { ownerKey: "other", workspaceId: "ws-1", taskId: "t-1" }, [sha(JPEG)])).size).toBe(0);
   });
   it("deletes withheld artifacts, and reports the ones it could not", async () => {
     const memory = memoryS3();
@@ -116,7 +116,7 @@ async function setup(links: Parameters<typeof viewWith>[0], over: Partial<{ auth
   await storeEvidenceArtifacts({ s3: memory.s3, artifactBucketName: "b" }, OWNER, links.map((item) => ({ kind: item.kind, bytes: item.bytes })));
   const presigned: Array<{ key: string; contentType: string; disposition: string; expiresInSeconds: number }> = [];
   const deps: EvidenceDownloadDependencies = {
-    authorize: over.authorize ?? (async () => ({ ...OWNER, candidateDigest: "candidateDigest" in over ? over.candidateDigest : DIGEST, view: "view" in over ? over.view : viewWith(links) })),
+    authorize: over.authorize ?? (async () => ({ ownerKey: OWNER.ownerKey, workspaceId: OWNER.workspaceId, taskId: OWNER.taskId, candidateDigest: "candidateDigest" in over ? over.candidateDigest : DIGEST, view: "view" in over ? over.view : viewWith(links) })),
     store: { s3: memory.s3, artifactBucketName: "b" },
     presign: over.presign ?? (async (input) => { presigned.push(input); return `https://bucket.s3.example/${input.key}?X-Amz-Expires=${input.expiresInSeconds}`; }),
   };
@@ -139,14 +139,14 @@ describe("the download rule", () => {
     expect(video).toMatchObject({ status: 302, kind: "webm", expiresInSeconds: EVIDENCE_PRESIGN_SECONDS });
     expect(trace).toMatchObject({ status: 302, kind: "trace_zip" });
     expect(EVIDENCE_PRESIGN_SECONDS).toBe(60);
-    expect(presigned).toEqual([{ key: evidenceArtifactKey("owner-1", "ws-1", sha(WEBM)), contentType: "video/webm", disposition: "inline", expiresInSeconds: 60 },
-      { key: evidenceArtifactKey("owner-1", "ws-1", sha(ZIP)), contentType: "application/zip", disposition: "attachment", expiresInSeconds: 60 }]);
+    expect(presigned).toEqual([{ key: evidenceArtifactKey("owner-1", "ws-1", "t-1", sha(WEBM)), contentType: "video/webm", disposition: "inline", expiresInSeconds: 60 },
+      { key: evidenceArtifactKey("owner-1", "ws-1", "t-1", sha(ZIP)), contentType: "application/zip", disposition: "attachment", expiresInSeconds: 60 }]);
   });
   it("is 404 for a hash the store holds but the current pack does not name (a withheld video, another candidate's file)", async () => {
     const { deps, memory } = await setup(all);
     const strayWebm = Buffer.concat([WEBM, Buffer.from("stray")]);
     await storeEvidenceArtifacts({ s3: memory.s3, artifactBucketName: "b" }, OWNER, [{ kind: "webm", bytes: strayWebm }]);
-    expect(memory.objects.has(evidenceArtifactKey("owner-1", "ws-1", sha(strayWebm)))).toBe(true);
+    expect(memory.objects.has(evidenceArtifactKey("owner-1", "ws-1", "t-1", sha(strayWebm)))).toBe(true);
     expect(await serveEvidenceArtifact(deps, sha(strayWebm))).toEqual({ status: 404 });
     expect(await serveEvidenceArtifact(deps, sha(Buffer.from("anything")))).toEqual({ status: 404 });
   });
@@ -161,17 +161,56 @@ describe("the download rule", () => {
   });
   it("is 404 when the object differs from what the pack says (size or digest), and nothing leaves", async () => {
     const { deps, memory } = await setup(all);
-    memory.objects.set(evidenceArtifactKey("owner-1", "ws-1", sha(JPEG)), { body: Buffer.concat([JPEG, Buffer.from("x")]) });
+    memory.objects.set(evidenceArtifactKey("owner-1", "ws-1", "t-1", sha(JPEG)), { body: Buffer.concat([JPEG, Buffer.from("x")]) });
     expect(await serveEvidenceArtifact(deps, sha(JPEG))).toEqual({ status: 404 });
-    memory.objects.set(evidenceArtifactKey("owner-1", "ws-1", sha(JPEG)), { body: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(JPEG.length - 4, 9)]) });
+    memory.objects.set(evidenceArtifactKey("owner-1", "ws-1", "t-1", sha(JPEG)), { body: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(JPEG.length - 4, 9)]) });
     expect(await serveEvidenceArtifact(deps, sha(JPEG))).toEqual({ status: 404 });
-    memory.objects.set(evidenceArtifactKey("owner-1", "ws-1", sha(WEBM)), { body: WEBM, metadata: { sha256: "0".repeat(64), kind: "webm" } });
+    memory.objects.set(evidenceArtifactKey("owner-1", "ws-1", "t-1", sha(WEBM)), { body: WEBM, metadata: { sha256: "0".repeat(64), kind: "webm" } });
     expect(await serveEvidenceArtifact(deps, sha(WEBM))).toEqual({ status: 404 });
+  });
+  it("keeps the same bytes of two tasks as two objects, so deleting one task's artifact never deletes the other's, and one task cannot serve the other's (I4)", async () => {
+    const memory = memoryS3();
+    const store = { s3: memory.s3, artifactBucketName: "b" };
+    const other = { ...OWNER, taskId: "t-2" };
+    await storeEvidenceArtifacts(store, OWNER, [{ kind: "jpeg", bytes: JPEG }]);
+    await storeEvidenceArtifacts(store, other, [{ kind: "jpeg", bytes: JPEG }]);
+    expect(memory.objects.size).toBe(2);
+    expect(await deleteEvidenceArtifacts(store, OWNER, [{ sha256: sha(JPEG) }])).toEqual([]);
+    expect([...memory.objects.keys()]).toEqual([evidenceArtifactKey("owner-1", "ws-1", "t-2", sha(JPEG))]);
+    // t-1 names the bytes in its pack, but only t-2 holds them: t-1 cannot serve them
+    const { deps } = await setup([{ kind: "jpeg", bytes: JPEG }]);
+    const crossed = { ...deps, store };
+    expect(await serveEvidenceArtifact(crossed, sha(JPEG))).toEqual({ status: 404 });
+    expect((await statEvidenceArtifacts(store, OWNER, [sha(JPEG)])).size).toBe(0);
+    expect((await statEvidenceArtifacts(store, other, [sha(JPEG)])).size).toBe(1);
+  });
+  it("refuses a task id that is not a plain id (it becomes part of a key)", async () => {
+    const memory = memoryS3();
+    for (const taskId of ["", "../x", "a/b", "a b", "x".repeat(65)]) {
+      await expect(storeEvidenceArtifacts({ s3: memory.s3, artifactBucketName: "b" }, { ...OWNER, taskId }, [{ kind: "jpeg", bytes: JPEG }])).rejects.toThrow(/names its task/);
+    }
+    expect(memory.objects.size).toBe(0);
+    const { deps } = await setup([{ kind: "jpeg", bytes: JPEG }], { authorize: async () => ({ ownerKey: "owner-1", workspaceId: "ws-1", taskId: "../x", candidateDigest: DIGEST, view: viewWith([{ kind: "jpeg", bytes: JPEG }]) }) });
+    expect(await serveEvidenceArtifact(deps, sha(JPEG))).toEqual({ status: 404 });
+  });
+  it("hands each failed delete to the caller's retry queue, with the key and the digest", async () => {
+    const failing = { send: async () => { throw new Error("denied"); } };
+    const seen: Array<{ key: string; sha256: string }> = [];
+    expect(await deleteEvidenceArtifacts({ s3: failing, artifactBucketName: "b" }, OWNER, [{ sha256: sha(WEBM) }], (failure) => { seen.push(failure); })).toEqual([sha(WEBM)]);
+    expect(seen).toEqual([{ key: evidenceArtifactKey("owner-1", "ws-1", "t-1", sha(WEBM)), sha256: sha(WEBM) }]);
+    // a retry queue that itself fails changes nothing
+    expect(await deleteEvidenceArtifacts({ s3: failing, artifactBucketName: "b" }, OWNER, [{ sha256: sha(WEBM) }], () => { throw new Error("queue down"); })).toEqual([sha(WEBM)]);
+  });
+  it("is 403 for a reader who can read the task but not its project's evidence (the Auditor case): authorize answers undefined (M9)", async () => {
+    const { deps, memory } = await setup(all, { authorize: async () => undefined });
+    memory.sent.length = 0;
+    expect(await serveEvidenceArtifact(deps, sha(JPEG))).toEqual({ status: 403 });
+    expect(memory.sent).toEqual([]);
   });
   it("reads only the caller's task: another owner's or workspace's copy is never the answer", async () => {
     const { deps, memory } = await setup(all);
-    memory.objects.delete(evidenceArtifactKey("owner-1", "ws-1", sha(JPEG)));
-    memory.objects.set(evidenceArtifactKey("owner-2", "ws-1", sha(JPEG)), { body: JPEG });
+    memory.objects.delete(evidenceArtifactKey("owner-1", "ws-1", "t-1", sha(JPEG)));
+    memory.objects.set(evidenceArtifactKey("owner-2", "ws-1", "t-1", sha(JPEG)), { body: JPEG });
     expect(await serveEvidenceArtifact(deps, sha(JPEG))).toEqual({ status: 404 });
   });
   it("is 403 for someone who may not read the task, whatever the code of the refusal, and 503 for any other failure", async () => {
@@ -211,7 +250,7 @@ describe("the route's answer and its audit event", () => {
     const { deps } = await setup([{ kind: "webm", bytes: WEBM }]);
     const response = evidenceDownloadResponse(await serveEvidenceArtifact(deps, sha(WEBM)));
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toMatch(/^https:\/\/bucket\.s3\.example\/private\/owner-1\/ws-1\/evidence\//u);
+    expect(response.headers.location).toMatch(/^https:\/\/bucket\.s3\.example\/private\/owner-1\/ws-1\/evidence\/t-1\//u);
     expect(response.body).toBe("");
   });
   it("audits a served download by kind and class, never by name or path, and a refusal leaves none", async () => {
@@ -238,7 +277,7 @@ describe("the route's answer and its audit event", () => {
 });
 
 describe("the lifecycle rules on the artifact bucket", () => {
-  type Rule = { Id?: string; Status: string; ExpirationInDays?: number; TagFilters?: Array<{ Key: string; Value: string }> };
+  type Rule = { Id?: string; Status: string; ExpirationInDays?: number; Prefix?: string; TagFilters?: Array<{ Key: string; Value: string }> };
   type Bucket = { Properties: { LifecycleConfiguration?: { Rules: Rule[] } } };
   const rulesOf = (context?: Record<string, unknown>) => {
     const template = Template.fromStack(new ControlPlaneStack(new App({ context }), "EvidenceRetention", { naming: environmentNaming("live25d") }));
@@ -247,6 +286,7 @@ describe("the lifecycle rules on the artifact bucket", () => {
   };
   it("expires evidence-short after 14 days and evidence-std after 30 by default, each on its own tag, and keeps the screenshot rule", () => {
     const rules = rulesOf();
+    expect(rules.map((rule) => rule.Prefix)).toEqual([undefined, "private/", "private/"]);
     expect(rules.map((rule) => [rule.Id, rule.ExpirationInDays, rule.TagFilters])).toEqual([
       ["ExpireE2EScreenshots", 30, [{ Key: "rovara-retention", Value: "e2e-screenshot" }]],
       ["ExpireEvidenceShort", 14, [{ Key: "rovara-retention", Value: "evidence-short" }]],

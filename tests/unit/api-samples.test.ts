@@ -285,3 +285,14 @@ describe("the broker reads samples back and builds the api rows", () => {
     expect(buildEvidencePack({ ...common, storedArtifacts: new Map() }).pack?.api[0]?.samples).toEqual([]);
   });
 });
+
+describe("fix round 1 minors", () => {
+  it("M6: a sample's path is a fixed path: a query or a fragment withholds the sample", () => {
+    for (const path of ["/orders?token=abc", "/orders#frag", "/o?"]) expect(buildApiSample({ method: "GET", path, status: 200 })).toEqual({ bytes: undefined, withheld: "invalid" });
+    expect(buildApiSample({ method: "GET", path: "/orders/42", status: 200 }).bytes).toBeDefined();
+  });
+  it("M6: changed paths carry real key names from bodies, so no pull request line may print them (they are not among the fixed evidence words)", async () => {
+    const { readFileSync } = await import("node:fs");
+    for (const file of ["packages/broker/src/rovara-code/evidence-lines.ts", "packages/broker/src/rovara-code/proof-section.ts"]) expect(readFileSync(file, "utf8"), file).not.toMatch(/changedPaths/u);
+  });
+});

@@ -249,6 +249,7 @@ export function createE2EApplicationCliHost(input: { launchContext: E2EApplicati
     },
   };
 
+  const mediaWanted = resolved.suite.runtimeAdmissionContext.selectionInput.policy.capture.video === true;
   if (launchContext.selectedTarget.kind === "web") {
     // Screenshots and traces of failed cases follow the admitted capture policy and nothing else; with both off the case adapter is given no capture port at all.
     const screenshots = fileLedger.capture.enabled("screenshot");
@@ -275,7 +276,12 @@ export function createE2EApplicationCliHost(input: { launchContext: E2EApplicati
         // captures are scanned for. Either way it is registered with the executor parent like any session cookie (this context's responses, and the cookie jar when the case
         // closes), so the parent redacts it wherever it appears as text and a page that echoes it ends the run `credential-leak`; the orders-auth/v1 cookie is a session secret like
         // the form login's, and qualification pins no probe that echoes it.
-        if (screenshots) for (const cookie of state.cookies) fileLedger.registerSessionSecret(cookie.value);
+        // Every secret of the round is told to the ledger whenever something that can carry one is kept: a screenshot, or video and trace (Opus review C2). That is each cookie value and each localStorage value,
+        // so the parent's scan finds them in a trace's blobs and snapshots and in a video; a trace's own scrub learns the rest (login responses, custom auth headers, query tokens) from the trace itself.
+        if (screenshots || mediaWanted) {
+          for (const cookie of state.cookies) fileLedger.registerSessionSecret(cookie.value);
+          for (const item of state.localStorage) for (const entry of item.entries) fileLedger.registerSessionSecret(entry.value);
+        }
         await browserContext.addCookies(state.cookies.map((cookie) => ({ ...cookie })));
         for (const item of state.localStorage) {
           // Once per tab, before the page's own scripts, as Playwright's own storage state does it.

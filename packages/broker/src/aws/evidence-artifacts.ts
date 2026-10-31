@@ -1,6 +1,7 @@
 // Proof and evidence P6: the private store for evidence artifacts (screenshots of a strip, API samples, output tails, video, traces) and the one rule for reading them back.
 //
-// Store. Objects are content-addressed under the task's own owner and workspace, `private/<owner>/<workspace>/evidence/<sha256>`, written only when they are what their kind says: the bytes have the named digest,
+// Store. Objects are content-addressed UNDER THE TASK, `private/<owner>/<workspace>/evidence/<taskId>/<sha256>` (Opus review I4: byte-identical files of two tasks of one workspace are two objects, so deleting one task's
+// artifact never deletes another's and a pack can never name an object of another task), written only when they are what their kind says: the bytes have the named digest,
 // are within the kind's cap, carry the kind's magic bytes (JPEG, WebM `1A45DFA3`, ZIP `504B0304`), and a JSON sample or a text tail really parses. Each object is tagged `rovara-retention=<class>` (`evidence-short` or
 // `evidence-std`), which the artifact bucket's lifecycle rules expire (infra/lib/control-plane.ts); the tag is the only thing that tells an object's lifetime, so it is set on every write.
 //
@@ -15,10 +16,15 @@ import {
 } from "@agentx/contracts";
 
 export type EvidenceArtifactStore = Readonly<{ s3: Pick<S3Client, "send">; artifactBucketName: string }>;
-export type EvidenceOwner = Readonly<{ ownerKey: string; workspaceId: string }>;
+export type EvidenceOwner = Readonly<{ ownerKey: string; workspaceId: string; taskId: string }>;
 
-export const evidenceArtifactKey = (ownerKey: string, workspaceId: string, sha256: string): string => `private/${ownerKey}/${workspaceId}/evidence/${sha256}`;
-const KEY_SHAPE = /^private\/[^/]+\/[^/]+\/evidence\/[a-f0-9]{64}$/u;
+export const evidenceArtifactKey = (ownerKey: string, workspaceId: string, taskId: string, sha256: string): string => `private/${ownerKey}/${workspaceId}/evidence/${taskId}/${sha256}`;
+const KEY_SHAPE = /^private\/[^/]+\/[^/]+\/evidence\/[^/]+\/[a-f0-9]{64}$/u;
+const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
+const keyOf = (owner: EvidenceOwner, sha256: string): string => {
+  if (!TASK_ID.test(owner.taskId)) throw new Error("an evidence key names its task");
+  return evidenceArtifactKey(owner.ownerKey, owner.workspaceId, owner.taskId, sha256);
+};
 const SHA = /^[a-f0-9]{64}$/u;
 const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
@@ -57,7 +63,7 @@ export async function storeEvidenceArtifacts(store: EvidenceArtifactStore, owner
     if ((item.sha256 !== undefined && item.sha256 !== digest) || !evidenceBytesAreKind(item.kind, item.bytes)) continue;
     const retentionClass = EVIDENCE_ARTIFACT_RETENTION[item.kind];
     if (retentionClass === "evidence-record") continue;
-    await store.s3.send(new PutObjectCommand({ Bucket: store.artifactBucketName, Key: evidenceArtifactKey(owner.ownerKey, owner.workspaceId, digest), Body: item.bytes,
+    await store.s3.send(new PutObjectCommand({ Bucket: store.artifactBucketName, Key: keyOf(owner, digest), Body: item.bytes,
       ContentType: EVIDENCE_ARTIFACT_CONTENT_TYPES[item.kind], Metadata: { sha256: digest, kind: item.kind }, Tagging: evidenceTagging(retentionClass) }));
     stored.set(digest, { kind: item.kind, sha256: digest, bytes: item.bytes.byteLength, retentionClass });
   }
@@ -70,7 +76,7 @@ export async function statEvidenceArtifacts(store: EvidenceArtifactStore, owner:
   for (const digest of new Set(digests)) {
     if (!SHA.test(digest)) continue;
     try {
-      const head = await store.s3.send(new HeadObjectCommand({ Bucket: store.artifactBucketName, Key: evidenceArtifactKey(owner.ownerKey, owner.workspaceId, digest) })) as { ContentLength?: number; Metadata?: Record<string, string> };
+      const head = await store.s3.send(new HeadObjectCommand({ Bucket: store.artifactBucketName, Key: keyOf(owner, digest) })) as { ContentLength?: number; Metadata?: Record<string, string> };
       const kind = head.Metadata?.kind;
       if (kind !== undefined && kind in EVIDENCE_ARTIFACT_RETENTION && head.Metadata?.sha256 === digest && Number.isSafeInteger(head.ContentLength)) held.set(digest, { kind: kind as EvidenceArtifactKind, bytes: head.ContentLength! });
     } catch { /* not held */ }
@@ -79,14 +85,17 @@ export async function statEvidenceArtifacts(store: EvidenceArtifactStore, owner:
 }
 
 /**
- * Deletes artifacts the pack withheld (a video whose gate failed, a file of a candidate that was sent back), so a withheld file cannot be fetched by its hash. Returns the digests it could not delete,
- * for the caller to retry or alarm on; it never throws for one object.
+ * Deletes artifacts the pack withheld (a video whose gate failed, a file of a candidate that was sent back), so a withheld file cannot be fetched by its hash. Returns the digests it could not delete
+ * (and hands each to `onFailed`, the caller's durable retry queue with an alarm); it never throws for one object. Only THIS task's objects can be named by the key.
  */
-export async function deleteEvidenceArtifacts(store: EvidenceArtifactStore, owner: EvidenceOwner, refs: readonly Pick<ArtifactRef, "sha256">[]): Promise<string[]> {
+export async function deleteEvidenceArtifacts(store: EvidenceArtifactStore, owner: EvidenceOwner, refs: readonly Pick<ArtifactRef, "sha256">[], onFailed?: (failure: { key: string; sha256: string }) => void): Promise<string[]> {
   const failed: string[] = [];
   for (const ref of refs) {
     if (!SHA.test(ref.sha256)) continue;
-    try { await store.s3.send(new DeleteObjectCommand({ Bucket: store.artifactBucketName, Key: evidenceArtifactKey(owner.ownerKey, owner.workspaceId, ref.sha256) })); } catch { failed.push(ref.sha256); }
+    try { await store.s3.send(new DeleteObjectCommand({ Bucket: store.artifactBucketName, Key: keyOf(owner, ref.sha256) })); } catch {
+      failed.push(ref.sha256);
+      try { onFailed?.({ key: keyOf(owner, ref.sha256), sha256: ref.sha256 }); } catch { /* the retry queue failing changes nothing here */ }
+    }
   }
   return failed;
 }
@@ -114,7 +123,7 @@ export type EvidenceDownload =
 
 export type EvidenceDownloadDependencies = Readonly<{
   /** The caller's right to the task, checked on every request. Throws (or resolves to undefined) for someone who may not read it; says nothing else about the task. */
-  authorize(): Promise<{ ownerKey: string; workspaceId: string; candidateDigest: string | undefined; view: EvidenceView | undefined } | undefined>;
+  authorize(): Promise<{ ownerKey: string; workspaceId: string; taskId: string; candidateDigest: string | undefined; view: EvidenceView | undefined } | undefined>;
   store: EvidenceArtifactStore;
   /** A presigned GET for the key, valid for the seconds given, answered with the given response headers. */
   presign(input: { key: string; contentType: string; disposition: "inline" | "attachment"; expiresInSeconds: number }): Promise<string>;
@@ -136,7 +145,8 @@ export async function serveEvidenceArtifact(deps: EvidenceDownloadDependencies, 
   if (task === undefined) return { status: 403 };
   const link: ArtifactLink | undefined = servableEvidenceArtifact(task.view, task.candidateDigest, sha256);
   if (link === undefined) return { status: 404 };
-  const key = evidenceArtifactKey(task.ownerKey, task.workspaceId, sha256);
+  let key: string;
+  try { key = keyOf({ ownerKey: task.ownerKey, workspaceId: task.workspaceId, taskId: task.taskId }, sha256); } catch { return { status: 404 }; }
   const contentType = EVIDENCE_ARTIFACT_CONTENT_TYPES[link.kind];
   if (INLINE_KINDS.has(link.kind)) {
     const bytes = await readObject(deps.store, key, link.bytes);

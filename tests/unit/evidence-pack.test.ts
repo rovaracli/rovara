@@ -1,7 +1,7 @@
 // Proof and evidence P5: the broker builds the evidence pack from the worker's raw parts and its own check report. The raw file is untrusted: bound to the candidate digest, checked against the broker's
 // check outcomes and the artifact store, redacted again; whatever fails is dropped and named, and a drop never makes a check look better.
 import { describe, expect, it } from "vitest";
-import { EVIDENCE_ARTIFACT_RETENTION, EvidencePackSchema, EvidenceViewSchema, type ArtifactRef, type CheckEntry, type EvidenceArtifactKind, type EvidenceEnvironment } from "../../packages/contracts/src/evidence.js";
+import { EVIDENCE_ARTIFACT_RETENTION, consoleErrorsWords, EvidencePackSchema, EvidenceViewSchema, type ArtifactRef, type CheckEntry, type EvidenceArtifactKind, type EvidenceEnvironment } from "../../packages/contracts/src/evidence.js";
 import { buildEvidencePack, evidenceHref, evidenceViewOf, type EvidenceBuildInput, type StoredArtifact } from "../../packages/broker/src/rovara-code/evidence-pack.js";
 
 const sha = (letter: string) => letter.repeat(64);
@@ -12,7 +12,7 @@ const entry = (id: string, label: string, over: Partial<CheckEntry> = {}): Check
 const environment = (over: Partial<EvidenceEnvironment> = {}): EvidenceEnvironment => ({ tier: "sandbox", envRevision: 3, services: [{ name: "partner-scorer", mode: "mocked", fixtureRevision: 2, schemaVersion: 3, recordedAt: "2026-11-02T00:00:00.000Z" }], data: "synthetic", accounts: [{ profileId: "buyer", kind: "run_scoped" }], ...over });
 const tests = (over: Record<string, unknown> = {}) => ({ total: 4, passed: 3, failed: 0, skipped: 1, errored: 0, names: [{ name: "test_match.py::test_no_region", status: "passed", proof: "proves_change" }], newTests: ["test_match.py::test_no_region"], ...over });
 const raw = (over: Record<string, unknown> = {}) => JSON.stringify({ schemaVersion: 1, candidateDigest: DIGEST, checks: [{ checkId: "readiness:0", tests: tests(), coverage: { linesChanged: 48, linesCovered: 41, files: [{ path: "src/match.py", uncovered: [3, 4] }] } }], ...over });
-const ALL_OK = { companyAllows: { video: true, trace: true }, revocationConfirmed: true, tierAllowed: true };
+const ALL_OK = { companyAllows: { video: true, trace: true }, revocationConfirmed: true, tierAllowed: true, gate: { allowed: { video: true, trace: true }, reasons: {} } };
 const available = () => "available" as const;
 const stored = (...refs: ArtifactRef[]): Map<string, StoredArtifact> => new Map(refs.map((item) => [item.sha256, { kind: item.kind, bytes: item.bytes }]));
 const input = (over: Partial<EvidenceBuildInput> = {}): EvidenceBuildInput => ({
@@ -196,6 +196,18 @@ describe("artifacts", () => {
     rawText: raw({ api: [{ scenarioId: "rank", samples: [sample], diff: "none", changedPaths: [] }], browser: [browser(scenario)] }),
     storedArtifacts: stored(sample, shot, video, trace), ...over,
   }));
+  it("leaves consoleErrors out when none was measured (never a zero), keeps a count a worker really sent, and reads a pack saved before the field was optional (I5)", () => {
+    const unmeasured = buildEvidencePack(input({ rawText: raw({ browser: [{ scenarioId: "login", strip: { before: [], after: [] } }] }) })).pack?.browser[0];
+    expect(unmeasured).toBeDefined();
+    expect("consoleErrors" in unmeasured!).toBe(false);
+    expect(consoleErrorsWords(unmeasured!.consoleErrors)).toBe("not measured");
+    const measured = build({}, { consoleErrors: 3 }).pack?.browser[0];
+    expect(measured?.consoleErrors).toBe(3);
+    expect(consoleErrorsWords(0)).toBe("0 console errors");
+    expect(consoleErrorsWords(1)).toBe("1 console error");
+    expect(consoleErrorsWords(3)).toBe("3 console errors");
+    expect(EvidencePackSchema.safeParse({ ...build().pack, browser: [{ scenarioId: "login", strip: { before: [], after: [] }, consoleErrors: 0 }] }).success).toBe(true);
+  });
   it("keeps references the store really holds, and nothing else", () => {
     const built = build({ media: ALL_OK });
     expect(built.problems).toEqual([]);
@@ -225,6 +237,12 @@ describe("artifacts", () => {
     expect(reasons({ ...ALL_OK, tierAllowed: false })).toEqual(["tier_not_allowed", "tier_not_allowed"]);
     expect(reasons({ ...ALL_OK, companyAllows: { video: false, trace: false } })).toEqual(["company_setting_off", "company_setting_off"]);
     expect(reasons({ ...ALL_OK, revocationConfirmed: false })).toEqual(["revocation_not_confirmed", "revocation_not_confirmed"]);
+    // a caller that forgot the proof is a refusal, not a pass (Opus review I2)
+    expect(reasons({ ...ALL_OK, revocationConfirmed: undefined as never })).toEqual(["revocation_not_confirmed", "revocation_not_confirmed"]);
+    // the full publication gate decides too, including the data check the pack's own schema cannot make
+    expect(reasons({ ...ALL_OK, gate: { allowed: { video: false, trace: true }, reasons: { video: "data_not_synthetic" } } })).toEqual(["data_not_synthetic"]);
+    expect(reasons({ ...ALL_OK, gate: { allowed: { video: false, trace: false }, reasons: {} } })).toEqual(["data_not_synthetic", "data_not_synthetic"]);
+    expect(reasons({ ...ALL_OK, gate: undefined as never })).toEqual(["data_not_synthetic", "data_not_synthetic"]);
     expect(reasons(undefined)).toEqual(["tier_not_allowed", "tier_not_allowed"]);
     expect(reasons({ companyAllows: { video: true, trace: true }, revocationConfirmed: false, tierAllowed: false })).toEqual(["tier_not_allowed", "tier_not_allowed"]);
     // A shared environment with no run-scoped account at all cannot show its accounts were dead.

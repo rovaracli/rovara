@@ -3,8 +3,9 @@
 // left out and named. Whether a kept file is shown is not decided here: the evidence pack builder applies the gate (run-scoped accounts, tier, company setting, revocation proof) and the caller deletes the
 // files it withholds, so a withheld video cannot be fetched by its hash.
 import { createHash } from "node:crypto";
-import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_MAGIC, EVIDENCE_ARTIFACT_RETENTION, evaluateMediaGate, type ArtifactRef, type EvidenceRaw, type MediaGateInput, type MediaGateResult } from "@agentx/contracts";
+import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_MAGIC, EVIDENCE_ARTIFACT_RETENTION, evaluatePublicationGate, type ArtifactRef, type EvidenceRaw, type MediaGateInput, type MediaGateResult } from "@agentx/contracts";
 import { scrubTraceZip } from "@agentx/verifier";
+import type { buildEvidencePack } from "../rovara-code/evidence-pack.js";
 
 export interface MediaItem {
   scenarioId: string;
@@ -12,7 +13,7 @@ export interface MediaItem {
   bytes: Uint8Array;
 }
 
-export type MediaProblem = "not_that_kind" | "over_cap" | "unsafe_content" | "duplicate";
+export type MediaProblem = "not_that_kind" | "over_cap" | "unsafe_content" | "duplicate" | "gate_refused";
 
 export interface PreparedMedia {
   scenarioId: string;
@@ -31,14 +32,19 @@ export interface PreparedMediaResult {
 const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const hasMagic = (bytes: Uint8Array, hex: string) => hex.match(/../gu)!.every((pair, index) => bytes[index] === Number.parseInt(pair, 16));
 
-/** Holds each uploaded file to its kind and scrubs a trace again. `contains` is the run's credential scan in every spelling. One file of each kind a scenario. */
-export function prepareMediaArtifacts(items: readonly MediaItem[], options: { contains: (bytes: Uint8Array) => boolean }): PreparedMediaResult {
+/**
+ * Holds each uploaded file to its kind and scrubs a trace again. `contains` is the run's credential scan in every spelling. One file of each kind a scenario.
+ * `gate` is the FULL publication gate result and runs FIRST (Opus review I4): bytes of a kind the gate refuses are not read, scrubbed or returned, so a withheld video is never written to the store at all
+ * and there is nothing to delete afterwards. A caller that has no gate result cannot call this.
+ */
+export function prepareMediaArtifacts(items: readonly MediaItem[], options: { contains: (bytes: Uint8Array) => boolean; gate: Pick<MediaGateResult, "allowed"> }): PreparedMediaResult {
   const rows = new Map<string, PreparedMedia>();
   const artifacts = new Map<string, { ref: ArtifactRef; data: Uint8Array }>();
   const problems: PreparedMediaResult["problems"] = [];
   for (const item of items) {
     const kind = item.kind === "video" ? "webm" : "trace_zip";
     const problem = (name: MediaProblem) => { problems.push({ scenarioId: item.scenarioId, kind: item.kind, problem: name }); };
+    if (options.gate.allowed[item.kind] !== true) { problem("gate_refused"); continue; }
     const row = rows.get(item.scenarioId) ?? { scenarioId: item.scenarioId };
     if (row[item.kind] !== undefined) { problem("duplicate"); continue; }
     if (!(item.bytes instanceof Uint8Array) || !hasMagic(item.bytes, EVIDENCE_ARTIFACT_MAGIC[kind]!)) { problem("not_that_kind"); continue; }
@@ -62,15 +68,16 @@ export function attachMedia(browser: NonNullable<EvidenceRaw["browser"]>, prepar
     return media === undefined ? row : { ...row, ...(media.video === undefined ? {} : { video: media.video }), ...(media.trace === undefined ? {} : { trace: media.trace }) };
   });
   for (const media of byScenario.values()) {
-    out.push({ scenarioId: media.scenarioId, strip: { before: [], after: [] }, consoleErrors: 0, ...(media.video === undefined ? {} : { video: media.video }), ...(media.trace === undefined ? {} : { trace: media.trace }) });
+    out.push({ scenarioId: media.scenarioId, strip: { before: [], after: [] }, ...(media.video === undefined ? {} : { video: media.video }), ...(media.trace === undefined ? {} : { trace: media.trace }) });
   }
   return out;
 }
 
 /**
- * The `media` input of `buildEvidencePack`, from the approved environment and the revocation proof. At publication the proof is a real boolean; the pack keeps a file only when it is `true`.
+ * The `media` input of `buildEvidencePack` AND the gate result for `prepareMediaArtifacts`, from the approved environment and the revocation proof, both from one publication-gate evaluation
+ * (Opus review I2). `revocationConfirmed` must be `true`; `undefined` or `false` refuses every kind. The one result is used for both calls so they cannot disagree.
  */
-export function mediaInputFor(input: Omit<MediaGateInput, "revocationConfirmed"> & { revocationConfirmed: boolean }): { companyAllows: { video: boolean; trace: boolean }; revocationConfirmed: boolean; tierAllowed: boolean; gate: MediaGateResult } {
-  const gate = evaluateMediaGate(input);
-  return { companyAllows: { video: input.companyAllows.video, trace: input.companyAllows.trace }, revocationConfirmed: input.revocationConfirmed, tierAllowed: gate.tierAllowed, gate };
+export function publicationMediaFor(input: Omit<MediaGateInput, "revocationConfirmed"> & { revocationConfirmed: boolean | undefined }): { gate: MediaGateResult; media: NonNullable<Parameters<typeof buildEvidencePack>[0]["media"]> } {
+  const gate = evaluatePublicationGate(input);
+  return { gate, media: { companyAllows: { video: input.companyAllows.video, trace: input.companyAllows.trace }, revocationConfirmed: input.revocationConfirmed === true, tierAllowed: gate.tierAllowed, gate: { allowed: gate.allowed, reasons: gate.reasons } } };
 }

@@ -42,7 +42,7 @@ export const ApiSampleSchema = z
   .object({
     schemaVersion: z.literal(API_SAMPLE_SCHEMA_VERSION),
     method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-    path: z.string().min(1).max(300).regex(/^\/[\x21-\x7e]*$/u),
+    path: z.string().min(1).max(300).regex(/^\/[\x21-\x7e]*$/u).refine((path) => !path.includes("?") && !path.includes("#"), "a fixed path: no query and no fragment"),
     status: z.number().int().min(100).max(599),
     request: z.object({ headers: HeadersSchema, body: BodySchema }).strict(),
     response: z.object({ headers: HeadersSchema, body: BodySchema }).strict(),

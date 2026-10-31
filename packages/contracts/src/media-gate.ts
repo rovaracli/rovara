@@ -2,7 +2,7 @@
 // reliable, so they are kept only when the secrets in them are worthless: the accounts are run-scoped (made for the round and revoked after it), the data is synthetic, the tier lets the provisioner delete,
 // and the company has switched the less-safe option on. Every condition must hold; the first one that does not names the reason, in the design's order. Pure and browser-safe.
 //
-// Two checkpoints use it. At ADMISSION the broker asks `evaluateMediaGate` and sets the capture policy's `video` and `traces` from the answer (so an executor is never asked to record what may not be kept).
+// Two checkpoints use it (`evaluateMediaGate` and `evaluatePublicationGate`). At ADMISSION the broker asks `evaluateMediaGate` and sets the capture policy's `video` and `traces` from the answer (so an executor is never asked to record what may not be kept).
 // At PUBLICATION the evidence pack asks again with the revocation proof (`revocationConfirmed`), and a file whose gate is not whole is deleted, not just hidden.
 import { provisionerIsRunScoped, type TestEnvAccount } from "./test-environment.js";
 import type { EVIDENCE_WITHHELD_REASONS } from "./evidence.js";
@@ -20,7 +20,7 @@ export interface MediaGateInput {
   data: "synthetic" | "unknown" | "real";
   /** The company's less-safe settings (a second person, a fresh sign-in), per kind. */
   companyAllows: { video: boolean; trace: boolean };
-  /** Only at publication: the broker's own proof that the accounts were revoked and a login then failed. Absent at admission. */
+  /** Only at publication: the broker's own proof that the accounts were revoked, their sessions ended and replayed credentials refused. Absent at admission (not known yet); `evaluatePublicationGate` requires `true`. */
   revocationConfirmed?: boolean | undefined;
 }
 
@@ -29,25 +29,23 @@ export interface MediaGateResult {
   allowed: Record<MediaKind, boolean>;
   /** The reason a kind that was asked for is refused: the first failing condition. */
   reasons: Partial<Record<MediaKind, MediaWithheldReason>>;
-  /** The tier rule on its own, for the evidence pack's `media.tierAllowed`. */
+  /** The tier rule on its own. */
   tierAllowed: boolean;
 }
 
-/** Provisioners that DELETE the account they made (a Cognito test user, the customer's own hook). `seed_command` accounts only die with the sandbox, so they do not make a shared tier safe. */
-const DELETING = new Set<TestEnvAccount["provisioner"]>(["cognito_test_pool", "http_hook"]);
-
 /**
- * Tier 1 (sandbox) and tier 2 (preview) always pass this rule: the app and its data are the round's own and are destroyed with it. Tier 3 (shared) passes only when every account is made by a provisioner
- * that deletes it, because the shared environment outlives the round.
+ * Tier rule (Opus review I1). Video and traces are kept ONLY where the app and its data are the round's own and die with it: tier 1 (sandbox) and tier 2 (a per-task preview environment). A shared
+ * pre-prod environment (tier 3) is refused whatever its accounts: a trace keeps every response body and the on-screen text, which there include other users' records, admin pages, third-party keys in
+ * bundles and internal hostnames, none of which revocation neutralises, and until the data guard (E10) MEASURES synthetic data the "synthetic" input is only the environment's own declaration.
+ * OWNER-VISIBLE DEFAULT: media is off in tier 3 for now. Turning it on needs E10's measured data check plus a per-environment secret list registered with the redactor, and a decision recorded in DECISIONS.md.
  */
-export function mediaTierAllowed(tier: MediaGateInput["tier"], accounts: MediaGateInput["accounts"]): boolean {
-  if (tier === "sandbox" || tier === "preview") return true;
-  return accounts.length > 0 && accounts.every((account) => DELETING.has(account.provisioner));
+export function mediaTierAllowed(tier: MediaGateInput["tier"]): boolean {
+  return tier === "sandbox" || tier === "preview";
 }
 
 export function evaluateMediaGate(input: MediaGateInput): MediaGateResult {
   const runScoped = input.accounts.length > 0 && input.accounts.every((account) => provisionerIsRunScoped(account.provisioner));
-  const tierAllowed = mediaTierAllowed(input.tier, input.accounts);
+  const tierAllowed = mediaTierAllowed(input.tier);
   const allowed: Record<MediaKind, boolean> = { video: false, trace: false };
   const reasons: MediaGateResult["reasons"] = {};
   for (const kind of ["video", "trace"] as const) {
@@ -63,4 +61,12 @@ export function evaluateMediaGate(input: MediaGateInput): MediaGateResult {
     if (reason === undefined) allowed[kind] = true; else reasons[kind] = reason;
   }
   return { allowed, reasons, tierAllowed };
+}
+
+/**
+ * The gate at PUBLICATION (Opus review I2): the same conditions as admission, re-applied in full (accounts, tier, the data check, the company setting), and the revocation proof must be exactly `true`.
+ * Anything else, an `undefined` from a caller that forgot it included, is "revocation_not_confirmed". Admission may leave the proof open because it is not known yet; publication may not.
+ */
+export function evaluatePublicationGate(input: Omit<MediaGateInput, "revocationConfirmed"> & { revocationConfirmed: boolean | undefined }): MediaGateResult {
+  return evaluateMediaGate({ ...input, revocationConfirmed: input.revocationConfirmed === true });
 }
