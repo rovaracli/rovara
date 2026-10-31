@@ -88,6 +88,17 @@ describe("validation: read-only, enforced before the call", () => {
     const result = await validateContextSource(environment({ registeredServer: async () => ({ status: "awaiting_approval" }) }), ORG, registered);
     expect(result.problems.join(" ")).toMatch(/not been approved/);
   });
+  it("ME-16: refuses a package-run server while package-run servers are off, and when the install does not say", async () => {
+    const registered = source({ server: { kind: "registered_server", serverId: "mcpabc12345" } });
+    const stdio = async () => ({ status: "approved" as const, transport: "stdio" as const });
+    for (const over of [{ stdioAvailable: () => false }, {}]) {
+      const result = await validateContextSource(environment({ registeredServer: stdio, ...over }), ORG, registered);
+      expect(result.problems.join(" "), JSON.stringify(over)).toMatch(/runs from a package.*switched off/);
+    }
+    // the same server is fine when the install runs package-run servers, and an address-based server never depends on the switch
+    expect((await validateContextSource(environment({ registeredServer: stdio, stdioAvailable: () => true }), ORG, registered)).problems).toEqual([]);
+    expect((await validateContextSource(environment({ registeredServer: async () => ({ status: "approved", transport: "http" }), stdioAvailable: () => false }), ORG, registered)).problems).toEqual([]);
+  });
   it("fails closed when the server cannot be listed, and says nothing about why", async () => {
     const result = await validateContextSource(environment({ discoverTools: async () => { throw new Error("connect ECONNREFUSED 10.1.2.3:443"); } }), ORG, source());
     expect(result.problems).toEqual(["server: Rovara could not list that server's tools right now; try again"]);

@@ -3,7 +3,9 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OrgRole } from "../../packages/contracts/src/org-node.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
-import { createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { dynamoMcpServerStore, summariseProbe } from "../../packages/broker/src/context-sources/mcp-servers.js";
+import { orgMcpServerSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -14,31 +16,33 @@ const ENV = "staging";
 const person = (digit: string, name: string): Developer => ({ developerId: digit.repeat(64), name, provider: "oidc", sessionId: `s-${name.toLowerCase()}` });
 const DANA = person("1", "Dana"); // org admin
 const MAX = person("3", "Max"); // member
-const orgResolver: OrgResolver = async () => TEST_ORG;
+const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as typeof TEST_ORG;
+const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
 
 beforeAll(async () => { await loadSlackBroker(); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
-async function setup(options: { connectionSecrets?: boolean } = {}) {
+async function setup(options: { connectionSecrets?: boolean; cloud?: boolean; people?: Array<[Developer, OrgRole, typeof TEST_ORG?]> } = {}) {
   const fake = new FakeOrgSecrets({ env: ENV, now: Date.now });
   const secrets = new OrgSecrets({ env: ENV, roleArn: FAKE_CONNECTOR_ROLE_ARN, sts: fake.sts, secretsFor: fake.secretsFor, now: Date.now });
   const holder: { db?: { send(command: unknown): Promise<unknown> } } = {};
   const h = await createDeveloperTaskBroker({
     orgResolver, register: false,
     brokerExtra: {
+      ...(options.cloud === true ? { cloud: true } : {}),
       agents: { projectMembers: new FakeProjectMembers() },
       ...(options.connectionSecrets === false ? {} : { orgConnections: { documentClient: { send: (command: unknown) => holder.db!.send(command) }, tableName: "state", env: ENV, secrets, now: Date.now } }),
     },
   });
   holder.db = h.db;
-  for (const [who, role] of [[DANA, "admin"], [MAX, "member"]] as Array<[Developer, OrgRole]>) {
+  for (const [who, role, orgId] of options.people ?? [[DANA, "admin"], [MAX, "member"]] as Array<[Developer, OrgRole, typeof TEST_ORG?]>) {
     h.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
     h.db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: who.provider, displayName: who.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
     await h.orgOf(who);
-    seedMembership(h.db, who.developerId, { orgId: TEST_ORG, role });
+    seedMembership(h.db, who.developerId, { orgId: orgId ?? TEST_ORG, role });
   }
-  const call = async (who: Developer, method: string, path: string) => h.dev(who, method, path, undefined) as Promise<{ status: number; body: { error?: { code: string; message: string }; servers?: unknown[]; stdioAvailable?: boolean } }>;
-  return { h, call };
+  const call = async (who: Developer, method: string, path: string, body?: Record<string, unknown>) => h.dev(who, method, path, body) as Promise<{ status: number; body: { error?: { code: string; message: string }; servers?: unknown[]; stdioAvailable?: boolean } }>;
+  return { h, call, fake, secrets };
 }
 
 const SOURCES = "/v1/app/projects/payments/context-sources";
@@ -88,5 +92,26 @@ describe("the lane E routes in a real handler", () => {
       expect(reply.status, path).toBe(404);
       expect(reply.body.error?.message, path).toMatch(NOT_SET_UP);
     }
+  });
+});
+
+describe("closing an org (ME-16)", () => {
+  it("removes the org's MCP servers and schedules the deletion of their tokens, and leaves another org's alone", async () => {
+    vi.stubEnv("ROVARA_EDITION", "enterprise");
+    const START = Date.now();
+    const { h, call, fake, secrets } = await setup({ cloud: true, people: [[MAYA, "owner"], [OMAR, "owner", ORG_B]] });
+    const OTHER = ORG_B;
+    const store = dynamoMcpServerStore({ documentClient: h.db, tableName: "state" });
+    const entry = (serverId: string) => ({ serverId, label: "SIM", status: "approved" as const, transport: { kind: "http" as const, address: `https://${serverId}.corp.example/mcp` }, probe: summariseProbe([], START), requestedBy: "dev1", requestedAt: "2026-11-01T10:00:00Z", hasSecret: true, secretVersion: "v1" });
+    for (const [org, id] of [[TEST_ORG, "mcpone000001"], [TEST_ORG, "mcptwo000002"], [OTHER, "mcpoth000003"]] as const) {
+      await store.create(org, entry(id));
+      await secrets.put(org, orgMcpServerSecretName("staging", org, id), "tok");
+    }
+    const left = await call(MAYA, "POST", "/v1/app/org/leave");
+    expect(left.status, JSON.stringify(left.body)).toBe(200);
+    expect(await store.list(TEST_ORG)).toEqual([]);
+    for (const id of ["mcpone000001", "mcptwo000002"]) expect(fake.stored(orgMcpServerSecretName("staging", TEST_ORG, id))!.deleteAt, id).toBeGreaterThan(START);
+    expect((await store.list(OTHER)).map((item) => item.serverId)).toEqual(["mcpoth000003"]);
+    expect(fake.stored(orgMcpServerSecretName("staging", OTHER, "mcpoth000003"))!.deleteAt).toBeUndefined();
   });
 });

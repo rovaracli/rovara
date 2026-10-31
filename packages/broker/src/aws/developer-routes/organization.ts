@@ -41,6 +41,7 @@ import { decidingOf, type SessionRouteDependencies } from "../../agent-sessions/
 import { closeOrgSessions, stopOrgSessions } from "../../agent-sessions/lifecycle.js";
 import { stopSession } from "../../agent-sessions/stop.js";
 import { clearOrgConnections } from "../../connections/store.js";
+import { clearOrgMcpServers } from "../../context-sources/mcp-servers.js";
 import { CLOSE_STOP_BUDGET_MS, type DeveloperCaller, type DeveloperRouteDependencies } from "./types.js";
 import { bodyError, signInStoreOf } from "./common.js";
 import { errorName } from "./identity-lambda.js";
@@ -287,7 +288,10 @@ export async function leaveOrganization(deps: DeveloperRouteDependencies, caller
   if (sole && deps.cloud !== true) throw agentXError("LAST_OWNER", LAST_OWNER_MESSAGE);
   if (sole) {
     const connections = deps.orgConnections ?? deps.agents?.connections;
-    const clearConnections = deps.closeOrgHooks?.clearConnections ?? (connections === undefined ? undefined : (orgId: OrgId) => clearOrgConnections({ store: connections }, orgId));
+    const clearOwnConnections = deps.closeOrgHooks?.clearConnections ?? (connections === undefined ? undefined : (orgId: OrgId) => clearOrgConnections({ store: connections }, orgId));
+    // ME-16: the org's MCP servers and their tokens go with it, in the same step as its connections (a no-op where the install has no registered servers).
+    const mcpServers = deps.agents?.mcpServers;
+    const clearConnections = mcpServers === undefined ? clearOwnConnections : async (orgId: OrgId) => { await clearOwnConnections?.(orgId); await clearOrgMcpServers(mcpServers, orgId); };
     const triggers = deps.agents?.triggers;
     const clearTriggers = deps.closeOrgHooks?.clearTriggers ?? (triggers === undefined ? undefined : (orgId: OrgId) => deleteOrgTriggers({ triggers, ...(deps.agents?.triggerSchedules === undefined ? {} : { triggerSchedules: deps.agents.triggerSchedules }) }, orgId));
     const eventHooks = deps.agents?.eventHooks;

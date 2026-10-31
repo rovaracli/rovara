@@ -134,8 +134,10 @@ export function sourceEnvironment(deps: ServerPortDependencies & { port: Context
     },
     registeredServer: async (orgId, serverId) => {
       const entry = await deps.servers.get(orgId, serverId);
-      return entry === undefined ? undefined : { status: entry.status };
+      return entry === undefined ? undefined : { status: entry.status, transport: entry.transport.kind };
     },
+    // A package-run server is offered and saved only where the install runs them (Enterprise, switched on), however it is stored (ME-16).
+    stdioAvailable: () => stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled }),
     discoverTools: async (orgId, server) => {
       if (deps.port.listAll === undefined) throw new Error("no tool listing");
       return deps.port.listAll(orgId, server, AbortSignal.timeout(15_000));

@@ -69,7 +69,9 @@ export interface SourceEnvironment {
   /** The org connection, if it is this org's. */
   connection(orgId: OrgId, connectionId: string): Promise<{ type: string; access: "read" | "read_write" } | undefined>;
   /** The approved MCP server entry (see mcp-servers.ts), if it is this org's. */
-  registeredServer(orgId: OrgId, serverId: string): Promise<{ status: "approved" | "awaiting_approval" | "disabled" } | undefined>;
+  registeredServer(orgId: OrgId, serverId: string): Promise<{ status: "approved" | "awaiting_approval" | "disabled"; /** Absent: a server with an address. */ transport?: "http" | "stdio" } | undefined>;
+  /** Whether this install runs servers from a package. Absent counts as no: a package-run server is then not offered and not saved (ME-16). */
+  stdioAvailable?(): boolean;
   /** The tools the source's server lists now. It throws when the server cannot be reached; the message is not shown. */
   discoverTools(orgId: OrgId, server: ContextSourceServer): Promise<DiscoveredTool[]>;
   /** Whether a live check at the source with the viewer's own identity exists for this source (`source_acl` needs it). */
@@ -111,6 +113,7 @@ export async function validateContextSource(env: SourceEnvironment, orgId: OrgId
     const server = await env.registeredServer(orgId, source.server.serverId);
     if (server === undefined) problems.push("server: that MCP server is not registered in this organisation");
     else if (server.status !== "approved") problems.push("server: that MCP server has not been approved by an admin");
+    else if (server.transport === "stdio" && env.stdioAvailable?.() !== true) problems.push("server: that MCP server runs from a package, which is switched off on this install; choose a server that has an address");
   }
   if (problems.length > 0) return { problems, secondAdminReasons, source };
 

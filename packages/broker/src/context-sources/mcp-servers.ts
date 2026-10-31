@@ -284,6 +284,22 @@ export async function disableMcpServer(deps: McpServerDependencies, actor: McpSe
   const result = await deps.store.decide({ orgId: actor.orgId, serverId, from: entry.status, to: "disabled", by: actor.developerId, at: new Date(deps.now()).toISOString() });
   if (result === "stale") throw agentXError("CHANGE_STALE", "That server changed while this was decided. Reload the list.");
   await told(deps, { action: "mcp_server.disabled", actor, serverId, label: entry.label });
+  // ME-16: a disabled server is never turned back on, so its token has no further use: delete it now. The server is already off (the allow-list reads the entry at every call); if the delete
+  // fails the admin is told and removing the server tries again.
+  if (entry.hasSecret === true) {
+    try { await deps.secrets.remove(actor.orgId, serverId); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "The server is turned off, but its token could not be deleted just now. Remove the server to try again."); }
+  }
+}
+
+/**
+ * What closing an org does to its MCP servers (ME-16): every entry and every token of the org goes, in any status, and no other org's. The token is deleted first and the entry after,
+ * so a failure leaves the entry for the next run; running it again after a stop part-way finishes the rest.
+ */
+export async function clearOrgMcpServers(deps: Pick<McpServerDependencies, "store" | "secrets">, orgId: OrgId): Promise<void> {
+  for (const entry of await deps.store.list(orgId)) {
+    if (entry.hasSecret === true) await deps.secrets.remove(orgId, entry.serverId);
+    await deps.store.remove(orgId, entry.serverId);
+  }
 }
 
 export async function removeMcpServer(deps: McpServerDependencies, actor: McpServerActor, serverId: string): Promise<void> {
