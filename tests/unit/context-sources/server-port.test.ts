@@ -116,7 +116,7 @@ describe("the settings view of the world", () => {
 describe("testing a pasted address", () => {
   const listed = [SEARCH_TOOL];
   it("pins the connection through the probe guard and lists the tools", async () => {
-    const list = vi.fn(async () => listed);
+    const list = vi.fn((input: unknown) => Promise.resolve(input === undefined ? [] : listed));
     const guard = vi.fn(async () => (async () => new Response("")));
     const tools = await gatewayProber({ guard, list: list }).http("https://sim.corp.example/mcp", undefined);
     expect(tools.map((tool) => tool.name)).toEqual(["search_tickets"]);
