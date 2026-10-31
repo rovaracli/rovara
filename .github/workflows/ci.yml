@@ -71,6 +71,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+        env:
+          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
+          NODE_OPTIONS: --max-old-space-size=6144
       # The stricter type check (the programs in tsconfig.lint/, which also cover tests/ and scripts/)
       # may not add errors beyond tests/typecheck-baseline.json (issue #50, scripts/typecheck-baseline.ts).
       # On the public repository a pull request runs only the programs its changed files can affect
@@ -82,6 +85,9 @@ jobs:
       - name: Stricter type check (every program)
         if: github.repository == 'PrepLabsAI/Rovara-cloud' || github.event_name != 'pull_request'
         run: npm run typecheck:all
+        env:
+          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
+          NODE_OPTIONS: --max-old-space-size=6144
       # The full repository, on every run on both repositories, with the same config and rules as `eslint .`. One eslint process over the whole
       # repository needed about 14 GB (13.8 GB measured) and ran out of memory on the 8 GB runner (C90), so scripts/lint-shards.ts lints one TypeScript
       # program of tsconfig.lint/ at a time (the programs the stricter type check uses), then the web directories, then everything else, each in its own
@@ -119,6 +125,9 @@ jobs:
       - run: npm ci
       # The packages import each other through their built output, which `npm run typecheck` used to leave behind.
       - run: npm run build
+        env:
+          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
+          NODE_OPTIONS: --max-old-space-size=6144
       - run: npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
   release:
@@ -136,6 +145,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+        env:
+          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
+          NODE_OPTIONS: --max-old-space-size=6144
       - run: npm run build:web
       - run: npm run infra:synth
       - name: Web builds are reproducible
@@ -215,6 +227,9 @@ jobs:
       - run: npm ci
       # The packages import each other through their built output.
       - run: npm run build
+        env:
+          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
+          NODE_OPTIONS: --max-old-space-size=6144
       # The executor as the host runs it (the pinned seccomp profile, every capability dropped, read-only, no network), from the one definition the release path and
       # test-deploy use too. The smoke check fails unless Chromium's renderer is sandboxed.
       - name: Smoke-test the executor image without a network
@@ -295,6 +310,9 @@ jobs:
       - run: npm ci
       # The mock cell reuses broker guards and their package dependencies.
       - run: npx tsc -b
+        env:
+          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
+          NODE_OPTIONS: --max-old-space-size=6144
       - run: npm run build:web
       - run: npx playwright install --with-deps chromium firefox webkit
       - run: npx playwright test -c tests/web-e2e/playwright.config.ts
