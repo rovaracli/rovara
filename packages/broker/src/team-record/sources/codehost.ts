@@ -285,17 +285,25 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
     const seen = new Set<string>();
     targets = targets.filter(({ target }) => !seen.has(target.taskId) && seen.add(target.taskId));
     for (const { target, via, at, by } of targets.slice(0, 20)) {
-      // Who reverted it (LR-W1): the reverting pull request's author, or the account that pushed the revert commit. It rides on the revert row as its `actor` (never in a structured
-      // field), so an erase finds it and the learning side can tell a third party's revert from the task starter's own. Only a known member counts: a bot, an excluded account or an
-      // unknown account leaves the revert without a person, and a revert without a person is not a measured outcome.
-      const reverter = by === undefined || by.isBot || isExcluded(source, by.id, by.login) ? undefined : await deps.actors.resolve({ workspaceId: repo.workspaceId, project: target.project, system: repo.host, sourceId: by.id });
-      const reverterActor = reverter?.developerId === undefined || by === undefined ? {} : { actor: { sourceId: by.id, developerId: reverter.developerId, trust: reverter.trust } };
+      // Who reverted it (LR-W1): the reverting pull request's author, or the account that pushed the revert commit. The TASK's outcome ("reverted") is task data and is always recorded
+      // with no person on it. The reverter is kept on a SEPARATE person-link row (`rovara.reverted_by`, the person as that row's `actor`, never in a structured field), which an
+      // erase of that person deletes with their other rows. Only a company member counts: a bot, an excluded account, an outsider, an unknown account, an erased one, or a resolver
+      // that fails leaves the revert without a person (an outcome nobody measured), and the outcome rows are recorded anyway.
+      let reverter: NonNullable<RecordDraft["actor"]> | undefined;
+      if (by !== undefined && !by.isBot && !isExcluded(source, by.id, by.login)) {
+        try {
+          const resolved = await deps.actors.resolve({ workspaceId: repo.workspaceId, project: target.project, system: repo.host, sourceId: by.id });
+          if (resolved.developerId !== undefined && resolved.trust === "member") reverter = { sourceId: resolved.developerId, developerId: resolved.developerId, trust: "member" };
+        } catch {
+          log("record.reverter_unresolved", { host: repo.host });
+        }
+      }
       const common = {
         workspaceId: repo.workspaceId, project: target.project, repo: repo.fullName, source: sourceOf(repo), scope: repoScope(repo), occurredAt: at, retention: retention,
         audience: audienceOf(repo, at), links: linksOf(target.url),
       };
       await write({
-        ...common, kind: "github.revert", trust: "system", ...reverterActor,
+        ...common, kind: "github.revert", trust: "system",
         sourceRef: { system: repo.host, id: `${repo.fullName}:revert:${target.taskId}`, url: target.url, version: "1" },
         structured: scalars({ taskId: target.taskId, prNumber: target.number, revertedBy: via }),
       }, result);
@@ -304,6 +312,13 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
         sourceRef: { system: "rovara", id: `task:${target.taskId}:closed`, url: target.url, version: "reverted" },
         structured: scalars({ taskId: target.taskId, outcome: "reverted", revertedBy: via }),
       }, result);
+      if (reverter !== undefined) {
+        await write({
+          ...common, kind: "rovara.reverted_by", trust: "member", source: "rovara", actor: reverter,
+          sourceRef: { system: "rovara", id: `task:${target.taskId}:reverted_by`, url: target.url, version: "1" },
+          structured: scalars({ taskId: target.taskId }),
+        }, result);
+      }
       if (deps.trackRecord !== undefined) {
         // Once per task, however many deliveries tell of the revert; a failure gives the claim back so the next delivery retries.
         const key = `revert#${target.taskId}`;

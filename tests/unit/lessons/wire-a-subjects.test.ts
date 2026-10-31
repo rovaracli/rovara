@@ -61,6 +61,19 @@ describe("send-backs and reverts now count as measured outcomes, through the ref
     expect(await measured(base({ sendBacks: [{ id: "sb1", origin: "human", reasonText: "use the shared helper" }] }))).toBe(false);
     expect(await measured(base({ sendBacks: [{ id: "sb1", origin: "automatic" }] }))).toBe(false);
   });
+  it("design note: a send-back the lesson CITES makes its sender an author, so that send-back is not measured; one it does not cite still is", async () => {
+    const facts = base({ sendBacks: [{ id: "sb1", origin: "human", actorDeveloperId: "sam", actorTrust: "member", reasonText: "use the shared helper" }] });
+    const run = async (ids: string[]) => reflectSubject(
+      { model: new ScriptedModel([reply(candidateJson({ type: "fact", evidenceSpanIds: ids }))]), spend: new Spend(), audit: new Audit(), settings: settings(), edition: "public", now: new Clock().now },
+      buildTaskReflectSubject(facts));
+    // spans are ordered by priority: the human edit is S1, the send-back S2
+    const citingSendBack = (await run(["S1", "S2"])).drafts[0]!.provenance;
+    expect(citingSendBack.authors).toEqual(expect.arrayContaining(["sam"]));
+    expect(citingSendBack.measured).toBe(false);
+    const notCiting = (await run(["S1"])).drafts[0]!.provenance;
+    expect(notCiting.authors).not.toContain("sam");
+    expect(notCiting.measured).toBe(true);
+  });
   it("a send-back is not measured for a task nobody started (no initiator): fail closed", async () => {
     expect(await measured(base({ task: { developerId: "creator", agent: {} }, sendBacks: [{ id: "sb1", origin: "human", actorDeveloperId: "sam", actorTrust: "member", reasonText: "use the shared helper" }] }))).toBe(false);
   });

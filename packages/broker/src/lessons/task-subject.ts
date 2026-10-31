@@ -3,8 +3,10 @@
 // one place that fills them in:
 //   - `initiatorId`: the person who started the task. It comes from the TASK RECORD (`startedBy`, set by developer-tasks/start.ts), not from a Team record row, so no extra
 //     copy of a person's id is stored for it.
-//   - `revertedBy`: the person who reverted the change, from the actor on the `github.revert` row (team-record/sources/codehost.ts `revertsOf`). A bot or an unknown account has
-//     no actor there, so the revert has no person and does not count.
+//   - `revertedBy`: the person who reverted the change, from the actor on the task's `rovara.reverted_by` person-link row (team-record/sources/codehost.ts `revertsOf`). The revert's
+//     OUTCOME rows carry no person; a bot, an outsider, an erased or unknown account has no link row, so the revert has no person and does not count.
+//   - A send_back that a lesson cites as a span makes its sender an AUTHOR of that lesson (`reflect.ts`: authors are the member authors of the spans the lesson cites), so that
+//     send-back is not independent of the lesson and is not a measured outcome for it. Only send-backs the lesson does not cite count.
 //   - each human send-back becomes a `send_back` span whose `authorId` is the person who sent the task back (the actor on its `rovara.send_back` row).
 // Every id is a canonical developer id (the identity-linked id, never a Slack or GitHub account), trimmed. A missing id stays missing: the outcome is then not measured.
 import type { EvidenceSpan, ReflectSubject } from "./reflect-input.js";
@@ -55,7 +57,7 @@ export interface TaskSubjectFacts {
   outcome?: ReflectSubject["outcome"] | undefined;
   /** The task record's start fields. */
   task: TaskStartSource;
-  /** The `github.revert` row's actor, when the task's change was reverted. */
+  /** The actor of the task's `rovara.reverted_by` person-link row, when the task's change was reverted. */
   revert?: { actorDeveloperId?: string | undefined } | undefined;
   sendBacks: readonly SendBackFact[];
   /** The rest of the subject, as the caller worked it out (trusts, links, audience, the other spans). Nothing here may set `initiatorId` or `revertedBy`. */

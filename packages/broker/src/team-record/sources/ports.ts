@@ -49,7 +49,7 @@ export type RecordKind =
   | "slack.message" | "ticket.created" | "ticket.updated" | "ticket.comment"
   | "github.pr" | "github.review" | "github.review_comment" | "github.ci" | "github.revert"
   | "rovara.task" | "rovara.plan" | "rovara.send_back" | "rovara.review" | "rovara.human_edit"
-  | "rovara.merged" | "rovara.closed" | "rovara.remembered" | "rovara.ask";
+  | "rovara.merged" | "rovara.closed" | "rovara.reverted_by" | "rovara.remembered" | "rovara.ask";
 
 export type Retention = "A" | "B" | "C" | "D";
 
