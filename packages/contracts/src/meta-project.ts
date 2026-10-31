@@ -255,3 +255,20 @@ export type CreateProjectFromMetaBody = z.infer<typeof CreateProjectFromMetaBody
 export function isCreateFromMetaBody(body: unknown): boolean {
   return typeof body === "object" && body !== null && !Array.isArray(body) && Object.hasOwn(body, "metaRepository");
 }
+
+/**
+ * The meta repository a worker brings into the workspace beside the code (lane A, task A3). The prepare payload carries it next to the project, which no longer lists a meta
+ * repository that is not also code. `repository` is the minimum a clone needs (never the installation pins); `paths` are the knowledge files and folders to materialize, read-only, at the
+ * default branch's head. Sent only to a worker that lists `prepare.metaRepo`.
+ */
+export const PrepareMetaSchema = z.object({
+  repository: z.object({
+    name: AgentXNameSchema,
+    url: ConfigRepositoryUrlSchema,
+    path: RelativeWorkspacePathSchema,
+    defaultBranch: GitBranchNameSchema,
+    credentialRef: AgentXNameSchema,
+  }).strict(),
+  paths: z.array(KnowledgePathSchema).min(1).max(64).refine((paths) => new Set(paths).size === paths.length, "paths must be unique"),
+}).strict();
+export type PrepareMeta = z.infer<typeof PrepareMetaSchema>;
