@@ -6,7 +6,7 @@ import { isInfraPath, riskTierOf } from "../../packages/broker/src/decisions/ris
 import { isSafeRelativePath } from "../../packages/broker/src/decisions/text.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111";
-const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, taskId: TASK, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", openPath: `/s/ses_${"a".repeat(20)}`, ...extra });
+const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, taskId: TASK, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, ...extra });
 const proof = { proven: 3, passed: 1, failed: 0, notTested: 0 };
 
 const ITEMS: Record<DecisionKind, DecisionItem> = {
@@ -85,14 +85,14 @@ describe("risk tiers are deterministic and only go up", () => {
   it("tiers a spend by amount and a dependency by install scripts", () => {
     const spend = ITEMS.approve_spend as Extract<DecisionItem, { kind: "approve_spend" }>;
     expect([5, 10.01, 100, 100.01].map((amountUsd) => cardOf({ ...spend, amountUsd }).risk)).toEqual(["low", "medium", "medium", "high"]);
-    expect(cardOf({ ...(ITEMS.approve_dependency as DecisionItem), newInstallScripts: true } as DecisionItem).risk).toBe("high");
+    expect(cardOf({ ...(ITEMS.approve_dependency), newInstallScripts: true } as DecisionItem).risk).toBe("high");
   });
   it("uses the test environment's own tier and a company lock can raise a tier but never lower it", () => {
-    expect(cardOf({ ...(ITEMS.approve_test_env as DecisionItem), risk: "high" } as DecisionItem).risk).toBe("high");
+    expect(cardOf({ ...(ITEMS.approve_test_env), risk: "high" } as DecisionItem).risk).toBe("high");
     expect(cardOf(ITEMS.approve_plan, { approve_plan: "high" }).risk).toBe("high");
     expect(cardOf(ITEMS.approve_plan, { approve_plan: "medium" }).risk).toBe("medium");
     expect(cardOf(ITEMS.approve_setting, { approve_setting: "low" }).risk).toBe("high");
-    expect(cardOf({ ...(ITEMS.merge as DecisionItem), prRisk: "high" } as DecisionItem, { merge: "low" }).risk).toBe("high");
+    expect(cardOf({ ...(ITEMS.merge), prRisk: "high" } as DecisionItem, { merge: "low" }).risk).toBe("high");
     expect(cardOf(ITEMS.approve_dependency, { approve_dependency: "low" }).risk).toBe("medium");
   });
   it("fails closed when an input a kind needs is missing: no tier is guessed", () => {
@@ -124,17 +124,17 @@ describe("friction on the card", () => {
     expect(card.actions[0]?.label).toBe("Open to decide");
     expect(card.recommended.action).toBe("open");
     expect(card.friction).toEqual({ expandEvidenceFirst: true, freshSignIn: true, secondPerson: true });
-    expect(cardOf({ ...(ITEMS.approve_plan as DecisionItem), files: ["infra/x.ts"] } as DecisionItem).friction.secondPerson).toBe(false);
+    expect(cardOf({ ...(ITEMS.approve_plan), files: ["infra/x.ts"] } as DecisionItem).friction.secondPerson).toBe(false);
   });
   it("recommends looking first when the merge's evidence is bad", () => {
-    const card = cardOf({ ...(ITEMS.merge as DecisionItem), proof: { ...proof, failed: 1 } } as DecisionItem);
+    const card = cardOf({ ...(ITEMS.merge), proof: { ...proof, failed: 1 } } as DecisionItem);
     expect(card.recommended.action).toBe("open");
     expect(card.actions[0]?.kind).toBe("open");
   });
-  it("a question or a checks choice is answered on its own page (GET), never approved on the card", () => {
+  it("a question or a checks choice is answered on its own page: the card only opens it", () => {
     for (const kind of ["answer_question", "choose_checks"] as const) {
       const card = cardOf(ITEMS[kind]);
-      expect(card.actions.every((action) => action.kind !== "approve" && action.method === "GET")).toBe(true);
+      expect(card.actions.map((action) => [action.kind, action.method])).toEqual([["open", "GET"]]);
     }
   });
   it("no card has more than one approve and no action is bulk", () => {
@@ -147,14 +147,14 @@ describe("friction on the card", () => {
 });
 
 describe("links are same-origin relative paths only", () => {
-  it("accepts a path and refuses absolute, protocol-relative, backslash, dot-dot, spaced and control forms", () => {
-    expect(isSafeRelativePath("/s/ses_abc")).toBe(true);
+  it("accepts the contract's paths and refuses absolute, protocol-relative, backslash, dot-dot, spaced, encoded, colon and control forms", () => {
+    expect(isSafeRelativePath("/app/sessions/ses_abc")).toBe(true);
     expect(isSafeRelativePath("/v1/app/approve/apr_abc?x=1")).toBe(true);
-    for (const bad of ["https://evil.example/x", "//evil.example", "/\\evil.example", "/a\\b", "/a/../b", "/a b", "/a\nb", "/‮evil", "javascript:alert(1)", "evil", ""]) expect(isSafeRelativePath(bad), bad).toBe(false);
+    for (const bad of ["https://evil.example/x", "//evil.example", "/\\evil.example", "/app/a\\b", "/app/a/../b", "/app/a b", "/app/a\nb", "/app/\u202Eevil", "javascript:alert(1)", "evil", "", "/s/ses_abc", "/other/x", "/app//x", "/app/a:b", "/app/a%2Fb", "/app/x@y"]) expect(isSafeRelativePath(bad), bad).toBe(false);
   });
   it("drops a card whose open path is unsafe, counted and never shown", () => {
-    const unsafe = ["//evil.example/x", "/\\evil.example", "https://evil.example/x", "/a/../b"];
-    const projection = projectDecisionCards([...unsafe.map((openPath, index) => ({ ...ITEMS.approve_plan, subjectId: `p${String(index)}`, openPath }) as DecisionItem), ITEMS.merge]);
+    const unsafe = ["//evil.example/x", "/\\evil.example", "https://evil.example/x", "/app/a/../b", "/s/ses_x"];
+    const projection = projectDecisionCards([...unsafe.map((openPath, index) => ({ ...ITEMS.approve_plan, subjectId: `p${String(index)}`, openPath })), ITEMS.merge]);
     expect(projection.cards.map((card) => card.kind)).toEqual(["merge"]);
     expect(projection.dropped).toBe(unsafe.length);
   });
@@ -162,7 +162,7 @@ describe("links are same-origin relative paths only", () => {
     for (const card of projectDecisionCards(Object.values(ITEMS)).cards) for (const action of card.actions) expect(isSafeRelativePath(action.href), action.href).toBe(true);
   });
   it("drops an item with a bad id and a duplicate card", () => {
-    const projection = projectDecisionCards([{ ...ITEMS.merge, subjectId: "has space" } as DecisionItem, ITEMS.approve_plan, ITEMS.approve_plan]);
+    const projection = projectDecisionCards([{ ...ITEMS.merge, subjectId: "has space" }, ITEMS.approve_plan, ITEMS.approve_plan]);
     expect(projection.cards).toHaveLength(1);
     expect(projection.dropped).toBe(2);
   });
@@ -171,23 +171,23 @@ describe("links are same-origin relative paths only", () => {
 describe("standing rules", () => {
   const rule = { ruleId: "docs-only", at: "2026-10-30T11:00:00.000Z" };
   it("record a rule's answer on a low or medium card: answered_by_rule, no actions", () => {
-    const card = cardOf({ ...(ITEMS.approve_plan as DecisionItem), answeredByRule: rule } as DecisionItem);
+    const card = cardOf({ ...(ITEMS.approve_plan), answeredByRule: rule });
     expect(card.status).toBe("answered_by_rule");
     expect(card.answeredByRule).toEqual(rule);
     expect(card.actions).toEqual([]);
   });
   it("never answer a high card: the rule is ignored and the card stays pending with 'open to decide'", () => {
-    const card = cardOf({ ...(ITEMS.approve_setting as DecisionItem), answeredByRule: rule } as DecisionItem);
+    const card = cardOf({ ...(ITEMS.approve_setting), answeredByRule: rule });
     expect(card.status).toBe("pending");
     expect(card.answeredByRule).toBeUndefined();
     expect(card.actions.map((action) => action.kind)).toEqual(["open"]);
   });
   it("a lock that raises a card to high also stops a rule from answering it", () => {
-    const card = cardOf({ ...(ITEMS.approve_plan as DecisionItem), answeredByRule: rule } as DecisionItem, { approve_plan: "high" });
+    const card = cardOf({ ...(ITEMS.approve_plan), answeredByRule: rule }, { approve_plan: "high" });
     expect(card.status).toBe("pending");
   });
   it("a finished item is history: its outcome, no actions", () => {
-    const card = cardOf({ ...(ITEMS.merge as DecisionItem), outcome: "approved" } as DecisionItem);
+    const card = cardOf({ ...(ITEMS.merge), outcome: "approved" });
     expect(card.status).toBe("approved");
     expect(card.actions).toEqual([]);
   });
@@ -195,7 +195,7 @@ describe("standing rules", () => {
 
 describe("Full path: requirements and design are one card with two tabs", () => {
   it("merges the pair for one task into one card at the higher tier, with two tabs that each stay an approval", () => {
-    const projection = projectDecisionCards([ITEMS.approve_requirements, { ...(ITEMS.approve_design as DecisionItem), files: ["infra/stack.ts", "src/auth/login.ts"] } as DecisionItem]);
+    const projection = projectDecisionCards([ITEMS.approve_requirements, { ...(ITEMS.approve_design), files: ["infra/stack.ts", "src/auth/login.ts"] } as DecisionItem]);
     expect(projection.cards).toHaveLength(1);
     const [card] = projection.cards;
     expect(card?.kind).toBe("approve_requirements");
@@ -205,7 +205,7 @@ describe("Full path: requirements and design are one card with two tabs", () => 
     expect(tabs?.every((tab) => !tab.approved)).toBe(true);
   });
   it("keeps the pair at the higher tier: a medium design makes the card medium", () => {
-    const projection = projectDecisionCards([ITEMS.approve_requirements, { ...(ITEMS.approve_design as DecisionItem), files: ["src/auth/login.ts"] } as DecisionItem]);
+    const projection = projectDecisionCards([ITEMS.approve_requirements, { ...(ITEMS.approve_design), files: ["src/auth/login.ts"] } as DecisionItem]);
     expect(projection.cards[0]?.risk).toBe("medium");
     expect(projection.cards[0]?.friction.expandEvidenceFirst).toBe(true);
   });
@@ -215,7 +215,7 @@ describe("Full path: requirements and design are one card with two tabs", () => 
     expect(projection.cards[0]?.actions.map((action) => action.kind)).toEqual(["open"]);
   });
   it("does not merge different tasks, or when pairing is off (two separate cards)", () => {
-    const other = { ...(ITEMS.approve_design as DecisionItem), taskId: "22222222-2222-4222-8222-222222222222" } as DecisionItem;
+    const other = { ...(ITEMS.approve_design), taskId: "22222222-2222-4222-8222-222222222222" } as DecisionItem;
     expect(projectDecisionCards([ITEMS.approve_requirements, other]).cards).toHaveLength(2);
     expect(projectDecisionCards([ITEMS.approve_requirements, ITEMS.approve_design], { pairFullCards: false }).cards).toHaveLength(2);
   });
@@ -223,17 +223,17 @@ describe("Full path: requirements and design are one card with two tabs", () => 
 
 describe("text and order", () => {
   it("flattens a hostile title and question to plain text", () => {
-    const card = cardOf({ ...(ITEMS.answer_question as DecisionItem), question: "Pick one‮\nnow <script>alert(1)</script>", title: "a\u0000b\n\nc" } as DecisionItem);
+    const card = cardOf({ ...(ITEMS.answer_question), question: "Pick one‮\nnow <script>alert(1)</script>", title: "a\u0000b\n\nc" } as DecisionItem);
     expect(card.question).not.toMatch(/[\p{Cc}\p{Cf}]/u);
     expect(card.title).toBe("a b c");
   });
   it("cuts long text to the card's limits", () => {
-    const card = cardOf({ ...(ITEMS.answer_question as DecisionItem), question: "word ".repeat(200), title: "t".repeat(500) } as DecisionItem);
+    const card = cardOf({ ...(ITEMS.answer_question), question: "word ".repeat(200), title: "t".repeat(500) } as DecisionItem);
     expect([...card.question].length).toBeLessThanOrEqual(160);
     expect([...card.title].length).toBeLessThanOrEqual(80);
   });
   it("orders high first, then newer first, and gives the same answer every time", () => {
-    const items = [ITEMS.approve_plan, { ...ITEMS.merge, createdAt: "2026-10-30T12:00:00.000Z" } as DecisionItem, ITEMS.approve_setting, ITEMS.approve_dependency];
+    const items = [ITEMS.approve_plan, { ...ITEMS.merge, createdAt: "2026-10-30T12:00:00.000Z" }, ITEMS.approve_setting, ITEMS.approve_dependency];
     const first = projectDecisionCards(items).cards.map((card) => card.id);
     expect(first).toEqual(["approve_setting:set1", "approve_dependency:dep1", "merge:pr1", "approve_plan:plan1"]);
     expect(projectDecisionCards([...items].reverse()).cards.map((card) => card.id)).toEqual(first);

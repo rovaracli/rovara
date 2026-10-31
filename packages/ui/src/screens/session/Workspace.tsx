@@ -5,7 +5,6 @@ import type { ReadSession } from "./SessionHeader.js";
 import { PipelineTab } from "./PipelineTab.js";
 import { PlanTab } from "./PlanTab.js";
 import { EvidenceTab } from "./EvidenceTab.js";
-import { TaskDecisions } from "../home/NeedsYou.js";
 import { ChangesTab } from "./ChangesTab.js";
 import { PullRequestTab } from "./PullRequestTab.js";
 import { MergeSection } from "./MergeSection.js";
@@ -24,6 +23,5 @@ export const Workspace = memo(function Workspace({ session, onComment, section }
  const tabs = SESSION_TABS.filter(tab => tab.available(view)), requested = location.hash.startsWith("#" + prefix) ? location.hash.slice(1 + prefix.length) : "", selected = tabs.find(tab => tab.value === requested)?.value ?? "pipeline";
  const items = tabs.map(tab => ({ ...tab, content: tab.value === "pipeline" ? <PipelineTab session={session} task={task} onComment={onComment} /> : task === undefined ? null : tab.value === "plan" ? <PlanTab session={session} task={task} onComment={onComment} /> : tab.value === "tests" ? <EvidenceTab task={task} /> : tab.value === "changes" ? <ChangesTab session={session} task={task} onComment={onComment} /> : <PullRequestTab task={task} /> }));
  const merge = section === undefined && task?.merge !== undefined ? <MergeSection session={session} task={{ ...task, merge: task.merge }} /> : null;
- const decisions = section === undefined && task !== undefined ? <TaskDecisions taskId={task.taskId} /> : null;
- return <>{decisions}{merge}<Tabs label={section === undefined ? "Session workspace" : "Evidence for step " + section} value={selected} onValueChange={value => { if (tabs.some(tab => tab.value === value)) void navigate({ pathname: location.pathname, search: location.search, hash: "#" + prefix + value }, { replace: true, preventScrollReset: true }); }} items={items} /></>;
+ return <>{merge}<Tabs label={section === undefined ? "Session workspace" : "Evidence for step " + section} value={selected} onValueChange={value => { if (tabs.some(tab => tab.value === value)) void navigate({ pathname: location.pathname, search: location.search, hash: "#" + prefix + value }, { replace: true, preventScrollReset: true }); }} items={items} /></>;
 });

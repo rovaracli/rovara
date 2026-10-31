@@ -7,7 +7,7 @@ import { DECISION_SLACK_TEXT, decisionSlackHandler, pressRequestId, pressToReque
 import { routeDecisionCards, type DecisionCaller } from "../../packages/broker/src/decisions/routes.js";
 import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store.js";
 
-const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", openPath: `/s/ses_${"a".repeat(20)}`, ...extra });
+const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, ...extra });
 const lowItem: DecisionItem = { ...base("plan1"), kind: "approve_plan", path: "quick", files: ["src/retry.ts"], claims: 2, untestedClaims: 0, cost: { lowUsd: 1.2, highUsd: 3.1, minutes: { low: 12, high: 25 } } };
 const mediumItem: DecisionItem = { ...base("dep1"), kind: "approve_dependency", packages: 2, newInstallScripts: false };
 const highItem: DecisionItem = { ...base("set1"), kind: "approve_setting", settingLabel: "Allow video", secondPerson: false };
@@ -41,7 +41,7 @@ describe("the Slack card follows the card's friction", () => {
     expect(elementsOf(slackCardMessage(question, { cardUrl: URL_ })).some((element) => element["action_id"] === DECISION_SLACK_APPROVE_ACTION)).toBe(false);
   });
   it("an answered card has no buttons and says what became of it", () => {
-    const message = slackCardMessage(card({ ...lowItem, outcome: "approved" } as DecisionItem), { cardUrl: URL_ });
+    const message = slackCardMessage(card({ ...lowItem, outcome: "approved" }), { cardUrl: URL_ });
     expect(elementsOf(message)).toEqual([]);
     expect(JSON.stringify(message.blocks)).toContain("Approved.");
   });
@@ -52,7 +52,7 @@ describe("the Slack card follows the card's friction", () => {
     expect(JSON.stringify(message.blocks)).toContain("Two approvals: Requirements and Design.");
   });
   it("escapes Slack markup in anything a person wrote, and stays inside Slack's limits", () => {
-    const hostile = card({ ...lowItem, title: "<!channel> <@U123> &amp; <https://evil.example|click>" } as DecisionItem);
+    const hostile = card({ ...lowItem, title: "<!channel> <@U123> &amp; <https://evil.example|click>" });
     const text = JSON.stringify(slackCardMessage(hostile, { cardUrl: URL_ }).blocks);
     expect(text).not.toContain("<!channel>");
     expect(text).not.toContain("<@U123>");
@@ -67,7 +67,7 @@ describe("the Slack card follows the card's friction", () => {
 describe("a press becomes the same request the web sends", () => {
   it("approve and not-now map to the card routes with a stable request id", () => {
     const approve = pressToRequest({ actionId: DECISION_SLACK_APPROVE_ACTION, value: "approve_plan:plan1", actionTs: "1700000000.0001" });
-    expect(approve).toMatchObject({ method: "POST", pathname: "/v1/app/decisions/approve_plan%3Aplan1/approve" });
+    expect(approve).toMatchObject({ method: "POST", pathname: "/v1/app/decisions/approve_plan/plan1/approve" });
     expect((approve?.body as { requestId: string }).requestId).toBe(pressRequestId("approve_plan:plan1", "1700000000.0001"));
     expect((approve?.body as { requestId: string }).requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/u);
     expect(pressRequestId("approve_plan:plan1", "1700000000.0002")).not.toBe(pressRequestId("approve_plan:plan1", "1700000000.0001"));

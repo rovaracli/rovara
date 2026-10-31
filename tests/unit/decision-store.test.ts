@@ -1,6 +1,7 @@
 // Decisions D2: the DynamoDB form of the decision store keeps the evidence-opened record per person, card, tab and digest, and writes a decision once per request id.
 import { describe, expect, it } from "vitest";
-import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import type { GetCommand} from "@aws-sdk/lib-dynamodb";
+import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { dynamoDecisionStore, DECISION_EVIDENCE_OPEN_TTL_MS } from "../../packages/broker/src/decisions/store.js";
 
 function fakeTable() {

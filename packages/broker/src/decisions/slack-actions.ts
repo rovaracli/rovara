@@ -34,7 +34,7 @@ export const DECISION_SLACK_TEXT = Object.freeze({
 
 /** The fixed sentence for an error a route threw (by its code only). */
 export function refusalText(error: unknown): string {
-  const code = typeof error === "object" && error !== null && "code" in error ? (error as { code: unknown }).code : undefined;
+  const code = typeof error === "object" && error !== null && "code" in error ? (error).code : undefined;
   if (code === "CHANGE_STALE") return DECISION_SLACK_TEXT.openFirst;
   if (code === "NOT_FOUND") return DECISION_SLACK_TEXT.gone;
   return DECISION_SLACK_TEXT.failed;

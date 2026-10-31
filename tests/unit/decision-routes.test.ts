@@ -1,7 +1,7 @@
 // Decisions D2: the card routes enforce the friction on the server. A medium card cannot be approved without its evidence opened (409), a high card has no approve route, nothing is bulk, and
 // the routes decide nothing themselves: they call the existing endpoint through the performer.
 import { describe, expect, it, vi } from "vitest";
-import type { DecisionCard, DecisionCardsView, DecisionAnswered } from "@agentx/contracts";
+import type { DecisionCard, DecisionAnswered } from "@agentx/contracts";
 import { DecisionCardsViewSchema } from "@agentx/contracts";
 import { routeDecisionCards, type DecisionCaller, type DecisionPerformer, type DecisionRequest, type DecisionSources } from "../../packages/broker/src/decisions/routes.js";
 import { decisionCardPath, type DecisionItem, type ItemBase } from "../../packages/broker/src/decisions/project.js";
@@ -12,7 +12,7 @@ const TASK = "11111111-1111-4111-8111-111111111111";
 const ME: DecisionCaller = { orgId: "org1", developerId: "dev1" };
 const OTHER: DecisionCaller = { orgId: "org1", developerId: "dev2" };
 const REQ = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, taskId: TASK, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", openPath: `/s/ses_${"a".repeat(20)}`, ...extra });
+const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, taskId: TASK, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", openPath: `/app/sessions/ses_${"a".repeat(20)}`, ...extra });
 const low = (): DecisionItem => ({ ...base("plan1"), kind: "approve_plan", path: "quick", files: ["src/retry.ts"], claims: 2, untestedClaims: 0 });
 const medium = (): DecisionItem => ({ ...base("dep1"), kind: "approve_dependency", packages: 2, newInstallScripts: false });
 const high = (): DecisionItem => ({ ...base("set1"), kind: "approve_setting", settingLabel: "Allow video", secondPerson: false });
@@ -36,7 +36,7 @@ describe("GET /v1/app/decisions", () => {
   it("lists the caller's cards, high first, and nobody else's", async () => {
     const t = setup();
     const mine = await t.call(ME, "GET", "/v1/app/decisions");
-    const view = DecisionCardsViewSchema.parse(mine?.body) as DecisionCardsView;
+    const view = DecisionCardsViewSchema.parse(mine?.body);
     expect(view.cards.map((card) => card.id)).toEqual(["approve_setting:set1", "approve_dependency:dep1", "approve_plan:plan1"]);
     expect(view.total).toBe(3);
     expect(DecisionCardsViewSchema.parse((await t.call(OTHER, "GET", "/v1/app/decisions"))?.body).cards).toEqual([]);
@@ -46,7 +46,7 @@ describe("GET /v1/app/decisions", () => {
     expect(await t.call(ME, "GET", "/v1/app/home")).toBeUndefined();
     expect(await t.call(ME, "POST", "/v1/app/decisions", { ids: ["a"] })).toBeUndefined();
     expect(await t.call(ME, "POST", "/v1/app/decisions/approve-all", {})).toBeUndefined();
-    expect(await t.call(ME, "GET", "/v1/app/decisions/approve_plan%3Aplan1/approve")).toBeUndefined();
+    expect(await t.call(ME, "GET", "/v1/app/decisions/approve_plan/plan1/approve")).toBeUndefined();
   });
 });
 
@@ -128,12 +128,14 @@ describe("nothing is bulk and only the caller's own cards exist", () => {
     const t = setup();
     await expect(t.call(OTHER, "POST", t.path("approve_plan:plan1", "approve"), { requestId: REQ(16) })).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(t.call(ME, "POST", t.path("approve_plan:nope", "approve"), { requestId: REQ(17) })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(t.call(ME, "POST", "/v1/app/decisions/%E0%A4%A/approve", { requestId: REQ(18) })).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(t.call(ME, "POST", "/v1/app/decisions/not-a-card/approve", { requestId: REQ(18) })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(t.call(ME, "POST", "/v1/app/decisions/not_a_kind/x1/approve", { requestId: REQ(18) })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    // A path that is not a card route at all is not ours.
+    expect(await t.call(ME, "POST", "/v1/app/decisions/%E0%A4%A/approve", { requestId: REQ(18) })).toBeUndefined();
+    expect(await t.call(ME, "POST", "/v1/app/decisions/not-a-card/approve", { requestId: REQ(18) })).toBeUndefined();
     expect(t.performer.approve).not.toHaveBeenCalled();
   });
   it("a card that already has an outcome is not approvable again", async () => {
-    const t = setup([{ ...low(), outcome: "approved" } as DecisionItem]);
+    const t = setup([{ ...low(), outcome: "approved" }]);
     await expect(t.call(ME, "POST", t.path("approve_plan:plan1", "approve"), { requestId: REQ(19) })).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
   it("passes a performer's refusal on and records nothing", async () => {

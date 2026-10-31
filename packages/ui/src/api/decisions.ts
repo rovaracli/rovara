@@ -13,16 +13,16 @@ export interface ReadDecision { card: ReadDecisionCard; tabs: DecisionTab[] | un
 export function decisionActionPath(card: ReadDecisionCard, kind: "approve" | "reject"): string | undefined {
  const action = card.actions.find(candidate => candidate.kind === kind);
  if (action === undefined || action.method !== "POST" || typeof card.id !== "string") return undefined;
- const expected = "/v1/app/decisions/" + encodeURIComponent(card.id) + "/" + kind;
+ const expected = "/v1/app/decisions/" + card.id.replace(":", "/") + "/" + kind;
  return action.href === expected ? expected : undefined;
 }
-const evidencePath = (card: ReadDecisionCard, tab?: DecisionTabId): string => "/v1/app/decisions/" + encodeURIComponent(card.id) + "/evidence-opened" + (tab === undefined ? "" : "?tab=" + tab);
+const evidencePath = (card: ReadDecisionCard, tab?: DecisionTabId): string => "/v1/app/decisions/" + card.id.replace(":", "/") + "/evidence-opened" + (tab === undefined ? "" : "?tab=" + tab);
 
 /** The open action's address as an app path (a page of this app) or a confirmation page of this origin; anything else is no link. */
 export function decisionOpenTarget(card: ReadDecisionCard, origin: string): { kind: "internal"; to: string } | { kind: "external"; href: string } | undefined {
  const action = card.actions.find(candidate => candidate.kind === "open");
- if (action === undefined || action.method !== "GET" || !/^\/(?![/\\])[^\s\\\p{Cc}\p{Cf}]*$/u.test(action.href) || action.href.split(/[/?#]/).includes("..")) return undefined;
- if (action.href.startsWith("/app/") || action.href.startsWith("/s/")) return { kind: "internal", to: action.href };
+ if (action === undefined || action.method !== "GET" || !/^\/(?:v1\/)?app\/[A-Za-z0-9/_.~-]+(?:\?[A-Za-z0-9=&_.~%-]*)?$/u.test(action.href) || action.href.split(/[/?#]/).includes("..")) return undefined;
+ if (action.href.startsWith("/app/")) return { kind: "internal", to: action.href };
  return action.href.startsWith("/v1/app/approve/") ? { kind: "external", href: origin + action.href } : undefined;
 }
 

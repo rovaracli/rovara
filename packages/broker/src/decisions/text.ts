@@ -8,7 +8,8 @@ export function plainLine(value: string, max: number): string {
   return `${(space > max / 2 ? head.slice(0, space) : head).trimEnd()}…`;
 }
 
-/** Whether a path is a same-origin relative path a card may link to: one leading slash, no second slash, no backslash, no spaces or control characters, no `..` segment, no scheme. */
+/** Whether a path is one a card may link to: the card contract's own rule (a path under `/app/` or `/v1/app/`, URL-safe characters only, no empty or dot segment, an optional plain query). */
 export function isSafeRelativePath(value: string): boolean {
-  return value.length <= 2048 && /^\/(?![/\\])[^\s\\\p{Cc}\p{Cf}]*$/u.test(value) && !value.split(/[/?#]/u).includes("..");
+  return value.length <= 2048 && /^\/(?:v1\/)?app\/[A-Za-z0-9/_.~-]+(?:\?[A-Za-z0-9=&_.~%-]*)?$/u.test(value)
+    && !value.split("?")[0]!.split("/").slice(1).some((segment) => segment === "" || segment === "." || segment === "..");
 }

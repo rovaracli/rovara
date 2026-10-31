@@ -73,7 +73,8 @@ export interface Projection {
 
 /** The card routes this server mounts (decisions/routes.ts). The id's colon is encoded, so it is one path segment. */
 export const DECISION_ROUTE_BASE = "/v1/app/decisions";
-export const decisionCardPath = (cardId: string): string => `${DECISION_ROUTE_BASE}/${encodeURIComponent(cardId)}`;
+/** `<kind>/<subject>` as two path segments (the contract allows no colon or percent-escape in a path). */
+export const decisionCardPath = (cardId: string): string => `${DECISION_ROUTE_BASE}/${cardId.replace(":", "/")}`;
 
 const APPROVABLE: ReadonlySet<DecisionKind> = new Set<DecisionKind>([
   "approve_plan", "approve_requirements", "approve_design", "merge", "approve_dependency", "approve_e2e_plan", "review_feedback", "autofix_ask",
@@ -173,8 +174,9 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   const base = decisionCardPath(cardId);
   const open: CardAction = { kind: "open", label: risk === "high" ? "Open to decide" : "Open the details", href: item.openPath, method: "GET" };
   if (risk === "high") return { actions: [open], recommended: "open" };
-  if (item.kind === "answer_question") return { actions: [{ kind: "answer", label: "Answer", href: item.openPath, method: "GET" }], recommended: "answer" };
-  if (item.kind === "choose_checks") return { actions: [{ kind: "choose", label: "Choose checks", href: item.openPath, method: "GET" }], recommended: "choose" };
+  // A question or a checks choice is answered on its own page: the card only opens it (an answer or a choice is a POST of that page, never a link).
+  if (item.kind === "answer_question") return { actions: [{ ...open, label: "Answer" }], recommended: "open" };
+  if (item.kind === "choose_checks") return { actions: [{ ...open, label: "Choose checks" }], recommended: "open" };
   if (!APPROVABLE.has(item.kind)) return { actions: [open], recommended: "open" };
   const approve: CardAction = { kind: "approve", label: "Approve", href: `${base}/approve`, method: "POST" };
   const reject: CardAction = { kind: "reject", label: "Not now", href: `${base}/reject`, method: "POST" };

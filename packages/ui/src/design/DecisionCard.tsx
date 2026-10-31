@@ -53,7 +53,7 @@ export function DecisionCard({ decision, actions }: { decision: ReadDecision; ac
    if (start !== undefined && end !== undefined && end.clientX - start.x >= SWIPE_APPROVE_PX && Math.abs(end.clientY - start.y) < (end.clientX - start.x) / 2) void approve(undefined);
   },
  } : {};
- const evidencePanel = (which: DecisionTabId | undefined, summary: string) => <details className="rv-decision-panel" onToggle={event => { if ((event.currentTarget as HTMLDetailsElement).open && needsEvidence && opened[which ?? "card"] !== true) void open(which); }}>
+ const evidencePanel = (which: DecisionTabId | undefined, summary: string) => <details className="rv-decision-panel" onToggle={event => { if ((event.currentTarget).open && needsEvidence && opened[which ?? "card"] !== true) void open(which); }}>
   <summary>{needsEvidence ? "Open the evidence to approve" : "More evidence"}</summary>
   <p><VisibleText text={summary} /></p>
   {card.riskReasons.length > 0 && <ul>{card.riskReasons.map((reason, index) => <li key={index}><VisibleText text={reason} /></li>)}</ul>}

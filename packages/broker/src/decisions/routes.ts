@@ -42,7 +42,7 @@ export interface DecisionRouteDependencies {
 
 export interface DecisionRequest { method: string; pathname: string; searchParams: URLSearchParams; body: unknown }
 
-const PATH = /^\/v1\/app\/decisions(?:\/([^/]+)\/(approve|reject|evidence-opened))?$/u;
+const PATH = /^\/v1\/app\/decisions(?:\/([a-z_]+\/[A-Za-z0-9_-]{1,150})\/(approve|reject|evidence-opened))?$/u;
 const ISSUE = (error: { issues: ReadonlyArray<{ path: PropertyKey[]; message: string }> }): never => {
   const issue = error.issues[0];
   // Field names only: the values are the caller's.
@@ -55,7 +55,7 @@ async function project(deps: DecisionRouteDependencies, caller: DecisionCaller):
 }
 
 /** The caller's pending card, with its tabs; NOT_FOUND for a card that is not theirs, not there, or not waiting. */
-function pendingCard(projection: Projection, cardId: string): { card: DecisionCard; tabs: DecisionTab[] | undefined; subjectOf(tab?: DecisionTabId): string } {
+function pendingCard(projection: Projection, cardId: string): { card: DecisionCard; tabs: DecisionTab[] | undefined; subjectOf: (tab?: DecisionTabId) => string } {
   const card = projection.cards.find((candidate) => candidate.id === cardId);
   if (card === undefined || card.status !== "pending") throw agentXError("NOT_FOUND", "This decision is no longer waiting for you.");
   const subjects = projection.tabSubjects[card.id];
@@ -90,9 +90,7 @@ export async function routeDecisionCards(deps: DecisionRouteDependencies, caller
     return new StatusReply(200, view);
   }
   if (request.method !== "POST") return undefined;
-  let id: string;
-  try { id = decodeURIComponent(rawId); } catch { throw agentXError("NOT_FOUND", "This decision is no longer waiting for you."); }
-  const parsedId = DecisionCardIdSchema.safeParse(id);
+  const parsedId = DecisionCardIdSchema.safeParse(rawId.replace("/", ":"));
   if (!parsedId.success) throw agentXError("NOT_FOUND", "This decision is no longer waiting for you.");
   const cardId = parsedId.data;
   const nowIso = (): string => new Date(deps.now()).toISOString();
