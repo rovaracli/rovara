@@ -14,6 +14,8 @@ export const LOAD_MAX_BYTES = LEARNED_CONTEXT_MAX_BYTES;
 /** Over-fetch so recall survives the scope and audience filters. */
 const VECTOR_FETCH = 60;
 const DAY = 86_400_000;
+/** The reviewer's list of what earlier stages loaded is kept short (about 1 KB of titles), so it cannot crowd the lessons budget. */
+const PRIOR_LOADED_MAX = 12;
 
 export type TaskAudience = { kind: "shared" } | { kind: "private"; identity: IdentitySet };
 export interface LoadRequest {
@@ -148,7 +150,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     for (const manifest of await deps.store.manifests(key, request.taskId)) {
       if (manifest.stage === "PLAN_CRITIQUE" || manifest.stage === "REVIEW") continue;
       for (const entry of manifest.lessons) {
-        if (seen.has(entry.id) || seen.size >= 40) continue;
+        if (seen.has(entry.id) || seen.size >= PRIOR_LOADED_MAX) continue;
         const lesson = await deps.store.get(key, entry.id);
         if (lesson !== undefined && !isRestricted(lesson)) seen.set(entry.id, { id: lesson.id, type: lesson.type, title: lesson.title });
       }
@@ -158,9 +160,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
 
   const manifest: LoadManifest = { taskId: request.taskId, workspaceId: key.workspaceId, project: key.project, stage, round: request.round, setVersion, memory: "live", at: now, lessons: entries, bytes };
   await deps.store.putManifest(manifest);
-  for (const entry of entries) {
-    if (await deps.store.markOnce(key, `loaded:${request.taskId}:${entry.id}`)) await deps.store.mutate(key, entry.id, (l) => ({ counters: { ...l.counters, loaded: l.counters.loaded + 1 } }));
-  }
+  // `loaded` is counted when the worker reports the lesson reached the prompt (applyLoadReport), not here: a lesson the worker dropped was never loaded.
   if (chosen.length === 0 && priorLoaded === undefined) return { manifest, skipped: "no_lessons" };
   return { manifest, context: { v: 1, setVersion, stage, lessons: chosen, ...(priorLoaded === undefined ? {} : { priorLoaded }) } };
 }

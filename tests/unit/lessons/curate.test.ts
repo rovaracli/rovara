@@ -240,27 +240,3 @@ describe("atomic delta writes and rollback", () => {
     await expect(store.commit(other, await store.setVersion(other), [lessonRecord({ id: "les_x", workspaceId: WS })], 1)).rejects.toThrow();
   });
 });
-
-describe("rate limits and the burst brake (C10, C14)", () => {
-  const unique = (i: number, over: Partial<LessonDraft> = {}): LessonDraft =>
-    draft({ title: `Topic ${i}`, description: "", body: Array.from({ length: 12 }, (_, j) => `w${i}x${j}q${i * 31 + j}`).join(" "), ...over });
-
-  it("P11: a burst of 50 member candidates pauses auto-apply, alerts, and no more than 20 are kept", async () => {
-    const { deps, store, alerts, audit } = setup();
-    const outcomes: string[] = [];
-    for (let i = 0; i < 50; i += 1) outcomes.push((await curateDraft(deps, KEY, unique(i, { provenance: { ...draft().provenance, authors: [`m${i % 25}`] } }))).outcome);
-    expect(outcomes.filter((o) => o === "added")).toHaveLength(20);
-    expect(outcomes.filter((o) => o === "dropped")).toHaveLength(30);
-    expect(await store.list(KEY)).toHaveLength(20);
-    expect((await store.flags(KEY)).autoTierPausedAt).toBeDefined();
-    expect(alerts.sent.filter((c) => c === "burst_auto_tier_paused")).toHaveLength(1);
-    expect(audit.actions().filter((a) => a === "lesson.auto_tier_paused")).toHaveLength(1);
-  });
-
-  it("limits one author to 10 candidates a day", async () => {
-    const { deps } = setup();
-    const results: string[] = [];
-    for (let i = 0; i < 12; i += 1) results.push(JSON.stringify((await curateDraft(deps, KEY, unique(i))).outcome === "added"));
-    expect(results.filter((r) => r === "true")).toHaveLength(10);
-  });
-});

@@ -17,6 +17,10 @@ export const STALE_LIMIT = 3;
 const MAX_JUDGE_CALLS_PER_TASK = 20;
 const MAX_CORRECTIONS_PER_LESSON = 5;
 
+/** Only a lesson the worker reported as having reached the prompt counts for anything: loaded, helpful, harmful. A dropped or unreported lesson never ran. */
+const REACHED_PROMPT: ReadonlySet<string> = new Set(["valid", "moved", "none"]);
+const reached = (manifests: readonly LoadManifest[]): Set<string> => new Set(manifests.flatMap((m) => m.lessons.filter((e) => REACHED_PROMPT.has(e.citation)).map((e) => e.id)));
+
 export interface CounterDeps extends LessonDeps { store: LessonStore; judge: CorrectionJudge; settings: LearningSettingsReader; alerts?: AlertSink }
 
 export interface TaskCorrection { kind: CorrectionKind; /** Files the correction touches, for scope matching. */ paths: readonly string[]; text: string; at: number }
@@ -80,7 +84,7 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
   if (!modeAllows(resolved.mode, "load")) return result;
 
   const loaded = new Set<string>();
-  for (const manifest of await deps.store.manifests(key, outcome.taskId)) for (const entry of manifest.lessons) loaded.add(entry.id);
+  for (const id of reached(await deps.store.manifests(key, outcome.taskId))) loaded.add(id);
   let judgeCalls = 0;
   for (const lessonId of [...loaded].sort()) {
     const lesson = await deps.store.get(key, lessonId);
@@ -127,7 +131,7 @@ export type FeedbackFailure = "not_loaded" | "not_found" | "repeat";
 export async function recordFeedback(deps: CounterDeps, input: { workspaceId: string; project: string; taskId: string; lessonId: string; userId: string; kind: "helpful" | "wrong_here" }): Promise<{ ok: true } | { ok: false; code: FeedbackFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const manifests = await deps.store.manifests(key, input.taskId);
-  if (!manifests.some((m) => m.lessons.some((e) => e.id === input.lessonId))) return { ok: false, code: "not_loaded" };
+  if (!reached(manifests).has(input.lessonId)) return { ok: false, code: "not_loaded" };
   if ((await deps.store.get(key, input.lessonId)) === undefined) return { ok: false, code: "not_found" };
   if (!(await deps.store.markOnce(key, `feedback:${input.kind}:${input.taskId}:${input.lessonId}:${input.userId}`))) return { ok: false, code: "repeat" };
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
@@ -155,6 +159,7 @@ export async function applyLoadReport(deps: CounterDeps, input: { workspaceId: s
     if (entry === undefined || entry.version !== reported.version) continue;
     entry.citation = reported.citation;
     if (reported.citation === "valid" || reported.citation === "none" || reported.citation === "moved") {
+      if (await deps.store.markOnce(key, `loaded:${input.taskId}:${reported.id}`)) await deps.store.mutate(key, reported.id, (l) => ({ counters: { ...l.counters, loaded: l.counters.loaded + 1 } }));
       if (reported.citation === "moved" && reported.corrected !== undefined) await patchMovedCitations(deps, key, reported.id, reported.corrected);
       await renewLesson(deps.store, key, reported.id, now, resolved.expiryDays, "validated");
     } else if (reported.citation === "stale_dropped") {

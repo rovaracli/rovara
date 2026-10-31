@@ -36,7 +36,8 @@ export class MemoryVectors implements LessonVectors {
   rows = new Map<string, { id: string; vector: readonly number[] }>();
   fail = false;
   private k(ws: string, p: string, id: string): string { return `${ws}\u0001${p}\u0001${id}`; }
-  async upsert(ws: string, p: string, id: string, vector: readonly number[], _meta?: { status: string }): Promise<void> { this.rows.set(this.k(ws, p, id), { id, vector }); }
+  async upsert(ws: string, p: string, id: string, vector: readonly number[], _meta?: { status: string }): Promise<void> {
+    void _meta; this.rows.set(this.k(ws, p, id), { id, vector }); }
   async query(ws: string, p: string, vector: readonly number[], k: number): Promise<Array<{ id: string; score: number }>> {
     if (this.fail) throw new Error("index down");
     const prefix = `${ws}\u0001${p}\u0001`;
@@ -101,7 +102,7 @@ export function draft(over: Partial<LessonDraft> = {}): LessonDraft {
   return {
     type: "fact", title: "Retries use withRetry", description: "HTTP retries in api go through the shared helper", body: "Use withRetry from src/retry/index.ts for HTTP retries in the api service.",
     scope: { repos: ["api"], paths: ["src/**"] }, stages: ["UNDERSTAND", "PLAN", "IMPLEMENT"], citations: [codeCite()],
-    provenance: { sourceEvents: ["ev-1"], sourceKinds: ["human_edit"], authors: ["ann"], supportTasks: ["task-1"], minTrust: "member", audience: { kind: "project" }, reflectorRun: "run-1", model: "m", memberSignal: true },
+    provenance: { sourceEvents: ["ev-1"], sourceKinds: ["human_edit"], authors: ["ann"], supportTasks: ["task-1"], sources: ["member:ann"], minTrust: "member", audience: { kind: "project" }, reflectorRun: "run-1", model: "m", memberSignal: true },
     ...over,
   };
 }

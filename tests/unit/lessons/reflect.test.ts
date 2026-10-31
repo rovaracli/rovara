@@ -107,11 +107,13 @@ describe("reflector run (C4, C6, C8)", () => {
     expect(result.drafts).toHaveLength(0);
   });
 
-  it("keeps at most 3 candidates", async () => {
+  it("owner decision 'Lesson limits': no flat cap, every valid candidate is collected (the prompt asks for 3)", async () => {
     const many = Array.from({ length: 6 }, (_, i) => candidateJson({ title: `Lesson ${i}`, body: `Body ${i} about withRetry` }));
-    const { d } = deps(new ScriptedModel([reply(...many)]));
+    const model = new ScriptedModel([reply(...many)]);
+    const { d } = deps(model);
     const result = await reflectSubject(d, subject([memberSpan("Use withRetry.")]));
-    expect(result.drafts).toHaveLength(3);
+    expect(result.drafts).toHaveLength(6);
+    expect(model.calls[0]!.system).toContain("at most 3");
   });
 
   it("a parse failure drops the whole output, with no retry", async () => {

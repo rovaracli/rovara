@@ -3,6 +3,8 @@
 //     ineligible for lessons (MINJA): only its structured outcomes count elsewhere.
 //   - A member's quoted, forwarded or pasted text is treated as its unknown author's, which is an outsider (C3).
 //   - Every span is cleaned (secrets redacted, hidden characters and markup removed) and datamarked with an id and its trust class (C5, spotlighting).
+//   - Every span that reaches the prompt counts for the lesson's trust and audience, whether or not the model cites it (see reflect.ts): the model
+//     cannot launder a restricted or low-trust span by choosing which evidence to name.
 //   - Human edits to a pull request (decision Q5) are read from the PR at merge by the caller and arrive here as in-memory spans. They are never stored;
 //     the lesson keeps only a link to the PR.
 import { cleanForLearning, looksQuoted } from "./guards.js";
@@ -14,6 +16,8 @@ export interface EvidenceSpan {
   eventId?: string;
   /** The member whose words or edit this is. */
   authorId?: string;
+  /** Where it came from, for per-source spike detection: `slack:<channel>`, `linear:<project>`, `ci`. Defaults to the author, then the span kind. */
+  sourceKey?: string;
   audience?: Audience;
 }
 
@@ -32,7 +36,7 @@ export interface ReflectSubject {
 }
 
 export type IneligibleReason = "eval_run" | "unknown_initiator" | "outsider_initiated" | "outsider_steered" | "outsider_intent" | "no_member_reason" | "no_usable_evidence";
-export interface MarkedSpan { id: string; kind: SpanKind; trust: TrustClass; eventId?: string; authorId?: string; audience?: Audience }
+export interface MarkedSpan { id: string; kind: SpanKind; trust: TrustClass; eventId?: string; authorId?: string; sourceKey?: string; audience?: Audience }
 export type ReflectorInput =
   | { eligible: false; reason: IneligibleReason; removedOutsider: number }
   | { eligible: true; system: string; user: string; spans: Map<string, MarkedSpan>; removedOutsider: number; allowedTypes: readonly LessonType[] };
@@ -86,7 +90,7 @@ export function buildReflectorInput(subject: ReflectSubject): ReflectorInput {
     const text = cleanForLearning(span.text, MAX_SPAN_CHARS);
     if (text === "" || used + text.length > MAX_INPUT_CHARS) continue;
     const id = `S${spans.size + 1}`;
-    spans.set(id, { id, kind: span.kind, trust: span.trust, ...(span.eventId === undefined ? {} : { eventId: span.eventId }), ...(span.authorId === undefined ? {} : { authorId: span.authorId }), ...(span.audience === undefined ? {} : { audience: span.audience }) });
+    spans.set(id, { id, kind: span.kind, trust: span.trust, ...(span.eventId === undefined ? {} : { eventId: span.eventId }), ...(span.authorId === undefined ? {} : { authorId: span.authorId }), ...(span.sourceKey === undefined ? {} : { sourceKey: span.sourceKey }), ...(span.audience === undefined ? {} : { audience: span.audience }) });
     blocks.push(`<<span id=${id} trust=${span.trust} kind=${span.kind}>>\n${text}\n<</span ${id}>>`);
     used += text.length;
   }

@@ -43,8 +43,12 @@ export function learningCaps(edition: Edition, override?: LearningCaps): Learnin
   if (edition === "enterprise") return {};
   return { perTaskUsd: 0.15, perNightUsd: 2, ...override };
 }
-/** Safety rate limits (C10). They are not spend caps: they stop a compromised account from flooding the queue, so both editions keep them. */
-export const RATE_LIMITS = { candidatesPerTask: 3, candidatesPerProjectPerDay: 20, candidatesPerAuthorPerDay: 10, burstMultiple: 3, burstMinimum: 6 } as const;
+/**
+ * No flat caps on lessons, in either edition (owner decision "Lesson limits"). Every candidate is collected and queued, never dropped. What guards the queue
+ * is per-source spike detection: a source whose daily count reaches SPIKE_MULTIPLE times its own learned baseline (and at least SPIKE_MINIMUM that day) is
+ * paused alone, and the maintainer is alerted. Other sources carry on.
+ */
+export const SPIKE = { multiple: 10, minimum: 10, baselineDays: 14, baselineFloor: 1 } as const;
 
 export const MIN_EXPIRY_DAYS = 14;
 export const MAX_EXPIRY_DAYS = 365;
@@ -77,8 +81,19 @@ export async function resolveLearning(reader: LearningSettingsReader, workspaceI
 
 const SAFE_FACT = /^[A-Za-z0-9:_\-.#@/]{1,128}$/u;
 /** Writes an audit event whose facts hold ids, counts and fixed codes only (the v1.2 rule): a string value that is not id-shaped is dropped. */
-export async function emitAudit(sink: LessonAuditSink, event: LessonAuditEvent): Promise<void> {
+function safeFacts(event: LessonAuditEvent): LessonAuditEvent {
   const facts: LessonAuditEvent["facts"] = {};
   for (const [key, value] of Object.entries(event.facts)) if (typeof value !== "string" || SAFE_FACT.test(value)) facts[key] = value;
-  try { await sink.emit({ ...event, facts }); } catch { /* an audit outage never blocks learning; the outbox retries */ }
+  return { ...event, facts };
+}
+/** Best-effort audit, for bookkeeping that grants nothing (counters, candidates, refusals, retire). An outage never blocks learning. */
+export async function emitAudit(sink: LessonAuditSink, event: LessonAuditEvent): Promise<void> {
+  try { await sink.emit(safeFacts(event)); } catch { /* bookkeeping only */ }
+}
+/**
+ * Audit that must succeed before a change that GRANTS something (an approval, a go-live, a promotion, a rollback). The event is written before the change,
+ * and a failed write returns false so the caller refuses the change (fail closed). The kill switches (retire) use `emitAudit`, so they always work.
+ */
+export async function requireAudit(sink: LessonAuditSink, event: LessonAuditEvent): Promise<boolean> {
+  try { await sink.emit(safeFacts(event)); return true; } catch { return false; }
 }

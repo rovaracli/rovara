@@ -2,7 +2,7 @@
 // code turns into lesson drafts; the model never writes to a store. Any parse failure drops the whole output, with no retry loop.
 import { randomUUID } from "node:crypto";
 import { cleanForLearning, requestsCapabilityChange } from "./guards.js";
-import { emitAudit, learningCaps, modeAllows, RATE_LIMITS, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
+import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
 import {
@@ -88,7 +88,7 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   const runId = (deps.newId ?? randomUUID)();
   const drafts: LessonDraft[] = [];
   for (const raw of output.candidates) {
-    if (drafts.length >= RATE_LIMITS.candidatesPerTask) break;
+    // No flat cap: every valid candidate is collected (the prompt asks for at most 3; the output schema bounds a runaway reply at 20).
     const parsed = LessonCandidateSchema.safeParse(raw);
     if (!parsed.success) continue;
     const draft = await toDraft(deps, subject, input.spans, input.allowedTypes, parsed.data, runId, reply.model);
@@ -109,6 +109,8 @@ async function toDraft(
     if (span === undefined || span.trust === "outsider") return undefined;
     cited.push(span);
   }
+  // A lesson the model was shown cannot be its own evidence: citing only `loaded_lesson` spans would let a lesson re-derive itself and collect support.
+  if (cited.every((s) => s.kind === "loaded_lesson")) return undefined;
   const title = cleanForLearning(candidate.title, 80);
   const description = cleanForLearning(candidate.description, 160);
   const body = cleanForLearning(candidate.body, 600);
@@ -136,14 +138,18 @@ async function toDraft(
     }
   }
 
-  const trust: TrustClass = minTrust(cited.map((s) => s.trust));
+  // Trust and audience come from EVERYTHING the model read, not what it chose to cite: the lowest trust and the narrowest audience of every span in the
+  // prompt. Citations only decide what the lesson shows as its sources.
+  const everything = [...spans.values()];
+  const trust: TrustClass = minTrust(everything.map((s) => s.trust));
   if (trust === "outsider") return undefined;
-  const audience: Audience = narrowestAudience([...cited.flatMap((s) => (s.audience === undefined ? [] : [s.audience])), ...(subject.audience === undefined ? [] : [subject.audience])]);
+  const audience: Audience = narrowestAudience([...everything.flatMap((s) => (s.audience === undefined ? [] : [s.audience])), ...(subject.audience === undefined ? [] : [subject.audience])]);
+  const sources = [...new Set(cited.map((s) => s.sourceKey ?? (s.authorId === undefined ? `kind:${s.kind}` : `member:${s.authorId}`)))].slice(0, 20);
   const authors = [...new Set(cited.flatMap((s) => (s.trust === "member" && s.authorId !== undefined ? [s.authorId] : [])))];
   return {
     type: candidate.type, title, description, body, scope: candidate.scope, stages: [...new Set(candidate.stages)], citations,
     provenance: {
-      sourceEvents: [...events], sourceKinds: [...new Set(cited.map((s) => s.kind))], authors, supportTasks: subject.kind === "task" ? [subject.id] : [],
+      sourceEvents: [...events], sourceKinds: [...new Set(cited.map((s) => s.kind))], authors, supportTasks: subject.kind === "task" ? [subject.id] : [], sources,
       minTrust: trust, audience, reflectorRun: runId, model: model.slice(0, 100),
       memberSignal: cited.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit")),
     },

@@ -194,7 +194,7 @@ describe("edit and approve, reject, retire, rollback", () => {
   it("lists the lessons waiting for people, newest first", async () => {
     const { store } = setup();
     await seed(store, base({ id: "les_pend0001", createdAt: 5 }), base({ id: "les_pend0002", createdAt: 9 }), lessonRecord());
-    expect((await listWaiting(store, KEY)).map((l) => l.id)).toEqual(["les_pend0002", "les_pend0001"]);
+    expect((await listWaiting(store, KEY, { principals: [], groups: [] })).map((l) => l.id)).toEqual(["les_pend0002", "les_pend0001"]);
   });
 });
 
@@ -254,12 +254,12 @@ describe("weekly digest (decision Q2)", () => {
       lessonRecord({ id: "les_auto0001", updatedAt: now - 1000 }), lessonRecord({ id: "les_wait0001", status: "pending", approvals: [] }),
       lessonRecord({ id: "les_gone0001", status: "retired", updatedAt: now - 1000 }), lessonRecord({ id: "les_old00001", status: "retired", updatedAt: now - 30 * 86_400_000 }),
       lessonRecord({ id: "les_rest0001", provenance: restricted, updatedAt: now - 1000 }), lessonRecord({ id: "les_stal0001", status: "stale" }));
-    const digest = await buildWeeklyDigest(store, KEY, now);
+    const digest = await buildWeeklyDigest(store, KEY, now, { principals: [], groups: [] });
     expect(digest.autoApplied.map((i) => i.id)).toEqual(["les_auto0001"]);
     expect(digest.waiting.map((i) => i.id)).toEqual(["les_wait0001"]);
     expect(digest.retired.map((i) => i.id)).toEqual(["les_gone0001"]);
     expect(digest.staleOrRetireProposed.map((i) => i.id)).toEqual(["les_stal0001"]);
-    expect(digest.restrictedCount).toBe(1);
+    expect(digest.restrictedHidden).toBe(1);
     expect(JSON.stringify(digest)).not.toContain("les_rest0001");
   });
 });

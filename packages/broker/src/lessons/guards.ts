@@ -41,6 +41,34 @@ export function hasEscalationWords(...texts: readonly string[]): boolean {
   return texts.some((text) => ESCALATION.some((pattern) => pattern.test(text)));
 }
 
+/**
+ * Text that tells someone what to RUN or where to fetch from: URLs, downloads, shell pipes and commands, package installs, privileged or destructive
+ * commands, environment variables. A tier-0 fact says where something is, not what to run, so any of these sends a lesson to two people.
+ */
+const COMMANDS: readonly RegExp[] = [
+  /\bhttps?:\/\//iu, /\b(curl|wget|scp|rsync|nc|ncat|telnet)\b/iu, /\|\s*(sh|bash|zsh|python3?|node|perl|ruby)\b/iu, /\b(bash|sh|zsh|pwsh|powershell)\s+(-c|-e)\b/iu,
+  /\b(pip3?|npm|npx|pnpm|yarn|brew|apt(-get)?|yum|gem|cargo|go)\s+(install|add|i|run|exec|dlx|get|x)\b/iu, /\bnpx\s+\S+/iu, /\b(sudo|chmod|chown|eval|exec|source)\b/iu,
+  /\brm\s+-/iu, /\bgit\s+(push|reset|checkout|clone|remote|config|apply|am)\b/iu, /\b(export\s+)?[A-Z][A-Z0-9_]{2,}=\S+/u, /&&|\$\(|`[^`\n]*\s[^`\n]*`/u, /\bdocker\s+(run|exec|build|pull)\b/iu,
+];
+export function hasCommandOrUrl(...texts: readonly string[]): boolean {
+  return texts.some((text) => COMMANDS.some((pattern) => pattern.test(text)));
+}
+
+/**
+ * Paths where a wrong lesson weakens what protects the project: tests, CI, auth and security code, lockfiles and manifests, container and infra files.
+ * A lesson scoped to, or citing, any of them needs two people whatever its text says. Globs are matched as plain strings, so `tests/**` matches.
+ */
+const RISKY_PATHS: readonly RegExp[] = [
+  /(^|\/)(tests?|__tests__|specs?|e2e|fixtures|cypress|playwright)(\/|$)/iu, /\.(test|spec)\.[A-Za-z0-9]+/iu, /(^|\/)\*?[A-Za-z0-9_-]*(test|spec)[A-Za-z0-9_-]*\*?(\.|\/|$)/iu,
+  /(^|\/)\.github(\/|$)/iu, /(^|\/)\.gitlab-ci/iu, /(^|\/)(Jenkinsfile|\.circleci|\.buildkite|azure-pipelines|buildspec)/iu, /(^|\/)ci(\/|$)/iu,
+  /(^|\/)\*?(auth|authn|authz|security|secrets?|iam|crypto|permissions?|acl)[A-Za-z0-9_-]*\*?(\/|\.|$)/iu,
+  /(^|\/)(package-lock\.json|package\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|Pipfile\.lock|Cargo\.lock|go\.sum|go\.mod|requirements[A-Za-z0-9_.-]*\.txt)$/iu,
+  /(^|\/)(Dockerfile[A-Za-z0-9_.-]*|docker-compose[A-Za-z0-9_.-]*|Makefile|\.env[A-Za-z0-9_.-]*|\.npmrc|\.pypirc|terraform|infra|deploy|helm|k8s)(\/|$|\.)/iu,
+];
+export function touchesRiskyPath(paths: readonly string[]): boolean {
+  return paths.some((path) => RISKY_PATHS.some((pattern) => pattern.test(path)));
+}
+
 /** Words that flip a rule's direction, for the curator's "opposite polarity" check. */
 const POSITIVE = /\b(always|must|use|prefer|do|enable|require|add|keep)\b/iu;
 const NEGATIVE = /\b(never|avoid|don'?t|do\s+not|must\s+not|disable|remove|stop|without|instead\s+of)\b/iu;

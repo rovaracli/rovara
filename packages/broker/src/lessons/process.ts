@@ -1,10 +1,13 @@
 // Learning v2 L2/L3a: the path from a reflector draft to a lesson in front of people (or live). Curate, check the code citations against the base commit,
 // classify the tier, decide whether the lesson has earned a person's attention (promotion), and apply tier 0 by itself when the policy and the mode allow.
-import { activateLesson } from "./approve.js";
+import { AuditUnavailable, activateLesson } from "./approve.js";
 import { curateDraft, type CurateDeps, type CurateOutcome } from "./curate.js";
 import { pendingExpiry } from "./expiry.js";
 import { approversRequired, emitAudit, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { CitationVerifier } from "./ports.js";
+import { isHeldBySource } from "./sources.js";
+import { isCorroborated } from "./value.js";
+import { isMeaningfulAnchor } from "@agentx/contracts";
 import type { LessonDraft } from "./reflect.js";
 import { nextVersion, type ScopeKey } from "./store.js";
 import { classifyTier, type TierContext } from "./tier.js";
@@ -13,12 +16,15 @@ import type { Lesson } from "./types.js";
 export interface ProcessDeps extends CurateDeps { verifier: CitationVerifier; settings: LearningSettingsReader }
 const VERIFY_TIMEOUT_MS = 3000;
 
-/** A promotion rule (design §4.5.2 step 5): two independent tasks, or one task plus a member's own signal, or a single tier-0 fact with valid code citations. */
-export function earnedAttention(lesson: Lesson, tier: Lesson["tier"], neverMind: boolean): boolean {
+/**
+ * A promotion rule (design §4.5.2 step 5, with the owner's corroboration rule): two independent tasks, or one task plus a member's own signal, or a
+ * corroborated tier-0 fact (a measured outcome behind it). A single-source fact waits as a candidate until something backs it up. Nothing is dropped.
+ */
+export function earnedAttention(lesson: Lesson, tier: Lesson["tier"]): boolean {
   if (lesson.contradictsWith !== undefined) return true;
-  if (lesson.provenance.supportTasks.length >= 2) return true;
+  if (new Set(lesson.provenance.supportTasks).size >= 2) return true;
   if (lesson.provenance.supportTasks.length >= 1 && lesson.provenance.memberSignal) return true;
-  return !neverMind && tier === 0;
+  return tier === 0 && isCorroborated(lesson.provenance);
 }
 
 async function verifyCitations(deps: ProcessDeps, lesson: Lesson): Promise<Lesson> {
@@ -27,6 +33,8 @@ async function verifyCitations(deps: ProcessDeps, lesson: Lesson): Promise<Lesso
   const citations = [...lesson.citations];
   for (const [index, citation] of lesson.citations.entries()) {
     if (citation.kind !== "code") continue;
+    // A trivial anchor (a lone brace) proves nothing: it is recorded as stale, so the lesson cannot be tier 0.
+    if (!isMeaningfulAnchor(citation.anchor)) { checks.push({ index, result: "stale", at: now }); continue; }
     try {
       const answer = await Promise.race([
         deps.verifier.verify({ workspaceId: lesson.workspaceId, repo: citation.repo, commit: citation.commit, path: citation.path, startLine: citation.startLine, endLine: citation.endLine, anchor: citation.anchor }),
@@ -59,7 +67,10 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     const verified = await verifyCitations(deps, current);
     // The judge's escalate flag and a contradiction stay with the lesson: settling again can raise a tier, never lower it.
     const context: TierContext = { contradiction: current.contradictsWith !== undefined || options.contradiction === true, judgeEscalate: options.judgeEscalate === true || current.tierReasons.includes("judge_escalate") };
-    const decision = classifyTier(verified, context);
+    // A refinement is at least as risky as the lesson it replaces. A lesson already tiered keeps its tier and reasons: settling again only raises.
+    const superseded = current.supersedes === undefined ? undefined : await deps.store.get(key, current.supersedes);
+    if (superseded !== undefined) context.supersedesTier = superseded.tier;
+    const decision = classifyTier(verified, context, current.tierReasons.length > 0 ? { tier: current.tier, reasons: current.tierReasons } : undefined);
     const now = deps.now();
     const setVersion = await deps.store.setVersion(key);
     const version = nextVersion(current, await deps.store.versions(key, lessonId));
@@ -71,7 +82,10 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
       return deps.store.get(key, lessonId);
     }
 
-    const earned = earnedAttention(verified, decision.tier, false);
+    const flags = await deps.store.flags(key);
+    // A lesson from a source that spiked is collected but held: it is not queued for people or applied until a maintainer resumes the source.
+    const held = isHeldBySource(flags, verified.provenance.sources);
+    const earned = earnedAttention(verified, decision.tier) && (!held || current.status === "pending");
     // A higher tier than before means earlier approvals were for less risk: they no longer count.
     const approvals = decision.tier > current.tier ? [] : current.approvals;
     const next: Lesson = {
@@ -82,10 +96,16 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     if (!result.ok) continue;
     if (next.status === "pending" && current.status !== "pending") await emitAudit(deps.audit, { action: "lesson.pending", workspaceId: key.workspaceId, project: key.project, lessonId, facts: { tier: next.tier } });
 
-    const flags = await deps.store.flags(key);
-    if (next.status === "pending" && next.tier === 0 && approversRequired(0, resolved.approval) === 0 && modeAllows(resolved.mode, "auto_apply") && flags.autoTierPausedAt === undefined) {
-      const active = await activateLesson(deps, key, next, [{ approvalId: `auto-${lessonId}`, by: "system:auto", at: deps.now(), mode: "auto" }], resolved.expiryDays, "lesson.auto_applied");
-      if (active !== undefined) return active;
+    // Auto-apply: tier 0, corroborated, not held, not a refinement of an existing lesson, and the policy and mode allow it.
+    if (next.status === "pending" && next.tier === 0 && next.supersedes === undefined && isCorroborated(next.provenance) && !held
+      && approversRequired(0, resolved.approval) === 0 && modeAllows(resolved.mode, "auto_apply")) {
+      try {
+        const active = await activateLesson(deps, key, next, [{ approvalId: `auto-${lessonId}`, by: "system:auto", at: deps.now(), mode: "auto" }], resolved.expiryDays, "lesson.auto_applied");
+        if (active !== undefined) return active;
+      } catch (error) {
+        // If the go-live cannot be audited it does not happen: the lesson stays pending for a person.
+        if (!(error instanceof AuditUnavailable)) throw error;
+      }
     }
     return deps.store.get(key, lessonId);
   }

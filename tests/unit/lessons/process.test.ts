@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { curateDraft } from "../../../packages/broker/src/lessons/curate.js";
 import { processDraft, settleLesson, type ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
+import { resumeSource } from "../../../packages/broker/src/lessons/sources.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, draft, embedder, settings, verifier } from "./lesson-helpers.js";
@@ -10,23 +11,114 @@ function setup(over: { store?: InMemoryLessonStore; model?: ScriptedModel; setti
   const store = over.store ?? new InMemoryLessonStore();
   const audit = new Audit();
   const clock = new Clock();
+  const alerts = new Alerts();
   let n = 0;
   const deps: ProcessDeps = {
-    store, embedder, vectors: new MemoryVectors(), judgeModel: over.model ?? new ScriptedModel(), spend: new Spend(), audit, alerts: new Alerts(), now: clock.now,
+    store, embedder, vectors: new MemoryVectors(), judgeModel: over.model ?? new ScriptedModel(), spend: new Spend(), audit, alerts, now: clock.now,
     verifier: over.verifier ?? verifier("valid"), settings: over.settings ?? settings(), newId: () => `les_${String(++n).padStart(4, "0")}`,
   };
-  return { deps, store, audit };
+  return { deps, store, audit, clock, alerts };
 }
 const text = (title: string, body: string, over: Partial<LessonDraft> = {}): LessonDraft => draft({ title, description: "", body, ...over });
 
-describe("rate brake effect on routing (C14)", () => {
-  it("while paused, a tier-0 lesson waits for a person instead of going live", async () => {
+const DAY = 86_400_000;
+const unique = (i: number, sources: string[], over: Partial<LessonDraft["provenance"]> = {}): LessonDraft =>
+  draft({ title: `Topic ${i}`, description: "", body: Array.from({ length: 12 }, (_, j) => `w${i}x${j}q${i * 31 + j}`).join(" "), provenance: { ...draft().provenance, sources, authors: [], memberSignal: false, sourceKinds: ["send_back"], ...over } });
+
+describe("per-source spike detection (owner decision 'Lesson limits': no flat caps)", () => {
+  async function history(store: InMemoryLessonStore, clock: Clock, source: string, perDay: number, days = 14): Promise<void> {
+    for (let d = 1; d <= days; d += 1) for (let i = 0; i < perDay; i += 1) await store.recordSourceEvent(KEY, { at: clock.now() - d * DAY, source });
+  }
+
+  it("collects every candidate: 50 from one source are all kept, none dropped", async () => {
     const { deps, store } = setup();
-    await store.setFlags(KEY, { autoTierPausedAt: 1, autoTierPausedReason: "burst" });
-    const result = await processDraft(deps, KEY, draft());
-    expect(result.lesson).toMatchObject({ status: "pending", tier: 0 });
+    for (let i = 0; i < 50; i += 1) expect((await curateDraft(deps, KEY, unique(i, ["member:ann"]))).outcome).toBe("added");
+    expect(await store.list(KEY)).toHaveLength(50);
   });
 
+  it("a source at ten times its own baseline is paused ALONE, with one alert; its lessons are held, not dropped; other sources carry on", async () => {
+    const { deps, store, clock, alerts, audit } = setup();
+    await history(store, clock, "member:ann", 1);
+    const held: string[] = [];
+    for (let i = 0; i < 12; i += 1) { const r = await processDraft(deps, KEY, unique(i, ["member:ann"])); if (r.lesson !== undefined) held.push(r.lesson.status); }
+    expect(Object.keys((await store.flags(KEY)).pausedSources ?? {})).toEqual(["member:ann"]);
+    expect(alerts.sent.filter((c) => c === "source_spike_paused")).toHaveLength(1);
+    expect(audit.actions().filter((a) => a === "lesson.source_paused")).toHaveLength(1);
+    // The 10th, 11th and 12th candidates arrived after the pause: collected and held as candidates, never queued for people or applied.
+    expect(held.slice(-3)).toEqual(["candidate", "candidate", "candidate"]);
+    expect((await store.list(KEY)).filter((l) => l.status === "candidate").length).toBeGreaterThanOrEqual(3);
+    expect(await store.list(KEY)).toHaveLength(12);
+    const other = await processDraft(deps, KEY, unique(100, ["member:bob"]));
+    expect(other.lesson!.status).toBe("active");
+  });
+
+  it("the unit is the source, not the author: a flood of author-less CI text is caught", async () => {
+    const { deps, store } = setup();
+    for (let i = 0; i < 12; i += 1) await curateDraft(deps, KEY, unique(i, ["ci"]));
+    expect(Object.keys((await store.flags(KEY)).pausedSources ?? {})).toEqual(["ci"]);
+  });
+
+  it("is judged against the source's own learned baseline: 30 a day is normal for a source that gives 5, a spike for one that gives 1", async () => {
+    const busy = setup();
+    await history(busy.store, busy.clock, "slack:C1", 5);
+    for (let i = 0; i < 30; i += 1) await curateDraft(busy.deps, KEY, unique(i, ["slack:C1"]));
+    expect((await busy.store.flags(KEY)).pausedSources).toBeUndefined();
+    for (let i = 30; i < 60; i += 1) await curateDraft(busy.deps, KEY, unique(i, ["slack:C1"]));
+    expect(Object.keys((await busy.store.flags(KEY)).pausedSources ?? {})).toEqual(["slack:C1"]);
+  });
+
+  it("a brand-new source is not paused below ten candidates in a day", async () => {
+    const { deps, store } = setup();
+    for (let i = 0; i < 9; i += 1) await curateDraft(deps, KEY, unique(i, ["slack:new"]));
+    expect((await store.flags(KEY)).pausedSources).toBeUndefined();
+    await curateDraft(deps, KEY, unique(9, ["slack:new"]));
+    expect(Object.keys((await store.flags(KEY)).pausedSources ?? {})).toEqual(["slack:new"]);
+  });
+
+  it("a maintainer resumes the source, and its held lesson moves on at the next settle", async () => {
+    const { deps, store, audit } = setup();
+    await store.setFlags(KEY, { pausedSources: { "member:ann": { at: 1, reason: "spike" } } });
+    const held = await processDraft(deps, KEY, unique(1, ["member:ann"]));
+    expect(held.lesson!.status).toBe("candidate");
+    expect(await resumeSource(deps, store, KEY, "member:ann", "owner")).toBe(true);
+    expect(await resumeSource(deps, store, KEY, "member:ann", "owner")).toBe(false);
+    expect(audit.actions()).toContain("lesson.source_resumed");
+    const settled = await settleLesson(deps, KEY, held.lesson!.id);
+    expect(settled!.status).toBe("active");
+  });
+});
+
+describe("corroboration for tier-0 auto-apply (owner decision 'Lesson limits')", () => {
+  const fact = (over: Partial<LessonDraft["provenance"]>) => draft({ provenance: { ...draft().provenance, memberSignal: false, ...over } });
+
+  it("a single-source fact with no measured outcome waits as a candidate: nothing is applied and nothing is dropped", async () => {
+    const { deps } = setup();
+    const out = await processDraft(deps, KEY, fact({ sourceKinds: ["human_edit"] }));
+    expect(out.lesson).toMatchObject({ status: "candidate", tier: 0 });
+  });
+
+  it("a measured outcome backs it up: it goes live", async () => {
+    for (const kind of ["send_back", "ci_failure", "outcome"] as const) {
+      const { deps } = setup();
+      expect((await processDraft(deps, KEY, fact({ sourceKinds: [kind] }))).lesson).toMatchObject({ status: "active" });
+    }
+  });
+
+  it("two independent tasks back it up: the second one corroborates, and the merged fact goes live", async () => {
+    const { deps } = setup();
+    const first = await processDraft(deps, KEY, fact({ sourceKinds: ["human_edit"] }));
+    expect(first.lesson!.status).toBe("candidate");
+    const second = await processDraft(deps, KEY, fact({ sourceKinds: ["human_edit"], supportTasks: ["task-2"], sourceEvents: ["ev-2"] }));
+    expect(second.outcome.outcome).toBe("merged");
+    expect(second.lesson).toMatchObject({ status: "active" });
+  });
+
+  it("the same task twice is not two sources", async () => {
+    const { deps } = setup();
+    await processDraft(deps, KEY, fact({ sourceKinds: ["human_edit"] }));
+    const again = await processDraft(deps, KEY, fact({ sourceKinds: ["human_edit"] }));
+    expect(again.lesson!.status).toBe("candidate");
+  });
 });
 
 describe("promotion to pending (design §4.5.2 step 5) and tier-0 routing", () => {
@@ -48,9 +140,11 @@ describe("promotion to pending (design §4.5.2 step 5) and tier-0 routing", () =
     expect(result.lesson).toMatchObject({ status: "pending", tier: 1 });
   });
 
-  it("a single cited fact from a trusted source goes live by itself in mode On (decision Q2), audited", async () => {
+  const measured = (over: Partial<LessonDraft["provenance"]> = {}) => ({ ...draft().provenance, memberSignal: false, sourceKinds: ["send_back" as const], ...over });
+
+  it("a cited fact backed by a measured outcome goes live by itself in mode On (decisions Q2 and Lesson limits), audited", async () => {
     const { deps, audit } = setup();
-    const result = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, memberSignal: false } }));
+    const result = await processDraft(deps, KEY, draft({ provenance: measured() }));
     expect(result.lesson).toMatchObject({ status: "active", tier: 0 });
     expect(result.lesson!.approvals[0]).toMatchObject({ by: "system:auto", mode: "auto" });
     expect(audit.actions()).toEqual(expect.arrayContaining(["lesson.pending", "lesson.auto_applied"]));
@@ -58,7 +152,7 @@ describe("promotion to pending (design §4.5.2 step 5) and tier-0 routing", () =
 
   it("in mode Suggest the same fact waits for a person; in mode Collect or Off nothing is made", async () => {
     const suggest = setup({ settings: settings({ mode: "Suggest" }) });
-    expect((await processDraft(suggest.deps, KEY, draft())).lesson).toMatchObject({ status: "pending", tier: 0 });
+    expect((await processDraft(suggest.deps, KEY, draft({ provenance: measured() }))).lesson).toMatchObject({ status: "pending", tier: 0 });
     for (const mode of ["Collect", "Off"] as const) {
       const s = setup({ settings: settings({ mode }) });
       const out = await processDraft(s.deps, KEY, draft());
@@ -69,7 +163,7 @@ describe("promotion to pending (design §4.5.2 step 5) and tier-0 routing", () =
   it("an unverified or stale citation keeps a fact out of tier 0; an unreadable check is not trusted", async () => {
     for (const result of ["stale", "unknown"] as const) {
       const { deps } = setup({ verifier: verifier(result) });
-      const out = await processDraft(deps, KEY, draft());
+      const out = await processDraft(deps, KEY, draft({ provenance: measured({ memberSignal: true }) }));
       expect(out.lesson).toMatchObject({ status: "pending", tier: 1 });
       expect(out.lesson!.tierReasons).toContain("citations_not_verified");
     }
@@ -77,7 +171,7 @@ describe("promotion to pending (design §4.5.2 step 5) and tier-0 routing", () =
 
   it("a moved citation is corrected and then trusted", async () => {
     const { deps } = setup({ verifier: verifier("moved") });
-    const out = await processDraft(deps, KEY, draft());
+    const out = await processDraft(deps, KEY, draft({ provenance: measured() }));
     expect(out.lesson).toMatchObject({ status: "active", tier: 0 });
     expect(out.lesson!.citations[0]).toMatchObject({ startLine: 20, endLine: 30 });
   });

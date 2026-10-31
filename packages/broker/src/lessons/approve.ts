@@ -9,27 +9,41 @@ import { randomUUID } from "node:crypto";
 import { decideSecondPersonApproval } from "../org/second-person-approval.js";
 import { cleanForLearning, requestsCapabilityChange } from "./guards.js";
 import { expiryWindowMs } from "./expiry.js";
-import { approversRequired, emitAudit, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
+import { approversRequired, emitAudit, modeAllows, requireAudit, resolveLearning, type LearningSettingsReader } from "./policy.js";
+import { lessonValue } from "./value.js";
 import type { ApproverDirectory, LessonDeps } from "./ports.js";
 import { retireLesson } from "./curate.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
-import type { Lesson, Tier } from "./types.js";
+import { isRestricted, satisfiesAcl, type IdentitySet, type Lesson, type Tier } from "./types.js";
 
 export interface ApproveDeps extends LessonDeps { store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader }
 
 export type ApprovalFailure =
   | "not_found" | "not_pending" | "mode_off" | "not_eligible" | "already_approved" | "author_cannot_approve_alone"
-  | "second_person_required" | "sole_owner_cool_off" | "eligibility_unavailable" | "capability_request" | "conflict" | "tier_never";
+  | "second_person_required" | "sole_owner_cool_off" | "eligibility_unavailable" | "capability_request" | "conflict" | "tier_never" | "not_permitted" | "audit_unavailable";
 export type ApprovalResult =
   | { ok: true; status: "active" | "pending"; lesson: Lesson; needs: "nothing" | "second_person" | "group_member" }
   | { ok: false; code: ApprovalFailure };
 
 const MAX_TRIES = 3;
 
+/** The change was not made because its audit record could not be written (fail closed). */
+export class AuditUnavailable extends Error { constructor() { super("audit unavailable"); } }
+
+/** A restricted lesson may be shown to, and decided by, only a person who could see its source (design §1.2, Q14). Unrestricted lessons are open to every eligible person. */
+async function mayHandle(deps: { directory: ApproverDirectory }, key: ScopeKey, lesson: Lesson, personId: string): Promise<boolean> {
+  if (!isRestricted(lesson) || lesson.provenance.audience.kind !== "restricted") return true;
+  try { return satisfiesAcl(await deps.directory.identity(key.workspaceId, personId), lesson.provenance.audience.acl); } catch { return false; }
+}
+
 /** Makes a lesson live: status active, expiry set, approvals recorded, and the lesson it supersedes retired. One conditional commit per attempt. */
 export async function activateLesson(deps: LessonDeps & { store: LessonStore }, key: ScopeKey, lesson: Lesson, approvals: Lesson["approvals"], expiryDays: number | undefined, action: "lesson.activated" | "lesson.auto_applied"): Promise<Lesson | undefined> {
   const now = deps.now();
+  // A refinement is never applied without a person: the judge that called it a refinement can be steered by the text it read.
+  if (action === "lesson.auto_applied" && lesson.supersedes !== undefined) return undefined;
+  // Audit first: a go-live that cannot be recorded does not happen.
+  if (!(await requireAudit(deps.audit, { action, workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, facts: { tier: lesson.tier, approvals: approvals.length, ...(lesson.supersedes === undefined ? {} : { supersedes: lesson.supersedes }) } }))) throw new AuditUnavailable();
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     const fresh = await deps.store.get(key, lesson.id);
     if (fresh === undefined || (fresh.status !== "pending" && fresh.status !== "candidate")) return undefined;
@@ -45,10 +59,7 @@ export async function activateLesson(deps: LessonDeps & { store: LessonStore }, 
       if (old !== undefined && old.status === "active") writes.push({ ...old, version: nextVersion(old, await deps.store.versions(key, old.id)), status: "retired", updatedAt: now });
     }
     const result = await deps.store.commit(key, setVersion, writes, now);
-    if (result.ok) {
-      await emitAudit(deps.audit, { action, workspaceId: key.workspaceId, project: key.project, lessonId: fresh.id, facts: { tier: fresh.tier, approvals: approvals.length, ...(fresh.supersedes === undefined ? {} : { supersedes: fresh.supersedes }) } });
-      return next;
-    }
+    if (result.ok) return next;
   }
   return undefined;
 }
@@ -68,6 +79,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     const lesson = await deps.store.get(key, input.lessonId);
     if (lesson === undefined) return { ok: false, code: "not_found" };
     if (lesson.status !== "pending") return { ok: false, code: "not_pending" };
+    if (!(await mayHandle(deps, key, lesson, input.approverId))) return { ok: false, code: "not_permitted" };
 
     // Edit and approve: the edited text is cleaned and screened, and the tier is worked out again on it.
     let working: Lesson = lesson;
@@ -78,7 +90,9 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       const body = cleanForLearning(input.edit.body, 600);
       if (title === "" || body === "" || requestsCapabilityChange(title, description, body)) return { ok: false, code: "capability_request" };
       working = { ...lesson, title, description, body };
-      const decision = classifyTier(working, { contradiction: lesson.contradictsWith !== undefined });
+      // The tier of an edited lesson is the higher of its old tier and the new one, and it keeps its reasons (including the judge's escalate flag): an edit can
+      // raise a tier, never lower it, so rewording a tier-2 lesson cannot take it to one person.
+      const decision = classifyTier(working, { contradiction: lesson.contradictsWith !== undefined, judgeEscalate: lesson.tierReasons.includes("judge_escalate") }, { tier: lesson.tier, reasons: lesson.tierReasons });
       if (decision.tier === "never") return { ok: false, code: "tier_never" };
       working = { ...working, tier: decision.tier, tierReasons: decision.reasons };
       // A person's edit is a new lesson text: approvals given to the old text do not carry over, and a higher tier needs its people again.
@@ -88,15 +102,15 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     if (approvals.some((a) => a.by === input.approverId)) return { ok: false, code: "already_approved" };
     const tier: Tier = working.tier;
     const required = approversRequired(tier, resolved.approval);
-    const soleAuthor = working.provenance.authors.length === 1 ? working.provenance.authors[0] : undefined;
+    const isAuthor = working.provenance.authors.includes(input.approverId);
     let mode: Lesson["approvals"][number]["mode"] = "one";
 
     if (required === 0) {
       // Policy says this tier applies by itself, but a person who is deciding anyway is accepted as the approval.
       mode = "one";
     } else if (required === 1) {
-      if (soleAuthor === input.approverId && group.eligibleIds.length > 1) return { ok: false, code: "author_cannot_approve_alone" };
-      if (soleAuthor === input.approverId) {
+      if (isAuthor && group.eligibleIds.length > 1) return { ok: false, code: "author_cannot_approve_alone" };
+      if (isAuthor) {
         const decision = trySecondPerson(group, input.approverId, input.approverId, deps.now());
         if (!decision.ok) return decision;
         mode = "sole_owner_exception";
@@ -120,8 +134,9 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     approvals = [...approvals, given];
     const complete = mode === "sole_owner_exception" || approvals.length >= Math.max(required, 1);
     const inGroup = resolved.approval.requiredGroup === undefined || approvals.some((a) => (group.groups?.[resolved.approval.requiredGroup!] ?? []).includes(a.by));
-    await emitAudit(deps.audit, { action: "lesson.approved", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { tier, mode, count: approvals.length } });
-    if (mode === "sole_owner_exception") await emitAudit(deps.audit, { action: "lesson.sole_owner_exception", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { tier } });
+    // The approval is recorded before it takes effect; if the record cannot be written, nothing changes.
+    if (!(await requireAudit(deps.audit, { action: "lesson.approved", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { tier, mode, count: approvals.length } }))) return { ok: false, code: "audit_unavailable" };
+    if (mode === "sole_owner_exception" && !(await requireAudit(deps.audit, { action: "lesson.sole_owner_exception", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { tier } }))) return { ok: false, code: "audit_unavailable" };
 
     if (complete && inGroup) {
       // The edited text must be saved with the activation: write the edit first as a version of the pending lesson when there is one.
@@ -130,7 +145,8 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
         const saved = await deps.store.commit(key, setVersion, [{ ...working, version: nextVersion(lesson, await deps.store.versions(key, lesson.id)), updatedAt: now }], now);
         if (!saved.ok) continue;
       }
-      const active = await activateLesson(deps, key, working, approvals, resolved.expiryDays, "lesson.activated");
+      let active: Lesson | undefined;
+      try { active = await activateLesson(deps, key, working, approvals, resolved.expiryDays, "lesson.activated"); } catch (error) { if (error instanceof AuditUnavailable) return { ok: false, code: "audit_unavailable" }; throw error; }
       if (active === undefined) continue;
       return { ok: true, status: "active", lesson: active, needs: "nothing" };
     }
@@ -144,7 +160,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
   return { ok: false, code: "conflict" };
 }
 
-function trySecondPerson(group: Awaited<ReturnType<ApproverDirectory["eligibility"]>>, proposerId: string, approverId: string, nowMs: number):
+export function trySecondPerson(group: Awaited<ReturnType<ApproverDirectory["eligibility"]>>, proposerId: string, approverId: string, nowMs: number):
   | { ok: true; mode: "second_person" | "sole_owner_exception" } | { ok: false; code: ApprovalFailure } {
   try {
     const decision = decideSecondPersonApproval({
@@ -165,6 +181,8 @@ async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; proje
   const lesson = await deps.store.get(key, input.lessonId);
   if (lesson === undefined) return { ok: false, code: "not_found" };
   if (!input.allowed.includes(lesson.status)) return { ok: false, code: "not_pending" };
+  // Reading a restricted lesson to reject it needs the same access as approving it. Retire is the kill switch: it shows no text, so it is never blocked.
+  if (input.to === "rejected" && !(await mayHandle(deps, key, lesson, input.actorId))) return { ok: false, code: "not_permitted" };
   if (input.to === "retired") return (await retireLesson(deps, key, lesson.id, input.reason, input.actorId, "lesson.retired")) ? { ok: true } : { ok: false, code: "conflict" };
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     const fresh = await deps.store.get(key, lesson.id);
@@ -194,13 +212,23 @@ export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId:
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
   if (!group.eligibleIds.includes(input.actorId)) return { ok: false, code: "not_eligible" };
   const current = await deps.store.setVersion(key);
+  if (!(await requireAudit(deps.audit, { action: "lesson.rolled_back", workspaceId: key.workspaceId, project: key.project, actor: input.actorId, facts: { to: input.targetSetVersion, from: current } }))) return { ok: false, code: "audit_unavailable" };
   const result = await deps.store.rollback(key, input.targetSetVersion, current, deps.now());
   if (!result.ok) return { ok: false, code: "conflict" };
-  await emitAudit(deps.audit, { action: "lesson.rolled_back", workspaceId: key.workspaceId, project: key.project, actor: input.actorId, facts: { to: input.targetSetVersion, from: current } });
   return { ok: true, setVersion: result.setVersion };
 }
 
-/** The lessons waiting for people, for the Lessons tab and the Home card. Newest first. */
-export async function listWaiting(store: LessonStore, key: ScopeKey): Promise<Lesson[]> {
-  return (await store.list(key, { statuses: ["pending"] })).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+/**
+ * The lessons waiting for people, most valuable first (measured outcomes, then recurrence, then severity), for the Lessons tab and the Home card. A lesson
+ * from a restricted source is listed only for a viewer who could see that source.
+ */
+export async function listWaiting(store: LessonStore, key: ScopeKey, viewer: IdentitySet): Promise<Lesson[]> {
+  return (await store.list(key, { statuses: ["pending"] })).filter((l) => l.provenance.audience.kind !== "restricted" || satisfiesAcl(viewer, l.provenance.audience.acl))
+    .sort((a, b) => lessonValue(b) - lessonValue(a) || b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+}
+
+/** Lessons collected but not yet in front of people (waiting for corroboration, or held because their source spiked), most valuable first. Nothing is dropped. */
+export async function listQueued(store: LessonStore, key: ScopeKey, viewer: IdentitySet): Promise<Lesson[]> {
+  return (await store.list(key, { statuses: ["candidate"] })).filter((l) => l.provenance.audience.kind !== "restricted" || satisfiesAcl(viewer, l.provenance.audience.acl))
+    .sort((a, b) => lessonValue(b) - lessonValue(a) || a.id.localeCompare(b.id));
 }

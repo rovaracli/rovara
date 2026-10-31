@@ -110,6 +110,8 @@ export const LessonProvenanceSchema = z.object({
   authors: z.array(z.string().max(100)).max(20),
   /** Independent tasks that support the lesson (one id per task). */
   supportTasks: z.array(z.string().max(100)).max(50),
+  /** Where the evidence came from, for per-source spike detection: `member:<id>`, `slack:<channel>`, `ci`, or a span kind. */
+  sources: z.array(z.string().max(120)).max(20),
   minTrust: TrustClassSchema, audience: AudienceSchema, reflectorRun: z.string().max(100), model: z.string().max(100),
   /** Set when a person asked for the lesson with "remember this" or a member's edit made it (a strong signal). */
   memberSignal: z.boolean(),
@@ -134,7 +136,10 @@ export const LessonSchema = z.object({
   /** Pending lessons that nobody decided expire at this time. */
   pendingExpiresAt: z.number().optional(),
   approvals: z.array(z.object({ approvalId: z.string().max(100), by: z.string().max(100), at: z.number(), mode: z.enum(["one", "second_person", "sole_owner_exception", "auto"]) }).strict()).max(10),
-  supersedes: z.string().max(64).optional(), promotedRuleId: z.string().max(100).optional(),
+  supersedes: z.string().max(64).optional(),
+  /** People who asked for this lesson to become a How we work rule; a tier-2 lesson needs two before it is published. */
+  promotionApprovals: z.array(z.object({ by: z.string().max(100), at: z.number() }).strict()).max(5).optional(),
+  promotedRuleId: z.string().max(100).optional(),
   /** The lesson this one contradicts, when both go to a person on one card. */
   contradictsWith: z.string().max(64).optional(),
   /** Set when harmful marks call for a retire and a person has to decide (tier 1 and 2 lessons). */
@@ -152,7 +157,7 @@ export const isRestricted = (lesson: Pick<Lesson, "provenance">): boolean => les
 export const LESSON_AUDIT_ACTIONS = [
   "lesson.candidate_created", "lesson.merged", "lesson.updated", "lesson.pending", "lesson.auto_applied", "lesson.approved", "lesson.activated",
   "lesson.rejected", "lesson.retired", "lesson.auto_retired", "lesson.retire_proposed", "lesson.refused", "lesson.stale", "lesson.expired",
-  "lesson.rolled_back", "lesson.promoted", "lesson.wrong_here", "lesson.helpful", "lesson.auto_tier_paused", "lesson.auto_tier_resumed",
-  "lesson.sole_owner_exception", "lesson.citation_moved", "lesson.contradiction", "lesson.dropped_rate_limit", "lesson.withdrawn",
+  "lesson.rolled_back", "lesson.promoted", "lesson.wrong_here", "lesson.helpful", "lesson.source_paused", "lesson.source_resumed",
+  "lesson.sole_owner_exception", "lesson.citation_moved", "lesson.contradiction", "lesson.withdrawn", "lesson.promote_failed", "lesson.held_source_paused",
 ] as const;
 export type LessonAuditAction = (typeof LESSON_AUDIT_ACTIONS)[number];

@@ -19,7 +19,7 @@ function setup(judge = new Judge(), s = settings()) {
 }
 const manifest = (taskId: string, ids: string[], over: Partial<LoadManifest> = {}): LoadManifest => ({
   taskId, workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1,
-  lessons: ids.map((id) => ({ id, version: 1, score: 0.5, why: "scope" as const, citation: "unchecked" as const })), bytes: 100, ...over,
+  lessons: ids.map((id) => ({ id, version: 1, score: 0.5, why: "scope" as const, citation: "valid" as const })), bytes: 100, ...over,
 });
 const outcome = (over: Partial<TaskOutcome> = {}): TaskOutcome => ({ ...KEY, taskId: "task-1", outcome: "merged", sendBacks: 0, mergedAt: 1_800_000_000_000, corrections: [], ...over });
 const correction = (over: Record<string, unknown> = {}) => ({ kind: "send_back" as const, paths: ["src/retry/a.ts"], text: "use the shared retry helper", at: 1, ...over });
@@ -280,7 +280,7 @@ describe("panel rows", () => {
     const asStranger = await lessonPanelRows(store, KEY, "task-1", { principals: ["U-stranger"], groups: [] });
     expect(asStranger.map((r) => [r.lessonId, r.visible, r.canMark])).toEqual([["les_aaaa1111", true, true], ["les_rest0001", false, false], ["les_gone0001", false, false]]);
     expect(JSON.stringify(asStranger)).not.toContain("Secret channel lesson");
-    expect(asStranger[0]).toMatchObject({ title: "Retries use withRetry", helpful: 2, citation: "unchecked", why: "scope" });
+    expect(asStranger[0]).toMatchObject({ title: "Retries use withRetry", helpful: 2, citation: "valid", why: "scope" });
     const asMember = await lessonPanelRows(store, KEY, "task-1", { principals: ["U-member"], groups: [] });
     expect(asMember[1]).toMatchObject({ visible: true, title: "Secret channel lesson" });
   });

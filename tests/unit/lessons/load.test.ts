@@ -1,6 +1,7 @@
 // L4 (broker side): the loader. Poisoning classes P9 and P10 (loader side), and the reviewer-independence control C11.
 import { describe, expect, it } from "vitest";
 import { LearnedContextSchema } from "../../../packages/contracts/src/index.js";
+import { applyLoadReport } from "../../../packages/broker/src/lessons/counters.js";
 import { LOAD_MAX_BYTES, LOAD_MAX_LESSONS, learnedContextForDispatch, loadLessonsForStage, scopeMatch, wilsonLower, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
@@ -114,16 +115,21 @@ describe("selection", () => {
     expect(ids(await loadLessonsForStage(deps, request()))[0]).toBe("les_zzz00001");
   });
 
-  it("writes the manifest once per stage dispatch and counts 'loaded' once per task and lesson", async () => {
+  it("writes the manifest once per stage dispatch; 'loaded' is counted only when the worker reports the lesson reached the prompt (once per task and lesson)", async () => {
     const { deps, add, store } = setup();
     await add(conv("les_ok000001"));
     await loadLessonsForStage(deps, request({ stage: "UNDERSTAND" }));
     await loadLessonsForStage(deps, request({ stage: "IMPLEMENT" }));
     await loadLessonsForStage(deps, request({ stage: "IMPLEMENT" }));
-    expect((await store.get(KEY, "les_ok000001"))!.counters.loaded).toBe(1);
+    expect((await store.get(KEY, "les_ok000001"))!.counters.loaded).toBe(0);
     expect(await store.manifests(KEY, "task-1")).toHaveLength(2);
     const [m] = await store.manifests(KEY, "task-1");
     expect(m).toMatchObject({ memory: "live", setVersion: 1, round: 1 });
+    const counter = { store, judge: { rate: async () => "unrelated" as const }, settings: settings(), audit: new Audit(), now: new Clock().now };
+    const report = (stage: "UNDERSTAND" | "IMPLEMENT") => ({ v: 1 as const, stage, lessons: [{ id: "les_ok000001", version: 1, citation: "valid" as const }] });
+    await applyLoadReport(counter, { ...KEY, taskId: "task-1", stage: "UNDERSTAND", round: 1, report: report("UNDERSTAND") });
+    await applyLoadReport(counter, { ...KEY, taskId: "task-1", stage: "IMPLEMENT", round: 1, report: report("IMPLEMENT") });
+    expect((await store.get(KEY, "les_ok000001"))!.counters.loaded).toBe(1);
   });
 });
 

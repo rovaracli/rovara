@@ -26,9 +26,10 @@ describe("checkCitation (the plan-citation anchor rules)", () => {
     expect(checkCitation(undefined, c)).toEqual({ kind: "stale" });
     expect(checkCitation(file(["a"]), c)).toEqual({ kind: "stale" });
     expect(checkCitation(retryFile, { ...c, anchor: "export function other() {" })).toEqual({ kind: "stale" });
-    const twice = file(["x", "dup", "y", "dup", "z"]);
-    expect(checkCitation(twice, { startLine: 5, endLine: 5, anchor: "z" })).toEqual({ kind: "valid" });
-    expect(checkCitation(twice, { startLine: 1, endLine: 1, anchor: "dup" })).toEqual({ kind: "stale" });
+    const dup = "const duplicated = compute()";
+    const twice = file(["x", dup, "y", dup, "z", ...Array.from({ length: 10 }, (_, i) => `filler ${i}`), "const last = finish()"]);
+    expect(checkCitation(twice, { startLine: 15, endLine: 15, anchor: "const last = finish()" })).toEqual({ kind: "valid" });
+    expect(checkCitation(twice, { startLine: 8, endLine: 8, anchor: dup })).toEqual({ kind: "stale" });
   });
   it("unchecked when the file is too large to hold", () => { expect(checkCitation({ lineCount: 99999, lines: undefined }, c)).toEqual({ kind: "unchecked" }); });
 });

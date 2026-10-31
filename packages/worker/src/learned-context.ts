@@ -6,8 +6,8 @@
 //   4. returns the load report the broker turns into counters.
 // Wiring pending: the payload field in the invocation schema and the one prompt-assembly hunk in run-task.ts (see the lane report).
 import {
-  LearnedContextSchema, cleanLessonText,
-  type CodeCitation, type LearnedContext, type LearnedLesson, type LoadReport, type LessonStage,
+  LearnedContextSchema, cleanLessonText, locateCitation,
+  type CitationLocation, type CodeCitation, type LearnedContext, type LearnedLesson, type LoadReport, type LessonStage,
 } from "@agentx/contracts";
 
 /** What the check needs of a file at the base commit: its lines, or only the count when the file is too large to hold. */
@@ -17,23 +17,9 @@ export type BaseFileReader = (repo: string, path: string) => Promise<BaseFile | 
 
 export const CITATION_CHECK_DEADLINE_MS = 3000;
 
-type CitationResult = { kind: "valid" } | { kind: "moved"; startLine: number; endLine: number } | { kind: "stale" } | { kind: "unchecked" };
-
-/** Checks one code citation against a file. The anchor is the first cited line, copied from the file when the lesson was made. */
-export function checkCitation(file: BaseFile | undefined, citation: Pick<CodeCitation, "startLine" | "endLine" | "anchor">): CitationResult {
-  if (file === undefined) return { kind: "stale" };
-  if (citation.startLine > file.lineCount) return { kind: "stale" };
-  if (file.lines === undefined) return { kind: "unchecked" };
-  const wanted = citation.anchor.trimEnd();
-  const found: number[] = [];
-  for (const [position, line] of file.lines.entries()) if (line.trimEnd() === wanted) found.push(position + 1);
-  if (found.some((line) => line >= citation.startLine && line <= citation.endLine)) return { kind: "valid" };
-  if (found.length === 1) {
-    const length = citation.endLine - citation.startLine;
-    const startLine = Math.max(1, Math.min(found[0]!, file.lineCount - length));
-    return { kind: "moved", startLine, endLine: Math.min(file.lineCount, startLine + length) };
-  }
-  return { kind: "stale" };
+/** Checks one code citation against a file (the shared anchor rules in contracts: meaningful anchor, at the start line, or found once elsewhere). */
+export function checkCitation(file: BaseFile | undefined, citation: Pick<CodeCitation, "startLine" | "endLine" | "anchor">): CitationLocation {
+  return locateCitation(file, citation);
 }
 
 type LessonResult = { citation: LoadReport["lessons"][number]["citation"]; lesson: LearnedLesson; corrected?: Array<{ index: number; startLine: number; endLine: number }> };

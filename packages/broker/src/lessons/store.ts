@@ -20,7 +20,8 @@ export interface LoadManifest {
   memory: "live" | "off"; at: number; lessons: LoadManifestEntry[]; bytes: number;
 }
 export interface PendingOutcome { key: string; workspaceId: string; project: string; lessonId: string; taskId: string; dueAt: number }
-export interface ProjectFlags { autoTierPausedAt?: number; autoTierPausedReason?: string }
+/** A source paused by spike detection: its lessons are collected but held until a maintainer resumes the source. */
+export interface ProjectFlags { pausedSources?: Record<string, { at: number; reason: string }> }
 export interface SetSnapshot { setVersion: number; at: number; members: Array<{ id: string; version: number }> }
 
 export interface LessonStore {
@@ -45,9 +46,10 @@ export interface LessonStore {
   removePending(key: ScopeKey, pendingKey: string): Promise<void>;
   flags(key: ScopeKey): Promise<ProjectFlags>;
   setFlags(key: ScopeKey, flags: ProjectFlags): Promise<void>;
-  recordCandidate(key: ScopeKey, event: { at: number; authors: readonly string[] }): Promise<void>;
-  countCandidates(key: ScopeKey, sinceMs: number, author?: string): Promise<number>;
-  candidateDays(key: ScopeKey, days: number, now: number): Promise<number[]>;
+  /** One candidate from a source (for the source's own baseline). */
+  recordSourceEvent(key: ScopeKey, event: { at: number; source: string }): Promise<void>;
+  /** Candidates per day from one source, newest day first (index 0 is the last 24 hours). */
+  sourceDays(key: ScopeKey, source: string, days: number, now: number): Promise<number[]>;
 }
 
 const DAY = 86_400_000;
@@ -59,7 +61,7 @@ const clone = <T>(value: T): T => structuredClone(value);
 interface ProjectState {
   heads: Map<string, Lesson>; versions: Map<string, Lesson[]>; members: Map<string, number>; sets: SetSnapshot[];
   manifests: Map<string, LoadManifest>; once: Set<string>; pending: Map<string, PendingOutcome>; flags: ProjectFlags;
-  candidates: Array<{ at: number; authors: readonly string[] }>;
+  sourceEvents: Array<{ at: number; source: string }>;
 }
 
 export class InMemoryLessonStore implements LessonStore {
@@ -69,7 +71,7 @@ export class InMemoryLessonStore implements LessonStore {
     const id = scopeId(key);
     let value = this.state.get(id);
     if (value === undefined) {
-      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, candidates: [] };
+      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [] };
       this.state.set(id, value);
     }
     return value;
@@ -188,14 +190,12 @@ export class InMemoryLessonStore implements LessonStore {
   async removePending(key: ScopeKey, pendingKey: string): Promise<void> { this.of(key).pending.delete(pendingKey); }
   async flags(key: ScopeKey): Promise<ProjectFlags> { return clone(this.of(key).flags); }
   async setFlags(key: ScopeKey, flags: ProjectFlags): Promise<void> { this.of(key).flags = clone(flags); }
-  async recordCandidate(key: ScopeKey, event: { at: number; authors: readonly string[] }): Promise<void> { this.of(key).candidates.push(clone(event)); }
-  async countCandidates(key: ScopeKey, sinceMs: number, author?: string): Promise<number> {
-    return this.of(key).candidates.filter((c) => c.at >= sinceMs && (author === undefined || c.authors.includes(author))).length;
-  }
-  async candidateDays(key: ScopeKey, days: number, now: number): Promise<number[]> {
+  async recordSourceEvent(key: ScopeKey, event: { at: number; source: string }): Promise<void> { this.of(key).sourceEvents.push(clone(event)); }
+  async sourceDays(key: ScopeKey, source: string, days: number, now: number): Promise<number[]> {
     const counts = new Array<number>(days).fill(0);
-    for (const c of this.of(key).candidates) {
-      const age = Math.floor((now - c.at) / DAY);
+    for (const e of this.of(key).sourceEvents) {
+      if (e.source !== source) continue;
+      const age = Math.floor((now - e.at) / DAY);
       if (age >= 0 && age < days) counts[age]! += 1;
     }
     return counts;

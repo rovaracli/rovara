@@ -37,7 +37,7 @@ export interface LessonAuditEvent {
   facts: Record<string, string | number | boolean>;
 }
 export interface LessonAuditSink { emit(event: LessonAuditEvent): Promise<void> }
-export interface AlertSink { alert(workspaceId: string, project: string, code: "burst_auto_tier_paused" | "lesson_contradiction" | "retire_proposed"): Promise<void> }
+export interface AlertSink { alert(workspaceId: string, project: string, code: "source_spike_paused" | "lesson_contradiction" | "retire_proposed"): Promise<void> }
 export interface Metrics { count(name: string, tags?: Record<string, string>): void }
 
 /** The broker's check of a code citation against a base commit's objects (never a working tree). `unknown`: it could not tell, so the lesson is not trusted as verified. */

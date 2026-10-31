@@ -2,6 +2,7 @@
 // worker invocation (protocol.ts) and the feature string `task.learnedContext.v1` are added by the record-core lane (R1); the shape lives here so the
 // broker's loader and the worker's validator read one definition. Strict: a field this build does not know is refused, never ignored.
 import { z } from "zod";
+import { isMeaningfulAnchor } from "./lesson-citation.js";
 
 export const LEARNED_CONTEXT_FEATURE = "task.learnedContext.v1" as const;
 export const LEARNED_CONTEXT_MAX_LESSONS = 12;
@@ -20,7 +21,7 @@ export const CodeCitationSchema = z.object({
   kind: z.literal("code"), repo: RepoName, path: RelativePath,
   startLine: z.number().int().min(1).max(10_000_000), endLine: z.number().int().min(1).max(10_000_000),
   /** The first cited line, copied from the file. */
-  anchor: z.string().min(1).max(400), commit: z.string().regex(/^[a-f0-9]{7,64}$/u),
+  anchor: z.string().min(1).max(400).refine(isMeaningfulAnchor, "the anchor is a meaningful line of code"), commit: z.string().regex(/^[a-f0-9]{7,64}$/u),
 }).strict().refine((c) => c.endLine >= c.startLine && c.endLine - c.startLine <= 400, "the range is at most 400 lines");
 export type CodeCitation = z.infer<typeof CodeCitationSchema>;
 
