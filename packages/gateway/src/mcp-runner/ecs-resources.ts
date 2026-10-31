@@ -6,7 +6,6 @@
 //   - a SECURITY GROUP `rovara-mcp-<kind>-<id>` that holds only what the admin approved: the endpoints the task needs to start, the controller, and each approved destination's
 //     resolved addresses as /32. EC2 gives a new group "all traffic out"; that rule is removed before anything else is added, and no rule here is ever 0.0.0.0/0.
 // The cloud calls go through the narrow interfaces below (the real clients are adapted in the broker's aws-adapters.ts), so every rule is tested against a fake.
-import { createHash } from "node:crypto";
 import { RUNNER_FAMILY_PREFIX, serveFamily } from "./task-runner.js";
 import type { ServerResources } from "../mcp-controller.js";
 
@@ -60,7 +59,8 @@ interface ContainerDefinition {
 
 const IMAGE_BY_DIGEST = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,300}@sha256:[0-9a-f]{64}$/u;
 const EXECUTION_ROLE = /^arn:aws(?:-[a-z]+)*:iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,200}$/u;
-const SECRET_REF = /^(?:arn:aws(?:-[a-z]+)*:secretsmanager:[a-z0-9-]+:\d{12}:secret:)?agentx\/[A-Za-z0-9/_+=.@-]{1,300}$/u;
+/** The secret's FULL ARN (with the random suffix Secrets Manager adds): ECS reads a JSON key of it as `<arn>:<key>::`. A bare name is not accepted. */
+const SECRET_REF = /^arn:aws(?:-[a-z]+)*:secretsmanager:[a-z0-9-]+:\d{12}:secret:agentx\/[A-Za-z0-9/_+=.@-]{1,300}-[A-Za-z0-9]{6}$/u;
 const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/u;
 const NODE = "/usr/local/bin/node";
 
@@ -107,11 +107,41 @@ export function buildRunnerTaskDefinition(input: TaskDefinitionInput): RunnerTas
   };
 }
 
-export const definitionHash = (definition: RunnerTaskDefinition): string => createHash("sha256").update(JSON.stringify(definition)).digest("hex");
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+/** Every field of `expected` is in `actual` with the same value (arrays element by element); `actual` may have more fields (ECS fills in defaults). */
+function holds(expected: unknown, actual: unknown): boolean {
+  if (Array.isArray(expected)) return Array.isArray(actual) && actual.length === expected.length && expected.every((item, index) => holds(item, actual[index]));
+  if (isRecord(expected)) return isRecord(actual) && Object.entries(expected).every(([key, value]) => holds(value, actual[key]));
+  return expected === actual;
+}
+const empty = (value: unknown): boolean => value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0);
+
+/**
+ * Whether a revision that exists in ECS is exactly what this controller would register. A revision is only ever run after this passes (it is run by its ARN), so someone who can register
+ * a newer revision of the family cannot get it run: not with a task role, not with another image, not with an entry point, a privileged container or extra environment.
+ */
+export function definitionMatches(built: RunnerTaskDefinition, actual: unknown): boolean {
+  if (!isRecord(actual)) return false;
+  if (!empty(actual.taskRoleArn)) return false;
+  const { tags: _tags, containerDefinitions, volumes, ...rest } = built;
+  void _tags;
+  if (!holds(rest, actual) || !holds(volumes.map((volume) => volume.name), (Array.isArray(actual.volumes) ? actual.volumes : []).map((volume) => (isRecord(volume) ? volume.name : undefined)))) return false;
+  const found: unknown[] = Array.isArray(actual.containerDefinitions) ? actual.containerDefinitions as unknown[] : [];
+  if (found.length !== containerDefinitions.length) return false;
+  return containerDefinitions.every((container, index) => {
+    const other: unknown = found[index];
+    if (!isRecord(other)) return false;
+    // ECS adds `hostPort` to a port mapping on Fargate; nothing else of ours may differ.
+    if (!holds(container, other)) return false;
+    // And nothing may be added that changes what runs: an entry point, a working directory, environment, privilege, extra security options, links, a PID or IPC mode.
+    return empty(other.entryPoint) && empty(other.environment) && empty(other.environmentFiles) && empty(other.workingDirectory) && empty(other.dockerSecurityOptions) && empty(other.links)
+      && empty(other.dependsOn) === (container.dependsOn === undefined) && other.privileged !== true && empty(other.pseudoTerminal) && empty(other.systemControls) && empty(other.extraHosts);
+  }) && empty(actual.pidMode) && empty(actual.ipcMode) && empty(actual.proxyConfiguration) && (actual.volumes === undefined || (Array.isArray(actual.volumes) && actual.volumes.every((volume) => isRecord(volume) && Object.keys(volume).every((key) => key === "name"))));
+}
 
 export interface EcsDefinitionApi {
-  /** The newest ACTIVE revision of a family, and the hash of the definition it was made from (its `rovara:definition` tag). */
-  latestRevision(family: string): Promise<{ arn: string; definitionHash?: string | undefined } | undefined>;
+  /** The newest ACTIVE revision of a family: its ARN and the definition as ECS describes it. */
+  latestRevision(family: string): Promise<{ arn: string; definition: unknown } | undefined>;
   register(definition: RunnerTaskDefinition): Promise<string>;
   /** Deregisters every ACTIVE revision of a family. A family that is gone is not an error. */
   deregisterAll(family: string): Promise<void>;
@@ -299,17 +329,15 @@ export function ecsServerResources(config: EcsResourcesConfig): ServerResources 
         if (add.length > 0 || drop.length > 0) config.onEgressChange?.({ serverId: id, added: cidrs(add), removed: cidrs(drop) });
         if (!exactlyWanted(await findGroup(kind, id), wanted)) throw new Error("the security group does not hold the wanted rules");
       }
-      // 3. The task definition: registered when there is none or the definition changed (a new image, size or secret), and left alone otherwise.
+      // 3. The task definition: the newest revision is used only if it is exactly what would be registered (checked by reading it back); otherwise a new one is registered. The task is
+      //    run by the revision's ARN, so a revision someone else registers afterwards is never started.
       const definition = buildRunnerTaskDefinition({
         family, image: config.image, executionRoleArn: config.executionRoleArn, logGroup: config.logGroup, region: config.region, size: spec.size, secretRef, secretEnv: spec.secretEnv,
         tags: { [MANAGED_TAG]: MANAGED_VALUE, "rovara:server": id, "rovara:purpose": kind },
       });
-      const hash = definitionHash(definition);
       const latest = await config.definitions.latestRevision(family);
-      if (latest?.definitionHash !== hash) {
-        await config.definitions.register({ ...definition, tags: [...definition.tags, { key: "rovara:definition", value: hash }] });
-      }
-      return { family, securityGroupId: groupId };
+      const taskDefinition = latest !== undefined && definitionMatches(definition, latest.definition) ? latest.arn : await config.definitions.register(definition);
+      return { family, taskDefinition, securityGroupId: groupId };
     },
 
     async release(kind, id) {

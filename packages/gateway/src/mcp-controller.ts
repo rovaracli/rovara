@@ -57,7 +57,7 @@ export interface RunnerSpec {
 /** The per-server task definition and security group (T7). The default (static) one only names the families the infrastructure created. */
 export interface ServerResources {
   /** Makes (or confirms) what a task of this server needs, and returns what to start it with. Throws when it cannot (the controller then does not start). */
-  ensure(input: { kind: "serve" | "probe"; id: string; spec: RunnerSpec; secretRef?: string | undefined }): Promise<{ family: string; securityGroupId?: string | undefined }>;
+  ensure(input: { kind: "serve" | "probe"; id: string; spec: RunnerSpec; secretRef?: string | undefined }): Promise<{ family: string; taskDefinition: string; securityGroupId?: string | undefined }>;
   /** Removes them: deregisters the task definition and deletes the security group. */
   release(kind: "serve" | "probe", id: string): Promise<void>;
   /** The servers that have resources, for reconcile. */
@@ -65,7 +65,7 @@ export interface ServerResources {
 }
 
 export const staticServerResources: ServerResources = {
-  async ensure(input) { return { family: input.kind === "serve" ? serveFamily(input.id) : `${RUNNER_FAMILY_PREFIX}probe` }; },
+  async ensure(input) { const family = input.kind === "serve" ? serveFamily(input.id) : `${RUNNER_FAMILY_PREFIX}probe`; return { family, taskDefinition: family }; },
   async release() { /* nothing was made */ },
 };
 
@@ -370,12 +370,12 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     const { token, key } = addGrant({ purpose: input.kind, bundleHash: input.spec.bundleHash });
     let taskId: string | undefined;
     try {
-      let made: { family: string; securityGroupId?: string | undefined };
+      let made: { family: string; taskDefinition: string; securityGroupId?: string | undefined };
       try { made = await resources.ensure({ kind: input.kind, id: input.id, spec: input.spec, secretRef: input.secretRef }); } catch { throw new ControllerError("resources_failed"); }
       if (input.isCancelled()) throw new ControllerError("task_stopped");
       const bundleHash = input.spec.bundleHash;
       taskId = await startTask({
-        purpose: input.kind, serverId: input.id, approval: approvalOf(bundleHash), family: made.family, securityGroupId: made.securityGroupId, size: input.spec.size,
+        purpose: input.kind, serverId: input.id, approval: approvalOf(bundleHash), family: made.family, taskDefinition: made.taskDefinition, securityGroupId: made.securityGroupId, size: input.spec.size,
         containers: {
           // The fetch container gets the controller's address and the token; the server container gets the token (the bridge's own bearer) and what it needs to start the package.
           fetch: { MCP_CONTROLLER_URL: options.controllerUrl, MCP_RUNNER_TOKEN: token, MCP_BUNDLE_HASH: bundleHash, ...(options.controllerCa === undefined ? {} : { ROVARA_MCP_CONTROLLER_CA: options.controllerCa }) },
@@ -475,7 +475,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     let taskId: string | undefined;
     try {
       taskId = await startTask({
-        purpose: "install", serverId: "install", approval: "", family: installFamily, securityGroupId: options.installSecurityGroupId, size: { cpu: 512, memoryMiB: 1_024 },
+        purpose: "install", serverId: "install", approval: "", family: installFamily, taskDefinition: installFamily, securityGroupId: options.installSecurityGroupId, size: { cpu: 512, memoryMiB: 1_024 },
         containers: {
           install: {
             MCP_RUNNER_TOKEN: token, MCP_CONTROLLER_URL: options.controllerUrl, ROVARA_MCP_NPM_REGISTRY: options.npmRegistry,

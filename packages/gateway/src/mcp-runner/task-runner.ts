@@ -18,8 +18,13 @@ export interface RunnerTaskSpec {
   serverId: string;
   /** The first 12 characters of the bundle hash the task was approved to run (empty for an install). A task whose tag differs from the approval is stopped. */
   approval: string;
-  /** The task definition family. Always starts with `rovara-mcp-`. */
+  /** The task definition family. Always starts with `rovara-mcp-`. It is the tag; what is run is `taskDefinition`. */
   family: string;
+  /**
+   * The exact task definition revision to run (an ARN ending `:<revision>`), the one the controller registered or verified. A serve or probe task is never started from a family
+   * name, which would run whatever revision is the latest. An install task may name its static family (the infrastructure owns it).
+   */
+  taskDefinition: string;
   /** The server's own security group. Absent: the runner's default (install tasks). */
   securityGroupId?: string | undefined;
   /** The size the task definition has (the local runner uses its memory). */
@@ -29,8 +34,8 @@ export interface RunnerTaskSpec {
 }
 
 export type RunnerTaskStatus =
-  | { state: "pending" }
-  | { state: "running"; /** Where the bridge answers: `http://<private ip>:8080`. Absent for an install task. */ endpoint?: string }
+  | { state: "pending"; /** The private address of the task's network interface, when it has one yet. */ address?: string }
+  | { state: "running"; /** Where the bridge answers: `http://<private ip>:8080`. Absent for an install task. */ endpoint?: string; address?: string }
   | { state: "stopped"; /** Why the task stopped, when the runner knows: a container's exit code. */ exitCode?: number };
 
 export interface RunnerTaskInfo {

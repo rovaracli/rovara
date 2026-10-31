@@ -63,6 +63,7 @@ const CONTAINER = /^[a-z][a-z0-9-]{0,63}$/u;
 const ENV_NAME = /^[A-Z][A-Z0-9_]{1,63}$/u;
 const SUBNET = /^subnet-[0-9a-f]{8,17}$/u;
 const SECURITY_GROUP = /^sg-[0-9a-f]{8,17}$/u;
+const REVISION_ARN = /^arn:aws(?:-[a-z]+)*:ecs:[a-z0-9-]+:\d{12}:task-definition\/(rovara-mcp-[A-Za-z0-9_-]{1,200}):[1-9]\d{0,8}$/u;
 const IPV4 = /^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/u;
 const TASK_ARN = /^arn:aws(?:-[a-z]+)*:ecs:[a-z0-9-]+:\d{12}:task\/[A-Za-z0-9_-]{1,255}\/[0-9a-f]{8,64}$/u;
 const MAX_ENV_VALUE_BYTES = 8_192;
@@ -87,6 +88,9 @@ export function ecsTaskRunner(config: EcsRunnerConfig): TaskRunner {
   return {
     async start(spec: RunnerTaskSpec): Promise<string> {
       if (!FAMILY.test(spec.family) || !spec.family.startsWith(RUNNER_FAMILY_PREFIX)) throw new Error("the task family is not allowed");
+      // A serve or probe task runs the exact revision the controller checked (its ARN, of this family). Only an install task may name a family: the infrastructure owns that one.
+      const revision = REVISION_ARN.exec(spec.taskDefinition);
+      if (revision !== null ? revision[1] !== spec.family : (spec.purpose !== "install" || spec.taskDefinition !== spec.family)) throw new Error("the task definition is not the checked revision");
       if (!RUNNER_PURPOSES.includes(spec.purpose) || !SERVER_TAG.test(spec.serverId) || !APPROVAL.test(spec.approval)) throw new Error("the task's tags are not valid");
       if (spec.securityGroupId !== undefined && !SECURITY_GROUP.test(spec.securityGroupId)) throw new Error("the security group is not valid");
       // A serve or probe task always has the group made for its server (the approved destinations only). The default group is the install task's, which reaches the registry: a task that
@@ -102,7 +106,7 @@ export function ecsTaskRunner(config: EcsRunnerConfig): TaskRunner {
         }) };
       });
       const result = await config.api.runTask({
-        cluster: config.cluster, taskDefinition: spec.family, count: 1, launchType: "FARGATE", startedBy: ECS_STARTED_BY, enableExecuteCommand: false,
+        cluster: config.cluster, taskDefinition: spec.taskDefinition, count: 1, launchType: "FARGATE", startedBy: ECS_STARTED_BY, enableExecuteCommand: false,
         networkConfiguration: { awsvpcConfiguration: { subnets: [...config.subnets], securityGroups: [spec.securityGroupId ?? config.defaultSecurityGroupId], assignPublicIp: "DISABLED" } },
         overrides: { containerOverrides },
         tags: [

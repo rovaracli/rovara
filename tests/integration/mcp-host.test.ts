@@ -69,7 +69,7 @@ beforeAll(async () => {
   });
   controller = createMcpController({
     token: TOKEN, runner, bundles: directoryBundleStore(join(work, "bundles")), controllerUrl: runnerUrl, npmRegistry: registry.url, toolsHashOf, pollMs: 25, limits: { startMs: 30_000, installMs: 120_000 },
-    registry: registryFor(store, ORG, (serverId) => `secret/${serverId}`),
+    registry: registryFor(store, ORG, async (serverId) => `secret/${serverId}`),
   });
   later.controller = controller;
 }, 120_000);

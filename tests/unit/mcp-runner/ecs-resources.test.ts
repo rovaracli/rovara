@@ -3,13 +3,13 @@
 // left behind when something fails.
 import { describe, expect, it } from "vitest";
 import {
-  MAX_EGRESS_RULES, buildRunnerTaskDefinition, definitionHash, ecsServerResources, ruleKey, runnerGroupRules,
+  MAX_EGRESS_RULES, buildRunnerTaskDefinition, definitionMatches, ecsServerResources, ruleKey, runnerGroupRules,
   type DescribedGroup, type Ec2GroupApi, type EcsDefinitionApi, type EcsResourcesConfig, type GroupRule, type ResolvedDestination, type RunnerTaskDefinition, type TaskDefinitionInput,
 } from "../../../packages/gateway/src/mcp-runner/ecs-resources.js";
 
 const IMAGE = `111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara-mcp-runner@sha256:${"a".repeat(64)}`;
 const ROLE = "arn:aws:iam::111111111111:role/rovara-mcp-execution";
-const SECRET = "agentx/test/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcpsim000001";
+const SECRET = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcpsim000001-AbCdEf";
 const ENDPOINTS = { endpointGroupIds: ["sg-0eeeeeeeeeeeeeeee", "sg-0ffffffffffffffff"], s3PrefixListId: "pl-0123456789abcdef0", controllerGroupId: "sg-0123456789abcdef0", controllerPort: 8443 };
 const ID = "mcpsim000001";
 
@@ -60,19 +60,63 @@ describe("runner task definition", () => {
       { image: "x/rovara-mcp-runner:latest" }, { image: `x@sha256:${"a".repeat(63)}` }, { image: `x@sha256:${"A".repeat(64)}` }, { image: "" },
       { family: "other-serve" }, { family: "rovara-mcp-" }, { family: "rovara-mcp-a b" },
       { executionRoleArn: "arn:aws:iam::111111111111:user/me" }, { executionRoleArn: "role" },
-      { secretRef: undefined }, { secretRef: "other/secret" }, { secretRef: `${SECRET}:x` }, { secretRef: "agentx/../x" }, { secretRef: "agentx//x" },
+      { secretRef: undefined }, { secretRef: "other/secret" }, { secretRef: "agentx/test/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcpsim000001" }, { secretRef: SECRET.replace("-AbCdEf", "") }, { secretRef: SECRET.replace("agentx/", "other/") }, { secretRef: SECRET.replace("secretsmanager", "ssm") }, { secretRef: `${SECRET}:x` }, { secretRef: "agentx/../x" }, { secretRef: "agentx//x" },
       { secretEnv: ["lower"] }, { secretEnv: ["PATH;x"] }, { secretEnv: Array.from({ length: 9 }, (_, index) => `NAME_${index}`) },
       { size: { cpu: 2048, memoryMiB: 512 } }, { size: { cpu: 256, memoryMiB: 4096 } },
     ];
     for (const over of bad) expect(() => buildRunnerTaskDefinition(input(over)), JSON.stringify(over)).toThrow();
   });
-  it("hashes the definition, so a change in it is noticed", () => {
-    expect(definitionHash(definition)).toMatch(/^[0-9a-f]{64}$/u);
-    expect(definitionHash(buildRunnerTaskDefinition(input({ size: { cpu: 512, memoryMiB: 1024 } })))).not.toBe(definitionHash(definition));
-    expect(definitionHash(buildRunnerTaskDefinition(input({ image: IMAGE.replace(/a{64}/u, "b".repeat(64)) })))).not.toBe(definitionHash(definition));
+});
+
+/** A definition as ECS describes it back: the fields we set, plus the defaults ECS fills in. */
+function describedAs(definition: RunnerTaskDefinition): Record<string, unknown> {
+  return {
+    ...JSON.parse(JSON.stringify(definition)) as Record<string, unknown>, status: "ACTIVE", taskDefinitionArn: "arn:x", revision: 1, compatibilities: ["EC2", "FARGATE"],
+    containerDefinitions: definition.containerDefinitions.map((container) => ({ ...JSON.parse(JSON.stringify(container)) as Record<string, unknown>, cpu: 0, environment: [], volumesFrom: [], portMappings: container.portMappings?.map((mapping) => ({ ...mapping, hostPort: mapping.containerPort })) ?? [], systemControls: [] })),
+  };
+}
+
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment -- the tests edit a described definition freely */
+describe("a revision is run only if it is exactly what the controller would register", () => {
+  const built = buildRunnerTaskDefinition(input());
+  const tampered = (change: (described: Record<string, any>) => void): unknown => { const described = describedAs(built) as Record<string, any>; change(described); return described; }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  it("accepts the definition as ECS describes it back, defaults and all", () => {
+    expect(definitionMatches(built, describedAs(built))).toBe(true);
+  });
+  it("refuses every change that would change what runs", () => {
+    const changes: Array<[string, (described: Record<string, any>) => void]> = [ // eslint-disable-line @typescript-eslint/no-explicit-any
+      ["a task role", (d) => { d.taskRoleArn = "arn:aws:iam::111111111111:role/admin"; }],
+      ["another execution role", (d) => { d.executionRoleArn = "arn:aws:iam::111111111111:role/other"; }],
+      ["another image", (d) => { d.containerDefinitions[1].image = d.containerDefinitions[1].image.replace(/a{64}/u, "c".repeat(64)); }],
+      ["another image in the fetch step", (d) => { d.containerDefinitions[0].image = "evil/image@sha256:" + "d".repeat(64); }],
+      ["another command", (d) => { d.containerDefinitions[1].command = ["/bin/sh"]; }],
+      ["an entry point", (d) => { d.containerDefinitions[1].entryPoint = ["/bin/sh", "-c"]; }],
+      ["environment", (d) => { d.containerDefinitions[1].environment = [{ name: "NODE_OPTIONS", value: "--require /x" }]; }],
+      ["root", (d) => { d.containerDefinitions[1].user = "0"; }],
+      ["a writable root file system", (d) => { d.containerDefinitions[1].readonlyRootFilesystem = false; }],
+      ["privilege", (d) => { d.containerDefinitions[1].privileged = true; }],
+      ["capabilities kept", (d) => { d.containerDefinitions[1].linuxParameters.capabilities.drop = []; }],
+      ["a writable bundle", (d) => { d.containerDefinitions[1].mountPoints[0].readOnly = false; }],
+      ["another secret", (d) => { d.containerDefinitions[1].secrets[0].valueFrom = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/other-AbCdEf:JIRA_TOKEN::"; }],
+      ["a dependency added to the fetch step", (d) => { d.containerDefinitions[0].dependsOn = [{ containerName: "server", condition: "START" }]; }],
+      ["a missing dependency", (d) => { delete d.containerDefinitions[1].dependsOn; }],
+      ["an extra container", (d) => { d.containerDefinitions.push({ ...d.containerDefinitions[0], name: "sidecar" }); }],
+      ["a missing container", (d) => { d.containerDefinitions.pop(); }],
+      ["another size", (d) => { d.cpu = "1024"; }],
+      ["another network mode", (d) => { d.networkMode = "host"; }],
+      ["a host volume", (d) => { d.volumes.push({ name: "host", host: { sourcePath: "/" } }); }],
+      ["a volume with a host path", (d) => { d.volumes[0] = { name: "bundle", host: { sourcePath: "/" } }; }],
+      ["a PID mode", (d) => { d.pidMode = "host"; }],
+      ["a working directory", (d) => { d.containerDefinitions[1].workingDirectory = "/"; }],
+      ["security options", (d) => { d.containerDefinitions[1].dockerSecurityOptions = ["no-new-privileges:false"]; }],
+    ];
+    for (const [name, change] of changes) expect(definitionMatches(built, tampered(change)), name).toBe(false);
+    expect(definitionMatches(built, undefined)).toBe(false);
+    expect(definitionMatches(built, "x")).toBe(false);
   });
 });
 
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment */
 describe("runner security group rules", () => {
   const jira: ResolvedDestination = { host: "jira.corp.example", port: 443, addresses: ["10.1.2.3", "10.1.2.4"] };
   it("allows the endpoints a task needs to start, S3, the controller, and each approved destination's addresses as /32, and lets only the controller in", () => {
@@ -109,7 +153,7 @@ describe("runner security group rules", () => {
 function fakeCloud() {
   const calls: string[] = [];
   const groups = new Map<string, DescribedGroup & { name: string; vpcId?: string }>();
-  const revisions = new Map<string, Array<{ arn: string; hash: string; definition: RunnerTaskDefinition }>>();
+  const revisions = new Map<string, Array<{ arn: string; definition: RunnerTaskDefinition; described: unknown }>>();
   let counter = 0;
   const failAt = { step: "", times: 0 };
   const behaviour = { keepIpv6Default: false, vpcOf: "vpc-0123456789abcdef0" };
@@ -142,12 +186,12 @@ function fakeCloud() {
     async deleteGroup(groupId) { calls.push(`deleteGroup:${groupId}`); trip("deleteGroup"); groups.delete(groupId); },
   };
   const definitions: EcsDefinitionApi = {
-    async latestRevision(family) { const latest = revisions.get(family)?.at(-1); return latest === undefined ? undefined : { arn: latest.arn, definitionHash: latest.hash }; },
+    async latestRevision(family) { const latest = revisions.get(family)?.at(-1); return latest === undefined ? undefined : { arn: latest.arn, definition: latest.described }; },
     async register(definition) {
       calls.push(`register:${definition.family}`);
       const list = revisions.get(definition.family) ?? [];
       const arn = `arn:aws:ecs:us-east-1:111111111111:task-definition/${definition.family}:${list.length + 1}`;
-      list.push({ arn, hash: definition.tags.find((tag) => tag.key === "rovara:definition")!.value, definition });
+      list.push({ arn, definition, described: describedAs(definition) });
       revisions.set(definition.family, list);
       return arn;
     },
@@ -166,7 +210,7 @@ function setup(over: Partial<EcsResourcesConfig> = {}) {
     definitions: cloud.definitions, groups: cloud.ec2, vpcId: "vpc-0123456789abcdef0", image: IMAGE, executionRoleArn: ROLE, logGroup: "/rovara/mcp-runner", region: "us-east-1", endpoints: ENDPOINTS,
     resolveDestinations: async () => { if (state.refuse) throw new Error("outside the ranges"); return state.resolved; }, onEgressChange: (change) => changes.push(change), deleteRetryMs: 1, deleteRetries: 3, ...over,
   });
-  return { ...cloud, resources, changes, state };
+  return { ...cloud, resources, changes, state, ensureServe: () => resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET }) };
 }
 const spec = { name: "@acme/sim-mcp", args: [] as string[], secretEnv: ["JIRA_TOKEN"], destinations: [{ host: "jira.corp.example", port: 443 }], size: { cpu: 256, memoryMiB: 512 }, bundleHash: "b".repeat(64) };
 
@@ -174,7 +218,7 @@ describe("per-server resources: ensure", () => {
   it("makes the group empty-handed (default egress revoked FIRST), then adds the ingress and the egress, then registers the definition", async () => {
     const w = setup();
     const made = await w.resources.ensure({ kind: "serve", id: ID, spec, secretRef: SECRET });
-    expect(made).toEqual({ family: `rovara-mcp-serve-${ID}`, securityGroupId: "sg-00000000000000001" });
+    expect(made).toEqual({ family: `rovara-mcp-serve-${ID}`, taskDefinition: `arn:aws:ecs:us-east-1:111111111111:task-definition/rovara-mcp-serve-${ID}:1`, securityGroupId: "sg-00000000000000001" });
     expect(w.groups.get("sg-00000000000000001")!.foreignRules).toBe(0);
     expect(w.calls.slice(0, 4).map((call) => call.split(":").slice(0, 2).join(":"))).toEqual([`createGroup:rovara-mcp-serve-${ID}`, "revokeDefaultEgress", "authorize:ingress", "authorize:egress"]);
     expect(w.calls.at(-1)).toBe(`register:rovara-mcp-serve-${ID}`);
@@ -184,14 +228,13 @@ describe("per-server resources: ensure", () => {
     expect(group.tags).toEqual({ "rovara:managed": "rovara-mcp", "rovara:server": ID, "rovara:purpose": "serve" });
     expect(w.changes).toEqual([{ serverId: ID, added: ["10.1.2.3:443"], removed: [] }]);
   });
-  it("registers a definition with the server's secrets, size and the image digest, tagged with its own hash", async () => {
+  it("registers a definition with the server's secrets, size and the image digest", async () => {
     const w = setup();
     await w.resources.ensure({ kind: "serve", id: ID, spec: { ...spec, size: { cpu: 512, memoryMiB: 1024 } }, secretRef: SECRET });
     const registered = w.revisions.get(`rovara-mcp-serve-${ID}`)![0]!;
     expect(registered.definition).toMatchObject({ cpu: "512", memory: "1024" });
     expect(registered.definition).not.toHaveProperty("taskRoleArn");
     expect(registered.definition.containerDefinitions[1]!.secrets).toEqual([{ name: "JIRA_TOKEN", valueFrom: `${SECRET}:JIRA_TOKEN::` }]);
-    expect(registered.definition.tags.find((tag) => tag.key === "rovara:definition")!.value).toBe(registered.hash);
   });
   it("does not register the definition again, or touch the group, when nothing changed", async () => {
     const w = setup();
@@ -201,6 +244,20 @@ describe("per-server resources: ensure", () => {
     expect(again.securityGroupId).toBe("sg-00000000000000001");
     expect(w.calls.length).toBe(before);
     expect(w.revisions.get(`rovara-mcp-serve-${ID}`)).toHaveLength(1);
+  });
+  it("runs the revision it checked: a newer revision someone else registered (here with a task role) is not run, a new checked one is registered and its ARN is returned", async () => {
+    const w = setup();
+    const first = await w.ensureServe();
+    expect(first.taskDefinition).toMatch(/:1$/u);
+    // someone with ecs:RegisterTaskDefinition adds revision 2 of the family with a task role
+    const family = `rovara-mcp-serve-${ID}`;
+    const evil = { ...describedAs(w.revisions.get(family)![0]!.definition), taskRoleArn: "arn:aws:iam::111111111111:role/admin" };
+    w.revisions.get(family)!.push({ arn: `arn:aws:ecs:us-east-1:111111111111:task-definition/${family}:2`, definition: w.revisions.get(family)![0]!.definition, described: evil });
+    const second = await w.ensureServe();
+    expect(second.taskDefinition).toMatch(/:3$/u);
+    expect(w.revisions.get(family)!.at(-1)!.described).not.toHaveProperty("taskRoleArn");
+    // and a matching latest revision is reused as it is
+    expect((await w.ensureServe()).taskDefinition).toBe(second.taskDefinition);
   });
   it("registers a new revision when the definition changed (another size, another image)", async () => {
     const w = setup();

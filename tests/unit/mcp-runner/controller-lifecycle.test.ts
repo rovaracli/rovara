@@ -21,7 +21,8 @@ class FakeResources implements ServerResources {
   async ensure(input: { kind: "serve" | "probe"; id: string; spec: RunnerSpec; secretRef?: string | undefined }) {
     if (this.failEnsure) throw new Error("denied");
     this.ensured.push({ kind: input.kind, id: input.id, spec: input.spec, secretRef: input.secretRef });
-    return { family: input.kind === "serve" ? `rovara-mcp-serve-${input.id}` : `rovara-mcp-probe-${input.id}`, securityGroupId: "sg-0aaaaaaaaaaaaaaaa" };
+    const family = input.kind === "serve" ? `rovara-mcp-serve-${input.id}` : `rovara-mcp-probe-${input.id}`;
+    return { family, taskDefinition: `${family}:checked`, securityGroupId: "sg-0aaaaaaaaaaaaaaaa" };
   }
   async release(kind: "serve" | "probe", id: string) { if (this.failRelease) throw new Error("in use"); this.released.push({ kind, id }); }
   async list() { return this.held; }
@@ -322,7 +323,7 @@ describe("T7 lifecycle: the server's task definition and security group", () => 
     const w = await lifecycle({ approved: { [ID]: approvedOf({ secretRef: "agentx/test/org-connectors/org/mcpsim000001" }) } });
     await mcp(w.brokerUrl, ID);
     expect(w.resources.ensured).toEqual([{ kind: "serve", id: ID, spec: { name: "@acme/sim-mcp", args: ["--read-only"], secretEnv: ["JIRA_TOKEN"], destinations: [], size: { cpu: 256, memoryMiB: 512 }, bundleHash: BUNDLE }, secretRef: "agentx/test/org-connectors/org/mcpsim000001" }]);
-    expect(w.runner.started("serve")[0]!.spec).toMatchObject({ family: `rovara-mcp-serve-${ID}`, securityGroupId: "sg-0aaaaaaaaaaaaaaaa" });
+    expect(w.runner.started("serve")[0]!.spec).toMatchObject({ family: `rovara-mcp-serve-${ID}`, taskDefinition: `rovara-mcp-serve-${ID}:checked`, securityGroupId: "sg-0aaaaaaaaaaaaaaaa" });
   });
   it("starts nothing when they cannot be made", async () => {
     const w = await lifecycle();

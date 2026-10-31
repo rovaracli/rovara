@@ -1,5 +1,6 @@
 // Stdio MCP host redesign (T6): the real AWS clients behind the gateway's narrow interfaces (`EcsApi`, `BundleObjectApi`). The gateway holds the rules; these only translate. Nothing here
 // is called in a test against AWS: the tests pass fake SDK classes.
+import { DescribeSecretCommand, type SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import {
   AuthorizeSecurityGroupEgressCommand, AuthorizeSecurityGroupIngressCommand, CreateSecurityGroupCommand, DeleteSecurityGroupCommand, DescribeSecurityGroupsCommand, RevokeSecurityGroupEgressCommand,
   RevokeSecurityGroupIngressCommand, type EC2Client, type IpPermission,
@@ -31,7 +32,7 @@ export interface EcsResponse {
   failures?: unknown[];
   taskArns?: string[];
   nextToken?: string;
-  taskDefinition?: { taskDefinitionArn?: string };
+  taskDefinition?: { taskDefinitionArn?: string } & Record<string, unknown>;
   tags?: Array<{ key?: string; value?: string }>;
   taskDefinitionArns?: string[];
   families?: string[];
@@ -119,8 +120,8 @@ export function ecsDefinitionApiFromSdk(sdk: EcsSdk, client: InstanceType<EcsSdk
     async latestRevision(family) {
       const [arn] = await listArns(family);
       if (arn === undefined) return undefined;
-      const out = await client.send(new sdk.DescribeTaskDefinitionCommand({ taskDefinition: arn, include: ["TAGS"] }));
-      return { arn, definitionHash: (out.tags ?? []).find((tag) => tag.key === "rovara:definition")?.value };
+      const out = await client.send(new sdk.DescribeTaskDefinitionCommand({ taskDefinition: arn }));
+      return { arn, definition: out.taskDefinition };
     },
     async register(definition: RunnerTaskDefinition) {
       const out = await client.send(new sdk.RegisterTaskDefinitionCommand({ ...definition }));
@@ -212,5 +213,18 @@ export function ec2GroupApiFromSdk(client: Pick<EC2Client, "send">): Ec2GroupApi
     async deleteGroup(groupId) {
       await client.send(new DeleteSecurityGroupCommand({ GroupId: groupId }));
     },
+  };
+}
+
+/** The full ARN of a server's secret (its name plus the random suffix), which ECS needs to read one key of it. Looked up once per server and remembered. */
+export function secretArnResolver(client: Pick<SecretsManagerClient, "send">, nameOf: (serverId: string) => string): (serverId: string) => Promise<string | undefined> {
+  const known = new Map<string, string>();
+  return async (serverId) => {
+    const cached = known.get(serverId);
+    if (cached !== undefined) return cached;
+    const out = await client.send(new DescribeSecretCommand({ SecretId: nameOf(serverId) }));
+    if (out.ARN === undefined) return undefined;
+    known.set(serverId, out.ARN);
+    return out.ARN;
   };
 }

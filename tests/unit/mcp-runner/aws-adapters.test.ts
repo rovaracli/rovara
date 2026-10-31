@@ -1,7 +1,7 @@
 // Stdio MCP host redesign, task T6: the adapters from the real AWS clients to the gateway's narrow interfaces, with fake SDK classes (nothing here reaches AWS).
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { bundleObjectApiFromS3, ec2GroupApiFromSdk, ecsApiFromSdk, ecsDefinitionApiFromSdk, type EcsSdk } from "../../../packages/broker/src/mcp-host/aws-adapters.js";
+import { secretArnResolver, bundleObjectApiFromS3, ec2GroupApiFromSdk, ecsApiFromSdk, ecsDefinitionApiFromSdk, type EcsSdk } from "../../../packages/broker/src/mcp-host/aws-adapters.js";
 
 function fakeSdk(responses: Record<string, (input: Record<string, unknown>) => unknown>) {
   const sent: Array<{ command: string; input: Record<string, unknown> }> = [];
@@ -76,14 +76,14 @@ describe("bundle bucket adapter", () => {
 describe("ECS task definition adapter (T7)", () => {
   const FAMILY = "rovara-mcp-serve-mcpsim000001";
   const arn = (family: string, revision: number) => `arn:aws:ecs:us-east-1:111111111111:task-definition/${family}:${revision}`;
-  it("finds the newest revision of exactly this family (a family that starts the same is not it) and reads the definition hash from its tag", async () => {
+  it("finds the newest revision of exactly this family (a family that starts the same is not it) and returns the definition as ECS describes it", async () => {
     const { sdk, client, sent } = fakeSdk({
       ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn(`${FAMILY}x`, 9), arn(FAMILY, 3), arn(FAMILY, 2)] }),
-      DescribeTaskDefinitionCommand: () => ({ tags: [{ key: "other", value: "x" }, { key: "rovara:definition", value: "h".repeat(64) }] }),
+      DescribeTaskDefinitionCommand: () => ({ taskDefinition: { family: FAMILY, revision: 3 } }),
     });
-    expect(await ecsDefinitionApiFromSdk(sdk, client).latestRevision(FAMILY)).toEqual({ arn: arn(FAMILY, 3), definitionHash: "h".repeat(64) });
+    expect(await ecsDefinitionApiFromSdk(sdk, client).latestRevision(FAMILY)).toEqual({ arn: arn(FAMILY, 3), definition: { family: FAMILY, revision: 3 } });
     expect(sent[0]).toMatchObject({ command: "ListTaskDefinitionsCommand", input: { familyPrefix: FAMILY, status: "ACTIVE", sort: "DESC" } });
-    expect(sent[1]).toMatchObject({ command: "DescribeTaskDefinitionCommand", input: { taskDefinition: arn(FAMILY, 3), include: ["TAGS"] } });
+    expect(sent[1]).toMatchObject({ command: "DescribeTaskDefinitionCommand", input: { taskDefinition: arn(FAMILY, 3) } });
   });
   it("has no latest revision for a family with none", async () => {
     const { sdk, client } = fakeSdk({ ListTaskDefinitionsCommand: () => ({ taskDefinitionArns: [arn(`${FAMILY}x`, 1)] }) });
@@ -180,5 +180,20 @@ describe("EC2 security group adapter (T7)", () => {
     expect(sent[0]).toEqual({ command: "DeleteSecurityGroupCommand", input: { GroupId: "sg-1" } });
     const busy = ec2({ DeleteSecurityGroupCommand: () => { throw Object.assign(new Error("in use"), { name: "DependencyViolation" }); } });
     await expect(busy.api.deleteGroup("sg-1")).rejects.toMatchObject({ name: "DependencyViolation" });
+  });
+});
+
+describe("secret ARN resolver (fix round 1, m3)", () => {
+  const ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org_a/mcpsim000001-AbCdEf";
+  it("looks up the full ARN of the server's secret by name once, and remembers it", async () => {
+    const sent: unknown[] = [];
+    const resolve = secretArnResolver({ send: async (command: { input: unknown }) => { sent.push(command.input); return { ARN }; } } as never, (serverId) => `agentx/test/org-connectors/org_a/${serverId}`);
+    expect(await resolve("mcpsim000001")).toBe(ARN);
+    expect(await resolve("mcpsim000001")).toBe(ARN);
+    expect(sent).toEqual([{ SecretId: "agentx/test/org-connectors/org_a/mcpsim000001" }]);
+  });
+  it("has no ARN when the secret does not say one, and lets a failed lookup fail", async () => {
+    expect(await secretArnResolver({ send: async () => ({}) } as never, (id) => id)("mcpsim000001")).toBeUndefined();
+    await expect(secretArnResolver({ send: async () => { throw new Error("denied"); } } as never, (id) => id)("mcpsim000001")).rejects.toThrow("denied");
   });
 });

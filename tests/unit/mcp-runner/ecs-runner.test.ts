@@ -7,6 +7,7 @@ import type { RunnerTaskSpec } from "../../../packages/gateway/src/mcp-runner/ta
 const ARN = (id: string) => `arn:aws:ecs:us-east-1:111111111111:task/rovara-mcp/${id.padEnd(32, "0")}`;
 const SUBNETS = ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"];
 const DEFAULT_SG = "sg-0cccccccccccccccc";
+const REVISION = (family: string, revision: number): string => `arn:aws:ecs:us-east-1:111111111111:task-definition/${family}:${revision}`;
 const OWN_SG = "sg-0dddddddddddddddd";
 
 function fakeApi(over: Partial<EcsApi> = {}) {
@@ -24,7 +25,7 @@ function fakeApi(over: Partial<EcsApi> = {}) {
 }
 const runnerOf = (api: EcsApi) => ecsTaskRunner({ api, cluster: "rovara-mcp", subnets: SUBNETS, defaultSecurityGroupId: DEFAULT_SG });
 const spec = (over: Partial<RunnerTaskSpec> = {}): RunnerTaskSpec => ({
-  purpose: "serve", serverId: "mcpsim000001", approval: "a".repeat(12), family: "rovara-mcp-serve-mcpsim000001", securityGroupId: OWN_SG, size: { cpu: 256, memoryMiB: 512 },
+  purpose: "serve", serverId: "mcpsim000001", approval: "a".repeat(12), family: "rovara-mcp-serve-mcpsim000001", taskDefinition: REVISION("rovara-mcp-serve-mcpsim000001", 3), securityGroupId: OWN_SG, size: { cpu: 256, memoryMiB: 512 },
   containers: { fetch: { MCP_RUNNER_TOKEN: "t".repeat(43), MCP_BUNDLE_HASH: "b".repeat(64) }, server: { MCP_RUNNER_TOKEN: "t".repeat(43), PORT: "8080" } }, ...over,
 });
 const described = (over: Partial<EcsTaskDescription> = {}): EcsTaskDescription => ({
@@ -37,7 +38,7 @@ describe("ECS runner: start", () => {
     const { api, runs } = fakeApi();
     expect(await runnerOf(api).start(spec())).toBe(ARN("a1"));
     expect(runs).toEqual([{
-      cluster: "rovara-mcp", taskDefinition: "rovara-mcp-serve-mcpsim000001", count: 1, launchType: "FARGATE", startedBy: ECS_STARTED_BY, enableExecuteCommand: false,
+      cluster: "rovara-mcp", taskDefinition: REVISION("rovara-mcp-serve-mcpsim000001", 3), count: 1, launchType: "FARGATE", startedBy: ECS_STARTED_BY, enableExecuteCommand: false,
       networkConfiguration: { awsvpcConfiguration: { subnets: SUBNETS, securityGroups: [OWN_SG], assignPublicIp: "DISABLED" } },
       overrides: { containerOverrides: [
         { name: "fetch", environment: [{ name: "MCP_RUNNER_TOKEN", value: "t".repeat(43) }, { name: "MCP_BUNDLE_HASH", value: "b".repeat(64) }] },
@@ -48,16 +49,37 @@ describe("ECS runner: start", () => {
     expect(Object.keys(runs[0]!.overrides)).toEqual(["containerOverrides"]);
     expect(Object.keys(runs[0]!.overrides.containerOverrides[0]!).sort()).toEqual(["environment", "name"]);
   });
+  it("runs a serve or probe task only by the ARN of a revision of its own family, never by the family name (which runs whatever revision is the latest)", async () => {
+    const { api, runs } = fakeApi();
+    const runner = runnerOf(api);
+    const family = "rovara-mcp-serve-mcpsim000001";
+    for (const taskDefinition of [family, `${family}:3`, REVISION("rovara-mcp-serve-mcpother00001", 3), REVISION(family, 0), REVISION("other-family", 3), REVISION(`${family}`, 3).replace(":3", ":3x"), REVISION(family, 3).replace("task-definition", "task-definitionx"), ""]) {
+      await expect(runner.start(spec({ taskDefinition })), taskDefinition).rejects.toThrow(/checked revision/u);
+    }
+    await expect(runner.start(spec({ purpose: "probe", serverId: "probe0123456789", family: "rovara-mcp-probe-probe0123456789", taskDefinition: "rovara-mcp-probe-probe0123456789" }))).rejects.toThrow(/checked revision/u);
+    expect(runs).toEqual([]);
+    await runner.start(spec());
+    expect(runs[0]!.taskDefinition).toBe(REVISION(family, 3));
+  });
+  it("lets an install task name its static family or one of its revisions, and nothing else", async () => {
+    const { api, runs } = fakeApi();
+    const runner = runnerOf(api);
+    const install = { purpose: "install" as const, serverId: "install", approval: "", family: "rovara-mcp-install", securityGroupId: undefined };
+    await runner.start(spec({ ...install, taskDefinition: "rovara-mcp-install" }));
+    await runner.start(spec({ ...install, taskDefinition: REVISION("rovara-mcp-install", 7) }));
+    await expect(runner.start(spec({ ...install, taskDefinition: "rovara-mcp-serve-mcpsim000001" }))).rejects.toThrow(/checked revision/u);
+    expect(runs.map((run) => run.taskDefinition)).toEqual(["rovara-mcp-install", REVISION("rovara-mcp-install", 7)]);
+  });
   it("uses the default security group for a task with none of its own", async () => {
     const { api, runs } = fakeApi();
-    await runnerOf(api).start(spec({ purpose: "install", serverId: "install", approval: "", family: "rovara-mcp-install", securityGroupId: undefined }));
+    await runnerOf(api).start(spec({ purpose: "install", serverId: "install", approval: "", family: "rovara-mcp-install", taskDefinition: "rovara-mcp-install", securityGroupId: undefined }));
     expect(runs[0]!.networkConfiguration.awsvpcConfiguration.securityGroups).toEqual([DEFAULT_SG]);
   });
   it("never starts a serve or probe task in the default group (the install task's): it needs the group made for its server", async () => {
     const { api, runs } = fakeApi();
     const runner = runnerOf(api);
     await expect(runner.start(spec({ securityGroupId: undefined }))).rejects.toThrow(/own security group/u);
-    await expect(runner.start(spec({ purpose: "probe", serverId: "probe0123456789", family: "rovara-mcp-probe-probe0123456789", securityGroupId: undefined }))).rejects.toThrow(/own security group/u);
+    await expect(runner.start(spec({ purpose: "probe", serverId: "probe0123456789", family: "rovara-mcp-probe-probe0123456789", taskDefinition: REVISION("rovara-mcp-probe-probe0123456789", 1), securityGroupId: undefined }))).rejects.toThrow(/own security group/u);
     expect(runs).toEqual([]);
   });
   it("refuses a family that is not rovara-mcp-, tags that are not valid, a security group that is not one, and environment that is not valid, before calling ECS", async () => {

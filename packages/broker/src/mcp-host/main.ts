@@ -10,11 +10,12 @@ import { createServer as createHttpsServer } from "node:https";
 import { OrgIdSchema, stdioSpecIfComplete } from "@agentx/contracts";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { S3Client } from "@aws-sdk/client-s3";
+import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { createMcpController, ecsServerResources, ecsTaskRunner, objectBundleStore, runsAsRoot, type ApprovedServer, type ControllerRegistry, type McpController } from "@agentx/gateway";
 import { orgMcpServerSecretName } from "../connections/org-secrets.js";
 import { cidrBlockListOf, parseInstallCidrs } from "../connections/private-endpoints.js";
 import { installEnvironmentName } from "../org/resolve.js";
-import { bundleObjectApiFromS3, ec2GroupApiFromSdk, ecsApiFromSdk, ecsDefinitionApiFromSdk, type EcsSdk } from "./aws-adapters.js";
+import { secretArnResolver, bundleObjectApiFromS3, ec2GroupApiFromSdk, ecsApiFromSdk, ecsDefinitionApiFromSdk, type EcsSdk } from "./aws-adapters.js";
 import { destinationResolver } from "./destinations.js";
 import { dynamoProbeSlots } from "./probe-slots.js";
 import { dynamoMcpServerStore, summariseProbe } from "../context-sources/mcp-servers.js";
@@ -26,7 +27,7 @@ function required(env: Record<string, string | undefined>, name: string): string
 }
 
 /** An Enterprise install has one org; the controller serves that org's approved stdio entries and nothing else. */
-export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgId: string, secretRef?: (serverId: string) => string): ControllerRegistry {
+export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgId: string, secretArn?: (serverId: string) => Promise<string | undefined>): ControllerRegistry {
   const org = OrgIdSchema.parse(orgId);
   return {
     async approved(serverId): Promise<ApprovedServer | undefined> {
@@ -35,7 +36,9 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
       if (entry?.status !== "approved") return undefined;
       const spec = stdioSpecIfComplete(entry);
       if (spec === undefined) return undefined;
-      return { spec, toolsHash: entry.probe.toolsHash, secretVersion: entry.secretVersion, secretRef: secretRef?.(serverId) };
+      // The secret's full ARN (ECS needs it to read one key of the JSON secret). A secret that cannot be resolved leaves no reference, and then a server that declares secrets does not start.
+      const secretRef = entry.hasSecret === true && secretArn !== undefined ? await secretArn(serverId).catch(() => undefined) : undefined;
+      return { spec, toolsHash: entry.probe.toolsHash, secretVersion: entry.secretVersion, secretRef };
     },
   };
 }
@@ -144,7 +147,7 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
     onEgressChange: (change) => log("mcp_controller.egress_updated", { serverId: change.serverId, added: change.added.length, removed: change.removed.length }),
   });
   const controller = createMcpController({
-    token, registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, (serverId) => orgMcpServerSecretName(installEnvironment, orgId, serverId)), runner, bundles,
+    token, registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => orgMcpServerSecretName(installEnvironment, orgId, serverId))), runner, bundles,
     controllerUrl: config.controllerUrl, controllerCa: config.controllerCa, npmRegistry: config.npmRegistry, installSecurityGroupId: config.installSecurityGroupId, toolsHashOf, log,
     resources, probeSlots: dynamoProbeSlots({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), sweepMs: 60_000,
   });

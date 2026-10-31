@@ -49,11 +49,16 @@ describe("controller main: the registry", () => {
   const spec: McpStdioSpec = { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64), destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } };
   const probe = summariseProbe([], 0);
   const entry = (over: Partial<McpServerEntry> = {}): McpServerEntry => ({ serverId: "mcpsim000001", label: "Wiki", status: "approved", transport: { kind: "stdio", spec }, probe, requestedBy: "dev1", requestedAt: "2026-11-01T10:00:00Z", ...over });
-  const registry = (found: McpServerEntry | undefined) => registryFor({ get: async () => found } as never, "org_aaaaaaaaaaaaaaaaaaaa", (id) => `agentx/test/org-connectors/org/${id}`);
+  const registry = (found: McpServerEntry | undefined) => registryFor({ get: async () => found } as never, "org_aaaaaaaaaaaaaaaaaaaa", async (id) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`);
 
   it("serves an approved entry with its install pinned, with the tools hash the admin approved and its secret version", async () => {
     const approved = await registry(entry({ hasSecret: true, secretVersion: "v1" })).approved("mcpsim000001");
-    expect(approved).toMatchObject({ spec, toolsHash: probe.toolsHash, secretVersion: "v1", secretRef: "agentx/test/org-connectors/org/mcpsim000001" });
+    expect(approved).toMatchObject({ spec, toolsHash: probe.toolsHash, secretVersion: "v1", secretRef: "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/mcpsim000001-AbCdEf" });
+  });
+  it("gives no secret reference to an entry without a secret, and none when the ARN cannot be looked up", async () => {
+    expect((await registry(entry()).approved("mcpsim000001"))?.secretRef).toBeUndefined();
+    const failing = registryFor({ get: async () => entry({ hasSecret: true, secretVersion: "v1" }) } as never, "org_aaaaaaaaaaaaaaaaaaaa", async () => { throw new Error("denied"); });
+    expect((await failing.approved("mcpsim000001"))?.secretRef).toBeUndefined();
   });
   it("serves nothing else: not a waiting, disabled or needs-reapproval entry, an http entry, or none", async () => {
     for (const status of ["awaiting_approval", "disabled", "needs_reapproval"] as const) expect(await registry(entry({ status })).approved("mcpsim000001"), status).toBeUndefined();
