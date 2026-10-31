@@ -9,7 +9,7 @@ import type { AlertSink, Embedder, LearningSpend, LessonDeps, LessonVectors, Pip
 import { attributableSources, noteCandidateSources } from "./sources.js";
 import type { LessonDraft } from "./reflect.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
-import { LessonCitationSchema, LessonProvenanceSchema, LessonSchema, LessonScopeSchema, distinctIds, minTrust, narrowestAudience, trustAtLeast, type Lesson, type LessonCitation, type LessonScope } from "./types.js";
+import { LessonCitationSchema, LessonProvenanceSchema, LessonSchema, LessonScopeSchema, distinctIds, minTrust, narrowestAudience, normSource, trustAtLeast, type Lesson, type LessonCitation, type LessonScope } from "./types.js";
 
 /** At or above this similarity two lessons are the same advice, merged by code with no model call. */
 export const MERGE_SIMILARITY = 0.92;
@@ -56,7 +56,7 @@ const citationKey = (c: LessonCitation): string => (c.kind === "code" ? `code:${
 /** A union that, when it must cut, keeps the paused sources first: a lesson cannot shed a hold by absorbing more sources than it has room for. */
 const unionPinned = (a: readonly string[], b: readonly string[], max: number, pinned: ReadonlySet<string>): string[] => {
   const all = [...new Set([...a, ...b])];
-  return [...all.filter((x) => pinned.has(x)), ...all.filter((x) => !pinned.has(x))].slice(0, max);
+  return [...all.filter((x) => pinned.has(normSource(x))), ...all.filter((x) => !pinned.has(normSource(x)))].slice(0, max);
 };
 const union = <T,>(a: readonly T[], b: readonly T[], max: number): T[] => [...new Set([...a, ...b])].slice(0, max);
 
@@ -162,7 +162,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
       const merged = await commitWith(deps, key, async () => {
         const fresh = await deps.store.get(key, other.id);
         if (fresh === undefined || !mergeAllowed(fresh, draft)) return undefined;
-        return [mergeInto(fresh, draft, nextVersion(fresh, await deps.store.versions(key, fresh.id)), deps.now(), new Set(Object.keys((await deps.store.flags(key)).pausedSources ?? {})))];
+        return [mergeInto(fresh, draft, nextVersion(fresh, await deps.store.versions(key, fresh.id)), deps.now(), new Set(Object.keys((await deps.store.flags(key)).pausedSources ?? {}).map(normSource)))];
       });
       if (merged === undefined) return drop("conflict");
       await emitAudit(deps.audit, { action: "lesson.merged", workspaceId: key.workspaceId, project: key.project, lessonId: other.id, facts: { score: Math.round(score * 100) / 100 } });

@@ -5,7 +5,7 @@
 import type { LessonStore, ScopeKey } from "./store.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
-import type { IdentitySet, Lesson } from "./types.js";
+import { sameSource, type IdentitySet, type Lesson } from "./types.js";
 import { lessonValue } from "./value.js";
 
 const WEEK = 7 * 86_400_000;
@@ -52,12 +52,12 @@ export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: 
 }
 
 /** Keys that are plainly about a project member or CI are always safe to name; anything else (a channel, a tracker folder) only if known lessons mention it and the viewer sees all of them. */
-const ALWAYS_NAMEABLE = /^(member:|ci$|kind:)/u;
+const ALWAYS_NAMEABLE = /^(member:|ci$|kind:)/iu;
 async function pausedSourcesFor(store: LessonStore, key: ScopeKey, all: readonly Lesson[], visible: (l: Lesson) => boolean): Promise<{ pausedSources: string[]; pausedSourcesHidden: number }> {
   const keys = Object.keys((await store.flags(key)).pausedSources ?? {}).sort();
   const named: string[] = [];
   for (const source of keys) {
-    const mentions = all.filter((l) => l.provenance.sources.includes(source) || l.provenance.inputSources.includes(source));
+    const mentions = all.filter((l) => l.provenance.sources.some((s) => sameSource(s, source)) || l.provenance.inputSources.some((s) => sameSource(s, source)));
     if (ALWAYS_NAMEABLE.test(source) || (mentions.length > 0 && mentions.every(visible))) named.push(source);
   }
   return { pausedSources: named, pausedSourcesHidden: keys.length - named.length };

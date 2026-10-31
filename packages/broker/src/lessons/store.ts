@@ -7,7 +7,7 @@
 // Every key carries the workspace and the project, so one workspace's call can never read or change another's lessons.
 import { CHANGE_APPROVAL_TTL_DAYS } from "@agentx/contracts";
 import { scrubLesson } from "./scrub.js";
-import { LessonSchema, normId, peopleOf, recordIdsOf, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
+import { LessonSchema, normId, normSource, peopleOf, recordIdsOf, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
 import type { LessonStage } from "@agentx/contracts";
 
 export interface ScopeKey { workspaceId: string; project: string }
@@ -94,6 +94,8 @@ export interface LessonStore {
 }
 
 const DAY = 86_400_000;
+/** Statuses a write may carry under the fence: each one takes the lesson out of use (never into it). */
+const NARROWING_STATUSES: ReadonlySet<Lesson["status"]> = new Set(["retired", "rejected", "withdrawn", "expired", "stale"]);
 /** Bookkeeping about use: carried from the head into every new version, so a commit never rewinds a counter. */
 const USAGE_FIELDS = ["counters", "staleAt", "lastValidatedAt", "lastHelpfulAt"] as const;
 const scopeId = (k: ScopeKey): string => `${k.workspaceId}\u0001${k.project}`;
@@ -156,8 +158,9 @@ export class InMemoryLessonStore implements LessonStore {
       // The fence: nothing that names an erased person or a deleted record may be written back, whatever the writer read earlier.
       if (s.gone.get(lesson.id) === "purged") return { ok: false, reason: "erased" };
       if (peopleOf(lesson).some((p) => s.erased.has(normId(p))) || recordIdsOf(lesson).some((id) => s.deletedIds.has(id))) {
-        // A write that only NARROWS (retire, reject, withdraw: the kill switches) is never refused; what it carries from a stale read is scrubbed against the fence.
-        if (lesson.status !== "retired" && lesson.status !== "rejected" && lesson.status !== "withdrawn") return { ok: false, reason: "erased" };
+        // A write that only NARROWS (retire, reject, withdraw: the kill switches; expire and stale: a lesson leaving use) is never refused; what it carries from a stale read is
+        // scrubbed against the fence. So `sweepExpired` and the staleness check still reach a lesson that names an erased person.
+        if (!NARROWING_STATUSES.has(lesson.status)) return { ok: false, reason: "erased" };
         lesson = LessonSchema.parse(scrubLesson(lesson, s.deletedIds, s.erased));
       }
       staged.push(lesson);
@@ -264,11 +267,12 @@ export class InMemoryLessonStore implements LessonStore {
   }
   async forgetSource(key: ScopeKey, source: string): Promise<void> {
     const s = this.of(key);
-    s.sourceEvents = s.sourceEvents.filter((e) => e.source !== source);
-    if (s.flags.pausedSources?.[source] !== undefined) {
-      const rest = { ...s.flags.pausedSources };
-      delete rest[source];
-      s.flags = { ...s.flags, pausedSources: rest };
+    const wanted = normSource(source);
+    s.sourceEvents = s.sourceEvents.filter((e) => normSource(e.source) !== wanted);
+    // Every spelling of the key goes: a pause stored as `member:Mallory` is forgotten when `mallory` is erased.
+    const paused = s.flags.pausedSources;
+    if (paused !== undefined && Object.keys(paused).some((name) => normSource(name) === wanted)) {
+      s.flags = { ...s.flags, pausedSources: Object.fromEntries(Object.entries(paused).filter(([name]) => normSource(name) !== wanted)) };
     }
   }
   async fence(key: ScopeKey, fence: { people?: readonly string[]; ids?: readonly string[] }): Promise<void> {
@@ -312,11 +316,12 @@ export class InMemoryLessonStore implements LessonStore {
   async removePending(key: ScopeKey, pendingKey: string): Promise<void> { this.of(key).pending.delete(pendingKey); }
   async flags(key: ScopeKey): Promise<ProjectFlags> { return clone(this.of(key).flags); }
   async setFlags(key: ScopeKey, flags: ProjectFlags): Promise<void> { this.of(key).flags = clone(flags); }
-  async recordSourceEvent(key: ScopeKey, event: { at: number; source: string }): Promise<void> { this.of(key).sourceEvents.push(clone(event)); }
+  async recordSourceEvent(key: ScopeKey, event: { at: number; source: string }): Promise<void> { this.of(key).sourceEvents.push({ at: event.at, source: normSource(event.source) }); }
   async sourceDays(key: ScopeKey, source: string, days: number, now: number): Promise<number[]> {
     const counts = new Array<number>(days).fill(0);
+    const wanted = normSource(source);
     for (const e of this.of(key).sourceEvents) {
-      if (e.source !== source) continue;
+      if (normSource(e.source) !== wanted) continue;
       const age = Math.floor((now - e.at) / DAY);
       if (age >= 0 && age < days) counts[age]! += 1;
     }

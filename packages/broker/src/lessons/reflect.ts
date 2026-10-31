@@ -6,7 +6,7 @@ import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, typ
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
 import {
-  LessonCandidateSchema, ReflectorOutputSchema, distinctIds, idIn, minTrust, narrowestAudience, sameId,
+  LessonCandidateSchema, ReflectorOutputSchema, distinctIds, idIn, minTrust, narrowestAudience, normSource, sameId,
   type Audience, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type TrustClass,
 } from "./types.js";
 
@@ -163,7 +163,7 @@ async function toDraft(
   const audience: Audience = narrowestAudience([...everything.flatMap((s) => (s.audience === undefined ? [] : [s.audience])), ...(subject.audience === undefined ? [] : [subject.audience])]);
   // The places everything the model read came from: what the access records are asked about whenever the lesson is read.
   const sourceScopes = [...new Set([...everything.flatMap((s) => s.scopes ?? []), ...(subject.scopes ?? [])])].slice(0, 50);
-  const sourceOf = (s: MarkedSpan): string => s.sourceKey ?? (s.authorId === undefined ? `kind:${s.kind}` : `member:${s.authorId}`);
+  const sourceOf = (s: MarkedSpan): string => normSource(s.sourceKey ?? (s.authorId === undefined ? `kind:${s.kind}` : `member:${s.authorId}`));
   const sources = [...new Set(evidence.map(sourceOf))].slice(0, 20);
   // Spike detection counts every source the model read, so flood text it chose not to cite is still seen.
   const inputSources = [...new Set(everything.filter((s) => s.kind !== "loaded_lesson").map(sourceOf))].slice(0, 100);
