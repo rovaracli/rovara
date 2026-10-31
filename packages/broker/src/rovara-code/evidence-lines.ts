@@ -12,9 +12,14 @@ export interface ProofEvidenceContext {
   pack?: EvidencePack | undefined;
   /** The mode after `resolveEvidenceMode` (a public or unknown repository never gets `embed`). */
   mode: EvidenceMode;
-  /** The task page's address on Rovara's own origin. Used only when it is an https address with no spaces, quotes or angle brackets. */
+  /** The task page's address. Used only when it starts with `origin` and is an https address with no spaces, quotes or angle brackets. */
   taskUrl?: string | undefined;
+  /** Rovara's own https origin, as configured (`https://host`, no path). Without it no address is shown: the link line still says where to look. */
+  origin?: string | undefined;
 }
+
+/** The tests the change added or changed that the broker's own TestProof (bound to this code's digest) says fail on the original code, by name. Undefined when the proof has no per-test verdicts. */
+export type ProvenTestNames = ReadonlySet<string> | undefined;
 
 const LINE_MAX = 600;
 /** The most mocked-service and other not-tested bullets listed; the rest are counted. */
@@ -43,25 +48,28 @@ export function boundEvidence(context: ProofEvidenceContext | undefined, candida
 }
 
 /** The counts-per-kind line (dropped from shrink level 2): one entry per check, in the pack's order, joined with a middle dot. */
-export function testsLine(pack: EvidencePack): string | undefined {
+export function testsLine(pack: EvidencePack, proven?: ProvenTestNames): string | undefined {
   const parts: string[] = [];
   for (const check of pack.checks) {
     const label = inertLine(check.label, 60);
     if (check.kind === "test") {
       const tests = check.tests;
+      // The outcome word comes first and is always there, so a failed or unfinished check can never read as passed, whatever its counts say.
+      const mark = OUTCOME_WORDS[check.after];
       if (tests === undefined) {
-        parts.push(`${label} ${OUTCOME_WORDS[check.after]} (test details not read)`);
+        parts.push(`${label} ${mark} (test details not read)`);
         continue;
       }
       const counts = [`${number(tests.passed)} passed`, ...(tests.failed > 0 ? [`${number(tests.failed)} failed`] : []), ...(tests.errored > 0 ? [`${number(tests.errored)} errored`] : []), ...(tests.skipped > 0 ? [`${number(tests.skipped)} skipped`] : [])];
-      const fails = tests.names.filter((test) => tests.newTests.includes(test.name) && test.proof === "proves_change").length;
-      const added = tests.newTests.length === 0 ? "" : `; ${number(tests.newTests.length)} new${tests.names.some((test) => test.proof !== undefined) ? `, ${number(fails)} fail on the original code` : ""}`;
-      parts.push(`${label}: ${counts.join(", ")}${added}`);
+      // "Fails on the original code" is the broker's own TestProof's word, never the worker's per-test verdict in the pack.
+      const fails = proven === undefined ? undefined : tests.newTests.filter((name) => proven.has(Array.from(name).slice(0, 200).join(""))).length;
+      const added = tests.newTests.length === 0 ? "" : `; ${number(tests.newTests.length)} new${fails === undefined ? "" : `, ${number(fails)} fail on the original code`}`;
+      parts.push(`${label} ${mark}: ${counts.join(", ")}${added}`);
     } else if (check.kind === "security") {
       const findings = check.findings;
       if (check.after !== "passed" && check.after !== "failed") parts.push(`security scan ${OUTCOME_WORDS[check.after]}`);
       else if (findings === undefined) parts.push(`security scan ${OUTCOME_WORDS[check.after]} (findings not read)`);
-      else parts.push(`security scan: ${findings.newCount === 0 ? "0 new findings" : `${number(findings.newCount)} new${findings.bySeverity.critical + findings.bySeverity.high > 0 ? ` (${number(findings.bySeverity.critical + findings.bySeverity.high)} high or critical)` : ""}`}`);
+      else parts.push(`security scan ${OUTCOME_WORDS[check.after]}: ${findings.newCount === 0 ? "0 new findings" : `${number(findings.newCount)} new${findings.bySeverity.critical + findings.bySeverity.high > 0 ? ` (${number(findings.bySeverity.critical + findings.bySeverity.high)} high or critical)` : ""}`}`);
     } else if (check.kind === "migration") {
       const migrations = check.migrations;
       if (check.after !== "passed" || migrations === undefined) parts.push(`migrations ${OUTCOME_WORDS[check.after]}`);
@@ -113,7 +121,8 @@ export function evidenceLinkLine(context: ProofEvidenceContext): string {
   const where = "Rovara task page (sign-in needed)";
   if (context.mode === "summary") return "Full evidence is in Rovara (sign-in needed).";
   const url = context.taskUrl;
-  const safe = url !== undefined && /^https:\/\/[^\s<>"'`]{1,2000}$/u.test(url);
+  const origin = context.origin;
+  const safe = url !== undefined && origin !== undefined && /^https:\/\/[^\s<>"'`/?#]{1,253}$/u.test(origin) && url.startsWith(`${origin}/`) && /^https:\/\/[^\s<>"'`]{1,2000}$/u.test(url);
   return `Full evidence (screenshots, API samples, video, logs): ${where}${safe ? `: ${url}` : ""}`;
 }
 
@@ -123,8 +132,8 @@ const NOUNS = { claim: "Requirement", scenario: "Scenario", check: "Check", mock
  * The not-tested bullets the pack adds to the table's own (the table already lists claims and scenarios, so those kinds are left to it): mocked services, tests not selected, environment details that could
  * not be read, and checks that skipped more tests. Bounded to ten, with the rest counted; never dropped by the shrink levels, which only shorten their words.
  */
-export function evidenceNotTestedLines(pack: EvidencePack, level: number): string[] {
-  const items = pack.notTested.filter((item) => item.kind !== "claim" && item.kind !== "scenario");
+export function evidenceNotTestedLines(pack: EvidencePack, level: number, exclude: ReadonlySet<string> = new Set()): string[] {
+  const items = pack.notTested.filter((item) => item.kind !== "claim" && item.kind !== "scenario" && !exclude.has(`${item.kind}:${item.id}`));
   const lines = items.slice(0, EVIDENCE_NOT_TESTED_LISTED).map((item) => {
     const name = level >= 4 ? inertLine(item.id, 40) : inertLine(item.text === "" ? item.id : item.text, 80);
     return `- ${NOUNS[item.kind]} ${name} (${inertLine(item.reason, 100)})`;
@@ -137,15 +146,15 @@ export function evidenceNotTestedLines(pack: EvidencePack, level: number): strin
  * The evidence lines of the Proof section at a shrink level (0..4): counts per kind and coverage at levels 0 and 1, then the Environment line, the not-run line and the link at every level. The not-tested
  * bullets are returned apart (`notTested`) because the Proof section puts them under "What wasn't tested". Without a pack bound to this code there is nothing: stale evidence is never shown as current.
  */
-export function evidenceLines(context: ProofEvidenceContext | undefined, candidateDigest: string | undefined, level: number): { lines: string[]; notTested: string[] } {
+export function evidenceLines(context: ProofEvidenceContext | undefined, candidateDigest: string | undefined, level: number, extra: { proven?: ProvenTestNames; alreadyListed?: ReadonlySet<string> } = {}): { lines: string[]; notTested: string[] } {
   const pack = boundEvidence(context, candidateDigest);
   if (context === undefined || pack === undefined) return { lines: [], notTested: [] };
   const full = level <= 1;
   const lines = [
-    ...(full ? [testsLine(pack), coverageLine(pack)] : []),
+    ...(full ? [testsLine(pack, extra.proven), coverageLine(pack)] : []),
     environmentLine(pack, level),
     notRunLine(pack),
     evidenceLinkLine(context),
   ].filter((line): line is string => line !== undefined);
-  return { lines, notTested: evidenceNotTestedLines(pack, level) };
+  return { lines, notTested: evidenceNotTestedLines(pack, level, extra.alreadyListed) };
 }

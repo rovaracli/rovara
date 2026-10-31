@@ -80,16 +80,21 @@ export const DECISION_ACTION_KINDS = ["approve", "reject", "open", "answer", "ch
 export const DecisionActionKindSchema = z.enum(DECISION_ACTION_KINDS);
 export type DecisionActionKind = z.infer<typeof DecisionActionKindSchema>;
 
-/** A web address or a path of this server, with no spaces or control characters. */
+/**
+ * An action goes to an existing endpoint or page of THIS server: a path under `/app/` or `/v1/app/`, with only URL-safe characters (so no backslash, which a browser reads as a slash, no space, no colon and no
+ * `@`), no empty or `..` segment (no `//`), and an optional plain query. An absolute address (any scheme or host) and a protocol-relative one are refused.
+ */
 const ActionHrefSchema = z
   .string()
   .max(2048)
-  .regex(/^(?:https?:\/\/[^\s]+|\/(?!\/)[^\s]*)$/u, "an https address or a path")
-  .regex(NO_HIDDEN, "no hidden characters");
+  .regex(/^\/(?:v1\/)?app\/[A-Za-z0-9/_.~-]+(?:\?[A-Za-z0-9=&_.~%-]*)?$/u, "a path of this server")
+  .refine((href) => !href.split("?")[0]!.split("/").slice(1).some((segment) => segment === "" || segment === "." || segment === ".."), "no empty or dot segments");
 
 export const CardActionSchema = z
   .object({ kind: DecisionActionKindSchema, label: line(60), href: ActionHrefSchema, method: z.enum(["GET", "POST"]) })
-  .strict();
+  .strict()
+  // Only opening a page may be a GET: approving, rejecting, answering and choosing change state, so they are POSTs and never a link a crawler, a prefetch or an image tag can follow.
+  .refine((action) => action.kind === "open" || action.method === "POST", { message: "only an open action may be a GET", path: ["method"] });
 export type CardAction = z.infer<typeof CardActionSchema>;
 
 /** Why a person rejects, in one tap. */
@@ -150,6 +155,7 @@ export const DecisionCardSchema = z
     if (card.friction.expandEvidenceFirst !== wanted.expandEvidenceFirst || card.friction.freshSignIn !== wanted.freshSignIn || (card.friction.secondPerson && card.risk !== "high")) {
       problem(["friction"], "the friction is the one the risk tier carries");
     }
+    if (RISK_ORDER[card.risk] < RISK_ORDER[DECISION_KIND_FLOOR_RISK[card.kind]]) problem(["risk"], "a card is at least as risky as its kind's floor");
     if (card.risk === "high" && card.actions.some((action) => action.kind === "approve")) problem(["actions"], "a high-risk card has no approve action: it opens the full page");
     if (card.actions.filter((action) => action.kind === "approve").length > 1) problem(["actions"], "a card has at most one approve action");
     if (card.status === "pending" && !card.actions.some((action) => action.kind === card.recommended.action)) problem(["recommended", "action"], "the recommended action is one of the card's actions");

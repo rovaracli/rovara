@@ -60,6 +60,23 @@ describe("JUnit written by a command the agent can influence", () => {
     expect(parseJunit('<testsuite><testcase name="a > b"/></testsuite>')?.tests[0]?.name).toBe("a > b");
     expect(parseJunit('<testsuite><testcases name="a"/><testcase name="b"/></testsuite>')?.total).toBe(1);
   });
+  it("reads a test case with one huge attribute without a quadratic scan: over 16 KiB of attributes is unreadable, under it is read in linear time", () => {
+    for (const filler of ["a", "a=", "a =", 'a="', "a='", "= "]) {
+      const hostile = `<testsuite><testcase ${filler.repeat(Math.ceil(8_000_000 / filler.length))}/></testsuite>`;
+      const t0 = started();
+      expect(parseJunit(hostile), filler).toBeUndefined();
+      expect(performance.now() - t0, filler).toBeLessThan(2_000);
+    }
+    const nearCap = `<testsuite><testcase name="ok" ${"a".repeat(16_000)}/></testsuite>`;
+    const t1 = started();
+    expect(parseJunit(nearCap)?.tests[0]?.name).toBe("ok");
+    expect(performance.now() - t1).toBeLessThan(500);
+    expect(parseJunit(`<testsuite><testcase name="ok" ${"a".repeat(17_000)}/></testsuite>`)).toBeUndefined();
+  });
+  it("reads each attribute pair once: the first of a repeated name wins, both quote kinds work, a malformed pair is skipped", () => {
+    const read = parseJunit(`<testsuite><testcase junk = name='first' name="second" =x classname="a.b" time=oops/></testsuite>`)!;
+    expect(read.tests[0]).toMatchObject({ name: "first", file: "a/b" });
+  });
   it("reads a hostile 8 MiB file in one pass: many unclosed test cases, comments or CDATA sections cost no more than a single scan", () => {
     const hostile = [
       `<testsuite>${'<testcase name="a">'.repeat(400_000)}`,
@@ -96,6 +113,27 @@ describe("vitest and jest JSON", () => {
   });
 });
 
+describe("vitest and jest JSON, fail closed", () => {
+  const suite = (over: Record<string, unknown>) => JSON.stringify({ testResults: [{ name: "/w/a.test.ts", status: "passed", ...over }] });
+  it("counts an unknown or garbage status as errored, not skipped, and only pending, todo, skipped and disabled as skipped", () => {
+    const read = parseJsonReport(suite({ assertionResults: ["pending", "todo", "skipped", "disabled", "quarantined", 7, null, "passed"].map((status, index) => ({ fullName: `t${String(index)}`, status })) }))!;
+    expect(read).toMatchObject({ skipped: 4, errored: 3, passed: 1 });
+    expect(read.tests.filter((test) => test.status === "errored").map((test) => test.name)).toEqual(["t4", "t5", "t6"]);
+  });
+  it("keeps a suite's own failure when its tests passed (an afterAll or hook failure), and does not add one when a test failed", () => {
+    const hook = parseJsonReport(suite({ status: "failed", assertionResults: [{ fullName: "t", status: "passed" }] }))!;
+    expect(hook).toMatchObject({ total: 2, passed: 1, errored: 1 });
+    expect(hook.tests.at(-1)).toMatchObject({ status: "errored", file: "/w/a.test.ts" });
+    const failing = parseJsonReport(suite({ status: "failed", assertionResults: [{ fullName: "t", status: "failed" }] }))!;
+    expect(failing).toMatchObject({ total: 1, failed: 1, errored: 0 });
+  });
+  it("stops at the test cap even for suite-level errors", () => {
+    const suites = Array.from({ length: TEST_REPORT_MAX_TESTS + 1 }, (_, index) => ({ name: `f${String(index)}`, status: "failed", assertionResults: [] }));
+    expect(parseJsonReport(JSON.stringify({ testResults: suites }))).toBeUndefined();
+    expect(parseJsonReport(JSON.stringify({ testResults: suites.slice(0, TEST_REPORT_MAX_TESTS) }))?.total).toBe(TEST_REPORT_MAX_TESTS);
+  });
+});
+
 describe("parseTestReport", () => {
   it("picks the format from the text, or the one the check names", () => {
     expect(parseTestReport(PYTEST)?.format).toBe("junit");
@@ -114,6 +152,9 @@ describe("names", () => {
     expect(plainName("a\nb‮c\u0000d")).toBe("a b c d");
     expect(plainName("   ")).toBe("test");
     expect(plainName("x".repeat(400))).toHaveLength(300);
+    const cut = plainName(`${"x".repeat(299)}\u{1F600}tail`);
+    expect(cut).toBe(`${"x".repeat(299)}\u{1F600}`);
+    expect(cut).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u);
     const secret = `ghp_${"A1b2".repeat(9)}`;
     expect(plainName(`test with ${secret}`)).not.toContain(secret);
   });

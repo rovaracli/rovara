@@ -171,6 +171,12 @@ export const TestEnvironmentBodySchema = z
     if (!unique(env.services.map((service) => service.name))) problem(["services"], "service names are unique");
     if (!unique(env.accounts.map((account) => account.profileId))) problem(["accounts"], "account profiles are unique");
     if ((env.capture.video || env.capture.traces) && env.accounts.some((account) => !provisionerIsRunScoped(account.provisioner))) problem(["capture"], "video and traces need every account to be run-scoped");
+    // Tier 3 keeps a video or trace only with a provisioner that deletes its accounts: a shared environment with no run-scoped account has nothing to show they were dead.
+    if ((env.capture.video || env.capture.traces) && env.tier === "shared" && env.accounts.length === 0) problem(["capture"], "video and traces in a shared environment need a run-scoped account provisioner");
+    // Nothing the environment points at may be production: every pre-prod, shared, preview and account target is checked against the deny list.
+    for (const target of testEnvTargets(env)) {
+      if (targetIsProd(env.prodDeny, target)) problem(target.path, "this target is on the production deny list");
+    }
   });
 export type TestEnvironmentBody = z.infer<typeof TestEnvironmentBodySchema>;
 
@@ -183,10 +189,70 @@ export function testEnvDigest(body: TestEnvironmentBody): string {
   return sha256Hex(canonicalJson(TestEnvironmentBodySchema.parse(body)));
 }
 
+
+// ---- targets and the production deny list
+
+type TargetKind = "host" | "arn";
+interface EnvTarget {
+  path: (string | number)[];
+  kind: TargetKind;
+  value: string;
+}
+
+/** Every address and ARN the environment would call, with where it is in the body. */
+function testEnvTargets(env: TestEnvironmentBody): EnvTarget[] {
+  const targets: EnvTarget[] = [];
+  const host = (path: (string | number)[], url: string | undefined) => {
+    if (url === undefined) return;
+    const match = /^https:\/\/([^/:?#]+)/u.exec(url);
+    if (match !== null) targets.push({ path, kind: "host", value: match[1]!.toLowerCase() });
+  };
+  const arn = (path: (string | number)[], value: string | undefined) => {
+    if (value !== undefined) targets.push({ path, kind: "arn", value });
+  };
+  env.services.forEach((service, index) => {
+    host(["services", index, "preprod", "url"], service.preprod?.url);
+    arn(["services", index, "preprod", "endpointArn"], service.preprod?.endpointArn);
+    arn(["services", index, "preprod", "roleArn"], service.preprod?.roleArn);
+  });
+  host(["shared", "baseUrl"], env.shared?.baseUrl);
+  arn(["preview", "deployRoleArn"], env.preview?.deployRoleArn);
+  env.accounts.forEach((account, index) => {
+    if (account.provisioner === "cognito_test_pool") arn(["accounts", index, "roleArn"], account.roleArn);
+    if (account.provisioner === "http_hook") {
+      host(["accounts", index, "createUrl"], account.createUrl);
+      host(["accounts", index, "deleteUrl"], account.deleteUrl);
+    }
+  });
+  return targets;
+}
+
+/** `*` in a deny-list host matches any run of host characters; everything else is literal and the whole host must match. */
+function hostMatches(pattern: string, host: string): boolean {
+  const regex = new RegExp(`^${pattern.toLowerCase().split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/gu, "\\$&")).join("[a-z0-9.-]*")}$`, "u");
+  return regex.test(host);
+}
+
+function targetIsProd(deny: TestEnvironmentBody["prodDeny"], target: EnvTarget): boolean {
+  if (target.kind === "host") return deny.hosts.some((pattern) => hostMatches(pattern, target.value));
+  const account = target.value.split(":")[4];
+  return deny.arnPrefixes.some((prefix) => target.value.startsWith(prefix)) || (account !== undefined && deny.accountIds.includes(account));
+}
+
+/** The signature of what a pre-prod service points at; a different one is a different target even under the same name. */
+const preprodSignature = (service: TestEnvService): string | undefined => (service.preprod === undefined ? undefined : JSON.stringify([service.preprod.url ?? null, service.preprod.endpointArn ?? null, service.preprod.roleArn ?? null, service.preprod.region]));
+const accountSignature = (account: TestEnvAccount): string | undefined =>
+  account.provisioner === "cognito_test_pool" ? JSON.stringify([account.userPoolId, account.region, account.roleArn]) : account.provisioner === "http_hook" ? JSON.stringify([account.createUrl, account.deleteUrl, account.tokenSecretName]) : undefined;
+
+/** Whether the environment's targets include anything on the production deny list (the schema refuses such a body; this is for a caller that holds a body already parsed). */
+export function testEnvTouchesProd(env: TestEnvironmentBody): boolean {
+  return testEnvTargets(env).some((target) => targetIsProd(env.prodDeny, target));
+}
+
 // ---- less-safe fields and the approval card's risk
 
 /** The fields whose change is a less-safe change (a second person and a fresh sign-in, like a less-safe process change). */
-export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised"] as const;
+export const TEST_ENV_LESS_SAFE_FIELDS = ["preprod", "shared", "preview", "video", "traces", "schema_synth", "round_budget_raised", "preprod_target_changed", "shared_target_changed", "preview_target_changed", "account_target_changed", "prod_deny_reduced"] as const;
 export type TestEnvLessSafeField = (typeof TEST_ENV_LESS_SAFE_FIELDS)[number];
 
 function lessSafeSet(env: TestEnvironmentBody): Set<TestEnvLessSafeField> {
@@ -208,6 +274,17 @@ export function testEnvLessSafeChanges(previous: TestEnvironmentBody | undefined
   const before = previous === undefined ? new Set<TestEnvLessSafeField>() : lessSafeSet(previous);
   const changed = [...lessSafeSet(next)].filter((field) => !before.has(field));
   if (previous !== undefined && next.roundBudgetMin > previous.roundBudgetMin) changed.push("round_budget_raised");
+  if (previous !== undefined) {
+    // A target that already existed and was moved, or one more target added next to an old one, is as risky as turning pre-prod on: compared by value, per service, never by "was it already on".
+    const before = new Map(previous.services.map((service) => [service.name, preprodSignature(service)] as const));
+    if (next.services.some((service) => preprodSignature(service) !== undefined && before.get(service.name) !== preprodSignature(service))) changed.push("preprod_target_changed");
+    if (previous.shared !== undefined && next.shared !== undefined && previous.shared.baseUrl !== next.shared.baseUrl) changed.push("shared_target_changed");
+    if (previous.preview !== undefined && next.preview !== undefined && (previous.preview.deployRoleArn !== next.preview.deployRoleArn || previous.preview.stackTemplate !== next.preview.stackTemplate || previous.preview.provider !== next.preview.provider)) changed.push("preview_target_changed");
+    const accountsBefore = new Map(previous.accounts.map((account) => [account.profileId, accountSignature(account)] as const));
+    if (next.accounts.some((account) => accountSignature(account) !== undefined && accountsBefore.get(account.profileId) !== accountSignature(account))) changed.push("account_target_changed");
+    const missing = (was: readonly string[], now: readonly string[]) => was.some((entry) => !now.includes(entry));
+    if (missing(previous.prodDeny.accountIds, next.prodDeny.accountIds) || missing(previous.prodDeny.hosts, next.prodDeny.hosts) || missing(previous.prodDeny.arnPrefixes, next.prodDeny.arnPrefixes)) changed.push("prod_deny_reduced");
+  }
   return changed.sort((a, b) => TEST_ENV_LESS_SAFE_FIELDS.indexOf(a) - TEST_ENV_LESS_SAFE_FIELDS.indexOf(b));
 }
 
@@ -270,7 +347,10 @@ export type TestEnvProveReport = z.infer<typeof TestEnvProveReportSchema>;
 
 /** Whether a Prove run passed for this proposal: every step passed or was skipped, and the report is for exactly this digest. A missing or unreadable report is never "proved". */
 export function testEnvIsProved(report: TestEnvProveReport | undefined, proposalDigest: string): boolean {
-  return report !== undefined && report.proposalDigest === proposalDigest && report.steps.length > 0 && report.steps.every((step) => step.status !== "failed");
+  if (report === undefined || report.proposalDigest !== proposalDigest || report.steps.length === 0 || report.steps.some((step) => step.status === "failed")) return false;
+  // Skipped is not proved: something must have actually passed that exercises the code (the smoke check or the full suite), and an app that is a service must have booted.
+  const passed = (name: (typeof TEST_ENV_PROVE_STEPS)[number]) => report.steps.some((step) => step.step === name && step.status === "passed");
+  return (passed("smoke") || passed("full_suite")) && (report.services.length === 0 || passed("boot"));
 }
 
 // ---- the synthetic-data guard

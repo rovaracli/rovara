@@ -151,6 +151,24 @@ describe("the version 1 task view projection", () => {
   });
 });
 
+describe("the download contract", () => {
+  const expired: Record<string, unknown> = { ...link("log_txt", "7"), state: "expired" };
+  delete expired["href"];
+  const current = evidence.EvidenceViewSchema.parse(view({ checks: [check({ outputTailRef: expired })] }));
+  it("serves an artifact only when the task's current view names it and it is available", () => {
+    expect(evidence.servableEvidenceArtifact(current, sha("c"), sha("b"))?.kind).toBe("jpeg");
+    expect(evidence.servableEvidenceArtifact(current, sha("c"), sha("e"))?.kind).toBe("webm");
+    expect(evidence.servableEvidenceArtifact(current, sha("c"), sha("a"))?.kind).toBe("api_sample_json");
+  });
+  it("never serves an expired artifact, a hash the view does not name (a withheld video the store still holds), a view for other code, or no view", () => {
+    expect(evidence.servableEvidenceArtifact(current, sha("c"), sha("7"))).toBeUndefined();
+    expect(evidence.servableEvidenceArtifact(current, sha("c"), sha("9"))).toBeUndefined();
+    expect(evidence.servableEvidenceArtifact(current, sha("d"), sha("b"))).toBeUndefined();
+    expect(evidence.servableEvidenceArtifact(current, undefined, sha("b"))).toBeUndefined();
+    expect(evidence.servableEvidenceArtifact(undefined, sha("c"), sha("b"))).toBeUndefined();
+  });
+});
+
 describe("check kinds", () => {
   it("are the design's eight, and a check with none is other", () => {
     expect([...evidence.CHECK_KINDS]).toEqual(["test", "lint", "typecheck", "security", "migration", "build", "smoke", "other"]);
