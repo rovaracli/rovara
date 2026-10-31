@@ -317,7 +317,7 @@ import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { positiveInteger } from "./broker/admin-and-helpers.js";
 import { orgStoreOf } from "./broker/dependency-wiring.js";
 import { createAwsBrokerHandler } from "./broker/handler.js";
-import { installEditionPolicy } from "./broker/edition-wiring.js";
+import { createEditionGuard, editionRecordName, installEditionPolicy, ssmEditionRecordReader } from "./broker/edition-wiring.js";
 import { createBrokerPlugins } from "./broker/plugin-wiring.js";
 import { portCredentialResolver } from "./broker/credential-exchange.js";
 import { ssoStoresFor } from "../developer/sso-sign-in.js";
@@ -584,6 +584,8 @@ export const handler = createAwsBrokerHandler({
   // Enterprise foundations E2: the edition is the deploy stamp, read once; no stamp (an install deployed before editions) is no policy, never Enterprise.
   ...(editionPolicy === undefined ? {} : { editionPolicy }),
   ...(ssoStores === undefined ? {} : { sso: ssoStores }),
+  // Enterprise foundations I-2: the stamp is checked against the install's retained edition record before the first request.
+  editionGuard: createEditionGuard({ stamp: editionPolicy?.edition, recordName: process.env.AGENTX_ENV ? editionRecordName(installEnvironmentName()) : undefined, read: ssmEditionRecordReader(ssm), log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })) }),
   // Task 12b's acceptance item: on Rovara Cloud every request to a company's MCP endpoint is checked again and connects only to what was checked.
   ...(cloudOrgResolver === undefined ? {} : { mcpEndpointGuard: mcpEndpointGuard() }),
   ...(orgConnections === undefined ? {} : { orgConnections }),

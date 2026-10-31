@@ -251,6 +251,8 @@ export interface AwsBrokerDependencies {
    */
   codeHost?: CodeHostRouter;
   checkRunner?: PluginRegistry["checkRunner"];
+  /** Enterprise foundations I-2: run before the first request (and again until it passes): refuses to serve an install whose edition stamp is not its recorded edition. */
+  editionGuard?: () => Promise<void>;
   /** Enterprise foundations I1: the group mapping and break-glass stores, built once. Absent where the edition has no company sign-in. */
   sso?: SsoStores;
   /** Enterprise foundations E2: the edition's feature table, from the deploy stamp. Absent on an install deployed before editions, which keeps today's behaviour and is never Enterprise. */

@@ -3,6 +3,7 @@
 import { ArnFormat, CfnOutput, CfnParameter, Duration, Fn, Lazy, RemovalPolicy, Stack, Token, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda as lambda, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
+import { grantEditionRecordRead } from "./edition-env.js";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import { packagedFunction } from "./control-plane.js";
 import { CloudIdentity } from "./cloud-identity.js";
@@ -267,6 +268,8 @@ export class DeveloperSignIn extends Construct {
       conditions: { ArnNotEquals: { "aws:PrincipalArn": Lazy.list({ produce: () => [fn.role!.roleArn, ...this.publicKeyReaders] }) } },
     }));
     props.slackSecret.grantRead(fn);
+    // Enterprise foundations I-2: the sign-in server checks its edition stamp against the install's retained edition record before it serves.
+    grantEditionRecordRead(fn, props.env);
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],
       // Secrets Manager appends "-" and six characters to a secret's name in its ARN.
