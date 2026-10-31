@@ -36,6 +36,7 @@
   "packages/contracts/src/intake.ts",
   "packages/contracts/src/invite-creation.ts",
   "packages/contracts/src/knowledge-skills.ts",
+  "packages/contracts/src/live-interaction.ts",
   "packages/contracts/src/loaded-knowledge.ts",
   "packages/contracts/src/meta-project.ts",
   "packages/contracts/src/models.ts",

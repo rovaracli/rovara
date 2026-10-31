@@ -12,6 +12,7 @@ import { EvidenceViewSchema } from "./evidence.js";
 import { PlanOneScreenSchema } from "./plan-one-screen.js";
 import { MergeTrackingItemSchema, MergeViewSchema, ProofTableViewSchema, VerificationReportSchema } from "./rovara-code.js";
 import { readsAsUnknown } from "./forward-reader-unknown.js";
+import { ErrorRefSchema } from "./live-interaction.js";
 
 export const DEVELOPER_TASK_SUMMARY_MAX = 4_000;
 
@@ -109,6 +110,8 @@ export const DeveloperTaskViewSchema = z.object({
   }).optional(),
   e2ePresentation: z.object({ shared: E2ESharedViewSchema, slackBlocks: z.array(z.unknown()).max(16), pageHtml: z.string().max(65_536), mcp: z.object({ scope: z.string().max(2_000), view: E2ESharedViewSchema }).strict() }).strict().optional(),
   failure: DeveloperTaskFailureSchema.optional(),
+  /** Live interaction F1: what the "Fix with agent" button is about, when the task shows an error (a blocked step or a failed run). Fixed codes and ids only, never text; absent when there is no error to fix. */
+  errorRef: ErrorRefSchema.optional(),
   /** Ruling R60: set when the task's creator was removed from the org; the task has ended (status CANCELLED) and `outcomeReason` says why. */
   outcome: z.literal("creator_removed").optional(),
   outcomeReason: z.string().max(1000).optional(),

@@ -3,10 +3,13 @@
 // This file is pure: shapes, bounds, fixed words and small pure helpers. Nothing here can carry a budget, a tool, a permission or an approval (every payload is strict),
 // and nothing here holds a person's text except the request bodies a person typed themselves. Every stored record, audit fact and error reference built from these
 // shapes holds fixed codes, ids and counts only.
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import { SessionIdSchema } from "./browser-ids.js";
-import type { Edition } from "./edition.js";
+import { sha256Hex } from "./web-hash.js";
+
+// This file is part of the browser entry (the task view, the session view and the health rows carry an ErrorRef), so it imports no Node module: `sha256Hex` is the web-safe hash, the same digest.
+/** The two editions, by name (the edition module is not imported here: it is not part of the browser entry). */
+type Edition = "enterprise" | "public";
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Switches. Three packed settings in the design (`rd`, `ak`, and the fix switch), all OFF by default. The design named the third `fx`, but `fx` is already the autofix
@@ -237,7 +240,32 @@ export function errorRefOf(input: { kind: ErrorRefKind; code: string; subject: R
 /** The key of "one open diagnosis per ErrorRef": the same kind, code, subject and operation always give the same key, whatever the time. */
 export function errorRefKey(ref: ErrorRef): string {
   const [subjectKind, subjectId] = Object.entries(ref.subject)[0] ?? ["", ""];
-  return createHash("sha256").update(JSON.stringify([ref.kind, ref.code, subjectKind, subjectId, ref.operationId ?? ""]), "utf8").digest("hex");
+  return sha256Hex(JSON.stringify([ref.kind, ref.code, subjectKind, subjectId, ref.operationId ?? ""]));
+}
+
+/** A failed or interrupted task: its failure category (a fixed word of the task view), and the stage word when it has one. */
+export function taskFailureErrorRef(input: { taskId: string; failure: { category: string; stage?: string | undefined }; operationId?: string | undefined; at: string }): ErrorRef | undefined {
+  const word = (text: string) => text.replace(/[^A-Za-z0-9]+/gu, "_").toUpperCase();
+  const code = input.failure.stage === undefined ? word(input.failure.category) : `${word(input.failure.category)}_${word(input.failure.stage)}`;
+  const base = { kind: "operation_failed" as const, code, subject: { taskId: input.taskId }, at: input.at };
+  // An operation id that is not a uuid is left out rather than losing the whole reference.
+  return (input.operationId === undefined ? undefined : errorRefOf({ ...base, operationId: input.operationId })) ?? errorRefOf(base);
+}
+
+/** A project's failed setup check; the failed step's text is never carried (only that the check failed). */
+export function setupCheckErrorRef(input: { project: string; status: string; at: string }): ErrorRef | undefined {
+  if (input.status !== "failed" && input.status !== "outdated") return undefined;
+  return errorRefOf({ kind: "setup_check", code: input.status === "failed" ? "SETUP_CHECK_FAILED" : "SETUP_CHECK_OUTDATED", subject: { project: input.project }, at: input.at });
+}
+
+/** A health row of a connector or a stored runtime (`connectorId` is its fixed id) that is not healthy; `reason` is the row's own fixed word. */
+export function connectorHealthErrorRef(input: { connectorId: string; reason: string; at: string }): ErrorRef | undefined {
+  return errorRefOf({ kind: "connector_health", code: `CONNECTOR_${input.reason.replace(/[^A-Za-z0-9]+/gu, "_").toUpperCase()}`, subject: { connectorId: input.connectorId }, at: input.at });
+}
+
+/** A model that is not reachable for a project (access denied, not enabled, over quota); `reason` is a fixed word. */
+export function modelAccessErrorRef(input: { project: string; reason: string; at: string }): ErrorRef | undefined {
+  return errorRefOf({ kind: "model_access", code: `MODEL_ACCESS_${input.reason.replace(/[^A-Za-z0-9]+/gu, "_").toUpperCase()}`, subject: { project: input.project }, at: input.at });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
