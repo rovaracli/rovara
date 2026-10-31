@@ -74,19 +74,19 @@ export function remoteCodeReason(command: string): string | undefined {
 
 // ---- helpers
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : []);
+export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+export const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : []);
 /** Redacted, on one line (every run of whitespace, control and format characters is one space), and cut to `max` characters. */
 export function oneLineText(value: unknown, max: number): string {
   if (typeof value !== "string") return "";
   return [...redactText(value).replace(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim()].slice(0, max).join("").trimEnd();
 }
-const utf8Bytes = (text: string): number => new TextEncoder().encode(text).byteLength;
+export const utf8Bytes = (text: string): number => new TextEncoder().encode(text).byteLength;
 
 /** What a command is, as it is shown, and whether it was left out (and why). */
-type CommandReading = { kind: "kept"; text: string } | { kind: "left_out"; reason: "hidden" | "too_long" | "empty" };
+export type CommandReading = { kind: "kept"; text: string } | { kind: "left_out"; reason: "hidden" | "too_long" | "empty" };
 
-function readCommand(raw: string): CommandReading {
+export function readCommand(raw: string): CommandReading {
   if (HIDDEN.test(raw)) return { kind: "left_out", reason: "hidden" };
   const redacted = redactText(raw).trim();
   if (redacted === "") return { kind: "left_out", reason: "empty" };
@@ -101,9 +101,9 @@ function readCommand(raw: string): CommandReading {
   }
 }
 
-interface CommandResult { commands: string[]; leftOut: { hidden: number; tooLong: number; extra: number } }
+export interface CommandResult { commands: string[]; leftOut: { hidden: number; tooLong: number; extra: number } }
 
-function readCommands(value: unknown): CommandResult {
+export function readCommands(value: unknown): CommandResult {
   const commands: string[] = [];
   const leftOut = { hidden: 0, tooLong: 0, extra: 0 };
   for (const raw of strings(value)) {
@@ -134,7 +134,7 @@ export function looksLikeToken(name: string): boolean {
 }
 
 /** A secret's name from what the model wrote: the part before any `=` (a value that came with it is dropped), if that is a name; `"token"` for a name that looks like a token. */
-function secretNameOf(raw: unknown): { name: string } | "token" | undefined {
+export function secretNameOf(raw: unknown): { name: string } | "token" | undefined {
   if (typeof raw !== "string") return undefined;
   const name = raw.split("=", 1)[0]!.trim();
   if (!SECRET_NAME.test(name)) return name.length > 0 && name.length <= 200 && !HIDDEN.test(name) && /^[\w.-]+$/u.test(name) ? "token" : undefined;
