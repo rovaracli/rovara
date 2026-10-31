@@ -84,6 +84,8 @@ export interface ControlPlaneStackProps extends StackProps {
    * Off only for an account whose concurrency limit is too low to reserve any.
    */
   reservedConcurrency?: boolean;
+  /** Enterprise installs: the ranges the model proxy and the model access function may reach over HTTPS (never the whole internet). Absent: as before. */
+  privateEgressCidrs?: readonly string[];
 }
 
 /**
@@ -1367,6 +1369,7 @@ export class ControlPlaneStack extends Stack {
         clientSecurityGroupIds: [new CfnParameter(this, "Ec2WorkerSecurityGroupId", { type: "String", description: "The foundation's EC2 worker security group" }).valueAsString],
         // Ruling R52: the geography follows the install's region (an eu install serves eu.* profiles); an unsupported region fails the synth.
         models: bedrockClaudeModelIds(proxyGeographyForRegion(props?.deploymentRegion ?? "us-east-1")).map((id) => ({ id })),
+        ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: props.privateEgressCidrs }),
       });
       grantProviderKeySecrets(this, [modelProxy.taskRole.roleName]);
       // Ruling R28: the broker is outside the VPC, so it mints member keys and reads spend through this
@@ -1380,6 +1383,7 @@ export class ControlPlaneStack extends Stack {
         subnetIds: Fn.split(",", sessions.privateSubnetIds.valueAsString),
         proxy: modelProxy,
         handler: modelAccessFunction,
+        ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: props.privateEgressCidrs }),
       });
       modelAccessFunction.grantInvoke(broker);
       BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);

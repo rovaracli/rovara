@@ -8,9 +8,11 @@ import { IdentityStack } from "./identity.js";
 import { INSTALLER_DESCRIPTION, InstallerStack } from "./installer.js";
 import { namingFromContext } from "./naming.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
-import { ProductionFoundationStack } from "./production-foundation.js";
-import { ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
-import { EDITION_CONTEXT_KEY } from "@agentx/contracts";
+import { AGENTX_PRODUCTION_VPC_CIDR, ProductionFoundationStack } from "./production-foundation.js";
+import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
+import { EDITION_CONTEXT_KEY, editionAtSynth } from "@agentx/contracts";
+import { EditionEnvironment } from "./edition-env.js";
+import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
 import { RetainExceptOnCreate } from "./retention.js";
 import { EnvironmentRolePath } from "./role-path.js";
@@ -111,6 +113,20 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   // environments only; the legacy deployment is unchanged whatever this says (ruling R12).
   const agentxCloud = naming.env !== undefined && (app.node.tryGetContext("agentxCloud") === true || app.node.tryGetContext("agentxCloud") === "true");
 
+  // The edition of this install (-c rovaraEdition=enterprise|public). Unset keeps today's network. Only the foundation reads it here: the control plane reads it in task E2.
+  const explicitEdition = parseEditionContext(app.node.tryGetContext(EDITION_CONTEXT_KEY));
+  // Decided once, here (review I-3): Enterprise with the hosted cloud, and Public without it, are refused. Every function and task then carries the result.
+  const edition = explicitEdition;
+  const decidedEdition = editionAtSynth({ explicit: explicitEdition, cloud: agentxCloud });
+  Aspects.of(app).add(new EditionEnvironment(decidedEdition));
+  if (decidedEdition === "enterprise" && explicitEdition === "enterprise") {
+    // An Enterprise install never leaves the audit anchor on the two public timestamp authorities: the customer names its own or switches it off.
+    requireEnterpriseAuditTsa(app.node.tryGetContext("agentxAuditTsa"));
+  }
+  const isTrue = (value: unknown): boolean => value === true || value === "true";
+  const enterpriseInternetEgressContext = app.node.tryGetContext(ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY) as unknown;
+  const enterpriseEgressCidrsContext = app.node.tryGetContext(ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY) as unknown;
+  const enterpriseCidrs = parseEnterpriseEgressCidrs(enterpriseEgressCidrsContext, { allowPublicRanges: isTrue(app.node.tryGetContext(ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY)) });
   // The access stack holds the roles every other environment stack is deployed with, so it comes
   // first. The deployment that predates environments has none.
   let accessStack: AccessStack | undefined;
@@ -135,13 +151,10 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     naming,
     ...(reservedConcurrency ? {} : { reservedConcurrency: false }),
     ...(agentxCloud ? { cloud: true } : {}),
+    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs] } : {}),
     ...(deploymentRegion === undefined ? {} : { deploymentRegion }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("control-plane") }),
   });
-  // The edition of this install (-c rovaraEdition=enterprise|public). Unset keeps today's network. Only the foundation reads it here: the control plane reads it in task E2.
-  const edition = parseEditionContext(app.node.tryGetContext(EDITION_CONTEXT_KEY));
-  const enterpriseInternetEgressContext = app.node.tryGetContext(ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY) as unknown;
-  const enterpriseEgressCidrsContext = app.node.tryGetContext(ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY) as unknown;
   new ProductionFoundationStack(app, "AgentXProductionFoundation", {
     description: "Stable AgentX production network, encryption, and persistent workspace capacity",
     deploymentRegion: deploymentRegion ?? "us-east-1",
@@ -151,7 +164,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     ...(agentxCloud ? { cloud: true } : {}),
     ...(edition === undefined ? {} : { edition }),
     ...(enterpriseInternetEgressContext === undefined ? {} : { internetEgress: parseInternetEgress(enterpriseInternetEgressContext) }),
-    ...(enterpriseEgressCidrsContext === undefined ? {} : { enterpriseEgressCidrs: parseEnterpriseEgressCidrs(enterpriseEgressCidrsContext) }),
+    ...(enterpriseEgressCidrsContext === undefined ? {} : { enterpriseEgressCidrs: enterpriseCidrs }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("foundation") }),
   });
   // The identity stack is new with named environments; the legacy deployment brings its own OIDC
@@ -186,6 +199,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     env: { region: deploymentRegion ?? "us-east-1" },
     naming,
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("slack") }),
+    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs] } : {}),
   });
   // The Launch in AWS installer, only when asked for (-c agentxInstaller=enabled); no release
   // deploys it, and the environment it installs is never part of it.

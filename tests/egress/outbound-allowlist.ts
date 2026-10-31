@@ -85,7 +85,7 @@ export const HOST_RULES: readonly HostRule[] = [
   {
     category: "customer-integration", why: "Observability and operations connectors (read-only): Sentry, Datadog (regional hosts), Grafana, PagerDuty, Vercel.",
     hosts: [
-      "sentry.io", "datadoghq.com", "ap1.datadoghq.com", "ap2.datadoghq.com", "us3.datadoghq.com", "us5.datadoghq.com", "uk1.datadoghq.com", "ddog-gov.com", "us2.ddog-gov.com",
+      "sentry.io", "datadoghq.com", "ap1.datadoghq.com", "ap2.datadoghq.com", "datadoghq.eu", "us3.datadoghq.com", "us5.datadoghq.com", "uk1.datadoghq.com", "ddog-gov.com", "us2.ddog-gov.com",
       "api.pagerduty.com", "api.eu.pagerduty.com", "api.vercel.com", "vercel.com",
     ],
   },
@@ -108,7 +108,11 @@ export const HOST_RULES: readonly HostRule[] = [
   },
   {
     category: "aws-endpoint", why: "Wildcard for AWS API hosts in the default allow-list; the CloudWatch connector's host; the domain-suffix checks in the CLI.",
-    hosts: ["*.amazonaws.com", "monitoring.amazonaws.com", "amazonaws.com"],
+    hosts: ["*.amazonaws.com", "monitoring.amazonaws.com", "amazonaws.com", "amazonaws.com.cn"],
+  },
+  {
+    category: "aws-endpoint", why: "The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list.", files: ["infra/lib/vpc-endpoints.ts"],
+    hosts: ["sts.amazonaws.com"],
   },
   {
     category: "aws-service-principal", why: "Service principals named in IAM trust and resource policies and in the CDK stacks.",

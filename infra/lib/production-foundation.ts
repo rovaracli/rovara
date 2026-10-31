@@ -8,13 +8,14 @@ import {
   aws_iam as iam,
   aws_kms as kms,
   aws_logs as logs,
+  aws_ssm as ssm,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import type { Edition } from "@agentx/contracts";
 import { AgentDnsFirewall, EGRESS_ALLOW_DOMAINS_CONTEXT_KEY, parseExtraAllowDomains } from "./agent-dns-firewall.js";
 import { EgressAlarms, alertsTopicFromName } from "./egress-alarms.js";
 import { Ec2WorkerFoundation } from "./ec2-workers.js";
-import { EnterpriseVpcEndpoints, type InternetEgress } from "./vpc-endpoints.js";
+import { EnterpriseVpcEndpoints, endpointPolicyDocument, enterpriseAllowDomains, type InternetEgress } from "./vpc-endpoints.js";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 
 export const AGENTX_PRODUCTION_DEPLOYMENT_MODE = "ec2-ebs";
@@ -49,7 +50,10 @@ export interface ProductionFoundationStackProps extends StackProps {
    * worker and caller security groups with no route to the whole internet, and the DNS firewall in allow-list mode. `public`: today's network, unchanged.
    */
   edition?: Edition;
-  /** Enterprise only. `nat` (default) keeps the NAT gateways; `none` builds the install with no internet route at all. Refused on any other edition. */
+  /**
+   * Enterprise only. Default `none`: the install is built with no internet route at all (nothing leaves unless the customer approves a path); `nat` keeps the NAT
+   * gateways. `none` needs at least one approved range (`enterpriseEgressCidrs`), because workers must reach the control plane. Refused on any other edition.
+   */
   internetEgress?: InternetEgress;
   /**
    * Enterprise only: IPv4 ranges (each no wider than a /8) that workers and callers may reach over HTTPS besides the VPC itself, approved by the customer's
@@ -96,7 +100,10 @@ export class ProductionFoundationStack extends Stack {
       throw new Error("internetEgress and enterpriseEgressCidrs are Enterprise edition settings");
     }
     if (enterprise && naming.env === undefined) throw new Error("the Enterprise edition needs a named environment");
-    const noNat = enterprise && props.internetEgress === "none";
+    const noNat = enterprise && props.internetEgress !== "nat";
+    if (noNat && (props.enterpriseEgressCidrs ?? []).length === 0) {
+      throw new Error("an Enterprise install with no internet route needs at least one approved range (rovaraEnterpriseEgressCidrs): the workers must reach the control plane, which is public until the private control-plane path exists");
+    }
     const configuration = validateProductionFoundationConfiguration({
       region: props.deploymentRegion,
       availabilityZoneIds:
@@ -198,6 +205,7 @@ export class ProductionFoundationStack extends Stack {
       vpcEndpointType: "Gateway",
       vpcId: vpc.ref,
       routeTableIds: privateRouteTables.map((routeTable) => routeTable.ref),
+      ...(enterprise ? { policyDocument: endpointPolicyDocument("s3", props.deploymentRegion) } : {}),
     });
 
     const flowLogGroup = new logs.LogGroup(this, "VpcFlowLogs", {
@@ -233,12 +241,18 @@ export class ProductionFoundationStack extends Stack {
       new EnterpriseVpcEndpoints(this, "EnterpriseEndpoints", {
         vpcId: vpc.ref,
         vpcCidr: AGENTX_PRODUCTION_VPC_CIDR,
+        ingressCidrs: privateCidrs,
         region: props.deploymentRegion,
         privateSubnets,
         privateRouteTables,
         resourcePrefix: naming.resourcePrefix,
         tags: (name) => resourceTags(name, naming),
       });
+    }
+
+    // The edition is recorded: an install's edition is set once, and `rovara deploy` refuses a redeploy that asks for another (assertEditionUnchanged reads this).
+    if (enterprise) {
+      new ssm.CfnParameter(this, "EditionRecord", { name: `/agentx/${naming.env!}/edition`, type: "String", value: "enterprise", description: "The edition this install was deployed as. It never changes." });
     }
 
     // EC2 worker launch template, role and security groups.
@@ -256,7 +270,9 @@ export class ProductionFoundationStack extends Stack {
       const dnsFirewall = new AgentDnsFirewall(this, "AgentDnsFirewall", {
         env: naming.env,
         vpcId: vpc.ref,
-        extraAllowDomains: parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY)),
+        // An Enterprise install starts from its own endpoint names; the public defaults are not on its list.
+        ...(enterprise ? { baseAllowDomains: enterpriseAllowDomains(props.deploymentRegion) } : {}),
+        extraAllowDomains: parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseAllowDomains(props.deploymentRegion) : undefined),
       });
       // The control plane's broker keeps this list equal to the approved egress domains (it takes the id as a parameter, like the VPC's).
       new CfnOutput(this, "ProjectAllowListId", { value: dnsFirewall.projectAllowListId });
