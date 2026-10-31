@@ -183,6 +183,15 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     const at = isoOfSlackTs(event.event_ts) ?? new Date().toISOString();
     const scope = slackScope(teamId, channelId);
     deps.directory.invalidate?.(teamId, channelId);
+    // Before the first member event of a place (the app's own invite comes before any message), seed its access record from the full member list as Slack has it now. The list's
+    // time is the time it was READ, which is what a snapshot's `capturedAt` must mean.
+    await deps.sink.ensureAccessSeed?.({
+      workspaceId, scope,
+      read: async () => {
+        const info = await deps.directory.channelInfo(teamId, channelId);
+        return info !== undefined && info.kind === "private" && info.extShared !== true ? audienceOf(teamId, channelId, info, undefined, new Date().toISOString()) : undefined;
+      },
+    });
     await deps.sink.changePrincipals({ workspaceId, scope, ...(event.type === "member_joined_channel" ? { add: [userId] } : { remove: [userId] }), at });
     return { outcome: "acl_updated" };
   }

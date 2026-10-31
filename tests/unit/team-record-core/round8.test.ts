@@ -1,7 +1,7 @@
 // Fix round 8 (Opus recheck-7, N-13 / N-14 / N-15): access is checked at READ time against one record per place, so what the rows say never decides.
 // Every case below leaves the rows in a bad state on purpose (stale, half rewritten, never rewritten) and still expects zero hits for the person who was removed.
 import { describe, expect, it } from "vitest";
-import { applyMemberEvents } from "../../../packages/broker/src/team-record/access.js";
+import { applyAudienceEvent, applyMemberEvents } from "../../../packages/broker/src/team-record/access.js";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { recordSearch } from "../../../packages/broker/src/team-record/query.js";
 import { createCaptureModePort, createRecordSink, createSourceConfigPort } from "../../../packages/broker/src/team-record/sink.js";
@@ -101,17 +101,18 @@ describe("N-13 / N-14 the access record decides, whatever the rows say", () => {
   it("an older event never overrides a newer one, and a removal beats an add of the same time", async () => {
     const w = world();
     await seed(w, 5);
-    expect(await applyMemberEvents(w.table, ORG_A, { scope: SC, remove: ["U1"], at: T2 })).toBe(1);
-    expect(await applyMemberEvents(w.table, ORG_A, { scope: SC, add: ["U1"], at: T1 })).toBe(0); // older add: ignored
+    const applied = async (event: { add?: string[]; remove?: string[]; at: string }) => { const { applied: done } = await applyMemberEvents(w.table, ORG_A, { scope: SC, ...event }); return done.add.length + done.remove.length; };
+    expect(await applied({ remove: ["U1"], at: T2 })).toBe(1);
+    expect(await applied({ add: ["U1"], at: T1 })).toBe(0); // older add: ignored
     expect(await hits(w, "U1")).toBe(0);
-    expect(await applyMemberEvents(w.table, ORG_A, { scope: SC, add: ["U1"], at: T2 })).toBe(0); // same time: the removal wins
+    expect(await applied({ add: ["U1"], at: T2 })).toBe(0); // same time: the removal wins
     expect(await hits(w, "U1")).toBe(0);
-    expect(await applyMemberEvents(w.table, ORG_A, { scope: SC, add: ["U1"], at: T3 })).toBe(1); // a newer add is a real re-join
+    expect(await applied({ add: ["U1"], at: T3 })).toBe(1); // a newer add is a real re-join
     expect(await hits(w, "U1")).toBe(5);
     // the other way round: the add is processed first, the older removal after it
-    await applyMemberEvents(w.table, ORG_A, { scope: SC, add: ["U3"], at: T3 });
-    expect(await applyMemberEvents(w.table, ORG_A, { scope: SC, remove: ["U3"], at: T3 })).toBe(1); // a removal at the same time beats the add
-    expect(await applyMemberEvents(w.table, ORG_A, { scope: SC, remove: ["U1"], at: T1 })).toBe(0); // an older removal does not undo the re-join
+    await applied({ add: ["U3"], at: T3 });
+    expect(await applied({ remove: ["U3"], at: T3 })).toBe(1); // a removal at the same time beats the add
+    expect(await applied({ remove: ["U1"], at: T1 })).toBe(0); // an older removal does not undo the re-join
     expect(await hits(w, "U1")).toBe(5);
   });
 
@@ -209,21 +210,21 @@ describe("the read-time check itself", () => {
     expect(await hits(w, "U2")).toBe(0);
   });
 
-  it("a record that cannot be read drops its hits instead of failing the call or showing them", async () => {
+  it("a record that cannot be read fails the call as unavailable: never visible, never reported as hidden", async () => {
     const w = world();
     await seed(w, 5);
     w.db.injectFault({ command: "BatchGetCommand", error: { name: "InternalServerError" }, times: 100 });
-    expect((await search(w, U.U2)).hits).toHaveLength(0);
+    await expect(search(w, U.U2)).rejects.toThrow(/RUNTIME_UNAVAILABLE/);
     const [record] = w.db.find((row) => row.entityType === "TEAM_RECORD_ACCESS");
-    w.db.set({ ...record, members: "broken" });
-    expect(await hits(w, "U2")).toBe(0);
+    w.db.set({ ...record, seeded: "yes" });
+    await expect(search(w, U.U2)).rejects.toThrow(/RUNTIME_UNAVAILABLE/);
   });
 
   it("a restricted record on a place above hides the rows below it", async () => {
     const w = world();
     await seed(w, 5);
     expect(await hits(w, "U2")).toBe(5);
-    await applyMemberEvents(w.table, ORG_A, { scope: "slack:T1", add: ["U9"], at: T1 });
+    await applyAudienceEvent(w.table, ORG_A, { scope: "slack:T1", audience: acl("slack:T1", ["U9"], T1), at: T1 });
     expect(await hits(w, "U2")).toBe(0);
     await applyMemberEvents(w.table, ORG_A, { scope: "slack:T1", add: ["U2"], at: T2 });
     expect(await hits(w, "U2")).toBe(5);
@@ -235,18 +236,19 @@ describe("the read-time check itself", () => {
     await w.sink.put(githubDraft({ source: "slack", kind: "slack.message", repo: undefined, sourceRef: { system: "T1", id: "p1", version: "1" }, audience: { kind: "project" }, scope: SC, actor: { sourceId: "U2", trust: "member" }, text: "layoff plan", links: [] }));
     const shared = () => recordSearch({ table: w.table, modes: w.deps.modes, now: () => w.clock.ms }, { kind: "shared", orgId: ORG_A }, "web", { query: "layoff", limit: 10 });
     expect((await shared()).hits).toHaveLength(1);
-    await applyMemberEvents(w.table, ORG_A, { scope: SC, add: ["U2"], at: T1 });
+    await applyAudienceEvent(w.table, ORG_A, { scope: SC, audience: acl(SC, ["U2"], T1), at: T1 });
     expect((await shared()).hits).toHaveLength(0);
     expect(await hits(w, "U3")).toBe(0);
     expect(await hits(w, "U2")).toBe(1);
   });
 
-  it("the records of a page are fetched in one batch for the whole request", async () => {
+  it("the records of a page are fetched in two batches (headers, then the reader's entries) for the whole request", async () => {
     const w = world();
     for (const channel of ["C1", "C2", "C3"]) await seed(w, 5, `slack:T1/${channel}`);
     const before = w.db.commandNames().filter((name) => name === "BatchGetCommand").length;
     expect((await search(w, U.U2)).hits).toHaveLength(15);
-    expect(w.db.commandNames().filter((name) => name === "BatchGetCommand").length - before).toBe(1);
+    // one batch for the three headers and one for the reader's own entries, for the whole request
+    expect(w.db.commandNames().filter((name) => name === "BatchGetCommand").length - before).toBe(2);
   });
 
   it("a snapshot-fed place follows a newer snapshot until the first event, then only events", async () => {

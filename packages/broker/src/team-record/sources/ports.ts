@@ -31,6 +31,12 @@ export interface AclSnapshot {
   liveCheck: "none" | "on_read";
 }
 
+/**
+ * The snapshot rule every tap follows: `acl.capturedAt` is the time the member list was READ at the source, never the time of the content it sits on (a message's post time, an
+ * issue's `updated_at`). Snapshots are ordered by it, and the access record trusts a newer snapshot only until the first member or audience event reaches it; a list read from a
+ * cache must carry the time the cache was filled, or it could out-rank a later removal. A source whose ACL belongs to one item (a tracker issue, an MCP record) gives the
+ * item's own list; the record core files it under the item, not the place.
+ */
 export type Audience = { kind: "project" } | { kind: "restricted"; acl: AclSnapshot };
 
 /**
@@ -116,6 +122,8 @@ export interface RecordSinkPort {
   changePrincipals(input: { workspaceId: string; scope: string; add?: readonly string[]; remove?: readonly string[]; at: string }): Promise<void>;
   /** A channel that became private or public: every row of the scope takes the new audience. */
   replaceScopeAudience(input: { workspaceId: string; scope: string; audience: Audience; at: string }): Promise<void>;
+  /** Seeds the place's access record from its full, freshly read member list (does nothing if already seeded). Optional: a tap calls it before a first member event. */
+  ensureAccessSeed?(input: { workspaceId: string; scope: string; read: () => Promise<Audience | undefined> }): Promise<void>;
 }
 
 /**

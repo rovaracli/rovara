@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { recordFactKey, type RecordFact } from "@agentx/contracts";
-import { filterVisible } from "../../../packages/broker/src/team-record/acl.js";
 import { eventFromItem, getRecordFact, pendingHidesOf, listScopeWork, putDerivationLinks, putRecordFact, queryRecordEvents, getSourceConfigByScope, putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
 import { createRecordSink } from "../../../packages/broker/src/team-record/sink.js";
 import { wasDeletedAtSource } from "../../../packages/broker/src/team-record/scope-work.js";
-import { GITHUB_SCOPE, ORG_A, ORG_B, addSource, caller, get, githubDraft, rows, setMode, world, type World } from "../../support/team-record-core.js";
+import { GITHUB_SCOPE, ORG_A, ORG_B, addSource, caller, get, githubDraft, rows, setMode, world, type World, filterRows as filterVisible } from "../../support/team-record-core.js";
 
 const FACT_ID = "5b8e9f4c-2b1a-4c1e-9a53-3f2d3d1a0001";
 const slackScope = "slack:T1/C9";

@@ -2,8 +2,10 @@
 // lists what went live by itself (only where a project chose "auto"), what waits for people, what was retired, which sources are paused and how many candidates are queued. This builds the
 // content; where it is delivered (Slack, email, the Home card) is a later UI task. A lesson from a restricted source appears, with its text, only for a
 // viewer who could see that source; for everyone else it is counted and nothing more.
+import { OrgIdSchema } from "@agentx/contracts";
 import type { LessonStore, ScopeKey } from "./store.js";
-import { satisfiesAcl, type IdentitySet, type Lesson } from "./types.js";
+import type { AccessCheckPort } from "../team-record/access-port.js";
+import { lessonPlaces, satisfiesAcl, type IdentitySet, type Lesson } from "./types.js";
 import { lessonValue } from "./value.js";
 
 const WEEK = 7 * 86_400_000;
@@ -26,11 +28,18 @@ export interface WeeklyDigest {
   restrictedHidden: number;
 }
 
-export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: number, viewer: IdentitySet): Promise<WeeklyDigest> {
+export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: number, viewer: IdentitySet, access?: AccessCheckPort): Promise<WeeklyDigest> {
   const since = now - WEEK;
   const all = await store.list(key);
   const item = (l: Lesson): DigestItem => ({ id: l.id, title: l.title, type: l.type, tier: l.tier, scope: l.scope, links: l.citations.flatMap((c) => (c.kind === "pr" ? [c.url] : [])) });
-  const visible = (l: Lesson): boolean => l.provenance.audience.kind !== "restricted" || satisfiesAcl(viewer, l.provenance.audience.acl);
+  // The frozen snapshot AND the access records now, for the places each lesson was learned from (an unreadable record fails the digest rather than showing or hiding a guess).
+  const current = new Map<string, boolean>();
+  if (access !== undefined) {
+    const placed = all.filter((l) => lessonPlaces(l).scopes.length > 0);
+    const answers = placed.length === 0 ? [] : await access.mayRead(OrgIdSchema.parse(key.workspaceId), viewer, placed.map((l) => lessonPlaces(l)));
+    for (const [index, l] of placed.entries()) current.set(l.id, answers[index] === true);
+  }
+  const visible = (l: Lesson): boolean => (l.provenance.audience.kind !== "restricted" || satisfiesAcl(viewer, l.provenance.audience.acl)) && current.get(l.id) !== false;
   const shown = all.filter(visible);
   const byValue = (a: Lesson, b: Lesson): number => lessonValue(b) - lessonValue(a) || a.id.localeCompare(b.id);
   return {

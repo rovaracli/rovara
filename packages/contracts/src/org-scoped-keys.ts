@@ -955,11 +955,32 @@ export function recordScopeMarkerKey(orgId: OrgId, scope: string): OrgKey {
   return { pk: teamRecordPk(orgId), sk: `SCOPEDEL#${createHash("sha256").update(scope).digest("hex")}` };
 }
 /**
- * The ONE access record of a place (a channel, a repository): who may read what was recorded there, kept apart from the rows. Reads check it for every hit, so a row whose
- * own snapshot is stale (a list captured before someone left) never grants more than this record does. Keyed by the place's hash (in the workspace partition).
+ * The access record of one ACCESS UNIT (a channel, a repository, one issue of a tracker: the unit of the source's own ACL), in the workspace partition. A small HEADER item
+ * (visibility, whether it was seeded from a full list, the groups) plus one tiny item per person (`recordAccessMemberKey`), so a record has no size limit and a leave is one
+ * conditional write. Reads check these for every hit, so a row's own snapshot (which can be stale) never grants more than they do.
  */
 export function recordAccessKey(orgId: OrgId, scope: string): OrgKey {
   return { pk: teamRecordPk(orgId), sk: `ACCESS#${createHash("sha256").update(scope).digest("hex")}` };
+}
+const accessPersonHash = (person: string): string => createHash("sha256").update(`access\u0000${person}`).digest("hex");
+/** One person's entry in one unit's record: `ACCESS#<unit hash>#M#<person hash>` (the raw id is never in a key). */
+export function recordAccessMemberKey(orgId: OrgId, scope: string, person: string): OrgKey {
+  return { pk: teamRecordPk(orgId), sk: `${recordAccessKey(orgId, scope).sk}#M#${accessPersonHash(person)}` };
+}
+/** Prefix of every person entry of one unit. */
+export function recordAccessMemberPrefix(orgId: OrgId, scope: string): string {
+  return `${recordAccessKey(orgId, scope).sk}#M#`;
+}
+/** The index item that lets an erase find a person's entries in every unit: `ACCESSP#<person hash>#<unit hash>`. */
+export function recordAccessPersonKey(orgId: OrgId, person: string, scope: string): OrgKey {
+  return { pk: teamRecordPk(orgId), sk: `${recordAccessPersonPrefix(person)}${recordAccessKey(orgId, scope).sk.slice("ACCESS#".length)}` };
+}
+export function recordAccessPersonPrefix(person: string): string {
+  return `ACCESSP#${accessPersonHash(person)}#`;
+}
+/** The erased marker of a source person id for access records: while it stands, no event or snapshot writes that id into any record again. */
+export function recordAccessErasedKey(orgId: OrgId, person: string): OrgKey {
+  return erasedPersonKey(orgId, { actorSourceHash: recordActorSourceHash("access", person) });
 }
 /** The places a scope sits under, itself first: `slack:T1/C9` -> `slack:T1/C9`, `slack:T1`. */
 export function scopeAndAncestors(scope: string): string[] {

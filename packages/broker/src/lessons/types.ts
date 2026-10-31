@@ -119,6 +119,11 @@ export const LessonProvenanceSchema = z.object({
   minTrust: TrustClassSchema, audience: AudienceSchema, reflectorRun: z.string().max(100), model: z.string().max(100),
   /** Set when a person asked for the lesson with "remember this" or a member's edit made it (a strong signal). */
   memberSignal: z.boolean(),
+  /**
+   * The places (a channel, a repository, an issue) the evidence came from, restricted or not, as the Team record names them. They are what the access records are asked about when the
+   * lesson is read, so a person removed from a channel stops getting its lessons. Absent on a lesson learned before this field: its restricted places are read from the audience's scope.
+   */
+  sourceScopes: z.array(z.string().max(300)).max(50).optional(),
 }).strict();
 export type LessonProvenance = z.infer<typeof LessonProvenanceSchema>;
 
@@ -157,6 +162,16 @@ export type Lesson = z.infer<typeof LessonSchema>;
 
 /** The parts of a lesson that change without a new version: counters and expiry bookkeeping. */
 export const VOLATILE_FIELDS = ["counters", "staleAt", "lastValidatedAt", "lastHelpfulAt", "expiresAt", "retireProposedAt"] as const;
+
+/**
+ * The places a lesson was learned from, for the read-time access check: every source place it names, the restricted ones among them (the audience's scope is the sources joined by
+ * `+`), and the time of its snapshot. A lesson with no place at all (a project-wide lesson with no recorded sources) is for project members only: nothing to ask the records.
+ */
+export function lessonPlaces(lesson: Pick<Lesson, "provenance">): { scopes: string[]; restrictedScopes: string[]; capturedAt?: string } {
+  const audience = lesson.provenance.audience;
+  const restrictedScopes = audience.kind === "restricted" ? audience.acl.scope.split("+").filter((scope) => scope.length > 0) : [];
+  return { scopes: [...new Set([...(lesson.provenance.sourceScopes ?? []), ...restrictedScopes])], restrictedScopes, ...(audience.kind === "restricted" ? { capturedAt: audience.acl.capturedAt } : {}) };
+}
 
 export const isRestricted = (lesson: Pick<Lesson, "provenance">): boolean => lesson.provenance.audience.kind === "restricted";
 

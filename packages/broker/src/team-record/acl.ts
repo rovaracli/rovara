@@ -2,9 +2,9 @@
 // the row is not tombstoned, and (for a restricted `on_read` source) the source still says yes. Everything here fails closed: an unmapped identity, an empty
 // snapshot, a missing or failing live check and a row that does not parse all read as "not visible". The check runs in the broker on every hit; a vector or
 // query filter upstream is only a coarse cut.
-import { MAINTAINERS_GROUP, type AclSnapshot, type Audience, type RecordTombstone } from "@agentx/contracts";
+import { MAINTAINERS_GROUP, agentXError, type AclSnapshot, type Audience, type RecordTombstone } from "@agentx/contracts";
 import { scopeAndAncestors, teamRecordSourceHash } from "@agentx/contracts";
-import { accessScopesOf, aclOfAccess, type AccessReader } from "./access.js";
+import { accessScopesOf, judgeAccess, viewerOfCaller, type AccessReader, type AccessVerdict } from "./access.js";
 import type { LiveAclCheck, PendingHides, ReadAudience, RecordCaller } from "./types.js";
 
 /** How long a live re-check answer is reused, per caller and scope (design 4.4.2). */
@@ -17,6 +17,8 @@ export interface Visible {
   tombstone?: RecordTombstone | undefined;
   /** The place a row came from, or (for a fact) the places it was distilled from. */
   scope?: string | undefined;
+  /** Source units that carry their own ACL (a lesson distilled from several): when given, they are the units the read-time check requires a record for. */
+  restrictedScopes?: readonly string[] | undefined;
   scopes?: readonly string[] | undefined;
   /** The source item a row is (events), or the ones a fact was distilled from (`system:sourceId`). */
   sourceRef?: { system: string; id: string } | undefined;
@@ -83,39 +85,16 @@ export interface FilterDependencies {
   /** What queued work (a delete, a permission change) has not finished: those places and source items read as hidden from everyone. */
   pending?: PendingHides;
   /**
-   * The access records of the places (one per place, loaded in batches for one request). Every hit is checked against the record of its own place and of the places above it:
-   * the row's own snapshot is a pre-filter, never the final word. A restricted row whose place has no readable record is dropped, and so is any row whose record cannot be read.
+   * The access records of the units (one reader per request). Required: every hit is checked against the record of its own unit and of the places above it; the row's own
+   * snapshot is a pre-filter, never the final word. A restricted row whose unit has no record is dropped; a record that cannot be read makes the call fail (unavailable).
    */
-  access?: AccessReader;
+  access: AccessReader;
 }
 
 export interface FilterResult<T> {
   visible: T[];
   /** Rows the caller may not see. Tombstoned rows are not counted: they no longer exist for anyone. */
   withheld: number;
-}
-
-/**
- * The read-time check against the access records (design: one record per place). The place of the row and every place above it must allow the caller: a record that says
- * restricted needs the caller among its members or groups; one that cannot be read denies; a missing record denies a restricted row (its own place always has one) and is
- * skipped for the places above it. A shared task (no person) never reads a place a record restricts.
- */
-export function accessAllows(audience: ReadAudience, row: Visible, access: AccessReader | undefined): boolean {
-  if (access === undefined) return true;
-  const { all, own } = accessScopesOf(row);
-  for (const scope of all) {
-    const lookup = access.get(scope);
-    if (lookup === "unreadable") return false;
-    if (lookup === "absent") {
-      if (scope === own) return false;
-      continue;
-    }
-    if (lookup.mode !== "restricted") continue;
-    if (audience.kind !== "caller") return false;
-    if (audience.caller.projectRole === undefined) return false;
-    if (!satisfiesAcl(audience.caller, aclOfAccess(lookup))) return false;
-  }
-  return true;
 }
 
 /** Whether queued, unfinished work hides the row: its place, one of its places, its source item, or a source item its fact was distilled from. */
@@ -138,16 +117,24 @@ export function hiddenByPending(row: Visible, pending: PendingHides | undefined)
  * Splits rows into what this audience may see and a count of what it may not. A restricted row whose snapshot says `on_read` also needs a live check that passes
  * (cached 15 minutes per caller and scope), whether the audience is a person or a private task's owner. A shared task never sees a restricted row at all.
  */
-export async function filterVisible<T extends Visible>(rows: readonly T[], audience: ReadAudience, dependencies: FilterDependencies = {}): Promise<FilterResult<T>> {
+export async function filterVisible<T extends Visible>(rows: readonly T[], audience: ReadAudience, dependencies: FilterDependencies): Promise<FilterResult<T>> {
   const now = dependencies.now ?? Date.now;
-  await dependencies.access?.load(rows.filter((row) => row.tombstone === undefined).flatMap((row) => accessScopesOf(row).all));
+  const viewer = audience.kind === "caller" ? viewerOfCaller(audience.caller) : undefined;
+  await dependencies.access.load(rows.filter((row) => row.tombstone === undefined && visibleWithoutLiveCheck(audience, row)).flatMap((row) => accessScopesOf(row).all), viewer);
+  let unavailable = false;
   const visible: T[] = [];
   let withheld = 0;
   const checked = new Map<string, boolean>();
   for (const row of rows) {
     if (row.tombstone !== undefined) continue;
     if (hiddenByPending(row, dependencies.pending)) continue;
-    if (!visibleWithoutLiveCheck(audience, row) || !accessAllows(audience, row, dependencies.access)) {
+    if (!visibleWithoutLiveCheck(audience, row)) {
+      withheld += 1;
+      continue;
+    }
+    const verdict: AccessVerdict = judgeAccess(dependencies.access, viewer, accessScopesOf(row));
+    if (verdict === "unavailable") { unavailable = true; continue; }
+    if (verdict === "deny") {
       withheld += 1;
       continue;
     }
@@ -165,6 +152,8 @@ export async function filterVisible<T extends Visible>(rows: readonly T[], audie
     }
     visible.push(row);
   }
+  // A record that could not be read is not "hidden" and never "visible": the whole call fails, so the person is told the record is unavailable.
+  if (unavailable) throw agentXError("RUNTIME_UNAVAILABLE", "The team record can't be read right now.");
   return { visible, withheld };
 }
 

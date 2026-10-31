@@ -1,7 +1,6 @@
 // Fix round 3 (Opus recheck-2): N-4 nested places, N-3 equal version times, S-1, S-2, S-3.
 import { describe, expect, it } from "vitest";
 import { recordScopeHash } from "@agentx/contracts";
-import { filterVisible } from "../../../packages/broker/src/team-record/acl.js";
 import { recordSearch } from "../../../packages/broker/src/team-record/query.js";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { createRecordSink } from "../../../packages/broker/src/team-record/sink.js";
@@ -9,7 +8,7 @@ import { createTransientDistiller } from "../../../packages/broker/src/team-reco
 import { createRecordHistoryPort } from "../../../packages/broker/src/team-record/sink.js";
 import { pendingHidesOf, queryRecordEvents } from "../../../packages/broker/src/team-record/store.js";
 import { tableLakeDeleteQueue } from "../../../packages/broker/src/team-record/lake-queue.js";
-import { ORG_A, ORG_B, addSource, caller, githubDraft, rows, world, type World } from "../../support/team-record-core.js";
+import { ORG_A, ORG_B, addSource, caller, githubDraft, rows, world, type World, filterRows as filterVisible } from "../../support/team-record-core.js";
 import { addFact, deleteDeps } from "../../support/team-record-delete.js";
 
 const T1 = "2026-10-30T09:00:00.000Z";

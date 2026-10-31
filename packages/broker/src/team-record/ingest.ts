@@ -17,7 +17,8 @@ import {
 } from "@agentx/contracts";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { Aliases } from "../agents/table-writes.js";
-import { observeRowAccess } from "./access.js";
+import { createHash } from "node:crypto";
+import { observeOpenRow, observeRowAccess } from "./access.js";
 import { captureIsOn, type LearningModeReader } from "./mode.js";
 import { exceedsRetention, retentionPlan, retentionRefusal } from "./retention.js";
 import { supersedeItem, wasDeletedAtSource } from "./scope-work.js";
@@ -92,6 +93,18 @@ function cleanStructured(values: RecordDraft["structured"], trust: TrustClass, i
 /** The scope a draft is stored under: the snapshot's, else the explicit one. */
 function draftScope(draft: RecordDraft): string | undefined {
   return draft.audience.kind === "restricted" ? draft.audience.acl.scope : draft.scope;
+}
+
+/**
+ * Sources whose ACL belongs to ONE ITEM, not to the place: a tracker issue with a security level, a record an MCP server returns with its own list. The access record of such a
+ * row is its item's (an issue and its comments share one), so one restricted issue never hides the open issues of its project and a newer item's list never replaces another's.
+ * The place stays the row's `scope`; only the access unit in the snapshot moves down to the item.
+ */
+const PER_ITEM_ACL_SOURCES: ReadonlySet<string> = new Set(["jira", "linear", "mcp"]);
+function accessUnitAudience(draft: RecordDraft): RecordDraft["audience"] {
+  if (draft.audience.kind !== "restricted" || !PER_ITEM_ACL_SOURCES.has(draft.source)) return draft.audience;
+  const item = createHash("sha256").update(`${draft.sourceRef.system}\u0000${draft.sourceRef.parentId ?? draft.sourceRef.id}`).digest("hex").slice(0, 24);
+  return { kind: "restricted", acl: { ...draft.audience.acl, scope: `${draft.audience.acl.scope}/item:${item}` } };
 }
 
 /** What the distiller may use of a retention-B draft once it passed the same checks as a stored row. Nothing here is written to the table. */
@@ -236,7 +249,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
     occurredAt,
     ...(draft.actor === undefined ? {} : { actor: draft.actor }),
     trust,
-    audience: draft.audience,
+    audience: accessUnitAudience(draft),
     ...(text === undefined ? {} : { text }),
     ...(structured === undefined ? {} : { structured }),
     links: draft.links.filter(validLink).slice(0, LINKS_MAX),
@@ -259,6 +272,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   // The place's access record exists before the first restricted row is readable (reads drop a restricted row whose place has none). A newer snapshot replaces the list only
   // while no member or audience event has reached the record.
   if (event.audience.kind === "restricted") await observeRowAccess(deps.table, orgId, event.audience.acl);
+  else await observeOpenRow(deps.table, orgId, eventScope, occurredAt);
 
   // 6. Versions are ordered by the source's own time. A version older than the one stored changes nothing (it only lowers the item's remembered trust).
   const versionAt = versionTimeOf(draft);

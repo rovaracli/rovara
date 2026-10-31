@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import { recordDeleteQueueKey, recordScopeHash, teamRecordSourceHash, workspaceVectorBucketKey, erasedPersonKey, recordActorSourceHash, learningModeLockKey, teamRecordPk, type Audience } from "@agentx/contracts";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { erasePerson, eraseProject, eraseWorkspace } from "../../../packages/broker/src/team-record/erase.js";
-import { filterVisible } from "../../../packages/broker/src/team-record/acl.js";
 import { pastWork, recordSearch, recordFacts, type RecordQueryDependencies, type PastWorkTask } from "../../../packages/broker/src/team-record/query.js";
 import { callRecordTool, OUTSIDER_WITHHELD } from "../../../packages/broker/src/team-record/agent-tools.js";
 import { tableHotArchiveSource, tableHotStatsSource } from "../../../packages/broker/src/team-record/hot-source.js";
@@ -12,7 +11,7 @@ import { tableLakeDeleteQueue } from "../../../packages/broker/src/team-record/l
 import { createRecordSink } from "../../../packages/broker/src/team-record/sink.js";
 import { eventFromItem, pendingHidesOf, putDerivationLinks, putRecordFact, putScopeWork, queryRecordEvents, PENDING_HIDES_MAX_ITEMS } from "../../../packages/broker/src/team-record/store.js";
 import { hasQuotedOrForwarded } from "../../../packages/broker/src/team-record/quoted.js";
-import { GITHUB_SCOPE, ORG_A, addSource, caller, get, githubDraft, rows, world, type World } from "../../support/team-record-core.js";
+import { GITHUB_SCOPE, ORG_A, addSource, caller, get, githubDraft, rows, world, type World, filterRows as filterVisible } from "../../support/team-record-core.js";
 import { FACT_A, FACT_B, addFact, deleteDeps, eventsOf, idsOf, seedComments } from "../../support/team-record-delete.js";
 
 const DAY = 86_400_000;

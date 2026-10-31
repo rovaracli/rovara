@@ -1,11 +1,13 @@
 // Test helpers for the record core (lane "record"): a fake TeamRecord table, a mutable clock, drafts and callers.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { learningModeKey, learningModeLockKey, type OrgId, type RecordSystem, type RetentionMode } from "@agentx/contracts";
+import type { AccessReader } from "../../packages/broker/src/team-record/access.js";
+import { filterVisible, type FilterDependencies, type FilterResult, type Visible } from "../../packages/broker/src/team-record/acl.js";
 import { createRecordSink } from "../../packages/broker/src/team-record/sink.js";
 import { tableModeReader } from "../../packages/broker/src/team-record/mode.js";
 import { putSourceConfig } from "../../packages/broker/src/team-record/store.js";
 import type { IngestDependencies } from "../../packages/broker/src/team-record/ingest.js";
-import type { RecordCaller, RecordDraft, RecordEmbedder, RecordVectorPort, RecordVectorItem, TeamRecordTable } from "../../packages/broker/src/team-record/types.js";
+import type { ReadAudience, RecordCaller, RecordDraft, RecordEmbedder, RecordVectorPort, RecordVectorItem, TeamRecordTable } from "../../packages/broker/src/team-record/types.js";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
 
 export const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
@@ -87,3 +89,11 @@ export async function get(w: World, key: { pk: string; sk: string }) {
 }
 
 export const rows = (w: World, entityType: string) => w.db.find((item) => item.entityType === entityType);
+
+/** An access reader that lets every unit through (the tests of the row-level filter and of the rewrites do not exercise the records). */
+export const openAccess: AccessReader = {
+  async load() { /* nothing to fetch */ },
+  get: (scope) => ({ kind: "ok", header: { scope, source: "x", mode: "open", groups: [], liveCheck: "none", modeTs: "1970-01-01T00:00:00.000Z", seeded: true, fed: "events" }, entries: new Map() }),
+};
+/** `filterVisible` with the open access reader (the row-level rules only). */
+export const filterRows = <T extends Visible>(rows: readonly T[], audience: ReadAudience, dependencies: Partial<FilterDependencies> = {}): Promise<FilterResult<T>> => filterVisible(rows, audience, { access: openAccess, ...dependencies });

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MAINTAINERS_GROUP, type Audience } from "@agentx/contracts";
-import { LIVE_CHECK_CACHE_MS, createLiveCheckCache, filterVisible, satisfiesAcl, visibleWithoutLiveCheck, type Visible } from "../../../packages/broker/src/team-record/acl.js";
+import { LIVE_CHECK_CACHE_MS, createLiveCheckCache, satisfiesAcl, visibleWithoutLiveCheck, type Visible } from "../../../packages/broker/src/team-record/acl.js";
 import type { ReadAudience } from "../../../packages/broker/src/team-record/types.js";
-import { ORG_A, caller } from "../../support/team-record-core.js";
+import { ORG_A, caller, filterRows as filterVisible } from "../../support/team-record-core.js";
 
 const acl = (extra: Record<string, unknown> = {}): Audience => ({ kind: "restricted", acl: { source: "github", scope: "github:repo/9", principals: ["123"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none", ...extra } as never });
 const row = (audience: Audience, extra: Partial<Visible & { scope: string; id: string }> = {}) => ({ audience, id: "r", ...extra });

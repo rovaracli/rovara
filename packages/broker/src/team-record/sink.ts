@@ -2,7 +2,7 @@
 // lane imports another's files). `put` is the pipeline in ingest.ts. `tombstone` hides at once, then leaves a queue item the delete worker finishes (D1).
 // `changePrincipals` and `replaceScopeAudience` keep a private scope's permission snapshot current. A workspace id that is not an org id is refused.
 import { OrgIdSchema, recordDeleteQueueKey, recordScopeHash, type OrgId, type RecordSystem, type Audience } from "@agentx/contracts";
-import { applyAudienceEvent, applyMemberEvents } from "./access.js";
+import { accessIsSeeded, applyAudienceEvent, applyMemberEvents, observeRowAccess } from "./access.js";
 import { tableLakeDeleteQueue, type LakeDeleteQueue } from "./lake-queue.js";
 import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
@@ -16,6 +16,8 @@ export interface RecordSink {
   tombstone(input: { workspaceId: string; system: string; sourceIds?: readonly string[]; scope?: string; cause: TombstoneCause }): Promise<{ hidden: number }>;
   changePrincipals(input: { workspaceId: string; scope: string; add?: readonly string[]; remove?: readonly string[]; at: string }): Promise<void>;
   replaceScopeAudience(input: { workspaceId: string; scope: string; audience: Audience; at: string }): Promise<void>;
+  /** Seeds the access record of a place from its full, freshly read member list (does nothing if the place is seeded). The tap calls it before the first member event of a place. */
+  ensureAccessSeed(input: { workspaceId: string; scope: string; read: () => Promise<Audience | undefined> }): Promise<void>;
 }
 
 /** Places listed per page, and how many pages the first call reads before it leaves the rest to the delete worker. */
@@ -80,16 +82,27 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
     async changePrincipals(input) {
       const orgId = orgOf(input.workspaceId);
       // The access record FIRST: one conditional write per person, with the event's own time. From this write on, reads give a removed person nothing, whatever the rows say.
-      await applyMemberEvents(deps.table, orgId, { scope: input.scope, ...(input.add === undefined ? {} : { add: input.add }), ...(input.remove === undefined ? {} : { remove: input.remove }), at: input.at });
-      const item = { type: "principals" as const, system: "scope", scope: input.scope, ...(input.add === undefined ? {} : { add: [...input.add] }), ...(input.remove === undefined ? {} : { remove: [...input.remove] }), changeAt: input.at, hidePending: true };
+      // The rows are then brought in line for the people whose event is what the record says now: a late, older event that lost to a newer one rewrites nothing.
+      const { applied } = await applyMemberEvents(deps.table, orgId, { scope: input.scope, ...(input.add === undefined ? {} : { add: input.add }), ...(input.remove === undefined ? {} : { remove: input.remove }), at: input.at });
+      if (applied.add.length === 0 && applied.remove.length === 0) return;
+      const item = { type: "principals" as const, system: "scope", scope: input.scope, ...(applied.add.length === 0 ? {} : { add: applied.add }), ...(applied.remove.length === 0 ? {} : { remove: applied.remove }), changeAt: input.at, hidePending: true };
       // An older change to this place is still waiting (it crashed or ran out of time): this one waits behind it, and the worker replays them oldest first. Never inline over it.
       const behind = await olderChange(deps.table, orgId, input.scope);
       if (behind.waiting) { await queueScopeWork(work, orgId, item, behind.latestAt); return; }
       // Someone LOSING access: the place is hidden from everyone from the first write, for as long as the rows are being rewritten. A crash or a timeout in the pass leaves the item,
       // and the worker finishes it. Someone only joining needs no hiding (stale rows are narrower than intended, never wider).
-      const queued = (input.remove?.length ?? 0) > 0 ? await queueScopeWork(work, orgId, item) : undefined;
-      const result = await changeScopePrincipals(work, orgId, { scope: input.scope, ...(input.add === undefined ? {} : { add: input.add }), ...(input.remove === undefined ? {} : { remove: input.remove }), at: input.at }, budget);
+      const queued = applied.remove.length > 0 ? await queueScopeWork(work, orgId, item) : undefined;
+      const result = await changeScopePrincipals(work, orgId, { scope: input.scope, ...(applied.add.length === 0 ? {} : { add: applied.add }), ...(applied.remove.length === 0 ? {} : { remove: applied.remove }), at: input.at }, budget);
       await settle(deps.table, orgId, queued, result, item);
+    },
+
+    async ensureAccessSeed(input) {
+      // A first member event, before any message (the app's own invite): the source's full member list, read just now, seeds the unit so the record is authoritative from then
+      // on. The list is read only when the unit is not seeded yet; if it cannot be read the unit stays an overlay of events.
+      const orgId = orgOf(input.workspaceId);
+      if (await accessIsSeeded(deps.table, orgId, input.scope)) return;
+      const audience = await input.read().catch(() => undefined);
+      if (audience?.kind === "restricted" && audience.acl.scope === input.scope) await observeRowAccess(deps.table, orgId, audience.acl);
     },
 
     async replaceScopeAudience(input) {

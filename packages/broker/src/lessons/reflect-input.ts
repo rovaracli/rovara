@@ -20,6 +20,8 @@ export interface EvidenceSpan {
   /** Where it came from, for per-source spike detection: `slack:<channel>`, `linear:<project>`, `ci`. Defaults to the author, then the span kind. */
   sourceKey?: string;
   audience?: Audience;
+  /** The places (channel, repository, issue) the span came from, as the Team record names them. */
+  scopes?: readonly string[];
 }
 
 export interface ReflectSubject {
@@ -35,13 +37,15 @@ export interface ReflectSubject {
   /** Permalinks the task's lessons may cite (pull request URLs). Anything else a model names is dropped. */
   links?: readonly string[];
   audience?: Audience;
+  /** The places the task or fact set itself came from (the Team record's place names). */
+  scopes?: readonly string[];
   spans: readonly EvidenceSpan[];
   /** An eval run never reflects (design §4.13). */
   evalRun?: boolean;
 }
 
 export type IneligibleReason = "eval_run" | "unknown_initiator" | "outsider_initiated" | "outsider_steered" | "outsider_intent" | "no_member_reason" | "no_usable_evidence";
-export interface MarkedSpan { id: string; kind: SpanKind; trust: TrustClass; eventId?: string; authorId?: string; sourceKey?: string; audience?: Audience }
+export interface MarkedSpan { id: string; kind: SpanKind; trust: TrustClass; eventId?: string; authorId?: string; sourceKey?: string; audience?: Audience; scopes?: readonly string[] }
 export type ReflectorInput =
   | { eligible: false; reason: IneligibleReason; removedOutsider: number }
   | { eligible: true; system: string; user: string; spans: Map<string, MarkedSpan>; removedOutsider: number; allowedTypes: readonly LessonType[] };
@@ -97,7 +101,7 @@ export function buildReflectorInput(subject: ReflectSubject): ReflectorInput {
     const text = cleanForLearning(span.text, MAX_SPAN_CHARS);
     if (text === "" || used + text.length > MAX_INPUT_CHARS || spans.size >= MAX_SPANS) continue;
     const id = `S${spans.size + 1}`;
-    spans.set(id, { id, kind: span.kind, trust: span.trust, ...(span.eventId === undefined ? {} : { eventId: span.eventId }), ...(span.authorId === undefined ? {} : { authorId: span.authorId }), ...(span.sourceKey === undefined ? {} : { sourceKey: span.sourceKey }), ...(span.audience === undefined ? {} : { audience: span.audience }) });
+    spans.set(id, { id, kind: span.kind, trust: span.trust, ...(span.eventId === undefined ? {} : { eventId: span.eventId }), ...(span.authorId === undefined ? {} : { authorId: span.authorId }), ...(span.sourceKey === undefined ? {} : { sourceKey: span.sourceKey }), ...(span.audience === undefined ? {} : { audience: span.audience }), ...(span.scopes === undefined ? {} : { scopes: span.scopes }) });
     blocks.push(`<<span id=${id} trust=${span.trust} kind=${span.kind}>>\n${text}\n<</span ${id}>>`);
     used += text.length;
   }

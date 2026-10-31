@@ -7,6 +7,7 @@ import type { Item } from "../agents/table-writes.js";
 import { auditRecordErased } from "./audit.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { addPurge, emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
+import { eraseAccessOfPerson } from "./access.js";
 import { identitySystem, markPersonErased } from "./erased.js";
 import { changeScopePrincipals } from "./scope-work.js";
 import { bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
@@ -87,6 +88,9 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
       scrubbed &&= done.complete;
     }
     scrubbed &&= scopes.size <= 200;
+    // Their ids leave EVERY access record of the org (not only the places they wrote in: a member who never posted has no rows there), and an erased marker stops any later
+    // event or snapshot from putting an id back.
+    scrubbed &&= await eraseAccessOfPerson(deps.table, orgId, ids, { maxItems: budget.maxItems });
     for (const project of who.projects ?? []) {
       for (const config of await listSourceConfigs(deps.table, orgId, project)) await removeFromExclude(deps.table, config, new Set(ids));
     }
@@ -101,7 +105,7 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE"] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
 /** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ERASED#"] as const;
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#"] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts

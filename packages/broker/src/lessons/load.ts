@@ -2,14 +2,15 @@
 // and the manifest that records what was chosen. It never blocks a task: any failure loads nothing. Wiring it into the dispatch is one small hunk in
 // aws/broker.ts beside the promptSection composition (see the report, "Wiring pending (hot file)").
 import {
-  LEARNED_CONTEXT_FEATURE, LEARNED_CONTEXT_MAX_BYTES, LEARNED_CONTEXT_MAX_LESSONS, cleanLessonText, type CodeCitation, type LearnedContext, type LearnedLesson, type LessonStage,
+  OrgIdSchema, LEARNED_CONTEXT_FEATURE, LEARNED_CONTEXT_MAX_BYTES, LEARNED_CONTEXT_MAX_LESSONS, cleanLessonText, type CodeCitation, type LearnedContext, type LearnedLesson, type LessonStage,
 } from "@agentx/contracts";
 import { globToRegExp } from "./guards.js";
 import { safeScopeLabel } from "./render.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
-import { isRestricted, satisfiesAcl, type IdentitySet, type Lesson } from "./types.js";
+import type { AccessCheckPort } from "../team-record/access-port.js";
+import { isRestricted, lessonPlaces, satisfiesAcl, type IdentitySet, type Lesson } from "./types.js";
 
 export const LOAD_MAX_LESSONS = LEARNED_CONTEXT_MAX_LESSONS;
 export const LOAD_MAX_BYTES = LEARNED_CONTEXT_MAX_BYTES;
@@ -29,10 +30,17 @@ export interface LoadRequest {
   /** Only an eval-batch dispatch may ask for `off`; the broker route refuses it from production (design §4.13, task L8). */
   memory?: { mode: "off" | "live" };
 }
-export type LoadSkip = "mode" | "stage" | "memory_off" | "index_unreachable" | "no_lessons";
+export type LoadSkip = "mode" | "stage" | "memory_off" | "index_unreachable" | "no_lessons" | "access_unavailable";
 export interface LoadResult { context?: LearnedContext; manifest: LoadManifest; skipped?: LoadSkip }
 
-export interface LoadDeps extends LessonDeps { store: LessonStore; embedder: Embedder; vectors: LessonVectors; settings: LearningSettingsReader }
+export interface LoadDeps extends LessonDeps {
+  store: LessonStore; embedder: Embedder; vectors: LessonVectors; settings: LearningSettingsReader;
+  /**
+   * The record core's access check. Each lesson's source places are checked against the access records at load time (not only against the snapshot the lesson froze), so a person
+   * removed from a channel stops getting its lessons. WIRING: production must pass it; without it only the frozen snapshot is checked.
+   */
+  access?: AccessCheckPort;
+}
 
 
 interface ScopeMatch { matches: boolean; byPath: boolean }
@@ -106,6 +114,20 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     return empty("index_unreachable", setVersion);
   }
 
+  // The access records, asked now for the places each candidate lesson was learned from (one batch for the whole load). A record that cannot be read loads nothing.
+  const placed = deps.access === undefined ? [] : active.filter((lesson) => stageAllows(lesson, stage) && lessonPlaces(lesson).scopes.length > 0);
+  const stillAllowed = new Map<string, boolean>();
+  if (deps.access !== undefined && placed.length > 0) {
+    try {
+      const viewer = request.taskAudience.kind === "private" ? { principals: request.taskAudience.identity.principals, groups: request.taskAudience.identity.groups } : undefined;
+      const answers = await deps.access.mayRead(OrgIdSchema.parse(key.workspaceId), viewer, placed.map((lesson) => lessonPlaces(lesson)));
+      for (const [index, lesson] of placed.entries()) stillAllowed.set(lesson.id, answers[index] === true);
+    } catch {
+      deps.metrics?.count("learning_load_skipped", { reason: "access_unavailable" });
+      return empty("access_unavailable", setVersion);
+    }
+  }
+
   const scored: Array<{ lesson: Lesson; score: number; why: LoadManifestEntry["why"] }> = [];
   for (const lesson of active) {
     if (!stageAllows(lesson, stage)) continue;
@@ -113,6 +135,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
       // A restricted lesson loads only into a private task whose owner may see the source; a shared task never gets one.
       if (request.taskAudience.kind !== "private" || lesson.provenance.audience.kind !== "restricted" || !satisfiesAcl(request.taskAudience.identity, lesson.provenance.audience.acl)) continue;
     }
+    if (stillAllowed.get(lesson.id) === false) continue;
     const match = scopeMatch(lesson, request);
     if (!match.matches) continue;
     const sim = similarity.get(lesson.id) ?? 0;
