@@ -39,12 +39,12 @@ describe("ECS adapter", () => {
   it("follows the list pages, and refuses a list that has more pages than a controller should ever see", async () => {
     let page = 0;
     const paged = fakeSdk({ ListTasksCommand: () => { page += 1; return { taskArns: [`arn:${page}`], nextToken: page < 3 ? `t${page}` : undefined }; } });
-    expect(await ecsApiFromSdk(paged.sdk, paged.client).listTaskArns({ cluster: "c", startedBy: "s" })).toEqual(["arn:1", "arn:2", "arn:3"]);
+    expect(await ecsApiFromSdk(paged.sdk, paged.client).listTaskArns({ cluster: "c" })).toEqual(["arn:1", "arn:2", "arn:3"]);
     expect(paged.sent.map((call) => call.input)).toEqual([
-      { cluster: "c", startedBy: "s", desiredStatus: "RUNNING" }, { cluster: "c", startedBy: "s", desiredStatus: "RUNNING", nextToken: "t1" }, { cluster: "c", startedBy: "s", desiredStatus: "RUNNING", nextToken: "t2" },
+      { cluster: "c", desiredStatus: "RUNNING" }, { cluster: "c", desiredStatus: "RUNNING", nextToken: "t1" }, { cluster: "c", desiredStatus: "RUNNING", nextToken: "t2" },
     ]);
     const endless = fakeSdk({ ListTasksCommand: () => ({ taskArns: ["arn:x"], nextToken: "more" }) });
-    await expect(ecsApiFromSdk(endless.sdk, endless.client).listTaskArns({ cluster: "c", startedBy: "s" })).rejects.toThrow("too many");
+    await expect(ecsApiFromSdk(endless.sdk, endless.client).listTaskArns({ cluster: "c" })).rejects.toThrow("too many");
     expect(endless.sent).toHaveLength(20);
   });
 });

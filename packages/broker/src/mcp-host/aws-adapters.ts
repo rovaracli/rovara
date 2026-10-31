@@ -27,6 +27,7 @@ export interface EcsSdk {
 export interface EcsResponse {
   tasks?: Array<{
     taskArn?: string; lastStatus?: string; startedAt?: Date; createdAt?: Date; tags?: Array<{ key?: string; value?: string }>;
+    startedBy?: string; taskDefinitionArn?: string;
     attachments?: Array<{ type?: string; details?: Array<{ name?: string; value?: string }> }>; containers?: Array<{ name?: string; exitCode?: number }>;
   }>;
   failures?: unknown[];
@@ -56,7 +57,7 @@ export function ecsApiFromSdk(sdk: EcsSdk, client: InstanceType<EcsSdk["ECSClien
         const exitCodes: Record<string, number | undefined> = {};
         for (const container of task.containers ?? []) if (container.name !== undefined) exitCodes[container.name] = container.exitCode;
         return {
-          taskArn: String(task.taskArn), lastStatus: String(task.lastStatus), startedAt: task.startedAt, createdAt: task.createdAt,
+          taskArn: String(task.taskArn), lastStatus: String(task.lastStatus), startedAt: task.startedAt, createdAt: task.createdAt, startedBy: task.startedBy, taskDefinitionArn: task.taskDefinitionArn,
           tags: (task.tags ?? []).filter((tag): tag is { key: string; value: string } => typeof tag.key === "string" && typeof tag.value === "string"),
           privateIpv4: interfaceDetails.find((detail) => detail.name === "privateIPv4Address")?.value, exitCodes,
         };
@@ -66,7 +67,7 @@ export function ecsApiFromSdk(sdk: EcsSdk, client: InstanceType<EcsSdk["ECSClien
       const arns: string[] = [];
       let nextToken: string | undefined;
       for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-        const out = await client.send(new sdk.ListTasksCommand({ cluster: input.cluster, startedBy: input.startedBy, desiredStatus: "RUNNING", ...(nextToken === undefined ? {} : { nextToken }) }));
+        const out = await client.send(new sdk.ListTasksCommand({ cluster: input.cluster, desiredStatus: "RUNNING", ...(nextToken === undefined ? {} : { nextToken }) }));
         arns.push(...(out.taskArns ?? []));
         nextToken = out.nextToken;
         if (nextToken === undefined) return arns;

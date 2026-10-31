@@ -72,6 +72,7 @@ export interface FakeRunnerOptions {
 interface FakeTask { spec: RunnerTaskSpec; state: RunnerTaskStatus; bridge?: Awaited<ReturnType<typeof fakeBridge>> | undefined; stoppedFor?: StopReason; startedAt: number }
 
 export class FakeRunner implements TaskRunner {
+  readonly instanceId = "fakeinst1";
   readonly tasks = new Map<string, FakeTask>();
   readonly stops: Array<{ taskId: string; reason: StopReason }> = [];
   private counter = 0;
@@ -126,7 +127,7 @@ export class FakeRunner implements TaskRunner {
     if (this.listDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.listDelayMs));
     if (this.listFails) throw new Error("cannot list");
     const own = [...this.tasks.entries()].filter(([, task]) => task.state.state !== "stopped").map(([taskId, task]): RunnerTaskInfo => ({
-      taskId, purpose: task.spec.purpose, serverId: task.spec.serverId, approval: task.spec.approval, family: task.spec.family, startedAt: task.startedAt, state: task.state.state === "running" ? "running" : "pending",
+      taskId, purpose: task.spec.purpose, serverId: task.spec.serverId, approval: task.spec.approval, family: task.spec.family, owner: this.instanceId, startedAt: task.startedAt, state: task.state.state === "running" ? "running" : "pending",
     }));
     return [...own, ...this.extra.filter((info) => !this.tasks.has(info.taskId) || this.tasks.get(info.taskId)!.state.state !== "stopped")];
   }

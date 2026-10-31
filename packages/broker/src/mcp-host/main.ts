@@ -17,7 +17,9 @@ import { cidrBlockListOf, parseInstallCidrs } from "../connections/private-endpo
 import { installEnvironmentName } from "../org/resolve.js";
 import { secretArnResolver, bundleObjectApiFromS3, ec2GroupApiFromSdk, ecsApiFromSdk, ecsDefinitionApiFromSdk, type EcsSdk } from "./aws-adapters.js";
 import { destinationResolver } from "./destinations.js";
+import { dynamoInstanceLeases } from "./instance-leases.js";
 import { dynamoProbeSlots } from "./probe-slots.js";
+import { randomBytes } from "node:crypto";
 import { dynamoMcpServerStore, summariseProbe } from "../context-sources/mcp-servers.js";
 
 function required(env: Record<string, string | undefined>, name: string): string {
@@ -131,7 +133,8 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   const ecsModule = "@aws-sdk/client-ecs";
   const sdk = await import(ecsModule) as EcsSdk;
-  const runner = ecsTaskRunner({ api: ecsApiFromSdk(sdk, new sdk.ECSClient({})), cluster: config.cluster, subnets: config.subnets, defaultSecurityGroupId: config.installSecurityGroupId });
+  const instanceId = randomBytes(8).toString("hex");
+  const runner = ecsTaskRunner({ instanceId, api: ecsApiFromSdk(sdk, new sdk.ECSClient({})), cluster: config.cluster, subnets: config.subnets, defaultSecurityGroupId: config.installSecurityGroupId });
   const bundles = objectBundleStore(bundleObjectApiFromS3(new S3Client({}), config.bundleBucket));
   const orgId = required(env, "ROVARA_ORG_ID");
   const stateTable = required(env, "STATE_TABLE_NAME");
@@ -150,6 +153,7 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
     token, registry: registryFor(dynamoMcpServerStore({ documentClient, tableName: stateTable }), orgId, secretArnResolver(new SecretsManagerClient({}), (serverId) => orgMcpServerSecretName(installEnvironment, orgId, serverId))), runner, bundles,
     controllerUrl: config.controllerUrl, controllerCa: config.controllerCa, npmRegistry: config.npmRegistry, installSecurityGroupId: config.installSecurityGroupId, toolsHashOf, log,
     resources, probeSlots: dynamoProbeSlots({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId) }), sweepMs: 60_000,
+    leases: dynamoInstanceLeases({ documentClient, tableName: stateTable, orgId: OrgIdSchema.parse(orgId), instanceId }),
   });
   const listeners = listen(controller, { broker: config.brokerPort, runner: config.runnerPort, tls: { cert: config.tlsCert, key: config.tlsKey } });
   const stop = (): void => { listeners.close(); void controller.close().finally(() => process.exit(0)); };

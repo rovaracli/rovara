@@ -76,12 +76,13 @@ export function localTaskRunner(options: LocalRunnerOptions): TaskRunner & { sto
   }
 
   return {
+    instanceId: "local",
     async start(spec) {
       counter += 1;
       const taskId = `local-${counter}`;
       const task: LocalTask = {
         spec, state: { state: "pending" }, stopped: false,
-        info: { taskId, purpose: spec.purpose, serverId: spec.serverId, approval: spec.approval, family: spec.family, startedAt: Date.now(), state: "pending" },
+        info: { taskId, purpose: spec.purpose, serverId: spec.serverId, approval: spec.approval, family: spec.family, owner: "local", startedAt: Date.now(), state: "pending" },
       };
       tasks.set(taskId, task);
       options.onStart?.(taskId, spec);

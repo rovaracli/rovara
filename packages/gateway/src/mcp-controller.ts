@@ -69,6 +69,17 @@ export const staticServerResources: ServerResources = {
   async release() { /* nothing was made */ },
 };
 
+/**
+ * Which controller instances are alive. Two instances can run side by side for a while (a deploy), and each must judge only its own tasks. A task of another instance is stopped only when
+ * that instance's lease has run out. Without leases no other instance's task is ever judged.
+ */
+export interface InstanceLeases {
+  /** Records that this instance is alive for the next while. */
+  renew(): Promise<void>;
+  /** Whether the instance renewed its lease recently. */
+  alive(instanceId: string): Promise<boolean>;
+}
+
 /** At most N install-or-probe jobs at once for the org (T7 backs this with a conditional counter in DynamoDB). */
 export interface ProbeSlots {
   /** A release function, or undefined when all slots are taken. */
@@ -133,6 +144,7 @@ export interface McpControllerOptions {
   installFamily?: string | undefined;
   installSecurityGroupId?: string | undefined;
   resources?: ServerResources | undefined;
+  leases?: InstanceLeases | undefined;
   probeSlots?: ProbeSlots | undefined;
   /** The hash of a tools list that the approval binds (the broker's `summariseProbe`). */
   toolsHashOf: (tools: ProbedTool[]) => string;
@@ -758,11 +770,24 @@ export function createMcpController(options: McpControllerOptions): McpControlle
           log("mcp_controller.task_stopped", { serverId: entry.serverId, taskId: entry.taskId, reason: "crash" });
         }
       }
-      // 2. The cloud's own list of this controller's tasks. If it cannot be read, nothing is judged from it.
+      // 2. The cloud's own list of tasks. If it cannot be read, nothing is judged from it.
+      let renewed = false;
+      if (options.leases !== undefined) { try { await options.leases.renew(); renewed = true; } catch { log("mcp_controller.lease_failed", {}); } }
       let listed: Awaited<ReturnType<TaskRunner["list"]>> | undefined;
       try { listed = await runner.list(); } catch { log("mcp_controller.list_failed", {}); }
       if (listed !== undefined) {
         for (const task of listed) {
+          // A task another instance started is that instance's to judge. It is stopped only if that instance is known to be gone; with no leases, or when this instance's own lease could not
+          // be renewed, it is left alone.
+          if (runner.instanceId !== undefined && task.owner !== runner.instanceId) {
+            if (!renewed) continue;
+            let alive = true;
+            if (task.owner === "") alive = false; else { try { alive = await options.leases!.alive(task.owner); } catch { continue; } }
+            if (alive) continue;
+            await runner.stop(task.taskId, "leftover").catch(() => undefined);
+            log("mcp_controller.task_stopped", { serverId: task.serverId, taskId: task.taskId, reason: "leftover" });
+            continue;
+          }
           const entry = task.purpose === "serve" ? [...serving.values()].find((candidate) => candidate.taskId === task.taskId) : undefined;
           const known = task.purpose === "serve" ? entry !== undefined : activeTaskIds.has(task.taskId);
           if (!known) {

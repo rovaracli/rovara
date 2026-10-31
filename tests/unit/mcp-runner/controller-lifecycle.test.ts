@@ -30,7 +30,7 @@ class FakeResources implements ServerResources {
 
 const clock = { offset: 0 };
 const now = (): number => Date.now() + clock.offset;
-const ghost = (over: Partial<RunnerTaskInfo> = {}): RunnerTaskInfo => ({ taskId: "ghost-1", purpose: "serve", serverId: "mcpghost0001", approval: "a".repeat(12), family: "rovara-mcp-serve-mcpghost0001", startedAt: now(), state: "running", ...over });
+const ghost = (over: Partial<RunnerTaskInfo> = {}): RunnerTaskInfo => ({ taskId: "ghost-1", purpose: "serve", serverId: "mcpghost0001", approval: "a".repeat(12), family: "rovara-mcp-serve-mcpghost0001", owner: "fakeinst1", startedAt: now(), state: "running", ...over });
 
 async function lifecycle(over: Parameters<typeof world>[0] = {}) {
   clock.offset = 0;
@@ -217,6 +217,52 @@ describe("T7 lifecycle: reconcile from the cloud's records", () => {
     const calls = w.runner.listCalls;
     await new Promise((resolve) => setTimeout(resolve, 120));
     expect(w.runner.listCalls).toBe(calls);
+  });
+});
+
+describe("fix round 1, I2: a second controller never stops the first one's tasks", () => {
+  const other = (over: Partial<RunnerTaskInfo> = {}) => ghost({ taskId: "theirs-1", owner: "otherinst2", ...over });
+  const leases = (alive: Record<string, boolean>, over: { renewFails?: boolean; aliveFails?: boolean } = {}) => {
+    const calls: string[] = [];
+    return { calls, api: {
+      renew: async () => { calls.push("renew"); if (over.renewFails === true) throw new Error("down"); },
+      alive: async (id: string) => { calls.push(`alive:${id}`); if (over.aliveFails === true) throw new Error("down"); return alive[id] === true; },
+    } };
+  };
+  it("leaves the tasks of an instance whose lease is alive, however old they look, and stops those of an instance that is gone", async () => {
+    const l = leases({ otherinst2: true, deadinst3: false });
+    const w = await lifecycle({ controller: { leases: l.api } });
+    w.runner.extra.push(other(), other({ taskId: "theirs-2", owner: "deadinst3" }), other({ taskId: "theirs-3", owner: "" }), ghost());
+    await w.controller.reconcile();
+    expect(w.runner.stops.map((stop) => stop.taskId).sort()).toEqual(["ghost-1", "theirs-2", "theirs-3"]);
+    expect(w.runner.stops.every((stop) => stop.reason === "leftover")).toBe(true);
+  });
+  it("renews its own lease before it judges anything", async () => {
+    const l = leases({ otherinst2: true });
+    const w = await lifecycle({ controller: { leases: l.api } });
+    w.runner.extra.push(other());
+    await w.controller.reconcile();
+    expect(l.calls).toEqual(["renew", "alive:otherinst2"]);
+  });
+  it("judges no other instance's task when it has no leases, when its own lease could not be renewed, or when it cannot tell whether the other is alive", async () => {
+    for (const setup of [{ controller: {} }, { controller: { leases: leases({}, { renewFails: true }).api } }, { controller: { leases: leases({}, { aliveFails: true }).api } }]) {
+      const w = await lifecycle(setup);
+      w.runner.extra.push(other());
+      await w.controller.reconcile();
+      expect(w.runner.stops, JSON.stringify(Object.keys(setup.controller))).toEqual([]);
+    }
+  });
+  it("still judges its own tasks when the lease cannot be renewed", async () => {
+    const w = await lifecycle({ controller: { leases: leases({}, { renewFails: true }).api } });
+    w.runner.extra.push(ghost());
+    await w.controller.reconcile();
+    expect(w.runner.stops.map((stop) => stop.taskId)).toEqual(["ghost-1"]);
+  });
+  it("leaves a serve task of another instance alone even when this instance has no record of its server", async () => {
+    const w = await lifecycle({ controller: { leases: leases({ otherinst2: true }).api } });
+    w.runner.extra.push(other({ serverId: ID, approval: BUNDLE.slice(0, 12) }));
+    await w.controller.reconcile();
+    expect(w.runner.stops).toEqual([]);
   });
 });
 

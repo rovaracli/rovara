@@ -1,7 +1,7 @@
 // Stdio MCP host redesign, task T6: the ECS runner. Whatever the controller asks, a task is started only in the runner subnets with no public address, in a `rovara-mcp-` family, with
 // only environment overrides, and is tagged so it can be found again from the cloud's records.
 import { describe, expect, it } from "vitest";
-import { ECS_STARTED_BY, ECS_TAG, ecsTaskRunner, type EcsApi, type EcsRunTaskInput, type EcsTaskDescription } from "../../../packages/gateway/src/mcp-runner/ecs-runner.js";
+import { ECS_STARTED_BY_PREFIX, ECS_TAG, ecsTaskRunner, type EcsApi, type EcsRunTaskInput, type EcsTaskDescription } from "../../../packages/gateway/src/mcp-runner/ecs-runner.js";
 import type { RunnerTaskSpec } from "../../../packages/gateway/src/mcp-runner/task-runner.js";
 
 const ARN = (id: string) => `arn:aws:ecs:us-east-1:111111111111:task/rovara-mcp/${id.padEnd(32, "0")}`;
@@ -23,13 +23,14 @@ function fakeApi(over: Partial<EcsApi> = {}) {
   };
   return { api, runs, stops, described };
 }
-const runnerOf = (api: EcsApi) => ecsTaskRunner({ api, cluster: "rovara-mcp", subnets: SUBNETS, defaultSecurityGroupId: DEFAULT_SG });
+const INSTANCE = "a1b2c3d4e5f60718";
+const runnerOf = (api: EcsApi) => ecsTaskRunner({ instanceId: INSTANCE, api, cluster: "rovara-mcp", subnets: SUBNETS, defaultSecurityGroupId: DEFAULT_SG });
 const spec = (over: Partial<RunnerTaskSpec> = {}): RunnerTaskSpec => ({
   purpose: "serve", serverId: "mcpsim000001", approval: "a".repeat(12), family: "rovara-mcp-serve-mcpsim000001", taskDefinition: REVISION("rovara-mcp-serve-mcpsim000001", 3), securityGroupId: OWN_SG, size: { cpu: 256, memoryMiB: 512 },
   containers: { fetch: { MCP_RUNNER_TOKEN: "t".repeat(43), MCP_BUNDLE_HASH: "b".repeat(64) }, server: { MCP_RUNNER_TOKEN: "t".repeat(43), PORT: "8080" } }, ...over,
 });
 const described = (over: Partial<EcsTaskDescription> = {}): EcsTaskDescription => ({
-  taskArn: ARN("a1"), lastStatus: "RUNNING", createdAt: new Date(1_000), startedAt: new Date(2_000), privateIpv4: "10.0.3.7",
+  taskArn: ARN("a1"), taskDefinitionArn: REVISION("rovara-mcp-serve-mcpsim000001", 3), startedBy: `${ECS_STARTED_BY_PREFIX}${INSTANCE}`, lastStatus: "RUNNING", createdAt: new Date(1_000), startedAt: new Date(2_000), privateIpv4: "10.0.3.7",
   tags: [{ key: ECS_TAG.server, value: "mcpsim000001" }, { key: ECS_TAG.purpose, value: "serve" }, { key: ECS_TAG.approval, value: "a".repeat(12) }, { key: ECS_TAG.family, value: "rovara-mcp-serve-mcpsim000001" }], ...over,
 });
 
@@ -38,7 +39,7 @@ describe("ECS runner: start", () => {
     const { api, runs } = fakeApi();
     expect(await runnerOf(api).start(spec())).toBe(ARN("a1"));
     expect(runs).toEqual([{
-      cluster: "rovara-mcp", taskDefinition: REVISION("rovara-mcp-serve-mcpsim000001", 3), count: 1, launchType: "FARGATE", startedBy: ECS_STARTED_BY, enableExecuteCommand: false,
+      cluster: "rovara-mcp", taskDefinition: REVISION("rovara-mcp-serve-mcpsim000001", 3), count: 1, launchType: "FARGATE", startedBy: `${ECS_STARTED_BY_PREFIX}${INSTANCE}`, enableExecuteCommand: false,
       networkConfiguration: { awsvpcConfiguration: { subnets: SUBNETS, securityGroups: [OWN_SG], assignPublicIp: "DISABLED" } },
       overrides: { containerOverrides: [
         { name: "fetch", environment: [{ name: "MCP_RUNNER_TOKEN", value: "t".repeat(43) }, { name: "MCP_BUNDLE_HASH", value: "b".repeat(64) }] },
@@ -124,8 +125,8 @@ describe("ECS runner: stop and describe", () => {
     const { api, described: tasks } = fakeApi();
     const runner = runnerOf(api);
     tasks.push(described());
-    expect(await runner.describe(ARN("a1"))).toEqual({ state: "running", endpoint: "http://10.0.3.7:8080" });
-    for (const lastStatus of ["PROVISIONING", "PENDING", "ACTIVATING"]) { tasks[0] = described({ lastStatus }); expect(await runner.describe(ARN("a1")), lastStatus).toEqual({ state: "pending" }); }
+    expect(await runner.describe(ARN("a1"))).toEqual({ state: "running", address: "10.0.3.7", endpoint: "http://10.0.3.7:8080" });
+    for (const lastStatus of ["PROVISIONING", "PENDING", "ACTIVATING"]) { tasks[0] = described({ lastStatus }); expect(await runner.describe(ARN("a1")), lastStatus).toEqual({ state: "pending", address: "10.0.3.7" }); }
     for (const lastStatus of ["DEACTIVATING", "STOPPING", "DEPROVISIONING", "STOPPED"]) { tasks[0] = described({ lastStatus }); expect((await runner.describe(ARN("a1")))?.state, lastStatus).toBe("stopped"); }
     tasks[0] = described({ lastStatus: "STOPPED", exitCodes: { fetch: 0, server: 137 } });
     expect(await runner.describe(ARN("a1"))).toEqual({ state: "stopped", exitCode: 137 });
@@ -137,40 +138,53 @@ describe("ECS runner: stop and describe", () => {
     expect(await runnerOf(api).describe("not-an-arn")).toBeUndefined();
     expect(asked).toBe(0);
   });
-  it("does not know a task that is not one of this feature's (no tags, wrong purpose, a family outside rovara-mcp-) or an id that is not a task", async () => {
+  it("does not know a task that is not one of this feature's (a family outside the serve, probe and install ones, such as the controller's own) or an id that is not a task", async () => {
     const { api, described: tasks } = fakeApi();
     const runner = runnerOf(api);
-    tasks.push(described({ tags: [] }));
+    tasks.push(described({ tags: [], taskDefinitionArn: REVISION("rovara-mcp-controller", 4) }));
     expect(await runner.describe(ARN("a1"))).toBeUndefined();
-    tasks[0] = described({ tags: described().tags.map((tag) => (tag.key === ECS_TAG.purpose ? { ...tag, value: "shell" } : tag)) });
+    tasks[0] = described({ tags: [], taskDefinitionArn: "arn:aws:ecs:us-east-1:111111111111:task-definition/McpHostTask:9" });
     expect(await runner.describe(ARN("a1"))).toBeUndefined();
+    tasks[0] = described({ tags: [], taskDefinitionArn: undefined });
+    expect(await runner.describe(ARN("a1"))).toBeUndefined();
+    // a task of one of our families is ours, whatever its tags say, and the family of the revision it runs is what counts
+    tasks[0] = described({ tags: [] });
+    expect(await runner.describe(ARN("a1"))).toMatchObject({ state: "running" });
     tasks[0] = described({ tags: described().tags.map((tag) => (tag.key === ECS_TAG.family ? { ...tag, value: "controller" } : tag)) });
-    expect(await runner.describe(ARN("a1"))).toBeUndefined();
+    expect(await runner.describe(ARN("a1"))).toMatchObject({ state: "running" });
     expect(await runner.describe("nope")).toBeUndefined();
     expect(await runner.describe(ARN("zz"))).toBeUndefined();
   });
 });
 
 describe("ECS runner: list", () => {
-  it("lists the controller's tasks that are not stopped, with their tags and times, and none of the others", async () => {
+  it("lists every task of the serve, probe and install families that is not stopped, whoever started it and even with no tags, with its owner", async () => {
     const { api, described: tasks } = fakeApi();
     tasks.push(
-      described(), described({ taskArn: ARN("a2"), lastStatus: "PENDING", startedAt: undefined, createdAt: new Date(5_000) }), described({ taskArn: ARN("a3"), lastStatus: "STOPPED" }),
-      described({ taskArn: ARN("a4"), tags: [] }), described({ taskArn: ARN("a5"), tags: [{ key: ECS_TAG.purpose, value: "serve" }] }),
+      described(), described({ taskArn: ARN("a2"), lastStatus: "PENDING", startedAt: undefined, createdAt: new Date(5_000), startedBy: `${ECS_STARTED_BY_PREFIX}ffffffff00000000` }), described({ taskArn: ARN("a3"), lastStatus: "STOPPED" }),
+      described({ taskArn: ARN("a4"), tags: [], startedBy: "ecs-svc/123", taskDefinitionArn: REVISION("rovara-mcp-probe-probe0123456789", 2) }),
+      described({ taskArn: ARN("a5"), taskDefinitionArn: REVISION("rovara-mcp-install", 5), tags: [], startedBy: undefined }),
+      described({ taskArn: ARN("a6"), taskDefinitionArn: REVISION("rovara-mcp-controller", 1), tags: [] }), described({ taskArn: ARN("a7"), taskDefinitionArn: undefined, tags: [] }),
     );
     expect(await runnerOf(api).list()).toEqual([
-      { taskId: ARN("a1"), purpose: "serve", serverId: "mcpsim000001", approval: "a".repeat(12), family: "rovara-mcp-serve-mcpsim000001", startedAt: 2_000, state: "running" },
-      { taskId: ARN("a2"), purpose: "serve", serverId: "mcpsim000001", approval: "a".repeat(12), family: "rovara-mcp-serve-mcpsim000001", startedAt: 5_000, state: "pending" },
+      { taskId: ARN("a1"), purpose: "serve", serverId: "mcpsim000001", approval: "a".repeat(12), family: "rovara-mcp-serve-mcpsim000001", owner: INSTANCE, startedAt: 2_000, state: "running" },
+      { taskId: ARN("a2"), purpose: "serve", serverId: "mcpsim000001", approval: "a".repeat(12), family: "rovara-mcp-serve-mcpsim000001", owner: "ffffffff00000000", startedAt: 5_000, state: "pending" },
+      { taskId: ARN("a4"), purpose: "probe", serverId: "probe0123456789", approval: "", family: "rovara-mcp-probe-probe0123456789", owner: "", startedAt: 2_000, state: "running" },
+      { taskId: ARN("a5"), purpose: "install", serverId: "install", approval: "", family: "rovara-mcp-install", owner: "", startedAt: 2_000, state: "running" },
     ]);
   });
-  it("asks only for the tasks this controller started, and describes them 100 at a time", async () => {
-    const asked: Array<{ cluster: string; startedBy: string }> = [];
+  it("asks for every task of the cluster, and describes them 100 at a time", async () => {
+    const asked: Array<{ cluster: string }> = [];
     const batches: number[] = [];
     const arns = Array.from({ length: 230 }, (_, index) => ARN(`b${index}`));
     const { api } = fakeApi({ listTaskArns: async (input) => { asked.push(input); return arns; }, describeTasks: async ({ taskArns }) => { batches.push(taskArns.length); return []; } });
     await runnerOf(api).list();
-    expect(asked).toEqual([{ cluster: "rovara-mcp", startedBy: ECS_STARTED_BY }]);
+    expect(asked).toEqual([{ cluster: "rovara-mcp" }]);
     expect(batches).toEqual([100, 100, 30]);
+  });
+  it("starts every task as this instance, and refuses an instance id that is not one", () => {
+    expect(runnerOf(fakeApi().api).instanceId).toBe(INSTANCE);
+    for (const instanceId of ["", "short", "has space 12345678", "a".repeat(65), "with-dash-12345678"]) expect(() => ecsTaskRunner({ instanceId, api: fakeApi().api, cluster: "c", subnets: SUBNETS, defaultSecurityGroupId: DEFAULT_SG }), instanceId).toThrow(/instance id/u);
   });
   it("lets a failing list fail, so nothing is judged a leftover from a list that could not be read", async () => {
     await expect(runnerOf(fakeApi({ listTaskArns: async () => { throw new Error("throttled"); } }).api).list()).rejects.toThrow("throttled");

@@ -44,12 +44,16 @@ export interface RunnerTaskInfo {
   serverId: string;
   approval: string;
   family: string;
+  /** The controller instance that started it, or "" when it was started some other way. */
+  owner: string;
   /** Milliseconds since the epoch. */
   startedAt: number;
   state: "pending" | "running" | "stopped";
 }
 
 export interface TaskRunner {
+  /** This controller instance's id (a random id of the process). A task whose `owner` is another instance is that instance's to judge. */
+  readonly instanceId?: string;
   /** Starts a task and returns its id. Throws when the task cannot be started. */
   start(spec: RunnerTaskSpec): Promise<string>;
   /** Stops a task. Stopping a task that is already gone is not an error. */
