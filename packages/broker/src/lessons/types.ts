@@ -178,3 +178,10 @@ export const peopleOf = (l: Pick<Lesson, "provenance" | "approvals" | "promotion
 /** Every record row a version rests on: its source events and the record citations. */
 export const recordIdsOf = (l: Pick<Lesson, "provenance" | "citations">): string[] =>
   [...l.provenance.sourceEvents, ...l.citations.flatMap((c) => (c.kind === "record" ? [c.eventId] : []))];
+
+/** THE id normaliser: ids are compared trimmed and without case, everywhere (the fence, erasure, forget, measured outcomes, corroboration, the author rule, eligibility). */
+export const normId = (id: string): string => id.trim().toLowerCase();
+export const sameId = (a: string, b: string): boolean => normId(a) === normId(b);
+export const idIn = (list: readonly string[], id: string): boolean => list.some((x) => sameId(x, id));
+/** Distinct ids (by `normId`), keeping the first spelling. */
+export const distinctIds = (ids: readonly string[]): string[] => { const seen = new Set<string>(); return ids.filter((i) => { const n = normId(i); if (seen.has(n)) return false; seen.add(n); return true; }); };

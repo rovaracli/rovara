@@ -1,5 +1,5 @@
 // Learning v2 L2/L3a: the path from a reflector draft to a lesson in front of people (or live). Curate, check the code citations against the base commit,
-// classify the tier, decide whether the lesson has earned a person's attention (promotion), and apply tier 0 by itself when the policy and the mode allow.
+// classify the tier, decide whether the lesson has earned a person's attention (promotion), and apply tier 0 by itself only when the project's policy says "auto" (the pilot default is one person) and the mode allows.
 import { AuditUnavailable, activateLesson } from "./approve.js";
 import { curateDraft, type CurateDeps, type CurateOutcome } from "./curate.js";
 import { pendingExpiry } from "./expiry.js";
@@ -104,6 +104,9 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     // Auto-apply: tier 0, corroborated, not held, not a refinement of an existing lesson, and the policy and mode allow it.
     if (next.status === "pending" && next.tier === 0 && next.supersedes === undefined && isCorroborated(next.provenance) && !held
       && options.noAutoApply !== true && next.reviewRequired !== true && approversRequired(0, resolved.approval) === 0 && modeAllows(resolved.mode, "auto_apply")) {
+      // The policy is read AGAIN at the moment of go-live: a setting tightened while this settle ran wins.
+      const now = await resolveLearning(deps.settings, key.workspaceId, key.project);
+      if (approversRequired(0, now.approval) !== 0 || !modeAllows(now.mode, "auto_apply")) return deps.store.get(key, lessonId);
       try {
         const active = await activateLesson(deps, key, next, [{ approvalId: `auto-${lessonId}`, by: "system:auto", at: deps.now(), mode: "auto" }], resolved.expiryDays, "lesson.auto_applied");
         if (active !== undefined) return active;

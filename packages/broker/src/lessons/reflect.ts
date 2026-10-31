@@ -6,7 +6,7 @@ import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, typ
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
 import {
-  LessonCandidateSchema, ReflectorOutputSchema, minTrust, narrowestAudience,
+  LessonCandidateSchema, ReflectorOutputSchema, distinctIds, idIn, minTrust, narrowestAudience, sameId,
   type Audience, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type TrustClass,
 } from "./types.js";
 
@@ -20,8 +20,7 @@ export interface OutcomeEvent { kind: "revert" | "send_back" | "ci_failure"; act
 export function isMeasured(input: { authors: readonly string[]; initiatorId: string | undefined; events: readonly OutcomeEvent[] }): boolean {
   if (input.authors.length === 0 || input.initiatorId === undefined) return false;
   // Ids are compared without case, so "Ann" and "ann" are one person.
-  const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
-  return input.events.some((e) => e.actor !== undefined && !input.authors.some((a) => same(a, e.actor!)) && !same(e.actor, input.initiatorId!));
+  return input.events.some((e) => e.actor !== undefined && !idIn(input.authors, e.actor) && !sameId(e.actor, input.initiatorId!));
 }
 
 /** A lesson as the reflector proposes it, checked by code, with its provenance. It is not yet in any store. */
@@ -168,7 +167,7 @@ async function toDraft(
   const inputSources = [...new Set(everything.filter((s) => s.kind !== "loaded_lesson").map(sourceOf))].slice(0, 100);
   // Independence is counted in people: the canonical member ids of spans a PERSON wrote. Agent text (plan), system text, outcomes and channel or bucket keys
   // never make an author.
-  const authors = [...new Set(evidence.flatMap((s) => (s.trust === "member" && s.authorId !== undefined && PERSON_KINDS.has(s.kind) ? [s.authorId] : [])))];
+  const authors = distinctIds([...new Set(evidence.flatMap((s) => (s.trust === "member" && s.authorId !== undefined && PERSON_KINDS.has(s.kind) ? [s.authorId] : [])))]);
     // Measured outcomes come from structured facts in the input, never from which spans the model cited.
   // A send-back counts only when someone other than the lesson's own authors made it (a person cannot create a "measured outcome" by correcting their own task).
   // ONE function decides whether anything was measured, for every kind of outcome (a revert, a send-back, a CI failure).

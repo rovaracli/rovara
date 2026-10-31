@@ -1,5 +1,5 @@
 // Learning v2 L3a: the weekly digest for the project maintainer (owner decisions Q2 and "Lesson limits"). It leads with the top lessons by importance, then
-// lists what went live by itself, what waits for people, what was retired, which sources are paused and how many candidates are queued. This builds the
+// lists what went live by itself (only where a project chose "auto"), what waits for people, what was retired, which sources are paused and how many candidates are queued. This builds the
 // content; where it is delivered (Slack, email, the Home card) is a later UI task. A lesson from a restricted source appears, with its text, only for a
 // viewer who could see that source; for everyone else it is counted and nothing more.
 import type { LessonStore, ScopeKey } from "./store.js";

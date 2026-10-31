@@ -1,7 +1,7 @@
 // Learning v2: how much a lesson is worth (owner decision "Lesson limits"). Used to order the queue, the Lessons tab and the weekly digest, and to decide
 // whether a tier-0 fact has been backed up. Order of importance: measured outcomes first (a send-back, a revert, a CI failure), then recurrence across
 // tasks and people, then severity (safety and correctness above style). For an active lesson, its own helpful and harmful marks count too.
-import type { Lesson } from "./types.js";
+import { normId, type Lesson } from "./types.js";
 
 /**
  * Whether the task behind a lesson holds a measured outcome. The flag is set by code from structured facts (a member send-back with its reason, a revert, a
@@ -15,7 +15,7 @@ export const hasMeasuredOutcome = (provenance: Pick<Lesson["provenance"], "measu
  * in two channels, is one source. A fact from a single person waits until something backs it up.
  */
 export const isCorroborated = (provenance: Pick<Lesson["provenance"], "measured" | "supportTasks" | "authors">): boolean =>
-  provenance.measured || (new Set(provenance.supportTasks).size >= 2 && new Set(provenance.authors).size >= 2);
+  provenance.measured || (new Set(provenance.supportTasks).size >= 2 && new Set(provenance.authors.map(normId)).size >= 2);
 
 const SEVERITY: Record<Lesson["type"], number> = { pitfall: 3, review_check: 3, fact: 2, convention: 2, procedure: 1, preference: 0 };
 

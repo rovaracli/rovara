@@ -149,7 +149,7 @@ describe("N-2: a rollback never restores approval", () => {
     const store = new InMemoryLessonStore();
     const clock = new Clock();
     const deps: ApproveDeps = { store, directory: directory(), settings: settings(), audit: new Audit(), now: clock.now };
-    await seed(store, lessonRecord({ id: "les_auto0001" }), lessonRecord({ id: "les_pers0001", approvals: [{ approvalId: "p", by: "ann", at: 1, mode: "one" }] }));
+    await seed(store, lessonRecord({ id: "les_auto0001" }), lessonRecord({ id: "les_pers0001", approvals: [{ approvalId: "p", by: "ann", at: 1, mode: "one" }], provenance: { ...lessonRecord().provenance, authors: ["carl"] } }));
     const before = await store.setVersion(KEY);
     await seed(store, lessonRecord({ id: "les_x0000001" }));
     const checked: string[] = [];

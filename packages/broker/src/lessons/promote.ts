@@ -6,7 +6,7 @@ import { trySecondPerson } from "./approve.js";
 import { emitAudit, modeAllows, requireAudit, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { ApproverDirectory, LessonDeps, RulePublisher } from "./ports.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
-import { isRestricted, trustAtLeast, type Lesson } from "./types.js";
+import { idIn, isRestricted, sameId, trustAtLeast, type Lesson } from "./types.js";
 
 export interface PromoteDeps extends LessonDeps { store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader; publisher: RulePublisher }
 export type PromoteFailure = "not_found" | "not_active" | "restricted" | "not_trusted" | "not_eligible" | "eligibility_unavailable" | "mode_off" | "publish_failed" | "conflict"
@@ -35,7 +35,7 @@ export async function promoteToRule(deps: PromoteDeps, input: { workspaceId: str
   if (!modeAllows(resolved.mode, "load")) return { ok: false, code: "mode_off" };
   const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
-  if (!group.eligibleIds.includes(input.approverId)) return { ok: false, code: "not_eligible" };
+  if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };
   const lesson = await deps.store.get(key, input.lessonId);
   if (lesson === undefined) return { ok: false, code: "not_found" };
   if (lesson.promotedRuleId !== undefined) return { ok: true, ruleId: lesson.promotedRuleId, already: true };
@@ -45,7 +45,7 @@ export async function promoteToRule(deps: PromoteDeps, input: { workspaceId: str
 
   if (lesson.tier === 2) {
     const asked = lesson.promotionApprovals ?? [];
-    if (asked.some((a) => a.by === input.approverId)) return { ok: false, code: "already_approved" };
+    if (asked.some((a) => sameId(a.by, input.approverId))) return { ok: false, code: "already_approved" };
     if (asked.length > 0) {
       // A second person: the same rule as approving the lesson.
       const decision = trySecondPerson(group, asked[0]!.by, input.approverId, deps.now());

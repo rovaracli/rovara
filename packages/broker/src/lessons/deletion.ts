@@ -17,8 +17,9 @@ import type { LessonAuditSink, LessonVectors } from "./ports.js";
 import { pendingExpiry } from "./expiry.js";
 import { randomUUID } from "node:crypto";
 import { nextVersion, type DeletionIntent, type LessonStore, type ScopeKey } from "./store.js";
-import { ERASED_MARK, peopleOf, recordIdsOf, type Lesson, type LessonCitation } from "./types.js";
-export { ERASED_MARK };
+import { ERASED_MARK, idIn, peopleOf, recordIdsOf, sameId, type Lesson, type LessonCitation } from "./types.js";
+import { scrubLesson } from "./scrub.js";
+export { ERASED_MARK, scrubLesson };
 
 export type DeletionCause = "sources_deleted" | "source_deleted" | "person_erased";
 export interface ErasedPerson { developerId: string }
@@ -40,7 +41,7 @@ const DONE: ReadonlySet<string> = new Set(["withdrawn", "retired", "rejected"]);
 const MAX_TRIES = 3;
 
 const recordIds = recordIdsOf;
-const mentions = (l: Lesson, dev: string): boolean => peopleOf(l).includes(dev);
+const mentions = (l: Lesson, dev: string): boolean => idIn(peopleOf(l), dev);
 
 /** A lesson with everything ever stored for it: the head and every version. Deletion and erasure judge the whole history, never only the current version. */
 export interface LessonHistory { head: Lesson; all: Lesson[]; inSet: boolean }
@@ -50,23 +51,6 @@ export function supportedByCode(lesson: Pick<Lesson, "citations" | "lastValidate
   return lesson.citations.some((c) => c.kind === "code") && lesson.lastValidatedAt !== undefined && lesson.counters.citationStale === 0 && lesson.status === "active";
 }
 
-/** The lesson without the deleted ids (sources and record citations), and, if given, without the person. Citation checks are re-indexed. Pure. */
-export function scrubLesson(lesson: Lesson, deleted: ReadonlySet<string>, dev?: string): Lesson {
-  const citations = lesson.citations.filter((c) => c.kind !== "record" || !deleted.has(c.eventId));
-  const kept = lesson.citations.flatMap((c, index) => (citations.includes(c) ? [index] : []));
-  const checks = (lesson.citationChecks ?? []).flatMap((check) => { const at = kept.indexOf(check.index); return at < 0 ? [] : [{ ...check, index: at }]; });
-  const out: Lesson = { ...lesson, citations, provenance: { ...lesson.provenance, sourceEvents: lesson.provenance.sourceEvents.filter((id) => !deleted.has(id)) } };
-  if (checks.length > 0) out.citationChecks = checks; else delete (out as { citationChecks?: unknown }).citationChecks;
-  if (dev !== undefined) {
-    out.provenance = {
-      ...out.provenance, authors: out.provenance.authors.filter((a) => a !== dev), sources: out.provenance.sources.filter((s) => s !== `member:${dev}`),
-      inputSources: out.provenance.inputSources.filter((s) => s !== `member:${dev}`),
-    };
-    out.approvals = out.approvals.map((a) => (a.by === dev ? { ...a, by: ERASED_MARK } : a));
-    if (out.promotionApprovals !== undefined) out.promotionApprovals = out.promotionApprovals.map((a) => (a.by === dev ? { ...a, by: ERASED_MARK } : a));
-  }
-  return out;
-}
 
 export interface DeletionDeps { store: LessonStore; vectors: LessonVectors; audit: LessonAuditSink; now: () => number; newId?: () => string }
 
@@ -92,8 +76,8 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
     const allGone = everSources.size > 0 && [...everSources].every((id) => deleted.has(id));
     if (dev === undefined) return allGone;
     const people = new Set(h.all.flatMap(peopleOf));
-    const wrote = h.all.some((l) => l.provenance.authors.includes(dev));
-    return wrote || allGone || (people.size > 0 && [...people].every((p) => p === dev));
+    const wrote = h.all.some((l) => idIn(l.provenance.authors, dev));
+    return wrote || allGone || (people.size > 0 && [...people].every((p) => sameId(p, dev)));
   }
 
   // ---- the durable intent: written first, then idempotent steps, finished only when every step is done ----

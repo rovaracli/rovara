@@ -1,5 +1,5 @@
 // Learning v2 L3a: approving, rejecting and rolling back lessons (design §4.5.3, owner decision Q2). Who must approve is set by the tier and the policy:
-// tier 0 applies by itself (mode On), tier 1 needs one maintainer, tier 2 needs two (a second maintainer or admin). Eligibility comes from the project's
+// tier 0 and tier 1 need one maintainer by default (tier 0 applies by itself only if the project sets tier0Approval "auto"), tier 2 needs two (a second maintainer or admin). Eligibility comes from the project's
 // maintainers and How-we-work editors (`ApproverDirectory`); the second-person rule is the existing `decideSecondPersonApproval`, so the sole-owner exception
 // and its 24-hour cool-off behave as they do for every other less-safe change.
 //
@@ -15,7 +15,7 @@ import type { ApproverDirectory, LessonDeps } from "./ports.js";
 import { retireLesson } from "./curate.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
-import { isRestricted, satisfiesAcl, type IdentitySet, type Lesson, type Tier } from "./types.js";
+import { idIn, isRestricted, normId, sameId, satisfiesAcl, type IdentitySet, type Lesson, type Tier } from "./types.js";
 
 export interface ApproveDeps extends LessonDeps { store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader }
 
@@ -73,7 +73,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
 
   const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
-  if (!group.eligibleIds.includes(input.approverId)) return { ok: false, code: "not_eligible" };
+  if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };
 
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     const lesson = await deps.store.get(key, input.lessonId);
@@ -99,11 +99,11 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       approvals = [];
     }
 
-    if (approvals.some((a) => a.by === input.approverId)) return { ok: false, code: "already_approved" };
+    if (approvals.some((a) => sameId(a.by, input.approverId))) return { ok: false, code: "already_approved" };
     const tier: Tier = working.tier;
     // A lesson sent back to a person (review required) needs at least one person even if the policy would let its tier apply by itself.
     const required = Math.max(approversRequired(tier, resolved.approval), working.reviewRequired === true ? 1 : 0) as 0 | 1 | 2;
-    const isAuthor = working.provenance.authors.some((a) => a.toLowerCase() === input.approverId.toLowerCase());
+    const isAuthor = idIn(working.provenance.authors, input.approverId);
     let mode: Lesson["approvals"][number]["mode"] = "one";
 
     if (required === 0) {
@@ -163,9 +163,11 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
 
 export function trySecondPerson(group: Awaited<ReturnType<ApproverDirectory["eligibility"]>>, proposerId: string, approverId: string, nowMs: number):
   | { ok: true; mode: "second_person" | "sole_owner_exception" } | { ok: false; code: ApprovalFailure } {
+  // The shared rule compares ids exactly: hand it each person in the spelling of the eligible list.
+  const spelled = (id: string): string => group.eligibleIds.find((e) => sameId(e, id)) ?? id;
   try {
     const decision = decideSecondPersonApproval({
-      proposerId, approverId, nowMs, complete: group.complete, membershipVersion: group.membershipVersion, ownerIds: group.ownerIds, eligibleIds: group.eligibleIds, lastEligibleLossAtMs: group.lastEligibleLossAtMs,
+      proposerId: spelled(proposerId), approverId: spelled(approverId), nowMs, complete: group.complete, membershipVersion: group.membershipVersion, ownerIds: group.ownerIds, eligibleIds: group.eligibleIds, lastEligibleLossAtMs: group.lastEligibleLossAtMs,
     });
     return { ok: true, mode: decision.mode };
   } catch (error) {
@@ -178,7 +180,7 @@ async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; proje
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
-  if (!group.eligibleIds.includes(input.actorId)) return { ok: false, code: "not_eligible" };
+  if (!idIn(group.eligibleIds, input.actorId)) return { ok: false, code: "not_eligible" };
   const lesson = await deps.store.get(key, input.lessonId);
   if (lesson === undefined) return { ok: false, code: "not_found" };
   if (!input.allowed.includes(lesson.status)) return { ok: false, code: "not_pending" };
@@ -211,7 +213,7 @@ export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId:
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
-  if (!group.eligibleIds.includes(input.actorId)) return { ok: false, code: "not_eligible" };
+  if (!idIn(group.eligibleIds, input.actorId)) return { ok: false, code: "not_eligible" };
   const current = await deps.store.setVersion(key);
   if (!(await requireAudit(deps.audit, { action: "lesson.rolled_back", workspaceId: key.workspaceId, project: key.project, actor: input.actorId, facts: { to: input.targetSetVersion, from: current } }))) return { ok: false, code: "audit_unavailable" };
   const result = await deps.store.rollback(key, input.targetSetVersion, current, deps.now());
@@ -230,22 +232,30 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
   const lesson = await deps.store.get(key, id);
   if (lesson === undefined || lesson.status !== "pending") return;
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
-  const eligible = new Set(group.eligibleIds.map((e) => e.toLowerCase()));
+  const eligible = new Set(group.eligibleIds.map(normId));
   const persons = lesson.approvals.filter((a) => a.mode !== "auto");
-  const valid = persons.filter((a) => eligible.has(a.by.toLowerCase()));
+  const valid = persons.filter((a) => eligible.has(normId(a.by)));
   if (valid.length !== lesson.approvals.length) {
     const setVersion = await deps.store.setVersion(key);
     const kept = await deps.store.commit(key, setVersion, [{ ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: valid, updatedAt: deps.now() }], deps.now());
     if (!kept.ok) return;
   }
   const required = Math.max(approversRequired(lesson.tier, resolved.approval), 1);
-  const sole = valid.some((a) => a.mode === "sole_owner_exception");
-  const enough = sole || new Set(valid.map((a) => a.by.toLowerCase())).size >= required;
-  const groupsOk = resolved.requiredGroups.every((name) => valid.some((a) => (group.groups?.[name] ?? []).some((m) => m.toLowerCase() === a.by.toLowerCase())));
-  if (valid.length === 0 || !enough || !groupsOk) return;
+  // The sole-owner exception stands only while the group is still one person, and still passes the shared rule (cool-off included).
+  const sole = group.eligibleIds.length === 1 && valid.some((a) => a.mode === "sole_owner_exception" && trySecondPerson(group, a.by, a.by, deps.now()).ok);
+  // The author rule applies to a restored approval as it does to a new one: an author\'s own approval does not count while someone else could give it.
+  const countable = group.eligibleIds.length > 1 ? valid.filter((a) => !idIn(lesson.provenance.authors, a.by) || a.mode === "second_person") : valid;
+  if (countable.length !== valid.length) {
+    const setVersion = await deps.store.setVersion(key);
+    const kept = await deps.store.commit(key, setVersion, [{ ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: countable, updatedAt: deps.now() }], deps.now());
+    if (!kept.ok) return;
+  }
+  const enough = sole || new Set(countable.map((a) => normId(a.by))).size >= required;
+  const groupsOk = resolved.requiredGroups.every((name) => countable.some((a) => (group.groups?.[name] ?? []).some((m) => sameId(m, a.by))));
+  if (countable.length === 0 || !enough || !groupsOk) return;
   const fresh = await deps.store.get(key, id);
   if (fresh === undefined) return;
-  try { await activateLesson(deps, key, fresh, valid, resolved.expiryDays, "lesson.activated"); } catch (error) { if (!(error instanceof AuditUnavailable)) throw error; }
+  try { await activateLesson(deps, key, fresh, countable, resolved.expiryDays, "lesson.activated"); } catch (error) { if (!(error instanceof AuditUnavailable)) throw error; }
 }
 
 /**

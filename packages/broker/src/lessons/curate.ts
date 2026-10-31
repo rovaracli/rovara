@@ -9,7 +9,7 @@ import type { AlertSink, Embedder, LearningSpend, LessonDeps, LessonVectors, Pip
 import { attributableSources, noteCandidateSources } from "./sources.js";
 import type { LessonDraft } from "./reflect.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
-import { LessonCitationSchema, LessonProvenanceSchema, LessonSchema, LessonScopeSchema, minTrust, narrowestAudience, trustAtLeast, type Lesson, type LessonCitation, type LessonScope } from "./types.js";
+import { LessonCitationSchema, LessonProvenanceSchema, LessonSchema, LessonScopeSchema, distinctIds, minTrust, narrowestAudience, trustAtLeast, type Lesson, type LessonCitation, type LessonScope } from "./types.js";
 
 /** At or above this similarity two lessons are the same advice, merged by code with no model call. */
 export const MERGE_SIMILARITY = 0.92;
@@ -107,7 +107,7 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
     provenance: {
       ...target.provenance,
       sourceEvents: union(target.provenance.sourceEvents, draft.provenance.sourceEvents, 50), sourceKinds: union(target.provenance.sourceKinds, draft.provenance.sourceKinds, 20),
-      authors: union(target.provenance.authors, draft.provenance.authors, 20), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: unionPinned(target.provenance.inputSources, draft.provenance.inputSources, 100, paused), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
+      authors: distinctIds([...target.provenance.authors, ...draft.provenance.authors]).slice(0, 20), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: unionPinned(target.provenance.inputSources, draft.provenance.inputSources, 100, paused), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
       memberSignal: target.provenance.memberSignal || draft.provenance.memberSignal,
       minTrust: minTrust([target.provenance.minTrust, draft.provenance.minTrust]), audience: narrowestAudience([target.provenance.audience, draft.provenance.audience]),
     },

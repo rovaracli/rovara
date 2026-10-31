@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { LessonAuditEvent, LessonAuditSink } from "./ports.js";
 import type { Tier } from "./types.js";
 
-/** Off: nothing is captured or loaded. Collect: the record is filled, nothing is loaded. Suggest: lessons are made and every one needs a person. On: tier 0 goes live by itself. */
+/** Off: nothing is captured or loaded. Collect: the record is filled, nothing is loaded. Suggest: lessons are made and every one needs a person. On: lessons are made and loaded; a tier-0 lesson goes live by itself ONLY if the project sets `tier0Approval: "auto"`, otherwise one person approves it first. */
 export const LEARNING_MODES = ["Off", "Collect", "Suggest", "On"] as const;
 export type LearningMode = (typeof LEARNING_MODES)[number];
 export const LearningModeSchema = z.enum(LEARNING_MODES);
@@ -14,9 +14,9 @@ const ALLOWED: Record<LearningMode, readonly ModeAction[]> = {
 export const modeAllows = (mode: LearningMode, action: ModeAction): boolean => ALLOWED[mode].includes(action);
 
 /**
- * Approval by tier, as a policy a project (or a company, on Enterprise) can change. The default is the owner's decision Q2: cited low-risk facts
- * (tier 0) apply by themselves and are re-checked against the code before every use; broad lessons (tier 1) need one maintainer; reviewer, check and
- * security lessons (tier 2) need a second maintainer or admin. Tier 2 can never go below two people: the schema has no value for it.
+ * Approval by tier, as a policy a project (or a company, on Enterprise) can change. The pilot default (owner 2026-10-31, replacing Q2 auto-apply) is that a
+ * person approves every lesson: tier 0 and tier 1 need one maintainer, reviewer, check and security lessons (tier 2) need a second maintainer or admin.
+ * Tier 0 can go live by itself only when `tier0Approval` is set to "auto". Tier 2 can never go below two people: the schema has no value for it.
  */
 export const ApprovalPolicySchema = z.object({
   /** "auto": goes live by itself (mode On only). "one" or "two": a person, or two, must approve it first. */
@@ -93,7 +93,8 @@ function stricterApproval(project: ApprovalPolicy, floor: ApprovalPolicy, hasFlo
 export async function resolveLearning(reader: LearningSettingsReader, workspaceId: string, project: string): Promise<ResolvedLearning> {
   const off: ResolvedLearning = { mode: "Off", approval: DEFAULT_APPROVAL_POLICY, requiredGroups: [], expiryDays: undefined };
   let settings: LearningSettings;
-  try { settings = await reader.read(workspaceId, project); } catch { return off; }
+  // No settings row is the default (an undefined result), not a failure; a reader that throws fails closed.
+  try { settings = (await reader.read(workspaceId, project)) ?? {}; } catch { return off; }
   const own = LearningModeSchema.safeParse(settings.mode ?? DEFAULT_LEARNING_MODE);
   const lock = settings.companyLock === undefined ? undefined : LearningModeSchema.safeParse(settings.companyLock);
   if (!own.success || (lock !== undefined && !lock.success)) return off;
