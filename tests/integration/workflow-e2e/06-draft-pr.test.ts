@@ -55,6 +55,8 @@ describe("Suite 6: draft PR", () => {
     const operation = operations[0]!;
     const outbox = e2e.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operation.id);
     expect(outbox.length).toBeGreaterThan(0);
+    // The operation names the outbox item that carries the description and attribution, so an erasure can rewrite it.
+    expect((operation.publication as { outboxId?: string }).outboxId).toBe(outbox[0]!.id);
     const payload = (outbox[0]!.invocation as { payload: { attribution?: { requester?: { state: string; name?: string; ref?: string }; auditUrl?: string } } }).payload;
     expect(payload.attribution?.requester).toMatchObject({ state: "named", name: "Maya Chen", ref: expect.stringMatching(/^[a-f0-9]{16}$/u) as string });
     expect(payload.attribution?.auditUrl).toMatch(/\/v1\/app\/audit\/view\?action=pull_request\.opened$/u);

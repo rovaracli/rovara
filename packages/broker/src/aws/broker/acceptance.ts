@@ -333,6 +333,8 @@ export async function acceptPullRequest(
     operation.publication.publicationContextDigest = publicationContextDigest;
   }
   const outbox = outboxRecord(workspace, invocation);
+  // I3: the operation says which outbox item carries its description and attribution, so erasing a person can rewrite that copy too.
+  if (options.attribution !== undefined) operation.publication.outboxId = outbox.id;
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [
       { Update: {

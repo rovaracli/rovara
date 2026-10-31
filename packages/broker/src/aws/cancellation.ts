@@ -129,6 +129,8 @@ export interface OperationRecord extends Operation {
     admittedWorkflowAuthorityDigest?: string;
     /** I3: the full ids of the people the change request names (requester, approver), for the `pull_request.opened` event's `related`: the link from the host's change request to the Rovara people. */
     relatedIds?: string[];
+    /** I3: the outbox item that carries this publication to the worker (its payload holds the description and the attribution), so an erasure of a person can find it. */
+    outboxId?: string;
     /** The checked candidate the tree belongs to (a workflow publication only). */
     candidateDigest?: string;
     /** The base commit the broker pinned for the task: the pushed commit's only parent (a workflow publication only). */

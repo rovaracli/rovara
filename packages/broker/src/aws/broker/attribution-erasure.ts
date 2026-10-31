@@ -42,6 +42,8 @@ export async function rewriteDescriptionsOfTask(dependencies: AwsBrokerDependenc
   for (const operation of await queryAllItems(dependencies, `WORKSPACE#${task.workspaceId}`, "OPERATION#")) {
     const body = (operation.publication as { body?: unknown } | undefined)?.body;
     if (typeof body === "string") await rewriteStored(dependencies, { pk: String(operation.pk), sk: String(operation.sk) }, "publication.body", body, role);
+    const outboxId = (operation.publication as { outboxId?: unknown } | undefined)?.outboxId;
+    if (typeof outboxId === "string") await rewriteOutbox(dependencies, outboxId, role);
   }
 }
 
@@ -53,5 +55,35 @@ async function rewriteStored(dependencies: AwsBrokerDependencies, key: { pk: str
     UpdateExpression: path === "body" ? "SET #body = :next" : "SET publication.#body = :next",
     ConditionExpression: "attribute_exists(pk)",
     ExpressionAttributeNames: { "#body": "body" }, ExpressionAttributeValues: { ":next": next },
+  }));
+}
+
+/**
+ * The outbox item that carries a publication to the worker holds the description and the attribution in its payload. Pending or already queued, the stored copy is rewritten (the
+ * worker, if it has not published yet, then publishes "a former member"); an item that is gone has nothing to do. Copies already on the queue are the queue's, and are short-lived.
+ */
+async function rewriteOutbox(dependencies: AwsBrokerDependencies, outboxId: string, role: Role): Promise<void> {
+  const key = { pk: `OUTBOX#${outboxId}`, sk: "OUTBOX" };
+  const item = await getItem<{ invocation?: { payload?: { body?: unknown; attribution?: Record<string, unknown> } } }>(dependencies, key);
+  const invocation = item?.invocation;
+  const payload = invocation?.payload;
+  if (invocation === undefined || payload === undefined) return;
+  const body = typeof payload.body === "string" ? rewriteAttributionBody(payload.body, role) : undefined;
+  const named = (payload.attribution?.[role] as { state?: unknown } | undefined)?.state === "named";
+  const bodyChanged = body !== undefined && body !== payload.body;
+  if (!bodyChanged && !named) return;
+  const next = {
+    ...invocation,
+    payload: {
+      ...payload,
+      ...(bodyChanged ? { body } : {}),
+      ...(named ? { attribution: { ...payload.attribution, [role]: { state: "former" } } } : {}),
+    },
+  };
+  // The whole invocation is written back (only the erasure changes it, and the status the publisher sets is another attribute).
+  await dependencies.documentClient.send(new UpdateCommand({
+    TableName: dependencies.tableName, Key: key,
+    UpdateExpression: "SET invocation = :invocation", ConditionExpression: "attribute_exists(pk)",
+    ExpressionAttributeValues: { ":invocation": next },
   }));
 }

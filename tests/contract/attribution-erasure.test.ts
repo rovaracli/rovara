@@ -59,7 +59,9 @@ describe("the broker's port", () => {
     const body = "Summary\nRequested by: Maya Chen\nPlan approved by: Priya Raman\n";
     db.set({ ...taskKey(TASK), entityType: "DEVTASK", taskId: TASK, workspaceId: WORKSPACE, orgId: org });
     db.set({ pk: `WORKSPACE#${WORKSPACE}`, sk: "PULL_REQUEST#demo#000000000007", entityType: "PULL_REQUEST", repositoryUrl: URL, number: 7, body });
-    db.set({ pk: `WORKSPACE#${WORKSPACE}`, sk: "OPERATION#op-1", entityType: "OPERATION", id: "op-1", publication: { title: "t", body } });
+    db.set({ pk: `WORKSPACE#${WORKSPACE}`, sk: "OPERATION#op-1", entityType: "OPERATION", id: "op-1", publication: { title: "t", body, outboxId: "ob-1" } });
+    db.set({ pk: "OUTBOX#ob-1", sk: "OUTBOX", id: "ob-1", entityType: "OUTBOX", status: "PENDING", operationId: "op-1", workspaceId: WORKSPACE,
+      invocation: { kind: "publish", payload: { title: "t", body, attribution: { requester: { state: "named", name: "Maya Chen", ref: "0123456789abcdef" }, approver: { state: "named", name: "Priya Raman", ref: "fedcba9876543210" } } } } });
     const host = { body, reads: 0, failReads: false };
     const dependencies = {
       documentClient: db, tableName: "state", cloud: false,
@@ -79,9 +81,15 @@ describe("the broker's port", () => {
     expect(await port.erase(org, maya)).toBe(1);
     expect(host.body).toBe("Summary\nRequested by: a former member\nPlan approved by: Priya Raman\n");
     const pr = db.get(`WORKSPACE#${WORKSPACE}`, "PULL_REQUEST#demo#000000000007") as { body: string };
-    const operation = db.get(`WORKSPACE#${WORKSPACE}`, "OPERATION#op-1") as { publication: { title: string; body: string } };
+    const operation = db.get(`WORKSPACE#${WORKSPACE}`, "OPERATION#op-1") as { publication: { title: string; body: string; outboxId: string } };
     expect(pr.body).toBe(host.body);
-    expect(operation.publication).toEqual({ title: "t", body: host.body });
+    expect(operation.publication).toEqual({ title: "t", body: host.body, outboxId: "ob-1" });
+    // The pending outbox item that would carry the description and the attribution to the worker is rewritten too, for the erased person only.
+    const outbox = db.get("OUTBOX#ob-1", "OUTBOX") as { invocation: { payload: { body: string; attribution: Record<string, unknown> } } };
+    expect(outbox.invocation.payload.body).toBe(host.body);
+    expect(outbox.invocation.payload.attribution.requester).toEqual({ state: "former" });
+    expect(outbox.invocation.payload.attribution.approver).toEqual({ state: "named", name: "Priya Raman", ref: "fedcba9876543210" });
+    expect(JSON.stringify(outbox)).not.toContain("Maya");
     expect(await links.linksOf(org, maya)).toEqual([]);
     // Priya, the approver, is untouched.
     expect((await links.linksOf(org, priya)).length).toBe(1);
@@ -96,6 +104,13 @@ describe("the broker's port", () => {
     expect(await port.erase(org, maya)).toBe(1);
     expect(host.body).toContain("Requested by: a former member");
     expect(await links.linksOf(org, maya)).toEqual([]);
+  });
+
+  it("an outbox item that is already gone (sent and removed) is nothing to do, and an operation with no outbox id is skipped", async () => {
+    const { db, host, port } = await setup();
+    db.delete("OUTBOX#ob-1", "OUTBOX");
+    expect(await port.erase(org, maya)).toBe(1);
+    expect(host.body).toContain("Requested by: a former member");
   });
 
   it("is repeatable: a description that no longer names them is not written again", async () => {
