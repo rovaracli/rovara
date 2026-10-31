@@ -33,11 +33,13 @@ export type RepositoryResolver = (project: string, revision: number, repositoryI
 export const changeRequestRef = (repositoryUrl: string, number: number): ChangeRequestRef => ({ repository: { url: repositoryUrl }, id: String(number), url: "" });
 
 /**
- * The reviews of a change request in the shape the approval rules read (`approval.ts` is not edited: the Auditor filter and the write-access rules stay exactly as they are). A host that
- * gives no account id for a reviewer is told apart by its login, so that review can still block (changes requested) and can never match a linked member.
+ * The reviews of a change request in the shape the approval rules read (`approval.ts` is not edited: the Auditor filter and the write-access rules stay exactly as they are).
+ * A review whose host gives no account id for the reviewer can never be linked to a member, so it cannot be checked against the Auditor exclusion: it may BLOCK (changes requested,
+ * told apart by `login:<name>`) but it never counts as an approval, with self-approval on or off. Dropping an approval can only leave an earlier review of the same person in
+ * force, so it never turns a refusal into a pass.
  */
 export function approvalReviewsOf(reviews: ChangeRequestStatus["reviews"] | readonly Review[]): PullRequestReview[] {
-  return reviews.map((review) => ({
+  return reviews.filter((review) => review.reviewer.hostUserId !== undefined || review.state !== "APPROVED").map((review) => ({
     githubUserId: review.reviewer.hostUserId ?? `login:${review.reviewer.login.toLowerCase()}`, login: review.reviewer.login, userType: review.accountType, state: review.state,
     commitId: review.revision, submittedAt: review.submittedAt,
   }));

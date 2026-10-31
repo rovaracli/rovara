@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { orgMemberKey, MERGE_NOT_READY_MESSAGES as M } from "../../packages/contracts/src/index.js";
 import { pressMerge } from "../../packages/broker/src/rovara-code/merge.js";
+import { approvalReviewsOf } from "../../packages/broker/src/rovara-code/host-port.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
 import { PRIYA, ARJUN, MAX, ORG_A } from "../support/agent-session-world.js";
@@ -80,6 +81,34 @@ describe("merging on the fake code host", () => {
     w.seedTracking({ headSha: head, approval: { githubUserId: GH.max, login: LOGIN.max, commitId: head } });
     expect((await webPress(w)).status).toBe(200);
     expect(model.getChangeRequest(crId).state).toBe("merged");
+  });
+
+  it("a review from a host that gives no account id never counts as an approval (an Auditor-linked login, self-approval on or off), and a positive control with the id merges", async () => {
+    for (const allowSelfApproval of [false, true]) {
+      const { w, model, head, crId } = await fakeWorld({ allowSelfApproval });
+      w.seedTracking({ headSha: head, approval: { githubUserId: GH.max, login: LOGIN.max, commitId: head } });
+      w.db.set({ ...orgMemberKey(ORG_A, ARJUN), orgId: ORG_A, developerId: ARJUN, role: "auditor" });
+      // The host reports Arjun's approval with no account id: the Auditor exclusion cannot see who it is.
+      for (const review of model.getChangeRequest(crId).reviews) delete (review.reviewer as { hostUserId?: string }).hostUserId;
+      const refusal = await codeOf(webPress(w));
+      expect(refusal?.code, String(allowSelfApproval)).toBe("MERGE_NOT_READY");
+      expect(model.getChangeRequest(crId).state, String(allowSelfApproval)).toBe("open");
+    }
+    const { w, model, head, crId } = await fakeWorld({ allowSelfApproval: true });
+    w.seedTracking({ headSha: head, approval: { githubUserId: GH.max, login: LOGIN.max, commitId: head } });
+    expect((await webPress(w)).status).toBe(200);
+    expect(model.getChangeRequest(crId).state).toBe("merged");
+  });
+
+  it("an id-less review keeps its power to block: changes requested still refuses, and only an approval is dropped", async () => {
+    const { w, model, crId } = await fakeWorld({ allowSelfApproval: true });
+    model.addReview(crId, { login: LOGIN.max, state: "CHANGES_REQUESTED" });
+    for (const review of model.getChangeRequest(crId).reviews) delete (review.reviewer as { hostUserId?: string }).hostUserId;
+    expect(await codeOf(webPress(w))).toMatchObject({ code: "MERGE_NOT_READY" });
+    expect(model.getChangeRequest(crId).state).toBe("open");
+    const reviews = model.getChangeRequest(crId).reviews;
+    const mapped = approvalReviewsOf(reviews);
+    expect(mapped.map((review) => [review.state, review.githubUserId])).toEqual([["CHANGES_REQUESTED", `login:${LOGIN.max}`]]);
   });
 
   it("asks for a code owner from the host's CODEOWNERS and changed files, and merges once one has approved", async () => {
