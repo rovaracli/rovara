@@ -124,7 +124,7 @@ describe("the Same correction given twice block", () => {
 });
 
 describe("while the company's suggestions are off", () => {
- const LINE = "Suggestions are off for your company.";
+ const LINE = "Suggestions are off for your company. Repeats are still counted, but no rules are suggested until they're turned on.";
  it("keeps the metric and adds one line when collecting", async () => {
   const section = await read(block({ suggestions: { state: "collecting", corrections: 7 } }));
   expect(section.getByText("25% this month (3 of 12)")).toBeTruthy();

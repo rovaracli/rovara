@@ -83,7 +83,7 @@ const setSwitch = (request: APIRequestContext, input: Record<string, unknown>) =
 test("a project whose company has suggestions off shows Learning is collecting, with no suggestion cards and no Home card", async ({ page, context, request, baseURL }) => {
  await signIn(context, request, baseURL);await setSwitch(request, { suggestions: "off", source: "install_default", revision: 0, corrections: 4 });await mockRealtime(page);
  await page.setViewportSize({ width: 1280, height: 900 });await page.goto("/app/projects/payments");
- await expect(page.getByRole("region", { name: "Same correction given twice" }).getByText("Suggestions are off for your company.")).toBeVisible();
+ await expect(page.getByRole("region", { name: "Same correction given twice" }).getByText("Suggestions are off for your company. Repeats are still counted, but no rules are suggested until they're turned on.")).toBeVisible();
  await page.getByRole("tab", { name: "How we work" }).click();
  const section = page.getByRole("region", { name: "Suggested rules" });
  await expect(section.getByRole("heading", { name: "Learning is collecting" })).toBeVisible();

@@ -128,7 +128,7 @@ export const METRIC_TEXT = {
  SAME: "same as last month",
  PROJECT_WIDE_RULE: "Project-wide",
  AFTER_RULE_LIST: "Repeats after an accepted rule",
- SUGGESTIONS_OFF: "Suggestions are off for your company.",
+ SUGGESTIONS_OFF: "Suggestions are off for your company. Repeats are still counted, but no rules are suggested until they're turned on.",
 } as const;
 const plural = (count: number, one: string, many: string) => `${String(count)} ${count === 1 ? one : many}`;
 /** A share of this month's corrections, as a whole percent (0 when there were none). */
