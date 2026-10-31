@@ -154,8 +154,8 @@ export function sourceEnvironment(deps: ServerPortDependencies & { port: Context
 // ---------------------------------------------------------------------------------------------
 
 export interface HostProbeClient {
-  /** Asks the MCP host to start a package for a moment and list its tools. Throws McpProbeError. */
-  probe(spec: Parameters<McpProber["stdio"]>[0]): Promise<{ tools: DiscoveredTool[]; integrity: string }>;
+  /** Asks the MCP host to install a package for a moment and list its tools (with `pinned`: to test the pinned bundle without installing). Throws McpProbeError. */
+  probe(spec: Parameters<McpProber["stdio"]>[0], pinned?: Parameters<McpProber["stdio"]>[1]): Promise<{ tools: DiscoveredTool[]; integrity: string; lockfileHash?: string | undefined; bundleHash?: string | undefined }>;
 }
 
 /** Maps what went wrong while testing an address to one of the fixed codes. The error's own text is never kept. */
@@ -187,9 +187,9 @@ export function gatewayProber(deps: { host?: HostProbeClient | undefined; privat
         throw classify(error);
       }
     },
-    async stdio(spec) {
+    async stdio(spec, pinned) {
       if (deps.host === undefined) throw new McpProbeError("host_unavailable");
-      try { return await deps.host.probe(spec); } catch (error) { throw error instanceof McpProbeError ? error : new McpProbeError("host_refused"); }
+      try { return await deps.host.probe(spec, pinned); } catch (error) { throw error instanceof McpProbeError ? error : new McpProbeError("host_refused"); }
     },
   };
 }
@@ -197,12 +197,12 @@ export function gatewayProber(deps: { host?: HostProbeClient | undefined; privat
 /** The MCP host's probe route, called by the broker with the host's token. */
 export function hostProbeClient(host: McpHostEndpoint, fetchImplementation: typeof fetch = fetch): HostProbeClient {
   return {
-    async probe(spec) {
+    async probe(spec, pinned) {
       assertSecureHostUrl(host.url);
       let response: Response;
       try {
         response = await fetchImplementation(`${host.url.replace(/\/$/u, "")}/probe`, {
-          method: "POST", headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" }, body: JSON.stringify({ spec }), signal: AbortSignal.timeout(100_000),
+          method: "POST", headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" }, body: JSON.stringify({ spec, ...(pinned === undefined ? {} : { pinned }) }), signal: AbortSignal.timeout(450_000),
         });
       } catch {
         throw new McpProbeError("host_unavailable");
@@ -213,7 +213,9 @@ export function hostProbeClient(host: McpHostEndpoint, fetchImplementation: type
       const tools = (body.tools as Array<{ name?: unknown; description?: unknown; inputSchema?: unknown; annotations?: unknown }>)
         .filter((tool): tool is { name: string; description?: string; inputSchema: Record<string, unknown>; annotations?: DiscoveredTool["annotations"] } => typeof tool.name === "string" && typeof tool.inputSchema === "object" && tool.inputSchema !== null)
         .slice(0, 200).map((tool) => ({ name: tool.name, description: typeof tool.description === "string" ? tool.description : undefined, inputSchema: tool.inputSchema, annotations: tool.annotations }));
-      return { tools, integrity: (body as { integrity: string }).integrity };
+      const hash = (value: unknown): string | undefined => (typeof value === "string" && /^[0-9a-f]{64}$/u.test(value) ? value : undefined);
+      const answer = body as { integrity: string; lockfileHash?: unknown; bundleHash?: unknown };
+      return { tools, integrity: answer.integrity, lockfileHash: hash(answer.lockfileHash), bundleHash: hash(answer.bundleHash) };
     },
   };
 }

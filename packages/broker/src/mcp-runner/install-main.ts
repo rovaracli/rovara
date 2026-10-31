@@ -390,6 +390,33 @@ export function controllerUploader(input: { url: string; token: string; timeoutM
   };
 }
 
+/** Hands the result (the same JSON the task prints) to the controller: `PUT /result` with the per-task token. The controller reads the result from here, never from the task's log. */
+export interface ResultReporter { report(result: Record<string, unknown>): Promise<void> }
+
+export function controllerReporter(input: { url: string; token: string; timeoutMs?: number; ca?: string | undefined }): ResultReporter {
+  const base = assertSecureControllerUrl(input.url);
+  return {
+    async report(result) {
+      const target = new URL(`${base.href.replace(/\/$/u, "")}/result`);
+      const send = target.protocol === "https:" ? httpsRequest : httpRequest;
+      const body = Buffer.from(JSON.stringify(result), "utf8");
+      await new Promise<void>((resolve, reject) => {
+        const req = send(target, {
+          method: "PUT", timeout: input.timeoutMs ?? 30_000,
+          headers: { authorization: `Bearer ${input.token}`, "content-type": "application/json", "content-length": String(body.length) },
+          ...(input.ca === undefined ? {} : { ca: input.ca }),
+        }, (response) => {
+          response.resume();
+          response.on("end", () => ((response.statusCode ?? 0) >= 200 && (response.statusCode ?? 0) < 300 ? resolve() : reject(new Error("controller refused"))));
+        });
+        req.on("timeout", () => req.destroy(new Error("controller timed out")));
+        req.on("error", (error) => reject(error));
+        req.end(body);
+      });
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // The task's entry point
 // ---------------------------------------------------------------------------------------------
@@ -408,6 +435,8 @@ export interface MainDependencies {
   /** One line per call. The result line holds fixed codes and hashes, never a token or npm's text. */
   write?: (line: string) => void;
   uploader?: BundleUploader;
+  /** Where the result goes. Default: the controller (`PUT /result`). */
+  reporter?: ResultReporter;
   exec?: Exec;
 }
 
@@ -420,12 +449,24 @@ export async function main(dependencies: MainDependencies): Promise<number> {
   // The token is held here only; the environment npm gets is built from nothing (npmEnvironment), so it never reaches a child.
   delete dependencies.env.MCP_RUNNER_TOKEN;
   const emit = (value: Record<string, unknown>): void => write(`${RESULT_PREFIX}${JSON.stringify(value)}`);
+  const controllerUrl = env.MCP_CONTROLLER_URL ?? "";
+  const controllerCa = env.ROVARA_MCP_CONTROLLER_CA;
+  const reporterOf = (): ResultReporter => dependencies.reporter ?? controllerReporter({ url: controllerUrl, token: token ?? "", ...(controllerCa === undefined ? {} : { ca: controllerCa }) });
+  /** Prints the result, and tells the controller. A failure to tell it is swallowed for a failed install (the controller sees the task stop with no result and says so). */
+  const finish = async (value: Record<string, unknown>): Promise<boolean> => {
+    let delivered = true;
+    try { await reporterOf().report(value); } catch { delivered = false; }
+    // A success that was not delivered is no success: the controller has not been told to use the bundle.
+    if (value.ok === true && !delivered) { emit({ ok: false, code: "upload_failed", sentence: INSTALL_FAILURES.upload_failed }); return false; }
+    emit(value);
+    return delivered;
+  };
   // The token is checked before any work is done: it is 256 bits of URL-safe characters, as the other programs of a runner task require.
   if (!runnerTokenWellFormed(token)) { emit({ ok: false, code: "invalid_request", sentence: INSTALL_FAILURES.invalid_request }); return 1; }
   let request: unknown;
-  try { request = JSON.parse(env.MCP_INSTALL_REQUEST ?? ""); } catch { emit({ ok: false, code: "invalid_request", sentence: INSTALL_FAILURES.invalid_request }); return 1; }
+  try { request = JSON.parse(env.MCP_INSTALL_REQUEST ?? ""); } catch { await finish({ ok: false, code: "invalid_request", sentence: INSTALL_FAILURES.invalid_request }); return 1; }
   const registry = env.ROVARA_MCP_NPM_REGISTRY;
-  if (registry === undefined || registry === "") { emit({ ok: false, code: "invalid_request", sentence: INSTALL_FAILURES.invalid_request }); return 1; }
+  if (registry === undefined || registry === "") { await finish({ ok: false, code: "invalid_request", sentence: INSTALL_FAILURES.invalid_request }); return 1; }
   const limits: Partial<InstallLimits> = {
     maxPackages: boundedNumber(env.ROVARA_MCP_MAX_PACKAGES, INSTALL_LIMITS.maxPackages, 1, 5_000),
     maxUnpackedBytes: boundedNumber(env.ROVARA_MCP_MAX_UNPACKED_MB, INSTALL_LIMITS.maxUnpackedBytes / 1_048_576, 1, 1_024) * 1_048_576,
@@ -435,18 +476,18 @@ export async function main(dependencies: MainDependencies): Promise<number> {
     registry, workDir: env.MCP_INSTALL_WORKDIR || "/work", caFile: env.ROVARA_MCP_NPM_CAFILE, limits, ...(dependencies.exec === undefined ? {} : { exec: dependencies.exec }),
   });
   if (!result.ok) {
-    emit({ ok: false, code: result.code, sentence: result.sentence, ...(result.rule === undefined ? {} : { rule: result.rule }), ...(result.package === undefined ? {} : { package: result.package }), ...(result.computedIntegrity === undefined ? {} : { computedIntegrity: result.computedIntegrity }) });
+    await finish({ ok: false, code: result.code, sentence: result.sentence, ...(result.rule === undefined ? {} : { rule: result.rule }), ...(result.package === undefined ? {} : { package: result.package }), ...(result.computedIntegrity === undefined ? {} : { computedIntegrity: result.computedIntegrity }) });
     return 1;
   }
   try {
     const uploader = dependencies.uploader ?? controllerUploader({ url: env.MCP_CONTROLLER_URL ?? "", token: token ?? "", ...(env.ROVARA_MCP_CONTROLLER_CA === undefined ? {} : { ca: env.ROVARA_MCP_CONTROLLER_CA }) });
     await uploader.upload({ bundlePath: result.bundlePath, bundleHash: result.report.bundleHash, tarBytes: result.report.tarBytes });
   } catch {
-    emit({ ok: false, code: "upload_failed", sentence: INSTALL_FAILURES.upload_failed });
+    await finish({ ok: false, code: "upload_failed", sentence: INSTALL_FAILURES.upload_failed });
     return 1;
   }
-  emit({ ok: true, ...result.report });
-  return 0;
+  // The result is what tells the controller to use the bundle it was just given; if it cannot be delivered the install has not happened as far as anyone can tell.
+  return await finish({ ok: true, ...result.report }) ? 0 : 1;
 }
 
 /** Whether this file is the program being run (and not just imported). The real path is compared: a program started through a link would otherwise never start. */

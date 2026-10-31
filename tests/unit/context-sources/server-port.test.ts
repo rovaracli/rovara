@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { McpServerEntry } from "@agentx/contracts";
 import { dynamoMcpServerStore, summariseProbe } from "../../../packages/broker/src/context-sources/mcp-servers.js";
-import { gatewayProber, gatewayServerPort, sourceEnvironment, type ConnectionLookup } from "../../../packages/broker/src/context-sources/server-port.js";
+import { gatewayProber, gatewayServerPort, hostProbeClient, sourceEnvironment, type ConnectionLookup } from "../../../packages/broker/src/context-sources/server-port.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { CONNECTION, GET_TOOL, NOW, ORG, SEARCH_TOOL } from "./fixtures.js";
 
@@ -183,5 +183,44 @@ describe("review I6: the MCP host is reached over https", () => {
     await w.seed();
     await expect(w.port.open(ORG, { kind: "registered_server", serverId: "mcpsim000001" }, signal(), ["x"])).rejects.toBeDefined();
     expect(w.connects).toEqual([]);
+  });
+});
+
+describe("the host's probe route (T6)", () => {
+  const TOOL = { name: "echo", inputSchema: { type: "object" } };
+  const proposal = { registry: "npm" as const, name: "pkg", version: "1.0.0", args: [], destinations: [], secretEnv: [], size: { cpu: 256 as const, memoryMiB: 512 as const } };
+  function client(answer: unknown, status = 200) {
+    const calls: Array<{ url: string; body: unknown; authorization: string }> = [];
+    const fake = (async (url: string, init: { body: string; headers: Record<string, string> }) => {
+      calls.push({ url, body: JSON.parse(init.body), authorization: init.headers.authorization! });
+      return new Response(JSON.stringify(answer), { status });
+    }) as unknown as typeof fetch;
+    return { calls, probe: hostProbeClient({ url: "https://mcp-host.internal:8080/", token: "h".repeat(40) }, fake) };
+  }
+  it("sends the spec alone for a proposal, and the pinned pair beside it for an approval", async () => {
+    const answer = { tools: [TOOL], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) };
+    const a = client(answer);
+    expect(await a.probe.probe(proposal)).toMatchObject({ integrity: answer.integrity, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) });
+    expect(a.calls[0]).toEqual({ url: "https://mcp-host.internal:8080/probe", body: { spec: proposal }, authorization: `Bearer ${"h".repeat(40)}` });
+    const b = client(answer);
+    await b.probe.probe(proposal, { lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) });
+    expect(b.calls[0]!.body).toEqual({ spec: proposal, pinned: { lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) } });
+  });
+  it("passes the pinned pair from the prober to the host", async () => {
+    const seen: unknown[] = [];
+    const prober = gatewayProber({ host: { probe: async (_spec, pinned) => { seen.push(pinned); return { tools: [], integrity: "x" }; } } });
+    await prober.stdio(proposal);
+    await prober.stdio(proposal, { lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) });
+    expect(seen).toEqual([undefined, { lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64) }]);
+  });
+  it("takes a hash that is not a sha256 as absent, so a proposal cannot be completed with it", async () => {
+    const result = await client({ tools: [TOOL], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "nope", bundleHash: 5 }).probe.probe(proposal);
+    expect(result.lockfileHash).toBeUndefined();
+    expect(result.bundleHash).toBeUndefined();
+  });
+  it("says the host refused when it answers with an error or with no tools", async () => {
+    await expect(client({ error: "host_refused" }).probe.probe(proposal)).rejects.toMatchObject({ code: "host_refused" });
+    await expect(client({}, 500).probe.probe(proposal)).rejects.toMatchObject({ code: "host_refused" });
+    await expect(client({}, 401).probe.probe(proposal)).rejects.toMatchObject({ code: "host_unavailable" });
   });
 });

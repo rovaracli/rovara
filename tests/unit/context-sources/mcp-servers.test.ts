@@ -16,11 +16,11 @@ const STDIO = { kind: "stdio" as const, spec: { registry: "npm" as const, name: 
 
 function world(over: { edition?: "enterprise" | "public"; tools?: DiscoveredTool[]; fails?: McpProbeError | Error; secondAdmin?: boolean; stdio?: boolean } = {}) {
   const table = new FakeDynamoDb();
-  const state = { tools: over.tools ?? [SEARCH_TOOL, GET_TOOL], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64) as string | undefined, bundleHash: "2".repeat(64) as string | undefined, fails: over.fails, tokens: [] as Array<string | undefined>, httpProbes: 0 };
+  const state = { tools: over.tools ?? [SEARCH_TOOL, GET_TOOL], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64) as string | undefined, bundleHash: "2".repeat(64) as string | undefined, fails: over.fails, tokens: [] as Array<string | undefined>, httpProbes: 0, stdioCalls: [] as Array<{ spec: Record<string, unknown>; pinned: { lockfileHash: string; bundleHash: string } | undefined }> };
   let counter = 0;
   const prober: McpProber = {
     http: async (_address, token) => { state.httpProbes += 1; state.tokens.push(token); if (state.fails) throw state.fails; return state.tools; },
-    stdio: async () => { if (state.fails) throw state.fails; return { tools: state.tools, integrity: state.integrity, lockfileHash: state.lockfileHash, bundleHash: state.bundleHash }; },
+    stdio: async (spec, pinned) => { state.stdioCalls.push({ spec: { ...spec }, pinned }); if (state.fails) throw state.fails; return { tools: state.tools, integrity: state.integrity, lockfileHash: state.lockfileHash, bundleHash: state.bundleHash }; },
   };
   const audit: string[] = [];
   const vault = new Map<string, string>();
@@ -425,6 +425,18 @@ describe("T1: the approval of a package-run server binds the install (lockfile a
     const entry = await proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO });
     expect(entry.transport).toMatchObject({ kind: "stdio", spec: { lockfileHash: state.lockfileHash, bundleHash: state.bundleHash, destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } } });
     await expect(proposeMcpServer(deps, admin(), { label: "Wiki2", transport: { ...STDIO, spec: { ...STDIO.spec, bundleHash: "3".repeat(64) } } })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+  it("sends the host no pin when a package is proposed, and the pinned pair (apart from the spec) when it is approved, so the host tests that bundle and installs nothing", async () => {
+    const { deps, state } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO });
+    expect(state.stdioCalls).toHaveLength(1);
+    expect(state.stdioCalls[0]!.pinned).toBeUndefined();
+    await approveMcpServer(deps, admin(), entry.serverId);
+    expect(state.stdioCalls).toHaveLength(2);
+    expect(state.stdioCalls[1]!.pinned).toEqual({ lockfileHash: state.lockfileHash, bundleHash: state.bundleHash });
+    // the spec itself never carries the hashes (only the install computes them)
+    for (const call of state.stdioCalls) { expect(call.spec).not.toHaveProperty("lockfileHash"); expect(call.spec).not.toHaveProperty("bundleHash"); }
+    expect(state.stdioCalls[1]!.spec).toMatchObject({ integrity: state.integrity });
   });
   it("stores nothing, and says the host refused, when the install did not report both hashes", async () => {
     for (const missing of ["lockfileHash", "bundleHash"] as const) {
