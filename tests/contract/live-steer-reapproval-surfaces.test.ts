@@ -61,3 +61,72 @@ describe("the owner's way to decide after a live message asked for a change outs
     expect(taskPageStage(blocked("PLAN", reason), false, true).nextStep).toMatch(/Retry planning/u);
   });
 });
+
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Revise the plan with this change: the action offered for a coding step blocked with the revise reason, on every surface, and described truthfully.
+import { WORKFLOW_ACTION_IDS, workflowSlackHandlers, type SlackBlockAction } from "../../packages/broker/src/aws/slack-interactivity.js";
+
+const REVISE = WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise;
+const owner = "U0123456789";
+const stranger = "U0456789012";
+const thread = { teamId: "T0BSHLLUGBD", channelId: "C0123456789", threadTs: "1695500000.000001" };
+const nowSeconds = 1_758_657_600;
+const press = (actionId: string, value: Record<string, unknown>, userId = owner): SlackBlockAction => ({ actionId, value: JSON.stringify(value),
+  userId, userTeamId: thread.teamId, workspaceTeamId: thread.teamId, enterpriseId: "", userEnterpriseId: "",
+  requestStartedAt: nowSeconds * 1_000, thread, messageTs: "1695500001.000002", messageText: "blocked", responseUrl: "https://hooks.slack.com/actions/T0BSHLLUGBD/1/abc", triggerId: "1.2.3", actionTs: "1695500001.000009" });
+
+describe("Revise the plan is offered, and described truthfully, where coding stopped for a change the plan can take in", () => {
+  it("the reason names the action and what follows it (the owner approves the revised plan before coding continues), and Retry coding as the other way", () => {
+    expect(REVISE).toMatch(/Revise the plan/u);
+    expect(REVISE).toMatch(/approve the revised plan before coding continues/u);
+    expect(REVISE).toMatch(/Retry coding/u);
+    expect(REVISE).not.toMatch(/new task|put it in a note|send the task back|send it back/iu);
+  });
+
+  it("Slack: the blocked coding card carries Revise the plan beside Retry coding and Close, and its text says what the button does; the round-2 card (a plan that cannot take the change in) does not", () => {
+    const workflow = blocked("IMPLEMENT", REVISE);
+    const message = workflowMessage({ taskId, workflow })!;
+    expect(buttonsOf(message)).toEqual(["Revise the plan", "Retry coding", "Close task"]);
+    expect(message.text).toContain("Revise the plan");
+    expect(message.text).toContain("approve the revised plan before coding continues");
+    expect(message.text).not.toMatch(WRONG);
+    const revise = (message.blocks.flatMap((block) => (block as { elements?: Array<{ action_id: string; value: string }> }).elements ?? [])).find((element) => element.action_id === "agentx_workflow_revise_plan")!;
+    expect(JSON.parse(revise.value)).toEqual({ taskId, revision: workflow.revision });
+    const old = workflowMessage({ taskId, workflow: blocked("IMPLEMENT", WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding) })!;
+    expect(buttonsOf(old)).toEqual(["Retry coding", "Close task"]);
+    expect(old.text).not.toContain("Revise the plan");
+    expect(WORKFLOW_ACTION_IDS.has("agentx_workflow_revise_plan")).toBe(true);
+  });
+
+  it("the task page tells the owner the same ways on (the page button, the Slack thread, Retry coding, close), and a teammate that it is the owner's call", () => {
+    const step = taskPageStage(blocked("IMPLEMENT", REVISE), false, true);
+    expect(step.status).toBe("Coding stopped for a change outside the plan");
+    expect(step.nextStep).toMatch(/Revise the plan/u);
+    expect(step.nextStep).toMatch(/approve the revised plan/u);
+    expect(step.nextStep).toMatch(/retry coding/iu);
+    expect(step.nextStep).not.toMatch(WRONG);
+    expect(taskPageStage(blocked("IMPLEMENT", REVISE), false, false).nextStep).toMatch(/owner/u);
+    expect(taskPageStage(blocked("IMPLEMENT", REVISE), false, false).nextStep).not.toMatch(/Press/u);
+  });
+
+  const task = (workflow: unknown) => ({ taskId, slackUserId: owner, share: thread, workflow });
+
+  it("Slack press: the owner, at the exact revision, on a coding step blocked with the revise reason, hands the broker a revise-plan request through the existing send-back event; anyone else, a stale card or another block is refused and sends nothing", async () => {
+    const workflow = blocked("IMPLEMENT", REVISE);
+    let loaded: Record<string, unknown> = task(workflow);
+    const sent: Array<Record<string, unknown>> = [];
+    const handlers = workflowSlackHandlers({ loadTask: async () => loaded, openView: async () => undefined, submit: async () => undefined, sendBack: async (input) => { sent.push(input); } });
+    await handlers.handleAction(press("agentx_workflow_revise_plan", { taskId, revision: workflow.revision }));
+    expect(sent).toEqual([{ taskId, userId: owner, thread, expectedRevision: workflow.revision, revisePlan: true, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) as unknown }]);
+    await expect(handlers.handleAction(press("agentx_workflow_revise_plan", { taskId, revision: workflow.revision }, stranger))).rejects.toThrow(/Only .* can revise the plan/u);
+    await expect(handlers.handleAction(press("agentx_workflow_revise_plan", { taskId, revision: workflow.revision - 1 }))).rejects.toThrow(/out of date/u);
+    for (const other of [blocked("IMPLEMENT", WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding), blocked("PLAN", REVISE), blocked("IMPLEMENT", "Coding stopped")]) {
+      loaded = task(other);
+      await expect(handlers.handleAction(press("agentx_workflow_revise_plan", { taskId, revision: other.revision }))).rejects.toThrow(/out of date/u);
+    }
+    loaded = task({ ...workflow, state: "RUNNING", blockReason: undefined });
+    await expect(handlers.handleAction(press("agentx_workflow_revise_plan", { taskId, revision: workflow.revision }))).rejects.toThrow(/out of date/u);
+    expect(sent).toHaveLength(1);
+  });
+});

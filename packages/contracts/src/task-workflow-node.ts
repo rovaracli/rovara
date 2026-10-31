@@ -15,7 +15,7 @@ import { isNoCodeChangedReason, type NoChangeFindings } from "./no-change-findin
 
 export interface WorkflowOwnerAuthority { actorId: string; ownerIds: readonly string[] }
 
-function workflowOwnerAuthorized(legacyOwnerId: string, actorId: string, authority?: WorkflowOwnerAuthority): boolean {
+export function workflowOwnerAuthorized(legacyOwnerId: string, actorId: string, authority?: WorkflowOwnerAuthority): boolean {
   if (!ActorIdSchema.safeParse(actorId).success) return false;
   if (authority === undefined) return actorId === legacyOwnerId;
   return authority.actorId === actorId

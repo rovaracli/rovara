@@ -2364,12 +2364,12 @@ describe("exits for blocked work (Task 16)", () => {
     expect(operations(harness, workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
   });
 
-  it("blocks coding with the fixed re-approval reason when the owner's live message asked for a change outside the approved plan, and does not send it back by itself", async () => {
+  it("blocks coding with the fixed re-approval reason (the one that offers Revise the plan) when the owner's live message asked for a change outside the approved plan, and does not send it back by itself", async () => {
     const harness = await createSingleAnswerPlanBroker();
     const { taskId, workspaceId } = await workflowAtVerification(harness);
     const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
     await harness.finish(workspaceId, String(implementation.id), "FAILED", { error: `CONFIG_INVALID: ${WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE} (msg_0123456789abcdefghij)` });
-    expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding });
+    expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise });
     expect(operations(harness, workspaceId).filter((item) => item.workflowMode === "IMPLEMENT")).toHaveLength(1);
   });
 

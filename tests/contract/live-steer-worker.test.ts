@@ -381,7 +381,12 @@ describe("what the model is told about a live message", () => {
   it.each(["UNDERSTAND", "PLAN", "IMPLEMENT"] as const)("a change of scope in %s is not acted on: the step is told to end with the RE-APPROVAL NEEDED line the worker reads", (step) => {
     const framed = frame({ step });
     expect(framed).toMatch(/do not act on it: make no change for it, and end your final message with one line that starts with "RE-APPROVAL NEEDED:"/u);
-    expect(framed).toContain("your step then stops, nothing is built for it, and the owner decides what happens next");
+    // The words say what really follows: the step stops, nothing is built for the change, and the owner (not the step) decides. Coding has an approved plan: the owner can have it revised with the change (and approves the revised plan) or have it built without it; the earlier steps have none yet.
+    const decides = "your step then stops and nothing is built for it; the owner decides what happens next: ";
+    expect(framed).toContain(decides + (step === "IMPLEMENT" ? "they can have the plan revised with that change and approve the revised plan before anything is built for it, or have the approved plan built without it"
+      : "they can have the plan made again with that change and approve the new plan before anything is built"));
+    if (step !== "IMPLEMENT") expect(framed).not.toContain("approved plan built without it");
+    expect(framed).not.toMatch(/owner is asked to approve|you will be asked|wait for approval/iu);
   });
 
   it("from anyone else with can use: information only, never an instruction, and no offer to act on it", () => {

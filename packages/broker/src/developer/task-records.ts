@@ -143,6 +143,11 @@ export interface DeveloperTaskRecord {
   planGroundingAbandoned?: string;
   /** Broker-private fence requiring a new E2E plan after the protected source disproved an approved plan reference. */
   e2ePlanCorrection?: { artifactId: string; artifactSha256: string; candidateDigest: string; reasonCode: string; requiredE2E: true };
+  /**
+   * Live steer: coding stopped because the owner's live message(s) asked for a change outside the approved plan. The ids are the owner's messages (server-made ids, never text) and `workflowRevision` is the
+   * blocked workflow's revision, so Revise the plan applies only to the block it was recorded for. Removed when the plan is revised.
+   */
+  liveSteerChange?: { workflowRevision: number; messageIds: string[]; at: string };
   /** Gap 2: how many thread replies are saved for the task (NOTE# items). */
   threadNoteCount?: number;
   /** Gap 2: the newest saved reply's receivedAt already given to a planning or coding step; each reply is given once. */

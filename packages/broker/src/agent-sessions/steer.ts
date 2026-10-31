@@ -15,6 +15,7 @@ import {
   ENDED_SESSION_STATUSES,
   INDEX_EXPIRY_ATTRIBUTE,
   LIVE_STEER_REAPPROVAL_REASON,
+  LIVE_STEER_REVISED_REASON,
   SESSION_ENDED_MESSAGE,
   SESSION_RETENTION_DAYS,
   WORKFLOW_THREAD_NOTES_MAX,
@@ -416,6 +417,50 @@ export async function markSteerNeedsReapproval(deps: SteerDependencies, orgId: O
   } catch (error) {
     // The message was marked meanwhile (a condition failed): nothing more to do. Any other failure is only logged by name.
     if (failedIndexes(error) === undefined) deps.log?.({ event: "agent_session.steer_reapproval_mark_failed", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
+    return false;
+  }
+}
+
+/**
+ * A steer message of this session, as stored, or `undefined` when it is not one (another session's, a comment, gone). Read for the owner's "Revise the plan" press, which hands its text to the planner
+ * and nowhere else: the caller never logs it.
+ */
+export async function readSteerMessage(deps: Pick<SteerDependencies, "documentClient" | "tableName">, orgId: OrgId, sessionId: SessionId, messageId: string): Promise<SessionMessage | undefined> {
+  const message = messageOf(await getItem(deps, messageKey({ orgId, sessionId }, messageId)), { orgId, sessionId });
+  return message?.kind === "steer" ? message : undefined;
+}
+
+/**
+ * A message that stopped coding for re-approval (`needs re-approval`) whose owner chose Revise the plan: it keeps `delivered` and its reason becomes `plan being revised`, and the session's timeline
+ * says so (a `status` line with the author's name, never the text). Only a message carrying the `needs re-approval` reason moves, once. Never throws. Answers whether it marked the message.
+ */
+export async function markSteerRevised(deps: SteerDependencies, orgId: OrgId, sessionId: SessionId, messageId: string): Promise<boolean> {
+  try {
+    const session = await new AgentSessionStore(deps).get(orgId, sessionId);
+    if (session === undefined) return false;
+    const message = messageOf(await getItem(deps, messageKey(session, messageId)), session);
+    if (message?.kind !== "steer" || message.delivery?.state !== "delivered" || message.delivery.reason !== LIVE_STEER_REAPPROVAL_REASON) return false;
+    const change: TransactItem = {
+      Update: {
+        TableName: deps.tableName, Key: messageKey(session, messageId), UpdateExpression: "SET delivery = :delivery",
+        ConditionExpression: "attribute_exists(pk) AND delivery.#state = :delivered AND delivery.reason = :before",
+        ExpressionAttributeNames: { "#state": "state" },
+        ExpressionAttributeValues: { ":delivery": { state: "delivered", at: message.delivery.at, reason: LIVE_STEER_REVISED_REASON }, ":delivered": "delivered", ":before": LIVE_STEER_REAPPROVAL_REASON },
+      },
+    };
+    const event = sessionEventItem(deps, session, {
+      eventId: sessionEventId("steer_plan_revised", messageId), at: isoOf(deps.now()), type: "status", actor: { kind: "agent" }, source: message.source === "linear" ? "linear" : "app", messageId,
+      text: `${agentName(session) ?? THE_AGENT} is revising the plan with ${message.author.name}'s message; the owner approves the revised plan before coding continues.`,
+    });
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [change, event] }));
+    } catch (error) {
+      if (!onlyTheEventCancelled(error, 1)) throw error;
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [change] }));
+    }
+    return true;
+  } catch (error) {
+    if (failedIndexes(error) === undefined) deps.log?.({ event: "agent_session.steer_revise_mark_failed", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
     return false;
   }
 }

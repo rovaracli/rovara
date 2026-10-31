@@ -30,6 +30,9 @@ export const WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE = "a live message from the o
 /** What a message says on its row once its step stopped for re-approval (a fixed word list; the message's text is never repeated). */
 export const LIVE_STEER_REAPPROVAL_REASON = "needs re-approval" as const;
 
+/** What the same message says once the owner chose Revise the plan for it: its change is now in a revised plan that waits for the owner's approval (a fixed word list; never the text). */
+export const LIVE_STEER_REVISED_REASON = "plan being revised" as const;
+
 /** The longest message text a live steer carries (the same bound as a task note). */
 export const LIVE_STEER_TEXT_MAX_CHARS = 2_000;
 
