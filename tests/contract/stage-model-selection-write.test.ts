@@ -52,6 +52,15 @@ for(const role of ["owner","admin","maintainer","contributor","viewer"] as const
  expect(w.db.get(projectSelectionKey(ORG_A,"web"))!==undefined).toBe(allowed);
  expect(w.audit.flushed().length).toBe(allowed?1:0);
 });
+it("refuses a person who has become an Auditor, even with a maintainer grant, at the role step and again at the authority step (I2 re-check)",async()=>{
+ const {w,input}=fixture();const {orgMemberKey,developerOrgKey,projectMemberKey}=await import("../../packages/contracts/src/index.js");
+ const {projectModelSelectionAuthorityChecks}=await import("../../packages/broker/src/model-selection/authority.js");
+ for(const key of [orgMemberKey(ORG_A,MAX),developerOrgKey(MAX)])w.db.set({...w.db.get(key)!,role:"auditor"});
+ const grantKey=projectMemberKey(ORG_A,MAX,"web");w.db.set({...w.db.get(grantKey)!,role:"developer",projectRole:"maintainer"});
+ await expect(writeProjectModelSelection(w.deps,input)).rejects.toThrow("Your company access changed.");
+ expect(w.db.get(projectSelectionKey(ORG_A,"web"))).toBeUndefined();expect(w.audit.flushed()).toHaveLength(0);
+ await expect(projectModelSelectionAuthorityChecks(w.deps,{orgId:ORG_A,project:"web",registeredAt:"2026-10-01T00:00:00.000Z",signedInId:MAX,developerId:MAX})).rejects.toThrow("Reload before changing model choices.");
+});
 it("refuses the same signed-in person in another company without a selection or audit",async()=>{
  const {w,input}=fixture();
  await expect(writeProjectModelSelection(w.deps,{...input,orgId:"org_bbbbbbbbbbbbbbbbbbbb"})).rejects.toThrow("FORBIDDEN");

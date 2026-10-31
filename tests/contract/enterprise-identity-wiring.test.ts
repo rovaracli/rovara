@@ -82,6 +82,42 @@ describe("the attribution for a publication, and the erasure of a person", () =>
   });
 });
 
+describe("a failed rewrite does not lose the list of descriptions to rewrite (re-check New-2)", () => {
+  const decisions: unknown[] = [];
+  it("keeps the person's rows when a rewrite fails, has already cut the references, and a retry finishes the job", async () => {
+    const db = new FakeDynamoDb();
+    for (const [id, name] of [[maya, "Maya Chen"], [priya, "Priya Raman"]] as const) {
+      db.set({ ...orgMemberKey(org, id), orgId: org, developerId: id, role: "member", joinedAt: "2026-10-01T00:00:00Z" });
+      db.set({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, displayName: name });
+    }
+    const tables = { documentClient: db, stateTable: "state", signInTable: "state", teamRecordTable: "state" };
+    const links = dynamoAttributionLinkStore({ documentClient: db, tableName: "state" });
+    const refs: string[] = [];
+    const bodies = new Map<string, string>();
+    for (const taskId of [TASK, "22222222-2222-4222-8222-222222222222"]) {
+      const r = await attributionForPublication(tables, { orgId: org, taskId, requesterId: maya, decisions, origin: "https://rovara.example", links });
+      if (r.attribution.requester?.state === "named") refs.push(r.attribution.requester.ref);
+      bodies.set(taskId, "Requested by: Maya Chen\n");
+    }
+    let failOn: string | undefined = "22222222-2222-4222-8222-222222222222";
+    const rewrite = async (taskId: string, role: "requester" | "approver") => {
+      if (taskId === failOn) throw new Error("host down");
+      bodies.set(taskId, rewriteAttributionBody(bodies.get(taskId)!, role));
+    };
+    await expect(eraseAttributionOfPerson(links, org, maya, rewrite)).rejects.toThrow("host down");
+    // The references already lead nowhere, and the list of descriptions is still there.
+    expect(await Promise.all(refs.map((ref) => links.resolve(org, ref)))).toEqual([undefined, undefined]);
+    expect((await links.linksOf(org, maya)).map((link) => link.taskId).sort()).toEqual([TASK, "22222222-2222-4222-8222-222222222222"]);
+    expect([...bodies.values()].some((body) => body.includes("Maya Chen"))).toBe(true);
+    // The retry finds the same list and finishes: no description names the person, and no row is left.
+    failOn = undefined;
+    expect(await eraseAttributionOfPerson(links, org, maya, rewrite)).toBe(2);
+    expect([...bodies.values()]).toEqual(["Requested by: a former member\n", "Requested by: a former member\n"]);
+    expect(await links.linksOf(org, maya)).toEqual([]);
+    expect(JSON.stringify(db.find(() => true).filter((item) => String(item.entityType).startsWith("ATTRIBUTION")))).not.toContain(maya);
+  });
+});
+
 // ---- the call sites
 
 interface Site { file: string; calls: readonly string[]; why: string }

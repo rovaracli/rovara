@@ -1,6 +1,6 @@
 // Enterprise foundations, I3 fix round 1: the only place a commit's reference leads to a person. A commit carries a random reference (`contracts/attribution.ts`); this row says who it
 // stood for. Erasing a person deletes their rows, after which every reference they ever had leads nowhere, in git history that cannot be rewritten. Nothing else keeps the link.
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, orgScoped, type OrgId } from "@agentx/contracts";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };
@@ -19,8 +19,12 @@ export interface AttributionLinkStore {
   put(orgId: OrgId, link: AttributionLink): Promise<void>;
   /** The person a reference stood for, or undefined when there is no such reference or it was erased. */
   resolve(orgId: OrgId, ref: string): Promise<AttributionLink | undefined>;
-  /** Deletes every row of the person and returns what was deleted (the tasks whose descriptions to rewrite). */
-  eraseFor(orgId: OrgId, developerId: string): Promise<AttributionLink[]>;
+  /** Every row of the person (the tasks whose descriptions to rewrite). Reads only. */
+  linksOf(orgId: OrgId, developerId: string): Promise<AttributionLink[]>;
+  /** Step 1 of an erasure: deletes the reference rows, so every commit reference leads nowhere. The person's own rows stay, as the list of descriptions still to be rewritten. Safe to repeat. */
+  cutReferences(orgId: OrgId, links: readonly AttributionLink[]): Promise<void>;
+  /** Step 3 of an erasure, only after every description was rewritten: deletes the person's own rows. Safe to repeat. */
+  deletePersonRows(orgId: OrgId, links: readonly AttributionLink[]): Promise<void>;
 }
 
 const REF = /^[a-f0-9]{16}$/u;
@@ -37,34 +41,37 @@ export function dynamoAttributionLinkStore(input: { documentClient: DocumentClie
     async put(orgId, link) {
       if (!REF.test(link.ref) || !DEVELOPER_ID.test(link.developerId)) throw agentXError("CONFIG_INVALID", "the attribution reference is not valid");
       const item = { entityType: "ATTRIBUTION_LINK", orgId, ...link };
-      await documentClient.send(new PutCommand({ TableName: tableName, Item: { ...refKey(orgId, link.ref), ...item }, ConditionExpression: "attribute_not_exists(pk)" }));
-      await documentClient.send(new PutCommand({ TableName: tableName, Item: { ...personKey(orgId, link.developerId, link.ref), ...item } }));
+      // One transaction: the two rows exist together or not at all, so erasure (which finds a person's rows through the person row) never misses a reference row.
+      await documentClient.send(new TransactWriteCommand({ TransactItems: [
+        { Put: { TableName: tableName, Item: { ...refKey(orgId, link.ref), ...item }, ConditionExpression: "attribute_not_exists(pk)" } },
+        { Put: { TableName: tableName, Item: { ...personKey(orgId, link.developerId, link.ref), ...item } } },
+      ] }));
     },
     async resolve(orgId, ref) {
       if (!REF.test(ref)) return undefined;
       const found = await documentClient.send(new GetCommand({ TableName: tableName, Key: refKey(orgId, ref), ConsistentRead: true })) as { Item?: Record<string, unknown> };
       return found.Item === undefined ? undefined : linkOf(found.Item);
     },
-    async eraseFor(orgId, developerId) {
+    async linksOf(orgId, developerId) {
       if (!DEVELOPER_ID.test(developerId)) throw agentXError("CONFIG_INVALID", "the person id is not valid");
-      const erased: AttributionLink[] = [];
+      const found: AttributionLink[] = [];
       let start: Record<string, unknown> | undefined;
       for (let page = 0; page < MAX_PAGES; page += 1) {
         const response = await documentClient.send(new QueryCommand({
           TableName: tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
           ExpressionAttributeValues: { ":pk": orgScoped(orgId, "ATTRIBUTION_PERSON"), ":prefix": `${developerId}#` }, ConsistentRead: true, Limit: PAGE, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
         })) as { Items?: Record<string, unknown>[]; LastEvaluatedKey?: Record<string, unknown> };
-        for (const item of response.Items ?? []) {
-          const link = linkOf(item);
-          // The reference row goes first: once it is gone the commit's reference leads nowhere, whatever happens to the person row after.
-          await documentClient.send(new DeleteCommand({ TableName: tableName, Key: refKey(orgId, link.ref) }));
-          await documentClient.send(new DeleteCommand({ TableName: tableName, Key: personKey(orgId, developerId, link.ref) }));
-          erased.push(link);
-        }
+        for (const item of response.Items ?? []) found.push(linkOf(item));
         start = response.LastEvaluatedKey;
-        if (start === undefined) return erased;
+        if (start === undefined) return found;
       }
       throw agentXError("RUNTIME_UNAVAILABLE", "the person has more attribution rows than one erasure pass reads; run it again");
+    },
+    async cutReferences(orgId, links) {
+      for (const link of links) await documentClient.send(new DeleteCommand({ TableName: tableName, Key: refKey(orgId, link.ref) }));
+    },
+    async deletePersonRows(orgId, links) {
+      for (const link of links) await documentClient.send(new DeleteCommand({ TableName: tableName, Key: personKey(orgId, link.developerId, link.ref) }));
     },
   };
 }

@@ -29,7 +29,9 @@ function memoryLinks(options: { failPut?: boolean } = {}): AttributionLinkStore 
     rows,
     put: (_org, link) => { if (options.failPut === true) return Promise.reject(new Error("down")); rows.push(link); return Promise.resolve(); },
     resolve: (_org, ref) => Promise.resolve(rows.find((row) => row.ref === ref)),
-    eraseFor: (_org, id) => { const gone = rows.filter((row) => row.developerId === id); for (const row of gone) rows.splice(rows.indexOf(row), 1); return Promise.resolve(gone); },
+    linksOf: (_org, id) => Promise.resolve(rows.filter((row) => row.developerId === id)),
+    cutReferences: () => Promise.resolve(),
+    deletePersonRows: (_org, links) => { for (const link of links) rows.splice(rows.indexOf(link), 1); return Promise.resolve(); },
   };
 }
 const TASK = "11111111-1111-4111-8111-111111111111";
@@ -115,20 +117,43 @@ describe("the reference on a commit leads to a person only through a row that er
       if (r.attribution.requester?.state === "named") refs.push(r.attribution.requester.ref);
     }
     expect(await Promise.all(refs.map((ref) => links.resolve(org, ref)))).toEqual([expect.objectContaining({ developerId: maya }), expect.objectContaining({ developerId: maya })]);
-    const gone = await links.eraseFor(org, maya);
+    const gone = await links.linksOf(org, maya);
+    await links.cutReferences(org, gone);
+    // After the cut the references lead nowhere, though the person's own rows (the list of descriptions to rewrite) are still there.
+    expect(await Promise.all(refs.map((ref) => links.resolve(org, ref)))).toEqual([undefined, undefined]);
+    expect(await links.linksOf(org, maya)).toHaveLength(2);
+    await links.deletePersonRows(org, gone);
     expect(gone.map((link) => [link.role, link.taskId]).sort()).toEqual([["requester", TASK], ["requester", "22222222-2222-4222-8222-222222222222"]]);
     expect(await Promise.all(refs.map((ref) => links.resolve(org, ref)))).toEqual([undefined, undefined]);
     // Nothing of the person is left in the table, and the other person's rows are untouched.
     expect(JSON.stringify(db.find(() => true))).not.toContain(maya);
     expect(db.find(() => true).filter((item) => item.developerId === priya)).toHaveLength(4);
     // A second pass finds nothing.
-    expect(await links.eraseFor(org, maya)).toEqual([]);
+    expect(await links.linksOf(org, maya)).toEqual([]);
+  });
+
+  it("writes the reference row and the person row in one transaction: a failure or a repeated reference leaves neither (re-check New-3)", async () => {
+    const db = new FakeDynamoDb();
+    const links = dynamoAttributionLinkStore({ documentClient: db, tableName: "state" });
+    const link = { ref: "0123456789abcdef", developerId: maya, role: "requester" as const, taskId: TASK, createdAt: "2026-10-31T00:00:00.000Z" };
+    db.injectFault({ command: "TransactWriteCommand", error: { name: "ServiceUnavailable" } });
+    await expect(links.put(org, link)).rejects.toBeDefined();
+    expect(db.find(() => true)).toEqual([]);
+    const before = db.commandNames().length;
+    await links.put(org, link);
+    // One write command carries both rows: no state exists in which only one of them does.
+    expect(db.commandNames().slice(before)).toEqual(["TransactWriteCommand"]);
+    expect(db.find(() => true)).toHaveLength(2);
+    // The same reference again is refused and adds nothing (not an orphan person row).
+    await expect(links.put(org, { ...link, developerId: priya })).rejects.toBeDefined();
+    expect(db.find(() => true)).toHaveLength(2);
+    expect(await links.linksOf(org, priya)).toEqual([]);
   });
 
   it("refuses an invalid reference or person id", async () => {
     const links = dynamoAttributionLinkStore({ documentClient: new FakeDynamoDb(), tableName: "state" });
     await expect(links.put(org, { ref: "xyz", developerId: maya, role: "requester", taskId: TASK, createdAt: "t" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    await expect(links.eraseFor(org, "not-an-id")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(links.linksOf(org, "not-an-id")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(await links.resolve(org, "../x")).toBeUndefined();
   });
 });

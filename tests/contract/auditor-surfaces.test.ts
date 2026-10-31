@@ -5,7 +5,7 @@ import { developerOrgKey, editionPolicy, orgMemberKey, projectMemberKey } from "
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { liveWriterRole } from "../../packages/broker/src/org/live-role.js";
 import { requireWriterCaller } from "../../packages/broker/src/org/auditor.js";
-import { humanApprovalOf, linkedAmong } from "../../packages/broker/src/rovara-code/approval.js";
+import { humanApprovalOf, linkedAmong, nonWritersAmong } from "../../packages/broker/src/rovara-code/approval.js";
 import { githubMemberKey, memberGithubKey } from "@agentx/contracts";
 import { DECIDE_COOKIE, csrfTokenFor, requireDecideSession } from "../../packages/broker/src/developer/decide-session.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -13,6 +13,8 @@ import { SLACK_TEAM } from "../support/slack-broker.js";
 import { createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const USER = "U0AUDITOR1";
 const standIn = developerIdForSlackUser(USER);
@@ -121,6 +123,23 @@ describe("the task paths", () => {
   });
 });
 
+describe("the task creator is the person whose role is read (re-check)", () => {
+  it("reads the creator named by the task, not the key that holds the grant: a member's key running an Auditor's task is refused", async () => {
+    const h = await createDeveloperTaskBroker();
+    const holder = "4".repeat(64), creator = "3".repeat(64);
+    const { requireProjectAuthority } = await import("../../packages/broker/src/aws/broker/records.js");
+    h.db.set({ ...projectMemberKey(TEST_ORG, holder, "payments"), entityType: "MEMBERSHIP", ownerKey: holder, projectName: "payments", role: "developer", projectRole: "maintainer", grantId: "g1" });
+    seedMembership(h.db, holder, { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, creator, { orgId: TEST_ORG, role: "auditor" });
+    const attempt = (taskCreator: () => Promise<string | undefined>) => refused(requireProjectAuthority(h.brokerInput as never, TEST_ORG, holder, "payments", { taskCreator }));
+    expect(await attempt(async () => creator)).toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    // The controls: the same key with no creator named, or with a member creator, is let through by its grant.
+    expect(await attempt(async () => undefined)).toBeUndefined();
+    seedMembership(h.db, creator, { orgId: TEST_ORG, role: "member" });
+    expect(await attempt(async () => creator)).toBeUndefined();
+  });
+});
+
 describe("the dispatch guard", () => {
   it("holds the task of a person who has become an Auditor like a viewer's, and does not hold a member's", async () => {
     const { creatorIsProjectViewer } = await import("../../packages/broker/src/aws/task-dispatch-access.js");
@@ -180,6 +199,32 @@ describe("GitHub approval", () => {
 
   it("counts a linked member as the human approver and never a linked Auditor", async () => {
     expect([...await linkedAmong(deps, TEST_ORG, ["1001", "1002"])]).toEqual(["1001"]);
+  });
+
+  it("an Auditor's linked account never counts, with self-approval on or off (re-check New-1)", async () => {
+    const excluded = await nonWritersAmong(deps, TEST_ORG, ["1001", "1002", "9999"]);
+    expect([...excluded]).toEqual(["1002"]);
+    const review = (githubUserId: string, login: string) => ({ githubUserId, login, state: "APPROVED", commitId: "h".repeat(40), userType: "User", submittedAt: "2026-10-31T00:00:00Z" });
+    const input = (reviews: unknown[], allowSelfApproval: boolean, excludedGithubUserIds: ReadonlySet<string> | undefined) => humanApprovalOf({
+      reviews: reviews as never, headSha: "h".repeat(40), syncedFrom: undefined, ciPassingOnHead: true,
+      permissions: new Map([["aud", "write"], ["mem", "write"], ["outsider", "write"]]), requesterGithubUserIds: ["9998"],
+      linkedGithubUserIds: new Set(["1001", "1002"]), allowSelfApproval, excludedGithubUserIds,
+    });
+    // Self-approval on: any account with write access counts, linked or not, but never one linked to an Auditor.
+    expect(input([review("1002", "aud")], true, excluded)).toEqual({ approved: false, reason: "no_write" });
+    expect(input([review("1002", "aud")], true, undefined)).toMatchObject({ approved: true });
+    expect(input([review("1002", "aud"), review("1001", "mem")], true, excluded)).toMatchObject({ approved: true, by: { githubUserId: "1001" } });
+    expect(input([review("7777", "outsider")], true, excluded)).toMatchObject({ approved: true });
+    // Off: the same.
+    expect(input([review("1002", "aud")], false, excluded)).toEqual({ approved: false, reason: "no_write" });
+  });
+
+  it("the three places that count an approval pass the exclusion", () => {
+    for (const file of ["merge.ts", "merge-tracking.ts"]) {
+      const text = readFileSync(resolve(import.meta.dirname, "..", "..", "packages/broker/src/rovara-code", file), "utf8");
+      const calls = text.split("humanApprovalOf({").length - 1;
+      expect(text.split("excludedGithubUserIds: await nonWritersAmong(").length - 1, file).toBe(calls);
+    }
   });
 
   it("an Auditor's approval alone leaves the merge gate closed when self-approval is off", async () => {

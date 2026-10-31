@@ -59,9 +59,13 @@ export async function attributionForPublication(
 }
 
 /**
- * Erasure of a person, for the attribution: deletes every reference row (so every commit reference leads nowhere) and rewrites the person's line in each change request description they
- * were named in. `rewrite(taskId, role)` is the caller's: it finds the task's change request and writes the description `rewriteAttributionBody` gives. Returns how many descriptions were
- * asked to be rewritten; a rewrite that throws stops the erasure with the rows already gone, and running it again finds nothing more to delete but the caller can retry from the tasks it logged.
+ * Erasure of a person, for the attribution, in an order that survives a failure:
+ *   1. read the person's rows (the list of descriptions that name them);
+ *   2. delete the reference rows: every commit reference now leads nowhere (this is what matters in git history);
+ *   3. rewrite the person's line in each description (`rewrite(taskId, role)` is the caller's: it finds the task's change request and writes `rewriteAttributionBody`'s result);
+ *   4. only when every rewrite succeeded, delete the person's own rows.
+ * If a rewrite throws, the person's rows are still there, so running the erasure again finds the same list and repeats the cut and the rewrites (all safe to repeat). Returns how many
+ * descriptions were rewritten.
  */
 export async function eraseAttributionOfPerson(
   links: AttributionLinkStore,
@@ -69,9 +73,11 @@ export async function eraseAttributionOfPerson(
   developerId: string,
   rewrite: (taskId: string, role: "requester" | "approver") => Promise<void>,
 ): Promise<number> {
-  const erased = await links.eraseFor(orgId, developerId);
-  for (const link of erased) await rewrite(link.taskId, link.role);
-  return erased.length;
+  const found = await links.linksOf(orgId, developerId);
+  await links.cutReferences(orgId, found);
+  for (const link of found) await rewrite(link.taskId, link.role);
+  await links.deletePersonRows(orgId, found);
+  return found.length;
 }
 
 /** The start-time check of P7, named for the one call in the task start. */

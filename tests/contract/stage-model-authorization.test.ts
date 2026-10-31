@@ -54,6 +54,16 @@ it("replays exactly once and rejects a closed task racing the prepared transacti
  expect(race.cap.pending()).toHaveLength(0);
  expect(race.h.db.get(`DEVTASK#${race.input.taskId}`,"META")?.modelFallbacks).toBeUndefined();
 });
+it("refuses a model fallback for a task whose owner has become an Auditor, and still serves a member (I2 re-check)",async()=>{
+ const {h,deps,input}=await fixture();
+ const {orgMemberKey}=await import("../../packages/contracts/src/index.js");
+ const key=orgMemberKey(TEST_ORG,MAYA.developerId),row=h.db.get(key)!;
+ expect((await prepareTaskModelAuthorization(deps,input)).items.length).toBeGreaterThan(0);
+ h.db.set({...row,role:"auditor"});
+ await expect(prepareTaskModelAuthorization(deps,input)).rejects.toThrow("MODEL_NOT_ALLOWED");
+ h.db.set({...row,role:"member"});
+ expect((await prepareTaskModelAuthorization(deps,input)).items.length).toBeGreaterThan(0);
+});
 for(const change of ["member","identity","workspace","operation-org","operation-model","task-project","task-workspace"] as const)it(`fences ${change} revocation during first authorization and replay`,async()=>{
  for(const replay of [false,true]){
   const {h,cap,deps,input}=await fixture();

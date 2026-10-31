@@ -48,6 +48,7 @@ const ROWS: readonly Row[] = [
   // I3: the reference rows of a commit's attribution store the person a reference stood for (the requester or approver of a task); it decides nothing about who owns the task
   ["attribution/links.ts", "dynamoAttributionLinkStore>put", "history", ".developerId*2"],
   ["attribution/links.ts", "linkOf", "history", ".developerId"],
+  ["attribution/links.ts", "dynamoAttributionLinkStore>deletePersonRows", "history", ".developerId"],
   ["developer/task-person-identity.ts", "resolveTaskPickerPerson", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "registerTaskChannelPeople", "history", ".developerId*2", ".provider*2", ".slackUserId*2"],
   ["developer/task-person-identity.ts", "checkTaskPersonIdentity", "history", ".developerId*3", ".provider*3", ".slackUserId*6", ".developerName"],
