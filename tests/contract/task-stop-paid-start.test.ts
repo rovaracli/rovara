@@ -2432,5 +2432,12 @@ it("a real chain child never receives more than its step's explicit stop even wi
  f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 100 } });
  const key = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);f.t.db.set({ ...f.t.db.get(key)!, stopKind: "limited", maxPerRunUsd: 0.75 });
  const child = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: "Bound this chain step" }, origin: "chain", owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member", developerId: MAYA.developerId }, chain: { chainRunId: randomUUID(), stepId: "bounded-step" }, runLimitUsd: 200 });
- expect(child.task.budgetUsd).toBe(0.75);expect(child.task.budgetUsd).toBeLessThanOrEqual(0.75);
+ expect(f.t.meta(child.taskId).budgetUsd).toBe(0.75);expect(child.stopAtUsd).toBeLessThanOrEqual(0.75);
+});
+
+it("accepted spending window and required admission audit commit in the same transaction", async () => {
+ const f = await fixture(); const reply = await f.start(); expect(reply.status).toBe(200);
+ const transaction = f.t.db.transactions().find(items => items.some(item => (item.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "SPENDING_ADMISSION"));
+ expect(transaction).toBeDefined();
+ expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Put: expect.objectContaining({ Item: expect.objectContaining({ event: expect.objectContaining({ action: "spending.stop_admitted", actor: { kind: "member", id: MAYA.developerId }, facts: expect.objectContaining({ effectiveStopMicrousd: 1234567 }) }) }) }) })]));
 });
