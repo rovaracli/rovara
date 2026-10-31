@@ -47,7 +47,7 @@ export interface ContextServerPort {
 
 /** Where a result's text is kept for the task's lifetime so that people allowed to see it can (quotes.ts). */
 export interface ResultKeeper {
-  keep(input: { orgId: OrgId; taskId: string; operationId: string; sourceId: string; itemRef: string; digest: string; text: string; retention: ContextSource["retention"]; fetchedAt: string }): Promise<void>;
+  keep(input: { orgId: OrgId; taskId: string; operationId: string; sourceId: string; itemRef: string; digest: string; text: string; retention: ContextSource["retention"]; quotes: ContextSource["quotes"]; system?: string | undefined; fetchedAt: string }): Promise<void>;
 }
 
 export interface CitationRecorder {
@@ -262,7 +262,7 @@ async function callOne(deps: ContextToolsDependencies, run: ContextToolsRun, sou
     const citation: Citation = { sourceId: source.sourceId, itemRef, title, ...(url === undefined ? {} : { url }), fetchedAt, digest, standing };
     // The stage goes on if any of these fail: a citation or a record that is missing is a gap in the page, never a reason to lose the answer.
     await deps.citations?.record({ orgId, taskId: run.task.taskId, operationId, stage, citation }).catch(() => deps.log?.("context_source.citation_failed", { sourceId: source.sourceId }));
-    await deps.results?.keep({ orgId, taskId: run.task.taskId, operationId, sourceId: source.sourceId, itemRef, digest, text: stripForKeeping(rawText, source.limits.bytesPerResult), retention: source.retention, fetchedAt })
+    await deps.results?.keep({ orgId, taskId: run.task.taskId, operationId, sourceId: source.sourceId, itemRef, digest, text: stripForKeeping(rawText, source.limits.bytesPerResult), retention: source.retention, quotes: source.quotes, system: source.system, fetchedAt })
       .catch(() => deps.log?.("context_source.keep_failed", { sourceId: source.sourceId }));
     void deps.teamSink.seen({
       orgId, projectId: run.task.project, taskId: run.task.taskId, stage, sourceId: source.sourceId, system: source.system ?? "mcp", itemRef, url, title, permissionSnapshot: null, fetchedAt, contentDigest: digest,
