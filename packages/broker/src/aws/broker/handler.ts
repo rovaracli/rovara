@@ -666,6 +666,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           ...githubConnectRoute(dependencies),
           ...(agents === undefined ? {} : { agents }),
+          // Meta repo lane B: the setup agent's citations are re-read from GitHub, through the org's own installation.
+          ...(dependencies.githubPullRequests.getFileAtCommit === undefined ? {} : {
+            setupCitationReader: (orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => dependencies.githubPullRequests.getFileAtCommit!(repositoryUrl, path, commit, githubScope(dependencies, orgId), options),
+          }),
           // Closing an org clears its connections whether or not the agent routes are set up (Task 12b).
           ...(orgConnections === undefined ? {} : { orgConnections }),
           ...repositoriesGateRoute(dependencies),

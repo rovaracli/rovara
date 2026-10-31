@@ -69,6 +69,7 @@ const TITLES: Record<string, string> = {
   pull_request_merge: "Merge a pull request",
   code_settings: "Let people approve their own pull requests",
   playbook_default_process: "Switch a project back to the built-in way of working",
+  setup_item: "Approve a setup suggestion from Rovara",
   agent_run_version: "Run an older version of an agent that is less safe than the one that runs now",
 };
 
@@ -142,7 +143,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   }
   const subject = record.subject;
   const facts = [fact("Asked by", await nameOf(deps, record.requestedBy))];
-  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner" && subject.kind !== "pull_request_merge" && subject.kind !== "code_settings" && subject.kind !== "playbook_default_process") {
+  if (subject.kind !== "opt_out" && subject.kind !== "connector_widen" && subject.kind !== "chain_publish" && subject.kind !== "chain_rollback" && subject.kind !== "chain_share" && subject.kind !== "trigger_enable" && subject.kind !== "session_share_org" && subject.kind !== "session_owner" && subject.kind !== "pull_request_merge" && subject.kind !== "code_settings" && subject.kind !== "playbook_default_process" && subject.kind !== "setup_item") {
     facts.push(...await agentChangeFacts(deps, record.orgId, subject));
   }
   if (subject.kind === "opt_out") {
@@ -167,6 +168,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
     for (const pr of subject.pullRequests) facts.push(fact("Pull request", `${shownText(pr.repositoryId, NAME_MAX)} #${String(pr.number)} (code ${pr.headSha.slice(0, 7)})`));
   }
   if (subject.kind === "code_settings") facts.push(fact("Project", subject.project), fact("Settings revision it applies to", String(subject.settingsRevision)));
+  if (subject.kind === "setup_item") facts.push(fact("Project", subject.project), fact("Suggestion", subject.itemKind.replace("_", " ")), fact("Suggestion id", subject.itemId));
   if (subject.kind === "playbook_default_process") facts.push(fact("Project", subject.project), fact("Process layer version it replaces", String(subject.layerVersion)), fact("Playbook revision it applies to", String(subject.expectedRevision)));
   facts.push(expires);
   return { title: changeTitleOf(subject.kind), facts, paragraphs: record.changes };

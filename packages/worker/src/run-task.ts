@@ -1,8 +1,8 @@
 import { readFile, realpath } from "node:fs/promises";
 import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
-import { readSetupDraftAnswer, setupDraftInstructions, setupDraftRetryPrompt } from "./setup-draft.js";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupProposal, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
+import { readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
 import type { BashOperations, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
@@ -86,7 +86,7 @@ export interface TaskInvocationResult {
   checks?: CheckReport;
   workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND" | "SETUP_DRAFT";
   /** Rovara Code Task 10: the draft a setup-draft run read, already bounded and redacted (the broker reads it again). */
-  setupDraft?: SetupDraft;
+  setupProposal?: SetupProposal;
   /** Worker-reported Git object identities; the broker recomputes and stores the canonical digest. */
   workflowCandidateRepositories?: Array<{ repositoryId: string; commitSha: string; treeSha: string }>;
   /** Fixed worker export, uploaded on its separate capability before the model-visible terminal result. */
@@ -1188,7 +1188,7 @@ async function runTask(
         }
       };
       if (workflowDependencies === undefined) {
-        await promptAndSettle(settingUpDraft ? `${invocation.payload.prompt}\n\n${setupDraftInstructions(manifest.repositories)}` : invocation.payload.prompt);
+        await promptAndSettle(settingUpDraft ? `${invocation.payload.prompt}\n\n${setupProposalInstructions(manifest.repositories, { metaRepo: invocation.payload.setupMetaRepo })}` : invocation.payload.prompt);
       } else {
         const graph = workflowDependencies.graph;
         findings.setOrder(taskGraphOrder(graph));
@@ -1273,19 +1273,20 @@ async function runTask(
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "PLAN_CRITIQUE" });
         taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN_CRITIQUE" };
       } else if (settingUpDraft) {
-        const reading = { basedOnRevision: invocation.projectRevision, rootPath: canonicalRoot, repositories: manifest.repositories };
-        let read = await readSetupDraftAnswer(finalText ?? "", reading);
-        // An answer that can't be read gets one more try in the same session, with what is wrong with it; whichever comes last is what is reported.
-        if (!read.ok) {
-          await emit("progress", { message: "The draft could not be read; the agent is asked to answer again." });
-          await promptAndSettle(setupDraftRetryPrompt(read.errors));
-          read = await readSetupDraftAnswer(finalText ?? "", reading);
+        const reading = { basedOnRevision: invocation.projectRevision, rootPath: canonicalRoot, repositories: manifest.repositories, metaRepo: invocation.payload.setupMetaRepo };
+        let read = await readSetupProposalAnswer(finalText ?? "", reading);
+        // An answer that can't be read gets one more try in the same session, with what is wrong with it; whichever comes last is what is reported. (An answer the model did not give is
+        // asked for again even when the scan of the folders found something: that is the floor of a proposal, not the proposal.)
+        if (!read.ok || !read.answered) {
+          await emit("progress", { message: "The proposal could not be read; the agent is asked to answer again." });
+          await promptAndSettle(setupProposalRetryPrompt(read.ok ? ["there is no readable answer block"] : read.errors));
+          read = await readSetupProposalAnswer(finalText ?? "", reading);
         }
         monitor.stop();
-        if (!read.ok) throw agentXError("OPERATION_INTERRUPTED", "the setup draft run produced no readable draft");
+        if (!read.ok) throw agentXError("OPERATION_INTERRUPTED", "the setup draft run produced no readable proposal");
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SETUP_DRAFT" });
-        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupDraft: read.draft };
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupProposal: read.proposal };
       } else if (planning) {
         let plan = finalText?.trim();
         // Spec 061: when the broker asked for a structured plan, an answer AgentX cannot read, or that is too long, gets

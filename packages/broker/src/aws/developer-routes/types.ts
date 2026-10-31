@@ -103,6 +103,11 @@ export interface DeveloperApiConfiguration {
   slackRequestQueue?: SlackRequestQueue;
 }
 export interface DeveloperRouteDependencies {
+  /**
+   * Meta repo lane B: a file of one of an org's repositories at a commit, as GitHub holds it (undefined when it is not there; throws when GitHub cannot answer). The setup agent's
+   * citations are re-read through it. Without it every citation reads `unchecked` and nothing is pre-ticked.
+   */
+  setupCitationReader?: (orgId: OrgId, repositoryUrl: string, path: string, commit: string, options: { untilLine?: number; timeoutMs: number }) => Promise<string | undefined>;
   serviceStatus?: Pick<ServiceStatusDependencies, "runtimeStatus">;
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;

@@ -32,7 +32,7 @@ import { hashJson, isConditional, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChec
 import { buildFeatureE2EPlanningContext, isExactFeatureE2ESourceSnapshot } from "../../e2e/feature-plan-planning-context.js";
 import { offersApplicationE2EPlan } from "../../e2e/feature-plan-executable-kinds.js";
 import { evaluateApplicationPlanApproval, type ApplicationAccountsInput, type ApplicationRefusalScope } from "../../e2e/application-plan-approval.js";
-import { canonicalModelName } from "@agentx/contracts";
+import { canonicalModelName, metaRepositoryOf } from "@agentx/contracts";
 import { checkE2EAgentRouteCurrent } from "../../e2e/model-route-registry.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
 import { chatGptOwner, chatGptTaskSelection } from "../../chatgpt/task-model.js";
@@ -485,6 +485,8 @@ export async function taskOperationParts(
       prompt,
       conversationStarted: input.conversationStarted,
       ...(input.workflowMode === undefined ? {} : { workflowMode: input.workflowMode }),
+      // Meta repo lane B: a setup proposal run is told which repository is the project's meta repository, so it looks there for the team's rules, specs and runbooks.
+      ...(input.workflowMode === "SETUP_DRAFT" && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
       // The worker reads a planning answer as this kind of document (a Quick plan has no phase and is a coding plan).
       ...(input.workflowMode === "PLAN" && input.workflowPhase !== undefined ? { workflowPhase: input.workflowPhase } : {}),
       // Every planning step asks for a structured plan, so the worker checks the answer and asks once more when it is unreadable.
