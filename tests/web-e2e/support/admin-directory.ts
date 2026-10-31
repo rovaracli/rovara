@@ -6,7 +6,7 @@ import { createWorkingBranchProvider, createWorkingBranchPageProvider } from "..
 import { seedLaneB, readLaneBAgents } from "./admin-projects-agents.js";
 // Real admin routes over a persistent, bounded transactional table; unsupported expressions fail closed.
 import { BatchGetCommand, GetCommand, QueryCommand, TransactWriteCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMemberKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey, slackBindingKey, developerOrgKey, modelSourcesKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
+import { orgSettingsKey, projectAiKey, orgMemberKey, orgMetaKey, orgSlackTeamKey, slackTeamOrgKey, slackBindingKey, developerOrgKey, modelSourcesKey, OrgRoleSchema, type OrgRole } from "@agentx/contracts";
 import { appCsrfTokenFor } from "../../../packages/broker/src/developer/app-csrf.js";
 import { ModelSourceStore } from "../../../packages/broker/src/model-sources/store.js";
 import { OrgStore } from "../../../packages/broker/src/org/store.js";
@@ -34,7 +34,27 @@ export function createAdminDirectory() {
  put({ ...modelSourcesKey(FIXTURE_ORG),entityType:"ORG_MODEL_SOURCES",revision:1,sources:[],order:["personal-chatgpt","rovara"],credentials:[],removing:[],updatedBy:FIXTURE_DEVELOPER,updatedAt:"2026-10-27T12:00:00Z" });
  function condition(expression: string | undefined, row: Row | undefined, names: Record<string, string> = {}, values: Row = {}): boolean {
   if (expression === undefined) return true;
+  // Respect nested native predicates without importing a different test project's runtime.
+  expression = expression.trim();
+  const split = (text: string, operator: string) => {
+   const parts: string[] = [];let depth = 0, start = 0;
+   for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "(") depth += 1;else if (text[index] === ")") depth -= 1;
+    if (depth === 0 && text.startsWith(operator, index)) { parts.push(text.slice(start, index));start = index + operator.length;index = start - 1; }
+   }
+   parts.push(text.slice(start));return parts;
+  };
+  if (expression.startsWith("(")) {
+   let depth = 0, end = -1;
+   for (let index = 0; index < expression.length; index += 1) { if (expression[index] === "(") depth += 1;else if (expression[index] === ")") depth -= 1;if (depth === 0) { end = index;break; } }
+   if (end === expression.length - 1) return condition(expression.slice(1, -1), row, names, values);
+  }
   if (expression === "attribute_not_exists(pk) OR indexExpiresAt <= :now") return row === undefined || (typeof row.indexExpiresAt === "number" && typeof values[":now"] === "number" && row.indexExpiresAt <= values[":now"]);
+  const alternatives = split(expression, " OR ");
+  if (alternatives.length > 1) return alternatives.map(part => condition(part, row, names, values)).some(Boolean);
+  const conjunction = split(expression, " AND ");
+  if (conjunction.length > 1) return conjunction.map(part => condition(part, row, names, values)).every(Boolean);
+  if (expression === "#expires <= :now") { const actual = row?.[names["#expires"]!], now = values[":now"];return typeof actual === "number" && typeof now === "number" && actual <= now; }
   return expression.split(/\s+AND\s+/).every(part => {
    if (part === "attribute_not_exists(pk)") return row === undefined;
    if (part === "attribute_exists(pk)") return row !== undefined;
@@ -42,10 +62,10 @@ export function createAdminDirectory() {
    if (part === "attribute_not_exists(closedAt)") return row?.closedAt === undefined;
    if (["attribute_not_exists(acceptedAt)", "attribute_not_exists(revokedAt)", "attribute_not_exists(revision)"].includes(part)) return row?.[part.slice("attribute_not_exists(".length, -1)] === undefined;
    if (part === "expiresAt > :now") return typeof row?.expiresAt === "string" && typeof values[":now"] === "string" && row.expiresAt > values[":now"];
-   const absent = /^attribute_not_exists\((archiveRevision|orgId|approvalLastCompanyEligibleLossAt|approvalLastMaintainerLossAt|#[A-Za-z][A-Za-z0-9]*)\)$/.exec(part);
+   const absent = /^attribute_not_exists\((archiveRevision|orgId|approvalLastCompanyEligibleLossAt|approvalLastMaintainerLossAt|#[A-Za-z][A-Za-z0-9_]*)\)$/.exec(part);
    if (absent) return row?.[names[absent[1]!] ?? absent[1]!] === undefined;
-   const equal = /^([#A-Za-z0-9.]+) = (:[A-Za-z0-9]+)$/.exec(part);
-   if (equal === null) throw new Error("Unsupported fixture condition.");
+   const equal = /^([#A-Za-z0-9_.]+) = (:[A-Za-z0-9_]+)$/.exec(part);
+   if (equal === null) throw new Error(`Unsupported fixture condition: ${part}`);
    let actual: unknown = row;for (const field of equal[1]!.split(".")) actual = typeof actual === "object" && actual !== null ? (actual as Row)[names[field] ?? field] : undefined;
    return JSON.stringify(actual) === JSON.stringify(values[equal[2]!]);
   });
@@ -148,6 +168,10 @@ export function createAdminDirectory() {
   setRole,
   changeSourceOrder() { const key=modelSourcesKey(FIXTURE_ORG),row=rows.get(keyOf(key));if(!row||typeof row.revision!=="number")throw new Error("No source fixture.");put({...row,revision:row.revision+1,order:["rovara","personal-chatgpt"]}); },
   seedLaneB() { seedLaneB(put); },
+  seedTaskStops() {
+   put({ ...orgSettingsKey(FIXTURE_ORG, "TASK_STOP_POLICY"), orgId: FIXTURE_ORG, entityType: "ORG_TASK_STOP_POLICY", revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 2000000 } }, enrollment: { version: 1, state: "disabled" } });
+   put({ ...projectAiKey(FIXTURE_ORG, "payments"), orgId: FIXTURE_ORG, project: "payments", entityType: "PROJECT_AI", revision: 1, projectPays: false, monthlyBudgetUsd: 50, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 2000000 } });
+  },
   damageInvite() { const ref = [...rows.values()].filter(row => row.entityType === "ORG_INVITE_DIRECTORY" && row.orgId === FIXTURE_ORG).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1)[0];if (ref === undefined || typeof ref.tokenHash !== "string") throw new Error("No fixture invite.");const key = { pk: `ORG_INVITE#${ref.tokenHash}`, sk: "META" }, record = rows.get(keyOf(key));if (record === undefined) throw new Error("No fixture canonical record.");put({ ...record, role: "future-role" }); },
   async seedInvites() { let seedNow = Date.now() - 60_000;const store = new OrgStore({ documentClient, tableName: "mock-state", now: () => seedNow });for (let i = 0; i < 26; i++) { if (i === 20) seedNow += 60_000;await store.createInvite({ orgId: FIXTURE_ORG, createdBy: FIXTURE_DEVELOPER, role: "member", email: `private.person${i}@example.test` }); }await store.createInvite({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", createdBy: "c".repeat(64), role: "admin", email: "foreign.person@foreign.test" }); },
   roleOf(id: string) { const row = rows.get(keyOf(developerOrgKey(id)));return OrgRoleSchema.parse(row?.role); },

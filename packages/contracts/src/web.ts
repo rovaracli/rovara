@@ -99,3 +99,5 @@ export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema
 export * from "./app-allowed-websites.js";
 
 export * from "./app-project-slack.js";
+
+export { TaskStopEditablePolicySchema, type TaskStopEditablePolicy, TaskStopPendingChangeSchema, TaskStopEditingContextSchema, TaskStopEditBodySchema, TaskStopDecisionBodySchema, TaskStopEditResultSchema, taskStopEditKind } from "./task-stop-editing.js";

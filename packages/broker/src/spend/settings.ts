@@ -1,3 +1,4 @@
+import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
 import type { OwnerFinancialTerms } from "./owner-approval-terms.js";
 // Plan 3 Task 28: the budget settings the spend engine reads. A scope's limit is its base (the org's, a member's, a project's, an agent's
 // own) plus the month's top-up, held to the guardrails; `effectiveLimits` answers it for any list of scopes. This file also holds the
@@ -11,6 +12,7 @@ import {
   DEFAULT_PLANNING_LIMIT_USD,
   ProjectAiSettingsSchema,
   TaskStopProjectPolicySchema,
+  TaskStopPendingChangeSchema,
   sameJsonContent,
   SpendPolicySchema,
   TRIAL_LIMITS_R49,
@@ -152,7 +154,9 @@ export async function writeProjectAi(
 ): Promise<StoredProjectAi> {
   const checks = settingsActorChecks(deps, orgId, by, options);
   // A supplied audit "before" is not authority to discard newer money intent.
-  const current = await readProjectAiWithRevision(deps, orgId, project);
+  const original = await getItem(deps, projectAiKey(orgId, project));
+  const current = parseProjectAiWithRevision(original, project);
+  if (original?.pendingTaskStopChange !== undefined && !TaskStopPendingChangeSchema.safeParse(original.pendingTaskStopChange).success) throw agentXError("CONFIG_INVALID", "The pending Spending change is unreadable.");
   if (options.actor.role !== "owner" && options.actor.role !== "admin") {
     const unchangedFields = (value: ProjectAiSettings) => {
       const copy = { ...value }; delete copy.memberAcceptRunLimitUpToUsd; delete copy.taskStopPolicy; return copy;
@@ -187,7 +191,18 @@ export async function writeProjectAi(
     orgId, actor: auditActorOf(by), occurredAt: updatedAt, project, revision: expected + 1, after: preserved,
     before: options.before ?? current.settings,
   }));
-  const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...preserved, updatedBy: by, updatedAt }, expected);
+  const metadata = Object.fromEntries(["orgId", "project", "pendingTaskStopChange", "seedProvenance"].filter(field => original?.[field] !== undefined).map(field => [field, original![field]]));
+  const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...preserved, ...metadata, updatedBy: by, updatedAt }, expected);
+  if (item.Put !== undefined) {
+    const source = nativeSnapshotConditions(deps.tableName, [projectAiKey(orgId, project)], [original], ["taskStopPolicy", "pendingTaskStopChange", "orgId", "project", "seedProvenance"])[0]!.ConditionCheck!;
+    // Upgrade seeds and pending proposals do not advance the financial revision.
+    // Fence their exact presence and the original settings with this monthly write.
+    item.Put.ConditionExpression = `(${item.Put.ConditionExpression}) AND (${source.ConditionExpression})`;
+    const names = { ...item.Put.ExpressionAttributeNames, ...source.ExpressionAttributeNames };
+    const values = { ...item.Put.ExpressionAttributeValues, ...source.ExpressionAttributeValues };
+    if (Object.keys(names).length > 0) item.Put.ExpressionAttributeNames = names;
+    if (Object.keys(values).length > 0) item.Put.ExpressionAttributeValues = values;
+  }
   const items = [item, ...events.flatMap((event) => auditPending(deps, event))];
   const actorStart = items.length;
   await commit(deps, [...items, ...checks, ...lifecycle], (failed) => [...failed].some(index => index >= actorStart && index < actorStart + checks.length) ? budgetActorRefused() : [...failed].some(index => index >= actorStart + checks.length && index < actorStart + checks.length + lifecycle.length) ? coded("PROJECT_REVISION_MISMATCH", "The project registration or status changed. Reload and review your settings again.") : changedUnderYou(`${project}'s AI settings`), options.request, { settings: preserved, revision: expected + 1 });

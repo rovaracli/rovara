@@ -187,7 +187,7 @@ it("exports a strict browser-safe DTO that cannot claim readiness", async () => 
   }
 });
 for (const method of ["POST", "PUT", "DELETE"]) {
-  it(`does not expose a ${method} policy writer`, async () => {
+  it(method === "PUT" ? "requires native identity and reviewed terms before a company policy PUT" : `does not expose a ${method} policy writer`, async () => {
     const f = fixture();
     let status: number;
     try {
@@ -197,8 +197,9 @@ for (const method of ["POST", "PUT", "DELETE"]) {
       if (!(error instanceof AgentXError)) throw error;
       status = errorStatus(error.code);
     }
-    expect(status).toBe(404);
-    expect(f.db.commandNames().length).toBe(0);
+    expect(status).toBe(method === "PUT" ? 403 : 404);
+    expect(f.db.commandNames().every(name => name === "GetCommand")).toBe(true);
+    expect(f.db.commandNames()).not.toContain("TransactWriteCommand");
   });
 }
 

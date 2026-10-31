@@ -549,3 +549,16 @@ export function auditSlackChannelProposed(input: AuditBuilderBase & { projectNam
 export function auditSlackChannelDecision(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string; proposalId: string; state: "cancelled" | "rejected" }): AuditEventInput {
  return build(input.state === "cancelled" ? "slack_channel.cancelled" : "slack_channel.rejected", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.proposalId });
 }
+
+/** Exact original/proposed policy facts; estimate/inherit has no invented amount. */
+export function auditTaskStopPolicyChange(input: AuditBuilderBase & {
+ action: "spending.policy_changed" | "spending.policy_change_requested" | "spending.policy_change_decided";
+ scopeKind: "company" | "project"; project?: string; revision: number; requestId: string; proposalId?: string;
+ before: { kind: string; stopMicrousd?: number }; after: { kind: string; stopMicrousd?: number }; decision?: string;
+}): AuditEventInput {
+ return build(input.action, input, input.project === undefined ? { kind: "spend_policy", id: "task_stop" } : { kind: "project", name: input.project }, {
+  scopeKind: input.scopeKind, revision: input.revision, requestId: input.requestId, beforeKind: input.before.kind, afterKind: input.after.kind,
+  ...(input.proposalId === undefined ? {} : { proposalId: input.proposalId }), ...(input.decision === undefined ? {} : { decision: input.decision }),
+  ...(input.before.stopMicrousd === undefined ? {} : { beforeMicrousd: input.before.stopMicrousd }), ...(input.after.stopMicrousd === undefined ? {} : { afterMicrousd: input.after.stopMicrousd }),
+ });
+}

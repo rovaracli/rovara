@@ -1,3 +1,4 @@
+import { getTaskStopEditing, writeTaskStopEditing } from "../org/task-stop-editing.js";
 import { projectSlackBrowserHttp } from "../org/project-slack-browser-http.js";
 import { projectAllowedDomainsHttp, type AllowedDomainBrowserDependencies } from "../org/project-allowed-domains-http.js";
 import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
@@ -2184,6 +2185,13 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
+  const spendingEditing = /^\/v1\/app\/org\/task-stop-policy(?:\/projects\/([^/]+))?(?:\/(editing|decisions))?$/.exec(url.pathname);
+  if (spendingEditing !== null) {
+    const project = spendingEditing[1] === undefined ? undefined : decodeURIComponent(spendingEditing[1]);
+    if (request.method === "GET" && spendingEditing[2] === "editing") return getTaskStopEditing(deps, caller, project);
+    if (request.method === "PUT" && spendingEditing[2] === undefined) return writeTaskStopEditing(deps, caller, project, jsonBody(request));
+    if (request.method === "POST" && spendingEditing[2] === "decisions") return writeTaskStopEditing(deps, caller, project, jsonBody(request), true);
+  }
   // Lane A G1: no policy write, default inference or paid-start permission.
   if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-ceiling") return getTaskStopCeiling(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-policy") return getTaskStopCompany(deps, caller);
