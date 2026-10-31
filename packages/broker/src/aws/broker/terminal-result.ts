@@ -1,5 +1,7 @@
 // Part of the broker (split out of ../broker.ts): recording a task's terminal result and the stop, end and close notices.
 
+import { settleLiveSteerReapproval } from "../../agent-sessions/live-steer-reapproval.js";
+import { clearLiveDeliveredSince } from "../../agent-sessions/steer.js";
 import { posix as posixPath } from "node:path";
 import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { checksForSection, StandingFailuresSchema, nextStandingFailures, type StandingFailure, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskResultChecks, type CheckEntry, type LatestChecks, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, redactAndCap, redactText } from "@agentx/contracts";
@@ -475,6 +477,10 @@ export async function recordTerminalResult(
   if (recordedStatus === terminalStatus) await settleGroundingRound(dependencies, operation, terminalStatus);
   // T7c: and the plan it was holding back is finished now (its card posts, or the planner is sent back once).
   if (recordedStatus === terminalStatus) await finishGroundingForOperation(dependencies, operation);
+  // Live steer: a step that stopped because the owner's live message asked for a change outside the approved plan marks that message "needs re-approval" (never throws).
+  if (recordedStatus === terminalStatus && operation.kind === "task" && taskPointer !== undefined) await settleLiveSteerReapproval({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, taskPointer.taskId, error);
+  // Live steer: a step that took a live message and did not succeed runs again without it, so that message's note must not read "already given" to the re-run (scoped to this attempt; never throws).
+  if (recordedStatus === terminalStatus && terminalStatus !== "SUCCEEDED" && operation.kind === "task" && taskPointer !== undefined) await clearLiveDeliveredSince({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, taskPointer.taskId, operation.createdAt);
   // A replay that was stopped ends through the cancel operation that stopped it (the target's own terminal state is written with the cancel's): its record says so.
   if (recordedStatus === terminalStatus && operation.kind === "cancel" && terminalStatus === "SUCCEEDED" && cancelTargetOperation?.workflowE2EAdmission?.purpose === "replay") {
     await settleReplayRound(dependencies, cancelTargetOperation, "CANCELLED");
