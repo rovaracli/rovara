@@ -3634,6 +3634,8 @@ async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: D
   }
   // Plan 6 Task 15: a CI fix that waited for a person (suggest), ran out of rounds or changed nothing goes on at the owner's Retry.
   if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED" && (isCiFixBlockReason(task.workflow.blockReason) || isBranchConflictAskReason(task.workflow.blockReason) || isBranchSyncGiveUpReason(task.workflow.blockReason))) return retryCiFix(deps, caller, access, request);
+  // A lifecycle restart is new agent work, unlike Continue or an existing workflow decision.
+  await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") return retryWorkflowImplementation(deps, caller, access, request);
   if (task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "BLOCKED") return retryWorkflowUnderstand(deps, caller, access, request);
   if (task.workflow?.stage === "PLAN_CRITIQUE" && task.workflow.state === "BLOCKED") return retryPlanCritique(deps, caller, access, request);
@@ -3943,6 +3945,8 @@ async function queueWorkflowCoding(
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const { workflow } = task;
+  // Send-back and coding retries start a new run; archiving must refuse before any task writes.
+  await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   // The same authority this restart asks for once it has committed (below), asked before anything commits: a person who is refused it must not have started a run first.
   await authorizeTaskAction(deps, caller, task.taskId, "work");
   // A human's retry or send-back (rulings R38 and R39) starts a new window of the task's cap, unless that skips an approval they may not decide.
@@ -4429,6 +4433,7 @@ async function startTaskWorkflowReview(deps: DeveloperTaskRouteDependencies, cal
   if (!retrying && request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "the review request is stale; refresh the task and try again");
   }
+  await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   await actionableWorkspace(deps, task);
   try {
     await queueWorkflowReview(deps, task, { ...workflow, candidate: workflow.candidate }, request.requestId, request.instructions, access, caller);

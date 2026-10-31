@@ -1,6 +1,11 @@
 // Suite 4: checks. 4.1 (pass), 4.3 (a broken proposed check) and 4.8 (code changed after checks) are covered by
 // slack-workflow-e2e.test.ts. Here: a real failure sent back, a broken project check, project checks in every round, a
 // timeout, the check runner failing, and an old broker that sends no checks.
+import { randomUUID } from "node:crypto";
+import { projectMetaKey } from "@agentx/contracts";
+import { bearerFor } from "../../support/developer-task-broker.js";
+import { SLACK_MAYA } from "../../support/workflow-e2e.js";
+import { TEST_ORG } from "../../support/orgs.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,6 +21,64 @@ const projectLabel = (e2e: WorkflowE2E) => e2e.workflow().checkPolicy!.required[
 
 describe("Suite 4: checks", () => {
   journeySuite();
+
+  it("refuses archived-project send-back before changing the task or queuing coding", async () => {
+    let fail = false;
+    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS },
+      checkResult: () => fail ? { exitCode: 1, stdout: "", stderr: "1 failing" } : undefined });
+    await atPlanReview(e2e);
+    const key = projectMetaKey(TEST_ORG, "payments");
+    e2e.db.set({ ...e2e.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
+    // An existing plan decision and its ongoing workflow still proceed after archive.
+    fail = true;
+    await e2e.click("agentx_workflow_approve");
+    await e2e.settle();
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED" });
+    const before = structuredClone(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META"));
+    const invocations = e2e.invocations.length;
+    const response = await e2e.handler({ version: "2.0", rawPath: `/v1/dev/tasks/${e2e.taskId()}/workflow/send-back`, rawQueryString: "",
+      headers: { authorization: await bearerFor(SLACK_MAYA), "content-type": "application/json" },
+      requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+      body: JSON.stringify({ requestId: randomUUID(), expectedRevision: e2e.workflow().revision, instructions: "Fix the failed check." }), isBase64Encoded: false });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body) as unknown).toMatchObject({ error: { code: "PROJECT_ARCHIVED" } });
+    expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")).toEqual(before);
+    expect(e2e.invocations).toHaveLength(invocations);
+    const cancelled = await e2e.handler({ version: "2.0", rawPath: `/v1/dev/tasks/${e2e.taskId()}/cancel`, rawQueryString: "",
+      headers: { authorization: await bearerFor(SLACK_MAYA), "content-type": "application/json" },
+      requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+      body: JSON.stringify({ requestId: randomUUID() }), isBase64Encoded: false });
+    expect(cancelled.statusCode).toBe(200);
+  }, 120_000);
+
+  it.each(["PLAN", "IMPLEMENT", "REVIEW"] as const)("refuses an archived-project %s lifecycle retry without changing the task", async (mode) => {
+    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
+    e2e.worker.failNext(`task:${mode}`, "timeout:1800000");
+    if (mode === "PLAN") {
+      expect(await e2e.mention("quick: Add a greet(name) function")).toBe(200);
+      await e2e.settle();
+    } else {
+      await atPlanReview(e2e);
+      await e2e.click("agentx_workflow_approve");
+      await e2e.settle();
+    }
+    expect(e2e.workflow()).toMatchObject({ stage: mode, state: "BLOCKED" });
+    const workflow = e2e.workflow();
+    const key = projectMetaKey(TEST_ORG, "payments");
+    e2e.db.set({ ...e2e.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
+    const before = structuredClone(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META"));
+    const count = e2e.invocations.length;
+    const suffix = mode === "REVIEW" ? "review" : "retry";
+    const response = await e2e.handler({ version: "2.0", rawPath: `/v1/dev/tasks/${e2e.taskId()}/workflow/${suffix}`, rawQueryString: "",
+      headers: { authorization: await bearerFor(SLACK_MAYA), "content-type": "application/json" },
+      requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+      body: JSON.stringify({ requestId: randomUUID(), expectedRevision: workflow.revision, instructions: "Retry the failed step.",
+        ...(mode === "REVIEW" ? { candidateDigest: workflow.candidate!.digest } : {}) }), isBase64Encoded: false });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body) as unknown).toMatchObject({ error: { code: "PROJECT_ARCHIVED" } });
+    expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")).toEqual(before);
+    expect(e2e.invocations).toHaveLength(count);
+  }, 120_000);
 
   it("4.2 a real failure is shown, sent back with the failure, checked again on the new code, and opens the PR", async () => {
     const at: { e2e?: WorkflowE2E } = {};
