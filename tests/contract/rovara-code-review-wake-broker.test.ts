@@ -37,7 +37,9 @@ async function process(event: PullRequestWebhookEvent, options?: { observationMo
   };
   // The feedback path refuses a pull request no task is linked to; that it got as far as asking is the point here.
   await broker.processGithubWorkflowEvent(dependencies as never, event, "delivery-1", options === undefined ? undefined : { ...options, budget: undefined as never, release: "queue" }).catch(() => undefined);
-  return { gets, calls: wake.calls };
+  // Meta repo lane D reads the spec-pull-request row first, for every pull request (one read, handleSpecPullRequestEvent); that read is not the feedback path, so the order pinned here
+  // starts after it: the wake, then the feedback path's reads.
+  return { gets, calls: wake.calls.filter((call) => !call.startsWith("read:SPECPR#")) };
 }
 
 describe("processGithubWorkflowEvent and the tracking wake", () => {
