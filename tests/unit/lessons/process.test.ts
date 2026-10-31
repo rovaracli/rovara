@@ -5,7 +5,7 @@ import { processDraft, resumeAndResettle, settleLesson, type ProcessDeps } from 
 
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, draft, embedder, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, uniqueDraft, MemoryVectors, ScriptedModel, Spend, draft, embedder, settings, verifier } from "./lesson-helpers.js";
 
 function setup(over: { store?: InMemoryLessonStore; model?: ScriptedModel; settings?: ReturnType<typeof settings>; verifier?: ReturnType<typeof verifier> } = {}) {
   const store = over.store ?? new InMemoryLessonStore();
@@ -23,7 +23,7 @@ const text = (title: string, body: string, over: Partial<LessonDraft> = {}): Les
 
 const DAY = 86_400_000;
 const unique = (i: number, sources: string[], over: Partial<LessonDraft["provenance"]> = {}): LessonDraft =>
-  draft({ title: `Topic ${i}`, description: "", body: `The ${Array.from({ length: 6 }, (_, j) => `w${i}x${j}q${i * 31 + j}`).join(" ")} is in src/m${i}/index.ts.`, provenance: { ...draft().provenance, sources, inputSources: sources, authors: [], memberSignal: false, sourceKinds: ["send_back"], measured: true, ...over } });
+  uniqueDraft(i, { sources, inputSources: sources, authors: [], memberSignal: false, sourceKinds: ["send_back"], measured: true, ...over });
 
 describe("per-source spike detection (owner decision 'Lesson limits': no flat caps)", () => {
   async function history(store: InMemoryLessonStore, clock: Clock, source: string, perDay: number, days = 14): Promise<void> {

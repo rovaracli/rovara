@@ -5,11 +5,12 @@
 //   - every lesson version is kept, and every set version records which lesson versions it held, so a rollback restores a past set;
 //   - counters and expiry bookkeeping change in place (`mutate`) without a new version.
 // Every key carries the workspace and the project, so one workspace's call can never read or change another's lessons.
+import { CHANGE_APPROVAL_TTL_DAYS } from "@agentx/contracts";
 import { LessonSchema, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
 import type { LessonStage } from "@agentx/contracts";
 
 export interface ScopeKey { workspaceId: string; project: string }
-export type CommitResult = { ok: true; setVersion: number } | { ok: false; reason: "conflict" };
+export type CommitResult = { ok: true; setVersion: number; /** Lessons a rollback brought back; each comes back needing a person. */ restored?: string[] } | { ok: false; reason: "conflict" };
 
 export interface LoadManifestEntry {
   id: string; version: number; score: number; why: "scope" | "similar" | "path";
@@ -27,6 +28,10 @@ export interface SetSnapshot { setVersion: number; at: number; members: Array<{ 
 export interface LessonStore {
   get(key: ScopeKey, id: string): Promise<Lesson | undefined>;
   list(key: ScopeKey, filter?: { statuses?: readonly LessonStatus[] }): Promise<Lesson[]>;
+  /** Every stored head, including lessons that a rollback dropped from the current set: deletion and erasure walk these, not only the set. */
+  listAllHeads(key: ScopeKey): Promise<Lesson[]>;
+  /** A lesson's head whether or not it is in the current set. */
+  getHead(key: ScopeKey, id: string): Promise<Lesson | undefined>;
   setVersion(key: ScopeKey): Promise<number>;
   versions(key: ScopeKey, id: string): Promise<Lesson[]>;
   snapshots(key: ScopeKey): Promise<SetSnapshot[]>;
@@ -105,6 +110,9 @@ export class InMemoryLessonStore implements LessonStore {
     return out;
   }
 
+  async listAllHeads(key: ScopeKey): Promise<Lesson[]> { const s = this.of(key); return [...s.heads.keys()].sort().map((id) => clone(s.heads.get(id)!)); }
+  async getHead(key: ScopeKey, id: string): Promise<Lesson | undefined> { const h = this.of(key).heads.get(id); return h === undefined ? undefined : clone(h); }
+
   async setVersion(key: ScopeKey): Promise<number> { return this.of(key).sets.at(-1)!.setVersion; }
   async versions(key: ScopeKey, id: string): Promise<Lesson[]> { return clone(this.of(key).versions.get(id) ?? []); }
   async snapshots(key: ScopeKey): Promise<SetSnapshot[]> { return clone(this.of(key).sets); }
@@ -146,6 +154,7 @@ export class InMemoryLessonStore implements LessonStore {
     const target = s.sets.find((x) => x.setVersion === targetSetVersion);
     if (target === undefined || targetSetVersion >= expectedSetVersion) return { ok: false, reason: "conflict" };
     const members = new Map<string, number>();
+    const restoredIds: string[] = [];
     for (const m of target.members) {
       // A withdrawn lesson stays withdrawn and a purged one stays gone, whatever the earlier set held.
       const fate = s.gone.get(m.id);
@@ -157,13 +166,19 @@ export class InMemoryLessonStore implements LessonStore {
       const restored = clone(content);
       // Counters and expiry are bookkeeping about use, not content: a rollback does not rewind them.
       if (current !== undefined) for (const field of [...USAGE_FIELDS, "expiresAt"]) (restored as Record<string, unknown>)[field] = clone((current as Record<string, unknown>)[field]);
+      // A rollback never restores approval. Automatic approval is dropped and the lesson comes back needing a person; without a person's approval it is pending, so it
+      // is not loaded until the normal tier check and approval have run again.
+      restored.approvals = restored.approvals.filter((a) => a.mode !== "auto");
+      restored.reviewRequired = true;
+      if ((restored.status === "active" || restored.status === "stale") && restored.approvals.length === 0) { restored.status = "pending"; restored.pendingExpiresAt = at + CHANGE_APPROVAL_TTL_DAYS * DAY; }
       s.heads.set(m.id, restored);
       members.set(m.id, m.version);
+      restoredIds.push(m.id);
     }
     s.members = members;
     const setVersion = expectedSetVersion + 1;
     s.sets.push({ setVersion, at, members: [...members.entries()].map(([id, version]) => ({ id, version })).sort((a, b) => a.id.localeCompare(b.id)) });
-    return { ok: true, setVersion };
+    return { ok: true, setVersion, restored: restoredIds };
   }
 
   async mutate(key: ScopeKey, id: string, fn: (lesson: Lesson) => Partial<Pick<Lesson, (typeof VOLATILE_FIELDS)[number]>> | undefined): Promise<Lesson | undefined> {

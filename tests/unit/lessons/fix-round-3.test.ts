@@ -11,7 +11,7 @@ import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-
 import { BASELINE_DAILY_GROWTH, baselineOf, noteCandidateSources } from "../../../packages/broker/src/lessons/sources.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { classifyTier, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, candidateJson, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, uniqueDraft, MemoryVectors, ScriptedModel, Spend, candidateJson, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier } from "./lesson-helpers.js";
 
 const DAY = 86_400_000;
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
@@ -226,10 +226,7 @@ describe("minors", () => {
   it("an innocent member who merely appears in flooded prompts is not paused; the flood's own source and the cited author are", async () => {
     const { deps, store } = pipeline();
     for (let i = 0; i < 12; i += 1) {
-      await processDraft(deps, KEY, draft({
-        title: `Topic ${i}`, description: "", body: `The w${i}x0q${i} w${i}x1q${i} w${i}x2q${i} is in src/m${i}/index.ts.`,
-        provenance: { ...draft().provenance, sources: ["member:bob"], inputSources: ["member:bob", "member:ann", "slack:attacker"], authors: ["bob"], measured: true },
-      }));
+      await processDraft(deps, KEY, uniqueDraft(i, { sources: ["member:bob"], inputSources: ["member:bob", "member:ann", "slack:attacker"], authors: ["bob"], measured: true }));
     }
     const paused = Object.keys((await store.flags(KEY)).pausedSources ?? {});
     expect(paused).toContain("slack:attacker");

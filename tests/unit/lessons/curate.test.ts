@@ -215,8 +215,9 @@ describe("atomic delta writes and rollback", () => {
     expect((await store.get(KEY, "les_aaaa1111"))).toMatchObject({ title: "Changed", status: "retired", version: 2 });
     expect((await store.get(KEY, "les_aaaa1111"))!.counters.helpful).toBe(4);
     const current = await store.setVersion(KEY);
-    expect(await store.rollback(KEY, v1, current, 3)).toEqual({ ok: true, setVersion: current + 1 });
-    expect(await store.get(KEY, "les_aaaa1111")).toMatchObject({ title: "Retries use withRetry", status: "active" });
+    expect(await store.rollback(KEY, v1, current, 3)).toEqual({ ok: true, setVersion: current + 1, restored: ["les_aaaa1111"] });
+    // A rollback never restores approval: the automatic one is dropped and the lesson waits for a person.
+    expect(await store.get(KEY, "les_aaaa1111")).toMatchObject({ title: "Retries use withRetry", status: "pending", reviewRequired: true, approvals: [] });
     expect((await store.get(KEY, "les_aaaa1111"))!.counters.helpful).toBe(4);
     expect(await store.get(KEY, "les_bbbb2222")).toBeUndefined();
     expect((await store.versions(KEY, "les_aaaa1111")).map((v) => v.version)).toEqual([1, 2]);

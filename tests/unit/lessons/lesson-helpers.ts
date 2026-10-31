@@ -107,6 +107,12 @@ export function draft(over: Partial<LessonDraft> = {}): LessonDraft {
   };
 }
 
+/** A tier-0-shaped draft whose words are all distinct (so the curator does not merge a run of them) and all repeated from its own cited anchor (so the slot allow-list accepts them). */
+export function uniqueDraft(i: number, prov: Partial<LessonDraft["provenance"]> = {}, over: Partial<LessonDraft> = {}): LessonDraft {
+  const tokens = Array.from({ length: 6 }, (_, j) => `w${i}x${j}q${i * 31 + j}`);
+  return draft({ title: `Helper ${i}`, description: "", body: `The ${tokens.join(" ")} is in src/m${i}/index.ts.`, citations: [codeCite({ anchor: `const ${tokens.join("_")} = load();` })], provenance: { ...draft().provenance, ...prov }, ...over });
+}
+
 export function subject(spans: EvidenceSpan[], over: Partial<ReflectSubject> = {}): ReflectSubject {
   return {
     kind: "task", id: "task-1", workspaceId: WS, project: PROJECT, repositories: ["api"], baseCommit: BASE, mergedCommit: MERGED, outcome: "merged",

@@ -206,7 +206,7 @@ export const retireByPerson = (deps: ApproveDeps, input: { workspaceId: string; 
   decideOnce(deps, { ...input, allowed: ["active", "stale", "pending", "candidate"], to: "retired", action: "lesson.retired" });
 
 /** Restores an earlier lesson-set version (design §4.6). Audited `lesson.rolled_back`. */
-export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId: string; project: string; targetSetVersion: number; actorId: string }): Promise<{ ok: true; setVersion: number } | { ok: false; code: ApprovalFailure }> {
+export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId: string; project: string; targetSetVersion: number; actorId: string; /** Runs the normal tier check again on each restored lesson (the caller passes `settleLesson`). */ onRestored?: (lessonId: string) => Promise<unknown> }): Promise<{ ok: true; setVersion: number; restored: string[] } | { ok: false; code: ApprovalFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
@@ -215,7 +215,9 @@ export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId:
   if (!(await requireAudit(deps.audit, { action: "lesson.rolled_back", workspaceId: key.workspaceId, project: key.project, actor: input.actorId, facts: { to: input.targetSetVersion, from: current } }))) return { ok: false, code: "audit_unavailable" };
   const result = await deps.store.rollback(key, input.targetSetVersion, current, deps.now());
   if (!result.ok) return { ok: false, code: "conflict" };
-  return { ok: true, setVersion: result.setVersion };
+  const restored = result.restored ?? [];
+  for (const id of restored) { try { await input.onRestored?.(id); } catch { /* the lesson stays pending for a person */ } }
+  return { ok: true, setVersion: result.setVersion, restored };
 }
 
 /**

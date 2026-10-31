@@ -91,10 +91,50 @@ const THING = "(?<thing>[A-Za-z0-9][A-Za-z0-9 _/'-]{0,80}?)";
 /** Words that make a "thing" an instruction or an ordering rather than a name: modals, sequence words, imperatives. */
 const THING_FORBIDDEN = /\b(must|should|shall|need|needs|before|after|first|then|always|never|every|each|call|calls|run|runs|use|uses|using|ensure|make|do|dont|avoid|check|install|remember|please|only|once)\b/iu;
 const IMPERATIVE_START = /^(?:use|run|call|add|set|make|keep|avoid|never|always|do|don'?t|ensure|check|install|fix|update|remove|delete|create|write|read|open|start|stop|enable|disable|import|export|before|after|first|when|if|please)\b/iu;
-/** A title is a noun phrase: no instruction, no modal, no path. */
-export function isPlainTitle(title: string): boolean {
+/**
+ * The closed vocabulary of the free-text slots (a title, a description, the "thing" of a template). A word is accepted only if it is a function word, a fixed
+ * noun below, a number, or a word of the lesson's OWN cited material (its code paths and anchors, its scope), passed in as `vocab`. Everything else, including
+ * every verb, is not accepted, so a sentence an attacker writes cannot go through a slot just because it contains no word on a deny-list.
+ */
+const FIXED_WORDS: ReadonlySet<string> = new Set((
+  "the a an of for in on at under and or to by with from api http json yaml sql html css url id ids pr " +
+  "service helper module package library client server config configuration setting option flag timeout limit retry handler function class method endpoint route model schema table queue cache " +
+  "worker job parser validator formatter logger logging utility wrapper adapter interface type constant default value field file directory folder repo repository code data request response " +
+  "database db billing matching money amount cent date time name template test fixture script version release build workflow pipeline component screen page view store state event message " +
+  "error exception result input output param parameter argument key token session user account customer order payment invoice item list array map set string number boolean object " +
+  "layer shared common base core internal public private main module middleware plugin hook feature metric report query command cli app web mobile backend frontend project team policy rule"
+).split(/\s+/u));
+const CONNECTIVE: ReadonlySet<string> = new Set(["is", "are", "use", "uses", "called", "named", "known", "as", "lives", "live", "located", "stored", "defined", "configured", "implemented", "declared", "built", "depends", "inside"]);
+
+/** Words of a lesson's own cited material, lower-cased and split on punctuation and camelCase: what a title or a slot may repeat from the code. */
+export function vocabularyOf(...pieces: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const piece of pieces) for (const token of piece.split(/[^A-Za-z0-9]+/u)) {
+    if (token === "" || token.length > 40) continue;
+    out.add(token.toLowerCase());
+    for (const part of token.split(/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/u)) if (part !== "") out.add(part.toLowerCase());
+  }
+  return out;
+}
+const knownWord = (word: string, vocab: ReadonlySet<string>): boolean => {
+  const w = word.toLowerCase();
+  if (/^v?\d+(\.\d+)*$/u.test(w)) return true;
+  for (const form of [w, w.replace(/ies$/u, "y"), w.replace(/es$/u, ""), w.replace(/s$/u, "")]) if (FIXED_WORDS.has(form) || vocab.has(form)) return true;
+  return false;
+};
+const SLOT_CHARS = /^[A-Za-z0-9 _'-]{1,80}$/u;
+/** A slot (the thing of a template) holds at most nine words, from the closed character set, every one of them accepted by `knownWord`. */
+export function isPlainSlot(slot: string, vocab: ReadonlySet<string>): boolean {
+  const words = slot.trim().split(/\s+/u).filter((w) => w !== "");
+  return words.length >= 1 && words.length <= 9 && SLOT_CHARS.test(slot.trim()) && words.every((w) => knownWord(w.replace(/^'+|'+$/gu, ""), vocab));
+}
+
+/** A title is a short noun phrase made only of accepted words (the closed list plus the lesson's own cited words, and the template verbs): no instruction, no path. */
+export function isPlainTitle(title: string, vocab: ReadonlySet<string> = new Set()): boolean {
   const t = normaliseForScan(title).replace(/[`"]/gu, "").trim();
-  return t.length > 0 && t.length <= 80 && !IMPERATIVE_START.test(t) && !THING_FORBIDDEN.test(t.replace(/\buses?\b/giu, "")) && !/[/~\\]/u.test(t) && !hasEncodedBlob(t);
+  if (t.length === 0 || t.length > 80 || IMPERATIVE_START.test(t) || /[/~\\]/u.test(t) || hasEncodedBlob(t)) return false;
+  const words = t.split(/\s+/u);
+  return words.length <= 9 && words.every((w) => CONNECTIVE.has(w.toLowerCase()) || knownWord(w.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/gu, ""), vocab));
 }
 const NAME = "[A-Za-z_@][\\w@-]*(?:\\.[\\w-]+)*";
 const PATH = "[\\w@.~-]+(?:/[\\w@.~*-]+)*/?";
@@ -105,6 +145,7 @@ const TEMPLATES: readonly RegExp[] = [
 ];
 const CODE_EXT_RE = new RegExp(`\\.(?:${CODE_EXT})$`, "iu");
 function plainToken(token: string, kind: "name" | "path"): boolean {
+  if (token.length > (kind === "name" ? 60 : 100)) return false;
   const segments = token.split("/").filter((s) => s !== "");
   if (segments.some((s) => s === ".." || s === ".")) return false;
   for (const [i, seg] of segments.entries()) {
@@ -117,7 +158,7 @@ function plainToken(token: string, kind: "name" | "path"): boolean {
   return kind === "name" || segments.length > 0;
 }
 const isNameTemplate = (template: RegExp): boolean => template === TEMPLATES[1];
-export function isPlainDeclarative(text: string): boolean {
+export function isPlainDeclarative(text: string, vocab: ReadonlySet<string> = new Set()): boolean {
   const folded = normaliseForScan(text).replace(/[`"\u201C\u201D]/gu, "").trim();
   if (folded === "" || folded.length > 400 || /[\n\r]/u.test(folded) || hasEncodedBlob(folded)) return false;
   const sentences = folded.split(/[.!?](?:\s+|$)/u).map((s) => s.trim()).filter((s) => s !== "");
@@ -128,7 +169,7 @@ export function isPlainDeclarative(text: string): boolean {
       if (match === null) continue;
       const thing = match.groups?.thing ?? "";
       // The slot before the verb is a name for something: short, with no modal, sequencing or imperative word in it.
-      if (thing.trim().split(/\s+/u).length > 9 || THING_FORBIDDEN.test(thing.replace(/\b(?:retries|uses?)\b/giu, "")) || IMPERATIVE_START.test(thing.trim())) continue;
+      if (!isPlainSlot(thing, vocab) || THING_FORBIDDEN.test(thing.replace(/\b(?:retries|uses?)\b/giu, "")) || IMPERATIVE_START.test(thing.trim())) continue;
       const tokens = match.slice(1).filter((t): t is string => t !== undefined && t !== thing);
       // A path in the body is judged like a scope path: nothing that touches tests, CI, auth or secrets, and nothing outside the repository (~ or absolute).
       if (!isNameTemplate(template) && tokens.some((t) => /^[~/]/u.test(t) || touchesRiskyPath([t]))) continue;

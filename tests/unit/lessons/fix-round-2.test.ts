@@ -11,7 +11,7 @@ import { PROJECT_VOLUME_KEY } from "../../../packages/broker/src/lessons/sources
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { classifyTier, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
-import { Alerts, Audit, Clock, KEY, lessonRecord, seed, MemoryVectors, ScriptedModel, Spend, candidateJson, codeCite, draft, embedder, memberSpan, reply, settings, subject, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, uniqueDraft, lessonRecord, seed, MemoryVectors, ScriptedModel, Spend, candidateJson, codeCite, draft, embedder, memberSpan, reply, settings, subject, verifier } from "./lesson-helpers.js";
 
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
 const tierInput = (over: Partial<TierInput> = {}): TierInput => ({ ...draft(), citationChecks: valid, ...over });
@@ -128,7 +128,7 @@ describe("N1: 'measured outcome' is a structured fact, never a span the model ci
     expect((await run([edit, sendBack], ["S1"])).drafts[0]!.provenance.measured).toBe(true);
     const ci: EvidenceSpan = { kind: "ci_failure", text: "timeout in matching", trust: "rovara", eventId: "ev-c" };
     expect((await run([edit, ci], ["S1"])).drafts[0]!.provenance.measured).toBe(true);
-    expect((await run([edit], ["S1"], { outcome: "reverted" })).drafts[0]!.provenance.measured).toBe(true);
+    expect((await run([edit], ["S1"], { outcome: "reverted", revertedBy: "bob" })).drafts[0]!.provenance.measured).toBe(true);
   });
 
   it("a CI failure that is only system text (shaped by an attacker) is not measured", async () => {
@@ -168,7 +168,7 @@ describe("N2: two independent sources are two distinct people or sources, not tw
 
 describe("N3: a flood spread over many sources is seen, and every source in the input is counted", () => {
   const cand = (i: number, sources: string[], inputSources = sources) =>
-    draft({ title: `Topic ${i}`, description: "", body: `The ${Array.from({ length: 6 }, (_, j) => `w${i}x${j}q${i * 31 + j}`).join(" ")} is in src/m${i}/index.ts.`, provenance: { ...draft().provenance, sources, inputSources, authors: [], memberSignal: false, measured: true } });
+    uniqueDraft(i, { sources, inputSources, authors: [], memberSignal: false, measured: true });
 
   it("20 sources x 9 candidates collect everything, pause no source, and alert the project once", async () => {
     const { deps, store, alerts, audit } = pipeline();

@@ -29,6 +29,8 @@ export interface ReflectSubject {
   /** Trust of whoever started the task, and of everyone who steered it (a comment, a send-back, a Slack ask). Unknown is outsider. */
   /** The canonical developer id of whoever started the task. Their own send-backs are never a measured outcome. */
   initiatorId?: string;
+  /** The canonical developer id of whoever reverted the task's change (when it was reverted). Unknown means the revert does not count as a measured outcome. */
+  revertedBy?: string;
   initiatorTrust?: TrustClass; steeringTrust?: readonly TrustClass[]; intentTrust?: TrustClass;
   /** Permalinks the task's lessons may cite (pull request URLs). Anything else a model names is dropped. */
   links?: readonly string[];

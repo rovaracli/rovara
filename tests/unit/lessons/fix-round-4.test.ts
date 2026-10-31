@@ -74,7 +74,9 @@ describe("title, description, the thing slot and body paths", () => {
     expect(tierOf(over as Partial<TierInput>).tier).toBeGreaterThanOrEqual(1);
   });
   it("plain titles, descriptions and bodies still are", () => {
-    expect(isPlainTitle("Retries use withRetry")).toBe(true);
+    const vocab = new Set(["withretry", "with", "retry"]);
+    expect(isPlainTitle("Retries use withRetry", vocab)).toBe(true);
+    expect(isPlainTitle("Retries use withRetry")).toBe(false);
     expect(isPlainTitle("Before building")).toBe(false);
     expect(isPlainDeclarative("The retry helper is called withRetry.")).toBe(true);
     expect(isPlainDeclarative("The first thing to call before every build is at src/prep.ts.")).toBe(false);

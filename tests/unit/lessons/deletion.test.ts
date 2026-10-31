@@ -21,7 +21,7 @@ const resting = (id: string, events: string[], over: Partial<Lesson> = {}): Less
 const gone = (...ids: string[]) => new Set(ids);
 
 describe("lesson deletion port (learning side)", () => {
-  it("affected: lessons naming a deleted id in sources or record citations, in this workspace and project only, not already finished", async () => {
+  it("affected: lessons naming a deleted id in sources or record citations (also finished ones: their versions must be scrubbed), in this workspace and project only", async () => {
     const { port, add } = setup();
     await add(resting("les_a0000001", ["A"]));
     await add(resting("les_b0000001", ["B"]));
@@ -30,7 +30,7 @@ describe("lesson deletion port (learning side)", () => {
     await add(resting("les_e0000001", ["A"], { workspaceId: "ws-B" }));
     await add(resting("les_f0000001", ["A"], { project: "proj-2" }));
     const found = await port.affected(WS, PROJECT, gone("A"));
-    expect(found.map((l) => l.id).sort()).toEqual(["les_a0000001", "les_c0000001"]);
+    expect(found.map((l) => l.id).sort()).toEqual(["les_a0000001", "les_c0000001", "les_d0000001"]);
   });
 
   it("forgetSources prunes the deleted ids from provenance.sourceEvents AND record citations (a new version); counters survive", async () => {
