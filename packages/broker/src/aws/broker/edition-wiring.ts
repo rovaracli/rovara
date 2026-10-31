@@ -26,6 +26,8 @@ export function installEditionPolicy(environment: Record<string, string | undefi
 
 /** The SSM parameter the foundation keeps for an install that has an edition. */
 export const editionRecordName = (env: string): string => `/agentx/${env}/edition`;
+/** The backup the CLI keeps while it has the record out of the way (an interrupted deploy): while the record is missing it IS the edition on record. */
+export const editionBackupName = (env: string): string => `/agentx/${env}/edition-backup`;
 
 export const EDITION_STAMP_MISSING_MESSAGE = "This install has an edition on record, but this process was started without it. It will not serve until it is deployed with its edition.";
 export const EDITION_STAMP_DIFFERS_MESSAGE = "This process's edition is not the edition this install has on record. It will not serve until it is deployed with the edition on record.";
@@ -45,6 +47,8 @@ export function createEditionGuard(input: {
   stamp: EditionPolicy["edition"] | undefined;
   /** The record's name, or undefined for an install with no named environment (nothing to check). */
   recordName: string | undefined;
+  /** The backup's name: a record that is missing while the backup exists is that edition on record, not a legacy install. */
+  backupName?: string | undefined;
   /** The record's value, or undefined when there is none. Throws when it cannot be read. */
   read: (name: string) => Promise<string | undefined>;
   log?: (entry: Record<string, unknown>) => void;
@@ -61,6 +65,14 @@ export function createEditionGuard(input: {
       // Only a parameter that does not exist (the reader answers undefined) is a legacy install.
       input.log?.({ event: "edition.record_unreadable", level: "error" });
       throw agentXError("RUNTIME_UNAVAILABLE", EDITION_RECORD_UNREADABLE_MESSAGE);
+    }
+    if (value === undefined && input.backupName !== undefined) {
+      try {
+        value = await input.read(input.backupName);
+      } catch {
+        input.log?.({ event: "edition.record_unreadable", level: "error" });
+        throw agentXError("RUNTIME_UNAVAILABLE", EDITION_RECORD_UNREADABLE_MESSAGE);
+      }
     }
     if (value === undefined) {
       if (input.stamp === "enterprise") throw agentXError("RUNTIME_UNAVAILABLE", EDITION_RECORD_UNREADABLE_MESSAGE);

@@ -28,7 +28,7 @@ import { duplicateMerger } from "../org/merge-members.js";
 import { OrgStore } from "../org/store.js";
 import { unlockTrial } from "../org/trial.js";
 import { trialAvailable } from "../org/trial-availability.js";
-import { createEditionGuard, editionRecordName, installEditionPolicy, ssmEditionRecordReader } from "./broker/edition-wiring.js";
+import { createEditionGuard, editionBackupName, editionRecordName, installEditionPolicy, ssmEditionRecordReader } from "./broker/edition-wiring.js";
 import { SSMClient } from "@aws-sdk/client-ssm";
 import { ssoStoresFor } from "../developer/sso-sign-in.js";
 import type { HttpApiV2Event } from "./lambda.js";
@@ -273,7 +273,7 @@ function build(env: NodeJS.ProcessEnv): ReturnType<typeof createDeveloperIdentit
   const singleOrg = singleOrgIdFor(config);
   // Enterprise foundations E2/E3: the edition from the deploy stamp, read once; the hosted cloud method is the cross-check, as in the broker.
   const editionPolicy = installEditionPolicy(env, config.cloud !== undefined);
-  editionGuard = createEditionGuard({ stamp: editionPolicy?.edition, recordName: editionRecordName(config.env), read: ssmEditionRecordReader(new SSMClient(region)), log });
+  editionGuard = createEditionGuard({ stamp: editionPolicy?.edition, recordName: editionRecordName(config.env), backupName: editionBackupName(config.env), read: ssmEditionRecordReader(new SSMClient(region)), log });
   const ssoStores = ssoStoresFor({ documentClient, tableName: stateTableName, policy: editionPolicy });
   // Plan 2, Task 8: the notice of a newly linked sign-in method goes out through the cloud sign-in's SES sender (empty: no sender, no notice).
   // SES identities are regional, so the client sends in the region of the sender's identity ARN when the stack names one.

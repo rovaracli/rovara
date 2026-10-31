@@ -13,13 +13,25 @@ export const editionRecordName = (env: string): string => `/agentx/${env}/editio
 
 export const EDITION_NEEDS_CDK_MESSAGE = "The prebuilt templates carry no edition. An install with an edition (Enterprise) must be synthesized from source: use --engine cdk with --source.";
 
-/** The edition the foundation recorded for this environment, or undefined when it recorded none (an install deployed before editions, or the hosted cloud). */
-export async function readRecordedEdition(store: ParameterStore, env: string): Promise<Edition | undefined> {
-  const stored = await store.get(editionRecordName(env));
-  if (stored === undefined) return undefined;
-  const parsed = EditionSchema.safeParse(stored.value);
-  if (!parsed.success) throw agentXError("CONFIG_INVALID", `The edition recorded for environment ${env} (${editionRecordName(env)}) is not "enterprise" or "public"; fix or remove that parameter before deploying.`);
+/** The backup of the record, written before the record is ever taken out of the way (see `adoptOrphanedEditionRecord`). No stack owns it. */
+export const editionBackupName = (env: string): string => `/agentx/${env}/edition-backup`;
+
+const parsedEdition = (value: string, name: string, env: string): Edition => {
+  const parsed = EditionSchema.safeParse(value);
+  if (!parsed.success) throw agentXError("CONFIG_INVALID", `The edition recorded for environment ${env} (${name}) is not "enterprise" or "public"; fix or remove that parameter before deploying.`);
   return parsed.data;
+};
+
+/**
+ * The edition the install has on record: the foundation's record, or its backup while the record is out of the way (an interrupted deploy). Both present must agree,
+ * and a value that is not an edition refuses: while either exists the edition cannot be steered to another.
+ */
+export async function readRecordedEdition(store: ParameterStore, env: string): Promise<Edition | undefined> {
+  const [record, backup] = await Promise.all([store.get(editionRecordName(env)), store.get(editionBackupName(env))]);
+  const recorded = record === undefined ? undefined : parsedEdition(record.value, editionRecordName(env), env);
+  const backedUp = backup === undefined ? undefined : parsedEdition(backup.value, editionBackupName(env), env);
+  if (recorded !== undefined && backedUp !== undefined && recorded !== backedUp) throw agentXError("CONFIG_INVALID", `The edition record and its backup for environment ${env} disagree; fix them before deploying.`);
+  return recorded ?? backedUp;
 }
 
 /**
@@ -52,9 +64,28 @@ export async function adoptOrphanedEditionRecord(input: {
 }): Promise<"owned" | "adopted" | "none"> {
   if (input.edition !== "enterprise") return "none";
   const name = editionRecordName(input.env);
-  if ((await input.store.get(name)) === undefined) return "none";
+  const record = await input.store.get(name);
+  if (record === undefined) return "none";
   const owned = await input.foundationResources();
   if (owned?.includes(name) === true) return "owned";
+  // The backup first, then the removal: whatever happens next the edition is on record in one of the two, and nothing can steer the install to another.
+  await input.store.put(editionBackupName(input.env), record.value);
   await input.store.delete(name);
   return "adopted";
+}
+
+/**
+ * After the foundation deploy that followed an adoption. Completed: the stack owns the record again, so the backup is removed (only when the record is back and says the
+ * same). Not completed: the record is put back from the backup, so a failed deploy leaves the install as it was. A process that is killed does neither; the backup stays and
+ * is read as the record by the next deploy and by the broker.
+ */
+export async function settleEditionRecord(input: { store: ParameterStore; env: string; completed: boolean }): Promise<void> {
+  const backup = await input.store.get(editionBackupName(input.env));
+  if (backup === undefined) return;
+  const record = await input.store.get(editionRecordName(input.env));
+  if (input.completed) {
+    if (record?.value === backup.value) await input.store.delete(editionBackupName(input.env));
+    return;
+  }
+  if (record === undefined) await input.store.put(editionRecordName(input.env), backup.value);
 }

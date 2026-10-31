@@ -23,7 +23,7 @@ import { settingsParameterName } from "../environments/settings.js";
 import { ACCOUNT_PATTERN, AuditLockProfileSchema, BudgetAnswersSchema, CLOUD_NEEDS_CDK_MESSAGE, CloudSignInAnswersSchema, IdentityAnswersSchema, ImagesAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
 import { assertCdkBootstrapped, assertSourceAtRelease, buildSource, cdkDeployer, type CommandRunner } from "./cdk-engine.js";
 import { synthDeclaredParameters } from "./cdk-source.js";
-import { adoptOrphanedEditionRecord, resolveDeployEdition } from "./edition.js";
+import { adoptOrphanedEditionRecord, resolveDeployEdition, settleEditionRecord } from "./edition.js";
 import type { ChangeSetChange, DeployEvent, StackDeployer, StackOutputs } from "./deployer.js";
 import { deployEnvironment, type DeployAnswers, type DeployEnvironmentResult } from "./deploy-environment.js";
 import { ensureCdkPassRole } from "../init/pass-role.js";
@@ -652,6 +652,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
       ...(prepared.declaredParameters === undefined ? {} : { declaredParameters: prepared.declaredParameters }),
       ...(prepared.ensurePassRole === undefined ? {} : { ensurePassRole: prepared.ensurePassRole }),
       ...(prepared.adoptEditionRecord === undefined ? {} : { adoptEditionRecord: prepared.adoptEditionRecord }),
+      ...(prepared.settleEditionRecord === undefined ? {} : { settleEditionRecord: prepared.settleEditionRecord }),
       onEvent,
       ...(confirm === undefined ? {} : { confirm }),
       ...(deps.now === undefined ? {} : { now: deps.now }),
@@ -688,6 +689,7 @@ export interface PreparedDeployment {
   ensurePassRole?: () => Promise<"present" | "added">;
   /** The cdk engine, Enterprise only: see `adoptOrphanedEditionRecord`. */
   adoptEditionRecord?: () => Promise<"owned" | "adopted" | "none">;
+  settleEditionRecord?: (completed: boolean) => Promise<void>;
   /** Removes the cdk engine's outputs directory; a no-op for templates. */
   cleanup(): Promise<void>;
 }
@@ -803,7 +805,7 @@ export async function prepareDeployment(input: {
     partition,
     ...(declaredParameters === undefined ? {} : { declaredParameters }),
     ...(ensurePassRole === undefined ? {} : { ensurePassRole }),
-    ...(input.engine === "cdk" && edition === "enterprise" ? { adoptEditionRecord: () => adoptOrphanedEditionRecord({ store, env: input.env, edition, foundationResources: deps.foundationResources ?? cloudFormationResourceIds(new CloudFormationClient({ region }), environmentStackName(input.env, "foundation")) }) } : {}),
+    ...(input.engine === "cdk" && edition === "enterprise" ? { settleEditionRecord: (completed: boolean) => settleEditionRecord({ store, env: input.env, completed }), adoptEditionRecord: () => adoptOrphanedEditionRecord({ store, env: input.env, edition, foundationResources: deps.foundationResources ?? cloudFormationResourceIds(new CloudFormationClient({ region }), environmentStackName(input.env, "foundation")) }) } : {}),
     async cleanup() {
       if (outputsDir !== undefined) await rm(outputsDir, { recursive: true, force: true });
     },

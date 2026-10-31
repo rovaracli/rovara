@@ -122,6 +122,7 @@ export function deployStep(input: { id: DeployStepId; title: string; after?: (co
         ...(deployment.declaredParameters === undefined ? {} : { declaredParameters: deployment.declaredParameters }),
         ...(deployment.ensurePassRole === undefined ? {} : { ensurePassRole: deployment.ensurePassRole }),
         ...(deployment.adoptEditionRecord === undefined ? {} : { adoptEditionRecord: deployment.adoptEditionRecord }),
+        ...(deployment.settleEditionRecord === undefined ? {} : { settleEditionRecord: deployment.settleEditionRecord }),
         onEvent: (event) => context.write(progressLine(event)),
         now: context.now,
       });

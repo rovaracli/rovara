@@ -36,6 +36,7 @@ export function grantEditionRecordRead(fn: lambda.Function, env: string): void {
   fn.addToRolePolicy(new iam.PolicyStatement({
     sid: "ReadEditionRecord",
     actions: ["ssm:GetParameter"],
-    resources: [`arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${editionRecordParameterName(env)}`],
+    // The record, and the backup the CLI keeps while it has the record out of the way.
+    resources: [editionRecordParameterName(env), `/agentx/${env}/edition-backup`].map((name) => `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${name}`),
   }));
 }

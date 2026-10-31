@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { cdkAppArguments, cdkDiff, CDK_CONSTRUCT_IDS, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
 import { DeployAnswersSchema, prepareDeployment } from "../../packages/cli/src/deploy/commands.js";
-import { adoptOrphanedEditionRecord, editionRecordName, readRecordedEdition, resolveDeployEdition } from "../../packages/cli/src/deploy/edition.js";
+import { adoptOrphanedEditionRecord, editionBackupName, editionRecordName, readRecordedEdition, resolveDeployEdition, settleEditionRecord } from "../../packages/cli/src/deploy/edition.js";
 import { collectEdition, type InitFlags } from "../../packages/cli/src/init/answers.js";
 import { initDeployAnswers } from "../../packages/cli/src/init/deploy-steps.js";
 import { InitAnswersSchema } from "../../packages/cli/src/init/install-state.js";
@@ -214,6 +214,44 @@ describe("a retained edition record that its stack no longer owns (fix round 2, 
     const owned = withRecord("enterprise");
     expect(await adopt(owned, ["vpc-1", editionRecordName("staging")])).toBe("owned");
     expect(owned.values.get(editionRecordName("staging"))).toBe("enterprise");
+  });
+
+  it("writes the backup before it removes the record; a completed deploy removes the backup, a failed one puts the record back", async () => {
+    const store = withRecord("enterprise");
+    const order: string[] = [];
+    const original = store.delete.bind(store);
+    store.delete = async (name) => { order.push(`delete ${name}`); await original(name); };
+    const put = store.put.bind(store);
+    store.put = async (name, value, options) => { order.push(`put ${name}`); await put(name, value, options); };
+    await adopt(store, ["vpc-1"]);
+    expect(order).toEqual([`put ${editionBackupName("staging")}`, `delete ${editionRecordName("staging")}`]);
+    expect(store.values.get(editionBackupName("staging"))).toBe("enterprise");
+    // The deploy failed or was interrupted before the stack created the record: put it back.
+    await settleEditionRecord({ store, env: "staging", completed: false });
+    expect(store.values.get(editionRecordName("staging"))).toBe("enterprise");
+    expect(store.values.get(editionBackupName("staging"))).toBe("enterprise");
+    // The deploy completed: the backup goes (only with the record back and saying the same).
+    await settleEditionRecord({ store, env: "staging", completed: true });
+    expect(store.values.has(editionBackupName("staging"))).toBe(false);
+    const nothingBack = withRecord();
+    nothingBack.values.set(editionBackupName("staging"), "enterprise");
+    await settleEditionRecord({ store: nothingBack, env: "staging", completed: true });
+    expect(nothingBack.values.has(editionBackupName("staging"))).toBe(true);
+  });
+
+  it("while the backup exists (the record out of the way) the install's edition is the backup's, and no other edition is accepted", async () => {
+    const interrupted = withRecord();
+    interrupted.values.set(editionBackupName("staging"), "enterprise");
+    expect(await readRecordedEdition(interrupted, "staging")).toBe("enterprise");
+    expect(await resolveDeployEdition({ store: interrupted, env: "staging", engine: "cdk", cloud: false })).toBe("enterprise");
+    expect((await thrown(() => resolveDeployEdition({ store: interrupted, env: "staging", engine: "cdk", cloud: true, requested: "public" })))?.message).toContain("cannot change");
+    // Record and backup that disagree, or a backup that is not an edition: refused.
+    const disagree = withRecord("public");
+    disagree.values.set(editionBackupName("staging"), "enterprise");
+    expect((await thrown(() => readRecordedEdition(disagree, "staging")))?.message).toContain("disagree");
+    const bad = withRecord();
+    bad.values.set(editionBackupName("staging"), "garbage");
+    expect((await thrown(() => readRecordedEdition(bad, "staging")))?.code).toBe("CONFIG_INVALID");
   });
 
   it("does nothing where there is no record or the deploy is not Enterprise", async () => {

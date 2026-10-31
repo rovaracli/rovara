@@ -52,6 +52,8 @@ export interface DeployEnvironmentInput {
   ensurePassRole?: () => Promise<unknown>;
   /** The cdk engine, Enterprise only: makes a retained edition record the foundation stack no longer owns creatable again. Called just before the foundation part deploys. */
   adoptEditionRecord?: () => Promise<unknown>;
+  /** After the foundation deploy: `true` when it completed (the backup is no longer needed), `false` when it did not (the record is put back from the backup). */
+  settleEditionRecord?: (completed: boolean) => Promise<unknown>;
 }
 
 export interface DeployEnvironmentResult {
@@ -307,7 +309,6 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
         passRoleChecked = true;
         await input.ensurePassRole();
       }
-      if (part === "foundation" && input.adoptEditionRecord !== undefined) await input.adoptEditionRecord();
       const rawParameters = stackParameters(part, fullAnswers, outputs, { packages: engine === "templates" });
       // F24: only when this deploy is actually sending a stored sign-in choice to the control plane
       // are the declared parameters even consulted (every other deploy never calls `release.template`).
@@ -348,7 +349,20 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
         ...(input.confirm === undefined ? {} : { confirm: input.confirm }),
         ...(roleArn === undefined ? {} : { roleArn }),
       };
-      outputs[part] = await deployer.deploy(request);
+      if (part === "foundation" && input.adoptEditionRecord !== undefined) {
+        // The record is taken out of the way only now, with its backup written first; if the deploy does not complete the record is put back (and if the process is killed the
+        // backup stays, which the next deploy and the broker both read).
+        await input.adoptEditionRecord();
+        try {
+          outputs[part] = await deployer.deploy(request);
+        } catch (error) {
+          await input.settleEditionRecord?.(false).catch(() => undefined);
+          throw error;
+        }
+        await input.settleEditionRecord?.(true);
+      } else {
+        outputs[part] = await deployer.deploy(request);
+      }
     }
 
     const controlPlaneOutputs = outputs["control-plane"];
