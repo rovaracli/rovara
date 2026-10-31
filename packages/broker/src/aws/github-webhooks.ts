@@ -51,8 +51,8 @@ export const GITHUB_WEBHOOK_RECOVERY_INDEX = "github-webhook-recovery";
 const GITHUB_WEBHOOK_RECOVERY_PK = "GITHUB_WEBHOOK_RECOVERY";
 const MAX_WEBHOOK_ATTEMPTS = 8;
 
-/** The events (GitHub's `X-GitHub-Event` names) that can start a trigger, as well as being, for pull requests, feedback on a linked task. */
-export const GITHUB_TRIGGER_EVENT_NAMES: ReadonlySet<string> = new Set(["pull_request", "issues", "deployment_status", "workflow_run"]);
+/** The events (GitHub's `X-GitHub-Event` names) that can start a trigger, as well as being, for pull requests, feedback on a linked task. A `push` is not a trigger: it is a meta repo's config changing (meta-repo/config-import.ts). */
+export const GITHUB_TRIGGER_EVENT_NAMES: ReadonlySet<string> = new Set(["pull_request", "issues", "deployment_status", "workflow_run", "push"]);
 
 export const GITHUB_WEBHOOK_SIGNATURE_INVALID = "GitHub webhook signature is invalid";
 

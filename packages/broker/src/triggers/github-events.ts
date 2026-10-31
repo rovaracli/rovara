@@ -9,7 +9,7 @@
 // Only ids, codes and counts are logged: never a title, a branch, a label or a body.
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { OrgIdSchema, RUN_START_TITLE_MAX, TriggerEventSchema, githubInstallationKey, githubRepoProjectKey, type OrgId, type TriggerEvent } from "@agentx/contracts";
+import { OrgIdSchema, RUN_START_TITLE_MAX, TriggerEventSchema, githubInstallationKey, githubRepoProjectKey, metaRepositoryOf, type OrgId, type StoredProjectDefinition, type TriggerEvent } from "@agentx/contracts";
 import { GithubWebhookRetryableError } from "../aws/github-webhooks.js";
 import { latestRevision } from "../org/project-settings.js";
 import type { AuthorVerdict, TriggerDispatchContext } from "./dispatch.js";
@@ -28,7 +28,15 @@ export interface GithubTriggerDependencies extends EventMemoryDeps {
   authorStanding?: (query: AuthorQuery) => Promise<AuthorStanding>;
   /** How long one author lookup may take before it counts as an error. */
   authorCheckTimeoutMs?: number;
+  /**
+   * Meta repo lane A: a push to the default branch of a project's meta repository. Called once per such project with the commit pushed; the broker reads the project's config file
+   * at that commit and records what it would change (`queueMetaConfigImport`, meta-repo/config-import.ts). Absent, a push is ignored. A failure is retried by GitHub's redelivery.
+   */
+  queueMetaConfigImport?: (push: MetaPush) => Promise<unknown>;
 }
+
+/** A push to the default branch of a project's meta repository. */
+export interface MetaPush { orgId: OrgId; project: string; commit: string; pushedAtMs: number }
 
 /** Who to ask GitHub about: the pull request's or issue's own author (never the sender), in the repository's account. */
 export interface AuthorQuery {
@@ -92,6 +100,13 @@ const WorkflowRunBody = Common.extend({
     id: z.number().int().positive(), run_attempt: z.number().int().positive().optional(), name: z.string().max(500).optional(), conclusion: z.string().max(40).nullable().optional(),
     head_branch: z.string().max(500).nullable().optional(), updated_at: Time, html_url: z.string().max(2048).optional(), actor: Account.optional(), triggering_actor: Account.optional(),
   }).passthrough(),
+});
+
+const PushBody = Common.extend({
+  ref: z.string().max(500),
+  after: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
+  deleted: z.boolean().optional(),
+  head_commit: z.object({ timestamp: z.string().max(64).optional() }).passthrough().nullable().optional(),
 });
 
 const log = (deps: Pick<EventMemoryDeps, "log">) => deps.log ?? ((event: string, fields: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", event, ...fields })));
@@ -230,6 +245,11 @@ async function orgOfInstallation(deps: Pick<EventMemoryDeps, "documentClient" | 
 
 /** The projects of `orgId` the repository's index lists and whose latest revision pins this installation and this repository; each other row is logged and left out. */
 async function projectsOf(deps: Pick<EventMemoryDeps, "documentClient" | "tableName" | "log">, orgId: OrgId, installationId: number, repositoryId: number): Promise<string[]> {
+  return (await heldProjects(deps, orgId, installationId, repositoryId)).map((held) => held.project);
+}
+
+/** `projectsOf`, with each project's latest definition (which the meta repo push needs to tell its meta repository from a code one). */
+async function heldProjects(deps: Pick<EventMemoryDeps, "documentClient" | "tableName" | "log">, orgId: OrgId, installationId: number, repositoryId: number): Promise<Array<{ project: string; definition: StoredProjectDefinition }>> {
   const rows: Array<Record<string, unknown>> = [];
   let start: Record<string, unknown> | undefined;
   do {
@@ -240,7 +260,7 @@ async function projectsOf(deps: Pick<EventMemoryDeps, "documentClient" | "tableN
     rows.push(...(page.Items ?? []));
     start = page.LastEvaluatedKey;
   } while (start !== undefined);
-  const projects: string[] = [];
+  const projects: Array<{ project: string; definition: StoredProjectDefinition }> = [];
   for (const row of rows) {
     const named = typeof row["sk"] === "string" ? row["sk"] : "";
     const project = typeof row["project"] === "string" ? row["project"] : named.slice(named.indexOf("#") + 1);
@@ -256,7 +276,7 @@ async function projectsOf(deps: Pick<EventMemoryDeps, "documentClient" | "tableN
       stale();
       continue;
     }
-    projects.push(project);
+    projects.push({ project, definition: revision.definition });
   }
   return projects;
 }
@@ -354,6 +374,7 @@ const memoryKey = (event: TriggerEvent): string => `${event.project}\0${event.ev
  * is forgotten again and answered with a retryable fault, so that GitHub's redelivery starts it (dispatch's own identity makes a second attempt harmless).
  */
 export async function deliverGithubTriggerEvents(deps: GithubTriggerDependencies, input: GithubTriggerInput): Promise<{ events: number; duplicates: number }> {
+  if (input.eventName === "push") return deliverMetaPushes(deps, input);
   const fresh: Array<{ orgId: OrgId; event: TriggerEvent; author?: AuthorQuery }> = [];
   let duplicates = 0;
   try {
@@ -387,4 +408,49 @@ export async function deliverGithubTriggerEvents(deps: GithubTriggerDependencies
     }
   }
   return { events: fresh.length, duplicates };
+}
+
+/**
+ * The projects whose META repository this push is to, and only a push to that repository's default branch (the one the project records): a push to any other branch, a deleted
+ * branch, a repository the installation does not hold and a project that does not pin both are not the project's config. The commit is the push's own, as the signature vouches for it.
+ */
+export async function githubMetaPushes(deps: Pick<GithubTriggerDependencies, "documentClient" | "tableName" | "log">, input: GithubTriggerInput): Promise<MetaPush[]> {
+  const body = PushBody.safeParse(input.payload);
+  if (!body.success || body.data.deleted === true || /^0+$/.test(body.data.after)) return [];
+  const orgId = await orgOfInstallation(deps, input.installationId);
+  if (orgId === undefined) {
+    log(deps)("github.trigger_unbound", { installationId: input.installationId });
+    return [];
+  }
+  const stamp = body.data.head_commit?.timestamp === undefined ? Number.NaN : Date.parse(body.data.head_commit.timestamp);
+  const pushes: MetaPush[] = [];
+  for (const { project, definition } of await heldProjects(deps, orgId, input.installationId, body.data.repository.id)) {
+    const meta = metaRepositoryOf(definition);
+    if (meta === undefined || meta.githubRepositoryId !== body.data.repository.id) continue;
+    if (body.data.ref !== `refs/heads/${meta.defaultBranch}`) continue;
+    pushes.push({ orgId, project, commit: body.data.after, pushedAtMs: Number.isFinite(stamp) ? stamp : 0 });
+  }
+  return pushes;
+}
+
+/** Hands each meta repo push to `queueMetaConfigImport`. A failure is answered with a retryable fault, so that GitHub's redelivery tries again (queuing the same commit twice is harmless). */
+async function deliverMetaPushes(deps: GithubTriggerDependencies, input: GithubTriggerInput): Promise<{ events: number; duplicates: number }> {
+  const queue = deps.queueMetaConfigImport;
+  if (queue === undefined) return { events: 0, duplicates: 0 };
+  let pushes: MetaPush[];
+  try {
+    pushes = await githubMetaPushes(deps, input);
+  } catch (error) {
+    log(deps)("github.meta_push_unavailable", { error: error instanceof Error ? error.name : "unknown" });
+    throw new GithubWebhookRetryableError("GitHub trigger events will be retried");
+  }
+  for (const push of pushes) {
+    try {
+      await queue(push);
+    } catch (error) {
+      log(deps)("github.meta_push_failed", { orgId: push.orgId, project: push.project, error: error instanceof Error ? error.name : "unknown" });
+      throw new GithubWebhookRetryableError("GitHub trigger events will be retried");
+    }
+  }
+  return { events: pushes.length, duplicates: 0 };
 }

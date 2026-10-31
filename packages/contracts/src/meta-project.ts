@@ -168,10 +168,11 @@ export type MetaProjectConfig = z.infer<typeof MetaProjectConfigSchema>;
 
 /**
  * Cross-checks that need to know the meta repo's own name (a file cannot say it): every repository that `setup`, `tests` or `checks` names must be one
- * the project will have. Returns the problems, empty when the config is consistent with the project.
+ * the project will have (`alsoKnown`: repositories the project already has and the file does not list, when the file has no `repositories` section). Returns the
+ * problems, empty when the config is consistent with the project.
  */
-export function metaConfigReferenceProblems(config: MetaProjectConfig, metaRepositoryName: string): Array<{ path: string; message: string }> {
-  const known = new Set<string>([metaRepositoryName, ...(config.repositories ?? []).map((repository) => repository.name)]);
+export function metaConfigReferenceProblems(config: MetaProjectConfig, metaRepositoryName: string, alsoKnown: readonly string[] = []): Array<{ path: string; message: string }> {
+  const known = new Set<string>([metaRepositoryName, ...alsoKnown, ...(config.repositories ?? []).map((repository) => repository.name)]);
   const problems: Array<{ path: string; message: string }> = [];
   for (const section of ["setup", "tests"] as const) {
     for (const name of Object.keys(config[section] ?? {})) {

@@ -884,3 +884,53 @@ it("B33 direct narrowing cancels the pending widening and clears its pointer in 
  expect(h.db.get(pointer)).toBeUndefined();expect(h.db.get({ pk, sk: `EGRESS_PROPOSAL#${proposalId}` })).toMatchObject({ state: "cancelled", supersededByRevision: 2 });
  expect(audit.recordedBy("project.allowed_domains_changed")).toMatchObject([{ facts: { mode: "direct_narrowing", proposalId } }]);expect(audit.recordedBy("project.allowed_domains_cancelled")).toEqual([]);
 });
+
+describe("settings a meta repo's config file manages (meta repo lane A)", () => {
+  const origins = (value: Record<string, string>) => ({ origins: value });
+
+  it("refuses a save that changes a setting the file manages, writes no revision and asks GitHub nothing", async () => {
+    const h = await install();
+    seedProject(h.db, TEST_ORG, "web", origins({ setup: "file", repositories: "file" }));
+    const commands = await h.put(OMAR, { setupCommands: ["make setup"] });
+    expect(commands.status).toBe(403);
+    expect(commands.body.error).toMatchObject({ code: "FORBIDDEN", message: "setup is managed by the meta repo's config file; change it there" });
+    const added = await h.put(OMAR, { addRepositories: ["acme/lib"] });
+    expect(added.status).toBe(403);
+    expect(added.body.error).toMatchObject({ code: "FORBIDDEN", message: "repositories is managed by the meta repo's config file; change it there" });
+    const both = await h.put(OMAR, { setupCommands: ["x"], removeRepositories: ["acme/web"] });
+    expect(both.body.error).toMatchObject({ message: "setup, repositories are managed by the meta repo's config file; change them there" });
+    expect(h.revisions()).toHaveLength(1);
+    expect(h.github.getRepositoryIdentity).not.toHaveBeenCalled();
+  });
+
+  it("still lets a person change the settings the file does not manage", async () => {
+    const h = await install();
+    seedProject(h.db, TEST_ORG, "web", origins({ setup: "file" }));
+    const saved = await h.put(OMAR, { testCommands: ["npm run check"] });
+    expect(saved.status).toBe(200);
+    expect(h.revision(2)!.definition).toMatchObject({ readiness: [{ executable: "npm", args: ["run", "check"] }], origins: { setup: "file" } });
+  });
+
+  it("takes the agent's mark off a setting a person changes, and leaves the others", async () => {
+    const h = await install();
+    seedProject(h.db, TEST_ORG, "web", origins({ setup: "agent", readiness: "agent" }));
+    expect((await h.put(OMAR, { setupCommands: ["make setup"] })).status).toBe(200);
+    expect(h.revision(2)!.definition.origins).toEqual({ readiness: "agent" });
+    expect((await h.put(OMAR, { testCommands: ["make test"], expectedRevision: 2 })).status).toBe(200);
+    // Nothing is left to record: the field is gone, not empty.
+    expect(h.revision(3)!.definition).not.toHaveProperty("origins");
+  });
+
+  it("keeps the mark when the save does not change the value, and writes no revision", async () => {
+    const h = await install();
+    seedProject(h.db, TEST_ORG, "web", origins({ setup: "agent" }));
+    expect((await h.put(OMAR, { setupCommands: ["npm ci"] })).status).toBe(200);
+    expect(h.revisions()).toHaveLength(1);
+  });
+
+  it("does not add origins to a project that has none", async () => {
+    const h = await install();
+    expect((await h.put(OMAR, { setupCommands: ["make setup"] })).status).toBe(200);
+    expect(h.revision(2)!.definition).not.toHaveProperty("origins");
+  });
+});
