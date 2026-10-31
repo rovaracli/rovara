@@ -40,7 +40,11 @@ import {
   workspaceRepositoriesNote,
   type RepositoryContextFile,
 } from "./repository-context.js";
+import { quotedContextText } from "./context-text.js";
+import { knowledgeExtension } from "./knowledge/extension.js";
 import { loadKnowledgeContext, type KnowledgeSessionInput } from "./knowledge/load.js";
+import { MidRunKnowledge } from "./knowledge/session.js";
+import { readKnowledgeTool } from "./read-knowledge-tool.js";
 import type { KnowledgeStage } from "./knowledge/model.js";
 import type { ResolvedKnowledge } from "./knowledge/resolve.js";
 import type { PiCacheRetention } from "./usage.js";
@@ -84,6 +88,8 @@ export interface PiSessionInput {
   contextFiles: RepositoryContextFile[];
   /** "base-commit": a reviewer's session, whose rule files are AgentX's own alone; Pi's discovery in the working tree is left out (A5). */
   contextFilesAt?: "working-tree" | "base-commit";
+  /** The session's live knowledge (K1 C3): offers `read_knowledge` and loads newly applicable rules mid-run. Absent for judging stages and agent steps. */
+  knowledgeSession?: MidRunKnowledge;
   /** Where the agent's shell runs instead of the worker: the project's devcontainer (#121). */
   bashOperations?: BashOperations;
   /** The repository's folder in the devcontainer, which the local file tools resolve to the host folder (#128). */
@@ -127,7 +133,7 @@ export interface AgentRunSession {
 }
 
 /** The names no worker tool of an agent step may take: Pi's own, the shell and `read_skill`. */
-const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "edit", "write", "read", "grep", "find", "ls", "read_skill"]);
+const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "edit", "write", "read", "grep", "find", "ls", "read_skill", "read_knowledge"]);
 
 export interface PiSessionAdapter {
   create(input: PiSessionInput): Promise<PiSessionHandle>;
@@ -214,8 +220,11 @@ export async function createWorkspacePiSession(
     mkdir(agentDirectory, { recursive: true, mode: 0o700 }),
   ]);
   // An agent step reads the repository as information: its context files (written by whoever can push) are not loaded.
-  const contextFiles = input.agentRun === undefined ? await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded }) : [];
+  const knowledgeLoad = input.agentRun === undefined ? await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded }) : undefined;
+  const contextFiles = knowledgeLoad?.files ?? [];
+  const knowledgeSession = knowledgeLoad?.session;
   const handle = await adapter.create({
+    ...(knowledgeSession === undefined ? {} : { knowledgeSession }),
     cwd: workingDirectory,
     sessionDirectory,
     agentDirectory,
@@ -273,8 +282,10 @@ export async function openRegisteredWorkspacePiSession(
   });
   assertContained(sessionDirectory, sessionFile);
   if (!adapter.open) throw new Error("pi session adapter does not support saved-session reopen");
-  const contextFiles = await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded });
+  const knowledgeLoad = await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded });
+  const contextFiles = knowledgeLoad.files;
   const handle = await adapter.open({
+    ...(knowledgeLoad.session === undefined ? {} : { knowledgeSession: knowledgeLoad.session }),
     cwd: rootPath,
     sessionDirectory,
     agentDirectory,
@@ -426,7 +437,10 @@ async function createDefaultSession(
     const runTools = input.agentRun?.tools ?? [];
     const clash = runTools.find((tool, index) => RESERVED_TOOL_NAMES.has(tool.name) || runTools.findIndex(({ name }) => name === tool.name) !== index);
     if (clash !== undefined) throw agentXError("CONFIG_INVALID", `an agent step cannot have two tools named ${clash.name}, or one named like a file tool, the shell or read_skill`);
-    const { resourceLoader, settingsManager } = await createWorkerResources({ ...input, loadedSkills: skills, ...(input.agentRun === undefined ? {} : { systemPrompt: input.agentRun.systemPrompt }) });
+    const knowledge = input.agentRun === undefined ? input.knowledgeSession : undefined;
+    const knowledgeTool = knowledge?.offersTool === true ? [readKnowledgeTool(knowledge)] : [];
+    const midRun = knowledge?.allowsMidRun === true ? [knowledgeExtension(knowledge, input.onDiagnostic)] : [];
+    const { resourceLoader, settingsManager } = await createWorkerResources({ ...input, extensionFactories: [...(input.extensionFactories ?? []), ...midRun], loadedSkills: skills, ...(input.agentRun === undefined ? {} : { systemPrompt: input.agentRun.systemPrompt }) });
     // An AgentX extension that failed to load would leave its work silently undone, so the session does not start.
     // It is a deterministic AgentX bug, so not RUNTIME_UNAVAILABLE, which the broker reads as "retry" (M-10).
     const loadErrors = resourceLoader.getExtensions().errors;
@@ -449,7 +463,7 @@ async function createDefaultSession(
       model,
       thinkingLevel: requestedLevel ?? (model.reasoning ? "medium" : "off"),
       // read_skill is the worker's own tool, never a file tool: it is there only when the operation has skills.
-      tools: [...stepTools.tools, ...(skillFiles.length === 0 ? [] : ["read_skill"]), ...runTools.map(({ name }) => name)],
+      tools: [...stepTools.tools, ...(skillFiles.length === 0 ? [] : ["read_skill"]), ...knowledgeTool.map(({ name }) => name), ...runTools.map(({ name }) => name)],
       // A custom tool with a built-in's name replaces it.
       customTools: [
         ...(stepTools.shell ? [agentShellTool(input.cwd, input.bashOperations)] : []),
@@ -459,6 +473,7 @@ async function createDefaultSession(
           : !capabilities.customFileTools || input.devcontainerPaths === undefined ? []
             : devcontainerFileTools(input.cwd, input.devcontainerPaths).filter((tool) => stepTools.tools.includes(tool.name))),
         ...(skillFiles.length === 0 ? [] : [readSkillTool(skillFiles)]),
+        ...knowledgeTool,
         ...runTools,
       ],
       resourceLoader,
@@ -712,7 +727,7 @@ async function loadWorkspaceContextFiles(
   at: "working-tree" | "base-commit" = "working-tree",
   baseCommits: readonly { repositoryId: string; baseCommitSha?: string | undefined }[] = [],
   knowledge: { workflowMode: PiWorkflowMode | undefined; knowledge: SessionKnowledgeOptions | undefined; onLoaded: ((resolved: ResolvedKnowledge) => void) | undefined } = { workflowMode: undefined, knowledge: undefined, onLoaded: undefined },
-): Promise<RepositoryContextFile[]> {
+): Promise<{ files: RepositoryContextFile[]; session: MidRunKnowledge | undefined }> {
   const prepared = await readPreparedRepositories(rootPath);
   const repositories = at === "base-commit"
     ? prepared.map((repository) => {
@@ -720,18 +735,37 @@ async function loadWorkspaceContextFiles(
         return baseCommit === undefined ? repository : { ...repository, baseCommit };
       })
     : prepared;
-  const { stage, ...options } = knowledge.knowledge ?? {};
+  const { stage: requestedStage, ...options } = knowledge.knowledge ?? {};
+  const stage = requestedStage ?? knowledgeStageOf(knowledge.workflowMode, at);
   const canonicalRoot = await realpath(resolve(rootPath)).catch(() => resolve(rootPath));
-  const { files, diagnostics, notices, resolved } = await loadKnowledgeContext(
-    rootPath, repositories, { ...options, at, stage: stage ?? knowledgeStageOf(knowledge.workflowMode, at) }, canonicalRoot,
-  );
+  const request: KnowledgeSessionInput = { ...options, at, stage };
+  const { files, diagnostics, notices, resolved, rendering } = await loadKnowledgeContext(rootPath, repositories, request, canonicalRoot);
   for (const diagnostic of diagnostics) onDiagnostic?.(diagnostic);
+  const session = new MidRunKnowledge({
+    stage, initial: resolved, filesInPlay: options.filesInPlay ?? [], rendering, rootPath: canonicalRoot,
+    ...(options.budgets === undefined ? {} : { budgets: options.budgets }),
+    resolveAgain: async (filesInPlay) => (await loadKnowledgeContext(rootPath, repositories, { ...request, filesInPlay }, canonicalRoot)).resolved,
+  });
   knowledge.onLoaded?.(resolved);
   // AgentX's note comes first and is present with or without the repositories' own files.
   const note = workspaceRepositoriesNote(repositories);
   const editNote = ruleFileEditNote(notices);
-  const loaded = [...(note === undefined ? [] : [note]), ...files, ...(editNote === undefined ? [] : [editNote])];
-  return devcontainerPaths === undefined ? loaded : [...loaded, devcontainerContextFile(devcontainerPaths)];
+  const catalog = session.offersTool ? [knowledgeCatalogFile(session.names(), resolved)] : [];
+  const loaded = [...(note === undefined ? [] : [note]), ...files, ...catalog, ...(editNote === undefined ? [] : [editNote])];
+  return { files: devcontainerPaths === undefined ? loaded : [...loaded, devcontainerContextFile(devcontainerPaths)], session };
+}
+
+/** The list of rules the model can load by name: AgentX's own note, with only names and descriptions (no rule text) until `read_knowledge` is called. */
+function knowledgeCatalogFile(names: readonly string[], resolved: ResolvedKnowledge): RepositoryContextFile {
+  const described = new Map(resolved.autoCatalog.map((entry) => [entry.name.toLowerCase(), entry.description] as const));
+  const lines = names.map((name) => {
+    const description = described.get(name);
+    return description === undefined || description === "" ? `- ${quotedContextText(name)}` : `- ${quotedContextText(name)}: ${quotedContextText(description.slice(0, 200))}`;
+  });
+  return {
+    path: "AgentX team rules",
+    content: ["AgentX team rules (written by AgentX, not by any repository). Call read_knowledge with a name to load one of these rules when it applies:", ...lines].join("\n"),
+  };
 }
 
 function assertContained(parent: string, child: string): void {

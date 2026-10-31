@@ -38,22 +38,31 @@ export interface LoadedKnowledgeContext {
   diagnostics: string[];
   notices: string[];
   resolved: ResolvedKnowledge;
+  rendering: RenderRepository[];
 }
 
 export const META_REPOSITORY_UNAVAILABLE_MESSAGE = "Rovara can't read the meta repo";
 
 const INVALID_REPOSITORY_DIAGNOSTIC = "skipped a repository's rule files: its name or path is not valid";
 
-export async function loadKnowledgeContext(
-  rootPath: string,
+interface OpenedKnowledge {
+  sources: KnowledgeSourceEntry[];
+  rendering: RenderRepository[];
+  diagnostics: string[];
+  close(): Promise<void>;
+}
+
+/** Opens every source the stage reads (the meta repo at its pinned commit first, then each code repository). The caller must `close()`. */
+export async function openKnowledgeSources(
   repositories: readonly WorkspaceRepositoryReference[],
-  input: KnowledgeSessionInput,
+  input: Pick<KnowledgeSessionInput, "at" | "meta" | "baseReadOptions">,
   canonicalRoot: string,
-): Promise<LoadedKnowledgeContext> {
+): Promise<OpenedKnowledge> {
   const diagnostics: string[] = [];
   const opened: KnowledgeFileSource[] = [];
   const sources: KnowledgeSourceEntry[] = [];
   const rendering: RenderRepository[] = [];
+  const close = async (): Promise<void> => { await Promise.all(opened.map((source) => source.close().catch(() => undefined))); };
   const baseOptions: ReadOptions = { workspaceRoot: canonicalRoot, ...(input.baseReadOptions ?? {}) };
   try {
     // The meta repo first: a project that has one never runs without it.
@@ -86,8 +95,7 @@ export async function loadKnowledgeContext(
         }
         const source = await openBaseCommitSource(located.directory, repository.baseCommit, "base", baseOptions);
         opened.push(source);
-        const working = openWorkingTreeSource(located.directory);
-        sources.push({ name: repository.name, path: repository.path, layer: "repo", source, compareWith: working });
+        sources.push({ name: repository.name, path: repository.path, layer: "repo", source, compareWith: openWorkingTreeSource(located.directory) });
       } else {
         const source = openWorkingTreeSource(located.directory);
         opened.push(source);
@@ -95,9 +103,24 @@ export async function loadKnowledgeContext(
       }
       rendering.push({ name: repository.name, path: repository.path });
     }
+    return { sources, rendering, diagnostics, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+export async function loadKnowledgeContext(
+  rootPath: string,
+  repositories: readonly WorkspaceRepositoryReference[],
+  input: KnowledgeSessionInput,
+  canonicalRoot: string,
+): Promise<LoadedKnowledgeContext> {
+  const opened = await openKnowledgeSources(repositories, input, canonicalRoot);
+  try {
     const resolved = await resolveKnowledge({
       stage: input.stage,
-      sources,
+      sources: opened.sources,
       ...(input.external === undefined ? {} : { external: input.external }),
       ...(input.filesInPlay === undefined ? {} : { filesInPlay: input.filesInPlay }),
       ...(input.manualNames === undefined ? {} : { manualNames: input.manualNames }),
@@ -105,9 +128,9 @@ export async function loadKnowledgeContext(
       ...(input.registry === undefined ? {} : { registry: input.registry }),
       ...(input.budgets === undefined ? {} : { budgets: input.budgets }),
     });
-    diagnostics.push(...resolved.diagnostics);
-    return { files: renderKnowledgeItems(resolved.items, rendering, rootPath), diagnostics, notices: resolved.notices, resolved };
+    const diagnostics = [...opened.diagnostics, ...resolved.diagnostics];
+    return { files: renderKnowledgeItems(resolved.items, opened.rendering, rootPath), diagnostics, notices: resolved.notices, resolved, rendering: opened.rendering };
   } finally {
-    await Promise.all(opened.map((source) => source.close().catch(() => undefined)));
+    await opened.close();
   }
 }
