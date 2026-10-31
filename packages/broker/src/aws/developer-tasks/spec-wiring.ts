@@ -4,9 +4,11 @@
 //   specOwnerChoice         -- the task owner's Retry / Continue without spec on a held spec.
 // The pure parts (state, rendering, the link) are in ../../spec/; the effects here are the same ones the workflow already uses (a system-started run with its own conversation, the broker's publish).
 import { createHash } from "node:crypto";
-import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { SPEC_REVIEW_REQUIREMENTS_MAX, SpecReviewInputSchema, agentXError, metaRepositoryOf, specStripHidden, workflowRequestId, type SpecFile, type SpecKind, type SpecReviewInput, type WorkflowSnapshot } from "@agentx/contracts";
-import { developerTaskIdentity, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { developerTaskIdentity, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { specChoiceItemOf } from "../../spec/decision-item.js";
+import type { DecisionItem } from "../../decisions/project.js";
 import { isConditional, workflowDispatchItem } from "../broker-shared.js";
 import { createSpecHooks, type PlanApproval, type SpecTaskRef, type SpecWorld } from "../../spec/hooks.js";
 import { approvedPlanDigestOf } from "../../spec/plan.js";
@@ -254,4 +256,28 @@ export async function specHoldOf(deps: DeveloperTaskRouteDependencies, task: Dev
   const gate = specGate(state, corrupt, iso(deps));
   if (gate.action !== "hold" || gate.ownerActions.length === 0) return undefined;
   return { title: HOLD_TITLES[gate.reason], message: gate.message, choices: gate.ownerActions.map((action) => HOLD_ROUTE_NAMES[action]), canChoose: mayChoose };
+}
+
+/** The most index rows one listing reads, and the most cards it makes. */
+const SPEC_CHOICE_ROWS_MAX = 50;
+
+/**
+ * The decision-card items for the caller's tasks whose spec is on hold (wire lane D, MD-1): the tasks they OWN now (the effective owner, not a co-reader), open, with a spec for them to choose on.
+ * This is what a decision source's `list(caller)` adds for the `spec_choice` kind; the card only opens the task page, where the choice is made (and re-checked) by the spec routes.
+ */
+export async function specChoiceItemsFor(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller): Promise<DecisionItem[]> {
+  const response = await deps.documentClient.send(new QueryCommand({
+    TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": `DEVELOPER#${caller.developerId}`, ":prefix": "TASK#" },
+    ScanIndexForward: false, Limit: SPEC_CHOICE_ROWS_MAX, ConsistentRead: true,
+  })) as { Items?: Array<{ taskId?: string; orgId?: string; status?: string }> };
+  const items: DecisionItem[] = [];
+  for (const row of response.Items ?? []) {
+    if (row.orgId !== caller.orgId || row.status === "CLOSED" || typeof row.taskId !== "string") continue;
+    const task = await get<DeveloperTaskRecord>(deps, taskKey(row.taskId));
+    if (task === undefined || task.closedAt !== undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) continue;
+    const { state, corrupt } = await dynamoSpecStore(deps).load(task.taskId);
+    const item = specChoiceItemOf({ taskId: task.taskId, project: task.project, title: task.title, state, corrupt, now: iso(deps) });
+    if (item !== undefined) items.push(item);
+  }
+  return items;
 }

@@ -96,3 +96,22 @@ describe("the held spec on the task page", () => {
     expect((await t.page()).specHold).toBeUndefined();
   });
 });
+
+describe("the decision source for held specs (review round 1)", () => {
+  it("lists a card for the owner's task whose spec is on hold, and for nobody else", async () => {
+    const t = await editedSpecTask();
+    const { specChoiceItemsFor } = await import("../../packages/broker/src/aws/developer-tasks/spec-wiring.js");
+    const { developerTaskRouteDependencies } = await import("../../packages/broker/src/aws/developer-routes/dependencies.js");
+    const input = t.brokerInput as { documentClient: never; tableName: string; developer: never };
+    const caller = (who: typeof MAYA) => ({ developerId: who.developerId, sessionId: who.sessionId, amr: who.provider, name: who.name, orgId: TEST_ORG, orgRole: "member" as const });
+    const deps = (who: typeof MAYA) => developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: t.actions }, caller(who));
+    const mine = await specChoiceItemsFor(deps(MAYA), caller(MAYA));
+    expect(mine).toEqual([expect.objectContaining({ kind: "spec_choice", subjectId: t.taskId, taskId: t.taskId, message: "The spec changed. Re-plan or keep?" })]);
+    const { OMAR } = await import("../support/developer-task-broker.js");
+    expect(await specChoiceItemsFor(deps(OMAR), caller(OMAR))).toEqual([]);
+    // Once the owner keeps the edit, nothing is on hold.
+    const { state } = await t.store.load(t.taskId);
+    await t.db.send(new PutCommand({ TableName: "state", Item: { ...state!, revision: state!.revision + 1, editPrompt: { ...state!.editPrompt!, status: "kept" } } }));
+    expect(await specChoiceItemsFor(deps(MAYA), caller(MAYA))).toEqual([]);
+  });
+});
