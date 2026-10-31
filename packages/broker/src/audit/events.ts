@@ -574,6 +574,55 @@ export function auditContextSourceChange(input: AuditBuilderBase & { action: "co
   return build(action, { ...base, details: [...(base.details ?? []), { subject: "org", fields: { sourceId } }] }, { kind: "project", name: projectName }, { change });
 }
 
+// Live interaction part 2: Stop & redirect, Ask about this task, Fix with agent ------------------------------------------------------------------------------
+// Ids, fixed words and counts only. The instruction, the question, the answer and a diagnosis's text never enter an event.
+
+/** `occurrence`: the redirect's request id. The target is the session; `related` holds the task and the instruction's message id (server-made ids). `outcome` is one of `REDIRECT_OUTCOMES`. */
+export function auditSessionRedirected(input: AuditBuilderBase & { sessionId: string; taskId: string; messageId: string; mode: "keep_plan" | "change_plan"; step: string; outcome: "restarted" | "revise_started" | "left_blocked" | "refused" }): AuditEventInput {
+  const { sessionId, taskId, messageId, mode, step, outcome, ...base } = input;
+  return build("session.redirected", { ...base, related: [taskId, messageId, ...(base.related ?? [])] }, { kind: "session", id: sessionId }, { mode, step, outcome }, [outcome]);
+}
+
+/**
+ * `occurrence`: the ask's request id (`scope: "each"`, Enterprise: every Ask, for the Auditor) or `auditOccurrence(project, day)` (`scope: "daily"`, Public: one count per project per day). The target
+ * is the session for an Ask and the (name-keyed) project for a daily count; `related` holds the `ASK#` id. Never the question or the answer.
+ */
+export function auditTaskAsked(input: AuditBuilderBase & ({ scope: "each"; sessionId: string; askId: string; audience: "web" | "slack" | "linear"; contextBytes: number; model: string } | { scope: "daily"; projectName: string; count: number })): AuditEventInput {
+  if (input.scope === "daily") {
+    const { scope, projectName, count, ...base } = input;
+    return build("task.asked", base, { kind: "project", name: projectName }, { audience: "all", scope, count });
+  }
+  const { scope, sessionId, askId, audience, contextBytes, model, ...base } = input;
+  return build("task.asked", { ...base, related: [askId, ...(base.related ?? [])] }, { kind: "session", id: sessionId }, { audience, scope, count: 1, contextBytes, model });
+}
+
+/** `occurrence`: the diagnosis id. The target is the diagnosis; `errorKind`, `errorCode` and `tier` are fixed words. */
+export function auditDiagnosisStarted(input: AuditBuilderBase & { diagnosisId: string; errorKind: string; errorCode: string; tier: "light" | "deep" }): AuditEventInput {
+  return build("diagnosis.started", input, { kind: "diagnosis", id: input.diagnosisId }, { errorKind: input.errorKind, errorCode: input.errorCode, tier: input.tier });
+}
+
+/** `occurrence`: the diagnosis id. Counts of the proposals that survived, by kind, and how many were dropped. */
+export function auditDiagnosisProposed(input: AuditBuilderBase & { diagnosisId: string; counts: { explain: number; retryWithNote: number; redirect: number; settingsChange: number; newTask: number; adminSteps: number; contactSupport: number }; dropped: number }): AuditEventInput {
+  const { counts } = input;
+  const total = counts.explain + counts.retryWithNote + counts.redirect + counts.settingsChange + counts.newTask + counts.adminSteps + counts.contactSupport;
+  return build("diagnosis.proposed", input, { kind: "diagnosis", id: input.diagnosisId }, { total, dropped: input.dropped, ...counts });
+}
+
+/** `occurrence`: `auditOccurrence(diagnosisId, approvalId)`. A person pressed "Propose this change": `related` links the ordinary `approval.requested` id; nothing is applied by this event. */
+export function auditDiagnosisProposalRaised(input: AuditBuilderBase & { diagnosisId: string; proposalKind: string; approvalId: string }): AuditEventInput {
+  return build("diagnosis.proposal_raised", { ...input, related: [input.approvalId, ...(input.related ?? [])] }, { kind: "diagnosis", id: input.diagnosisId }, { proposalKind: input.proposalKind });
+}
+
+/** `occurrence`: the diagnosis id. Public, after the person ticked consent: codes, ids and the diagnosis went to staff. */
+export function auditDiagnosisSupportEscalated(input: AuditBuilderBase & { diagnosisId: string; errorKind: string }): AuditEventInput {
+  return build("diagnosis.support_escalated", input, { kind: "diagnosis", id: input.diagnosisId }, { errorKind: input.errorKind });
+}
+
+/** `occurrence`: the diagnosis id. Enterprise: the redacted support bundle was prepared for the customer's operator to read; nothing was sent. */
+export function auditDiagnosisBundlePrepared(input: AuditBuilderBase & { diagnosisId: string; errorKind: string }): AuditEventInput {
+  return build("diagnosis.bundle_prepared", input, { kind: "diagnosis", id: input.diagnosisId }, { errorKind: input.errorKind });
+}
+
 // G3 registrations/builders only. Writers must pair each event with the actual state change atomically.
 export function auditModelFallbackUsed(input:AuditBuilderBase&{projectName:string;stage:StageId;used:ModelIdentifier;wanted?:ModelIdentifier;reasonCode:ModelFallback["reasonCode"];companyRevision:number}):AuditEventInput {
  const digest=(model:ModelIdentifier)=>createHash("sha256").update(JSON.stringify([model.provider,model.modelId])).digest("hex");
@@ -596,4 +645,38 @@ export function auditSlackChannelProposed(input: AuditBuilderBase & { projectNam
 /** Terminal pending-link decision; never claims a canonical binding changed. */
 export function auditSlackChannelDecision(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string; proposalId: string; state: "cancelled" | "rejected" }): AuditEventInput {
  return build(input.state === "cancelled" ? "slack_channel.cancelled" : "slack_channel.rejected", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.proposalId });
+}
+
+// Company sign-in (Enterprise foundations I1) ------------------------------------------------------------------------------
+
+/** The details every sign-in event carries: the rule ids the sign-in matched, so a reviewer can see which mapping rules let the person in. Rule ids are an admin's words: details, never facts. */
+const ruleDetails = (matchedRuleIds: readonly string[]): AuditDetailPart[] => (matchedRuleIds.length === 0 ? [] : [{ subject: "org", fields: { matchedRuleIds: matchedRuleIds.join(",").slice(0, 480) } }]);
+
+/** `occurrence`: `auditOccurrence(requestId, memberId)`, where the request id is the sign-in's auth request (one occurrence per sign-in). */
+export function auditSsoSignIn(input: AuditBuilderBase & { memberId: string; role: string; matchedRuleIds: readonly string[] }): AuditEventInput {
+  return build("sso.sign_in", { ...input, details: [...(input.details ?? []), ...ruleDetails(input.matchedRuleIds)] }, { kind: "member", id: input.memberId }, { source: "mapping", role: input.role, rules: input.matchedRuleIds.length });
+}
+
+/** `occurrence`: as `auditSsoSignIn`. `reason` is one of the fixed refusal words. */
+export function auditSsoSignInRefused(input: AuditBuilderBase & { memberId: string; reason: string }): AuditEventInput {
+  return build("sso.sign_in_refused", input, { kind: "member", id: input.memberId }, { refusal: input.reason });
+}
+
+/** `occurrence`: as `auditSsoSignIn`. */
+export function auditSsoBreakGlassUsed(input: AuditBuilderBase & { memberId: string; sessionSeconds: number }): AuditEventInput {
+  return build("sso.break_glass_used", input, { kind: "member", id: input.memberId }, { role: "owner", sessionSeconds: input.sessionSeconds });
+}
+
+/** `occurrence`: `auditOccurrence(String(toVersion))`: each saved version is one occurrence. `added` and `removed` are the rule ids the save changed (details). */
+export function auditSsoGroupMappingChanged(input: AuditBuilderBase & { fromVersion: number; toVersion: number; rules: number; added: readonly string[]; removed: readonly string[] }): AuditEventInput {
+  const fields: Record<string, string> = {};
+  if (input.added.length > 0) fields.added = input.added.join(",").slice(0, 480);
+  if (input.removed.length > 0) fields.removed = input.removed.join(",").slice(0, 480);
+  return build("sso.group_mapping_changed", { ...input, details: [...(input.details ?? []), ...(Object.keys(fields).length === 0 ? [] : [{ subject: "org", fields }])] },
+    { kind: "org", id: input.orgId }, { fromVersion: input.fromVersion, toVersion: input.toVersion, rules: input.rules });
+}
+
+/** `occurrence`: `auditOccurrence(String(toVersion))`. The owners' ids are in details. */
+export function auditSsoBreakGlassChanged(input: AuditBuilderBase & { toVersion: number; owners: number; ownerIds: readonly string[] }): AuditEventInput {
+  return build("sso.break_glass_changed", { ...input, details: [...(input.details ?? []), ...(input.ownerIds.length === 0 ? [] : [{ subject: "org", fields: { ownerIds: input.ownerIds.join(",").slice(0, 480) } }])] }, { kind: "org", id: input.orgId }, { owners: input.owners });
 }

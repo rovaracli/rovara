@@ -250,6 +250,8 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     ...(step === undefined ? {} : { step }),
     ...(summary.peek === undefined ? {} : { peek: summary.peek }),
     ...(summary.lastRunFailed === undefined ? {} : { lastRunFailed: summary.lastRunFailed }),
+    // Live interaction F1: the task's own reference, read from the very view shown (a session whose task shows no error has none).
+    ...(taskShown?.errorRef === undefined ? {} : { errorRef: taskShown.errorRef }),
     cost: {
       spentUsd: summary.costUsd,
       ...(runLimitUsd === undefined ? {} : { runLimitUsd }),

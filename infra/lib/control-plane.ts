@@ -41,6 +41,7 @@ import {
 import type { Construct } from "constructs";
 import { E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
+import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
 import { RealtimeEvents } from "./realtime.js";
 import { TaskPersonProof } from "./task-person-proof.js";
@@ -87,6 +88,8 @@ export interface ControlPlaneStackProps extends StackProps {
   reservedConcurrency?: boolean;
   /** Enterprise installs: the ranges the model proxy and the model access function may reach over HTTPS (never the whole internet). Absent: as before. */
   privateEgressCidrs?: readonly string[];
+  /** Enterprise installs: the model proxy runs LiteLLM from the install's own ECR (loaded from the signed release bundle). Absent: the public image, as before. */
+  bundledImages?: boolean;
   /** Extra environment variables for the broker, from the install's own settings (the private MCP ranges, `privateMcpBrokerEnvironment`). Absent: none. */
   brokerEnvironment?: Readonly<Record<string, string>>;
 }
@@ -238,6 +241,8 @@ export class ControlPlaneStack extends Stack {
     }
     state.grantReadWriteData(broker);
     artifacts.grantReadWrite(broker);
+    // Enterprise foundations I-2: the broker checks its edition stamp against the install's retained edition record before it serves.
+    if (naming.env !== undefined) grantEditionRecordRead(broker, naming.env);
     broker.addToRolePolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],
       resources: [githubAppPrivateKeySecretArn.valueAsString],
@@ -1410,6 +1415,7 @@ export class ControlPlaneStack extends Stack {
         // Ruling R52: the geography follows the install's region (an eu install serves eu.* profiles); an unsupported region fails the synth.
         models: bedrockClaudeModelIds(proxyGeographyForRegion(props?.deploymentRegion ?? "us-east-1")).map((id) => ({ id })),
         ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: props.privateEgressCidrs }),
+        ...(props?.bundledImages === true ? { bundledImages: true } : {}),
       });
       grantProviderKeySecrets(this, [modelProxy.taskRole.roleName]);
       // Ruling R28: the broker is outside the VPC, so it mints member keys and reads spend through this

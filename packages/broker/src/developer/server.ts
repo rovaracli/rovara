@@ -1,6 +1,6 @@
 import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 import { withDecideIsolation } from "./confirm-page.js";
-import { SessionIdSchema } from "@agentx/contracts";
+import { SessionIdSchema, agentXError } from "@agentx/contracts";
 import { APP_CSRF_HEADER, appCsrfMatches } from "./app-csrf.js";
 // packages/broker/src/developer/server.ts
 // Spec 025 FR-001 to FR-008: the control plane as the developers' sign-in server. Behind
@@ -44,6 +44,7 @@ import {
   type TaskPeopleDisplayReadRequest,
   type TaskPeopleDisplayReadResponse,
   type DeveloperSignInMethod,
+  type EditionPolicy,
   type OrgId,
   type EndDeveloperSessionsRequest,
   type RealtimeTokenAnswer,
@@ -63,10 +64,14 @@ import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from 
 import {
   expiredInvitePage, joinDonePage, joinExpiredPage, maskEmail, openInvitePage, otherBrowserPage, unknownInvitePage, usedInvitePage, type PageSpec,
 } from "./join-page.js";
-import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderResult, type SignInProvider } from "./providers.js";
+import { ProviderNotConfiguredError, ProviderUnavailableError, type ProviderIdentity, type ProviderResult, type SignInProvider } from "./providers.js";
 import type { SlackDirectory } from "./slack-directory.js";
 import { endedByAdmin, endedByUnlink, isFreshSignIn, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
 import { sendDecideSignInAddedNotice, sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
+import { methodAllowedByEdition, sessionWithinEditionCap } from "./edition-methods.js";
+import { decideCompanySignIn, type CompanySignIn, type SsoStores } from "./sso-sign-in.js";
+import { recordAuditEventDurably, recordAuditRead } from "../audit/flush.js";
+import type { AuditRuntime } from "../audit/outbox.js";
 import { createDecideSignIn, type DecideSignInDependencies } from "./decide-signin.js";
 import { issueAccessToken, pkceChallengeMatches, type TokenSigner } from "./tokens.js";
 import { issueRealtimeToken } from "../realtime/token.js";
@@ -83,7 +88,7 @@ export interface DeveloperIdentityDependencies {
   providers: Partial<Record<DeveloperSignInMethod, SignInProvider>>;
   directory: SlackDirectory;
   /** The org store: a sign-in puts the developer in an org, and the tokens carry it. */
-  orgs: ResolveOrgOnSignInDependencies["orgs"] & Pick<OrgStore, "developerForVerifiedEmail" | "describeInviteByHash" | "describeInvite" | "getOrg">;
+  orgs: ResolveOrgOnSignInDependencies["orgs"] & Pick<OrgStore, "developerForVerifiedEmail" | "describeInviteByHash" | "describeInvite" | "getOrg" | "setRole">;
   /** The install's single org (ruling R3), which a Slack or company sign-in joins as a member. */
   singleOrgId?: OrgId;
   /** Told when a sign-in created or joined an org, so the model proxy can be told its budgets (see ResolveOrgOnSignInDependencies.onOrgJoined). */
@@ -109,6 +114,16 @@ export interface DeveloperIdentityDependencies {
    * approval (who may decide now), and Cognito's admin API on the cloud pool. Absent, the decide routes answer not found.
    */
   decide?: DecideSignInDependencies;
+  /**
+   * Enterprise foundations E3: the edition's feature table. Where the edition has no `publicSignInMethods` (Enterprise) the only way in is the company's own sign-in
+   * (`oidc`), so a person taken out of the provider's groups cannot come back through a linked Slack, Google, GitHub or email-code account. Absent: an install deployed
+   * before editions, which keeps today's methods.
+   */
+  editionPolicy?: EditionPolicy;
+  /** Enterprise foundations I1: the group mapping and the break-glass list, built once. Where the edition has `sso` and these are absent, every company sign-in is refused. */
+  sso?: SsoStores;
+  /** The Audit Ledger's outbox. A break-glass sign-in is recorded durably before it is let through; the other sign-in events are best effort. Absent on a legacy install. */
+  audit?: AuditRuntime;
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -148,14 +163,16 @@ const RETRYABLE_AWS_ERRORS = new Set([
   "ProvisionedThroughputExceededException", "RequestLimitExceeded", "InternalServerError", "ServiceUnavailable", "TimeoutError",
 ]);
 
-export function enabledMethods(deps: Pick<DeveloperIdentityDependencies, "config" | "providers">): DeveloperSignInMethod[] {
+export { methodAllowedByEdition };
+
+export function enabledMethods(deps: Pick<DeveloperIdentityDependencies, "config" | "providers" | "editionPolicy">): DeveloperSignInMethod[] {
   const methods: DeveloperSignInMethod[] = [];
   if (deps.config.slack.enabled && deps.config.slack.teamId !== undefined && deps.providers.slack !== undefined) methods.push("slack");
   if (deps.config.oidc !== undefined && deps.providers.oidc !== undefined) methods.push("oidc");
   if (deps.config.cloud !== undefined && deps.providers.cloud !== undefined) methods.push("cloud");
   // GitHub makes accounts the way the cloud method does, so it exists only where cloud does.
   if (deps.config.cloud !== undefined && deps.config.github !== undefined && deps.providers.github !== undefined) methods.push("github");
-  return methods;
+  return methods.filter((method) => methodAllowedByEdition(deps.editionPolicy, method));
 }
 
 const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -214,6 +231,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   const methodLabel = (method: DeveloperSignInMethod) =>
     method === "slack" ? "Slack" : method === "cloud" ? config.cloud?.displayName ?? "cloud sign-in" : method === "github" ? config.github?.displayName ?? "GitHub" : config.oidc?.displayName ?? "company sign-in";
   const provider = (method: DeveloperSignInMethod): SignInProvider => {
+    // Every flow that talks to a provider (sign-in, join, link, decide) comes through here: an edition that has no such method never reaches it.
+    if (!methodAllowedByEdition(deps.editionPolicy, method)) throw new ProviderNotConfiguredError(`${methodLabel(method)} sign-in is not available in this edition`);
     const found = deps.providers[method];
     if (found === undefined) throw new ProviderNotConfiguredError(`${methodLabel(method)} sign-in is not set up in this environment`);
     return found;
@@ -226,6 +245,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     return issueAccessToken(deps.signer, {
       issuer: config.issuer, subject: session.developerId, amr: session.amr, env: config.env, sessionId: session.sessionId, now: deps.now(),
       orgId: membership.orgId, orgRole: membership.role,
+      // The access token never outlives its session (the edition's cap included).
+      notAfter: session.endsAt,
     });
   }
   const tokens = (access: { token: string; expiresIn: number }, refreshToken: string): HttpResult =>
@@ -552,6 +573,34 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
   }
 
+  /**
+   * The company sign-in's decision (developer/sso-sign-in.ts), with its audit event recorded: a refusal and an ordinary sign-in are recorded best effort, and a
+   * break-glass sign-in durably BEFORE it is let through (a record that cannot be made refuses it). Anything but the company's own sign-in is refused: the edition's
+   * other methods are not offered, and a flow that reaches here by another method gets no access.
+   */
+  /** Removes the Slack allowance of a person whose company sign-in was refused, by the Slack user their developer record names. */
+  async function revokeSlackAllowance(developerId: string): Promise<void> {
+    if (deps.sso === undefined || deps.singleOrgId === undefined) return;
+    const slackUserId = (await store.getDeveloper(developerId))?.slackUserId;
+    if (slackUserId !== undefined) await deps.sso.slack.revoke(deps.singleOrgId, slackUserId);
+  }
+
+  async function decideCompanySignInFor(method: DeveloperSignInMethod, identity: ProviderIdentity, developerId: string, occurrence: string): Promise<CompanySignIn> {
+    const current = await deps.orgs.orgForDeveloper(developerId);
+    const audit = deps.audit === undefined ? {} : { audit: deps.audit };
+    const outcome = await decideCompanySignIn({
+      policy: deps.editionPolicy!, stores: deps.sso, method, orgId: deps.singleOrgId, identity, developerId, currentRole: current?.role, occurrence,
+      auditAvailable: deps.audit !== undefined, nowMs: deps.now(),
+    });
+    if (outcome.allow && outcome.breakGlass) {
+      await recordAuditEventDurably(audit, outcome.event);
+      deps.log({ event: "signin.break_glass_used", level: "alert", developerId });
+    } else if (outcome.event !== undefined) {
+      await recordAuditRead(audit, outcome.event);
+    }
+    return outcome;
+  }
+
   async function completeSignIn(method: DeveloperSignInMethod, request: AuthRequestRecord, code: string | null): Promise<HttpResult> {
     const client = (params: Record<string, string>) => toClient(request.clientRedirectUri, { ...params, state: request.clientState });
     // A join (the invite page's sign-in) ends on a page and a stored result, never in a session, a code or a redirect to the CLI.
@@ -577,9 +626,33 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       return client({ error: "access_denied", error_description: `${result.reason}${hint}` });
     }
     const identity = result.identity;
+    // Enterprise foundations I1: where the edition has company group sign-in, the person's groups decide whether they come in, as what, and for how long.
+    // This is before anything else is written or looked up about them: the identity link and any merge, the Slack lookup, the developer record, the org, a session or a code.
+    // The developer a company sign-in resolves to is read, not written: its identity's link if it has one, else its own key (a merge or a join of another route is for the cloud and GitHub methods).
+    let companySignIn: Extract<CompanySignIn, { allow: true }> | undefined;
+    let decidedFor: string | undefined;
+    if (deps.editionPolicy?.features.sso === true) {
+      const key = ownerKeyForSubject(identity.issuer, identity.subject);
+      const link = await store.getIdentityLink(key);
+      const decisionId = link !== undefined && (link.unlinkedFrom === undefined || link.developerId === key) ? link.developerId : key;
+      decidedFor = decisionId;
+      const developerId = decisionId;
+      const decided = await decideCompanySignInFor(method, identity, decisionId, request.id);
+      if (!decided.allow) {
+        deps.log({ event: "signin.refused", method, reason: decided.reason, developerId });
+        // A person the mapping no longer lets in loses their Slack access too (Enterprise foundations I-6).
+        await revokeSlackAllowance(developerId);
+        if (join) return page(403, "Sign-in was refused", [decided.message, "Ask your administrator."]);
+        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
+        return client({ error: "access_denied", error_description: decided.message });
+      }
+      companySignIn = decided;
+    }
     // One developer per person: a second sign-in route for the same verified email is linked to the first route's developer.
     const resolved = await resolveSignInDeveloper({ store, orgs: deps.orgs, log: deps.log, ...(deps.mergeDuplicate === undefined ? {} : { mergeDuplicate: deps.mergeDuplicate }), ...(deps.raceOrgBlocker === undefined ? {} : { raceOrgBlocker: deps.raceOrgBlocker }) }, { method, identity });
     const { developerId, identityKey } = resolved;
+    // The decision was made for a developer read before the link was written; a race that resolves to another developer gets no access from it.
+    if (decidedFor !== undefined && developerId !== decidedFor) throw agentXError("CHANGE_STALE", "the sign-in changed while it was being decided; run it again");
     const existing = await store.getDeveloper(developerId);
     if (existing?.revoked === true) {
       deps.log({ event: "signin.refused", method, reason: "developer_revoked", developerId });
@@ -587,12 +660,19 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "ended");
       return client({ error: "access_denied", error_description: "your AgentX sign-in was turned off by an admin; contact an admin" });
     }
+    /** What a company sign-in leaves on its session for a later mapping change to check itself against (Enterprise foundations N-2). */
+    const sessionClaims = (): { groupClaims?: Record<string, unknown>; ssoBreakGlass?: true } => companySignIn === undefined ? {}
+      : { groupClaims: identity.claims ?? {}, ...(companySignIn.breakGlass ? { ssoBreakGlass: true as const } : {}) };
     let slackUserId = identity.slackUserId;
     // ProviderIdentity.email is set only for a verified email (providers.ts), so only a verified
     // email is ever looked up in Slack.
     if (slackUserId === undefined && identity.email !== undefined) {
       const link = await deps.directory.lookupByEmail(identity.email);
       slackUserId = link === "unavailable" ? existing?.slackUserId : link === "none" ? undefined : link.userId;
+    }
+    // Enterprise foundations I-6: the Slack user this person is, allowed until their session ends. Without a Slack account there is nothing for Slack to act as.
+    if (companySignIn !== undefined && slackUserId !== undefined && deps.sso !== undefined && deps.singleOrgId !== undefined) {
+      await deps.sso.slack.record(deps.singleOrgId, slackUserId, developerId, companySignIn.sessionEndsAt);
     }
     // The developer record keeps the first identity's issuer and subject (ownerKeyForSubject(issuer, subject) === developerId, which
     // task-person-identity.ts relies on), so a linked sign-in only records that it happened.
@@ -631,6 +711,10 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "removed");
       return client({ error: "access_denied", error_description: (error as Error).message.replace(/^REMOVED_FROM_ORG: /, "") });
     }
+    // The mapped role replaces the person's role at every sign-in (an owner is never changed by a mapping): leaving a group takes the access away at the next sign-in.
+    if (companySignIn !== undefined && org.orgId !== undefined && org.role !== companySignIn.orgRole) {
+      await deps.orgs.setRole({ orgId: org.orgId, developerId, role: companySignIn.orgRole, by: { kind: "system", id: "rovara" }, requestId: request.id });
+    }
     if (join) {
       const outcome = await finishJoin(request, org, described, method);
       // Joining an org with a GitHub sign-in unlocks that org's trial as any GitHub sign-in does; no other outcome touches an org.
@@ -638,8 +722,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         await unlockTrialBestEffort(org.orgId, identity.githubUserId, developerId);
       }
       if (outcome === "joined") {
-        const endsAt = Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS;
-        const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime: signInTime(identity.authTime),
+        const endsAt = Math.min(Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS, companySignIn?.sessionEndsAt ?? Number.MAX_SAFE_INTEGER);
+        const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime: signInTime(identity.authTime), ...sessionClaims(),
           ...(slackUserId === undefined ? {} : { slackUserId }), reviewExpiresAt: endsAt, endsAt });
         return browserReturn(endpoint(`/join/done?request=${request.id}`), true, session.sessionId);
       }
@@ -653,16 +737,16 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const authTime = signInTime(identity.authTime);
     if (request.fresh === true && !isFreshSignIn({ authTime }, deps.now())) deps.log({ event: "signin.fresh_sign_in_not_fresh", method });
     if (request.browserReturnTo !== undefined) {
-      // A fixed 30 days from sign-in, with no renewal: the session record ends then, whatever the cookie says.
-      const endsAt = Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS;
-      const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime,
+      // A fixed 30 days from sign-in, with no renewal (an edition's sign-in cap, when it has one, comes sooner): the session record ends then, whatever the cookie says.
+      const endsAt = Math.min(Math.floor(deps.now() / 1000) + SESSION_MAX_AGE_SECONDS, companySignIn?.sessionEndsAt ?? Number.MAX_SAFE_INTEGER);
+      const { session } = await store.createSession({ developerId, amr: method, identityKey, authTime, ...sessionClaims(),
         ...(slackUserId === undefined ? {} : { slackUserId }),
         reviewExpiresAt: endsAt, endsAt,
       });
       deps.log({ event: "signin.browser_succeeded", method, developerId });
       return browserReturn(request.browserReturnTo, true, session.sessionId);
     }
-    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, authTime, ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
+    const agentxCode = await store.issueCode({ developerId, amr: method, identityKey, authTime, ...sessionClaims(), ...(companySignIn === undefined ? {} : { sessionEndsAt: companySignIn.sessionEndsAt }), ...(slackUserId === undefined ? {} : { slackUserId }), codeChallenge: request.codeChallenge, redirectUri: request.clientRedirectUri });
     deps.log({ event: "signin.succeeded", method, developerId, linkedToSlack: slackUserId !== undefined });
     // An invite that was not used (the person is already in an org, or it is unknown, used, expired or for another email) is reported, not hidden.
     return client({ code: agentxCode, ...(org.inviteError === undefined ? {} : { inviteError: org.inviteError }) });
@@ -787,7 +871,10 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (developer === undefined || developer.revoked) return oauthError(400, "invalid_grant", "your AgentX sign-in was turned off by an admin; contact an admin");
     // A code issued just before the person unlinked its identity must not start a session afterwards.
     if (redeemed.identityKey !== undefined && !await store.identityBelongsTo(redeemed.identityKey, redeemed.developerId)) return oauthError(400, ...SIGN_IN_ENDED);
-    const { session, refreshToken } = await store.createSession(redeemed);
+    // The edition's sign-in cap (Enterprise foundations I1) rides on the code: the session ends then, and a refresh never moves it.
+    const { sessionEndsAt, ...started } = redeemed;
+    if (sessionEndsAt !== undefined && sessionEndsAt <= Math.floor(deps.now() / 1000)) return oauthError(400, ...SIGN_IN_ENDED);
+    const { session, refreshToken } = await store.createSession({ ...started, ...(sessionEndsAt === undefined ? {} : { endsAt: sessionEndsAt }) });
     deps.log({ event: "signin.session_started", method: redeemed.amr, developerId: redeemed.developerId, sessionId: session.sessionId });
     const access = await accessToken(session);
     if (access === undefined) {
@@ -807,6 +894,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     // "active", or "recently_rotated": the same token presented again inside the grace window.
     const { session } = lookup;
+    // The edition's session cap holds for every session, old ones included.
+    if (!sessionWithinEditionCap(deps.editionPolicy, session.startedAt, deps.now())) {
+      await revoke(session.sessionId, "session_cap");
+      return ended;
+    }
     if (!methods.includes(session.amr)) {
       await revoke(session.sessionId, "method_disabled");
       return oauthError(400, "invalid_grant", `${methodLabel(session.amr)} sign-in was turned off in this environment; sign in another way with agentx login`);

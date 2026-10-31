@@ -583,7 +583,7 @@ describe("agentx init --ui", () => {
     git("init", "-q");
     git("commit", "-q", "--allow-empty", "-m", "release");
     git("tag", "v1.2.3");
-    expect(await h.run(["--ui", "--engine", "cdk", "--source", source], { openBrowser: operator.open, checks })).not.toBe(0);
+    expect(await h.run(["--ui", "--engine", "cdk", "--edition", "enterprise", "--source", source], { openBrowser: operator.open, checks })).not.toBe(0);
     await operator.settled();
     expect(operator.asked).toContain("Your answers need a change. What next?");
     const failed = operator.states.flatMap((state) => state.cards?.filter((card) => card.id === "prerequisites" && card.status === "failed") ?? []).at(-1);

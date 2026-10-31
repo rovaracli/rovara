@@ -62,6 +62,7 @@ import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { blockedOnRunLimit, estimateDependencies, get, inertTaskTitle, iso, log, removedReasonOf } from "./common.js";
 import { publicWorkflowDecision } from "./workflow-inputs.js";
 import { approvedPlanForPullRequest, proofContextOfTask } from "./pull-request-body.js";
+import { taskViewErrorRef } from "./error-ref.js";
 
 const DIFF_READ_BYTES = 1_000_000;
 const ARTIFACT_NAME_MAX = 200;
@@ -322,6 +323,9 @@ export async function taskView(
   const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
   const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
+  const updatedAt = derived.failedPrepare?.updatedAt !== undefined && derived.failedPrepare.updatedAt > task.updatedAt ? derived.failedPrepare.updatedAt : derived.current?.createdAt ?? task.updatedAt;
+  // Live interaction F1: what "Fix with agent" is about when this view shows an error (fixed codes and ids only).
+  const errorRef = taskViewErrorRef({ taskId: task.taskId, status: derived.status, workflow, failure: derived.failure, operationId: derived.failedPrepare?.id ?? derived.current?.id, creatorRemoved: removedReason !== undefined, at: updatedAt });
   return {
     modelFallbacks:modelFallbacks.data,
     taskId: task.taskId,
@@ -337,6 +341,7 @@ export async function taskView(
     ...(merge === undefined ? {} : { merge }),
     ...(e2ePresentation === undefined ? {} : { e2ePresentation }),
     ...(derived.failure === undefined ? {} : { failure: derived.failure }),
+    ...(errorRef === undefined ? {} : { errorRef }),
     ...(removedReason === undefined ? {} : { outcome: "creator_removed" as const, outcomeReason: capText(removedReason, 1000).text }),
     startingRevision: task.startingRevision,
     client: task.client,
@@ -351,7 +356,7 @@ export async function taskView(
     ...(sessionId === undefined ? {} : { sessionId, ...(deps.issuer === undefined ? {} : { sessionUrl: sessionLink(new URL(deps.issuer).origin, sessionId) }) }),
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.
-    updatedAt: derived.failedPrepare?.updatedAt !== undefined && derived.failedPrepare.updatedAt > task.updatedAt ? derived.failedPrepare.updatedAt : derived.current?.createdAt ?? task.updatedAt,
+    updatedAt,
     events,
     ...details,
     ...(channelTurns === undefined ? {} : { channelTurns }),

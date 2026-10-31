@@ -11,7 +11,7 @@
 // change set), this engine never needs to touch it.
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { agentXError } from "@agentx/contracts";
+import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, agentXError, type Edition } from "@agentx/contracts";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import type { DeployRequest, StackDeployer, StackOutputs } from "./deployer.js";
 import { SECRET_PARAMETERS, type DeployPart } from "./parameters.js";
@@ -152,18 +152,21 @@ function redactSecrets(text: string, parameters: Record<string, string>): string
 
 /** The app and context every cdk command runs with (deploy, diff, and cdk-source.ts's synth), so
  * the synth that reads the declared parameters synthesizes exactly what the deploy deploys. */
-export function cdkAppArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false }): string[] {
+export function cdkAppArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean }): string[] {
   const args = ["--app", "node infra/dist/bin/agentx.js", "-c", `agentxEnv=${input.env}`, "-c", `agentxRegion=${input.region}`];
   if (input.identityMode === "oidc") args.push("-c", "agentxIdentity=oidc");
   // R45: the hosted-cloud switch is synth-time only, so it comes from the stored settings on every command.
   if (input.cloud === true) args.push("-c", "agentxCloud=true");
+  // Enterprise foundations E2: the edition is synth-time only too (it stamps ROVARA_EDITION on every function). `rovara init` also marks a new install, so that a new install with no edition is refused at synth.
+  if (input.edition !== undefined) args.push("-c", `${EDITION_CONTEXT_KEY}=${input.edition}`);
+  if (input.newInstall === true) args.push("-c", `${NEW_INSTALL_CONTEXT_KEY}=true`);
   // `agentx upgrade --no-reserved-concurrency`: for an account whose Lambda concurrency limit is too low to reserve any. Unset keeps the default (reserved).
   if (input.reservedConcurrency === false) args.push("-c", "agentxReservedConcurrency=false");
   return args;
 }
 
 /** The cdk command's arguments for one stack (deploy or diff); a deploy passes each parameter by physical stack name. */
-function cdkArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false }, request: DeployRequest, command: "deploy" | "diff"): string[] {
+function cdkArguments(input: { env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean }, request: DeployRequest, command: "deploy" | "diff"): string[] {
   // --no-install: only the CDK CLI `npm ci` installed from the release's own lockfile, never one npx
   // would otherwise download on the fly.
   const args = ["--no-install", "cdk", command, CDK_CONSTRUCT_IDS[request.part], "--exclusively", ...cdkAppArguments(input)];
@@ -181,7 +184,7 @@ function cdkArguments(input: { env: string; region: string; identityMode: "cogni
  * through a Ref or GetAtt, nor a Conditions or Mappings change that adds or removes a conditional
  * resource; the live check (Task 20) looks at this. cdk prints the diff on stderr; the
  * text returned has every secret redacted. */
-export async function cdkDiff(input: { runner: CommandRunner; source: string; env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; request: DeployRequest }): Promise<string> {
+export async function cdkDiff(input: { runner: CommandRunner; source: string; env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean; request: DeployRequest }): Promise<string> {
   // --no-notices: a notice naming a guarded resource type would otherwise read as an unclear line.
   const args = [...cdkArguments(input, input.request, "diff"), "--method=template", "--no-notices"];
   const redact = (text: string) => redactSecrets(text, input.request.parameters);
@@ -198,6 +201,9 @@ export function cdkDeployer(input: {
   identityMode: "cognito" | "oidc";
   cloud?: boolean;
   reservedConcurrency?: false;
+  /** Enterprise foundations E2: the install's edition (the explicit request or the recorded one), passed to the synth as `-c rovaraEdition`. */
+  edition?: Edition;
+  newInstall?: boolean;
   outputsDir: string;
   outputs: (stackName: string) => Promise<StackOutputs | undefined>;
 }): StackDeployer {

@@ -1,6 +1,6 @@
 // Enterprise foundations, fix round 1 (review I-3): the edition is decided once, at synth, and every function and task carries it as ROVARA_EDITION, so no
 // process has to guess it from another setting at run time.
-import { type IAspect, aws_ecs as ecs, aws_lambda as lambda } from "aws-cdk-lib";
+import { Aws, type IAspect, aws_ecs as ecs, aws_iam as iam, aws_lambda as lambda } from "aws-cdk-lib";
 import type { IConstruct } from "constructs";
 import { EDITION_ENV_VAR, type Edition } from "@agentx/contracts";
 
@@ -21,4 +21,22 @@ export class EditionEnvironment implements IAspect {
       });
     }
   }
+}
+
+/** The SSM parameter that records an install's edition (written by the foundation for an Enterprise install, and kept when the stack goes). */
+export function editionRecordParameterName(env: string): string {
+  return `/agentx/${env}/edition`;
+}
+
+/**
+ * Lets a function that serves requests read the edition record, in EVERY synth of a named environment (not only one that names an edition): the check that an install
+ * with an edition is never served without its stamp must still be able to read the record in the synth that lost the stamp.
+ */
+export function grantEditionRecordRead(fn: lambda.Function, env: string): void {
+  fn.addToRolePolicy(new iam.PolicyStatement({
+    sid: "ReadEditionRecord",
+    actions: ["ssm:GetParameter"],
+    // The record, and the backup the CLI keeps while it has the record out of the way.
+    resources: [editionRecordParameterName(env), `/agentx/${env}/edition-backup`].map((name) => `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${name}`),
+  }));
 }

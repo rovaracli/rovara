@@ -4,7 +4,7 @@
 import type { AclSnapshot } from "@agentx/contracts";
 
 /** The erase steps. Each runs on its own, is reported in `EraseResult.steps`, and is resumed by the next run when it did not finish. */
-export const ERASE_STEPS = ["lake", "principals", "access", "config", "lessons", "rows"] as const;
+export const ERASE_STEPS = ["lake", "principals", "access", "config", "lessons", "asks", "rows"] as const;
 export type EraseStep = (typeof ERASE_STEPS)[number];
 
 export interface PersonField {
@@ -33,6 +33,7 @@ export const PERSON_FIELDS: readonly PersonField[] = [
   { store: "lake", path: "events/facts acl_json.principals, structured_json, actor_developer_id, actor_source_hash", names: ["acl_json", "structured_json", "actor_developer_id", "actor_source_hash"], step: "lake", note: "acl_json is written without principals and structured_json without actor fields (nothing reads either per viewer); actor_developer_id holds a HASH of the developer id and the lake-delete target carries the same hash; actor_source_hash is a hash too" },
   { store: "lessons", path: "provenance.authors, sources/inputSources member:<id>, approvals[].by, promotionApprovals[].by", names: ["authors", "by", "approvals", "approverId", "promotionApprovals", "createdBy"], step: "lessons", note: "the learning lane's erasePerson hard-deletes lessons resting on the person and scrubs the rest" },
   { store: "lessons", path: "provenance.audience.acl.principals", names: ["audience"], step: "lessons", note: "scrubAudienceIds over every version of every lesson" },
+  { store: "hot", path: "ASK# record (askedBy, question, answer, mentionTags), ASKBY#, ASKMENTION#, ASKEXP# (live interaction Ask, agent-sessions/ask-erase.ts)", names: ["askedBy", "mentionTags"], step: "asks", note: "every Ask the person asked is hard-deleted with its index items; their label in other people's stored questions and answers becomes @former-member (the writer replaces real names with labels, so the label index is complete)" },
   { store: "lessons", path: "feedback once-keys (Helpful / Wrong here)", names: ["feedback", "markedBy", "once"], step: "never_stored", note: "the key holds only a hash of workspace and user, never the id; it goes with the lesson when the lesson is purged. Marking needs access (recordFeedback)" },
   { store: "lessons", path: "weekly digest, panel rows", names: ["digest", "panel"], step: "never_stored", note: "computed when read; nothing is stored" },
 ];

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { npmLauncher, tarballIntegrity } from "../../../packages/gateway/src/mcp-host.js";
 
-const spec = { registry: "npm" as const, name: "@acme/sim-mcp", version: "1.4.2", args: ["--read-only"] };
+const spec = { registry: "npm" as const, name: "@acme/sim-mcp", version: "1.4.2", args: ["--read-only"], destinations: [], secretEnv: [], size: { cpu: 256 as const, memoryMiB: 512 as const } };
 
 /** An `npm` that writes what `npm pack` and `npm install` would, with the tarball bytes the "registry" serves. */
 function fakeNpm(options: { tarball: Buffer; bin?: unknown }) {

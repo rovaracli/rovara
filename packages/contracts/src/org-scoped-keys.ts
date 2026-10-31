@@ -636,11 +636,54 @@ export type AgentSessionItemSk =
   | `TAKE_OVER_FOLLOW_UP#${string}`
   | `REQUEST#${string}`
   | `HANDOFF_PENDING#${string}`
+  | `ASK#${string}`
   | "RETRIED";
 
 /** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
 export function agentSessionKey(orgId: OrgId, sessionId: SessionId, sk: AgentSessionItemSk): OrgKey {
   return { pk: orgScoped(orgId, `AGENT_SESSION#${keyPart(sessionId, "a session id")}`), sk };
+}
+
+/** Live interaction A5: one "Ask about this task" record, `ASK#<askId>`, in the session's own partition. */
+export function sessionAskKey(orgId: OrgId, sessionId: SessionId, askId: string): OrgKey {
+  return agentSessionKey(orgId, sessionId, `ASK#${keyPart(askId, "an ask id")}`);
+}
+
+/** The index of the Asks a person asked, so erasing the person finds them: partition `ASKBY#<developerId>`, one item per Ask. It holds ids only and goes with the Ask. */
+export function askByPersonKey(orgId: OrgId, developerId: string, sessionId: SessionId, askId: string): OrgKey {
+  return { pk: askByPersonPk(orgId, developerId), sk: `${keyPart(sessionId, "a session id")}#${keyPart(askId, "an ask id")}` };
+}
+
+/** The partition of one person's Ask index (what erasing the person queries). */
+export function askByPersonPk(orgId: OrgId, developerId: string): string {
+  return orgScoped(orgId, `ASKBY#${keyPart(developerId, "a developer id")}`);
+}
+
+/**
+ * The index of the Asks whose stored text names a person by their fixed label (`p_` and six hex digits), so erasing that person finds the other people's answers that mention them. Partition
+ * `ASKMENTION#<tag>`; ids only.
+ */
+export function askMentionKey(orgId: OrgId, personTag: string, sessionId: SessionId, askId: string): OrgKey {
+  return { pk: askMentionPk(orgId, personTag), sk: `${keyPart(sessionId, "a session id")}#${keyPart(askId, "an ask id")}` };
+}
+
+/** The partition of the Asks that mention one person label (what erasing that person queries). */
+export function askMentionPk(orgId: OrgId, personTag: string): string {
+  return orgScoped(orgId, `ASKMENTION#${keyPart(personTag, "a person tag")}`);
+}
+
+/**
+ * The expiry bucket of the Asks that expire on one day (`YYYY-MM-DD`): partition `ASKEXP#<day>`. The State table deletes by TTL only in named environments, so the 30 days are enforced by a sweep
+ * that reads these buckets; ids only.
+ */
+export function askExpiryKey(orgId: OrgId, day: string, sessionId: SessionId, askId: string): OrgKey {
+  return { pk: askExpiryPk(orgId, day), sk: `${keyPart(sessionId, "a session id")}#${keyPart(askId, "an ask id")}` };
+}
+
+/** The partition of one day's expiring Asks. */
+export function askExpiryPk(orgId: OrgId, day: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(day)) throw new Error("an expiry day is YYYY-MM-DD");
+  return orgScoped(orgId, `ASKEXP#${day}`);
 }
 
 /** A local session's transcript line, `TURN#<number>`; six digits keep a query on `TURN#` in order. */

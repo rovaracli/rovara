@@ -1,7 +1,7 @@
 // Spec 025 FR-002 to FR-004: the Slack and company OIDC providers, and the GitHub OAuth provider of cloud installs (Task 22). The code exchange runs here,
 // server side, with the client secret; the laptop never sees it.
 import { jwtVerify, type JWTPayload, type JWTVerifyGetKey } from "jose";
-import { SLACK_OIDC_ISSUER, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, containsEmailAddress, type DeveloperSignInMethod } from "@agentx/contracts";
+import { GroupClaimNameSchema, SLACK_OIDC_ISSUER, SlackTeamIdSchema, SlackUserIdSchema, cleanDisplayName, containsEmailAddress, type DeveloperSignInMethod } from "@agentx/contracts";
 
 export interface ProviderIdentity {
   method: DeveloperSignInMethod; issuer: string; subject: string; displayName: string; email?: string; slackUserId?: string;
@@ -24,6 +24,11 @@ export interface ProviderIdentity {
   amr?: string[];
   /** The ID token names federated identities (`identities`): a social sign-in through the pool, which is never the email code. */
   federated?: true;
+  /**
+   * Enterprise foundations I1: the verified ID token's group claims, for the company sign-in's group mapping, and nothing else of the token. Only claims whose name is one
+   * that carries groups (GroupClaimNameSchema) are kept, so a claim a person can edit about themselves (email, name) never reaches the mapping. Company sign-in only.
+   */
+  claims?: Record<string, unknown>;
 }
 /** `wrongAccount`: the person signed in fine but is not one AgentX accepts (another Slack workspace,
  * or without the required claim), so signing in as someone else may help. */
@@ -111,6 +116,13 @@ const amrOf = (payload: JWTPayload): { amr: string[] } | Record<string, never> =
   Array.isArray(payload.amr) && payload.amr.every((value) => typeof value === "string") ? { amr: payload.amr } : {};
 
 const federatedOf = (payload: JWTPayload): { federated: true } | Record<string, never> => (payload.identities === undefined ? {} : { federated: true });
+
+/** The group claims of a verified ID token (see `ProviderIdentity.claims`). Own properties only, copied into a plain object. */
+const groupClaimsOf = (payload: JWTPayload): { claims: Record<string, unknown> } | Record<string, never> => {
+  const claims: Record<string, unknown> = {};
+  for (const key of Object.keys(payload)) if (GroupClaimNameSchema.safeParse(key).success) claims[key] = payload[key];
+  return { claims };
+};
 
 const verifiedEmail = (payload: JWTPayload): string | undefined =>
   typeof payload.email === "string" && emailVerifiedClaim(payload) ? payload.email : undefined;
@@ -251,6 +263,7 @@ export function oidcSignInProvider(input: {
           ...authTimeOf(payload),
           ...amrOf(payload),
           ...federatedOf(payload),
+          ...(method === "oidc" ? groupClaimsOf(payload) : {}),
         },
       };
     },

@@ -1,13 +1,26 @@
 import { takeRateAt } from "../developer/page-comments.js";
 import { requireLiveCompanyAdmin, type CompanyAuthorityDependencies, type CompanyViewer } from "./company-authority.js";
 import { z } from "zod";
-import { e2eRuntimeExpiryNotice, OrgIdSchema, agentXError, orgScoped } from "@agentx/contracts";
+import { connectorHealthErrorRef, e2eRuntimeExpiryNotice, OrgIdSchema, agentXError, orgScoped, type ErrorRef } from "@agentx/contracts";
 type RuntimeKind = "web" | "api";
 export interface ServiceObservation {
  kind: RuntimeKind; state: "ready" | "parked" | "unavailable" | "unknown";
  observation: "qualified" | "warning" | "expired" | "unknown";
  reason: "qualified" | "expiring" | "expired" | "not_ready" | "not_observed" | "invalid_evidence" | "not_configured" | "unavailable";
  expiresAt?: string;
+ /** Live interaction F1: what "Fix with agent" is about, for a row that is not healthy (fixed codes and ids only). */
+ errorRef?: ErrorRef;
+}
+/**
+ * Which rows are an error to fix: an expired or not-ready qualification, evidence that cannot be read and a store that is down. A row that is simply not set up (`not_configured`), not yet observed
+ * (`not_observed`) or expiring soon is a state, not an error: no reference.
+ */
+export function withServiceErrorRefs(rows: readonly ServiceObservation[], at: string): ServiceObservation[] {
+ return rows.map(row => {
+  const reason = row.reason;
+  const errorRef = reason === "expired" || reason === "not_ready" || reason === "invalid_evidence" || reason === "unavailable" ? connectorHealthErrorRef({ connectorId: `runtime-${row.kind}`, reason, at }) : undefined;
+  return errorRef === undefined ? row : { ...row, errorRef };
+ });
 }
 const stored = z.object({ kind: z.enum(["web", "api"]), state: z.enum(["READY", "PARKED", "UNAVAILABLE"]), qualifiedAt: z.string().datetime(), expiresAt: z.string().datetime() });
 /** Only coarse stored qualification facts leave this projection. Never emit helper text. */
@@ -50,6 +63,7 @@ export async function readOrgServiceStatus(deps: ServiceStatusDependencies, call
   } catch { reason = "unavailable"; } finally { clearTimeout(timer); }
  }
  await requireLiveCompanyAdmin(deps, caller);const now = deps.now();
- const checks: ServiceObservation[] = evidence === undefined ? (["web", "api"] as const).map(kind => ({ kind, state: "unknown", observation: "unknown", reason })) : projectRuntimeStatus(evidence, now);
- return { orgId: caller.orgId, source: "stored_runtime_qualification" as const, checkedAt: new Date(now).toISOString(), configured: deps.runtimeStatus !== undefined, checks };
+ const checkedAt = new Date(now).toISOString();
+ const checks: ServiceObservation[] = withServiceErrorRefs(evidence === undefined ? (["web", "api"] as const).map(kind => ({ kind, state: "unknown", observation: "unknown", reason })) : projectRuntimeStatus(evidence, now), checkedAt);
+ return { orgId: caller.orgId, source: "stored_runtime_qualification" as const, checkedAt, configured: deps.runtimeStatus !== undefined, checks };
 }

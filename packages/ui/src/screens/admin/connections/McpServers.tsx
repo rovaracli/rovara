@@ -8,7 +8,7 @@ import { ApiError } from "../../../api/errors.js";
 import { createContextSourcesApi, type McpServerView } from "../../../api/context-sources.js";
 
 const annotationWords = { read_only: "says it only reads", unannotated: "does not say whether it only reads", unsafe: "says it changes things" } as const;
-const statusWords = { awaiting_approval: "Waiting for approval", approved: "Allowed", disabled: "Turned off" } as const;
+const statusWords = { awaiting_approval: "Waiting for approval", approved: "Allowed", disabled: "Turned off", needs_reapproval: "Add it again to approve" } as const;
 
 function Offers({ server }: { server: McpServerView }) {
  return <details><summary>What it offers ({server.probe.tools.length} tools)</summary><ul>{server.probe.tools.map(tool => <li key={tool.name}><code><VisibleText text={tool.name} /></code>: {annotationWords[tool.annotation]}. <VisibleText text={tool.description} /></li>)}</ul></details>;

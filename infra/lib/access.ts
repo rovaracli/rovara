@@ -5,6 +5,7 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import type { Construct } from "constructs";
 import { defaultBoundaryName, defaultBoundaryStatements, environmentRolePath, operatorRoleStatements, serviceRoleStatements, withoutSids } from "./access-policies.js";
 import type { AgentXNaming } from "./naming.js";
+import { OperatorAccess, type OperatorAccessSettings } from "./operator-access.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
 
 export interface AccessStackProps extends StackProps {
@@ -14,6 +15,16 @@ export interface AccessStackProps extends StackProps {
    * statement also excludes every account of that organization; when not, it excludes this account only (the fallback).
    */
   rovaraOrganizationId?: string;
+  /**
+   * Enterprise installs: the ECR repositories the signed release bundle's images are loaded into (`rovara-bundle/<name>`). They live here, in the stack that is
+   * deployed first, so `rovara upgrade --bundle` can load the images before any stack that runs them. Immutable tags, scanned on push, kept when the stack goes.
+   */
+  bundleImageRepositories?: readonly string[];
+  /**
+   * Enterprise installs under a managed-VPC agreement (task N6): the standing Rovara operator role, its approval bucket, the alert on every use and the
+   * customer's suspend switch. Absent: none of it exists (Public, and every Enterprise install that does not ask for it).
+   */
+  operatorAccess?: OperatorAccessSettings;
 }
 
 /**
@@ -25,7 +36,7 @@ export interface AccessStackProps extends StackProps {
 export class AccessStack extends Stack {
   constructor(scope: Construct, id: string, props: AccessStackProps) {
     super(scope, id, props);
-    const { naming, rovaraOrganizationId } = props;
+    const { naming, rovaraOrganizationId, bundleImageRepositories, operatorAccess } = props;
     const env = naming.env;
     if (env === undefined) throw new Error("the access stack exists only for named environments");
     const ecsFailureRuleArn = Fn.sub(`arn:${"${AWS::Partition}"}:events:${"${AWS::Region}"}:${"${AWS::AccountId}"}:rule/agentx-${env}-*-service-failures`);
@@ -80,6 +91,15 @@ export class AccessStack extends Stack {
       upstreamRegistryUrl: "public.ecr.aws",
     });
 
+    for (const repositoryName of bundleImageRepositories ?? []) {
+      const repository = new ecr.CfnRepository(this, `BundleImage${repositoryName.replace(/[^A-Za-z0-9]/g, "")}`, {
+        repositoryName,
+        imageTagMutability: "IMMUTABLE",
+        imageScanningConfiguration: { scanOnPush: true },
+      });
+      repository.applyRemovalPolicy(RemovalPolicy.RETAIN);
+    }
+
     const policyScope = {
       env,
       partition: Aws.PARTITION,
@@ -95,6 +115,9 @@ export class AccessStack extends Stack {
     const serviceStatements = serviceRoleStatements({ ...policyScope, permissionsBoundaryArn: effectiveBoundaryArn })
       .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement);
 
+    // Built before the deploy role, which gains the one statement it needs to read the templates the customer approved.
+    const operatorAccessConstruct = operatorAccess === undefined ? undefined : new OperatorAccess(this, "RovaraOperatorAccess", { naming, settings: operatorAccess });
+
     const serviceRole = new iam.CfnRole(this, "CloudFormationServiceRole", {
       roleName: naming.cloudFormationRoleName,
       description: `CloudFormation deployment role for ${env}`,
@@ -109,7 +132,10 @@ export class AccessStack extends Stack {
           },
         ],
       },
-      policies: [{ policyName: "deploy", policyDocument: { Version: "2012-10-17", Statement: serviceStatements } }],
+      policies: [
+        { policyName: "deploy", policyDocument: { Version: "2012-10-17", Statement: serviceStatements } },
+        ...(operatorAccessConstruct === undefined ? [] : [operatorAccessConstruct.deployRoleReadPolicy]),
+      ],
     });
 
     const operatorRole = new iam.CfnRole(this, "OperatorRole", {

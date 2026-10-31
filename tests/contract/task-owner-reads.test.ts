@@ -87,6 +87,8 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks/task-page.ts", "getTaskDocumentView", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-page.ts", "getTaskDocumentView", "caller-actor", "taskOwnerKey()*3"],
   ["aws/developer-tasks/feedback-capture.ts", "feedbackReviewWorkspaceReady", "principal", "taskOwnerKey()", ".developerId"],
+  // Live interaction A1: the ask context reads the task's latest document from its own object prefix (the task's principal, never changes), as the Slack-only task answer context does
+  ["agent-sessions/ask-context.ts", "readDocument", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-answer-context.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-answer-context.ts", "commentAnswerSection", "principal", ".ownerKey"],
   ["aws/developer-tasks/close.ts", "finishTaskClose>closing", "index", ".developerId"],

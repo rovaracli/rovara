@@ -147,8 +147,12 @@ describe("what a sign-in comes to", () => {
         sessionMaxSeconds: BREAK_GLASS_SESSION_MAX_SECONDS, freshAuthWithinSeconds: BREAK_GLASS_FRESH_AUTH_SECONDS,
       });
     }
-    // The provider stopped sending the claim: also a broken mapping.
-    expect(decideSignIn({ ...base, claims: {}, personId: OWNER_A, currentRole: "owner" })).toMatchObject({ source: "break-glass" });
+    // A token with no groups claim is a person in no groups (Entra ID and Okta leave an empty claim out), NOT a broken mapping: even a listed owner is refused.
+    for (const claims of [{}, { groups: null }, { roles: ["x"] }]) {
+      expect(decideSignIn({ ...base, claims, personId: OWNER_A, currentRole: "owner" })).toMatchObject({ allow: false, reason: "no_group" });
+    }
+    // A malformed claim is one person's token, not the mapping either.
+    expect(decideSignIn({ ...base, claims: { groups: [1] }, personId: OWNER_A, currentRole: "owner" })).toMatchObject({ allow: false, reason: "claim_invalid" });
     expect(BREAK_GLASS_SESSION_MAX_SECONDS).toBe(3_600);
     expect(BREAK_GLASS_FRESH_AUTH_SECONDS).toBe(300);
   });

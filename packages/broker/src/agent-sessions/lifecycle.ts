@@ -15,6 +15,7 @@
 //
 // An org CLOSED: `clearOrgSessions` deletes the org's live index and presence, its open and ended work entries, its devices and its change feeds, and gives everything else of the
 // sessions an expiry 30 days on (vision 11b). An expiry is only ever shortened, so a repeat never pushes one out.
+import { moveAsksOnMerge } from "./ask-erase.js";
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -274,6 +275,10 @@ export async function onSessionMembersMerged(deps: SessionLifecycleDeps, merge: 
   await rewriteSharers(deps, orgId, duplicateId, survivor, [...touched]);
   await moveFollows(deps, orgId, duplicateId, survivorId, [...touched]);
   await moveDevices(deps, orgId, duplicateId, survivorId);
+  // Live interaction Asks: the duplicate's Asks (and its label in other people's stored answers) become the survivor's, so erasing the survivor finds them all. Repeatable and bounded.
+  for (let pass = 0; pass < 25; pass += 1) {
+    if ((await moveAsksOnMerge(deps, orgId, duplicateId, survivorId)).complete) break;
+  }
   // The tasks come last: the steps above consume what they read, so a duplicate with a great many tasks (or a run that stops early) can't keep them from finishing.
   await moveCreatedTasks(deps, orgId, duplicateId, survivor);
 }

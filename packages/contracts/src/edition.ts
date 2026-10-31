@@ -70,6 +70,10 @@ export const EDITION_FEATURES = [
    * and even there it is off until the install sets `ROVARA_STDIO_MCP_SERVERS=1`.
    */
   "stdioMcpServers",
+  /** Live interaction, Fix with agent: "contact support" opens a staff ticket (codes, ids and the diagnosis text, after per-escalation consent). Public only: Enterprise has no staff routes. */
+  "diagnosisSupportEscalation",
+  /** Live interaction, Fix with agent: "contact support" prepares the redacted support bundle that the customer's operator reads before sending it. Enterprise only; nothing is sent from the install. */
+  "diagnosisSupportBundle",
 ] as const;
 export const EditionFeatureSchema = z.enum(EDITION_FEATURES);
 export type EditionFeature = z.infer<typeof EditionFeatureSchema>;
@@ -96,6 +100,8 @@ export const EDITION_FEATURE_TABLE: Readonly<Record<EditionFeature, { readonly e
   aiNavigationUncharged: { enterprise: true, public: false },
   privateMcpServers: { enterprise: true, public: false },
   stdioMcpServers: { enterprise: true, public: false },
+  diagnosisSupportEscalation: { enterprise: false, public: true },
+  diagnosisSupportBundle: { enterprise: true, public: false },
 };
 
 /** Team record retention (Learning v2): A live only, B process then drop, C raw text about 30 days plus distilled knowledge, D full history. */

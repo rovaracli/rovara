@@ -55,6 +55,7 @@ export function initDeployAnswers(answers: InitAnswers, progress: InstallProgres
     ...(answers.auditLock === undefined ? {} : { auditLock: answers.auditLock }),
     ...(answers.cloud === true ? { cloud: true as const } : {}),
     ...(answers.cloudSignIn === undefined ? {} : { cloudSignIn: answers.cloudSignIn }),
+    ...(answers.edition === undefined ? {} : { edition: answers.edition }),
   };
 }
 
@@ -120,6 +121,8 @@ export function deployStep(input: { id: DeployStepId; title: string; after?: (co
         ...(readParameters === undefined ? {} : { deployedParameters: readParameters }),
         ...(deployment.declaredParameters === undefined ? {} : { declaredParameters: deployment.declaredParameters }),
         ...(deployment.ensurePassRole === undefined ? {} : { ensurePassRole: deployment.ensurePassRole }),
+        ...(deployment.adoptEditionRecord === undefined ? {} : { adoptEditionRecord: deployment.adoptEditionRecord }),
+        ...(deployment.settleEditionRecord === undefined ? {} : { settleEditionRecord: deployment.settleEditionRecord }),
         onEvent: (event) => context.write(progressLine(event)),
         now: context.now,
       });

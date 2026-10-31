@@ -2,6 +2,7 @@
 // It turns the operator's answers, a release manifest, and the stack outputs collected so far into
 // the exact CloudFormation Parameters map for one environment stack. The caller (phase 15d's `agentx
 // init`/`agentx upgrade`) reads secrets and calls CloudFormation; this file only computes values.
+import type { Edition } from "@agentx/contracts";
 import { CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentStackName } from "@agentx/contracts";
 import type { ReleaseManifest, StackPart } from "@agentx/contracts";
 import { signInStackParameters, type StoredDeveloperSignIn } from "../signin/settings.js";
@@ -55,6 +56,8 @@ export interface InstallAnswers {
   setupPageUrl?: string;
   /** The hosted Rovara cloud (R45): the stored `cloud` setting; the cdk app is synthesized with agentxCloud=true. */
   cloud?: true;
+  /** Enterprise foundations E2: the edition this deploy asks for (not a stack parameter: it is a synth-time context, `-c rovaraEdition`). Absent keeps the recorded one. */
+  edition?: Edition;
   /** The cloud sign-in settings (R46); only the ones set are passed, the template defaults the rest. */
   cloudSignIn?: CloudSignInAnswers;
   /** The audit ledger's lock profile (the control plane's AuditLockProfile); absent leaves the template's default, or on an upgrade the deployed value. */

@@ -5,6 +5,7 @@ import { AGENTX_NAME_PATTERN } from "./names.js";
 import { DeveloperTaskViewSchema } from "./developer-tasks.js";
 import { ChainRunViewSchema } from "./chain-session.js";
 import { forwardReader } from "./forward-reader.js";
+import { ErrorRefSchema } from "./live-interaction.js";
 import { AgentPrincipalSchema, AgentIdSchema } from "./agent.js";
 import { ProjectStatusSchema, ProjectSetupStatusSchema, ProjectRoleSchema } from "./app-projects.js";
 
@@ -53,6 +54,8 @@ export const SessionViewSchema = z
     step: SessionSummarySchema.shape.step,
     peek: SessionSummarySchema.shape.peek,
     lastRunFailed: SessionSummarySchema.shape.lastRunFailed,
+    /** Live interaction F1: what "Fix with agent" is about for this session (the task's error, when it shows one). Fixed codes and ids only. */
+    errorRef: ErrorRefSchema.optional(),
     cost: z
       .object({
         spentUsd: z.number().min(0),

@@ -20,7 +20,7 @@ export const DiscoveredReader = z.object({ tools: z.array(z.object({ name: z.str
 export type DiscoveredView = z.infer<typeof DiscoveredReader>["tools"][number];
 const ProbeTool = z.object({ name: z.string().max(64), description: z.string().max(300), annotation: z.enum(["read_only", "unannotated", "unsafe"]) });
 const McpServerReader = z.object({
-  serverId: z.string().max(40), label: z.string().max(60), status: z.enum(["awaiting_approval", "approved", "disabled"]),
+  serverId: z.string().max(40), label: z.string().max(60), status: z.enum(["awaiting_approval", "approved", "disabled", "needs_reapproval"]),
   transport: z.discriminatedUnion("kind", [z.object({ kind: z.literal("http"), address: z.string().max(2048) }), z.object({ kind: z.literal("stdio"), spec: z.object({ name: z.string().max(100), version: z.string().max(50), integrity: z.string().max(200) }) })]),
   probe: z.object({ tools: z.array(ProbeTool).max(100) }), hasSecret: z.boolean().optional(), requestedAt: z.string().max(40),
 });

@@ -27,7 +27,7 @@ import type { TaskAccess } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { issueRepositoryGrant, membershipRecord, object, workspaceItem, workspaceKey, workspaceRuntime } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies, MembershipRecord, RegisteredProjectRecord } from "./definitions.js";
-import { developerTaskActions, orgStoreOf, slackTeamOrg } from "./dependency-wiring.js";
+import { developerTaskActions, orgStoreOf, requireSlackAllowedByEdition, slackTeamOrg } from "./dependency-wiring.js";
 import { getMembership, readOrgMember, requireAdministrator, requireLatestProject, requireWorkspace } from "./records.js";
 import { ensureInstallOrg } from "./scope-helpers.js";
 import { slackTaskAccess } from "./slack-workflow-events.js";
@@ -296,6 +296,8 @@ export async function slackServiceIdentity(
   const context = parseSlackHeaders(request.headers);
   // The thread acts in the org its Slack team is bound to, and the channel binding is read only inside that org.
   const orgId = await slackTeamOrg(dependencies, context.thread.teamId);
+  // Enterprise foundations I-6: the person acting through Slack must still be allowed by the company sign-in.
+  await requireSlackAllowedByEdition(dependencies, context.requester.userId, orgId);
   const binding = await getSlackBinding(dependencies, orgId, context.thread.teamId, context.thread.channelId);
   if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
   const subject = slackThreadSubject(context.thread);

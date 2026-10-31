@@ -1,4 +1,5 @@
 import {
+  CfnDeletionPolicy,
   CfnOutput,
   type CfnTag,
   RemovalPolicy,
@@ -252,7 +253,11 @@ export class ProductionFoundationStack extends Stack {
 
     // The edition is recorded: an install's edition is set once, and `rovara deploy` refuses a redeploy that asks for another (`rovara deploy` will read this and call assertEditionUnchanged once wired).
     if (enterprise) {
-      new ssm.CfnParameter(this, "EditionRecord", { name: `/agentx/${naming.env!}/edition`, type: "String", value: "enterprise", description: "The edition this install was deployed as. It never changes." });
+      // Retained: deleting this stack, or a synth that no longer names the edition, must not delete the record. The broker and the sign-in server refuse to serve an install
+      // whose stamp is missing or differs from it (review I-2).
+      const record = new ssm.CfnParameter(this, "EditionRecord", { name: `/agentx/${naming.env!}/edition`, type: "String", value: "enterprise", description: "The edition this install was deployed as. It never changes." });
+      record.cfnOptions.deletionPolicy = CfnDeletionPolicy.RETAIN;
+      record.cfnOptions.updateReplacePolicy = CfnDeletionPolicy.RETAIN;
     }
 
     // EC2 worker launch template, role and security groups.

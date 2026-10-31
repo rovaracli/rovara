@@ -6,7 +6,9 @@
   "exports": {
     ".": "./dist/index.js",
     "./e2e/discovery": "./dist/e2e/discovery.js",
-    "./e2e/execution-plan": "./dist/e2e/execution-plan.js"
+    "./e2e/execution-plan": "./dist/e2e/execution-plan.js",
+    "./developer/sso-bootstrap": "./dist/developer/sso-bootstrap.js",
+    "./audit/outbox": "./dist/audit/outbox.js"
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
@@ -14,6 +16,7 @@
     "@agentx/gateway": "0.1.0",
     "@agentx/model-runtime": "0.1.0",
     "@agentx/verifier": "0.1.0",
+    "@aws-sdk/client-cloudformation": "3.1134.0",
     "@aws-sdk/client-cloudwatch": "3.1134.0",
     "@aws-sdk/client-cloudwatch-logs": "3.1134.0",
     "@aws-sdk/client-codebuild": "3.1134.0",

@@ -48,4 +48,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowReviewSpec.v1",
   // Enterprise foundations I3: the commit a publication makes carries Requested-by / Approved-by trailers (publish.ts).
   "publish.attribution",
+  // Live interaction, Stop & redirect: the owner's instruction that stopped a coding step is taken from the owner and framed in the restarted step's prompt (steer-invocation.ts).
+  "task.ownerRedirect.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

@@ -59,9 +59,12 @@ export async function issueAccessToken(signer: TokenSigner, input: {
   issuer: string; subject: string; amr: DeveloperSignInMethod; env: string; sessionId: string; now: number;
   /** The org the developer belongs to and their role in it: the `org` and `org_role` claims. */
   orgId: OrgId; orgRole: OrgRole;
+  /** The session's end (epoch seconds): the token expires then at the latest. */
+  notAfter?: number;
 }): Promise<{ token: string; expiresIn: number }> {
   const { kid } = await signer.publicJwk();
   const iat = Math.floor(input.now / 1000);
+  const exp = Math.min(iat + DEVELOPER_ACCESS_TOKEN_SECONDS, input.notAfter ?? Number.MAX_SAFE_INTEGER);
   const header = { alg: "RS256", typ: "JWT", kid };
   const payload = {
     iss: input.issuer,
@@ -75,12 +78,12 @@ export async function issueAccessToken(signer: TokenSigner, input: {
     iat,
     // Backdated, so a verifier whose clock runs a little behind still accepts a fresh token.
     nbf: iat - NOT_BEFORE_SKEW_SECONDS,
-    exp: iat + DEVELOPER_ACCESS_TOKEN_SECONDS,
+    exp,
     jti: randomUUID(),
   };
   const signingInput = `${base64url(header)}.${base64url(payload)}`;
   const signature = await signer.sign(Buffer.from(signingInput));
-  return { token: `${signingInput}.${signature.toString("base64url")}`, expiresIn: DEVELOPER_ACCESS_TOKEN_SECONDS };
+  return { token: `${signingInput}.${signature.toString("base64url")}`, expiresIn: Math.max(exp - iat, 1) };
 }
 
 const VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;

@@ -184,6 +184,9 @@ describe("the event catalog", () => {
       // Lane E (private MCP servers, project Sources)
       "mcp_server.added", "mcp_server.approved", "mcp_server.disabled", "mcp_server.removed", "mcp_server.token_changed",
       "context_source.proposed", "context_source.applied", "context_source.rejected",
+      // Live interaction part 2
+      "session.redirected", "task.asked", "diagnosis.started", "diagnosis.proposed", "diagnosis.proposal_raised", "diagnosis.support_escalated", "diagnosis.bundle_prepared",
+      "sso.sign_in", "sso.sign_in_refused", "sso.break_glass_used", "sso.group_mapping_changed", "sso.break_glass_changed",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -193,7 +196,7 @@ describe("the event catalog", () => {
       "approval", "spend_request", "task", "pull_request", "org", "invite", "member", "project", "agent", "chain", "session", "trigger",
       "connection", "connector", "guardrails", "repository", "domain", "github_installation", "budget", "audit",
       "spend_policy", "model_source",
-      "process", "lesson", "record_source", "mcp_server",
+      "process", "lesson", "record_source", "mcp_server", "diagnosis",
     ]);
   });
 

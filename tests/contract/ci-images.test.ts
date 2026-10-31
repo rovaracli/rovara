@@ -113,7 +113,8 @@ describe("the public images CI pulls are all digest-pinned, and every one is mir
       const stages = new Set<string>();
       for (const line of read(file).match(/^\s*FROM\s.*$/gim) ?? []) {
         const words = line.trim().split(/\s+/).filter((word) => !word.startsWith("--"));
-        expect(pinned.has(words[1]!) || stages.has(words[1]!.toLowerCase()) || LOCAL_IMAGE.test(words[1]!), `${file}: ${line}`).toBe(true);
+        // `FROM scratch` is the empty image, not a pull: the MCP runner image is assembled onto it from the pinned node image (environments/mcp-runner/Dockerfile).
+        expect(pinned.has(words[1]!) || stages.has(words[1]!.toLowerCase()) || LOCAL_IMAGE.test(words[1]!) || words[1] === "scratch", `${file}: ${line}`).toBe(true);
         if (words[2]?.toLowerCase() === "as" && words[3]) stages.add(words[3].toLowerCase());
       }
       // The production host is only here for its pin (checked above); its messages mention "docker run" in prose and its images arrive as parameters.

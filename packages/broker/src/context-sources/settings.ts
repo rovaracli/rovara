@@ -69,7 +69,7 @@ export interface SourceEnvironment {
   /** The org connection, if it is this org's. */
   connection(orgId: OrgId, connectionId: string): Promise<{ type: string; access: "read" | "read_write" } | undefined>;
   /** The approved MCP server entry (see mcp-servers.ts), if it is this org's. */
-  registeredServer(orgId: OrgId, serverId: string): Promise<{ status: "approved" | "awaiting_approval" | "disabled"; /** Absent: a server with an address. */ transport?: "http" | "stdio" } | undefined>;
+  registeredServer(orgId: OrgId, serverId: string): Promise<{ status: "approved" | "awaiting_approval" | "disabled" | "needs_reapproval"; /** Absent: a server with an address. */ transport?: "http" | "stdio" } | undefined>;
   /** Whether this install runs servers from a package. Absent counts as no: a package-run server is then not offered and not saved (ME-16). */
   stdioAvailable?(): boolean;
   /** The tools the source's server lists now. It throws when the server cannot be reached; the message is not shown. */

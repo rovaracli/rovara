@@ -222,6 +222,20 @@ export const AUDIT_ACTIONS = [
   "context_source.proposed",
   "context_source.applied",
   "context_source.rejected",
+  // Live interaction part 2 (Stop & redirect, Ask, Fix with agent): ids, fixed words and counts only. An instruction, a question, an answer and a diagnosis's text never go in.
+  "session.redirected",
+  "task.asked",
+  "diagnosis.started",
+  "diagnosis.proposed",
+  "diagnosis.proposal_raised",
+  "diagnosis.support_escalated",
+  "diagnosis.bundle_prepared",
+  // Company sign-in (Enterprise foundations I1): ids, fixed words and counts only. The rule ids a sign-in matched go in `details`, never in a fact.
+  "sso.sign_in",
+  "sso.sign_in_refused",
+  "sso.break_glass_used",
+  "sso.group_mapping_changed",
+  "sso.break_glass_changed",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -254,6 +268,7 @@ export const AUDIT_TARGET_KINDS = [
   "lesson",
   "record_source",
   "mcp_server",
+  "diagnosis",
 ] as const;
 
 export const AuditTargetKindSchema = z.enum(AUDIT_TARGET_KINDS);
@@ -397,6 +412,20 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "context_source.proposed": ["change"],
   "context_source.applied": ["change"],
   "context_source.rejected": ["change"],
+  // Live interaction. `mode` is keep_plan or change_plan, `outcome` a redirect outcome word, `audience` web, slack or linear (or `all` on a daily count), `scope` each or daily, `tier` light or deep.
+  "session.redirected": ["mode", "step", "outcome"],
+  "task.asked": ["audience", "scope", "count", "contextBytes", "model"],
+  "diagnosis.started": ["errorKind", "errorCode", "tier"],
+  "diagnosis.proposed": ["total", "dropped", "explain", "retryWithNote", "redirect", "settingsChange", "newTask", "adminSteps", "contactSupport"],
+  "diagnosis.proposal_raised": ["proposalKind"],
+  "diagnosis.support_escalated": ["errorKind"],
+  "diagnosis.bundle_prepared": ["errorKind"],
+  // `source` is `mapping` or `break_glass`; `refusal` one of the fixed refusal words (GROUP_MAPPING_REFUSALS, or `break_glass_not_fresh`); `rules` and `owners` are counts.
+  "sso.sign_in": ["source", "role", "rules"],
+  "sso.sign_in_refused": ["refusal"],
+  "sso.break_glass_used": ["role", "sessionSeconds"],
+  "sso.group_mapping_changed": ["fromVersion", "toVersion", "rules"],
+  "sso.break_glass_changed": ["owners"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
