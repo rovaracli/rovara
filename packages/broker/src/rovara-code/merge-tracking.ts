@@ -20,13 +20,14 @@ import {
   sessionLink,
   type AgentXError,
   type Autonomy,
+  type ChangeRequestStatus,
   type CodeSettings,
+  type HostScope,
   type MergeTrackingItem,
   type OrgId,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { type GitHubTokenScope, parseGitHubRepository, GithubMergeRateLimitError } from "../github-app.js";
-import type { PullRequestStatus } from "../github-pull-status.js";
+import { parseGitHubRepository } from "../github-app.js";
 import type { GithubMergeReadBudget, MergeRecoveryResult } from "../aws/workflow-merge-recovery.js";
 import { SWEEP_INTERVAL_MS } from "../aws/workflow-merge-recovery.js";
 import { findLinkedGithubWorkflowPullRequest } from "../aws/github-webhooks.js";
@@ -38,6 +39,7 @@ import type { TaskOwnerSource } from "../developer/task-records.js";
 import { readCodeSettings } from "./code-settings.js";
 import { humanApprovalOf, latestReviewers, linkedAmong, nonWritersAmong, requesterGithubIds, type RepositoryPermission } from "./approval.js";
 import { runReviewNudges } from "./nudges.js";
+import { approvalReviewsOf, changeRequestRef, rateLimitRetryAt, type RepositoryResolver } from "./host-port.js";
 
 /** The definition version whose tasks are tracked (Rovara Code version 2). Version 1 tasks keep their kind-less merge-recovery rows and today's behaviour. */
 export const TRACKED_DEFINITION_VERSION = "1.1.0";
@@ -53,17 +55,6 @@ export const PUSH_WAS_MINE_MESSAGE = "That push was mine after all. I'll carry o
 export interface RepositoryStanding {
   permission: "admin" | "write" | "read" | "none";
   userType?: string | undefined;
-}
-
-export interface TrackingGithub {
-  getPullRequestStatus(repositoryUrl: string, number: number, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<PullRequestStatus>;
-  getRepositoryPermission(repositoryUrl: string, login: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"admin" | "write" | "read" | "none">;
-  /** The person's permission and what kind of account GitHub says it is (Plan 6 Task 16); without it the kind is not known and a bot is told by its name alone. */
-  getRepositoryStanding?(repositoryUrl: string, login: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<RepositoryStanding>;
-  markPullRequestReady(repositoryUrl: string, number: number, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"ready" | "already_ready">;
-  requestReviewers(repositoryUrl: string, number: number, reviewers: readonly string[], scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"requested" | "refused">;
-  /** The end of a GitHub Actions job's log (Plan 6 Task 15), absent where GitHub has none. Without it a CI fix is told which checks failed and where to read them. */
-  getJobLogTail?(repositoryUrl: string, jobId: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<string | undefined>;
 }
 
 /** The part of the task record tracking reads. */
@@ -87,13 +78,17 @@ export interface MergeTrackingDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now: () => number;
-  github: TrackingGithub;
-  /** The GitHub token scope of the task's org (`githubScope`): an org's own scope on a cloud install, which checks the installation is bound to the org on every mint. */
-  scope(orgId: OrgId): GitHubTokenScope;
+  /** The token scope of the task's org (`githubScope`): an org's own scope on a cloud install, which checks the installation is bound to the org on every mint. */
+  scope(orgId: OrgId): HostScope;
   /** The task, read fresh. */
   loadTask(taskId: string): Promise<TrackedTask | undefined>;
   /** The repository's URL as the task's project pins it. */
   repositoryUrl(project: string, revision: number, repositoryId: string, orgId: OrgId): Promise<string | undefined>;
+  /**
+   * The repository as the task's project pins it, with the code host its record names (task P7; an unknown kind is refused) and the runner that reads its builds. Everything a pass reads or does
+   * at the host goes through this host's port.
+   */
+  repository: RepositoryResolver;
   /** The head Rovara last pushed to the pull request, from the pull request's record. */
   recordedHead?(workspaceId: string, repositoryId: string, number: number): Promise<string | undefined>;
   /** The org's autonomy for Rovara Code, for the deciders; `prepare` when not given. */
@@ -161,8 +156,8 @@ export interface FailingCheck {
   url: string;
   /** The check run's id: the job id when the check is a GitHub Actions job. */
   jobId?: string;
-  /** The GitHub App that made the check run. */
-  appId?: number;
+  /** The system that made the check (a GitHub App's id as text). */
+  source?: string;
 }
 
 export interface CiReading {
@@ -180,34 +175,34 @@ export interface CiReading {
  * reported is pending, not passing. "No CI" (`none`) is read only when nothing has ever reported on the pull request, Rovara's push is a full sweep interval old and
  * the head holds no workflow files: anything less is `pending`, so a slow start is never read as "nothing to wait for".
  */
-export function readCi(status: PullRequestStatus, input: { checksEverSeen: boolean; lastRovaraPushAt: number | undefined; now: number }): CiReading {
-  const ciBasis = status.baseHasRequiredChecks ? "required" as const : "all_checks" as const;
+export function readCi(status: ChangeRequestStatus, input: { checksEverSeen: boolean; lastRovaraPushAt: number | undefined; now: number }): CiReading {
+  const ciBasis = status.targetHasRequiredChecks ? "required" as const : "all_checks" as const;
   // Checks that could not be read are not known: nothing may say they passed.
   if (status.checksUnavailable === true) return { ci: "pending", ciBasis, failingChecks: [], failingDetails: [] };
   const required = status.requiredChecks;
   // A required check is met by a check of that name, from the named app when the setting names one (a commit status has no app, so it cannot meet one that does).
-  const meets = (entry: PullRequestStatus["requiredChecks"][number], check: PullRequestStatus["checks"][number]): boolean =>
-    check.name === entry.name && (entry.appId === undefined || check.appId === entry.appId);
+  const meets = (entry: ChangeRequestStatus["requiredChecks"][number], check: ChangeRequestStatus["checks"][number]): boolean =>
+    check.name === entry.name && (entry.source === undefined || check.source === entry.source);
   if (status.checks.length === 0) {
     const settled = input.lastRovaraPushAt !== undefined && input.now - input.lastRovaraPushAt >= NO_CI_GRACE_MS;
-    if (!input.checksEverSeen && !status.headHasWorkflowFiles && required.length === 0 && settled) return { ci: "none", ciBasis, failingChecks: [], failingDetails: [] };
-    const waitEnds = !input.checksEverSeen && !status.headHasWorkflowFiles && required.length === 0 && input.lastRovaraPushAt !== undefined ? input.lastRovaraPushAt + NO_CI_GRACE_MS : undefined;
+    if (!input.checksEverSeen && !status.headDefinesChecks && required.length === 0 && settled) return { ci: "none", ciBasis, failingChecks: [], failingDetails: [] };
+    const waitEnds = !input.checksEverSeen && !status.headDefinesChecks && required.length === 0 && input.lastRovaraPushAt !== undefined ? input.lastRovaraPushAt + NO_CI_GRACE_MS : undefined;
     return { ci: "pending", ciBasis, failingChecks: [], failingDetails: [], ...(waitEnds === undefined || waitEnds <= input.now ? {} : { recheckAt: waitEnds }) };
   }
   // A check counts when GitHub says the base requires it for this pull request, or when branch protection or a ruleset names it (the name is the fallback when `isRequired` says nothing).
   const counted = ciBasis === "required" ? status.checks.filter((check) => check.required || required.some((entry) => meets(entry, check))) : status.checks;
-  const failing = counted.filter((check) => check.status === "completed" && check.conclusion !== undefined && FAILED_CONCLUSIONS.has(check.conclusion));
+  const failing = counted.filter((check) => check.state === "completed" && check.conclusion !== undefined && FAILED_CONCLUSIONS.has(check.conclusion));
   if (failing.length > 0) {
     const names = [...new Set(failing.map((check) => check.name))].slice(0, 10);
     const failingDetails = names.map((name) => failing.find((check) => check.name === name)!).map((check): FailingCheck => ({
-      name: check.name, conclusion: check.conclusion ?? "failure", url: check.url, ...(check.jobId === undefined ? {} : { jobId: check.jobId }), ...(check.appId === undefined ? {} : { appId: check.appId }),
+      name: check.name, conclusion: check.conclusion ?? "failure", url: check.url, ...(check.runId === undefined ? {} : { jobId: check.runId }), ...(check.source === undefined ? {} : { source: check.source }),
     }));
     return { ci: "failing", ciBasis, failingChecks: names, failingDetails };
   }
   // Every required check has to have reported: one that has not is not in the list yet, and nothing has passed for it.
   if (required.some((entry) => !status.checks.some((check) => meets(entry, check)))) return { ci: "pending", ciBasis, failingChecks: [], failingDetails: [] };
   if (counted.length === 0) return { ci: "pending", ciBasis, failingChecks: [], failingDetails: [] };
-  const waiting = counted.some((check) => check.status !== "completed" || check.conclusion === "action_required");
+  const waiting = counted.some((check) => check.state !== "completed" || check.conclusion === "action_required");
   return { ci: waiting ? "pending" : "passing", ciBasis, failingChecks: [], failingDetails: [] };
 }
 
@@ -224,13 +219,13 @@ export interface ReviewReading {
  * `PERMISSION_LOOKUPS_MAX` are not trusted, so nothing is read as approved.
  */
 export async function readReviews(
-  status: PullRequestStatus,
+  status: ChangeRequestStatus,
   input: { requested: boolean; permission(login: string): Promise<"admin" | "write" | "read" | "none"> },
 ): Promise<ReviewReading> {
   // A list cut at the page limit is not the whole story (a later review may withdraw an approval): nothing is read as approved from it.
   if (status.reviewsIncomplete === true) return { review: "requested" };
-  const latest = new Map<string, PullRequestStatus["reviews"][number]>();
-  const ordered = [...status.reviews].sort((left, right) => left.submittedAt.localeCompare(right.submittedAt));
+  const latest = new Map<string, ReturnType<typeof approvalReviewsOf>[number]>();
+  const ordered = [...approvalReviewsOf(status.reviews)].sort((left, right) => left.submittedAt.localeCompare(right.submittedAt));
   for (const review of ordered) {
     if (review.state === "COMMENTED" || review.state === "PENDING") continue;
     latest.set(review.githubUserId, review);
@@ -253,7 +248,7 @@ export async function readReviews(
 // ---- the branch and the head
 
 /** The branch against its base: conflicting (GitHub's own word), behind, up to date, or not yet known. */
-export function readBranch(status: PullRequestStatus): MergeTrackingItem["branch"] {
+export function readBranch(status: ChangeRequestStatus): MergeTrackingItem["branch"] {
   if (status.mergeable === false || status.mergeableState === "dirty") return "conflicted";
   if (status.mergeableState === "behind") return "behind";
   if (status.mergeableState === "unknown" || status.behindBy === undefined) return "unknown";
@@ -280,7 +275,7 @@ export function rovaraPushPending(workflow: WorkflowSnapshot): boolean {
 export interface TrackingInputs {
   task: TrackedTask & { workflow: WorkflowSnapshot; orgId: OrgId };
   pullRequest: NonNullable<WorkflowSnapshot["pullRequests"]>[number];
-  status: PullRequestStatus;
+  status: ChangeRequestStatus;
   prior: MergeTrackingItem | undefined;
   recordedHead: string | undefined;
   reviews: ReviewReading;
@@ -290,8 +285,8 @@ export interface TrackingInputs {
 /** The tracking item for what GitHub says now, without its version, digest and read time. Everything the pass does not decide (nudges, syncs, the merge claim, ...) is kept from `prior`. */
 export function deriveTrackingFields(input: TrackingInputs): Omit<MergeTrackingItem, "version" | "decisionDigest" | "observedAt"> {
   const { task, pullRequest, status, prior, now } = input;
-  const headByRovara = readHeadByRovara({ prior: prior?.headByRovara, head: status.headSha, recorded: [pullRequest.headSha, input.recordedHead], pushPending: rovaraPushPending(task.workflow) });
-  const newRovaraHead = headByRovara && (prior === undefined || prior.headSha !== status.headSha);
+  const headByRovara = readHeadByRovara({ prior: prior?.headByRovara, head: status.headRevision, recorded: [pullRequest.headSha, input.recordedHead], pushPending: rovaraPushPending(task.workflow) });
+  const newRovaraHead = headByRovara && (prior === undefined || prior.headSha !== status.headRevision);
   const updatedAt = task.workflow.pullRequestUpdatedAt === undefined ? undefined : Date.parse(task.workflow.pullRequestUpdatedAt);
   const lastRovaraPushAt = newRovaraHead
     ? (updatedAt !== undefined && Number.isFinite(updatedAt) && updatedAt <= now && updatedAt > Date.parse(prior?.lastRovaraPushAt ?? "1970-01-01T00:00:00.000Z") ? updatedAt : now)
@@ -302,7 +297,7 @@ export function deriveTrackingFields(input: TrackingInputs): Omit<MergeTrackingI
   const reAsked = (prior?.review === "changes_requested" || prior?.review === "approved") && input.reviews.review === "requested";
   return {
     orgId: task.orgId, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number,
-    headSha: status.headSha, draft: status.draft, state: status.state, baseBranch: status.baseBranch,
+    headSha: status.headRevision, draft: status.draft, state: status.state, baseBranch: status.targetBranch,
     ci: ci.ci, ciBasis: ci.ciBasis, checksEverSeen, failingChecks: ci.failingChecks,
     review: input.reviews.review, ...(input.reviews.approval === undefined ? {} : { approval: input.reviews.approval }),
     branch: readBranch(status), headByRovara,
@@ -584,7 +579,7 @@ export async function trackTask(deps: MergeTrackingDependencies, taskId: string)
     const fresh = await deps.loadTask(taskId);
     if (fresh !== undefined && fresh.closedAt === undefined && fresh.orgId === orgId) {
       await deps.sendFeedbackReplies({ ...fresh, orgId }, budget).catch((error: unknown) => {
-        if (error instanceof GithubMergeRateLimitError) throw error;
+        if (rateLimitRetryAt(error) !== undefined) throw error;
         deps.log?.("merge_tracking.replies_failed", { taskId, error: error instanceof Error ? error.name : "unknown" });
       });
     }
@@ -607,8 +602,10 @@ async function trackOne(
   standings: Map<string, Promise<RepositoryStanding>>,
   seen: PassSeen,
 ): Promise<{ changed: boolean; notOpen: boolean; acted: boolean; recheckAt?: number }> {
-  const url = await deps.repositoryUrl(task.project, task.startingRevision, pullRequest.repositoryId, task.orgId);
-  if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
+  // The code host is the one the repository's record names (an unknown kind is refused here, before anything is read).
+  const home = await deps.repository(task.project, task.startingRevision, pullRequest.repositoryId, task.orgId);
+  if (home === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
+  const { url, codeHost } = home;
   const repository = parseGitHubRepository(url);
   const fullName = `${repository.owner}/${repository.name}`;
   // The pull request must be the one Rovara linked to this task, in this repository of the pinned project: nothing a webhook or a read says moves it.
@@ -617,22 +614,21 @@ async function trackOne(
     throw agentXError("CONFIG_INVALID", "the pull request is not linked to this task");
   }
   const scope = deps.scope(task.orgId);
-  const status = await deps.github.getPullRequestStatus(url, pullRequest.number, scope, budget);
-  if (status.number !== pullRequest.number) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub answered for another pull request");
+  const ref = changeRequestRef(url, pullRequest.number);
+  const status = await codeHost.changeRequestStatus(ref, scope, budget);
+  if (status.id !== String(pullRequest.number)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub answered for another pull request");
   seen.requestedReviewerIds = status.requestedReviewerIds ?? [];
   const prior = trackingItemOf(await readTrackingItem(deps, task.taskId, pullRequest.repositoryId, pullRequest.number), task.orgId, task.taskId);
   // One lookup for each person a pass asks about, whoever asks (the reviews, or the rule for a feedback round): the answer carries the permission and, where GitHub says it, the kind of account.
   const standingOn = async (repositoryId: string, login: string): Promise<RepositoryStanding> => {
     // The repository of this pull request is known; another repository of the task is looked up as the task's project pins it.
-    const onUrl = repositoryId === pullRequest.repositoryId ? url : await deps.repositoryUrl(task.project, task.startingRevision, repositoryId, task.orgId);
-    if (onUrl === undefined) throw agentXError("CONFIG_INVALID", "the repository is not in the task's project");
-    const parsed = parseGitHubRepository(onUrl);
+    const on = repositoryId === pullRequest.repositoryId ? home : await deps.repository(task.project, task.startingRevision, repositoryId, task.orgId);
+    if (on === undefined) throw agentXError("CONFIG_INVALID", "the repository is not in the task's project");
+    const parsed = parseGitHubRepository(on.url);
     const key = `${parsed.owner}/${parsed.name}:${login.toLowerCase()}`;
     let found = standings.get(key);
     if (found === undefined) {
-      found = deps.github.getRepositoryStanding !== undefined
-        ? deps.github.getRepositoryStanding(onUrl, login, scope, budget)
-        : deps.github.getRepositoryPermission(onUrl, login, scope, budget).then((permission): RepositoryStanding => ({ permission }));
+      found = on.codeHost.standing({ url: on.url }, { login }, scope, budget).then((read): RepositoryStanding => ({ permission: read.permission, userType: read.accountType }));
       standings.set(key, found);
     }
     return found;
@@ -665,11 +661,14 @@ async function trackOne(
     }
   };
   if (wantsReady) {
-    const drafted = !status.draft || await attempt_(() => deps.github.markPullRequestReady(url, pullRequest.number, scope, budget), "mark_ready");
+    // A host that cannot take a change request out of draft leaves it a draft: it is never read as ready.
+    const markReady = codeHost.markReady?.bind(codeHost);
+    const drafted = !status.draft || (markReady !== undefined && await attempt_(() => markReady(ref, scope, budget), "mark_ready"));
     if (drafted) {
       markedReady = status.draft;
       if (settings.codeReviewers.length > 0 && status.requestedReviewers === 0 && early.reviewersRequestedAt === undefined) {
-        asked = await attempt_(() => deps.github.requestReviewers(url, pullRequest.number, settings.codeReviewers, scope, budget), "request_reviewers");
+        const requestReviewers = codeHost.requestReviewers?.bind(codeHost);
+        asked = requestReviewers !== undefined && await attempt_(() => requestReviewers(ref, settings.codeReviewers, scope, budget), "request_reviewers");
       }
       readyNow = true;
     }
@@ -693,12 +692,13 @@ async function trackOne(
   // the milestone's own key says whether it was said already. It uses the permissions the pass has just read, so it asks GitHub for nothing more.
   let announce: { login: string; n: number } | undefined;
   if (fields.approval !== undefined && !capped) {
-    const reviewers = latestReviewers(status.reviews);
+    const approvalReviews = approvalReviewsOf(status.reviews);
+    const reviewers = latestReviewers(approvalReviews);
     const known = new Map<string, RepositoryPermission>();
     for (const reviewer of reviewers) known.set(reviewer.login, await permission(reviewer.login));
     const members = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
     const counted = humanApprovalOf({
-      reviews: status.reviews, headSha: status.headSha, syncedFrom: pullRequest.syncedFrom, ciPassingOnHead: ci.ci === "passing" || ci.ci === "none", permissions: known,
+      reviews: approvalReviews, headSha: status.headRevision, syncedFrom: pullRequest.syncedFrom, ciPassingOnHead: ci.ci === "passing" || ci.ci === "none", permissions: known,
       requesterGithubUserIds: await requesterGithubIds(members, task.orgId, task), linkedGithubUserIds: await linkedAmong(members, task.orgId, reviewers.map((reviewer) => reviewer.githubUserId)),
       excludedGithubUserIds: await nonWritersAmong(members, task.orgId, reviewers.map((reviewer) => reviewer.githubUserId)),
       allowSelfApproval: settings.allowSelfApproval,
@@ -733,14 +733,17 @@ async function trackOne(
     seen.item = unchanged && current !== undefined ? current : nextItem;
     const items: TransactItem[] = [];
     let action: MergeActionRequest | undefined;
-    const github = deps.github;
-    const readLog = github.getJobLogTail === undefined ? undefined : (jobId: string) => github.getJobLogTail!(url, jobId, scope, budget);
+    // The end of a build's log is read by the host's check runner (GitHub Actions for GitHub); a host with none has no log to read.
+    const runner = home.checkRunner;
+    const readLog = runner === undefined ? undefined : (jobId: string) => runner.logTail(
+      { kind: "change-request", ref }, status.checks.find((check) => check.runId === jobId) ?? { name: "job", state: "completed", conclusion: "failure", required: false, url: "", runId: jobId }, scope, budget,
+    );
     const bound = deps.autonomyBinding !== undefined ? await deps.autonomyBinding(task) : { autonomy: await (deps.autonomy?.(task) ?? "prepare") };
     const recipeDigest = bound.recipeDigest;
     let ranOut = false;
     const decision = await nextMergeAction(unchanged && current !== undefined ? current : nextItem, task.workflow, settings, bound.autonomy, now, {
       tableName: deps.tableName, orgId: task.orgId, taskId: task.taskId, ...(task.sessionId === undefined ? {} : { sessionId: task.sessionId }),
-      repositoryId: pullRequest.repositoryId, pullRequestNumber: pullRequest.number, pullRequestUrl: pullRequest.url, headSha: status.headSha, failing: ci.failingDetails,
+      repositoryId: pullRequest.repositoryId, pullRequestNumber: pullRequest.number, pullRequestUrl: pullRequest.url, headSha: status.headRevision, failing: ci.failingDetails,
       behindRequired: status.mergeableState === "behind",
       ...(readLog === undefined ? {} : { readJobLog: readLog }),
       ...(deps.log === undefined ? {} : { log: (event: string, fields: Record<string, unknown>) => deps.log?.(event, fields) }),
@@ -769,7 +772,7 @@ async function trackOne(
     if (!unchanged || action?.syncs !== undefined) {
       items.push(trackingWriteItem(deps.tableName, current, written));
       // The index a check or status event finds the task by: kept up to date whenever the item is, for a head that is Rovara's.
-      if (merged.headByRovara) items.push(...prHeadItems(deps.tableName, { orgId: task.orgId, repositoryFullName: fullName, headSha: status.headSha, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, now).slice(0, 1));
+      if (merged.headByRovara) items.push(...prHeadItems(deps.tableName, { orgId: task.orgId, repositoryFullName: fullName, headSha: status.headRevision, taskId: task.taskId, repositoryId: pullRequest.repositoryId, number: pullRequest.number }, now).slice(0, 1));
     }
     if (action !== undefined) {
       items.push({ Update: {
@@ -836,7 +839,7 @@ export async function reconcileTrackingTask(deps: TrackingReconcileDependencies,
   const rowKey = { pk: "WORKFLOW_MERGE_RECOVERY", sk: `TASK#${taskId}` };
   const retry = (): MergeRecoveryResult => ({ kind: "RETRY", retryAt: deps.now() + RETRY_SOON_MS, scope: "task" });
   const limited = (error: unknown): MergeRecoveryResult | undefined =>
-    error instanceof GithubMergeRateLimitError ? { kind: "RETRY", retryAt: error.retryAt, scope: "github-global" } : undefined;
+    rateLimitRetryAt(error) !== undefined ? { kind: "RETRY", retryAt: rateLimitRetryAt(error)!, scope: "github-global" } : undefined;
   // Tracking and the merge observation are independent: whatever tracking does (a refusal from GitHub, a permission an installation has not accepted, an answer that does
   // not parse), the observation that records a merge a webhook missed still runs when it is due. Only GitHub's rate limit and a spent sweep budget stop both.
   let outcome: TrackOutcome | undefined;

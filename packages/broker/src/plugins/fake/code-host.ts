@@ -74,8 +74,9 @@ export class FakeCodeHost implements CodeHost {
     return;
   }
 
-  async standing(repository: RepositoryRef, person: HostAccount, scope: HostScope): Promise<HostStanding> {
+  async standing(repository: RepositoryRef, person: HostAccount, scope: HostScope, budget?: ReadBudget): Promise<HostStanding> {
     this.checkScope(scope);
+    budget?.beforeRequest();
     const model = this.registered(repository);
     const account = model.accounts.get(person.login);
     return (account === undefined ? { permission: "none" } : { permission: account.permission, accountType: account.accountType });
@@ -193,18 +194,21 @@ export class FakeCodeHost implements CodeHost {
     });
   }
 
-  async reply(ref: ChangeRequestRef, commentId: string, body: string, scope: HostScope): Promise<"replied" | "gone"> {
+  async reply(ref: ChangeRequestRef, commentId: string, body: string, scope: HostScope, budget?: ReadBudget): Promise<"replied" | "gone"> {
     this.checkScope(scope);
+    budget?.beforeRequest();
     return (this.model.reply(this.cr(ref).id, commentId, body));
   }
 
-  async markReady(ref: ChangeRequestRef, scope: HostScope): Promise<"ready" | "already_ready"> {
+  async markReady(ref: ChangeRequestRef, scope: HostScope, budget?: ReadBudget): Promise<"ready" | "already_ready"> {
     this.checkScope(scope);
+    budget?.beforeRequest();
     return (this.model.markReady(this.cr(ref).id));
   }
 
-  async requestReviewers(ref: ChangeRequestRef, reviewers: readonly string[], scope: HostScope): Promise<"requested" | "refused"> {
+  async requestReviewers(ref: ChangeRequestRef, reviewers: readonly string[], scope: HostScope, budget?: ReadBudget): Promise<"requested" | "refused"> {
     this.checkScope(scope);
+    budget?.beforeRequest();
     if (reviewers.length === 0 || reviewers.length > 10) throw agentXError("CONFIG_INVALID", "reviewers must be one to ten names");
     return (this.model.requestReviewers(this.cr(ref).id, reviewers));
   }

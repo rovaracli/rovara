@@ -141,7 +141,7 @@ export async function collectCiEvidence(context: Pick<MergeActionContext, "taskI
   for (const check of context.failing.slice(0, CI_FAILED_JOBS_MAX)) {
     const url = cleanUrl(check.url);
     const base = { name: oneLine(check.name, 100) || "a check", conclusion: oneLine(check.conclusion, 40) || "failure", ...(url === undefined ? {} : { url }) };
-    const actions = check.jobId !== undefined && (check.appId === undefined || check.appId === GITHUB_ACTIONS_APP_ID);
+    const actions = check.jobId !== undefined && (check.source === undefined || check.source === String(GITHUB_ACTIONS_APP_ID));
     if (!actions || context.readJobLog === undefined) {
       found.push({ ...base, note: "This check is not a GitHub Actions job, so its log can't be read here." });
       continue;

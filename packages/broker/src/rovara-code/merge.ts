@@ -24,7 +24,11 @@ import {
   mergeTrackingKey,
   sessionEventId,
   type AuditProof,
+  type ChangeRequestStatus,
+  type CodeHost,
   type CodeSettings,
+  type HostScope,
+  type MergeResult,
   type MergeTrackingItem,
   type MergeDone,
   type MergeRisk,
@@ -45,15 +49,14 @@ import { createPendingChange, registerApprovalSubjectHandler, registerApproverRu
 import type { AnyApprovalRecord } from "../agents/approvals-store.js";
 import { personNameForText } from "../developer/requester-text.js";
 import { ownerDisplayName, type DeveloperTaskRecord } from "../developer/task-records.js";
-import type { GitHubTokenScope, MergePullRequestResult } from "../github-app.js";
 import { parseGitHubRepository } from "../github-app.js";
-import type { PullRequestStatus } from "../github-pull-status.js";
 import { readCodeSettings } from "./code-settings.js";
 import { codeOwnerVerdict, type CodeOwnerVerdict } from "./code-owners.js";
 import { humanApprovalOf, latestReviewers, linkedAmong, nonWritersAmong, requesterGithubIds, type HumanApproval, type ApprovalRefusal, type RepositoryPermission } from "./approval.js";
 import { githubUserOfMember } from "./github-members.js";
 import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
 import { PERMISSION_LOOKUPS_MAX, readBranch, readCi, readMergeTracking, tracksMerge } from "./merge-tracking.js";
+import { approvalReviewsOf, changeRequestRef, changedPathsOf, type ConsumerRepository, type RepositoryResolver } from "./host-port.js";
 
 /** The rule a merge change names: only the person who pressed Merge decides it, while they can still press it. */
 export const MERGE_RULE = "pull_request_merge";
@@ -175,21 +178,13 @@ export { humanApprovalOf, type HumanApproval, type ApprovalRefusal, type Reposit
 
 // ---- what the merge needs of the broker
 
-export interface CodeMergeGithub {
-  getPullRequestStatus(repositoryUrl: string, number: number, scope: GitHubTokenScope): Promise<PullRequestStatus>;
-  getRepositoryPermission(repositoryUrl: string, login: string, scope: GitHubTokenScope): Promise<RepositoryPermission>;
-  mergePullRequest(repositoryUrl: string, number: number, input: { sha: string; method: "squash" | "merge" }, scope: GitHubTokenScope): Promise<MergePullRequestResult>;
-  /** The CODEOWNERS file of a branch, undefined where there is none (throws when it cannot be read). Without the three reads below no code owner is asked for. */
-  readCodeOwners?(repositoryUrl: string, branch: string, scope: GitHubTokenScope): Promise<string | undefined>;
-  /** Every path the pull request changes (a renamed file under both names), and whether that is all of them. */
-  listChangedPaths?(repositoryUrl: string, number: number, scope: GitHubTokenScope): Promise<{ paths: string[]; complete: boolean }>;
-  /** Whether a person is in a team (`org/slug`) of the repository's organization; `unknown` when that cannot be told. */
-  isTeamMember?(repositoryUrl: string, team: string, login: string, scope: GitHubTokenScope): Promise<"member" | "not_member" | "unknown">;
-}
-
 export interface CodeMergeHost {
-  github: CodeMergeGithub;
-  scope(orgId: OrgId): GitHubTokenScope;
+  /**
+   * The repository as the task's project pins it, with the code host its record names (task P7; an unknown kind is refused). Reads and the merge go through that host's port: the
+   * change request's status, a person's standing, the CODEOWNERS file, the changed paths and `merge`. A host without `merge` or without code owners is not asked for them.
+   */
+  repository: RepositoryResolver;
+  scope(orgId: OrgId): HostScope;
   loadTask(taskId: string): Promise<DeveloperTaskRecord | undefined>;
   /** The repository's URL as the task's project pins it. */
   repositoryUrl(project: string, revision: number, repositoryId: string, orgId: OrgId): Promise<string | undefined>;
@@ -312,6 +307,8 @@ export function mergeViewFromReadiness(readiness: Readiness): MergeView {
 // ---- pressing Merge
 
 const UNAVAILABLE = "Merging isn't available right now.";
+/** A code host that does not offer `merge` (the port's `merge` is optional): Rovara never merges there, a person does on the host. */
+const HOST_WILL_NOT_MERGE = "Rovara can't merge on this repository's code host. Merge it there.";
 const changeText = (repository: string, number: number, method: string): string => `Merge ${repository} pull request ${String(number)} (${method})`;
 
 /** The body of a press: `{ requestId }`, and for the web app the risk level the person saw. Nothing else. */
@@ -367,9 +364,9 @@ export async function pressMerge(
   const scope = host.scope(tracked.orgId);
   for (const item of items.filter((candidate) => candidate.branch === "behind")) {
     const entry = requiredPullRequests(tracked.workflow).find((pr) => pr.repositoryId === item.repositoryId && pr.number === item.number);
-    const url = entry === undefined ? undefined : await host.repositoryUrl(tracked.project, tracked.startingRevision, entry.repositoryId, tracked.orgId);
-    if (url === undefined) continue;
-    behindRequired.set(pullRequestKey(item), (await host.github.getPullRequestStatus(url, item.number, scope)).mergeableState === "behind");
+    const home = entry === undefined ? undefined : await host.repository(tracked.project, tracked.startingRevision, entry.repositoryId, tracked.orgId);
+    if (home === undefined) continue;
+    behindRequired.set(pullRequestKey(item), (await home.codeHost.changeRequestStatus(changeRequestRef(home.url, item.number), scope)).mergeableState === "behind");
   }
   const checked = await readinessFromItems(deps, host, tracked, items, caller.developerId, { behindRequired });
   if (!checked.readiness.ready) {
@@ -412,14 +409,14 @@ const REFUSAL_REASONS = {
 } as const;
 
 /** Why GitHub would not merge, in the words Rovara has for it and, where GitHub gave one, GitHub's own reason (branch protection, a required check, a ruleset), already cleaned. */
-function refusalWords(result: Extract<MergePullRequestResult, { outcome: "refused" }>): string {
+function refusalWords(result: Extract<MergeResult, { outcome: "refused" }>): string {
   const base = REFUSAL_REASONS[result.reason];
-  return result.githubMessage === undefined ? base : `${base} (GitHub says: ${result.githubMessage})`;
+  return result.hostMessage === undefined ? base : `${base} (GitHub says: ${result.hostMessage})`;
 }
 
 async function mergeableNow(
   deps: ApprovalDependencies, host: CodeMergeHost, task: DeveloperTaskRecord & { orgId: OrgId; workflow: WorkflowSnapshot }, subject: PullRequestMergeSubject, presserDeveloperId: string,
-): Promise<{ plan: Array<{ entry: PullRequestEntry; url: string; headSha: string }>; settings: CodeSettings; alreadyMerged: boolean; mergedBefore: string[]; entries: PullRequestEntry[] }> {
+): Promise<{ plan: Array<{ entry: PullRequestEntry; url: string; codeHost: CodeHost; headSha: string }>; settings: CodeSettings; alreadyMerged: boolean; mergedBefore: string[]; entries: PullRequestEntry[] }> {
   // The change lists the pull requests that were unmerged when it was pressed. Those that merged since (a half merge being finished) are not in the way; one that is new is.
   const required = requiredPullRequests(task.workflow);
   const entries = required.filter((entry) => entry.state !== "MERGED");
@@ -436,32 +433,33 @@ async function mergeableNow(
   const approvals = new Map<string, HumanApproval>();
   const bases = new Map<string, string>();
   const codeOwners = new Map<string, CodeOwnerVerdict>();
-  const plan: Array<{ entry: PullRequestEntry; url: string; headSha: string }> = [];
+  const plan: Array<{ entry: PullRequestEntry; url: string; codeHost: CodeHost; headSha: string }> = [];
   const items = new Map((await readMergeTracking(deps, task.taskId, task.orgId)).map((item) => [pullRequestKey(item), item]));
   for (const [index, entry] of entries.entries()) {
     const key = pullRequestKey(entry);
-    const url = await host.repositoryUrl(task.project, task.startingRevision, entry.repositoryId, task.orgId);
-    if (url === undefined) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
+    const home = await host.repository(task.project, task.startingRevision, entry.repositoryId, task.orgId);
+    if (home === undefined) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
+    const { url } = home;
     // The pull request must be the one Rovara linked to this task: nothing a stored field says moves it to another.
     const repository = parseGitHubRepository(url);
     const linked = await findLinkedGithubWorkflowPullRequest({ documentClient: deps.documentClient, tableName: deps.tableName, repositoryFullName: `${repository.owner}/${repository.name}`, number: entry.number });
     if (linked === undefined || linked.taskId !== task.taskId || linked.repositoryId !== entry.repositoryId || linked.url !== entry.url) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
-    const status = await host.github.getPullRequestStatus(url, entry.number, scope);
-    if (status.number !== entry.number) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub answered for another pull request");
-    if (status.state !== "merged" && status.headSha !== wanted[index]!.headSha) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
+    const status = await home.codeHost.changeRequestStatus(changeRequestRef(url, entry.number), scope);
+    if (status.id !== String(entry.number)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub answered for another pull request");
+    if (status.state !== "merged" && status.headRevision !== wanted[index]!.headSha) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
     const item = items.get(key);
     const ci = readCi(status, { checksEverSeen: item?.checksEverSeen ?? status.checks.length > 0, lastRovaraPushAt: item?.lastRovaraPushAt === undefined ? undefined : Date.parse(item.lastRovaraPushAt), now: deps.now() });
     facts.push({
-      repositoryId: entry.repositoryId, number: entry.number, headSha: status.headSha, state: status.state, draft: status.draft, baseBranch: status.baseBranch,
+      repositoryId: entry.repositoryId, number: entry.number, headSha: status.headRevision, state: status.state, draft: status.draft, baseBranch: status.targetBranch,
       ci: ci.ci, branch: readBranch(status), behindRequired: status.mergeableState === "behind",
     });
-    const approval = await approvalFromStatus(deps, host, { url, scope, orgId: task.orgId, status, syncedFrom: entry.syncedFrom, ciPassing: ci.ci === "passing" || ci.ci === "none", requesters, allowSelfApproval: settings.allowSelfApproval, permissions });
+    const approval = await approvalFromStatus(deps, { home, scope, orgId: task.orgId, status, syncedFrom: entry.syncedFrom, ciPassing: ci.ci === "passing" || ci.ci === "none", requesters, allowSelfApproval: settings.allowSelfApproval, permissions });
     approvals.set(key, approval);
     // Where the repository names code owners for the changed paths, one of them has to have approved (read fresh, and only once an approval counts: the approval words come first).
-    if (approval.approved && status.state === "open") codeOwners.set(key, await codeOwnersOf(host, { url, scope, baseBranch: status.baseBranch, number: entry.number, approval }));
+    if (approval.approved && status.state === "open") codeOwners.set(key, await codeOwnersOf({ home, scope, baseBranch: status.targetBranch, number: entry.number, approval }));
     const base = await host.recordedBase(task.workspaceId, entry.repositoryId, entry.number);
     if (base !== undefined) bases.set(key, base);
-    plan.push({ entry, url, headSha: status.headSha });
+    plan.push({ entry, url, codeHost: home.codeHost, headSha: status.headRevision });
   }
   const mergedBefore = [...mergedByWorkflow, ...facts.filter((fact) => fact.state === "merged").map((fact) => fact.repositoryId)];
   if (facts.every((fact) => fact.state === "merged")) return { plan: [], settings, alreadyMerged: true, mergedBefore, entries };
@@ -473,51 +471,55 @@ async function mergeableNow(
   return { plan: plan.filter((_, index) => facts[index]!.state !== "merged"), settings, alreadyMerged: false, mergedBefore, entries };
 }
 
-/** Whether a code owner approved, for one pull request: nothing is asked of GitHub when the host cannot read code owners or the repository has no CODEOWNERS file. Anything unreadable fails closed. */
+/**
+ * Whether a code owner approved, for one pull request: nothing is asked of the host when it does not read code owners or the repository has no CODEOWNERS file. Anything unreadable fails closed.
+ * The CODEOWNERS file and the changed paths come from the code host's port; team membership is outside the port today (`ConsumerRepository.isTeamMember`), and a host that cannot tell is "unknown".
+ */
 async function codeOwnersOf(
-  host: CodeMergeHost, ctx: { url: string; scope: GitHubTokenScope; baseBranch: string; number: number; approval: Extract<HumanApproval, { approved: true }> },
+  ctx: { home: ConsumerRepository; scope: HostScope; baseBranch: string; number: number; approval: Extract<HumanApproval, { approved: true }> },
 ): Promise<CodeOwnerVerdict> {
-  const github = host.github;
-  if (github.readCodeOwners === undefined || github.listChangedPaths === undefined) return { ok: true };
+  const { codeHost, url } = ctx.home;
+  if (!codeHost.capabilities.codeOwners || codeHost.codeOwners === undefined) return { ok: true };
   try {
-    const text = await github.readCodeOwners(ctx.url, ctx.baseBranch, ctx.scope);
+    const text = await codeHost.codeOwners({ url }, ctx.baseBranch, ctx.scope);
     if (text === undefined) return { ok: true };
-    const changed = await github.listChangedPaths(ctx.url, ctx.number, ctx.scope);
+    const changed = await changedPathsOf(codeHost, changeRequestRef(url, ctx.number), ctx.scope);
     // A list cut short could hide a path a code owner owns.
     if (!changed.complete) return { ok: false, unreadable: true };
     return await codeOwnerVerdict({
       codeOwnersText: text, paths: changed.paths, approverLogins: ctx.approval.approvers.map((approver) => approver.login),
-      teamMember: async (team, login) => (await github.isTeamMember?.(ctx.url, team, login, ctx.scope)) ?? "unknown",
+      teamMember: async (team, login) => (await ctx.home.isTeamMember?.(team, login, ctx.scope)) ?? "unknown",
     });
   } catch {
     return { ok: false, unreadable: true };
   }
 }
 
-/** The approval a fresh read of GitHub gives: each reviewer's permission is looked up now (once), and a reviewer's link to a member is read now. */
+/** The approval a fresh read of the host gives: each reviewer's permission is looked up now (once), and a reviewer's link to a member is read now. */
 async function approvalFromStatus(
-  deps: ApprovalDependencies, host: CodeMergeHost,
+  deps: ApprovalDependencies,
   ctx: {
-    url: string; scope: GitHubTokenScope; orgId: OrgId; status: PullRequestStatus; syncedFrom: string | undefined; ciPassing: boolean; requesters: string[] | "unlinked";
+    home: ConsumerRepository; scope: HostScope; orgId: OrgId; status: ChangeRequestStatus; syncedFrom: string | undefined; ciPassing: boolean; requesters: string[] | "unlinked";
     allowSelfApproval: boolean; permissions: Map<string, Promise<RepositoryPermission>>;
   },
 ): Promise<HumanApproval> {
   const { status } = ctx;
   if (status.reviewsIncomplete === true) return { approved: false, reason: "none" };
-  const reviewers = latestReviewers(status.reviews);
+  const reviews = approvalReviewsOf(status.reviews);
+  const reviewers = latestReviewers(reviews);
   if (reviewers.length > PERMISSION_LOOKUPS_MAX) return { approved: false, reason: "none" };
   const permissions = new Map<string, RepositoryPermission>();
   for (const review of reviewers) {
-    const key = `${ctx.url}:${review.login.toLowerCase()}`;
+    const key = `${ctx.home.url}:${review.login.toLowerCase()}`;
     let asked = ctx.permissions.get(key);
     if (asked === undefined) {
-      asked = host.github.getRepositoryPermission(ctx.url, review.login, ctx.scope);
+      asked = ctx.home.codeHost.standing({ url: ctx.home.url }, { login: review.login }, ctx.scope).then((standing) => standing.permission);
       ctx.permissions.set(key, asked);
     }
     permissions.set(review.login, await asked);
   }
   return humanApprovalOf({
-    reviews: status.reviews, headSha: status.headSha, syncedFrom: ctx.syncedFrom, ciPassingOnHead: ctx.ciPassing, permissions,
+    reviews, headSha: status.headRevision, syncedFrom: ctx.syncedFrom, ciPassingOnHead: ctx.ciPassing, permissions,
     requesterGithubUserIds: ctx.requesters, linkedGithubUserIds: await linkedAmong(deps, ctx.orgId, reviewers.map((review) => review.githubUserId)), excludedGithubUserIds: await nonWritersAmong(deps, ctx.orgId, reviewers.map((review) => review.githubUserId)), allowSelfApproval: ctx.allowSelfApproval,
   });
 }
@@ -606,6 +608,8 @@ async function mergeTask(
   const { plan, settings, alreadyMerged, mergedBefore, entries } = await mergeableNow(deps, host, tracked, subject, who.decidedBy);
   if (alreadyMerged) return entries.map((entry) => ({ repositoryId: entry.repositoryId, number: entry.number }));
   const scope = host.scope(tracked.orgId);
+  // A host that does not let Rovara merge is found before any claim is made or anything is merged: the person merges on the host itself.
+  if (plan.some((step) => step.codeHost.merge === undefined)) throw agentXError("MERGE_NOT_READY", HOST_WILL_NOT_MERGE);
   // What an earlier run of this handler already merged counts, so a rerun that finds the second pull request refused still says the first merged.
   const merged: string[] = [...mergedBefore];
   for (const step of plan) {
@@ -613,7 +617,7 @@ async function mergeTask(
     const claimedAt = await claimMerge(deps, tracked, { repositoryId: entry.repositoryId, number: entry.number, url }, headSha, who.decidedBy, { occurrence: who.occurrence, approvalId: who.approvalId, method: settings.mergeMethod, proof: who.proof });
     // Another handler holds the claim, or tracking has no item for the pull request yet: whichever it is, a later run finds out (the pull request merged, the claim gone stale).
     if (claimedAt === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Rovara is already merging this pull request.");
-    const result = await host.github.mergePullRequest(url, entry.number, { sha: headSha, method: settings.mergeMethod }, scope);
+    const result = await step.codeHost.merge!(changeRequestRef(url, entry.number), { revision: headSha, method: settings.mergeMethod }, scope);
     if (result.outcome === "merged" || result.outcome === "already_merged") {
       merged.push(entry.repositoryId);
       if (result.outcome === "merged" && result.fellBack && tracked.sessionId !== undefined) {

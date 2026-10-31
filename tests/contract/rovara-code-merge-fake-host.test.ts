@@ -1,0 +1,103 @@
+// Enterprise foundations P5a: Rovara Code's merge path runs on the CodeHost port, so it runs on `FakeCodeHost` as it does on the GitHub adapter. The same press, the same readiness words,
+// the same claim; the host here is a fake change request on an in-memory repository, not a GitHub-shaped provider. What the GitHub-shaped world proves for the wrapper
+// (rovara-code-merge.test.ts, rovara-code-oneclick-merge.test.ts) this proves for a host that is not GitHub, on the paths that read the port: status, standing, code owners, changed files and merge.
+import { describe, expect, it } from "vitest";
+import { orgMemberKey, MERGE_NOT_READY_MESSAGES as M } from "../../packages/contracts/src/index.js";
+import { pressMerge } from "../../packages/broker/src/rovara-code/merge.js";
+import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
+import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
+import { PRIYA, ARJUN, MAX, ORG_A } from "../support/agent-session-world.js";
+import { GH, LOGIN, mergeWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
+
+const URL = "https://github.com/acme/payments";
+const codeOf = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));
+const browser = (w: MergeWorld, who: string = PRIYA) => ({ ...w.caller(who), browserSession: true as const });
+const webPress = (w: MergeWorld, who: string = PRIYA) => pressMerge(w.shareDeps, browser(w, who), w.sessionId, { requestId: w.requestId(), risk: "low" }, w.deps);
+
+interface FakeWorld { w: MergeWorld; model: FakeHostModel; host: FakeCodeHost; head: string; crId: string }
+
+/** A project whose one repository is the fake host's: change request 1 from a branch of the base, checks passing, approved by Arjun (a member) on the head. */
+async function fakeWorld(options: { codeOwners?: string; allowSelfApproval?: boolean; host?: (model: FakeHostModel) => FakeCodeHost } = {}): Promise<FakeWorld> {
+  const model = new FakeHostModel({
+    url: URL, id: "42", fullName: "acme/payments", webBase: "https://github.com",
+    ...(options.codeOwners === undefined ? {} : { initialFiles: { "README.md": "# demo\n", ".github/CODEOWNERS": options.codeOwners } }),
+  });
+  // The host knows the people by the same account ids the world links to its members.
+  for (const [login, id] of [[LOGIN.priya, GH.priya], [LOGIN.arjun, GH.arjun], [LOGIN.max, GH.max], [LOGIN.ola, GH.ola]] as const) model.setAccount(login, "write").hostUserId = id;
+  const head = model.commit("agentx/limit", { "src/limit.ts": "export const limit = 1;\n" });
+  const { cr } = model.reconcile({ sourceBranch: "agentx/limit", targetBranch: "main", title: "Limit" });
+  model.setChecks(head, [{ name: "test", state: "completed", conclusion: "success", required: false, url: "" }]);
+  model.addReview(cr.id, { login: LOGIN.arjun, state: "APPROVED" });
+  const host = options.host?.(model) ?? new FakeCodeHost(model);
+  const w = mergeWorld({ pullRequests: [{ repositoryId: "payments", number: Number(cr.id) }], codeHost: host, ...(options.allowSelfApproval === undefined ? {} : { allowSelfApproval: options.allowSelfApproval }) });
+  await w.linkAll();
+  w.setPullRequests(w.prs.map((pr) => ({ repositoryId: pr.repositoryId, number: pr.number, url: `${URL}/pull/${String(pr.number)}`, headSha: head, candidateDigest: "c".repeat(64), required: true, state: "OPEN" })));
+  w.seedTracking({ headSha: head, approval: { githubUserId: GH.arjun, login: LOGIN.arjun, commitId: head } });
+  return { w, model, host, head, crId: cr.id };
+}
+
+describe("merging on the fake code host", () => {
+  it("merges a ready change request at once: the checked head, the project's method, the claim on the tracking item", async () => {
+    const { w, model, head, crId } = await fakeWorld();
+    const reply = await webPress(w);
+    expect(reply.status).toBe(200);
+    expect(model.getChangeRequest(crId)).toMatchObject({ state: "merged", mergedBy: "rovara-user" });
+    expect(model.headOf("main")).toBe(model.getChangeRequest(crId).mergeRevision);
+    expect(w.trackingOf({ repositoryId: "payments", number: Number(crId) })?.mergeClaim).toMatchObject({ headSha: head, by: PRIYA });
+  });
+
+  it("re-reads the host: checks that went red since tracking looked stop the merge, and so does a head that moved", async () => {
+    const red = await fakeWorld();
+    red.model.setChecks(red.head, [{ name: "test", state: "completed", conclusion: "failure", required: false, url: "" }]);
+    expect(await codeOf(webPress(red.w))).toEqual({ code: "MERGE_NOT_READY", message: M.checks });
+    expect(red.model.getChangeRequest(red.crId).state).toBe("open");
+    const moved = await fakeWorld();
+    moved.model.commit("agentx/limit", { "src/limit.ts": "export const limit = 2;\n" });
+    expect(await codeOf(webPress(moved.w))).toEqual({ code: "MERGE_NOT_READY", message: M.changedAfterConfirm });
+    expect(moved.model.getChangeRequest(moved.crId).state).toBe("open");
+  });
+
+  it("counts an approval only from a person with write access on the host (read live through the port)", async () => {
+    const { w, model, crId } = await fakeWorld();
+    model.setAccount(LOGIN.arjun, "read").hostUserId = GH.arjun;
+    expect(await codeOf(webPress(w))).toEqual({ code: "MERGE_NOT_READY", message: M.needsWriteApproval("payments") });
+    expect(model.getChangeRequest(crId).state).toBe("open");
+  });
+
+  it("keeps the Auditor non-writer filter on the live read: a linked Auditor's approval on the host never counts, with self-approval on or off", async () => {
+    for (const allowSelfApproval of [false, true]) {
+      const { w, model, head, crId } = await fakeWorld({ allowSelfApproval });
+      // What tracking stored is acceptable (a member's approval), so the press reaches the merge's own fresh read of the host, where the only approval is the Auditor's.
+      w.seedTracking({ headSha: head, approval: { githubUserId: GH.max, login: LOGIN.max, commitId: head } });
+      w.db.set({ ...orgMemberKey(ORG_A, ARJUN), orgId: ORG_A, developerId: ARJUN, role: "auditor" });
+      const refusal = await codeOf(webPress(w));
+      // An excluded account is "no write access" to the rule, in both modes.
+      expect(refusal, String(allowSelfApproval)).toEqual({ code: "MERGE_NOT_READY", message: M.needsWriteApproval("payments") });
+      expect(model.getChangeRequest(crId).state).toBe("open");
+    }
+    // Positive control: the same world with Arjun as a member merges.
+    const { w, model, head, crId } = await fakeWorld({ allowSelfApproval: true });
+    w.seedTracking({ headSha: head, approval: { githubUserId: GH.max, login: LOGIN.max, commitId: head } });
+    expect((await webPress(w)).status).toBe(200);
+    expect(model.getChangeRequest(crId).state).toBe("merged");
+  });
+
+  it("asks for a code owner from the host's CODEOWNERS and changed files, and merges once one has approved", async () => {
+    const { w, model, head, crId } = await fakeWorld({ codeOwners: "/src/ @max-gh\n" });
+    expect(await codeOf(webPress(w))).toEqual({ code: "MERGE_NOT_READY", message: M.needsCodeOwner("@max-gh") });
+    model.addReview(crId, { login: LOGIN.max, state: "APPROVED" });
+    // Tracking last saw Max's approval as the newest one on the head.
+    w.seedTracking({ headSha: head, approval: { githubUserId: GH.max, login: LOGIN.max, commitId: head } });
+    expect((await webPress(w)).status).toBe(200);
+    expect(model.getChangeRequest(crId).state).toBe("merged");
+    expect(MAX).toBeDefined();
+  });
+
+  it("never merges on a host that does not offer merge: it is found before any claim is made", async () => {
+    const { w, model, crId } = await fakeWorld({ host: (m) => { const host = new FakeCodeHost(m); Object.defineProperty(host, "merge", { value: undefined }); return host; } });
+    const refusal = await codeOf(webPress(w));
+    expect(refusal).toEqual({ code: "MERGE_NOT_READY", message: "Rovara can't merge on this repository's code host. Merge it there." });
+    expect(model.getChangeRequest(crId).state).toBe("open");
+    expect(w.trackingOf({ repositoryId: "payments", number: Number(crId) })?.mergeClaim).toBeUndefined();
+  });
+});

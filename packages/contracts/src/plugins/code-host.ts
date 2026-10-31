@@ -278,7 +278,8 @@ export interface CodeHost {
   repositoryIdentity(repository: RepositoryRef, scope: HostScope): Promise<RepositoryIdentity | undefined>;
   /** Refuses (throws) a repository the install's credential cannot reach. */
   checkRepository(repository: RepositoryRef, scope: HostScope): Promise<void>;
-  standing(repository: RepositoryRef, person: HostAccount, scope: HostScope): Promise<HostStanding>;
+  /** `budget` bounds the reads one tracking pass may spend (P5a): a host that makes requests to answer spends it. */
+  standing(repository: RepositoryRef, person: HostAccount, scope: HostScope, budget?: ReadBudget): Promise<HostStanding>;
 
   // credentials for the worker (clone, push); feeds `/repository-credentials`
   issueGitCredential(repository: RepositoryRef, access: GitAccess, scope: HostScope): Promise<GitCredential>;
@@ -301,9 +302,9 @@ export interface CodeHost {
   changedFiles(ref: ChangeRequestRef, page: number, scope: HostScope): Promise<ChangeRequestFilesPage>;
   /** Comments and threads. Untrusted text. */
   feedback(ref: ChangeRequestRef, scope: HostScope): Promise<ChangeRequestFeedback>;
-  reply(ref: ChangeRequestRef, commentId: string, body: UntrustedText, scope: HostScope): Promise<"replied" | "gone">;
-  markReady?(ref: ChangeRequestRef, scope: HostScope): Promise<"ready" | "already_ready">;
-  requestReviewers?(ref: ChangeRequestRef, reviewers: readonly string[], scope: HostScope): Promise<"requested" | "refused">;
+  reply(ref: ChangeRequestRef, commentId: string, body: UntrustedText, scope: HostScope, budget?: ReadBudget): Promise<"replied" | "gone">;
+  markReady?(ref: ChangeRequestRef, scope: HostScope, budget?: ReadBudget): Promise<"ready" | "already_ready">;
+  requestReviewers?(ref: ChangeRequestRef, reviewers: readonly string[], scope: HostScope, budget?: ReadBudget): Promise<"requested" | "refused">;
   /** Only after a person approves and presses Merge. Rovara never merges by itself. */
   merge?(ref: ChangeRequestRef, input: { revision: string; method: MergeMethod }, scope: HostScope): Promise<MergeResult>;
 

@@ -596,8 +596,8 @@ describe("collecting evidence", () => {
   it("reads a log only for an Actions job, a name goes through redaction and one line", async () => {
     const read: string[] = [];
     const evidence = await collectCiEvidence(context([
-      { name: `unit ${GHP}\n‮bad`, conclusion: "failure", url: "http://insecure.test/x", jobId: "1", appId: 15_368 },
-      { name: "app", conclusion: "failure", url: "https://user:pw@ci.test/x", jobId: "2", appId: 5 },
+      { name: `unit ${GHP}\n‮bad`, conclusion: "failure", url: "http://insecure.test/x", jobId: "1", source: "15368" },
+      { name: "app", conclusion: "failure", url: "https://user:pw@ci.test/x", jobId: "2", source: "5" },
       { name: "no id", conclusion: "timed_out", url: JOB_URL },
     ], async (jobId) => { read.push(jobId); return `log ${jobId}`; }));
     expect(read).toEqual(["1"]);

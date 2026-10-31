@@ -1,0 +1,63 @@
+// Enterprise foundations P5a-c: how Rovara Code's consumers (merge, merge tracking, CI fix, feedback autonomy) reach a repository's code host.
+//
+// They no longer hold a GitHub provider. They ask for the repository of a task's project and get back the address, the code host that serves it and, where there is one, the check runner
+// for its builds. The code host is chosen by the repository's `host` record (task P7: `CodeHostRouter.forRecord`), never by the address and never by a default: a kind with no
+// registered adapter is refused with a fixed sentence, so a repository on an unknown host is not read through GitHub by accident.
+//
+// Two small things that the CodeHost port does not carry yet live here, named, so the gap is visible and not silent:
+//   - `isTeamMember`: whether a person is in a team of the repository's organization (CODEOWNERS teams). GitHub-only today; absent means "unknown", which fails closed.
+//   - the rate-limit signal (`rateLimitRetryAt`): GitHub's merge-read limit is a GitHub class today; the neutral signal is task P6's.
+import type { ChangeRequestRef, ChangeRequestStatus, CheckRunner, CodeHost, HostScope, OrgId, Review } from "@agentx/contracts";
+import { GithubMergeRateLimitError } from "../github-app.js";
+import type { PullRequestReview } from "../github-pull-status.js";
+
+/** One repository of a task's project, as the consumers read it. */
+export interface ConsumerRepository {
+  /** The address the project pins. */
+  url: string;
+  /** The code host the repository's record names. */
+  codeHost: CodeHost;
+  /** The runner that reads this host's builds (their log tails), when the host has one registered. */
+  checkRunner?: CheckRunner | undefined;
+  /** Whether a person is in a team (`org/slug`) of the repository's organization. Absent: no team can be told, so a code-owner team is never matched. */
+  isTeamMember?: ((team: string, login: string, scope: HostScope) => Promise<"member" | "not_member" | "unknown">) | undefined;
+}
+
+/**
+ * The repository of a task's project, by the project's pinned revision. Undefined where the project has no such repository. Throws (CONFIG_INVALID, a fixed sentence) when the
+ * repository's record names a code host this install has not registered.
+ */
+export type RepositoryResolver = (project: string, revision: number, repositoryId: string, orgId: OrgId) => Promise<ConsumerRepository | undefined>;
+
+/** The change request a number names at a repository (GitHub's pull request number is the id). */
+export const changeRequestRef = (repositoryUrl: string, number: number): ChangeRequestRef => ({ repository: { url: repositoryUrl }, id: String(number), url: "" });
+
+/**
+ * The reviews of a change request in the shape the approval rules read (`approval.ts` is not edited: the Auditor filter and the write-access rules stay exactly as they are). A host that
+ * gives no account id for a reviewer is told apart by its login, so that review can still block (changes requested) and can never match a linked member.
+ */
+export function approvalReviewsOf(reviews: ChangeRequestStatus["reviews"] | readonly Review[]): PullRequestReview[] {
+  return reviews.map((review) => ({
+    githubUserId: review.reviewer.hostUserId ?? `login:${review.reviewer.login.toLowerCase()}`, login: review.reviewer.login, userType: review.accountType, state: review.state,
+    commitId: review.revision, submittedAt: review.submittedAt,
+  }));
+}
+
+/** The retry time of a host's rate limit, when the error is one. GitHub's class today; the neutral signal comes with the event work (P6). */
+export function rateLimitRetryAt(error: unknown): number | undefined {
+  return error instanceof GithubMergeRateLimitError ? error.retryAt : undefined;
+}
+
+export const isHostRateLimit = (error: unknown): boolean => rateLimitRetryAt(error) !== undefined;
+
+/** Every path a change request touches, a renamed file under both names, and whether that is all of them (the code-owner check). At most `CHANGED_PATH_PAGES` pages of the host's files. */
+export const CHANGED_PATH_PAGES = 10;
+export async function changedPathsOf(codeHost: CodeHost, ref: ChangeRequestRef, scope: HostScope): Promise<{ paths: string[]; complete: boolean }> {
+  const paths: string[] = [];
+  for (let page = 1; page <= CHANGED_PATH_PAGES; page += 1) {
+    const read = await codeHost.changedFiles(ref, page, scope);
+    for (const file of read.files) paths.push(file.path, ...(file.previousPath === undefined ? [] : [file.previousPath]));
+    if (read.nextPage === undefined) return { paths, complete: true };
+  }
+  return { paths, complete: false };
+}
