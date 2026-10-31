@@ -20,6 +20,7 @@ export default tseslint.config(
       ".release-synth/**",
       "coverage/**",
       "tests/fixtures/e2e-web-api-app/**",
+      "tests/support/stdio-mcp-fixture.mjs",
       "packages/verifier/assets/qualification-app/**",
       "tests/fixtures/orders-web-starter/**",
       "packages/audit-verifier/scripts/**",

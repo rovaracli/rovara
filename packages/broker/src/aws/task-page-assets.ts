@@ -117,6 +117,14 @@ main>section,.kind{border-top:1px solid var(--line);padding:.5rem 0}
 .claim-text{font-weight:500}
 .level-1>summary .claim-text{font-size:1.05rem}
 .claim-body{margin:.3rem 0 .3rem .5rem}
+.claim-sources{margin:.4rem 0;font-size:.9rem}
+.claim-sources-head{margin:0;color:var(--muted);font-size:.8rem}
+.source-list{margin:.2rem 0;padding-left:1.1rem}
+.source-ref{font-family:ui-monospace,monospace;color:var(--muted)}
+.source-live{color:var(--muted)}
+.source-quote{margin:.3rem 0;padding:.2rem 1rem;border-left:3px solid var(--line);color:var(--muted)}
+.badge-source-unverified,.badge-source-flagged{color:var(--warn)}
+.badge-source-outsider{color:var(--muted)}
 .more{margin:.3rem 0}
 .badge{display:inline-block;border:1px solid currentColor;border-radius:999px;padding:0 .45rem;font-size:.75rem;font-weight:400}
 .badge-new{color:var(--ok)}
