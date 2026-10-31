@@ -23,6 +23,7 @@ import { runIsolatedE2EApplication, type E2EApplicationRuntimePorts } from "./ap
 import { createE2EApplicationRuntimePorts } from "./application-services.js";
 import type { E2ERunInput, ProjectSetupRunnerToolchain } from "@agentx/contracts";
 import type { E2ECompiledApplicationSuite } from "./application-scenarios.js";
+import { stripStepIndexes } from "./executor/capture.js";
 
 const sha = (value: Uint8Array | string) => createHash("sha256").update(value).digest("hex");
 const utc = () => new Date().toISOString();
@@ -33,8 +34,10 @@ const utc = () => new Date().toISOString();
  */
 export type E2EWebCapturePorts = Readonly<{
   screenshots: boolean;
-  /** Stores one capture of one case under the executor's budget and credential scan. */
-  record(input: { caseId: string; kind: "screenshot"; bytes: Uint8Array }): Promise<unknown>;
+  /** "all" (proof and evidence B1): every case also gets a strip, one screenshot at the end of each of its steps (`stripStepIndexes`), whatever its outcome. Absent: failed cases only. */
+  mode?: "failed" | "all";
+  /** Stores one capture of one case under the executor's budget and credential scan. `step` marks a strip frame (the declared step it follows). */
+  record(input: { caseId: string; kind: "screenshot"; bytes: Uint8Array; step?: number }): Promise<unknown>;
 }>;
 /** What the case adapter made of the case, for capture: a failed assertion is FAILED, a case that could not be observed is UNKNOWN. */
 export type WebCaseCaptureOutcome = "passed" | "failed" | "unknown";
@@ -52,6 +55,20 @@ export async function finishWebCaseCapture(input: { capture: E2EWebCapturePorts 
     const bytes = await page.screenshot({ type: "jpeg", quality: SCREENSHOT_QUALITY, timeout: SCREENSHOT_TIMEOUT_MS });
     if (bytes.byteLength > 0) await capture.record({ caseId, kind: "screenshot", bytes: Uint8Array.from(bytes) });
   } catch { /* a page that cannot be photographed leaves no screenshot */ }
+}
+
+/**
+ * Takes the strip frame a step earns, after the step's action window is finished: only in mode "all", only for the steps `stripStepIndexes` picks for a case of this many steps (so the same scenario on the
+ * unchanged code and on the candidate is photographed at the same steps), and best effort like every capture: a page that cannot be photographed or a recorder that refuses (its budget, a credential in the
+ * picture) leaves no frame and changes no verdict.
+ */
+export async function finishWebStepCapture(input: { capture: E2EWebCapturePorts | undefined; caseId: string; stepIndex: number; stepCount: number; page: Pick<Page, "screenshot"> | null }): Promise<void> {
+  const { capture, caseId, stepIndex, stepCount, page } = input;
+  if (!capture?.screenshots || capture.mode !== "all" || !page || !stripStepIndexes(stepCount).includes(stepIndex)) return;
+  try {
+    const bytes = await page.screenshot({ type: "jpeg", quality: SCREENSHOT_QUALITY, timeout: SCREENSHOT_TIMEOUT_MS });
+    if (bytes.byteLength > 0) await capture.record({ caseId, kind: "screenshot", bytes: Uint8Array.from(bytes), step: stepIndex });
+  } catch { /* a page that cannot be photographed leaves no frame */ }
 }
 
 /**
@@ -425,6 +442,8 @@ export async function executeWebSteps(input: { caseId: string; scenario: E2EScen
         const finished = await input.ports.actionWindows.finish(action, signal);
         if (!finished || finished.confirmed !== true) finishError = new Error("protected action window finish was not confirmed");
       } catch (error) { finishError = error; }
+      // The end of a step that went through (a `continue` or a `break` above passes here too): its strip frame, when the admission asks for a strip.
+      if (actionError === undefined && finishError === undefined) await finishWebStepCapture({ capture: input.ports.capture, caseId: input.caseId, stepIndex, stepCount: input.scenario.steps.length, page: input.page });
     }
     if (finishError !== undefined) throw new Error("protected action result is uncertain because its action window could not be durably finished", { cause: finishError });
     if (actionError instanceof Error) throw actionError;

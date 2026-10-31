@@ -254,7 +254,7 @@ export function createE2EApplicationCliHost(input: { launchContext: E2EApplicati
     const screenshots = fileLedger.capture.enabled("screenshot");
     const ports: E2EWebRuntimePorts = Object.freeze({ ...shared,
       ...(agent !== null ? { agent: { runStep: agent.runStep } } : replay !== null ? { agent: { runStep: replay.runStep } } : {}),
-      ...(screenshots ? { capture: { screenshots, record: (item: { caseId: string; kind: "screenshot"; bytes: Uint8Array }) => fileLedger.capture.record(item) } } : {}),
+      ...(screenshots ? { capture: { screenshots, ...(fileLedger.capture.stripEnabled() ? { mode: "all" as const } : {}), record: (item: { caseId: string; kind: "screenshot"; bytes: Uint8Array; step?: number }) => fileLedger.capture.record(item) } } : {}),
       resolveOwnedCdpEndpoint: async () => {
         if (!context.cdpEndpoint) throw new Error("the executor launched no browser for this shard");
         return context.cdpEndpoint;

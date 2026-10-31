@@ -128,14 +128,14 @@ export async function readExecutorResultFile(outDir: string): Promise<ExecutorRe
 export const executorShardDirectory = (shardId: string): string => sha(shardId).slice(0, 16);
 
 const EXECUTOR_LOG_HEAD_BYTES = 64 * 1024;
-const MAX_ARTIFACTS_FILE_BYTES = 256 * 1024;
-const MAX_CAPTURE_ENTRIES = 256;
+const MAX_ARTIFACTS_FILE_BYTES = 512 * 1024;
+const MAX_CAPTURE_ENTRIES = 1024;
 /** A little more than the executor's own budget, so a listing the executor kept within 6 MiB is read whole. */
 const MAX_CAPTURE_READ_BYTES = 7 * 1024 * 1024;
 const captureEntrySchema = z.object({ caseId: z.string().min(1).max(160), kind: z.literal("screenshot"), sha256: z.string().regex(/^[a-f0-9]{64}$/),
-  bytes: z.number().int().nonnegative(), omitted: z.enum(["budget", "credential-match"]).optional() }).strict();
+  bytes: z.number().int().nonnegative(), omitted: z.enum(["budget", "credential-match"]).optional(), step: z.number().int().min(0).max(9999).optional() }).strict();
 const artifactsFileSchema = z.object({ schemaVersion: z.literal("e2e-executor-artifacts/v1"), artifacts: z.array(captureEntrySchema).max(MAX_CAPTURE_ENTRIES) }).strict();
-const CAPTURE_FILE = /^case-\d{1,4}-screenshot\.jpg$/;
+const CAPTURE_FILE = /^case-\d{1,4}(?:-step-\d{1,4})?-screenshot\.jpg$/;
 
 /**
  * The executor's log head and its captures, read best effort from its out directory. A capture file that carries a credential (by the host's own predicate, which also
@@ -165,7 +165,7 @@ async function readExecutorEvidence(outDir: string, containsCredential: (bytes: 
     const files: ExecutorCaptureFile[] = [];
     const artifacts: CaptureEntry[] = [];
     for (const parsed of listing.artifacts) {
-      const entry: CaptureEntry = { caseId: parsed.caseId, kind: parsed.kind, sha256: parsed.sha256, bytes: parsed.bytes, ...(parsed.omitted === undefined ? {} : { omitted: parsed.omitted }) };
+      const entry: CaptureEntry = { caseId: parsed.caseId, kind: parsed.kind, sha256: parsed.sha256, bytes: parsed.bytes, ...(parsed.step === undefined ? {} : { step: parsed.step }), ...(parsed.omitted === undefined ? {} : { omitted: parsed.omitted }) };
       if (entry.omitted !== undefined) { artifacts.push(entry); continue; }
       const found = loaded.find((file) => file.kind === entry.kind && file.sha256 === entry.sha256 && file.bytes.byteLength === entry.bytes
         && !files.some((kept) => kept.name === file.name));
