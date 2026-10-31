@@ -122,7 +122,7 @@ describe("the code pull request", () => {
   it("starts no spec write for a task whose creator has been removed from the organization (ruling R60: every task launch checks the creator first)", async () => {
     const t = await setup();
     await specAfterPlanApproval(t.deps, TASK);
-    await t.db.send(new PutCommand({ TableName: "t", Item: { ...orgRemovedKey("org-1" as never, "dev-1"), removedAt: NOW } }));
+    await t.db.send(new PutCommand({ TableName: "t", Item: { ...orgRemovedKey("org-1", "dev-1"), removedAt: NOW } }));
     const gate = await specPublicationGate(t.deps, t.task, t.task.workflow!);
     expect(gate).toMatchObject({ proceed: false });
     expect(t.startedWrites).toHaveLength(0);
