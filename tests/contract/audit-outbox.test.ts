@@ -774,6 +774,19 @@ describe("I4: the builders", () => {
     ["auditSsoBreakGlassUsed", (occurrence) => builders.auditSsoBreakGlassUsed({ ...base, occurrence, details, memberId: "dev_1", sessionSeconds: 3600 })],
     ["auditSsoGroupMappingChanged", (occurrence) => builders.auditSsoGroupMappingChanged({ ...base, occurrence, details, fromVersion: 1, toVersion: 2, rules: 3, added: ["users"], removed: [] })],
     ["auditSsoBreakGlassChanged", (occurrence) => builders.auditSsoBreakGlassChanged({ ...base, occurrence, details, toVersion: 1, owners: 1, ownerIds: ["a".repeat(64)] })],
+    // Lane E (private MCP servers, project Sources)
+    ["auditMcpServerChanged", (occurrence) => builders.auditMcpServerChanged({ ...base, occurrence, details, action: "mcp_server.added", serverId: "mcp_1", label: "Docs server", transport: "http", hasToken: true })],
+    ["auditMcpServerTokenChanged", (occurrence) => builders.auditMcpServerTokenChanged({ ...base, occurrence, details, serverId: "mcp_1", change: "stored" })],
+    ["auditContextSourceChange", (occurrence) => builders.auditContextSourceChange({ ...base, occurrence, details, action: "context_source.applied", projectName: "Secret Project", sourceId: "src_1", change: "set" })],
+    // Live interaction part 2
+    ["auditSessionRedirected", (occurrence) => builders.auditSessionRedirected({ ...base, occurrence, details, sessionId: "ses_1", taskId: "task_1", messageId: "msg_1", mode: "keep_plan", step: "IMPLEMENT", outcome: "restarted" })],
+    ["auditTaskAsked (each)", (occurrence) => builders.auditTaskAsked({ ...base, occurrence, details, scope: "each", sessionId: "ses_1", askId: "ask_1", audience: "web", contextBytes: 2048, model: "model_1" })],
+    ["auditTaskAsked (daily)", (occurrence) => builders.auditTaskAsked({ ...base, occurrence, details, scope: "daily", projectName: "Secret Project", count: 3 })],
+    ["auditDiagnosisStarted", (occurrence) => builders.auditDiagnosisStarted({ ...base, occurrence, details, diagnosisId: "diag_1", errorKind: "task", errorCode: "CHECKS_FAILED", tier: "light" })],
+    ["auditDiagnosisProposed", (occurrence) => builders.auditDiagnosisProposed({ ...base, occurrence, details, diagnosisId: "diag_1", counts: { explain: 1, retryWithNote: 1, redirect: 0, settingsChange: 0, newTask: 0, adminSteps: 0, contactSupport: 0 }, dropped: 0 })],
+    ["auditDiagnosisProposalRaised", (occurrence) => builders.auditDiagnosisProposalRaised({ ...base, occurrence, details, diagnosisId: "diag_1", proposalKind: "settings_change", approvalId: "appr_1" })],
+    ["auditDiagnosisSupportEscalated", (occurrence) => builders.auditDiagnosisSupportEscalated({ ...base, occurrence, details, diagnosisId: "diag_1", errorKind: "task" })],
+    ["auditDiagnosisBundlePrepared", (occurrence) => builders.auditDiagnosisBundlePrepared({ ...base, occurrence, details, diagnosisId: "diag_1", errorKind: "task" })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
