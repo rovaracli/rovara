@@ -1,0 +1,17 @@
+// E2: what an install supplies to run the context-source routes. The broker builds the project-sources store and the usage counters from its own table;
+// the pieces that reach other systems (the MCP servers, the Team record, the keeper of results, the citations) come in here, so that a deployment that has
+// none of them has no sources: the routes then answer an empty list and refuse every call.
+import type { ContextSource, CitationStanding } from "@agentx/contracts";
+import type { CitationRecorder, ContextServerPort, ResultKeeper } from "./routes.js";
+import type { TeamRecordSearch, TeamRecordSink } from "./team-record.js";
+
+export interface ContextSourcesRuntime {
+  servers: ContextServerPort;
+  teamSink?: TeamRecordSink;
+  teamSearch?: TeamRecordSearch;
+  teamRecordAvailable?: boolean;
+  citations?: CitationRecorder;
+  results?: ResultKeeper;
+  standingOf?: (source: ContextSource, structured: unknown) => CitationStanding;
+  callTimeoutMs?: number;
+}

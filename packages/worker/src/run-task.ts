@@ -3,7 +3,7 @@ import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupProposal, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
-import type { BashOperations } from "@earendil-works/pi-coding-agent";
+import type { BashOperations, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
 import { PLAN_CRITIQUE_ARTIFACT, settlePlanCritique } from "./plan-critic.js";
@@ -71,6 +71,11 @@ import { capturePartTree, checkoutIntegratedTree, clearPartsFolder, createPartWo
 import { executeWorkflowE2EChecks, workflowE2EAdmissionIsApplication } from "./workflow-e2e-checks.js";
 import type { WorkflowE2EApplicationRuntime } from "./workflow-e2e-application-checks.js";
 import { READ_ONLY_STEP_MODES, STOPS_PROGRAMS_FIRST_MODES, stopProgramsBeforeReading, type StopBeforeReadingOptions } from "./stop-before-reading.js";
+import { createContextTools, type ContextBridgeCall } from "./context-sources/bridge.js";
+import { contextSourcesNote } from "./context-sources/frame.js";
+import { stubContextEvent } from "./context-sources/events.js";
+import { createSourceTextGuard, guardArtifactSink, guardEventSink, type SourceTextGuard } from "./context-sources/text-guard.js";
+import { isContextSourceStage, type ContextToolCatalog } from "@agentx/contracts";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 
 export interface TaskInvocationResult {
@@ -150,6 +155,11 @@ export interface TaskInvocationDependencies {
   docker?: DockerCli;
   /** This operation's skills snapshot from the control plane (agent-step.ts); asked only when the step names skills. */
   agentSkills?: () => Promise<readonly AgentSkillFile[]>;
+  /**
+   * Lane E: where an Understand, Plan, Plan-check or Review stage reaches the project's MCP context sources, through the broker with the invocation's own capability.
+   * Asked only when the invocation says the stage has sources (`contextSources`). Without it such a stage does not run (it would run without the team's sources, silently).
+   */
+  contextSources?: { catalog: () => Promise<ContextToolCatalog | undefined>; call: ContextBridgeCall };
   /**
    * Where an agent step (Task 23) reaches the broker's connector tools, with the invocation's own capability. Without it the
    * worker cannot run an agent step. Tests supply fakes for the catalogs and the call.
@@ -529,7 +539,10 @@ async function runTask(
     );
   }
 
-  const events = new EventBatcher(dependencies.eventSink);
+  // m1: text the model writes is scrubbed like a source's own text once the stage has read a source (context-sources/text-guard.ts).
+  const sourceGuard: { current: SourceTextGuard | undefined } = { current: undefined };
+  const artifactSink = guardArtifactSink(dependencies.artifactSink, () => sourceGuard.current);
+  const events = new EventBatcher(guardEventSink(dependencies.eventSink, () => sourceGuard.current));
   const log = dependencies.log ?? consoleWorkerLog;
   // Events tell people what the run is doing; they never decide how it ends. A batch the control plane refuses (a cancel can land first and make the operation terminal, which refuses
   // more output) or cannot take is logged, stays pending for the next send, and the run goes on to its terminal result.
@@ -679,6 +692,21 @@ async function runTask(
 
   // The agent's shell: the devcontainer's or the sandbox's, or the local one when it was chosen.
   const agentShell = bashOperations ?? (localShell ? localBashOperations({ explicit: true }) : undefined);
+  // Lane E: the project's context sources, in the stages that may read them only. Build never gets them, whatever the invocation says.
+  let sourceSession: { contextTools: ToolDefinition[]; contextNote: string; labels: Array<{ label: string }> } | undefined;
+  if (invocation.payload.contextSources === true && isContextSourceStage(payloadMode)) {
+    if (dependencies.contextSources === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot reach this project's context sources");
+    const catalog = await dependencies.contextSources.catalog();
+    if (catalog !== undefined && (catalog.tools.length > 0 || catalog.searchTeamKnowledge)) {
+      const guard = createSourceTextGuard();
+      sourceGuard.current = guard;
+      sourceSession = {
+        contextTools: createContextTools(catalog, dependencies.contextSources.call, { workspaceId: invocation.workspaceId, conversationId, operationId: invocation.operationId }, { onText: (text) => { guard.remember(text); } }),
+        contextNote: contextSourcesNote(catalog),
+        labels: catalog.sources.map((source) => ({ label: source.label })),
+      };
+    }
+  }
   let session: PiSessionHandle;
   if (registered) {
     session = await openRegisteredWorkspacePiSession(
@@ -695,6 +723,7 @@ async function runTask(
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
         ...stepSession,
+        ...(sourceSession === undefined ? {} : { contextTools: sourceSession.contextTools, contextNote: sourceSession.contextNote }),
       },
       dependencies.piAdapter,
     );
@@ -708,6 +737,7 @@ async function runTask(
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
         ...stepSession,
+        ...(sourceSession === undefined ? {} : { contextTools: sourceSession.contextTools, contextNote: sourceSession.contextNote }),
       },
       dependencies.piAdapter,
     );
@@ -818,7 +848,7 @@ async function runTask(
   let lastModelNote: ModelCallNote | undefined;
   const unsubscribe = session.subscribe((event) => {
     monitor.observe(event);
-    if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(event));
+    if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(stubContextEvent(event)));
     fileChanges.observe(event);
     activeFindings.observe(event);
     // A failed or stopped model call and Pi's retries reach the task as one sanitized note each. The raw events (the provider's message, the model's thinking, the final error
@@ -834,7 +864,7 @@ async function runTask(
     // A tool's streaming update (tool_execution_update) likewise repeats its arguments and its output so far; the finished
     // call (tool_execution_end) is kept.
     const streamed = (event as { type?: unknown } | undefined)?.type;
-    if (streamed !== "message_update" && streamed !== "tool_execution_update" && !isModelFailureEvent(event)) void events.append(eventType(event), withoutModelFailureText(event)).catch(() => undefined);
+    if (streamed !== "message_update" && streamed !== "tool_execution_update" && !isModelFailureEvent(event)) void events.append(eventType(event), stubContextEvent(withoutModelFailureText(event))).catch(() => undefined);
     const outcome = assistantOutcome(event);
     if (outcome !== undefined) {
       lastAssistant = outcome;
@@ -881,7 +911,7 @@ async function runTask(
     let checksAttempted = false;
     const publishChecks = async (): Promise<void> => {
       checksAttempted = true;
-      await dependencies.artifactSink({
+      await artifactSink({
         name: "checks.json",
         mediaType: "application/json",
         content: checksArtifactContent(finalChecks()),
@@ -960,7 +990,7 @@ async function runTask(
     };
     const publishEvidence = async (): Promise<void> => {
       evidenceAttempted = true;
-      await dependencies.artifactSink({
+      await artifactSink({
         name: "test-and-tool-evidence.json",
         mediaType: "application/json",
         content: JSON.stringify(toolEvidence, null, 2),
@@ -1045,7 +1075,7 @@ async function runTask(
             }, partOutcome);
             const redactedUsage = redactCredentials(usage);
             await emit("usage", usageForControlPlane(redactedUsage, dependencies.model));
-            await dependencies.artifactSink({ name: `usage-part-${itemId.slice(0, 8)}.json`, mediaType: "application/json", content: JSON.stringify(redactedUsage, null, 2) });
+            await artifactSink({ name: `usage-part-${itemId.slice(0, 8)}.json`, mediaType: "application/json", content: JSON.stringify(redactedUsage, null, 2) });
           } catch (error) {
             onDiagnostic(`Rovara could not report the usage of one part: ${errorText(error)}`);
           }
@@ -1081,7 +1111,7 @@ async function runTask(
             const guard = new ToolLoopGuard();
             let stoppedBy: Error | undefined;
             unsubscribe = open.subscribe((event) => {
-              if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(event));
+              if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(stubContextEvent(event)));
               fileChanges.observe(event);
               partFindings.observe(event);
               const note = sanitizeModelCallEvent(event, 0);
@@ -1090,7 +1120,7 @@ async function runTask(
                 void emit("progress", note);
               }
               const streamed = (event as { type?: unknown } | undefined)?.type;
-              if (streamed !== "message_update" && streamed !== "tool_execution_update" && !isModelFailureEvent(event)) void events.append(eventType(event), withoutModelFailureText(event)).catch(() => undefined);
+              if (streamed !== "message_update" && streamed !== "tool_execution_update" && !isModelFailureEvent(event)) void events.append(eventType(event), stubContextEvent(withoutModelFailureText(event))).catch(() => undefined);
               const outcome = assistantOutcome(event);
               if (outcome !== undefined) {
                 lastOutcome = outcome;
@@ -1244,7 +1274,7 @@ async function runTask(
           async () => { await emit("progress", { message: "The plan check could not be read; the agent is asked to answer again." }); });
         monitor.stop();
         if (critique === undefined) throw agentXError("OPERATION_INTERRUPTED", "the plan check produced no answer");
-        await dependencies.artifactSink({ name: PLAN_CRITIQUE_ARTIFACT, mediaType: "text/markdown; charset=utf-8", content: critique });
+        await artifactSink({ name: PLAN_CRITIQUE_ARTIFACT, mediaType: "text/markdown; charset=utf-8", content: critique });
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "PLAN_CRITIQUE" });
         taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "PLAN_CRITIQUE" };
@@ -1322,7 +1352,7 @@ async function runTask(
         monitor.stop();
         if (!plan) throw agentXError("OPERATION_INTERRUPTED", "the planning run produced no plan artifact");
         if (Buffer.byteLength(plan, "utf8") > WORKFLOW_PLAN_MAX_BYTES) throw agentXError("OPERATION_INTERRUPTED", "the planning run exceeded the maximum plan size");
-        await dependencies.artifactSink({ name: "plan.md", mediaType: "text/markdown; charset=utf-8", content: plan });
+        await artifactSink({ name: "plan.md", mediaType: "text/markdown; charset=utf-8", content: plan });
         await publishEvidence();
         // PLANDRYRUN: the plan is saved; its proposed checks are tried on the unchanged code and only a fixed class per check is reported. It never fails the planning run.
         if (invocation.payload.planFormat === "structured" && planDocumentKind(invocation.payload.workflowPhase) === "plan") {
@@ -1358,7 +1388,7 @@ async function runTask(
         const assessment = await settleUnderstanding(finalText, async (again) => { await promptAndSettle(again); return finalText; });
         // The model is done: a deadline that passes while the answer is saved must not report a stop on a run that then succeeds.
         monitor.stop();
-        await dependencies.artifactSink({ name: UNDERSTAND_ARTIFACT_NAME, mediaType: "application/json", content: JSON.stringify(assessment) });
+        await artifactSink({ name: UNDERSTAND_ARTIFACT_NAME, mediaType: "application/json", content: JSON.stringify(assessment) });
         await publishEvidence();
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "UNDERSTAND" });
@@ -1379,6 +1409,7 @@ async function runTask(
           ...(invocation.payload.workflowReviewNote === undefined ? {} : { reviewNote: invocation.payload.workflowReviewNote }),
           ...(invocation.payload.workflowReviewers === undefined ? {} : { reviewers: invocation.payload.workflowReviewers }),
           ...(invocation.payload.workflowReviewRisk === true ? { reviewRisk: true } : {}),
+          ...(sourceSession === undefined ? {} : { sources: { tools: sourceSession.contextTools, note: sourceSession.contextNote, labels: sourceSession.labels } }),
           ...(reviewTimeoutMs === undefined ? {} : { timeoutMs: reviewTimeoutMs }),
           ...(agentStep?.promptSection === undefined ? {} : { promptSection: agentStep.promptSection }),
           ...(agentStep?.tools === undefined ? {} : { tools: agentStep.tools }),
@@ -1392,7 +1423,7 @@ async function runTask(
             const usage = createTaskUsageTelemetry(stats, { ...model, ...(dependencies.model.cacheRetention === undefined ? {} : { cacheRetention: dependencies.model.cacheRetention }) }, outcome);
             const redactedUsage = redactCredentials(usage);
             await events.append("usage", usageForControlPlane(redactedUsage, dependencies.model));
-            await dependencies.artifactSink({ name: `workflow-review-${role.toLowerCase()}-usage.json`, mediaType: "application/json", content: JSON.stringify(redactedUsage, null, 2) });
+            await artifactSink({ name: `workflow-review-${role.toLowerCase()}-usage.json`, mediaType: "application/json", content: JSON.stringify(redactedUsage, null, 2) });
           },
         });
         try {
@@ -1411,7 +1442,7 @@ async function runTask(
         taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "REVIEW", workflowCandidateRepositories: beforeReview.repositories, workflowReviews: reports };
       } else {
       diffAttempted = true;
-      const { changed: dirty } = await publishWorkspaceDiff(dependencies.rootPath, dependencies.artifactSink);
+      const { changed: dirty } = await publishWorkspaceDiff(dependencies.rootPath, artifactSink);
       await publishEvidence();
       await publishChecks();
       // With a before state, "changed" means this turn changed the tree (a revert counts); without
@@ -1558,7 +1589,7 @@ async function runTask(
       }
       if (!planning && !understanding && !diffAttempted && outcome !== "CANCELLED") {
         try {
-          await publishWorkspaceDiff(dependencies.rootPath, dependencies.artifactSink);
+          await publishWorkspaceDiff(dependencies.rootPath, artifactSink);
         } catch (artifactError) {
           evidenceFailure ??= artifactError;
           await reportUnsaved("workspace.diff");
@@ -1579,7 +1610,7 @@ async function runTask(
       }, outcome);
       const redactedUsage = redactCredentials(usage);
       await emit("usage", usageForControlPlane(redactedUsage, dependencies.model));
-      await dependencies.artifactSink({
+      await artifactSink({
         name: "usage.json",
         mediaType: "application/json",
         content: JSON.stringify(redactedUsage, null, 2),

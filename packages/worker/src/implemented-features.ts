@@ -41,4 +41,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.liveSteer.v1",
   // Meta repo lane A3: the prepare invocation's `meta` request (the project's meta repository, read-only and sparse; meta-checkout.ts).
   "prepare.metaRepo",
+  // Lane E (MCP context sources): an Understand, Plan, Plan-check or Review stage asks the broker for the project's source tools (worker/src/context-sources).
+  "task.contextSources.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

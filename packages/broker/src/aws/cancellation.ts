@@ -159,7 +159,7 @@ export interface CallbackClaims {
   workspaceId: string;
   operationId: string;
   fence: number;
-  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools">;
+  actions: Array<"events" | "artifacts" | "result" | "candidate-export" | "candidate-build-source" | "baseline-source" | "e2e-admission" | "e2e-evidence" | "e2e-model-budget" | "feedback-bundles" | "feedback-approval" | "pull-request" | "pull-request-update" | "codebuild" | "chatgpt-token" | "chatgpt-status" | "model-fallback" | "model-access" | "agent-skills" | "agent-tools" | "context-tools">;
   expiresAt: number;
 }
 
@@ -282,6 +282,8 @@ export interface CapabilityOptions {
   agentSkills?: boolean;
   /** Plan 3 Task 19: list the connector tools the step's agent is granted and call them (`/v1/internal/agent-tools`); granted to an agent step whose recipe has tool grants. */
   agentTools?: boolean;
+  /** Lane E: list the project's MCP context sources and call them (`/v1/internal/context-tools`); granted to an Understand, Plan, Plan-check or Review operation of a project that has sources, never to Build. */
+  contextTools?: boolean;
 }
 
 export function issueCapability(
@@ -317,6 +319,7 @@ export function issueCapability(
         : []),
       ...(options.agentSkills === true ? ["agent-skills" as const] : []),
       ...(options.agentTools === true ? ["agent-tools" as const] : []),
+      ...(options.contextTools === true ? ["context-tools" as const] : []),
     ],
     expiresAt: Math.floor(Date.now() / 1_000) + 32_400,
   };
