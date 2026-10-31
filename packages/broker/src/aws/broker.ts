@@ -7262,7 +7262,10 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
   const companyPolicy=operation.orgId===undefined||operation.modelPolicy===undefined?undefined:await readCompanyStagePolicy(dependencies,operation.orgId,operation.modelPolicy.stage,pinnedCompany);
   const companyGoverned=companyPolicy?.applies===true;
   const routing = routingOf(dependencies,companyGoverned);
-  if(companyGoverned&&operation.chatgptDeveloperId!==undefined&&operation.modelPolicy!==undefined&&((companyPolicy.sourceOrder!==undefined&&!companyPolicy.sourceOrder.includes("personal-chatgpt"))||(companyPolicy.model!==undefined&&(operation.model===undefined||canonicalModelName(companyPolicy.model)!==canonicalModelName(operation.model)))))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/models/sources");
+  if(companyGoverned&&operation.chatgptDeveloperId!==undefined&&operation.modelPolicy!==undefined) {
+    if(companyPolicy.sourceOrder!==undefined&&!companyPolicy.sourceOrder.includes("personal-chatgpt"))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/models/sources");
+    if(companyPolicy.locked&&companyPolicy.model!==undefined&&(operation.model===undefined||canonicalModelName(companyPolicy.model)!==canonicalModelName(operation.model)))throw new ProcessModelRefusal("MODEL_NOT_VERIFIED",operation.modelPolicy.stage,"/app/admin/how-we-work");
+  }
   const route = routing === undefined || operation.orgId === undefined || operation.modelRoute === undefined ? undefined
     : await liveRouteOf(routing, operation, operation.orgId, (await requireWorkspace(dependencies, operation.workspaceId)).projectName);
   const loadScope = async (): Promise<ModelKeyScope | undefined> => {

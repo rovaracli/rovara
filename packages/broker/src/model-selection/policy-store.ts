@@ -31,13 +31,13 @@ export async function inactiveModelSourcesRevision(deps:Partial<ModelPolicyReade
  return Number(row.revision);
 }
 
-/** Explicit company stage choices or stored source order activate governed legacy key routing. */
+/** A locked model or stored source order constrains legacy personal-plan key routing. */
 export async function readCompanyStagePolicy(deps:ModelPolicyReader,orgId:OrgId,stage:StageId,pinned?:Pick<ModelSelectionPolicyResponse,"stepOverrides">) {
  const policy=pinned??await readModelSelectionPolicy(deps,orgId);
  let source:Record<string,unknown>|undefined;
  try{source=(await deps.documentClient.send(new GetCommand({TableName:deps.tableName,Key:modelSourcesKey(orgId),ConsistentRead:true})) as {Item?:Record<string,unknown>}).Item;}catch{throw agentXError("RUNTIME_UNAVAILABLE","The model source policy could not be read.");}
  if(source?.order!==undefined&&(!Array.isArray(source.order)||!source.order.every((id:unknown)=>typeof id==="string")))throw agentXError("RUNTIME_UNAVAILABLE","The model source policy could not be verified.");
- const sourceOrder=source?.order,model=policy.stepOverrides[stage]?.model;
- return {applies:model!==undefined||sourceOrder!==undefined,model,sourceOrder};
+ const sourceOrder=source?.order,model=policy.stepOverrides[stage]?.model,locked=policy.stepOverrides[stage]?.locked===true;
+ return {applies:locked&&model!==undefined||sourceOrder!==undefined,model,locked,sourceOrder};
 }
-export async function hasCompanyStagePolicy(deps:ModelPolicyReader,orgId:OrgId,stage:StageId,pinned?:Pick<ModelSelectionPolicyResponse,"stepOverrides">):Promise<boolean> {return (await readCompanyStagePolicy(deps,orgId,stage,pinned)).applies;}
+export async function hasCompanyStagePolicy(deps:ModelPolicyReader,orgId:OrgId,stage:StageId,pinned?:Pick<ModelSelectionPolicyResponse,"stepOverrides">):Promise<boolean> {const policy=await readCompanyStagePolicy(deps,orgId,stage,pinned);return policy.model!==undefined||policy.sourceOrder!==undefined;}
