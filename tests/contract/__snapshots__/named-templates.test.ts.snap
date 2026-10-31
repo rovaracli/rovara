@@ -3659,6 +3659,53 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Resource": "*",
             },
             {
+              "Action": "ssm:GetParameter",
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":parameter/agentx/staging/edition",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":parameter/agentx/staging/edition-backup",
+                    ],
+                  ],
+                },
+              ],
+              "Sid": "ReadEditionRecord",
+            },
+            {
               "Action": "secretsmanager:GetSecretValue",
               "Effect": "Allow",
               "Resource": [
@@ -6023,6 +6070,53 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Resource": {
                 "Ref": "SlackSecretEA96F13F",
               },
+            },
+            {
+              "Action": "ssm:GetParameter",
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":parameter/agentx/staging/edition",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":ssm:",
+                      {
+                        "Ref": "AWS::Region",
+                      },
+                      ":",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":parameter/agentx/staging/edition-backup",
+                    ],
+                  ],
+                },
+              ],
+              "Sid": "ReadEditionRecord",
             },
             {
               "Action": "secretsmanager:GetSecretValue",
