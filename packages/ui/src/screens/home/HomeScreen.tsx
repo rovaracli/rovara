@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
 import { createRealtimeClient } from "../../realtime/client.js";
 import { createNoticeInvalidator } from "../../realtime/invalidate.js";
-import { useEffect, useRef } from "react";
+import { Suspense, lazy, useEffect, useRef } from "react";
 import { Link } from "react-router";
 import { useHome } from "../../api/home.js";
 import { ApiError } from "../../api/errors.js";
@@ -13,7 +13,8 @@ import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { HomeCard } from "./HomeCard.js";
-import { NeedsYou } from "./NeedsYou.js";
+// Decision cards load after the first paint: they bring the cards, the tabs and their contracts, which no other first-page view needs.
+const NeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NeedsYou }));
 import "./home.css";
 export function HomeScreen() {
  const host = useAppHost(), query = useQueryClient(), home = useHome(), announce = useAnnounce(), previous = useRef<Array<{ cardId: string; title: string }> | undefined>(undefined);
@@ -25,7 +26,7 @@ export function HomeScreen() {
  previous.current = cards;
  }, [cards, announce]);
  return <section className="rv-home"><PageHeader title="Home" {...(cards !== undefined && total > 0 ? { description: `${total} ${total === 1 ? "thing needs" : "things need"} you` } : {})} />
- <NeedsYou />
+ <Suspense fallback={null}><NeedsYou /></Suspense>
  {home.isPending && <Skeleton label="Loading what needs you" />}
  {home.isError && <div className="rv-home-error" role="alert"><p><VisibleText text={home.error instanceof ApiError ? home.error.message : "Couldn't load what needs you. Try again."} /></p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
  {cards !== undefined && cards.length === 0 && total === 0 && <EmptyState title="Nothing needs you right now" description="Your team's work can keep moving. Find ongoing sessions in Live." action={<Link to="/app/live">See work in progress</Link>} />}
