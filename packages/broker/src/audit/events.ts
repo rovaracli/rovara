@@ -594,9 +594,12 @@ function modelPolicyEvent(action:"model_policy.changed"|"model_policy.lock_set"|
 export const auditModelPolicyChanged=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.changed",input);
 export const auditModelPolicyLockSet=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.lock_set",input);
 export const auditModelPolicyLockRemoved=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.lock_removed",input);
-/** `occurrence`: `auditOccurrence(org, settings revision)`. The company's master "suggestions" switch changed; `setting` and `previous` are `on` or `off`, `source` is `company`. The target is the company itself. */
-export function auditRuleSuggestionsSet(input: AuditBuilderBase & { setting: "on" | "off"; previous: "on" | "off"; source: "company" }): AuditEventInput {
-  return build("rule.suggestions_set", input, { kind: "org", id: input.orgId }, { setting: input.setting, previous: input.previous, source: input.source });
+/**
+ * `occurrence`: `auditOccurrence(org, settings revision)`. The company's master "suggestions" switch changed; `setting` and `previous` are `on` or `off`, `source` is `company`, and
+ * `previousSource` says where the previous value came from (`company` or `install_default`). The target is the company itself.
+ */
+export function auditRuleSuggestionsSet(input: AuditBuilderBase & { setting: "on" | "off"; previous: "on" | "off"; source: "company"; previousSource?: "company" | "install_default" }): AuditEventInput {
+  return build("rule.suggestions_set", input, { kind: "org", id: input.orgId }, { setting: input.setting, previous: input.previous, source: input.source, ...(input.previousSource === undefined ? {} : { previousSource: input.previousSource }) });
 }
 
 /** A pending approval is an observation and request, never an applied binding. */

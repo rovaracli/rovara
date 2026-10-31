@@ -7,6 +7,7 @@ import {
   type LearningCompanySettingsAnswer, type OrgId,
 } from "../../packages/contracts/src/index.js";
 import { groupCorrections } from "../../packages/broker/src/learning/grouping.js";
+import { metricMonth, readMetric } from "../../packages/broker/src/learning/metric.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { captureCorrection, openSuggestion } from "../../packages/broker/src/learning/store.js";
 import { effectiveFromItem, effectiveSuggestions, installSuggestionsDefault, suggestionsOff } from "../../packages/broker/src/learning/suggestions-switch.js";
@@ -160,13 +161,13 @@ describe("GET and PUT /v1/app/org/learning-settings", () => {
     await s.put(callerOf(ADMIN, "admin"), { expectedRevision: 1, suggestions: "off" });
     const events = s.audit.recordedBy("rule.suggestions_set");
     expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({ facts: { setting: "on", previous: "off", source: "company" }, target: { kind: "org", id: ORG }, actor: { kind: "member", id: OWNER } });
-    expect(events[1]).toMatchObject({ facts: { setting: "off", previous: "on", source: "company" }, actor: { kind: "member", id: ADMIN } });
+    expect(events[0]).toMatchObject({ facts: { setting: "on", previous: "off", source: "company", previousSource: "install_default" }, target: { kind: "org", id: ORG }, actor: { kind: "member", id: OWNER } });
+    expect(events[1]).toMatchObject({ facts: { setting: "off", previous: "on", source: "company", previousSource: "company" }, actor: { kind: "member", id: ADMIN } });
     // The previous value of a first change from an install default of ON is on.
     vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "on");
     const second = setup();
     await second.put(callerOf(OWNER, "owner"), { expectedRevision: 0, suggestions: "off" });
-    expect(second.audit.recordedBy("rule.suggestions_set")[0]).toMatchObject({ facts: { setting: "off", previous: "on", source: "company" } });
+    expect(second.audit.recordedBy("rule.suggestions_set")[0]).toMatchObject({ facts: { setting: "off", previous: "on", source: "company", previousSource: "install_default" } });
   });
 
   it("has strict bodies: an extra field, a bad value or a missing revision is CONFIG_INVALID", async () => {
@@ -226,24 +227,39 @@ const prSetting = (world: World, prComments: "on" | "off") => seedItem(world.db,
 });
 
 describe("grouping while the switch is off", () => {
-  it("does nothing: nothing judged, opened or joined, no rule.suggested, the corrections stay ungrouped; turning it on groups the stored corrections", async () => {
+  it("only judges: the corrections are counted, but nothing is opened or joined and there is no rule.suggested; turning it on groups the judged corrections", async () => {
     const world = makeWorld();
     const audit = capturingAuditDeps({ db: world.db, now: () => world.clock.ms });
     const deps = { ...world.deps, audit: audit.audit };
     setSwitch(world, "off");
     await add(world, LINT_A, { task: "t1" });
     await add(world, LINT_B, { task: "t2" });
-    expect(await groupCorrections(deps, world.scope)).toEqual({ judged: 0, opened: [], joined: [], withdrawn: [], capped: false });
+    expect(await groupCorrections(deps, world.scope)).toEqual({ judged: 2, opened: [], joined: [], withdrawn: [], capped: false });
     expect(suggestionsOf(world)).toEqual([]);
-    expect(correctionsOf(world).every((item) => item.groupedAt === undefined)).toBe(true);
+    expect(correctionsOf(world).every((item) => item.groupedAt !== undefined)).toBe(true);
     expect(audit.recordedBy("rule.suggested")).toEqual([]);
-    // Turned on later: the same corrections group (they are inside the window).
+    // Turned on later: the same corrections group (they are inside the window); they are not judged, or counted, twice.
     setSwitch(world, "on", 2);
     const result = await groupCorrections(deps, world.scope);
     expect(result.opened).toHaveLength(1);
-    expect(result.judged).toBe(2);
+    expect(result.judged).toBe(0);
     expect(suggestionsOf(world)).toHaveLength(1);
     expect(audit.recordedBy("rule.suggested")).toHaveLength(1);
+  });
+
+  it("keeps the month's metric counting (review I1): two members give the same correction while it is off, and \"Same correction given twice\" goes up", async () => {
+    const world = makeWorld();
+    setSwitch(world, "off");
+    const month = metricMonth(new Date(world.clock.ms).toISOString());
+    const before = await readMetric(world.deps, world.scope, month, { prCaptureOff: true });
+    expect(before).toMatchObject({ memberCorrections: 0, repeats: 0 });
+    const first = await add(world, LINT_A, { task: "t1", author: "dev-maya" });
+    await groupCorrections(world.deps, world.scope);
+    const second = await add(world, LINT_B, { task: "t2", author: "dev-omar" });
+    await groupCorrections(world.deps, world.scope);
+    expect(await readMetric(world.deps, world.scope, month, { prCaptureOff: true })).toMatchObject({ memberCorrections: 2, repeats: 1 });
+    expect(correctionsOf(world).find((item) => item.id === second)).toMatchObject({ repeatOf: first });
+    expect(suggestionsOf(world)).toEqual([]);
   });
 
   it("opens nothing when the switch is turned off after the run read it (review M3): the open commit is held to the switch", async () => {
@@ -266,7 +282,8 @@ describe("grouping while the switch is off", () => {
     vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "off");
     const before = world.db.commandNames().length;
     expect((await groupCorrections(world.deps, world.scope)).opened).toEqual([]);
-    expect(world.db.commandNames().slice(before)).toEqual(["GetCommand"]);
+    expect(world.db.commandNames()[before]).toBe("GetCommand");
+    expect(suggestionsOf(world)).toEqual([]);
     vi.stubEnv("LEARNING_SUGGESTIONS_DEFAULT", "on");
     expect((await groupCorrections(world.deps, world.scope)).opened).toHaveLength(1);
   });
@@ -304,7 +321,7 @@ describe("B8: the master switch wins over the project's PR-comment toggle", () =
     await add(world, LINT_A, { task: "t1", source: "pr_comment" });
     await add(world, LINT_B, { task: "t2", source: "pr_comment" });
     expect(correctionsOf(world).filter((item) => item.source === "pr_comment")).toHaveLength(2);
-    expect(await groupCorrections(world.deps, world.scope)).toMatchObject({ opened: [], judged: 0 });
+    expect(await groupCorrections(world.deps, world.scope)).toMatchObject({ opened: [], judged: 2 });
     expect(suggestionsOf(world)).toEqual([]);
     expect(partition(world).find((item) => item.sk === "STATE")).toMatchObject({ liveCorrections: 2 });
     setSwitch(world, "on", 2);

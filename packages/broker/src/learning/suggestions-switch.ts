@@ -4,7 +4,7 @@
 // deployment config, not a runtime setting: the control plane's stack parameter `LearningSuggestionsDefault` (off unless an operator sets it) reaches the broker in its packed settings
 // (AGENTX_SETTINGS, code "lg"), which hydrate `LEARNING_SUGGESTIONS_DEFAULT`. Only the exact word "on" turns it on.
 //
-// While the value is off: grouping does nothing (grouping.ts asks `suggestionsOff` first), Home makes no card, the project view and overview report `collecting`, and Accept, Dismiss and
+// While the value is off: grouping only judges (the month's metric keeps counting, `repeatOf` is set) and opens, joins and withdraws nothing (grouping.ts asks `suggestionsOff` first), Home makes no card, the project view and overview report `collecting`, and Accept, Dismiss and
 // Reopen answer 409 LEARNING_SUGGESTIONS_OFF (decide.ts). Capture, settlement of waiting rules, rules, rollback and remove are never gated.
 //
 // A record that does not read (an unknown value from a newer writer) is skipped: the install default applies, as for a company that never chose.
@@ -94,7 +94,7 @@ export async function putSuggestionsSwitch(
   const key = orgLearningSettingsKey(input.orgId);
   const at = new Date(deps.now()).toISOString();
   const learning: LearningDeps = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) };
-  const audited = await learningEvents(learning, () => [suggestionsSetEvent(learning, { orgId: input.orgId, actor: input.actor, revision, setting: suggestions, previous: current.suggestions })]);
+  const audited = await learningEvents(learning, () => [suggestionsSetEvent(learning, { orgId: input.orgId, actor: input.actor, revision, setting: suggestions, previous: current.suggestions, previousSource: current.source })]);
   const write = input.expectedRevision === 0
     ? {
       // The first write: there is no record yet (a record that does not read, such as an unknown value, is replaced).
