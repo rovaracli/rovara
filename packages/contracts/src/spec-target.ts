@@ -271,8 +271,6 @@ export const SpecWriteBindingSchema = z.object({
   format: z.string().regex(/^[a-z][a-z0-9_]{0,31}$/u),
   kind: z.enum(SPEC_KINDS),
   planDigest: z.string().regex(/^[a-f0-9]{64}$/u),
-  /** A folder of the meta repo (relative, safe) whose sub-folder names the run reports back, so `{n}` can take the next free number. Absent: none is reported. */
-  foldersIn: folderPath.optional(),
 }).strict();
 export type SpecWriteBinding = z.infer<typeof SpecWriteBindingSchema>;
 

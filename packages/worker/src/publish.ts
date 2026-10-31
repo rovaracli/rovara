@@ -532,7 +532,7 @@ async function isAncestor(git: RepositoryGit, ancestor: string, descendant: stri
   }
 }
 
-export async function loadCompleteManifest(
+async function loadCompleteManifest(
   rootPath: string,
   invocation: PublishInvocation,
 ): Promise<PreparationManifest> {
@@ -659,12 +659,12 @@ async function missingCommandDirectory(rootPath: string, cwd: string): Promise<b
  * Git in one repository, each command in a throwaway repository that never reads the workspace repository's config, hooks or attributes files (see
  * isolated-repository.ts): the agent may write those at any moment, so a read of them made once, or just before, would not hold.
  */
-export interface RepositoryGit {
+interface RepositoryGit {
   (args: readonly string[]): Promise<string>;
   readonly directory: string;
 }
 
-export function repositoryGit(directory: string): RepositoryGit {
+function repositoryGit(directory: string): RepositoryGit {
   const run = async (args: readonly string[]): Promise<string> => {
     try {
       // `remote get-url` reads one value of the repository's config, from a private copy of the file; nothing in it is run.
@@ -683,21 +683,21 @@ export function repositoryGit(directory: string): RepositoryGit {
   return Object.assign(run, { directory });
 }
 
-export function containedPath(rootPath: string, configuredPath: string): string {
+function containedPath(rootPath: string, configuredPath: string): string {
   if (isAbsolute(configuredPath)) throw agentXError("CONFIG_INVALID", "repository path must be relative");
   const candidate = resolve(rootPath, configuredPath);
   assertContained(rootPath, candidate);
   return candidate;
 }
 
-export function assertContained(rootPath: string, candidate: string): void {
+function assertContained(rootPath: string, candidate: string): void {
   const fromRoot = relative(rootPath, candidate);
   if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
     throw agentXError("CONFIG_INVALID", "repository path escapes the workspace root");
   }
 }
 
-export function sanitizeGitError(value: string): string {
+function sanitizeGitError(value: string): string {
   // Redacted before it is cut to its last 16 KiB, where Git says what failed (#170).
   return storedCommandOutput(value
     .replace(/https:\/\/[^@\s/]+@/giu, "https://[redacted]@")

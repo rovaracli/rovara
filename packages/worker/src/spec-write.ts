@@ -1,8 +1,6 @@
 // K1 lane D, D2: the worker's half of "Rovara writes the spec". The run is a read-only planning session (read, grep, find and ls: no shell, no write tool). The broker's prompt holds the owner-approved plan as
 // data; the model answers with ONE block, fenced with the spec label, holding a structured draft. The worker reads it with `readSpecDraft` (bounded, one inert line per statement, the digest and kind taken from the
 // broker's binding) and the broker reads it again: the worker's copy is never trusted. The model writes no file and the run changes nothing; the broker renders and publishes.
-import { readdir, stat } from "node:fs/promises";
-import { resolve, sep } from "node:path";
 import { SPEC_CRITERIA_MAX, SPEC_DESIGN_MAX, SPEC_LINE_MAX, SPEC_REQUIREMENTS_MAX, SPEC_TASKS_MAX, SPEC_WRITE_INFO_STRING, readSpecDraft, specWriteAnswerOf, type SpecDraft, type SpecWriteBinding } from "@agentx/contracts";
 
 /** What the run is asked, after the broker's own rules. */
@@ -44,29 +42,4 @@ export type SpecWriteOutcome = { ok: true; draft: SpecDraft } | { ok: false; err
 /** The model's final message as a draft for the binding. */
 export function readSpecWriteAnswer(finalText: string, binding: SpecWriteBinding): SpecWriteOutcome {
   return readSpecDraft(specWriteAnswerOf(finalText), binding);
-}
-
-const FOLDER_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
-const FOLDERS_MAX = 500;
-
-/**
- * The names of the folders directly inside `foldersIn` of the prepared meta repository (the materialized checkout at the task's `knowledgeCommit`), so `{n}` can take the next free number. Only names that are plain
- * folder names are reported, at most 500, and a folder that is not inside the meta repository's own directory is never read. Nothing is reported when the meta repository or the folder is missing.
- */
-export async function listSpecFolders(input: { rootPath: string; metaPath: string | undefined; foldersIn: string | undefined }): Promise<string[]> {
-  if (input.metaPath === undefined || input.foldersIn === undefined) return [];
-  const metaRoot = resolve(input.rootPath, input.metaPath);
-  const directory = resolve(metaRoot, input.foldersIn);
-  if (directory !== metaRoot && !directory.startsWith(`${metaRoot}${sep}`)) return [];
-  try {
-    if (!(await stat(directory)).isDirectory()) return [];
-    const names: string[] = [];
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (entry.isDirectory() && FOLDER_NAME.test(entry.name)) names.push(entry.name);
-      if (names.length >= FOLDERS_MAX) break;
-    }
-    return names.sort();
-  } catch {
-    return [];
-  }
 }

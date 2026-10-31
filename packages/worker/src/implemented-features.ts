@@ -43,8 +43,7 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "prepare.metaRepo",
   // Lane E (MCP context sources): an Understand, Plan, Plan-check or Review stage asks the broker for the project's source tools (worker/src/context-sources).
   "task.contextSources.v1",
-  // Meta repo lane D: the spec write run (spec-write.ts) and the spec publication (spec-publish.ts).
+  // Meta repo lane D: the spec write run (spec-write.ts) .
   "task.specWrite.v1",
-  "publish.specFiles.v1",
   "task.workflowReviewSpec.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

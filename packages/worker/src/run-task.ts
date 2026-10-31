@@ -3,7 +3,7 @@ import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SpecDraft, type SpecReviewResult, type SetupProposal, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
-import { listSpecFolders, readSpecWriteAnswer, specWriteInstructions, specWriteRetryPrompt } from "./spec-write.js";
+import { readSpecWriteAnswer, specWriteInstructions, specWriteRetryPrompt } from "./spec-write.js";
 import type { BashOperations, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
@@ -91,8 +91,6 @@ export interface TaskInvocationResult {
   setupProposal?: SetupProposal;
   /** Meta repo lane D: the spec draft a spec-write run read, bounded and cleaned (the broker reads it again). */
   specDraft?: SpecDraft;
-  /** Meta repo lane D: what the spec write read of the meta repository besides the plan: the folder names for `{n}`. Names only, never text. */
-  specContext?: { folders: string[] };
   /** Meta repo lane D (D3): the code review's walk of the spec's requirements (the broker reads it again). */
   specReview?: SpecReviewResult;
   /** Worker-reported Git object identities; the broker recomputes and stores the canonical digest. */
@@ -642,7 +640,9 @@ async function runTask(
   const planningOnly = invocation.payload.workflowMode === "PLAN";
   const planReadsBase = planningOnly && (invocation.payload.workflowBase?.length ?? 0) > 0;
   if (planningOnly && !planReadsBase) onDiagnostic("the plan read the repositories' rule files from the working tree: no base commit was sent for this planning run");
-  const ruleBases = reviewing || planCritique || understanding ? reviewerRuleBases : planReadsBase ? { ...reviewerRuleBases, knowledge: { stage: "plan" as const } } : {};
+  // Meta repo lane D (C3): the spec write reads the rule files of the base commit the broker pinned, as the reviewers do, never the working tree a build wrote; it refuses to run without one.
+  if (writingSpec && (invocation.payload.workflowBase?.length ?? 0) === 0) throw agentXError("CONFIG_INVALID", "the spec write was sent without the base commit its rule files are read at");
+  const ruleBases = reviewing || planCritique || understanding || writingSpec ? reviewerRuleBases : planReadsBase ? { ...reviewerRuleBases, knowledge: { stage: "plan" as const } } : {};
   let graphFinalItemReady = workflowDependencies === undefined;
   const recorder = new CommandRecorder({
     fingerprint: (signal) => recorderFingerprint(
@@ -1315,7 +1315,7 @@ async function runTask(
         if (!read.ok) throw agentXError("OPERATION_INTERRUPTED", "the spec write run produced no readable spec");
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SPEC_WRITE" });
-        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SPEC_WRITE", specDraft: read.draft, specContext: { folders: await listSpecFolders({ rootPath: canonicalRoot, metaPath: manifest.meta?.path, foldersIn: specBinding.foldersIn }) } };
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SPEC_WRITE", specDraft: read.draft };
       } else if (planning) {
         let plan = finalText?.trim();
         // Spec 061: when the broker asked for a structured plan, an answer AgentX cannot read, or that is too long, gets

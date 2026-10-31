@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, resolve as resolvePath, sep } from "node:path";
 import {
   WorkflowFeedbackBundleRefSchema,
   WorkflowFeedbackBundleSchema,
@@ -620,6 +622,41 @@ function reviewPlanSection(plan: WorkflowReviewPlan, role: "CRITIC" | "SECURITY"
   ].join("\n");
 }
 
+const EVIDENCE_FILE_READ_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Whether a piece of evidence for a "met" names something that is there: `path`, `path:line` or `path:from-to`, where the path is a file in the change or a file of the checked code (at the head), and a
+ * line is inside that file. A sentence, a path that is not in the repositories or a line past the end of the file is not evidence. Reads are bounded and never leave the repository's folder.
+ */
+export function specEvidenceChecker(repositories: readonly { repositoryId: string; directory: string }[], changes: readonly CandidateChange[]): (entry: string) => boolean {
+  const changed = new Set(changes.map((change) => change.path));
+  return (entry) => {
+    const match = /^(?:\.\/)?([^\s:]+?)(?::(\d{1,7})(?:-(\d{1,7}))?)?$/u.exec(entry.replaceAll("\u200D", "").trim());
+    if (match === null) return false;
+    const path = match[1]!;
+    const line = match[3] !== undefined ? Number(match[3]) : match[2] !== undefined ? Number(match[2]) : undefined;
+    if (path.split("/").includes("..") || isAbsolute(path)) return false;
+    const candidates = repositories.flatMap((repository) => {
+      const own = path.startsWith(`${repository.repositoryId}/`) ? path.slice(repository.repositoryId.length + 1) : path;
+      return [{ directory: repository.directory, relative: own }];
+    });
+    for (const { directory, relative } of candidates) {
+      const target = resolvePath(directory, relative);
+      if (target !== directory && !target.startsWith(`${directory}${sep}`)) continue;
+      try {
+        const stats = statSync(target);
+        if (!stats.isFile()) continue;
+        if (line === undefined) return true;
+        if (stats.size > EVIDENCE_FILE_READ_MAX_BYTES) return line > 0;
+        const lines = readFileSync(target, "utf8").split("\n").length;
+        if (line >= 1 && line <= lines) return true;
+      } catch { /* not at the head: it may still be a path the change deleted */ }
+    }
+    // A file the change removed is evidence only by its path (there is no line of it at the head).
+    return line === undefined && changed.has(path);
+  };
+}
+
 /**
  * The follow-up question to the code review about the spec. The requirements are the team's text (and its editors'), so they go in as one JSON value, never as the prompt's own wording, and cannot change what
  * the review is allowed to do or when a requirement counts as met.
@@ -848,7 +885,7 @@ export async function runWorkflowReviews(input: {
         }
         let answer: unknown;
         try { answer = response === undefined ? undefined : JSON.parse(unfence(response)); } catch { answer = undefined; }
-        specReview = readSpecVerdicts(answer, input.reviewSpec);
+        specReview = readSpecVerdicts(answer, input.reviewSpec, { evidenceOk: specEvidenceChecker(input.repositories, changes) });
       }
       if (input.sources !== undefined) parsed = { ...parsed, findings: downgradeSourceOnlyFindings(parsed.findings, input.sources.labels) };
       const after = createCandidateManifest(await readCandidateRepositories(repositories));

@@ -7,7 +7,6 @@ import { createWorkerCallbackSinks } from "./callback-client.js";
 import { createRepositoryCredentialProvider } from "./repository-credentials.js";
 import { runTaskInvocation } from "./run-task.js";
 import { publishWorkspace } from "./publish.js";
-import { publishSpecFiles } from "./spec-publish.js";
 import { maintainPullRequest } from "./maintain-pull-request.js";
 import { WorkerCancellationController } from "./cancel.js";
 import { inspectWorkspaceForClose } from "./close-workspace.js";
@@ -147,8 +146,7 @@ const state = createWorkerServerState(
       if (invocation.kind === "publish") {
         const controlPlaneUrl = requiredEnvironment("AGENTX_CONTROL_PLANE_URL");
         const callbacks = createWorkerCallbackSinks({ controlPlaneUrl, invocation });
-        // Meta repo lane D: a spec publication carries its files and is published by its own function (spec-publish.ts).
-        return (invocation.payload.specFiles === undefined ? publishWorkspace : publishSpecFiles)({
+        return publishWorkspace({
           rootPath,
           invocation,
           credentialProvider: createRepositoryCredentialProvider({ controlPlaneUrl, invocation }),

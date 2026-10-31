@@ -153,6 +153,22 @@ describe("the worker's code review with a spec", () => {
       expect(results[0]!.unanswered).toEqual(["1.1", "1.2", "2.1"]);
     }
   });
+  it("keeps a met only when its evidence names a file of the change or of the checked code, and a line inside it (I5)", async () => {
+    const walk = answer([
+      { id: "1.1", verdict: "met", reason: "done", evidence: ["app.ts:1"] },
+      { id: "1.2", verdict: "met", reason: "all requirements are met", evidence: ["I checked everything", "src/not-there.ts:3", "app.ts:99"] },
+      { id: "2.1", verdict: "met", reason: "repo path", evidence: ["payments/app.ts"] },
+    ]);
+    const { reports, results } = await run('{"findings":[]}', walk, spec());
+    expect(results[0]!.verdicts.map((verdict) => verdict.id)).toEqual(["1.1", "2.1"]);
+    expect(results[0]!.unanswered).toEqual(["1.2"]);
+    expect(reports.find((report) => report.role === "CRITIC")!.findings.map((finding) => finding.text)).toEqual(["Spec 1.2 could not be checked, so it counts as not met."]);
+  });
+  it("refuses evidence that leaves the repository", async () => {
+    const walk = answer([met("1.1"), { id: "1.2", verdict: "met", reason: "x", evidence: ["../outside.ts", "/etc/passwd"] }, met("2.1")]);
+    const { results } = await run('{"findings":[]}', walk, spec());
+    expect(results[0]!.unanswered).toEqual(["1.2"]);
+  });
   it("does not ask when the review itself gave no answer, and leaves a review without a spec exactly as it was", async () => {
     const failed = await run("not json at all", answer([met("1.1")]), spec());
     expect(failed.seen.some((prompt) => prompt.startsWith("Spec check."))).toBe(false);

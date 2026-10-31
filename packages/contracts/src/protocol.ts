@@ -17,7 +17,7 @@ import { ResultContractSchema, RunCheckoutSchema } from "./agent-run-node.js";
 import { WorkflowFixPayloadSchema } from "./rovara-code.js";
 import { LiveSteerPayloadSchema } from "./live-steer.js";
 import { PrepareMetaSchema } from "./meta-project.js";
-import { SPEC_FILES_MAX, SpecFileSchema, SpecReviewInputSchema, SpecWriteBindingSchema } from "./spec-target.js";
+import { SpecReviewInputSchema, SpecWriteBindingSchema } from "./spec-target.js";
 
 export const AGENTX_PROTOCOL_VERSION = 1 as const;
 
@@ -28,7 +28,7 @@ export const AGENTX_PROTOCOL_VERSION = 1 as const;
  * list on GET /ping, and the eval runner image release records it beside the image, so the control
  * plane sends such a field only to a build that lists it.
  */
-export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "publish.specFiles.v1", "task.workflowReviewSpec.v1"] as const;
+export const WORKER_INVOCATION_FEATURES = ["task.modelPolicy", "model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks", "task.workflowFeedbackReview", "task.workflowFeedbackApproval", "publish.reportChecks", "task.workflowBase", "publish.candidateTree", "publish.workflowBase", "publish.mode", "publish.contextDigest", "task.workflowReviewChecks", "task.structuredPlans", "task.workflowReviewPlan", "task.workflowPullRequestUpdate", "task.codeAnchors", "task.workflowReviewFeedback", "task.workflowReviewNote", "task.workflowReviewers", "model.chatgpt", "task.workflowDependencies", "task.workflowE2EAdmission", "task.workflowE2EApplicationPlan", "task.workflowE2EApplicationChecks", "task.workflowE2EApplicationChecks.v2", "task.workflowE2EBaselineChecks", "task.workflowE2EBaselineSource", "task.workflowE2EAgentSteps.v1", "task.workflowE2ECaptureExtras.v1", "task.workflowE2EReplayChecks.v1", "task.workflowE2EModelFreeLimits.v1", "task.workflowE2EAgentModelChoice.v1", "task.agentStep", "task.agentRun", "task.agentGrounding.v1", "model.route", "task.workflowUnderstand", "task.workflowPlanCritique", "task.workflowParallelParts", "task.workflowFix", "task.workflowFeedbackAutonomy", "maintain.workflowSync", "task.setupDraft", "task.setupProposal.v2", "publish.branchOnly", "close.trashBundle", "task.workflowReviewRisk", "task.workflowPlanDryRun.v1", "task.workflowE2EGroundingChecks.v1", "task.workflowE2EMidStepSync.v1", "task.liveSteer.v1", "prepare.metaRepo", "task.contextSources.v1", "task.specWrite.v1", "task.workflowReviewSpec.v1"] as const;
 export type WorkerInvocationFeature = (typeof WORKER_INVOCATION_FEATURES)[number] | "project.setupSmoke";
 /** An agent step's payload (`agentStep`) goes only to a worker that lists this; the agent kind also needs AGENT_RUN_FEATURE. */
 export const AGENT_STEP_FEATURE = "task.agentStep" as const;
@@ -490,22 +490,9 @@ export const WorkerInvocationSchema = z.discriminatedUnion("kind", [
          * Sent only to a worker whose /ping lists "publish.workflowBase"; never dropped for an older one.
          */
         workflowBaseCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
-        /**
-         * Meta repo lane D: a spec publication. The worker writes exactly these files on top of `specBaseCommit` in the meta repository and pushes that one commit; it runs no check and takes nothing else from the
-         * workspace. Sent only to a worker whose /ping lists "publish.specFiles.v1"; never dropped.
-         */
-        specFiles: z.array(SpecFileSchema).min(1).max(SPEC_FILES_MAX).optional(),
-        /** The commit the spec commit is built on: the task's `knowledgeCommit`. */
-        specBaseCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
       })
       .strict()
       .superRefine((value, context) => {
-        if ((value.specFiles === undefined) !== (value.specBaseCommit === undefined)) {
-          context.addIssue({ code: "custom", path: ["specBaseCommit"], message: "spec files and their base commit go together" });
-        }
-        if (value.specFiles !== undefined && (value.mode !== "create" || value.candidateTreeSha !== undefined || value.reportChecks !== undefined || value.targetPullRequestNumber !== undefined)) {
-          context.addIssue({ code: "custom", path: ["specFiles"], message: "a spec publication opens one new pull request and nothing else" });
-        }
         if (value.mode === "create" && (value.targetPullRequestNumber !== undefined || value.revertCommit !== undefined)) {
           context.addIssue({ code: "custom", message: "create mode must not target another pull request" });
         }
