@@ -84,9 +84,28 @@ describe("decision card", () => {
     expect(ok(card({ evidence: [chip({ href: "https://evil.example/x.png" })] }))).toBe(false);
     expect(ok(card({ evidence: Array.from({ length: 7 }, () => ({ kind: "risk", label: "R", value: "low", state: "good" })) }))).toBe(false);
   });
-  it("takes only a path of this server or an https address as an action's href", () => {
-    for (const href of ["javascript:alert(1)", "//evil.example", "http://a b", "data:text/html,x", "ftp://x"]) expect(ok(card({ actions: [{ ...action("approve"), href }, action("reject")] })), href).toBe(false);
-    expect(ok(card({ actions: [{ ...action("approve"), href: "https://app.example.com/v1/app/x" }, action("reject")] }))).toBe(true);
+  it("takes only a path of this server as an action's href: no absolute, protocol-relative, backslash, dot-segment or credential form", () => {
+    const bad = ["https://app.example.com/v1/app/x", "http://app.example.com/v1/app/x", "javascript:alert(1)", "//evil.example", "/\\evil.example/x", "/v1/app/..\\evil", "/v1/app/../admin", "/v1/app//x", "/v1/app/./x", "/admin/x", "/v1/app/x y", "/v1/app/x@evil.example", "/v1/app/x:80", "data:text/html,x", "ftp://x", "/v1/app/x?a=<b>", "/app/x#frag", ""];
+    for (const href of bad) expect(ok(card({ actions: [{ ...action("approve"), href }, action("reject")] })), href).toBe(false);
+    for (const href of ["/v1/app/tasks/8b579b4b/approve", "/app/projects/web/setup", "/app/review/x?tab=evidence&a=1"]) expect(ok(card({ actions: [{ ...action("approve"), href }, action("reject")] })), href).toBe(true);
+  });
+  it("makes every action but open a POST: an approve, reject, answer or choose by GET is refused", () => {
+    for (const kind of ["approve", "reject", "answer", "choose"] as const) {
+      expect(ok(card({ actions: [{ ...action(kind), method: "GET" }, ...(kind === "approve" ? [action("reject")] : [action("approve")])], recommended: { action: kind, why: "x" } })), kind).toBe(false);
+    }
+    expect(ok(high({ actions: [{ ...action("open"), method: "GET" }, action("reject")] }))).toBe(true);
+    expect(ok(high({ actions: [{ ...action("open"), method: "POST" }, action("reject")] }))).toBe(true);
+  });
+  it("keeps each kind at or above its floor tier: a setting change cannot be a one-tap card", () => {
+    for (const kind of cards.DECISION_KINDS) {
+      const floor = cards.DECISION_KIND_FLOOR_RISK[kind];
+      const at = (risk: cards.DecisionRisk) => ({ ...(risk === "low" ? card() : risk === "medium" ? medium() : high()), kind, id: `${kind}:x` });
+      expect(ok(at(floor)), `${kind} at its floor`).toBe(true);
+      expect(ok(at("high")), `${kind} high`).toBe(true);
+      if (floor !== "low") expect(ok(at("low")), `${kind} below its floor`).toBe(false);
+      if (floor === "high") expect(ok(at("medium")), `${kind} medium`).toBe(false);
+    }
+    expect(ok({ ...card(), kind: "approve_setting", id: "approve_setting:x" })).toBe(false);
   });
   it("refuses texts with hidden characters and over-long texts", () => {
     expect(ok(card({ title: "a\nb" }))).toBe(false);
