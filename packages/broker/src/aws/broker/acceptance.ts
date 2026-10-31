@@ -322,7 +322,7 @@ export async function acceptPullRequest(
       ...(candidate === undefined ? {} : { publicationMode: candidate.publicationMode }),
       // The task's pinned base, as the published commit's parent, in place of the workspace's own record of it.
       ...(candidate?.baseCommitSha === undefined ? {} : { workflowBaseCommit: candidate.baseCommitSha }),
-      // I3: sent only to a worker that lists "publish.attribution" (ec2-delivery refuses a publication that carries it to one that does not, before any request).
+      // I3: sent only to a worker that lists "publish.attribution"; ec2-delivery drops it for an older worker, which publishes as before (no trailer) with the description the broker wrote.
       ...(options.attribution === undefined ? {} : { attribution: options.attribution.attribution }),
     },
   };
