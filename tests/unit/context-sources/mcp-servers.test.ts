@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MCP_PROBE_FAILURES } from "@agentx/contracts";
-import { type McpServerSecrets, McpProbeError, STDIO_OFF_MESSAGE, stdioAvailable, allowedTargets, approveMcpServer, disableMcpServer, clearOrgMcpServers, dynamoMcpServerStore, listMcpServers, proposeMcpServer, removeMcpServer, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
+import { MCP_PROBE_FAILURES, orgScoped } from "@agentx/contracts";
+import { type McpServerSecrets, McpProbeError, STDIO_OFF_MESSAGE, stdioAvailable, allowedTargets, approveMcpServer, disableMcpServer, clearOrgMcpServers, dynamoMcpServerStore, listMcpServers, proposeMcpServer, removeMcpServer, summariseProbe, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { routeMcpServers } from "../../../packages/broker/src/context-sources/mcp-server-routes.js";
 import { StatusReply } from "../../../packages/broker/src/aws/status-reply.js";
 import type { AgentCaller } from "../../../packages/broker/src/agents/access.js";
@@ -206,6 +206,31 @@ describe("adding a server is easy: paste, test, see, approve", () => {
     await clearOrgMcpServers(deps, ORG);
     expect(vault.has(a.serverId)).toBe(false);
     expect(await deps.store.list(ORG)).toEqual([]);
+  });
+  it("fix round: closing an org clears every page of servers (more than the 200 one read returns) and every token", async () => {
+    const world1 = world();
+    const { deps, vault } = world1;
+    const ids = Array.from({ length: 450 }, (_, index) => `mcp${String(index).padStart(6, "0")}`);
+    for (const serverId of ids) {
+      await deps.store.create(ORG, { serverId, label: "S", status: "disabled", transport: { kind: "http", address: `https://${serverId}.corp.example/mcp` }, probe: summariseProbe([], NOW), requestedBy: "dev1", requestedAt: "2026-11-01T10:00:00Z", hasSecret: true, secretVersion: "v1" });
+      vault.set(serverId, "tok");
+    }
+    expect((await deps.store.list(ORG)).length).toBe(200);
+    await clearOrgMcpServers(deps, ORG);
+    expect(await deps.store.listAll(ORG)).toEqual({ entries: [], unreadable: 0 });
+    expect(vault.size).toBe(0);
+  });
+  it("fix round: closing an org stops, with nothing silently left behind, when a server entry cannot be read", async () => {
+    const table = new FakeDynamoDb();
+    const { deps } = world();
+    const store = dynamoMcpServerStore({ documentClient: table, tableName: "state" });
+    const good = { serverId: "mcpgood00001", label: "S", status: "disabled" as const, transport: { kind: "http" as const, address: "https://g.corp.example/mcp" }, probe: summariseProbe([], NOW), requestedBy: "dev1", requestedAt: "2026-11-01T10:00:00Z" };
+    await store.create(ORG, good);
+    table.set({ pk: orgScoped(ORG, "MCPSRV"), sk: "SRV#mcpbad000001", serverId: "mcpbad000001", status: "nonsense" });
+    await expect(clearOrgMcpServers({ ...deps, store }, ORG)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    // the entry that can be read is not touched either: the close stops as a whole and can be run again once the item is dealt with
+    expect((await store.listAll(ORG)).unreadable).toBe(1);
+    expect((await store.listAll(ORG)).entries.map((entry) => entry.serverId)).toEqual(["mcpgood00001"]);
   });
   it("does not add the same host and port twice", async () => {
     const { deps } = world();

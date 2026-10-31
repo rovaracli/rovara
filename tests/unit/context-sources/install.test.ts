@@ -105,6 +105,15 @@ describe("the builders get what the install set", () => {
       expect(call.mcpHost).toBeUndefined();
     }
   });
+  it("fix round: gives the Sources settings one limiter on tool listings for the whole install, so a new request does not reset it", () => {
+    const install = installContextSources({ env: { ROVARA_EDITION: "enterprise" }, orgConnections: connections(), documentClient: new FakeDynamoDb(), tableName: "state", registerCleanup: false })!;
+    const first = install.routes({ requireProjectRole: async () => undefined }).contextSources.discoverAllowed!;
+    const second = install.routes({ requireProjectRole: async () => undefined }).contextSources.discoverAllowed!;
+    expect(first).toBe(second);
+    const results = Array.from({ length: 31 }, () => first(ORG));
+    expect(results.filter(Boolean)).toHaveLength(30);
+    expect(first(ORG)).toBe(false);
+  });
   it("gives the MCP servers flow only to Enterprise", () => {
     const options = { orgConnections: connections(), documentClient: new FakeDynamoDb(), tableName: "state", registerCleanup: false };
     expect(installContextSources({ env: { ROVARA_EDITION: "enterprise" }, ...options })!.routes({ requireProjectRole: async () => undefined }).mcpServers).toBeDefined();

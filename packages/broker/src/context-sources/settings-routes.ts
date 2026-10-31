@@ -17,6 +17,8 @@ export const CONTEXT_SOURCES_PATH = /^\/v1\/app\/projects\/([^/]+)\/context-sour
 export interface ContextSourceRouteDependencies extends SettingsDependencies {
   /** Throws PROJECT_NOT_FOUND unless the caller has a role on the project (the same answer for a missing project). */
   requireProjectRole(caller: AgentCaller, project: string): Promise<void>;
+  /** Called before every listing of a server's tools (a call out to the server); false refuses it. Per org, counted in this process (the style of `probeLimiter`). Absent: no limit. */
+  discoverAllowed?: ((orgId: AgentCaller["orgId"]) => boolean) | undefined;
   /** Used to refuse changes to an archived project. */
   table: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string };
 }
@@ -67,6 +69,7 @@ export async function routeContextSources(deps: ContextSourceRouteDependencies, 
   if (request.method !== "POST") throw notThere();
   if (part === "discover") {
     const body = parse(DiscoverBodySchema, jsonBody(request));
+    if (deps.discoverAllowed !== undefined && !deps.discoverAllowed(caller.orgId)) throw agentXError("TOO_MANY_REQUESTS", "Too many tool listings just now. Wait a few minutes and try again.");
     let tools;
     try { tools = await deps.env.discoverTools(caller.orgId, body.server); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "Rovara could not list that server's tools right now; try again"); }
     return { tools: tools.slice(0, 200).map((tool) => ({

@@ -36,6 +36,8 @@ export interface McpProber {
 export interface McpServerStore {
   get(orgId: OrgId, serverId: string): Promise<McpServerEntry | undefined>;
   list(orgId: OrgId): Promise<McpServerEntry[]>;
+  /** Every entry of the org, page after page, and how many items could not be read (they are not served by `list` either). For closing an org. */
+  listAll(orgId: OrgId): Promise<{ entries: McpServerEntry[]; unreadable: number }>;
   /** Stores a new entry; false when the id is taken. */
   create(orgId: OrgId, entry: McpServerEntry): Promise<boolean>;
   /** Moves an entry from one status to another only if it still has `from` (and, for an approval, the tools hash that was shown). */
@@ -66,6 +68,23 @@ export function dynamoMcpServerStore(deps: { documentClient: DocumentClient; tab
         TableName: deps.tableName, ConsistentRead: true, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": partition(orgId), ":prefix": "SRV#" }, Limit: 200,
       }))) as { Items?: Array<Record<string, unknown>> };
       return (found.Items ?? []).map(parse).filter((entry): entry is McpServerEntry => entry !== undefined);
+    },
+    async listAll(orgId) {
+      const entries: McpServerEntry[] = [];
+      let unreadable = 0;
+      let startKey: Record<string, unknown> | undefined;
+      do {
+        const page = (await deps.documentClient.send(new QueryCommand({
+          TableName: deps.tableName, ConsistentRead: true, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": partition(orgId), ":prefix": "SRV#" }, Limit: 200,
+          ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }),
+        }))) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+        for (const item of page.Items ?? []) {
+          const entry = parse(item);
+          if (entry === undefined) unreadable += 1; else entries.push(entry);
+        }
+        startKey = page.LastEvaluatedKey;
+      } while (startKey !== undefined);
+      return { entries, unreadable };
     },
     async create(orgId, entry) {
       try {
@@ -300,10 +319,13 @@ export async function disableMcpServer(deps: McpServerDependencies, actor: McpSe
 
 /**
  * What closing an org does to its MCP servers (ME-16): every entry and every token of the org goes, in any status, and no other org's. The token is deleted first and the entry after,
- * so a failure leaves the entry for the next run; running it again after a stop part-way finishes the rest.
+ * so a failure leaves the entry for the next run; running it again after a stop part-way finishes the rest. Every page is read, and an unreadable item stops it before anything is removed.
  */
 export async function clearOrgMcpServers(deps: Pick<McpServerDependencies, "store" | "secrets">, orgId: OrgId): Promise<void> {
-  for (const entry of await deps.store.list(orgId)) {
+  const { entries, unreadable } = await deps.store.listAll(orgId);
+  // An item that cannot be read may hold a token that cannot be found: stop, before anything else is removed, rather than call the org cleared.
+  if (unreadable > 0) throw agentXError("RUNTIME_UNAVAILABLE", `${unreadable} MCP server record${unreadable === 1 ? " is" : "s are"} unreadable, so the organization's servers were not cleared. An operator must look at them.`);
+  for (const entry of entries) {
     if (entry.hasSecret === true) await deps.secrets.remove(orgId, entry.serverId);
     await deps.store.remove(orgId, entry.serverId);
   }

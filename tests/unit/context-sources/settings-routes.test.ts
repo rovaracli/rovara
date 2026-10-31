@@ -4,17 +4,18 @@ import { dynamoContextSourceStore } from "../../../packages/broker/src/context-s
 import { StatusReply } from "../../../packages/broker/src/aws/status-reply.js";
 import type { AgentCaller } from "../../../packages/broker/src/agents/access.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
+import { probeLimiter } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { GET_TOOL, NOW, ORG, PLAIN_TOOL, SEARCH_TOOL, environment, source } from "./fixtures.js";
 
 const caller = (orgRole = "admin", developerId = "dev1"): AgentCaller => ({ orgId: ORG, developerId, orgRole } as AgentCaller);
 
-function world() {
+function world(over: Partial<ContextSourceRouteDependencies> = {}) {
   const table = new FakeDynamoDb();
   const roles: string[] = [];
   const deps: ContextSourceRouteDependencies = {
     store: dynamoContextSourceStore({ documentClient: table, tableName: "state", now: () => NOW }), env: environment({ tools: [SEARCH_TOOL, GET_TOOL, PLAIN_TOOL] }), now: () => NOW,
     requireProjectRole: async (_caller, project) => { roles.push(project); },
-    table: { documentClient: table, tableName: "state" },
+    table: { documentClient: table, tableName: "state" }, ...over,
   };
   const send = (method: string, path: string, body?: unknown, who = caller()) =>
     routeContextSources(deps, who, { method, path, headers: {}, requestId: "r1", ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, new URL(`https://x${path}`));
@@ -32,6 +33,24 @@ describe("the Sources settings routes", () => {
     const answer = await send("POST", "/v1/app/projects/proj/context-sources/discover", { server: { kind: "connection", connectionId: "con_aaaaaaaaaaaaaaaaaaaa" } }) as { tools: Array<Record<string, unknown>> };
     expect(answer.tools.map((tool) => [tool.name, tool.annotation])).toEqual([["search_tickets", "read_only"], ["get_ticket", "read_only"], ["lookup_page", "unannotated"]]);
     expect(answer.tools[0]!.schemaHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+  it("fix round: limits tool listings per org, in a window, and says so in a fixed sentence", async () => {
+    let now = NOW;
+    const { send } = world({ discoverAllowed: probeLimiter({ max: 3, windowMs: 600_000, now: () => now }) });
+    const discover = (who = caller()) => send("POST", "/v1/app/projects/proj/context-sources/discover", { server: { kind: "connection", connectionId: "con_aaaaaaaaaaaaaaaaaaaa" } }, who);
+    for (let i = 0; i < 3; i += 1) await discover();
+    await expect(discover()).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    await expect(discover()).rejects.toThrow(/Too many tool listings/u);
+    // another org has its own allowance, and the window moves on
+    await expect(discover({ ...caller(), orgId: "org_bbbbbbbbbbbbbbbbbbbb" })).resolves.toBeDefined();
+    now += 600_001;
+    await expect(discover()).resolves.toBeDefined();
+  });
+  it("fix round: a refused listing reaches no server", async () => {
+    const listed: string[] = [];
+    const { send } = world({ discoverAllowed: () => false, env: { ...environment(), discoverTools: async () => { listed.push("called"); return []; } } });
+    await expect(send("POST", "/v1/app/projects/proj/context-sources/discover", { server: { kind: "connection", connectionId: "con_aaaaaaaaaaaaaaaaaaaa" } })).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    expect(listed).toEqual([]);
   });
   it("proposes (202), then applies only on confirmation", async () => {
     const { send } = world();

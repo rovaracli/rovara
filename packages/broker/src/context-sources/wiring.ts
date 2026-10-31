@@ -73,12 +73,12 @@ export function createContextSourcesRuntime(deps: Common & { teamSink?: ContextS
   };
 }
 
-export function createContextSourceRouteDependencies(deps: Common & { requireProjectRole: ContextSourceRouteDependencies["requireProjectRole"]; audit?: ContextSourceRouteDependencies["audit"] }): ContextSourceRouteDependencies {
+export function createContextSourceRouteDependencies(deps: Common & { requireProjectRole: ContextSourceRouteDependencies["requireProjectRole"]; audit?: ContextSourceRouteDependencies["audit"]; discoverAllowed?: ContextSourceRouteDependencies["discoverAllowed"] }): ContextSourceRouteDependencies {
   const servers = dynamoMcpServerStore(deps);
   const port = gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, serverSecrets: deps.serverSecrets, stdioEnabled: deps.stdioEnabled, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }), ...(deps.rovaraCidrs === undefined ? {} : { rovaraCidrs: deps.rovaraCidrs }) });
   return {
     store: dynamoContextSourceStore(deps), env: sourceEnvironment({ edition: deps.edition, connections: deps.connections, servers, port }), now: deps.now,
-    requireProjectRole: deps.requireProjectRole, table: { documentClient: deps.documentClient, tableName: deps.tableName }, ...(deps.audit === undefined ? {} : { audit: deps.audit }),
+    requireProjectRole: deps.requireProjectRole, table: { documentClient: deps.documentClient, tableName: deps.tableName }, ...(deps.discoverAllowed === undefined ? {} : { discoverAllowed: deps.discoverAllowed }), ...(deps.audit === undefined ? {} : { audit: deps.audit }),
   };
 }
 
