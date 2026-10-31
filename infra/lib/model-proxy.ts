@@ -17,6 +17,7 @@ import {
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
+import { enterpriseHttpsEgress } from "./vpc-endpoints.js";
 
 /** LiteLLM, pinned by digest (spike: docs/learnings/model-proxy-spike.md). ghcr.io is public; the tasks pull it through the NAT. */
 export const LITELLM_IMAGE = "ghcr.io/berriai/litellm-database:v1.105.1@sha256:2bcadb9905b692a5ca4dadd51bccaaa23a95dc8a0f9322d9c9787f0ac2aeb50e";
@@ -74,6 +75,8 @@ export interface ModelProxyProps {
   clientSecurityGroupIds: string[];
   /** Bedrock model ids as Pi's catalog names them; the proxy serves exactly these (ruling R21). */
   models: ReadonlyArray<{ id: string }>;
+  /** Enterprise installs: the ranges the proxy's tasks may reach over HTTPS (the VPC's endpoints and what the customer approved). Absent: HTTPS to the whole internet, as before. */
+  privateEgressCidrs?: readonly string[];
 }
 
 /**
@@ -109,10 +112,10 @@ export class ModelProxy extends Construct {
     const serviceSecurityGroup = new ec2.CfnSecurityGroup(this, "ServiceSecurityGroup", {
       groupDescription: `AgentX model proxy tasks: port ${port} from the load balancer only`,
       vpcId: props.vpcId,
-      securityGroupEgress: [{
+      securityGroupEgress: props.privateEgressCidrs === undefined ? [{
         ipProtocol: "tcp", fromPort: 443, toPort: 443, cidrIp: "0.0.0.0/0",
         description: "HTTPS to Amazon Bedrock, Secrets Manager, CloudWatch Logs and the LiteLLM image registry",
-      }],
+      }] : enterpriseHttpsEgress(props.privateEgressCidrs, "HTTPS to the VPC endpoints"),
       tags,
     });
     const databaseSecurityGroup = new ec2.CfnSecurityGroup(this, "DatabaseSecurityGroup", {

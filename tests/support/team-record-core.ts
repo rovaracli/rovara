@@ -1,6 +1,6 @@
 // Test helpers for the record core (lane "record"): a fake TeamRecord table, a mutable clock, drafts and callers.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { learningModeKey, learningModeLockKey, type OrgId, type RecordSourceKind, type RetentionMode } from "@agentx/contracts";
+import { learningModeKey, learningModeLockKey, type OrgId, type RecordSystem, type RetentionMode } from "@agentx/contracts";
 import { createRecordSink } from "../../packages/broker/src/team-record/sink.js";
 import { tableModeReader } from "../../packages/broker/src/team-record/mode.js";
 import { putSourceConfig } from "../../packages/broker/src/team-record/store.js";
@@ -59,7 +59,7 @@ export function setLock(w: World, orgId: OrgId, mode: string): void {
   w.db.set({ ...learningModeLockKey(orgId), entityType: "TEAM_RECORD_MODE_LOCK", mode });
 }
 
-export async function addSource(w: World, input: { orgId?: OrgId; project?: string; source: RecordSourceKind; scope: string; retention?: RetentionMode; enabled?: boolean; exclude?: string[]; audienceDefault?: "maintainers" | "project"; notesOptIn?: boolean }) {
+export async function addSource(w: World, input: { orgId?: OrgId; project?: string; source: RecordSystem; scope: string; retention?: RetentionMode; enabled?: boolean; exclude?: string[]; audienceDefault?: "maintainers" | "project"; notesOptIn?: boolean }) {
   return putSourceConfig(w.table, {
     workspaceId: input.orgId ?? ORG_A, project: input.project ?? "web", source: input.source, scope: input.scope, enabled: input.enabled ?? true, retention: input.retention ?? "D",
     exclude: input.exclude ?? [], audienceDefault: input.audienceDefault ?? "maintainers", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",

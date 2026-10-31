@@ -1,0 +1,31 @@
+source packages/broker/src/aws/broker.ts: 14570 lines, 489 top-level statements
+  definitions: 30 declarations, 520 lines
+  handler: 1 declarations, 668 lines
+  workspace-routes: 19 declarations, 332 lines
+  project-registration: 10 declarations, 729 lines
+  workspace-preparation: 16 declarations, 366 lines
+  thread-workspaces: 36 declarations, 1362 lines
+  task-operations: 16 declarations, 505 lines
+  acceptance: 14 declarations, 842 lines
+  slack-workflow-events: 61 declarations, 775 lines
+  callbacks: 4 declarations, 562 lines
+  evidence-and-setup: 20 declarations, 825 lines
+  workflow-e2e-verification: 33 declarations, 1104 lines
+  feedback-and-codebuild: 34 declarations, 1196 lines
+  terminal-and-github-events: 46 declarations, 1202 lines
+  e2e-rounds: 32 declarations, 979 lines
+  workflow-items: 22 declarations, 1162 lines
+  terminal-result: 17 declarations, 564 lines
+  records: 21 declarations, 332 lines
+  admin-and-helpers: 36 declarations, 504 lines
+  runtime-clients: 4 declarations, 25 lines
+  packages/broker/src/aws/broker.ts (stays): 17 declarations, 321 lines
+  stays in packages/broker/src/aws/broker.ts: s3, secretsManager, codeBuild, ssm, github, githubCredentials, repositoryGrantSigningKey, repositoryGrants, lambdaClient, developerConfiguration, slackRequestQueue, developer, chatGptKeyArn, chatgpt, cloudWatch, sqs, handler
+note: import cycles between modules: 1 group(s) of 17 modules (functions only; no load-time constant crosses them)
+tests that read or list broker.ts: 4 file(s) would be patched (admin-health-infrastructure.test.ts, e2e-model-route-setup.test.ts, e2e-application-replay-admission.test.ts, requalify-hold.test.ts)
+review: tests/contract/developer-task-start.test.ts: names "broker.ts" as a file name (built into a path?); look at what it reads
+review: tests/contract/release-build.test.ts: still names aws/broker.ts 1 time(s) (a path, a comment or a deploy entry; check it is still right)
+review: tests/unit/test-deploy-check.test.ts: still names aws/broker.ts 2 time(s) (a path, a comment or a deploy entry; check it is still right)
+review: tests/unit/test-deploy-plan.test.ts: still names aws/broker.ts 1 time(s) (a path, a comment or a deploy entry; check it is still right)
+dry run: the split would apply cleanly
+shared-config dry run on mainline exit=0

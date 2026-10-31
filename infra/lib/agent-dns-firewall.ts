@@ -43,6 +43,11 @@ export interface AgentDnsFirewallProps {
   vpcId: string;
   /** Allowed in addition to DEFAULT_AGENT_ALLOW_DOMAINS. */
   extraAllowDomains?: readonly string[];
+  /**
+   * The base allow-list. Default: DEFAULT_AGENT_ALLOW_DOMAINS, the public package, image and OS-mirror hosts every hosted install uses. An Enterprise install
+   * passes its own short list (infra/lib/vpc-endpoints.ts) and the public defaults are not on it.
+   */
+  baseAllowDomains?: readonly string[];
 }
 
 /**
@@ -78,7 +83,7 @@ export class AgentDnsFirewall extends Construct {
 
   constructor(scope: Construct, id: string, props: AgentDnsFirewallProps) {
     super(scope, id);
-    this.allowDomains = [...DEFAULT_AGENT_ALLOW_DOMAINS, ...(props.extraAllowDomains ?? [])];
+    this.allowDomains = [...(props.baseAllowDomains ?? DEFAULT_AGENT_ALLOW_DOMAINS), ...(props.extraAllowDomains ?? [])];
 
     const allowList = new resolver.CfnFirewallDomainList(this, "AllowList", {
       name: `agentx-${props.env}-allow`,

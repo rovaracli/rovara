@@ -1,7 +1,7 @@
 // The record sink: the object the source taps call (the ingest lane's `RecordSinkPort`, `SourceConfigPort` and `CaptureModePort`, implemented structurally so no
 // lane imports another's files). `put` is the pipeline in ingest.ts. `tombstone` hides at once, then leaves a queue item the delete worker finishes (D1).
 // `changePrincipals` and `replaceScopeAudience` keep a private scope's permission snapshot current. A workspace id that is not an org id is refused.
-import { OrgIdSchema, recordScopeHash, type OrgId, type RecordSourceKind, type Audience } from "@agentx/contracts";
+import { OrgIdSchema, recordScopeHash, type OrgId, type RecordSystem, type Audience } from "@agentx/contracts";
 import { tableLakeDeleteQueue, type LakeDeleteQueue } from "./lake-queue.js";
 import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
@@ -73,7 +73,7 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 /** The adapter for the ingest lane's `SourceConfigPort`: the source row of a scope, in the shape the taps read. */
 export function createSourceConfigPort(deps: Pick<IngestDependencies, "table" | "edition">) {
   return {
-    async get(workspaceId: string, source: RecordSourceKind, scope: string) {
+    async get(workspaceId: string, source: RecordSystem, scope: string) {
       const parsed = OrgIdSchema.safeParse(workspaceId);
       if (!parsed.success) return undefined;
       const config = await getSourceConfigByScope(deps.table, parsed.data, source, scope);
@@ -94,3 +94,9 @@ export function createCaptureModePort(deps: Pick<IngestDependencies, "modes">) {
     },
   };
 }
+
+/**
+ * The Slack tap asks "did this workspace opt in to notes with links?" (`notesOptIn`). The answer lives in ONE place, the source row (`SourceConfig.notesOptIn`): the config port
+ * above already reads a Public Slack row as live-only (A) unless it is B with the opt-in, so by the time the tap asks, the answer is yes. Wire this as the tap's `notesOptIn`.
+ */
+export const NOTES_OPT_IN_FROM_SOURCE_ROW = async (): Promise<boolean> => true;

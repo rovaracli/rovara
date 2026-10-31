@@ -191,6 +191,9 @@ export const AUDIT_ACTIONS = [
   "process.rolled_back",
   "playbook.default_process_changed",
   "company.change_applied_to_project",
+  // Proof and evidence (W4/W5): the approved test environment changed; a task reader downloaded a stored evidence artifact.
+  "project.test_env_changed",
+  "evidence.downloaded",
   // Team record and lessons (learning v2): one block. Ids, fixed words and counts only; a lesson's or a source's text never goes in.
   "record.source_added",
   "record.source_changed",
@@ -353,6 +356,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "process.rolled_back": ["fromVersion", "toVersion", "safety"],
   "playbook.default_process_changed": ["revision", "processKind"],
   "company.change_applied_to_project": ["changeRevision", "settingCount"],
+  // `tier` is `sandbox`, `preview` or `shared`; `lessSafeCount` is how many less-safe fields the change turned on. `artifactKind` and `retentionClass` are the fixed words of the evidence contract.
+  "project.test_env_changed": ["revision", "tier", "lessSafeCount"],
+  "evidence.downloaded": ["artifactKind", "retentionClass"],
   // Team record and lessons. `source` is a fixed word (`slack`, `github`, `linear`, `jira`, `mcp`, `rovara`, `codehost`); retention is `A` to `D`; `cause` a fixed
   // word (`source_deleted`, `person_erased`, `project_archived`, `org_closed`, `excluded`, `harmful`, `stale`, `expired`, `sources_deleted`); `refusal` a fixed code; `mode` is `off`, `collect`, `suggest` or `on`.
   "record.source_added": ["source", "retention", "restricted"],

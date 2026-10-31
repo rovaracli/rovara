@@ -92,7 +92,43 @@ function draftScope(draft: RecordDraft): string | undefined {
   return draft.audience.kind === "restricted" ? draft.audience.acl.scope : draft.scope;
 }
 
+/** What the distiller may use of a retention-B draft once it passed the same checks as a stored row. Nothing here is written to the table. */
+export interface AdmittedTransient {
+  orgId: OrgId;
+  project: string | undefined;
+  /** The place the item came from. */
+  scope: string;
+  /** The lowest trust of the row, its actor, and every quoted or forwarded piece. */
+  trust: TrustClass;
+  /** The trust of the author's own words (quoted pieces are split off by the distiller's own span rules). */
+  baseTrust: TrustClass;
+  /** The text after the same hygiene as a stored row. */
+  text: string;
+  audience: RecordDraft["audience"];
+  links: string[];
+  occurredAt: string;
+}
+
+export type AdmitOutcome = { admitted: true; item: AdmittedTransient } | { admitted: false; reason: IngestRefusal };
+
+/**
+ * Retention B (Public Slack "notes with links"): the text goes to the distiller in memory and no row is stored, but it must pass EVERYTHING a stored row passes first:
+ * the mode, the scope's source row and its opt-in, the exclusion list, the erased-person check (an unreadable marker THROWS, so the queue redelivers), the deleted-at-
+ * source marker, the trust rules and text hygiene. A refusal means the text is dropped.
+ */
+export async function admitTransient(deps: IngestDependencies, draft: RecordDraft): Promise<AdmitOutcome> {
+  if (draft.retention !== "B" || draft.text === undefined) return { admitted: false, reason: "invalid" };
+  const result = await runIngest(deps, draft, true);
+  return "admitted" in result ? result : { admitted: false, reason: result.status === "refused" ? (result.reason as IngestRefusal) : "invalid" };
+}
+
 export async function ingestRecord(deps: IngestDependencies, draft: RecordDraft): Promise<IngestOutcome> {
+  const result = await runIngest(deps, draft, false);
+  if ("admitted" in result) return refused("retention_not_stored");
+  return result;
+}
+
+async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: boolean): Promise<IngestOutcome | AdmitOutcome> {
   const now = deps.now ?? Date.now;
   const log: RecordLog = deps.log ?? (() => undefined);
   const org = OrgIdSchema.safeParse(draft.workspaceId);
@@ -151,7 +187,18 @@ export async function ingestRecord(deps: IngestDependencies, draft: RecordDraft)
   // The Slack rule follows Slack's words into a Rovara row: in Public they are never kept as text.
   const keptText = deps.edition === "public" && draft.origin === "slack" ? undefined : draft.text;
   const plan = retentionPlan({ retention: draft.retention, source: draft.source, hasText: keptText !== undefined, occurredAtSeconds: Math.floor(occurred.getTime() / 1000), nowSeconds: Math.floor(now() / 1000) });
-  if (!plan.store) return refused("retention_not_stored");
+  if (!plan.store) {
+    if (admit && plan.distillTransient) {
+      // Everything a stored row would be checked against, except the idempotent write (which a transient draft does not have).
+      if (await wasDeletedAtSource(deps.table, orgId, draft.sourceRef.system, draft.sourceRef.id)) return refused("deleted_at_source");
+      const clean = cleanRecordText(draft.text);
+      const transientScope = scope;
+      if (clean === undefined || transientScope === undefined) return refused("invalid");
+      const baseTrust = minTrust(draft.trust, ...(draft.actor === undefined ? [] : [draft.actor.trust]), ...(draft.actor === undefined && draft.source !== "rovara" ? ["system" as const] : []));
+      return { admitted: true, item: { orgId, project, scope: transientScope, trust, baseTrust, text: clean, audience: draft.audience, links: draft.links.filter(validLink).slice(0, LINKS_MAX), occurredAt } };
+    }
+    return refused("retention_not_stored");
+  }
 
   // 4. Text hygiene, then the row. A row of rovara trust carries no free text from people.
   const text = plan.keepText && trust !== "rovara" ? cleanRecordText(keptText, { keepCode: draft.kind === "rovara.human_edit" }) : undefined;

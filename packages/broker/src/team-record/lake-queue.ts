@@ -4,28 +4,12 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordPk } from "@agentx/contracts";
+import type { LakeDeleteQueue, LakeDeleteTarget, PendingLakeDelete } from "./lake-delete.js";
 import { queryPrefix } from "./store.js";
 import type { TeamRecordTable } from "./types.js";
 
-export type LakeDeleteTarget =
-  | { kind: "source"; sourceHash: string }
-  | { kind: "actor"; developerId: string }
-  /** A person with no developer id (an outsider, an unmapped Slack user): `recordActorSourceHash(system, sourceId)`. */
-  | { kind: "actor_source"; hash: string }
-  /** A whole place (a deleted channel or repository, a channel that turned private): `recordScopeHash(scope)`. */
-  | { kind: "scope"; hash: string }
-  | { kind: "project"; project: string }
-  /** A whole workspace (org close), including rows that belong to no project. The lake job must delete every table by `workspace_id`. */
-  | { kind: "workspace" }
-  | { kind: "fact"; factId: string };
-
-export interface PendingLakeDelete { id: string; target: LakeDeleteTarget }
-
-export interface LakeDeleteQueue {
-  enqueue(workspaceId: string, targets: readonly LakeDeleteTarget[]): Promise<void>;
-  listPending(workspaceId: string, limit: number): Promise<PendingLakeDelete[]>;
-  ack(workspaceId: string, ids: string[]): Promise<void>;
-}
+// One definition of the targets and the queue interface: the storage lane's (lake-delete.ts), which is what the lake job reads. This file is the DynamoDB queue behind it.
+export type { LakeDeleteQueue, LakeDeleteTarget, PendingLakeDelete };
 
 const PREFIX = "LAKEDEL#";
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;

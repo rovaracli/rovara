@@ -32,7 +32,7 @@ import {
   type OrgId,
   type RecordEvent,
   type RecordFact,
-  type RecordSourceKind,
+  type RecordSystem,
   type SourceConfig,
 } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item } from "../agents/table-writes.js";
@@ -249,7 +249,7 @@ export function sourceConfigFromItem(item: Item | undefined): SourceConfig | und
 }
 
 /** The source row of one scope. One scope belongs to one project: a scope found in two is read as no row (fail closed). */
-export async function getSourceConfigByScope(table: TeamRecordTable, orgId: OrgId, source: RecordSourceKind, scope: string): Promise<SourceConfig | undefined> {
+export async function getSourceConfigByScope(table: TeamRecordTable, orgId: OrgId, source: RecordSystem, scope: string): Promise<SourceConfig | undefined> {
   const { items } = await queryIndex(table, TEAM_RECORD_GSI1, recordSourceConfigIndexValue(orgId, source, scope), 3);
   const configs = items.map(sourceConfigFromItem).filter((config): config is SourceConfig => config !== undefined);
   return configs.length === 1 ? configs[0] : undefined;

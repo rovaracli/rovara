@@ -28,6 +28,11 @@ type Item = Record<string, unknown>;
 /** What Home needs: the session reads, and Plan 3's approvals core (without it there are no approval or spend cards). */
 export interface HomeDependencies extends SessionReadDependencies {
   approvals?: (ApprovalDependencies & Partial<AgentRouteDependencies>) | undefined;
+  /**
+   * The kinds of Home card that decision cards now carry (`decisions/`), set by the wiring ONLY when the decision card sources are mounted. Home then drops its own cards of these kinds, so a
+   * decision cannot be made from Home's older card and skip the card's friction (a medium card's evidence-first rule, a high card's confirmation page). Absent: nothing is dropped.
+   */
+  retiredKinds?: readonly HomeCardKind[] | undefined;
   /** How long one source may take before it is skipped (default `HOME_SOURCE_TIMEOUT_MS`). */
   homeSourceTimeoutMs?: number | undefined;
 }
@@ -481,7 +486,9 @@ async function collect(deps: HomeDependencies, caller: HomeCaller): Promise<Coll
   const answers = await Promise.all([...sources].map(async (source) => ({ source, cards: await runSource(source, deps, asker, context, log) })));
   const seen = new Set<string>();
   const cards: HomeSourceCard[] = [];
+  const retired = new Set<HomeCardKind>(deps.retiredKinds ?? []);
   for (const { source, cards: answered } of answers) {
+    if (retired.has(source.kind)) continue;
     if (answered.length > HOME_SOURCE_CARDS_MAX) log({ event: "home.source_truncated", source: source.kind });
     for (const card of answered.slice(0, HOME_SOURCE_CARDS_MAX)) {
       const { blocksRunningSession, occurrence, ...shown } = card;

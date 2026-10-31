@@ -142,13 +142,27 @@ describe("one click from the web app", () => {
 });
 
 describe("the risk a press has seen", () => {
-  it("merges a low risk pull request with no ceremony, and a medium or high one when the press names the level the person saw", async () => {
-    for (const level of ["low", "medium", "high"] as const) {
+  it("merges a low risk pull request with no ceremony, and a medium one when the press names the level the person saw", async () => {
+    for (const level of ["low", "medium"] as const) {
       const w = await ready();
       w.setWorkflow({ risk: risk(level, ["This PR changes CI configuration."]) });
       expect((await webPress(w, { risk: level })).status, level).toBe(200);
       expect(w.github.mergeCalls, level).toHaveLength(1);
     }
+  });
+
+  it("never merges a HIGH risk pull request on a click: a browser press gets the confirmation page (fresh sign-in) and nothing is merged", async () => {
+    const w = await ready();
+    w.setWorkflow({ risk: risk("high", ["This PR changes CI configuration."]) });
+    const reply = await webPress(w, { risk: "high" });
+    expect(reply.status).toBe(202);
+    expect(reply.body).toMatchObject({ status: "NEEDS_CONFIRMATION", code: "REAUTH_REQUIRED" });
+    expect(w.github.mergeCalls).toEqual([]);
+    expect(w.db.find((item) => item.entityType === "APPROVAL").length).toBe(1);
+    // A press that did not see the risk is still refused first, as before.
+    const unseen = await ready();
+    unseen.setWorkflow({ risk: risk("high") });
+    expect(await codeOf(webPress(unseen, { risk: "medium" }))).toEqual({ code: "MERGE_NOT_READY", message: M.riskChanged("high") });
   });
 
   it("refuses a medium or high risk press that did not see the risk, or saw another level, and merges nothing", async () => {

@@ -8,16 +8,15 @@ import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/li
 import { RECORD_EVENT_SK_PREFIX, recordEventKey, teamRecordPk, teamRecordSourceHash, workspaceVectorBucketKey, type OrgId, type RecordEvent } from "@agentx/contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import { eventFromItem } from "./store.js";
+import type { HotArchiveSource } from "./archiver.js";
+import type { HotStatsSource } from "./stats-templates.js";
 import type { TeamRecordTable } from "./types.js";
 
 // ---- archive
 
-export interface HotArchiveSource {
-  listArchivable(request: { workspaceId: string; olderThan: string; limit: number; cursor?: string }): Promise<{ rows: RecordEvent[]; nextCursor?: string }>;
-  filterLive(workspaceId: string, ids: string[]): Promise<Set<string>>;
-  /** Returns the ids it could NOT mark because the row was deleted meanwhile; the caller's lake copy of those must be deleted again. */
-  markArchived(workspaceId: string, ids: string[], archivedAt: string): Promise<string[]>;
-}
+// One definition of each port: the storage lane's (the archiver and the statistics runner declare what they read). This file implements them over the TeamRecord table.
+export type { HotArchiveSource } from "./archiver.js";
+export type { HotStatsSource } from "./stats-templates.js";
 
 /** The lake delete targets of rows that died while the archiver was copying them (see `markArchived`). */
 export interface ArchiveRaceQueue { enqueue(workspaceId: string, targets: Array<{ kind: "source"; sourceHash: string }>): Promise<void> }
@@ -120,11 +119,6 @@ export function tableHotArchiveSource(table: TeamRecordTable, projectsPort: Proj
 
 // ---- statistics (the recent side)
 
-type StatsTemplateName = "send_backs_by_stage" | "tickets_by_component" | "ci_failures_by_test" | "rovara_merge_rate";
-export interface HotStatsSource {
-  groupedCounts(request: { workspaceId: string; project: string; template: StatsTemplateName; since: string; until: string }): Promise<Array<{ group: string; count: number }>>;
-  mergeTotals(request: { workspaceId: string; project: string; since: string; until: string }): Promise<{ tasks: number; merged: number; reverted: number; send_backs: number }>;
-}
 
 /** The most rows one statistic reads from the hot table. A window with more is cut (newest rows kept) and the totals are lower bounds. */
 export const HOT_STATS_MAX_ROWS = 20_000;

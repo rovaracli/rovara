@@ -13,6 +13,7 @@ import { environmentNaming } from "../../infra/lib/naming.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
+import { brokerSourceFiles, readBrokerSource } from "../support/broker-source.js";
 
 skipLambdaBundling();
 
@@ -126,7 +127,7 @@ describe("the health route's grants (A13)", () => {
   it("names indexExpiresAt only where index, notice, channel-operation, admin-change and audit-pending items are written or read, so the TTL deletes nothing else", () => {
     const allowed = new Set([
       "packages/contracts/src/admin.ts", "packages/broker/src/aws/activity-index.ts", "packages/broker/src/aws/admin-reads.ts", "infra/lib/control-plane.ts",
-      "packages/broker/src/aws/developer-task-notifier.ts", "packages/broker/src/aws/broker.ts",
+      "packages/broker/src/aws/developer-task-notifier.ts", ...brokerSourceFiles(),
       // The workflow dispatch row's one definition, shared by the broker and the developer task routes.
       "packages/broker/src/aws/broker-shared.ts",
       "packages/contracts/src/admin-changes.ts", "packages/broker/src/aws/admin-changes.ts",
@@ -239,7 +240,7 @@ describe("the health route's grants (A13)", () => {
   });
 
   it("sets the TTL attribute in broker.ts on the channel-operation marker, workflow dispatch rows and Slack refusal notes alone, and in the notifier on NOTICE items alone (25c note 2, gap 6, Task 19)", () => {
-    const broker = readFileSync("packages/broker/src/aws/broker.ts", "utf8");
+    const broker = readBrokerSource();
     const brokerUses = broker.split("\n").filter((line) => /indexExpiresAt\(|INDEX_EXPIRY_ATTRIBUTE\]/.test(line));
     expect(brokerUses).toEqual([
       "        slackUserId: user.data, channelId: thread.data.channelId, threadTs: thread.data.threadTs, message, at, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiresAt(at) },",

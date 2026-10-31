@@ -8,7 +8,7 @@
 //
 // `hotExpiresAt` is when the row is due to leave the hot table; `indexExpiresAt` (the TTL attribute) is a grace period later so the archiver has time to copy it
 // first. The Public edition's Slack source is fixed at A or B: C and D are never offered for it (Slack's API terms).
-import { RECORD_HOT_DAYS, RECORD_RAW_TEXT_DAYS_C, type RecordSourceKind, type RetentionMode } from "@agentx/contracts";
+import { RECORD_HOT_DAYS, RECORD_RAW_TEXT_DAYS_C, type RecordSystem, type RetentionMode } from "@agentx/contracts";
 import type { Edition } from "./types.js";
 
 const DAY = 86_400;
@@ -45,7 +45,7 @@ export function exceedsRetention(mode: RetentionMode, ceiling: RetentionMode): b
  * Why a retention mode is not allowed for a source in an edition, or undefined when it is. The Public edition keeps Slack at A, or at B only with the workspace's opt-in;
  * every other combination is allowed.
  */
-export function retentionRefusal(edition: Edition, source: RecordSourceKind, retention: RetentionMode, notesOptIn = false): "slack_public_fixed_a_b" | "slack_notes_need_opt_in" | undefined {
+export function retentionRefusal(edition: Edition, source: RecordSystem, retention: RetentionMode, notesOptIn = false): "slack_public_fixed_a_b" | "slack_notes_need_opt_in" | undefined {
   if (edition !== "public" || source !== "slack") return undefined;
   if (retention === "C" || retention === "D") return "slack_public_fixed_a_b";
   // Owner decision Q4: Public Slack is read live (A); "notes with links" (B) only when the workspace chose it.
@@ -53,7 +53,7 @@ export function retentionRefusal(edition: Edition, source: RecordSourceKind, ret
   return undefined;
 }
 
-export function retentionPlan(input: { retention: RetentionMode; source: RecordSourceKind; hasText: boolean; occurredAtSeconds: number; nowSeconds: number }): RetentionPlan {
+export function retentionPlan(input: { retention: RetentionMode; source: RecordSystem; hasText: boolean; occurredAtSeconds: number; nowSeconds: number }): RetentionPlan {
   const { retention, source } = input;
   const own = source === "rovara";
   // The age counts from when the item happened, but never reaches into the past so far that a late arrival is gone on arrival: it keeps at least a day.

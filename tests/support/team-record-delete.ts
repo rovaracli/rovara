@@ -38,7 +38,7 @@ export function deleteDeps(w: World, extra: Partial<PurgeDependencies> = {}): De
   const rowsAtEnqueue: number[] = [];
   const lake = {
     ...real, enqueued, rowsAtEnqueue,
-    async enqueue(workspaceId: string, targets: readonly LakeDeleteTarget[]) { enqueued.push(...targets); rowsAtEnqueue.push(rows(w, "TEAM_RECORD_EVENT").length); await real.enqueue(workspaceId, targets); },
+    async enqueue(workspaceId: string, targets: LakeDeleteTarget[]) { enqueued.push(...targets); rowsAtEnqueue.push(rows(w, "TEAM_RECORD_EVENT").length); await real.enqueue(workspaceId, targets); },
   };
   const lessons = new FakeLessons();
   const audit: AuditEventInput[] = [];

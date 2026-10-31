@@ -34,13 +34,13 @@ export type RecordSource = z.infer<typeof RecordSourceSchema>;
 
 /** A code host other than GitHub, through a W6 plug-in (`codehost:gitfarm`). Record ingest consumes plug-in events, not GitHub types. */
 export const CodehostSourceSchema = z.string().regex(/^codehost:[a-z][a-z0-9-]{0,40}$/);
-export const RecordSourceKindSchema = z.union([RecordSourceSchema, CodehostSourceSchema]);
-export type RecordSourceKind = z.infer<typeof RecordSourceKindSchema>;
+export const RecordSystemSchema = z.union([RecordSourceSchema, CodehostSourceSchema]);
+export type RecordSystem = z.infer<typeof RecordSystemSchema>;
 
 export const ACL_PRINCIPALS_MAX = 500;
 /** The permission snapshot taken at capture. `principals` are source-native ids (Slack user ids, GitHub numeric ids) for private scopes. */
 export const AclSnapshotSchema = z.object({
-  source: RecordSourceKindSchema,
+  source: RecordSystemSchema,
   scope: z.string().min(1).max(300),
   principals: z.array(z.string().min(1).max(100)).max(ACL_PRINCIPALS_MAX).optional(),
   groups: z.array(z.string().min(1).max(100)).max(50).optional(),
@@ -97,7 +97,7 @@ export function recordKindSources(kind: RecordEventKind): "slack" | "ticket" | "
   return "rovara";
 }
 
-function sourceFitsKind(kind: RecordEventKind, source: RecordSourceKind): boolean {
+function sourceFitsKind(kind: RecordEventKind, source: RecordSystem): boolean {
   switch (recordKindSources(kind)) {
     case "slack": return source === "slack";
     case "ticket": return source === "linear" || source === "jira" || source === "mcp";
@@ -140,7 +140,7 @@ export const RecordEventSchema = z.object({
   workspaceId: OrgIdSchema,
   project: RecordProjectSchema.optional(),
   repo: z.string().min(1).max(200).optional(),
-  source: RecordSourceKindSchema,
+  source: RecordSystemSchema,
   sourceRef: RecordSourceRefSchema,
   /**
    * The place the row came from (`slack:T1/C9`, `github:repo/123`, `rovara:project/web`). Required on every row: the lake erases by place (a deleted channel or
@@ -201,7 +201,7 @@ export const SOURCE_HEALTH = ["unknown", "ok", "failing"] as const;
 export const SourceConfigSchema = z.object({
   workspaceId: OrgIdSchema,
   project: RecordProjectSchema,
-  source: RecordSourceKindSchema,
+  source: RecordSystemSchema,
   scope: z.string().min(1).max(300),
   enabled: z.boolean(),
   retention: RetentionModeSchema,
@@ -233,7 +233,7 @@ export const RecordSearchQuerySchema = z.object({
   kinds: z.array(RecordEventKindSchema).max(RECORD_EVENT_KINDS.length).optional(),
   since: z.string().datetime().optional(),
   until: z.string().datetime().optional(),
-  sources: z.array(RecordSourceKindSchema).max(10).optional(),
+  sources: z.array(RecordSystemSchema).max(10).optional(),
   limit: z.number().int().min(1).max(RECORD_SEARCH_LIMIT_MAX).default(10),
 }).strict();
 export type RecordSearchQuery = z.infer<typeof RecordSearchQuerySchema>;
@@ -241,7 +241,7 @@ export type RecordSearchQuery = z.infer<typeof RecordSearchQuerySchema>;
 export const RecordSearchHitSchema = z.object({
   id: z.string().min(1).max(100),
   kind: z.union([RecordEventKindSchema, z.literal("fact")]),
-  source: RecordSourceKindSchema,
+  source: RecordSystemSchema,
   occurredAt: z.string().datetime(),
   title: z.string().max(200),
   snippet: z.string().max(RECORD_SNIPPET_MAX),

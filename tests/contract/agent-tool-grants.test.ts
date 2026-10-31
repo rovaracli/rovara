@@ -33,6 +33,7 @@ import { TEST_ORG } from "../support/orgs.js";
 import { call, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
 import { decideApproval, getAnyApproval, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { deriveWriteRequestId } from "../../packages/broker/src/agents/write-gate.js";
+import { readBrokerSource } from "../support/broker-source.js";
 
 beforeAll(async () => { await loadSlackBroker(); }, 60_000);
 
@@ -183,8 +184,7 @@ describe("resolveToolGrants", () => {
 
 describe("grants and the capability", () => {
   it("the broker gives the capability exactly when the dispatch says so", async () => {
-    const { readFileSync } = await import("node:fs");
-    expect(readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8")).toContain("agentTools: givesAgentTools(applied),");
+    expect(readBrokerSource()).toContain("agentTools: givesAgentTools(applied),");
   });
 
   it("an agent step of a recipe with tool grants is given the agent-tools capability, and nothing else is", () => {

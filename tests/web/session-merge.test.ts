@@ -257,7 +257,7 @@ it("a medium or high risk adds one line to the dialog and is still one click; th
     const dialog = await screen.findByRole("dialog", { name: "Press Merge?" });
     expect(dialog.textContent).toContain(`${risk.level === "high" ? "High" : "Medium"} risk`);
     expect(dialog.textContent).toContain(risk.reasons[0]);
-    expect(dialog.textContent).toContain("Merge anyway?");
+    expect(dialog.textContent).toContain(risk.level === "high" ? "You will confirm on the next page, after signing in again." : "Merge anyway?");
     fireEvent.click(screen.getByRole("button", { name: "Press Merge" }));
     await screen.findByText("Merged payments #42.");
     expect(f.presses()).toHaveLength(1);

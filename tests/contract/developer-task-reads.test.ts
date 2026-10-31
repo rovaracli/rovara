@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { NEXT_STEPS } from "../../packages/mcp/src/index.js";
 import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { readSplitSource } from "../support/split-source.js";
 
 const PLANTED = "xoxb-2222222222-planted-secret";
 const DIFF = ["## demo", "", "### status", " M src/retry.ts", "### diff", "diff --git a/src/retry.ts b/src/retry.ts", "--- a/src/retry.ts", "+++ b/src/retry.ts", "@@ -1 +1,2 @@", "-old", "+new", "+more"].join("\n");
@@ -404,7 +405,7 @@ describe("no developer task code reads the deployment mode (FR-024)", () => {
     "packages/broker/src/developer/task-records.ts",
     "packages/broker/src/developer/limits.ts",
   ])("%s", (path) => {
-    expect(readFileSync(path, "utf8")).not.toMatch(/deploymentMode|ec2-ebs|agentcore/i);
+    expect(readSplitSource(path)).not.toMatch(/deploymentMode|ec2-ebs|agentcore/i);
   });
   it.skipIf(!existsSync("packages/mcp/src"))("the MCP package", () => {
     for (const path of files("packages/mcp/src")) expect(readFileSync(path, "utf8"), path).not.toMatch(/deploymentMode|ec2-ebs|agentcore/i);

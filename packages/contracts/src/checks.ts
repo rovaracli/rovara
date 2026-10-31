@@ -2,6 +2,7 @@
 // worker (which runs checks), the broker (which keeps the report and shapes the PR) and Slack.
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { CheckKindSchema } from "./evidence.js";
 
 /**
  * Covers AGENTX_WORKER_PROMPT and AGENTX_PREAMBLE: changing either means a new version. 1 had only the preamble; 3 added
@@ -75,6 +76,8 @@ export const CheckEntrySchema = z.object({
   durationMs: z.number().int().nonnegative(),
   /** The command's exit code when it ran to an end (null: a signal stopped it). Older workers send none. */
   exitCode: z.number().int().nullable().optional(),
+  /** What the check is for (proof and evidence design, 3.1). Older workers send none, and none reads as `other`. */
+  kind: CheckKindSchema.optional(),
 }).strict();
 export type CheckEntry = z.infer<typeof CheckEntrySchema>;
 

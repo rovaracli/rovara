@@ -1,12 +1,12 @@
 // Spec 025 Task 8: POST /v1/dev/tasks, the start of a developer task (FR-017 to FR-020, R8, R9, R12).
 import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { NEXT_STEPS } from "../../packages/mcp/src/index.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, registerRevision, unbindChannel } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { readSplitParts } from "../support/split-source.js";
 import { orgLimitKey, projectMemberKey, projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
 
 const start = (overrides: Record<string, unknown> = {}) => ({ requestId: randomUUID(), project: "payments", instructions: "Fix the flaky retry test", client: "claude-code", ...overrides });
@@ -389,10 +389,13 @@ describe("the start's transaction and the workspace limit (FR-020, R6)", () => {
 
 describe("shared broker helpers (ruling F9)", () => {
   it("defines hashJson and isConditional once, in the module broker.ts and developer-tasks.ts both import", () => {
-    const source = (file: string) => readFileSync(new URL(`../../packages/broker/src/aws/${file}`, import.meta.url), "utf8");
+    // developer-tasks.ts is split into modules (developer-tasks/*.ts, which import it as "../broker-shared.js"); broker.ts is one file.
+    const parts = (file: string) => readSplitParts(new URL(`../../packages/broker/src/aws/${file}`, import.meta.url).pathname);
+    const source = (file: string) => parts(file).join("\n");
     for (const file of ["broker.ts", "developer-tasks.ts"]) {
       expect(source(file)).not.toMatch(/(?:function|const)\s+(?:hashJson|isConditional)\b/);
-      expect(source(file)).toMatch(/import \{[^}]*\bhashJson\b[^}]*\bisConditional\b[^}]*\} from "\.\/broker-shared\.js"/);
+      // As before the split: one import line of one file brings in both helpers.
+      expect(parts(file).some((text) => /import \{[^}]*\bhashJson\b[^}]*\bisConditional\b[^}]*\} from "\.{1,2}\/broker-shared\.js"/.test(text)), `${file}: an import of hashJson and isConditional together`).toBe(true);
     }
     expect(source("broker-shared.ts")).toMatch(/export function hashJson/);
     expect(source("broker-shared.ts")).toMatch(/export function isConditional/);

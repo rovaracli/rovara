@@ -5,10 +5,18 @@ import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, erasedPersonKey, recordActorSourceHash, type OrgId } from "@agentx/contracts";
 import type { TeamRecordTable } from "./types.js";
 
+/**
+ * The system string a row is indexed under (`sourceRef.system`): for Slack the bare team id (`T1`). The Slack tap resolves a person's identity as `slack:T1`, so an erase
+ * given that form must reach the same keys. One function, used by every erase and every check, so the two forms can never drift apart.
+ */
+export function identitySystem(system: string): string {
+  return system.startsWith("slack:") ? system.slice("slack:".length) : system;
+}
+
 export async function markPersonErased(table: TeamRecordTable, orgId: OrgId, who: { developerId?: string | undefined; identities?: ReadonlyArray<{ system: string; sourceId: string }> | undefined }, at: string): Promise<void> {
   const keys = [
     ...(who.developerId === undefined ? [] : [erasedPersonKey(orgId, { developerId: who.developerId })]),
-    ...(who.identities ?? []).map((identity) => erasedPersonKey(orgId, { actorSourceHash: recordActorSourceHash(identity.system, identity.sourceId) })),
+    ...(who.identities ?? []).map((identity) => erasedPersonKey(orgId, { actorSourceHash: recordActorSourceHash(identitySystem(identity.system), identity.sourceId) })),
   ];
   for (const key of keys) await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...key, entityType: "TEAM_RECORD_ERASED", at } }));
 }
@@ -16,7 +24,7 @@ export async function markPersonErased(table: TeamRecordTable, orgId: OrgId, who
 export async function isErasedActor(table: TeamRecordTable, orgId: OrgId, system: string, actor: { sourceId: string; developerId?: string | undefined }): Promise<boolean> {
   const keys = [
     ...(actor.developerId === undefined ? [] : [erasedPersonKey(orgId, { developerId: actor.developerId })]),
-    erasedPersonKey(orgId, { actorSourceHash: recordActorSourceHash(system, actor.sourceId) }),
+    erasedPersonKey(orgId, { actorSourceHash: recordActorSourceHash(identitySystem(system), actor.sourceId) }),
   ];
   for (const key of keys) {
     const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })).catch(() => {

@@ -7,7 +7,7 @@ import type { Item } from "../agents/table-writes.js";
 import { auditRecordErased } from "./audit.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { addPurge, emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
-import { markPersonErased } from "./erased.js";
+import { identitySystem, markPersonErased } from "./erased.js";
 import { changeScopePrincipals } from "./scope-work.js";
 import { bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
 
@@ -46,7 +46,7 @@ export interface ErasedPerson {
 export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: ErasedPerson, occurrence: string, budget: EraseBudget = DEFAULT_ERASE_BUDGET): Promise<EraseResult> {
   const now = deps.now ?? Date.now;
   const queue = deps.lakeQueue ?? tableLakeDeleteQueue(deps.table, now);
-  const identities = (who.identities ?? []).slice(0, 50);
+  const identities = (who.identities ?? []).slice(0, 50).map((identity) => ({ ...identity, system: identitySystem(identity.system) }));
   if (who.developerId === undefined && identities.length === 0) throw new Error("erase: name a developer or a source identity");
   // The marker first: from now on no backfill, poller or edit can bring them back. Then the lake: their events and outcomes there are queued before anything hot is touched.
   await markPersonErased(deps.table, orgId, { developerId: who.developerId, identities }, new Date(now()).toISOString());
