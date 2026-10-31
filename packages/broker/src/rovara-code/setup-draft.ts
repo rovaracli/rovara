@@ -11,8 +11,10 @@
 //                                    citations found. One item, replaced by a new draft.
 //   the task (`DEVTASK#<id>`)        `setupDraftResult` and `agentRunEnd`, written by the task's own result transaction.
 //   `SETUP_DRAFT#<project>` / APPLY#<requestId>   a request id that applied items, so a repeat answers the first outcome.
-//   an approval record (`APPROVAL#`) one per risky item per asker: the item's own card (subject `setup_item`). Approving it records consent and changes nothing; the maintainer
-//                                    then applies the item from the page.
+//   an approval record (`APPROVAL#`) one per risky item per asker and attempt: the item's own card (subject `setup_item`). Approving it records consent and changes nothing; the
+//                                    maintainer then applies the item from the page, which USES the consent up (setup-consent.ts: one application per card, within
+//                                    `SETUP_CONSENT_MAX_AGE_MS`; a used, declined or expired card is followed by a new one).
+//   `SETUP_DRAFT#<project>` / USED#<approvalId>   the consent of one card that has been used (setup-consent.ts).
 // The status is never stored: `setupDraftState` derives it from the pointer, the task and its workspace on every read. A draft stored by the version 1 setup draft reads as
 // failed with a fixed sentence (ask again): it is never applied.
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -57,9 +59,10 @@ import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import {
-  SETUP_ITEM_WORDS, citationWords, currentOf, getSetupItemApplier, githubFullNameOf, isCardKind, itemDigest, registerSetupItemApplier, unavailableReason,
+  SETUP_ITEM_WORDS, citationWords, currentOf, getSetupItemApplier, githubFullNameOf, isCardKind, itemDigest, registerSetupItemApplier, unavailableReason, type SetupItemApplier,
 } from "./setup-items.js";
 import { verifyProposalDetailed, type CitationFileReader } from "./setup-proposal-verify.js";
+import { SETUP_CONSENT_USED, consentHasExpired, consentIsUsed, giveBackConsent, useConsent } from "./setup-consent.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 type Item = Record<string, unknown>;
@@ -90,6 +93,8 @@ export const SETUP_APPLY_WORDS = {
   waiting: "This needs an administrator's approval. Open the card to decide it.",
   unknownItem: "This proposal has no such item. Ask Rovara to draft the setup again.",
   failed: "Rovara couldn't apply this item.",
+  consentUsed: SETUP_CONSENT_USED,
+  tooManyCards: "This item has had several approval cards already. Ask Rovara to draft the setup again.",
   websiteProposal: "Websites are widened only through a website change proposal. Carry these to the website access page.",
 } as const;
 
@@ -368,13 +373,22 @@ async function verificationOf(
 
 // ---- approval cards
 
-type CardState = { state: "none" } | { state: "pending" | "approved" | "declined" | "expired"; approvalId: string; approvedBy?: string };
+/** `used`: the card was approved and its consent already used. It reads as dead, like `expired`, and the page shows it as expired. */
+type CardState = { state: "none" } | { state: "pending" | "approved" | "declined" | "expired" | "used"; approvalId: string; approvedBy?: string };
 
-/** The id a card's request carries: the same for the same draft, item and value, so asking twice is one card. */
-const cardRequestIdOf = (taskId: string, item: SetupItem, attempt?: string): string => derivedRequestId(`${taskId}|${item.id}|${itemDigest(item)}`, attempt === undefined ? "card" : `card:${attempt}`);
+/** How many cards one item can have in one draft (the first, then one for each time an earlier one was declined, expired or used). More than that, the person starts a new draft. */
+export const SETUP_CARD_ATTEMPTS_MAX = 6;
 
-/** What the asker's own card for an item stands at. A card made for another value (the digest differs) or another draft is not this item's. */
-async function cardStateOf(approvals: ApprovalDependencies, caller: DeveloperCaller, project: string, taskId: string, item: SetupItem, attempt?: string): Promise<CardState> {
+/** The id a card's request carries: the same for the same draft, item, value and attempt, so asking twice is one card. Attempt 0 is the first card. */
+const cardRequestIdOf = (taskId: string, item: SetupItem, attempt: number): string => derivedRequestId(`${taskId}|${item.id}|${itemDigest(item)}`, attempt === 0 ? "card" : `card:${String(attempt)}`);
+
+/**
+ * What the asker's card for an item stands at, for one attempt. A card made for another value (the digest differs) or another draft is not this item's. An approved card is
+ * consent for one application only, and only for `SETUP_CONSENT_MAX_AGE_MS`: one that was used, or approved too long ago, is dead.
+ */
+async function cardStateOf(
+  deps: SetupDraftDependencies, approvals: ApprovalDependencies, caller: DeveloperCaller, project: string, taskId: string, item: SetupItem, attempt: number,
+): Promise<CardState> {
   const record = await getApproval(approvals, caller.orgId, approvalIdFor(caller.orgId, caller.developerId, cardRequestIdOf(taskId, item, attempt)));
   const subject = record?.subject;
   if (record === undefined || subject?.kind !== "setup_item" || subject.project !== project || subject.draftTaskId !== taskId || subject.itemId !== item.id || subject.digest !== itemDigest(item)) return { state: "none" };
@@ -382,27 +396,48 @@ async function cardStateOf(approvals: ApprovalDependencies, caller: DeveloperCal
     case "PENDING":
     case "EXECUTING": return { state: "pending", approvalId: record.approvalId };
     case "APPROVED":
-    case "APPROVED_DONE": return record.decidedBy === undefined ? { state: "pending", approvalId: record.approvalId } : { state: "approved", approvalId: record.approvalId, approvedBy: record.decidedBy };
+    case "APPROVED_DONE":
+      if (record.decidedBy === undefined) return { state: "pending", approvalId: record.approvalId };
+      if (consentHasExpired(record.decidedAt, deps.now())) return { state: "expired", approvalId: record.approvalId };
+      if (await consentIsUsed(deps, caller.orgId, project, record.approvalId)) return { state: "used", approvalId: record.approvalId };
+      return { state: "approved", approvalId: record.approvalId, approvedBy: record.decidedBy };
     case "DECLINED": return { state: "declined", approvalId: record.approvalId };
     default: return { state: "expired", approvalId: record.approvalId };
   }
 }
 
-/** The card an item needs, as its asker sees it: the existing one if it is still open or approved, else a new one (a declined or expired card is asked again under the new request). */
+/**
+ * The card an item has now: the first attempt that is not dead. A dead card (declined, expired, used) is followed by the next attempt, which the person asks for. `attempt` is the
+ * one the card is at, or the next one to ask for; at `SETUP_CARD_ATTEMPTS_MAX` there are no more, and `card` is the last dead one.
+ */
+async function liveCardOf(
+  deps: SetupDraftDependencies, approvals: ApprovalDependencies, caller: DeveloperCaller, project: string, taskId: string, item: SetupItem,
+): Promise<{ card: CardState; attempt: number }> {
+  let card: CardState = { state: "none" };
+  for (let attempt = 0; attempt < SETUP_CARD_ATTEMPTS_MAX; attempt += 1) {
+    const found = await cardStateOf(deps, approvals, caller, project, taskId, item, attempt);
+    // A dead card stays what the page shows (so it says "ask again") until the next one is asked for.
+    if (found.state === "none") return { card, attempt };
+    if (found.state === "pending" || found.state === "approved") return { card: found, attempt };
+    card = found;
+  }
+  return { card, attempt: SETUP_CARD_ATTEMPTS_MAX };
+}
+
+/** The card an item needs, as its asker sees it: the existing one if it is still open or approved, else a new one (a declined, expired or used card is asked again as a new card). */
 async function askCard(
-  approvals: ApprovalDependencies, caller: DeveloperCaller, project: string, taskId: string, item: SetupItem, proposal: SetupProposal, requestId: string,
+  deps: SetupDraftDependencies, approvals: ApprovalDependencies, caller: DeveloperCaller, project: string, taskId: string, item: SetupItem,
 ): Promise<{ approvalId: string; confirmUrl: string; state: "pending" | "approved"; approvedBy?: string }> {
   const kind = item.kind;
   const applier = getSetupItemApplier(kind);
   if (applier === undefined || !isCardKind(kind)) throw agentXError("CONFIG_INVALID", SETUP_ITEM_WORDS.noApplier);
-  const first = await cardStateOf(approvals, caller, project, taskId, item);
-  const attempt = first.state === "declined" || first.state === "expired" ? requestId : undefined;
-  const existing = attempt === undefined ? first : await cardStateOf(approvals, caller, project, taskId, item, attempt);
+  const { card: existing, attempt } = await liveCardOf(deps, approvals, caller, project, taskId, item);
   if (existing.state === "pending" || existing.state === "approved") {
     const link = existing.state === "pending" ? (await confirmationReply(approvals, caller, { approvalId: existing.approvalId, changes: [] })).body.confirmUrl : "";
     return { approvalId: existing.approvalId, confirmUrl: link, state: existing.state, ...(existing.state === "approved" && existing.approvedBy !== undefined ? { approvedBy: existing.approvedBy } : {}) };
   }
-  const words = [...applier.cardWords(item), citationWords(item), `Approving this lets a maintainer of ${project} apply it from the setup page. Nothing changes until they do.`];
+  if (attempt >= SETUP_CARD_ATTEMPTS_MAX) throw agentXError("CONFIG_INVALID", SETUP_APPLY_WORDS.tooManyCards);
+  const words = [...applier.cardWords(item), citationWords(item), `Approving this lets a maintainer of ${project} apply it from the setup page once. Nothing changes until they do.`];
   const record = await createPendingChange(approvals, {
     orgId: caller.orgId, requestId: cardRequestIdOf(taskId, item, attempt), requestedBy: caller.developerId,
     subject: { kind: "setup_item", project, draftTaskId: taskId, itemId: item.id, itemKind: kind, digest: itemDigest(item) },
@@ -415,7 +450,7 @@ async function askCard(
 
 /**
  * What confirming a `setup_item` card does: records consent and nothing else. The item is applied by a maintainer from the setup page, through the same save every other change
- * uses, so it is checked again then (their role, the revision, the repository connection). A card nobody decided is never taken as consent.
+ * uses, so it is checked again then (their role, the revision, the repository connection), and the consent is used up by that application. A card nobody decided is never taken as consent.
  */
 export function registerSetupItemApprovals(): void {
   registerApprovalSubjectHandler("setup_item", async (_deps, record) => {
@@ -479,8 +514,9 @@ async function reviewOf(
     const unavailable = unavailableReason(definition, item, { cards: deps.approvals !== undefined });
     let approval: SetupReviewEntry["approval"];
     if (handling === "approval" && unavailable === undefined && deps.approvals !== undefined) {
-      const card = await cardStateOf(deps.approvals, caller, project, pointer.taskId, item);
-      if (card.state !== "none") approval = { approvalId: card.approvalId, state: card.state };
+      const { card } = await liveCardOf(deps, deps.approvals, caller, project, pointer.taskId, item);
+      // A used card reads as expired: the person asks again.
+      if (card.state !== "none") approval = { approvalId: card.approvalId, state: card.state === "used" ? "expired" : card.state };
     }
     entries.push({
       id: item.id, handling, verification: verification[item.id] ?? "unchecked",
@@ -635,20 +671,33 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
     if (currentOf(latest.definition, item)?.state === "same") { result(item, "already_set", { message: SETUP_APPLY_WORDS.alreadySet }); continue; }
     const approvals = deps.approvals!;
     try {
-      const card = await askCard(approvals, caller, name, pointer.taskId, item, proposal, body.requestId);
+      const card = await askCard(deps, approvals, caller, name, pointer.taskId, item);
       if (card.state === "pending") { result(item, "approval_needed", { message: SETUP_APPLY_WORDS.waiting, approval: { approvalId: card.approvalId, confirmUrl: card.confirmUrl } }); continue; }
       const applier = getSetupItemApplier(item.kind)!;
-      const revision = (await deps.latest(caller.orgId, name))?.revision ?? body.expectedRevision;
       const applyRequestId = derivedRequestId(body.requestId, `apply:${item.id}`);
-      const applied = await applier.apply({
-        project: name, taskId: pointer.taskId, item, proposal, approvedBy: card.approvedBy ?? "", requestId: applyRequestId, revision,
-        host: {
-          updateSettings: (settings) => deps.updateSettings(caller, name, settings),
-          startPullRequest: (request) => deps.startPullRequest(caller, { requestId: request.requestId, project: name, text: request.text }),
-          claimPullRequest: (requestId) => claimPullRequest(deps, caller.orgId, name, pointer.taskId, requestId),
-          releasePullRequestClaim: (requestId) => releasePullRequestClaim(deps, caller.orgId, name, pointer.taskId, requestId),
-        },
-      });
+      // The consent is used up BEFORE the change is made, in a conditional write (a second press, or a second person, finds it used); it is given back if the change is not made.
+      try {
+        await useConsent(deps, { orgId: caller.orgId, project: name, approvalId: card.approvalId, requestId: applyRequestId, by: caller.developerId });
+      } catch (error) {
+        if (error instanceof AgentXError && error.code === "APPROVAL_CLOSED") { result(item, "failed", { message: SETUP_APPLY_WORDS.consentUsed }); continue; }
+        throw error;
+      }
+      let applied: Awaited<ReturnType<SetupItemApplier["apply"]>>;
+      try {
+        const revision = (await deps.latest(caller.orgId, name))?.revision ?? body.expectedRevision;
+        applied = await applier.apply({
+          project: name, taskId: pointer.taskId, item, proposal, approvedBy: card.approvedBy ?? "", requestId: applyRequestId, revision,
+          host: {
+            updateSettings: (settings) => deps.updateSettings(caller, name, settings),
+            startPullRequest: (request) => deps.startPullRequest(caller, { requestId: request.requestId, project: name, text: request.text }),
+            claimPullRequest: (requestId) => claimPullRequest(deps, caller.orgId, name, pointer.taskId, requestId),
+            releasePullRequestClaim: (requestId) => releasePullRequestClaim(deps, caller.orgId, name, pointer.taskId, requestId),
+          },
+        });
+      } catch (error) {
+        await giveBackConsent(deps, { orgId: caller.orgId, project: name, approvalId: card.approvalId, requestId: applyRequestId });
+        throw error;
+      }
       warnings.push(...applied.warnings);
       appliedRevision = (await deps.latest(caller.orgId, name))?.revision ?? appliedRevision;
       result(item, "applied", { message: SETUP_APPLY_WORDS.appliedAfterApproval, ...(applied.pullRequest === undefined ? {} : { pullRequest: applied.pullRequest }) });

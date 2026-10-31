@@ -4,6 +4,7 @@
 // (`POST …/setup-draft/apply`): settings through the project settings save, risky items each through their own approval card. The pure reading of an answer is in
 // setup-proposal-contracts.test.ts and the worker's half in setup-agent-worker.test.ts.
 import { randomUUID } from "node:crypto";
+import { agentXError } from "@agentx/contracts"; // the package the broker itself imports: an error from the relative path would not be an instance of its AgentXError
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_WORKER_OUTDATED, DEFAULT_PLANNING_LIMIT_USD, SetupApplyResponseSchema, SetupDraftResponseReaderSchema, SetupDraftResponseSchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema,
@@ -869,6 +870,111 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
     expect(t.approvals()).toHaveLength(2);
   });
 
+  it("uses an approved card up: apply, take the repository away, apply again, and the maintainer needs a NEW card (the old approval is not consent a second time)", async () => {
+    const t = await setup();
+    await t.drafted();
+    const repo = itemId(await t.proposal(), "repository");
+    const approvalId = outcomeOf(await t.apply([{ id: repo }]), repo)!.approval!.approvalId;
+    t.approve(approvalId);
+    expect(outcomeOf(await t.apply([{ id: repo }]), repo)?.outcome).toBe("applied");
+    expect(t.latestSettings().repositories.map((entry) => entry.name)).toEqual(["web", "lib"]);
+    // Someone takes the repository away again. (The draft follows the settings to the revision of the take-away, as it does after the maintainer's own apply.)
+    const current = t.db.get(projectRevisionKey(TEST_ORG, NAME, 2)) as { definition: Record<string, unknown> };
+    t.db.set({ ...current, ...projectRevisionKey(TEST_ORG, NAME, 3), definition: { ...current.definition, revision: 3, repositories: [(current.definition["repositories"] as unknown[])[0]] } });
+    t.db.set({ ...(t.db.get(orgProjectCatalogKey(TEST_ORG, NAME)) as Record<string, unknown>), latestRevision: 3 });
+    t.db.set({ ...(t.pointer() as unknown as Record<string, unknown>), appliedRevision: 3 });
+    expect(t.latestSettings().repositories.map((entry) => entry.name)).toEqual(["web"]);
+    // The page shows the used card as expired, so it says "ask again".
+    expect((view(await t.read()).review ?? []).find((entry) => entry.id === repo)!.approval).toEqual({ approvalId, state: "expired" });
+    const again = await t.apply([{ id: repo }], { expectedRevision: 3 });
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    const asked = outcomeOf(again, repo)!;
+    expect(asked.outcome).toBe("approval_needed");
+    expect(asked.approval!.approvalId).not.toBe(approvalId);
+    expect(t.latestSettings().repositories.map((entry) => entry.name)).toEqual(["web"]);
+    expect(t.latestSettings().revision).toBe(3);
+    // The new card works, once.
+    t.approve(asked.approval!.approvalId);
+    expect(outcomeOf(await t.apply([{ id: repo }], { expectedRevision: 3 }), repo)?.outcome).toBe("applied");
+    expect(t.latestSettings().repositories.map((entry) => entry.name)).toEqual(["web", "lib"]);
+  });
+
+  it("lets only one of two applies at once use an approved card (one applier call)", async () => {
+    const calls: string[] = [];
+    registerSetupItemApplier("source", { cardWords: (item) => [`Set up ${item.id}.`], apply: async (context) => { calls.push(context.requestId); await Promise.resolve(); return { warnings: [] }; } });
+    try {
+      const t = await setup();
+      await t.drafted({ ...NODE_ANSWER, sources: [{ name: "wiki", foundIn: "mcp_config", from: [cite("README.md", 1)] }] });
+      const asked = await t.apply([{ id: "source-wiki" }]);
+      t.approve(outcomeOf(asked, "source-wiki")!.approval!.approvalId);
+      const [first, second] = await Promise.all([t.apply([{ id: "source-wiki" }]), t.apply([{ id: "source-wiki" }])]);
+      expect(calls).toHaveLength(1);
+      const outcomes = [outcomeOf(first, "source-wiki")!, outcomeOf(second, "source-wiki")!];
+      expect(outcomes.filter((outcome) => outcome.outcome === "applied")).toHaveLength(1);
+      // The other either lost the race to use the card ("used") or arrived after and needs a new card; either way it applied nothing.
+      expect(["failed", "approval_needed"]).toContain(outcomes.find((outcome) => outcome.outcome !== "applied")?.outcome);
+      // And a later apply needs a new card.
+      expect(outcomeOf(await t.apply([{ id: "source-wiki" }]), "source-wiki")?.outcome).toBe("approval_needed");
+      expect(calls).toHaveLength(1);
+    } finally {
+      unregisterSetupItemApplier("source");
+    }
+  });
+
+  it("gives the approval back when the application did not happen, so the same card can be applied again", async () => {
+    let fail = true;
+    const calls: string[] = [];
+    registerSetupItemApplier("source", { cardWords: (item) => [`Set up ${item.id}.`], apply: async (context) => {
+      calls.push(context.item.id);
+      if (fail) throw agentXError("CONFIG_INVALID", "the source could not be set up");
+      return { warnings: [] };
+    } });
+    try {
+      const t = await setup();
+      await t.drafted({ ...NODE_ANSWER, sources: [{ name: "wiki", foundIn: "mcp_config", from: [cite("README.md", 1)] }] });
+      const approvalId = outcomeOf(await t.apply([{ id: "source-wiki" }]), "source-wiki")!.approval!.approvalId;
+      t.approve(approvalId);
+      const failedReply = await t.apply([{ id: "source-wiki" }]);
+      expect(failedReply.status, JSON.stringify(failedReply.body)).toBe(200);
+      expect(outcomeOf(failedReply, "source-wiki")?.outcome).toBe("failed");
+      fail = false;
+      const retried = outcomeOf(await t.apply([{ id: "source-wiki" }]), "source-wiki")!;
+      expect(retried.outcome).toBe("applied");
+      expect(calls).toHaveLength(2);
+      expect(t.approvals()).toHaveLength(1);
+    } finally {
+      unregisterSetupItemApplier("source");
+    }
+  });
+
+  it("does not take an approved card as consent after it has gone unused for too long", async () => {
+    const calls: string[] = [];
+    registerSetupItemApplier("source", { cardWords: (item) => [`Set up ${item.id}.`], apply: async (context) => { calls.push(context.item.id); return { warnings: [] }; } });
+    try {
+      const t = await setup();
+      await t.drafted({ ...NODE_ANSWER, sources: [{ name: "wiki", foundIn: "mcp_config", from: [cite("README.md", 1)] }] });
+      const approvalId = outcomeOf(await t.apply([{ id: "source-wiki" }]), "source-wiki")!.approval!.approvalId;
+      t.approve(approvalId);
+      const record = t.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === approvalId)[0]!;
+      t.db.set({ ...record, decidedAt: new Date(Date.now() - 8 * 86_400_000).toISOString() });
+      expect((view(await t.read()).review ?? []).find((entry) => entry.id === "source-wiki")!.approval).toEqual({ approvalId, state: "expired" });
+      const reply = await t.apply([{ id: "source-wiki" }]);
+      expect(outcomeOf(reply, "source-wiki")?.outcome).toBe("approval_needed");
+      expect(outcomeOf(reply, "source-wiki")?.approval?.approvalId).not.toBe(approvalId);
+      expect(calls).toEqual([]);
+      // An approved card with no time on record reads as too old too (fail closed).
+      const second = outcomeOf(reply, "source-wiki")!.approval!.approvalId;
+      t.approve(second);
+      const fresh = t.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === second)[0]!;
+      const { decidedAt: _gone, ...untimed } = fresh as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+      t.db.set(untimed);
+      expect(outcomeOf(await t.apply([{ id: "source-wiki" }]), "source-wiki")?.outcome).toBe("approval_needed");
+      expect(calls).toEqual([]);
+    } finally {
+      unregisterSetupItemApplier("source");
+    }
+  });
+
   it("opens the dev container pull request once its card is approved, in a labelled block, and only once per draft", async () => {
     const t = await setup();
     await t.drafted();
@@ -891,6 +997,10 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
     expect(started.requestText).toContain("```json");
     expect(t.pointer()!.pullRequestClaim).toBeDefined();
     const tasks = t.db.find((item) => item.entityType === "DEVELOPER_TASK").length;
+    // The first card is used up, so asking again makes a new card, which an administrator has to approve. Even then only one pull request per draft is started.
+    const again = await t.apply([{ id: "devcontainer" }]);
+    expect(outcomeOf(again, "devcontainer")?.outcome).toBe("approval_needed");
+    t.approve(outcomeOf(again, "devcontainer")!.approval!.approvalId);
     const second = await t.apply([{ id: "devcontainer" }]);
     expect(outcomeOf(second, "devcontainer")).toMatchObject({ outcome: "failed", message: SETUP_DRAFT_PULL_REQUEST_ONCE });
     expect((second.body.warnings as string[]).join(" ")).toContain("A pull request for this dev container was already started.");
