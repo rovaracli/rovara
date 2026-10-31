@@ -208,6 +208,15 @@ const ROWS: readonly Row[] = [
   ["events.ts", "getArtifact", "principal", ".ownerKey"],
   ["github-mcp.ts", "connectorContext", "principal", ".ownerKey"],
   ["repository-access.ts", "inspect", "principal", ".ownerKey"],
+  // Meta repo lane D: the broker's own meta-repository token is issued for the task's principal (`ownerKey`, with the workspace and an operation id it makes), as `repositoryGrants.issue` is for a worker; it never changes, and the broker uses it itself
+  ["aws/broker/spec-wiring.ts", "metaClient", "principal", ".ownerKey"],
+  // Proof and evidence P6: an evidence file is stored under the task's object prefix (`private/<ownerKey>/<workspace>/evidence/<task>/<sha256>`), the task's principal; who may download it is decided by `authorize()` before either read
+  ["aws/evidence-artifacts.ts", "keyOf", "principal", ".ownerKey"],
+  ["aws/evidence-artifacts.ts", "serveEvidenceArtifact", "principal", ".ownerKey"],
+  // Meta repo lane E: the project authority check of a context-tools call is looked up for the task's principal (its per-task MEMBERSHIP row), as `agent-tools-routes` does; the creator's org standing is read through `effectiveTaskOwner` in the same call
+  ["context-sources/routes.ts", "stageSources", "principal", ".ownerKey"],
+  // Meta repo lane F: `known` is an intake item (a ticket waiting or starting), not a task; its `startedBy` is the member whose act started the ticket, handed back to the waiting list
+  ["intake/engine.ts", "ingestOnce", "other-record", ".startedBy*2"],
 ];
 
 const PACKAGES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../packages");
