@@ -1,3 +1,4 @@
+import { TaskFundingProofSchema, type TaskFundingProof } from "../org/task-stop-funding.js";
 import {prepareTaskModelPolicyPin,parseTaskModelPolicyPin,taskModelPolicyAdmissionChecks,type TaskModelPolicyPin} from "../model-selection/task-pin.js";
 // Plan 3 Task 15: starting a run from a frozen recipe. The developer task start (`startTask`, aws/developer-tasks.ts) holds the project checks, the
 // budget floor, the workspace charge and the one transaction that creates a task; this file holds what is particular to an agent's run:
@@ -238,6 +239,7 @@ async function requireMayStart(deps: AgentRunStarter, input: { orgId: OrgId; pro
 // ---- preparing a run: nothing is charged or written
 
 export interface PreparedRun {
+  fundingProof?: TaskFundingProof;
   modelPolicyPin?:TaskModelPolicyPin;
   recipe: ResolvedRecipe;
   digest: string;
@@ -451,7 +453,7 @@ export function runStartItems(table: TableInput, input: {
   const nowSeconds = Math.floor(table.now() / 1000);
   const expires = nowSeconds + RUN_RECORD_MEMORY_DAYS * 86_400;
   const items: TransactItem[] = [
-    putNew(table, taskRecipeKey(input.taskId), "TASK_RECIPE", { orgId: input.orgId, recipe: prepared.recipe, digest: prepared.digest,...(modelPolicyPin===undefined?{}:{modelPolicyPin}) }),
+    putNew(table, taskRecipeKey(input.taskId), "TASK_RECIPE", { orgId: input.orgId, recipe: prepared.recipe, digest: prepared.digest, ...(prepared.fundingProof === undefined ? {} : { fundingProof: prepared.fundingProof }),...(modelPolicyPin===undefined?{}:{modelPolicyPin}) }),
     putNew(table, agentTasksKey(input.orgId, prepared.ref.agentId, input.createdAt, input.taskId), "AGENT_TASK", {
       orgId: input.orgId, agentId: prepared.ref.agentId, taskId: input.taskId, project: input.project, version: prepared.ref.version, origin: prepared.origin, createdAt: input.createdAt,
       [INDEX_EXPIRY_ATTRIBUTE]: expires,
@@ -502,15 +504,17 @@ export function runStartItems(table: TableInput, input: {
 // ---- reading a run back
 
 /** The frozen recipe of a task, or undefined for a task from before agents. The item is a named exception to org-scoped keys: another org's refuses. */
-export async function readTaskRecipe(deps: Pick<TableInput, "documentClient" | "tableName">, taskId: string, orgId: OrgId): Promise<{ recipe: ResolvedRecipe; digest: string; modelPolicyPin?:TaskModelPolicyPin } | undefined> {
-  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskRecipeKey(taskId), ConsistentRead: true })) as { Item?: { orgId?: unknown; recipe?: unknown; digest?: unknown; modelPolicyPin?:unknown } };
+export async function readTaskRecipe(deps: Pick<TableInput, "documentClient" | "tableName">, taskId: string, orgId: OrgId): Promise<{ recipe: ResolvedRecipe; digest: string; modelPolicyPin?:TaskModelPolicyPin; fundingProof?: TaskFundingProof } | undefined> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskRecipeKey(taskId), ConsistentRead: true })) as { Item?: { orgId?: unknown; recipe?: unknown; digest?: unknown; modelPolicyPin?:unknown; fundingProof?: unknown } };
   const item = response.Item;
   if (item === undefined) return undefined;
   if (item.orgId !== orgId) throw agentXError("NOT_FOUND", "no agent snapshot belongs to this task");
   const recipe = ResolvedRecipeSchema.safeParse(item.recipe);
   if (!recipe.success || typeof item.digest !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "the agent snapshot of this task can't be read");
   const modelPolicyPin=item.modelPolicyPin===undefined?undefined:parseTaskModelPolicyPin(item.modelPolicyPin,{orgId,recipe:recipe.data,digest:item.digest});
-  return { recipe: recipe.data, digest: item.digest,...(modelPolicyPin===undefined?{}:{modelPolicyPin}) };
+  const funding = item.fundingProof === undefined ? undefined : TaskFundingProofSchema.safeParse(item.fundingProof);
+  if (funding !== undefined && !funding.success) throw agentXError("TASK_STOP_CONFIG_INVALID", "The pinned funding proof is invalid.");
+  return { recipe: recipe.data, digest: item.digest,...(modelPolicyPin===undefined?{}:{modelPolicyPin}), ...(funding?.success ? { fundingProof: funding.data } : {}) };
 }
 
 /** The request item of a run, if one is there and has not expired. */

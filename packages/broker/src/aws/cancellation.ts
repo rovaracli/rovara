@@ -43,6 +43,7 @@ export interface CancellationDependencies extends StateTable {
 export const TERMINAL = new Set<OperationStatus>(["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"]);
 
 export interface OperationRecord extends Operation {
+  fundingSourceId?: string;
   /** Frozen developer task identity for governed fallback callbacks. */
   modelTaskId?: string;
   modelTurnPin?: TurnModelPin;

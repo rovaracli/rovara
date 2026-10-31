@@ -1,3 +1,4 @@
+import type { TaskFundingProof } from "../org/task-stop-funding.js";
 import type { SpendingAdmissionReference } from "@agentx/contracts";
 import type { CapturedTaskStop } from "../org/task-stop-admission.js";
 // Spec 025 phase 25b: a developer task's records, owner key, status and failure rules, event text
@@ -83,6 +84,7 @@ export interface DeveloperTaskRecord {
   budgetUsd?: number;
   /** Immutable numeric capture for this accepted admission; not an authority lease. */
   spendingStop?: CapturedTaskStop;
+  fundingProof?: TaskFundingProof;
   /** Durable receipt of the approved plain-task window; never fresh money. */
   spendingAdmission?: SpendingAdmissionReference;
   /** Ruling R38: the task keys' cumulative spend when its owner last chose Continue; the task's cap counts spend above it. */

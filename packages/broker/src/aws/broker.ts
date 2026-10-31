@@ -1,3 +1,7 @@
+import { readStageModelEvidence } from "../model-selection/evidence.js";
+import { failedIndexes, type TransactItem } from "../agents/table-writes.js";
+import { auditEventId } from "@agentx/contracts";
+import { TaskFundingProofSchema, actualCompanyFunding, fundingRevisionCheck, fundingAuditItems } from "../org/task-stop-funding.js";
 import { requirePricedTaskStopAdmission } from "../org/task-stop-unpriced.js";
 import { AuditEventInputSchema } from "@agentx/contracts";
 import { projectAiKey } from "@agentx/contracts";
@@ -399,7 +403,7 @@ import type { AuditEraseDeps } from "../audit/erase.js";
 import { routeAuditAdminRequest } from "../audit/admin-routes.js";
 import { isAuditViewPath } from "../audit/view-page.js";
 import { AuditKeyring } from "../audit/keyring.js";
-import { auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
+import { auditPendingItem, auditPending, auditTransact, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence, auditPullRequestOpened, auditSlackChannelBound, auditSlackChannelUnbound, auditSlackTeamConnected, auditSlackTeamDisconnected } from "../audit/events.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
@@ -6532,6 +6536,7 @@ async function taskOperationParts(
   if(turnPolicy!==undefined){operation.modelPolicy=turnPolicy.binding;operation.modelTurnPin=turnPolicy.frozen;delete operation.modelTaskId;}
   const turnAudit=turnPolicy?.decision.fallback===undefined?undefined:prepareTurnModelFallback({...dependencies,now:Date.now},{orgId,taskId:operationId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:turnPolicy.binding.companyRevision,decision:turnPolicy.decision});
   if(turnAudit!==undefined)Object.assign(operation,turnAudit.fields);
+  if (applied?.modelDecision !== undefined) operation.fundingSourceId = applied.modelDecision.sourceId === "personal-chatgpt" && routed?.route != null ? routed.route.sourceId : applied.modelDecision.sourceId;
   if (routed !== undefined) {
     operation.modelRoute = routed.route?.alias === undefined ? null : { sourceId: routed.route.sourceId, alias: routed.route.alias, model: routed.requested };
   }
@@ -6936,6 +6941,19 @@ async function chatGptTaskToken(dependencies: AwsBrokerDependencies, operation: 
   if (operation.kind !== "task" || operation.chatgptDeveloperId === undefined || dependencies.chatgpt === undefined) {
     throw agentXError("CALLBACK_FORBIDDEN", "this operation does not run on a ChatGPT plan");
   }
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
+  const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  const pinnedFunding = task?.orgId === undefined || task.agent === undefined ? undefined : (await readTaskRecipe(dependencies, task.taskId, task.orgId))?.fundingProof;
+  if (task !== undefined && (task.fundingProof !== undefined || pinnedFunding !== undefined)) {
+    const proof = TaskFundingProofSchema.parse(task.fundingProof ?? pinnedFunding), source = proof.sources.find(source => source.sourceId === "personal-chatgpt");
+    const routing = routingOf(dependencies, true);
+    const evidence = routing === undefined || operation.model === undefined ? undefined : await readStageModelEvidence({ ...dependencies, routing, chatgpt: dependencies.chatgpt, now: Date.now }, { orgId: proof.orgId, project: proof.project, models: [operation.model], payerDeveloperId: operation.chatgptDeveloperId });
+    if (task.fundingProof === undefined || pinnedFunding === undefined || canonicalJson(task.fundingProof) !== canonicalJson(pinnedFunding) || operation.fundingSourceId === undefined || operation.modelPolicy === undefined || source === undefined || evidence === undefined || source.payerDeveloperId !== operation.chatgptDeveloperId || evidence.connectionRevision !== source.connectionRevision || evidence.sourcesRevision !== proof.sourcesRevision || !evidence.candidates.some(candidate => candidate.sourceId === "personal-chatgpt")) {
+      const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", `${operation.id}:chatgpt-funding`), orgId: task.orgId, action: "spending.stop_refused", actor: { kind: "system", id: "rovara" }, target: { kind: "task", id: task.taskId }, occurredAt: new Date().toISOString(), facts: { outcomeCode: "TASK_STOP_CONFIG_MISSING", workKind: "chatgpt-funding-changed", admissionId: operation.id } });
+      try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, Date.now()), ConditionExpression: "attribute_not_exists(pk)" } }] })); } catch (error) { if (!failedIndexes(error)?.size) throw error; }
+      throw agentXError("TASK_STOP_CONFIG_MISSING", "The admitted ChatGPT funding connection changed. Start again with the current connection.");
+    }
+  }
   const token = await dependencies.chatgpt.accessToken(operation.chatgptDeveloperId);
   return { accessToken: token.access, expiresAt: new Date(token.expiresAt).toISOString() };
 }
@@ -7318,8 +7336,10 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
           || canonicalJson(current.spendingAdmission) !== canonicalJson(task.spendingAdmission)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation spending window is unavailable or changed.");
       }
       await requireTaskStopWindowContext(dependencies, task);
-      const keyAuthority = task.spendingStop === undefined ? [] : await taskStopKeyActorChecks(dependencies, task, effectiveTaskOwner(task).developerId, payment?.payer.kind === "member" ? payment.payer.developerId : undefined, agentRouteDependencies(dependencies, developerTaskActions(dependencies)));
-      if (task.spendingStop !== undefined) {
+      const pinnedFunding = task.agent === undefined ? undefined : (await readTaskRecipe(dependencies, task.taskId, task.orgId))?.fundingProof;
+      const fundingRequired = task.fundingProof !== undefined || pinnedFunding !== undefined;
+      const keyAuthority = task.spendingStop === undefined && !fundingRequired ? [] : await taskStopKeyActorChecks(dependencies, task, effectiveTaskOwner(task).developerId, payment?.payer.kind === "member" ? payment.payer.developerId : undefined, agentRouteDependencies(dependencies, developerTaskActions(dependencies)));
+      if (task.spendingStop !== undefined || fundingRequired) {
         if (pointer === undefined || pointer.entityType !== "DEVELOPER_TASK_POINTER" || pointer.taskId !== task.taskId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task pointer could not be checked.");
         keyAuthority.push({ ConditionCheck: { TableName: dependencies.tableName, Key: taskPointerKey(current.workspaceId),
           ConditionExpression: "#pointerType = :pointerType AND taskId = :pointerTask AND developerId = :pointerDeveloper",
@@ -7351,6 +7371,21 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
             ":identitySubject": identity.subject, ":identitySlack": identity.slackUserId, ":identityRevoked": false },
         } });
       }
+      let funding: ReturnType<typeof TaskFundingProofSchema.parse> | undefined;
+      if (fundingRequired) {
+        const proof = TaskFundingProofSchema.parse(task.fundingProof ?? pinnedFunding);
+        if (task.fundingProof !== undefined && pinnedFunding !== undefined && canonicalJson(task.fundingProof) === canonicalJson(pinnedFunding) && proof.orgId === task.orgId && proof.project === task.project && routing !== undefined && route !== undefined && current.modelRoute !== undefined && current.modelRoute !== null
+          && current.fundingSourceId === route.sourceId && current.modelPolicy !== undefined && current.workflowMode !== "CHECKS" && payment !== undefined) {
+          funding = await actualCompanyFunding({ ...dependencies, routing, now: Date.now, chatgpt: dependencies.chatgpt }, proof, { sourceId: route.sourceId, model: current.modelRoute.model });
+        }
+        if (funding === undefined) {
+          const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", `${current.id}:funding`), orgId: task.orgId, action: "spending.stop_refused", actor: { kind: "system", id: "rovara" }, target: { kind: "task", id: task.taskId }, occurredAt: new Date().toISOString(), facts: { outcomeCode: "TASK_STOP_CONFIG_MISSING", workKind: "funding-changed", admissionId: current.id } });
+          try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, Date.now()), ConditionExpression: "attribute_not_exists(pk)" } }] })); }
+          catch (error) { if (!failedIndexes(error)?.size) throw error; }
+          throw agentXError("TASK_STOP_CONFIG_MISSING", "This operation no longer has verified own-source funding. Review Spending before continuing.");
+        }
+      }
+      const fundingChecks: TransactItem[] = funding === undefined ? [] : [{ ConditionCheck: { TableName: dependencies.tableName, Key: taskRecipeKey(task.taskId), ConditionExpression: "orgId = :fundingOrg AND fundingProof = :fundingProof", ExpressionAttributeValues: { ":fundingOrg": task.orgId, ":fundingProof": pinnedFunding } } }, fundingRevisionCheck(dependencies.tableName, funding), ...fundingAuditItems(dependencies.tableName, funding, { taskId: task.taskId, occurrence: `${current.id}:${task.modelKeyIds?.length ?? 0}`, actor: { kind: "system", id: "rovara" }, at: Date.now() })];
       const taskOrg = task.orgId;
       const runLimitUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
       const taskKeyIds = task.modelKeyIds ?? [];
@@ -7366,6 +7401,15 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
         orgId: task.orgId, developerId: payment === undefined ? task.developerId : payment.origin === "test_run" ? undefined : keyMember(payment.payer), refId: task.taskId,
         ...(route === undefined ? {} : { route }),
         ...(task.spendingStop === undefined ? {} : { guardRecord: items => [...guardModelKeyOperation(current, withAdmittedTaskSource(dependencies.tableName, task, items).items), ...keyAuthority] }),
+        ...(funding === undefined ? {} : { taskStopExempt: true, guardRecord: (items: readonly TransactItem[]) => {
+          const guarded = guardModelKeyOperation(current, [...items]), key = taskKey(task.taskId);
+          const source = nativeSnapshotConditions(dependencies.tableName, [key], [task as unknown as Record<string, unknown>], ["modelKeyIds"])[0]?.ConditionCheck;
+          if (source === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The funding source is unavailable.");
+          const index = guarded.findIndex(item => item.Update?.Key?.pk === key.pk && item.Update.Key.sk === key.sk), update = guarded[index]?.Update;
+          if (update === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The funding task record is unavailable.");
+          guarded[index] = { Update: { ...update, ConditionExpression: `(${update.ConditionExpression ?? "attribute_exists(pk)"}) AND (${source.ConditionExpression})`, ExpressionAttributeNames: { ...update.ExpressionAttributeNames, ...source.ExpressionAttributeNames }, ExpressionAttributeValues: { ...update.ExpressionAttributeValues, ...source.ExpressionAttributeValues } } };
+          return [...guarded, ...fundingChecks, ...keyAuthority];
+        } }),
         runLimitUsd, stopAtUsd: task.maxPerRunUsd === undefined ? runLimitUsd : Math.min(runLimitUsd, task.maxPerRunUsd),
         taskKeyIds, budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
         // Task 31: with agents set up, the key is held on every budget the task counts against, recorded on the operation as well as the task, and a refusal
@@ -7462,7 +7506,7 @@ function guardModelKeyOperation(operation: OperationRecord, input: TransactItems
   const update = items[index]?.Update;
   if (update === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation key record is unavailable.");
   const names: Record<string, string> = {}, values: Record<string, unknown> = {};
-  const conditions = ["entityType", "id", "workspaceId", "orgId", "kind", "status", "fence", "modelRoute", "workflowMode", "programStepId", "spendingTaskId", "spendingAdmission"].map(field => {
+  const conditions = ["entityType", "id", "workspaceId", "orgId", "kind", "status", "fence", "modelRoute", "workflowMode", "programStepId", "spendingTaskId", "spendingAdmission", "fundingSourceId", "modelPolicy"].map(field => {
     const name = `#admittedOp_${field}`, value = `:admittedOp_${field}`;
     if (update.ExpressionAttributeNames?.[name] !== undefined || update.ExpressionAttributeValues?.[value] !== undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation source condition is ambiguous.");
     names[name] = field;

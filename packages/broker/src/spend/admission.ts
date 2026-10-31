@@ -182,6 +182,8 @@ export interface MintOperationDependencies extends BudgetDependencies {
 }
 
 export interface MintOperationKeyInput {
+  /** Set only after native actual own-source funding validation in the broker. */
+  taskStopExempt?: boolean;
   orgId: OrgId;
   /** The member the key is minted in the name of (`keyMember(payer)`); absent when the payer is not a member. */
   developerId?: string | undefined;
@@ -313,7 +315,7 @@ async function planCap(deps: MintOperationDependencies, input: MintOperationKeyI
     await pauseAt(taskId === undefined ? undefined : { kind: "test", taskId });
     throw runLimitReached(taskSpent, input.testCapUsd);
   }
-  if (left(stopAtUsd, windowSpent) <= 0) {
+  if (input.taskStopExempt !== true && left(stopAtUsd, windowSpent) <= 0) {
     // The agent's max per run is what stopped it when that is lower than the run limit; during planning the run limit is the planning limit.
     const kind = stopAtUsd < input.runLimitUsd ? "max_per_run" : input.planning === true ? "planning" : "task";
     await pauseAt(taskId === undefined ? undefined : { kind, taskId });
@@ -321,7 +323,7 @@ async function planCap(deps: MintOperationDependencies, input: MintOperationKeyI
   }
   if (input.stepBudgetUsd !== undefined && left(input.stepBudgetUsd, stepSpent) <= 0) throw runLimitReached(stepSpent, input.stepBudgetUsd);
   const capUsd = clean(Math.min(
-    left(stopAtUsd, windowSpent), smallestRoom(read.levels),
+    input.taskStopExempt === true ? input.runLimitUsd : left(stopAtUsd, windowSpent), smallestRoom(read.levels),
     input.testCapUsd === undefined ? Infinity : left(input.testCapUsd, taskSpent),
     input.stepBudgetUsd === undefined ? Infinity : left(input.stepBudgetUsd, stepSpent),
   ));
@@ -382,6 +384,7 @@ async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOpe
  * once and mints again; a second miss is that scope's error. A key that is reserved and cannot be recorded is blocked and finalized.
  */
 export async function mintOperationKey(deps: MintOperationDependencies, input: MintOperationKeyInput): Promise<MintedOperationKey> {
+  if (input.taskStopExempt === true && (deps.ledger === undefined || input.scopes === undefined || input.tags === undefined || input.guardRecord === undefined || !/^src_[a-z0-9]{20}$/.test(input.route?.sourceId ?? ""))) throw agentXError("TASK_STOP_CONFIG_INVALID", "Own-source funding requires scoped native admission.");
   const names = { agentName: input.agentName ?? "Rovara Code", chainName: input.chainName };
   const scopes = input.scopes ?? [{ kind: "org" } as const, ...(input.developerId === undefined ? [] : [{ kind: "member", developerId: input.developerId } as const])];
   const ledger = input.scopes !== undefined && input.tags !== undefined ? deps.ledger : undefined;

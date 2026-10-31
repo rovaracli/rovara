@@ -1,3 +1,4 @@
+import { TaskFundingProofSchema, captureTaskFundingProof, taskFundingModelPool, fundingAuditItems, fundingRevisionCheck } from "../org/task-stop-funding.js";
 import { resolveAgentForAutonomousRun } from "../agents/roster.js";
 import { recipeRunner, AgentRunStateSchema, type SpendingAdmissionReference } from "@agentx/contracts";
 import { isDeepStrictEqual } from "node:util";
@@ -268,6 +269,7 @@ import {
   taskIndexKey,
   taskActionRequestKey,
   taskAgentRunKey,
+  taskRecipeKey,
   taskKey,
   taskOwnerKey,
   taskOwnerLabel,
@@ -2107,6 +2109,13 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     project: request.project, asWorkflow: asWorkflow || settingUpDraft, workflowPath, prepared,
   });
   if (prepared !== undefined && startLimitUsd !== undefined) prepared = { ...prepared, ...runLimitsOf(startLimitUsd, run?.runLimitUsd, prepared.maxPerRunUsd) };
+  const fundingProof = prepared?.modelPolicyPin === undefined || deps.agentRuns?.modelRouting === undefined ? undefined : await captureTaskFundingProof({ documentClient: deps.documentClient, tableName: deps.tableName, routing: deps.agentRuns.modelRouting, chatgpt: deps.agentRuns.stageChatgpt, now: () => deps.now() }, {
+    orgId: deps.orgId, project: request.project, models: taskFundingModelPool(prepared.modelPolicyPin, deps.agentRuns.modelRouting.rovaraGeography), ...(prepared.payer.kind === "member" ? { payerDeveloperId: prepared.payer.developerId } : {}),
+  });
+  if (fundingProof !== undefined && prepared !== undefined) {
+    if (prepared.modelPolicyPin?.sourcesRevision !== fundingProof.sourcesRevision) return refused(agentXError("TASK_STOP_CONFIG_INVALID", "The funding sources changed during admission."));
+    prepared = { ...prepared, fundingProof };
+  }
   let spendingStop: CapturedTaskStop | undefined;
   let spendingScopeChecks: TransactItem[] = [];
   // Every task captures once after its existing live principal checks and
@@ -2122,7 +2131,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     try {
       const pathLimitMicrousd = usdToWholeMicrodollars(startLimitUsd ?? prepared?.runLimitUsd ?? PER_TASK_BUDGET_USD);
       const requestedMicrousd = run?.runLimitUsd === undefined ? undefined : usdToWholeMicrodollars(run.runLimitUsd);
-      const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(),
+      const captured = fundingProof === undefined ? await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(),
         requireScopeAccess: async input => {
           const fresh = await deps.checkAccess(input.project);
           await requireNewWorkAllowed(deps, deps.orgId, input.project, fresh.role, "task");
@@ -2131,8 +2140,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       }, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project,
         agentId: prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID, pathLimitMicrousd: pathLimitMicrousd ?? null,
         ...(requestedMicrousd !== undefined ? { requestedMicrousd } : run?.runLimitUsd === undefined ? {} : { requestedMicrousd: null }),
-      });
-      if (captured.kind === "captured") {
+      }) : { kind: "disabled" as const };
+      if (captured.kind === "captured" || fundingProof !== undefined) {
         spendingScopeChecks = await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project }, async () => {
           const fresh = await deps.checkAccess(request.project);
           await requireNewWorkAllowed(deps, deps.orgId, request.project, fresh.role, "task");
@@ -2147,11 +2156,13 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
             return deps.agentRuns.store.listShares(deps.orgId, agentId);
           }));
         }
+        if (captured.kind === "captured") {
         const exactUsd = captured.effectiveStopMicrousd / 1_000_000;
         if (usdToWholeMicrodollars(exactUsd) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
         if (exactUsd === 0 && !paused) return refused(agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0."));
         spendingStop = captured; startLimitUsd = exactUsd;
         if (prepared !== undefined) prepared = { ...prepared, ...runLimitsOf(exactUsd, undefined, prepared.maxPerRunUsd) };
+        }
       }
     } catch (error) {
       if (error instanceof AgentXError) return refused(error);
@@ -2200,6 +2211,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const keepsBudget = spendingStop !== undefined || admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
   const task: DeveloperTaskRecord = {
     ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId,
+    ...(fundingProof === undefined ? {} : { fundingProof }),
     ...(spendingStop === undefined ? {} : { spendingStop, spendingAdmission: { requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash } }),
     ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
@@ -2253,6 +2265,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position (a paused run takes no slot).
     ...(paused ? [] : chargeItems(deps.tableName, charge, limits, taskId)),
     ...preparationItems,
+    ...(fundingProof === undefined ? [] : fundingAuditItems(deps.tableName, fundingProof, { taskId, occurrence: request.requestId, actor: { kind: "member", id: caller.developerId }, at: deps.now() })),
     putNew(deps.tableName, { ...task }),
     ...(spendingStop === undefined ? [] : taskStopWindowItems(deps.tableName, {
       orgId: deps.orgId, taskId, requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash,
@@ -2303,7 +2316,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ]),
   ];
   const spendingAuthorityIndexes = new Set<number>();
-  if (spendingStop !== undefined) for (const guard of [...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), ...spendingScopeChecks]) {
+  if (spendingStop !== undefined || fundingProof !== undefined) for (const guard of [...(fundingProof === undefined ? [] : [fundingRevisionCheck(deps.tableName, fundingProof)]), ...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), ...spendingScopeChecks]) {
     const check = guard.ConditionCheck;
     if (check?.Key === undefined) throw budgetActorRefused();
     const checkKey = check.Key;
@@ -2704,7 +2717,7 @@ async function continueTask(deps: DeveloperTaskRouteDependencies, caller: Develo
   await actionableWorkspace(deps, task);
   let windowStop: CapturedTaskStop | undefined;
   let windowChecks: TransactItem[] = [];
-  if (deps.spendResume === undefined) {
+  if (deps.spendResume === undefined && task.fundingProof === undefined) {
     const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
     const pathLimitMicrousd = previous?.calculationInput.approvedRunLimitMicrousd ?? previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD);
     const oldBounds = previous?.calculationInput;
@@ -3059,8 +3072,17 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
     if (deps.agentRuns === undefined || task.agent === undefined) throw budgetActorRefused();
     await requireAgentAccess(deps.agentRuns, caller, task.agent.agentId, task.agent.version === "draft" ? "edit" : "use");
   };
+  const { payer, place, projectPays } = await resolveRunPayer(deps.agentRuns, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, origin: "app", startedBy: { developerId: caller.developerId } });
+  let fundingTransition: ReturnType<typeof TaskFundingProofSchema.parse> | undefined;
+  if (task.fundingProof !== undefined) {
+    await authorize();
+    const pinned = await readTaskRecipe(deps, taskId, deps.orgId), prior = TaskFundingProofSchema.parse(task.fundingProof);
+    if (pinned?.modelPolicyPin === undefined || !isDeepStrictEqual(pinned.fundingProof, prior) || deps.agentRuns.modelRouting === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The admitted funding proof is unavailable.");
+    fundingTransition = await captureTaskFundingProof({ documentClient: deps.documentClient, tableName: deps.tableName, routing: deps.agentRuns.modelRouting, chatgpt: deps.agentRuns.stageChatgpt, now: () => deps.now() }, { orgId: deps.orgId, project: task.project, models: taskFundingModelPool(pinned.modelPolicyPin, deps.agentRuns.modelRouting.rovaraGeography), admittedProof: prior, ...(payer.kind === "member" ? { payerDeveloperId: payer.developerId } : {}) });
+    if (fundingTransition === undefined) throw agentXError("TASK_STOP_CONFIG_MISSING", "The task's own-source funding changed. Start again with current spending rules.");
+  }
   const previous = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
-  const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), requireScopeAccess: authorize }, {
+  const captured = fundingTransition === undefined ? await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), requireScopeAccess: authorize }, {
     orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project, agentId: task.agent.agentId,
     pathLimitMicrousd: previous?.calculationInput.approvedRunLimitMicrousd ?? previous?.calculationInput.pathLimitMicrousd ?? usdToWholeMicrodollars(task.budgetUsd ?? PER_TASK_BUDGET_USD) ?? null,
     ...(task.maxPerRunUsd === undefined ? {} : { committedMaxPerRunMicrousd: usdToWholeMicrodollars(task.maxPerRunUsd) ?? null }),
@@ -3068,8 +3090,7 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
     // The testing allowance belongs to historical spend; this is a new payer.
     ...(previous?.calculationInput.requestedMicrousd !== undefined ? { requestedMicrousd: previous.calculationInput.requestedMicrousd }
       : task.requestedRunLimitUsd === undefined ? {} : { requestedMicrousd: usdToWholeMicrodollars(task.requestedRunLimitUsd) ?? null }),
-  });
-  const { payer, place, projectPays } = await resolveRunPayer(deps.agentRuns, { orgId: deps.orgId, project: task.project, agentId: task.agent.agentId, origin: "app", startedBy: { developerId: caller.developerId } });
+  }) : { kind: "disabled" as const };
   if (captured.kind === "captured") {
     checkedTaskMaxPerRun(task);
     if (captured.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
@@ -3121,13 +3142,27 @@ export async function continueAsTask(deps: DeveloperTaskRouteDependencies, calle
     if (accepted === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The spending transition receipt is missing.");
     return recover(accepted);
   } else try {
-    await deps.documentClient.send(new UpdateCommand({
+    const update = {
       TableName: deps.tableName, Key: taskKey(taskId),
-      UpdateExpression: "SET origin = :app, payer = :payer, place = :place, startedBy = :startedBy, updatedAt = :now REMOVE budgetPause",
-      ConditionExpression: "origin = :test AND budgetPause.#scope.#kind = :testScope AND attribute_not_exists(closedAt)",
+      UpdateExpression: "SET origin = :app, payer = :payer, place = :place, startedBy = :startedBy, updatedAt = :now" + (fundingTransition === undefined ? "" : ", fundingProof = :nextFunding") + " REMOVE budgetPause",
+      ConditionExpression: "origin = :test AND budgetPause.#scope.#kind = :testScope AND attribute_not_exists(closedAt)" + (fundingTransition === undefined ? "" : " AND fundingProof = :priorFunding"),
       ExpressionAttributeNames: { "#scope": "scope", "#kind": "kind" },
-      ExpressionAttributeValues: { ":app": "app", ":payer": payer, ":place": place, ":startedBy": { developerId: caller.developerId }, ":now": iso(deps), ":test": "test_run", ":testScope": "test" },
-    }));
+      ExpressionAttributeValues: { ":app": "app", ":payer": payer, ":place": place, ":startedBy": { developerId: caller.developerId }, ":now": iso(deps), ":test": "test_run", ":testScope": "test", ...(fundingTransition === undefined ? {} : { ":priorFunding": task.fundingProof, ":nextFunding": fundingTransition }) },
+    };
+    if (fundingTransition === undefined) await deps.documentClient.send(new UpdateCommand(update));
+    else {
+      const agent = task.agent;
+      const agentChecks = await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: task.project, agentId: agent.agentId, draft: agent.version === "draft", frozenRecipe: true, process: agent.process === true, developerId: caller.developerId, role: caller.orgRole }, authorize,
+        async () => { if (deps.agentRuns === undefined) throw budgetActorRefused();return deps.agentRuns.store.listShares(deps.orgId, agent.agentId); });
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        { Update: update },
+        { Update: { TableName: deps.tableName, Key: taskRecipeKey(taskId), UpdateExpression: "SET fundingProof = :nextFunding", ConditionExpression: "orgId = :fundingOrg AND fundingProof = :priorFunding", ExpressionAttributeValues: { ":fundingOrg": deps.orgId, ":priorFunding": task.fundingProof, ":nextFunding": fundingTransition } } },
+        fundingRevisionCheck(deps.tableName, fundingTransition),
+        ...fundingAuditItems(deps.tableName, fundingTransition, { taskId, occurrence: request.requestId, actor: { kind: "member", id: caller.developerId }, at: deps.now() }),
+        ...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }),
+        ...await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: task.project }, authorize), ...agentChecks,
+      ] }));
+    }
   } catch (error) {
     if (!isConditional(error)) throw error;
     const now = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
