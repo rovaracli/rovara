@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { ConnectionIdSchema } from "./agent-node.js";
 import { McpToolNameSchema } from "./github-mcp.js";
+import type { WorkflowReviewFinding } from "./task-workflow.js";
 
 /** The stages that may consult a source. Build (IMPLEMENT) is deliberately absent. */
 export const CONTEXT_SOURCE_STAGES = ["UNDERSTAND", "PLAN", "PLAN_CRITIQUE", "REVIEW"] as const;
@@ -197,4 +198,28 @@ export function stripHiddenCharacters(text: string): { text: string; removed: nu
     return "";
   });
   return { text: cleaned, removed };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Citation markers and the review rule
+// ---------------------------------------------------------------------------------------------
+
+/** `[SIM P123456]`: a source's label, a space, and the item's reference. The label may have spaces (`[Team wiki PAGE-12]` reads the last word as the reference). */
+export const CITATION_MARKER = /\[([^\][\n]{1,60}?) ([^\][\s]{1,80})\]/gu;
+
+export const SOURCE_ONLY_NOTE = " (cites a source only, with no code or test, so it does not block)";
+
+/**
+ * A review finding that cites a source (`[SIM P123456]`) must also point at code or a test (`file`). One that does not is kept but made advisory, so it is read and
+ * cannot block the change. Only the finding's own words are changed; its citation stays. A review's approval is never derived from a source: nothing here turns a
+ * finding into a pass, and nothing turns a pass into one because a source said so.
+ */
+export function downgradeSourceOnlyFindings(findings: readonly WorkflowReviewFinding[], sources: readonly { label: string }[]): WorkflowReviewFinding[] {
+  const labels = new Set(sources.map((source) => source.label.toLowerCase()));
+  return findings.map((finding) => {
+    if (finding.file !== undefined || finding.advisory === true) return finding;
+    const cites = [...finding.text.matchAll(CITATION_MARKER)].some((match) => labels.has(match[1]!.toLowerCase()));
+    if (!cites) return finding;
+    return { ...finding, advisory: true, text: `${finding.text.slice(0, 600 - SOURCE_ONLY_NOTE.length)}${SOURCE_ONLY_NOTE}` };
+  });
 }

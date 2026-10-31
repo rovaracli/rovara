@@ -677,7 +677,7 @@ async function runTask(
   // The agent's shell: the devcontainer's or the sandbox's, or the local one when it was chosen.
   const agentShell = bashOperations ?? (localShell ? localBashOperations({ explicit: true }) : undefined);
   // Lane E: the project's context sources, in the stages that may read them only. Build never gets them, whatever the invocation says.
-  let sourceSession: { contextTools: ToolDefinition[]; contextNote: string } | undefined;
+  let sourceSession: { contextTools: ToolDefinition[]; contextNote: string; labels: Array<{ label: string }> } | undefined;
   if (invocation.payload.contextSources === true && isContextSourceStage(payloadMode)) {
     if (dependencies.contextSources === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the worker cannot reach this project's context sources");
     const catalog = await dependencies.contextSources.catalog();
@@ -685,6 +685,7 @@ async function runTask(
       sourceSession = {
         contextTools: createContextTools(catalog, dependencies.contextSources.call, { workspaceId: invocation.workspaceId, conversationId, operationId: invocation.operationId }),
         contextNote: contextSourcesNote(catalog),
+        labels: catalog.sources.map((source) => ({ label: source.label })),
       };
     }
   }
@@ -704,7 +705,7 @@ async function runTask(
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
         ...stepSession,
-        ...(sourceSession === undefined ? {} : sourceSession),
+        ...(sourceSession === undefined ? {} : { contextTools: sourceSession.contextTools, contextNote: sourceSession.contextNote }),
       },
       dependencies.piAdapter,
     );
@@ -718,7 +719,7 @@ async function runTask(
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
         ...stepSession,
-        ...(sourceSession === undefined ? {} : sourceSession),
+        ...(sourceSession === undefined ? {} : { contextTools: sourceSession.contextTools, contextNote: sourceSession.contextNote }),
       },
       dependencies.piAdapter,
     );
@@ -1367,6 +1368,7 @@ async function runTask(
           ...(invocation.payload.workflowReviewNote === undefined ? {} : { reviewNote: invocation.payload.workflowReviewNote }),
           ...(invocation.payload.workflowReviewers === undefined ? {} : { reviewers: invocation.payload.workflowReviewers }),
           ...(invocation.payload.workflowReviewRisk === true ? { reviewRisk: true } : {}),
+          ...(sourceSession === undefined ? {} : { sources: { tools: sourceSession.contextTools, note: sourceSession.contextNote, labels: sourceSession.labels } }),
           ...(reviewTimeoutMs === undefined ? {} : { timeoutMs: reviewTimeoutMs }),
           ...(agentStep?.promptSection === undefined ? {} : { promptSection: agentStep.promptSection }),
           ...(agentStep?.tools === undefined ? {} : { tools: agentStep.tools }),

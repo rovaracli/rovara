@@ -8,7 +8,6 @@
 // and still has authority on the project; the tool is one an admin ticked for this stage; the stage's allowance is not used up; the tool is still the tool
 // that was ticked (its hash) and still only reads (the write gate); the arguments are small, on-host and carry neither code nor a credential; and the call
 // has a time limit. What comes back is cleaned, cut, framed as data and recorded as a citation. Nothing the model supplies decides any of it.
-import { createHash } from "node:crypto";
 import {
   ContextToolCallRequestSchema,
   SEARCH_TEAM_KNOWLEDGE_TOOL,
@@ -26,7 +25,7 @@ import {
 } from "@agentx/contracts";
 import { effectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { ARGUMENT_REFUSAL_TEXT, checkArguments, contextWriteGate } from "./guards.js";
-import { UNAVAILABLE_TEXT, frameResult, inertSentence, presentTool, presentedToolName, resolvePresentedTool } from "./present.js";
+import { UNAVAILABLE_TEXT, frameResult, inertSentence, presentTool, presentedToolName, resolvePresentedTool, resultDigest } from "./present.js";
 import { toolSchemaHash, annotationVerdict, nameSuggestsWrite, type DiscoveredTool } from "./settings.js";
 import { TEAM_SEARCH_LIMIT_MAX, withoutLiveFacts, type TeamRecordSearch, type TeamRecordSink } from "./team-record.js";
 import type { UsageStore } from "./usage.js";
@@ -51,7 +50,8 @@ export interface ResultKeeper {
 }
 
 export interface CitationRecorder {
-  record(input: { orgId: OrgId; taskId: string; operationId: string; stage: string; citation: Citation }): Promise<void>;
+  /** `replay` is the call that fetched the item (the presented name and the arguments), kept server-side so that a plan check and the page can ask for it again. */
+  record(input: { orgId: OrgId; taskId: string; operationId: string; stage: string; citation: Citation; replay: { tool: string; arguments: Record<string, unknown> } }): Promise<void>;
 }
 
 /** The task's operation as the route sees it. */
@@ -249,8 +249,7 @@ async function callOne(deps: ContextToolsDependencies, run: ContextToolsRun, sou
 
     const record = firstRecord(answer.structuredContent);
     const rawText = textOf(answer) || (answer.structuredContent === undefined ? "" : JSON.stringify(answer.structuredContent));
-    const digestBasis = answer.structuredContent !== undefined ? JSON.stringify(withoutLiveFacts(answer.structuredContent, source.liveFacts)) : rawText;
-    const digest = createHash("sha256").update(digestBasis).digest("hex");
+    const digest = resultDigest({ structuredContent: answer.structuredContent, text: rawText }, source.liveFacts);
     const itemRef = inertSentence(stringField(record, ["key", "id", "number", "identifier", "ticketId", "pageId"]) ?? `${ticked.upstreamName}:${digest.slice(0, 12)}`, 200);
     const title = inertSentence(stringField(record, ["title", "summary", "name", "subject"]) ?? source.label, 200);
     const url = safeUrl(stringField(record, ["url", "webUrl", "html_url", "link"]), session.hosts);
@@ -261,7 +260,7 @@ async function callOne(deps: ContextToolsDependencies, run: ContextToolsRun, sou
 
     const citation: Citation = { sourceId: source.sourceId, itemRef, title, ...(url === undefined ? {} : { url }), fetchedAt, digest, standing };
     // The stage goes on if any of these fail: a citation or a record that is missing is a gap in the page, never a reason to lose the answer.
-    await deps.citations?.record({ orgId, taskId: run.task.taskId, operationId, stage, citation }).catch(() => deps.log?.("context_source.citation_failed", { sourceId: source.sourceId }));
+    await deps.citations?.record({ orgId, taskId: run.task.taskId, operationId, stage, citation, replay: { tool: presented, arguments: args as Record<string, unknown> } }).catch(() => deps.log?.("context_source.citation_failed", { sourceId: source.sourceId }));
     await deps.results?.keep({ orgId, taskId: run.task.taskId, operationId, sourceId: source.sourceId, itemRef, digest, text: stripForKeeping(rawText, source.limits.bytesPerResult), retention: source.retention, quotes: source.quotes, system: source.system, fetchedAt })
       .catch(() => deps.log?.("context_source.keep_failed", { sourceId: source.sourceId }));
     void deps.teamSink.seen({

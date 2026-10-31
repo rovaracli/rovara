@@ -92,3 +92,24 @@ export function frameResult(input: { source: ContextSource; itemRef: string; fet
 }
 
 export const UNAVAILABLE_TEXT = (label: string): string => `${inertSentence(label, 60)} is unavailable right now. Carry on without it and say in your answer that it was not reachable.`;
+
+/** The keys named in `liveFacts` removed at any depth: status, assignee and priority change, and are fetched fresh when shown, never stored or compared. */
+export function withoutLiveFacts(value: unknown, liveFacts: readonly string[]): unknown {
+  if (liveFacts.length === 0) return value;
+  const names = new Set(liveFacts.map((name) => name.toLowerCase()));
+  const walk = (entry: unknown, depth: number): unknown => {
+    if (depth > 12) return entry;
+    if (Array.isArray(entry)) return entry.map((item) => walk(item, depth + 1));
+    if (typeof entry === "object" && entry !== null) {
+      return Object.fromEntries(Object.entries(entry as Record<string, unknown>).filter(([name]) => !names.has(name.toLowerCase())).map(([name, item]) => [name, walk(item, depth + 1)]));
+    }
+    return entry;
+  };
+  return walk(value, 0);
+}
+
+/** The digest of an answer: of its structured part without the live facts when it has one, else of its text. The same answer gives the same digest whatever its status is now. */
+export function resultDigest(answer: { structuredContent?: unknown; text: string }, liveFacts: readonly string[]): string {
+  const basis = answer.structuredContent !== undefined ? JSON.stringify(withoutLiveFacts(answer.structuredContent, liveFacts)) : answer.text;
+  return createHash("sha256").update(basis).digest("hex");
+}
