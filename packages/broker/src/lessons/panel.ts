@@ -1,0 +1,30 @@
+// Learning v2 L5: the rows of the task page's "What the agent loaded" panel for lessons (design §1.2, §4.7). The shell of the panel belongs to the K1 design;
+// this supplies the lesson rows. A lesson from a restricted source is shown to a person who may not see that source as an opaque row: no title, no text.
+import type { LessonStore, ScopeKey } from "./store.js";
+import { isRestricted, satisfiesAcl, type IdentitySet, type Lesson } from "./types.js";
+
+export interface PanelRow {
+  stage: string; round: number; lessonId: string; version: number; why: "scope" | "similar" | "path";
+  citation: "unchecked" | "valid" | "moved" | "stale_dropped" | "unchecked_dropped" | "none";
+  /** False when the viewer may not see the lesson's source: the row then carries no text. */
+  visible: boolean;
+  title?: string; type?: Lesson["type"]; helpful?: number; harmful?: number;
+  /** "Helpful" and "Wrong here" are offered only on a lesson the viewer can see. */
+  canMark: boolean;
+}
+
+export async function lessonPanelRows(store: LessonStore, key: ScopeKey, taskId: string, viewer: IdentitySet): Promise<PanelRow[]> {
+  const rows: PanelRow[] = [];
+  for (const manifest of await store.manifests(key, taskId)) {
+    for (const entry of manifest.lessons) {
+      const lesson = await store.get(key, entry.id);
+      const base = { stage: manifest.stage, round: manifest.round, lessonId: entry.id, version: entry.version, why: entry.why, citation: entry.citation };
+      if (lesson === undefined) { rows.push({ ...base, visible: false, canMark: false }); continue; }
+      const visible = !isRestricted(lesson) || (lesson.provenance.audience.kind === "restricted" && satisfiesAcl(viewer, lesson.provenance.audience.acl));
+      rows.push(visible
+        ? { ...base, visible, title: lesson.title, type: lesson.type, helpful: lesson.counters.helpful, harmful: lesson.counters.harmful, canMark: true }
+        : { ...base, visible, canMark: false });
+    }
+  }
+  return rows;
+}
