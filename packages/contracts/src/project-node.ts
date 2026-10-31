@@ -10,6 +10,7 @@ import { E2EPolicySchema } from "./e2e-node.js";
 import { ConnectorsSchema, StoredConnectorsSchema, type GitHubConnectorConfig } from "./connectors-node.js";
 import { E2E_PROJECT_CHECK_ID } from "./e2e.js";
 import { SettingOriginSchema, type SettingOrigin } from "./provenance.js";
+import { SpecTargetSchema } from "./spec-target.js";
 
 export const OCI_DIGEST_PATTERN = /@sha256:[a-f0-9]{64}$/;
 
@@ -274,6 +275,8 @@ function projectDefinitionObject<Connectors extends z.ZodTypeAny>(connectorsSche
       developerTasks: DeveloperTaskPolicySchema.optional(),
       /** Optional trusted-scenario policy. Absence preserves the legacy workflow. */
       e2e: E2EPolicySchema.optional(),
+      /** K1 lane D: where this project's specs are written (spec-target.ts). Absent: no spec is written. */
+      specTarget: SpecTargetSchema.optional(),
       origins: ProjectOriginsSchema.optional(),
     })
     .strict();
@@ -416,11 +419,13 @@ export type ProjectDefinition = z.infer<typeof ProjectDefinitionSchema>;
  * Workers of an earlier release parse the definition with a strict schema that does not know the fields, and they are the control plane's
  * alone (the DNS firewall enforces `network`, the broker's start check the pins).
  */
-export function workerProjectDefinition<Definition extends object>(definition: Definition): Omit<Definition, "network" | "origins"> {
+export function workerProjectDefinition<Definition extends object>(definition: Definition): Omit<Definition, "network" | "origins" | "specTarget"> {
   const rest: Record<string, unknown> = { ...(definition as Record<string, unknown>) };
   delete rest.network;
   // Meta repo lane A: who set each setting is the control plane's too.
   delete rest.origins;
+  // Lane D: where specs are written is the control plane's (the broker renders and publishes them); an earlier worker's strict schema does not know it.
+  delete rest.specTarget;
   // The same for the repository pins (`installationId`, `githubRepositoryId`) and the meta role: the repository entry of an earlier worker is strict too.
   if (Array.isArray(rest.repositories)) {
     rest.repositories = rest.repositories
@@ -437,7 +442,7 @@ export function workerProjectDefinition<Definition extends object>(definition: D
         return repository;
       });
   }
-  return rest as Omit<Definition, "network" | "origins">;
+  return rest as Omit<Definition, "network" | "origins" | "specTarget">;
 }
 
 function isPureMetaRepository(entry: unknown): boolean {

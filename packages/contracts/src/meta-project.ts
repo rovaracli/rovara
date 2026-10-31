@@ -14,6 +14,7 @@ import { canonicalJson } from "./canonical-json.js";
 import { AgentXNameSchema } from "./names.js";
 import { RelativeWorkspacePathSchema } from "./project.js";
 import { GitBranchNameSchema } from "./git-branch.js";
+import { SpecTargetSchema } from "./spec-target.js";
 
 /** The config file's places, in the order they are tried. The first that exists is the file. */
 export const META_CONFIG_FILE_PATHS = [".rovara/project.yaml", ".rovara/project.yml", ".rovara/project.json"] as const;
@@ -145,8 +146,8 @@ export const MetaProjectConfigSchema = z.object({
     runbooks: knowledgePaths.optional(),
     keyDocs: knowledgePaths.optional(),
   }).strict().optional(),
-  /** Lane D's `SpecTarget` replaces this schema. */
-  specTarget: OpaqueSectionSchema.optional(),
+  /** Lane D: where a task's spec is written, and in which format (spec-target.ts). */
+  specTarget: SpecTargetSchema.optional(),
   sources: z.array(MetaConfigSourceSchema).max(META_CONFIG_MAX_SOURCES).optional(),
   /** Lane F's `IntakeChannelRef` replaces this schema. */
   intake: z.array(OpaqueSectionSchema).max(META_CONFIG_MAX_INTAKE).optional(),
