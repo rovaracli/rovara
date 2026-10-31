@@ -1,9 +1,10 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { afterEach, expect, it } from "vitest";
-import { initialJavaScriptGzipBytes, checkWebBundleBudget } from "../../scripts/web-bundle-budget.js";
+import { initialJavaScriptGzipBytes, initialJavaScriptFiles, checkWebBundleBudget } from "../../scripts/web-bundle-budget.js";
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 function fixture() {
@@ -24,4 +25,9 @@ it("never follows an asset path outside the built app", () => {
 });
 it("keeps the actual built application within the complete startup budget", () => {
  expect(() => checkWebBundleBudget("packages/web/dist/app")).not.toThrow();
+});
+it("keeps screens and contracts that only a lazy route needs out of the initial JavaScript", () => {
+ // One string from each: the decision-card tabs contract, the decision card's reject reasons, and the loaded-knowledge contract. Home loads the cards after its first paint.
+ const markers = ["second_person_required", "wrong_approach", "loadedKnowledge"], directory = "packages/web/dist/app";
+ for (const file of initialJavaScriptFiles(directory)) { const text = readFileSync(join(directory, file), "utf8");for (const marker of markers) expect(text.includes(marker), file + " holds " + marker).toBe(false); }
 });
