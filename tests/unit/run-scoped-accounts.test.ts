@@ -2,7 +2,7 @@
 // it was revoked, an existence probe says it is gone AND replaying a credential the round really held is refused; where the replay cannot run, publication is held for the token lifetime. Leases are durable
 // before the account exists, and a sweeper revokes what a crash left behind.
 import { describe, expect, it } from "vitest";
-import { RUN_SCOPED_ASSUMED_TOKEN_TTL_MS, RUN_SCOPED_DEFAULT_MAX_HOLD_MS, RUN_SCOPED_GRACE_MS, RUN_SCOPED_MAX_ROUND_MS, RUN_SCOPED_REVOKE_ATTEMPTS, RUN_SCOPED_STORE_ATTEMPTS, cognitoPresenceOf, cognitoTestPoolProvisioner, evidenceAccountsOf, holdFor, httpHookProvisioner, provisionRunScopedAccounts, revocationSettledAt,
+import { RUN_SCOPED_ASSUMED_TOKEN_TTL_MS, RUN_SCOPED_DEFAULT_MAX_HOLD_MS, RUN_SCOPED_GRACE_MS, RUN_SCOPED_MAX_ROUND_MS, RUN_SCOPED_REVOKE_ATTEMPTS, RUN_SCOPED_SESSION_PROBES_MAX, RUN_SCOPED_STORE_ATTEMPTS, cognitoPresenceOf, cognitoTestPoolProvisioner, evidenceAccountsOf, holdFor, httpHookProvisioner, provisionRunScopedAccounts, revocationSettledAt,
   revokeRunScopedAccounts, runScopedExpiry, seedCommandProvisioner, sessionStateOfStatus, sweepRunScopedLeases,
   type AccountPresence, type AccountProvisionerPort, type LeaseAlert, type AccountProvisionerPorts, type LeaseRecord, type LeaseStore, type RunScopedAccount, type RunScopedLease, type SessionCredential, type SessionState } from "../../packages/broker/src/e2e/run-scoped-accounts.js";
 import { TestEnvAccountSchema, type TestEnvAccount } from "../../packages/contracts/src/index.js";
@@ -376,6 +376,28 @@ describe("revocation and its proof (C1)", () => {
     // the same round with that credential refused is confirmed, so the test is not passing for another reason
     const dead = await revokeRunScopedAccounts({ leases: leases.slice(0, 1), accounts: all, ports: ports(live(fake())), now: NOW, sessions: new Map([["buyer", issued]]) });
     expect(dead.confirmed).toBe(true);
+  });
+  it("fix round: replays at most 32 credentials per account, and any beyond that count as uncontrolled, so the proof fails closed", async () => {
+    expect(RUN_SCOPED_SESSION_PROBES_MAX).toBe(32);
+    const issued: SessionCredential[] = Array.from({ length: 33 }, (_, index) => ({ kind: "bearer" as const, value: `bearer-value-${String(index).padStart(2, "0")}` }));
+    const replayed: string[] = [];
+    const port = live(fake());
+    const ended = new Set<string>();
+    const endSessions = port.endSessions.bind(port);
+    port.endSessions = async (input) => { ended.add(input.account.profileId); return endSessions(input); };
+    port.sessionState = async ({ account, credential }) => { replayed.push(credential.value); return ended.has(account.profileId) ? "dead" : "alive"; };
+    const report = await revokeRunScopedAccounts({ leases: leases.slice(0, 1), accounts: all, ports: ports(port), now: NOW, sessions: new Map([["buyer", issued]]), maxTokenTtlMs: 600_000 });
+    // 32 credentials, each replayed before and after; the 33rd is never replayed and is uncontrolled
+    expect(replayed).toHaveLength(64);
+    expect(replayed).not.toContain("bearer-value-32");
+    expect(report.accounts[0]?.sessionProof).toBe("unclear");
+    expect(report.confirmed).toBe(false);
+    expect(report.heldUntil).toBe("2026-11-03T10:10:00.000Z");
+    expect(revocationSettledAt(report, NOW + 599_999)).toBe(false);
+    // exactly 32 is fully proved
+    const exact = await revokeRunScopedAccounts({ leases: leases.slice(0, 1), accounts: all, ports: ports(live(fake())), now: NOW, sessions: new Map([["buyer", issued.slice(0, 32)]]) });
+    expect(exact.accounts[0]?.sessionProof).toBe("dead");
+    expect(exact.confirmed).toBe(true);
   });
   it("PC-N1: a credential that cannot be replayed (unusable, or not alive before the revoke) is uncontrolled: not confirmed until the hold runs out", async () => {
     const unusable = { kind: "header", value: "x-token-value" } as unknown as SessionCredential;
