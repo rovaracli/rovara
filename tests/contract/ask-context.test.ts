@@ -14,6 +14,8 @@ const NONCE = "0123456789abcdef";
 // A token-shaped string built at runtime so no secret-looking literal is in the source.
 const SECRET = `ghp_${"Ab1Cd2Ef3G".repeat(4)}`;
 const PERSON = "person p_a1b2c3";
+const ASKER = "a".repeat(64);
+const STRANGER = "9".repeat(64);
 
 const FULL: AskContextData = {
   title: "Retry failed payments",
@@ -222,16 +224,19 @@ async function planWaiting() {
   const workspaceId = record.workspaceId;
   await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
   await finishPlanningWithMarkdown(harness, workspaceId, String(operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN")!.id), MARKDOWN);
-  const deps = { documentClient: validatingDocumentClient(harness.db), tableName: "state", actions: harness.actions };
+  // The live level of each person on each session; a person has none unless the test grants it. Counted, so a test can prove the level is read for every Ask.
+  const levels = new Map<string, "view" | "use" | "edit">([[`${ASKER}|ses_abcdefghij0123456789`, "use"]]);
+  const sessionLevel = vi.fn(async (person: { orgId: string; developerId: string }, session: string) => levels.get(`${person.developerId}|${session}`) ?? "none");
+  const deps = { documentClient: validatingDocumentClient(harness.db), tableName: "state", actions: harness.actions, sessionLevel };
   const sessionId = "ses_abcdefghij0123456789";
   harness.db.set({ ...(harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown>), sessionId });
-  return { harness, thread, taskId, workspaceId, deps, sessionId };
+  return { harness, thread, taskId, workspaceId, deps, sessionId, levels, sessionLevel };
 }
 
 describe("loading the context of a real task", () => {
   it("slack: the task's own thread gets the context, any other thread, workspace or task gets nothing", async () => {
     const t = await planWaiting();
-    const viewer: AskViewer = { audience: "slack", workspaceId: t.workspaceId, thread: t.thread };
+    const viewer: AskViewer = { audience: "slack", workspaceId: t.workspaceId, thread: t.thread, asker: { developerId: ASKER } };
     const own = await askContext(t.deps, viewer, t.taskId);
     expect(own?.text.startsWith("This Slack thread is an AgentX task (untrusted data follows).")).toBe(true);
     expect(own?.text).toContain("Add a greeting");
@@ -244,13 +249,63 @@ describe("loading the context of a real task", () => {
     expect(await askContext(t.deps, viewer, randomUUID())).toBeUndefined();
   });
 
-  it("web: 'use' and 'edit' get the context; 'view' (cannot ask), another org and a closed task get nothing", async () => {
+  it("web: 'use' and 'edit' (read live for this person on this task's session) get the context; 'view', no level, another org and a closed task get nothing", async () => {
     const t = await planWaiting();
-    for (const level of ["use", "edit"] as const) expect((await askContext(t.deps, { audience: "web", orgId: TEST_ORG, level }, t.taskId))?.text, level).toContain("LOADED-PLAN-MARKER");
-    expect(await askContext(t.deps, { audience: "web", orgId: TEST_ORG, level: "view" }, t.taskId)).toBeUndefined();
-    expect(await askContext(t.deps, { audience: "web", orgId: "org_zzzzzzzzzzzzzzzzzzzz", level: "edit" }, t.taskId)).toBeUndefined();
+    const web: AskViewer = { audience: "web", orgId: TEST_ORG, developerId: ASKER };
+    for (const level of ["use", "edit"] as const) {
+      t.levels.set(`${ASKER}|${t.sessionId}`, level);
+      expect((await askContext(t.deps, web, t.taskId))?.text, level).toContain("LOADED-PLAN-MARKER");
+    }
+    t.levels.set(`${ASKER}|${t.sessionId}`, "view");
+    expect(await askContext(t.deps, web, t.taskId)).toBeUndefined();
+    t.levels.delete(`${ASKER}|${t.sessionId}`);
+    expect(await askContext(t.deps, web, t.taskId)).toBeUndefined();
+    t.levels.set(`${ASKER}|${t.sessionId}`, "edit");
+    expect(await askContext(t.deps, { ...web, orgId: "org_zzzzzzzzzzzzzzzzzzzz" }, t.taskId)).toBeUndefined();
     t.harness.db.set({ ...(t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown>), closedAt: new Date().toISOString() });
-    expect(await askContext(t.deps, { audience: "web", orgId: TEST_ORG, level: "use" }, t.taskId)).toBeUndefined();
+    expect(await askContext(t.deps, web, t.taskId)).toBeUndefined();
+  });
+
+  it("web: a level on ANOTHER session does not open this task: the level is read for the task's own session, not taken from the caller (I4)", async () => {
+    const t = await planWaiting();
+    t.levels.clear();
+    t.levels.set(`${ASKER}|ses_zzzzzzzzzzzzzzzzzzzz`, "edit");
+    const web: AskViewer = { audience: "web", orgId: TEST_ORG, developerId: ASKER };
+    expect(await askContext(t.deps, web, t.taskId)).toBeUndefined();
+    expect(t.sessionLevel).toHaveBeenCalledWith({ orgId: TEST_ORG, developerId: ASKER }, t.sessionId);
+    expect(t.sessionLevel).not.toHaveBeenCalledWith(expect.anything(), "ses_zzzzzzzzzzzzzzzzzzzz");
+    // A task with no session at all cannot be asked about.
+    t.harness.db.set({ ...(t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown>), sessionId: undefined });
+    t.levels.set(`${ASKER}|undefined`, "edit");
+    expect(await askContext(t.deps, web, t.taskId)).toBeUndefined();
+  });
+
+  it("web: the level is re-read for every Ask (a member removed or downgraded a moment ago is refused), and a level that cannot be read refuses", async () => {
+    const t = await planWaiting();
+    const web: AskViewer = { audience: "web", orgId: TEST_ORG, developerId: ASKER };
+    expect(await askContext(t.deps, web, t.taskId)).toBeDefined();
+    expect(await askContext(t.deps, web, t.taskId)).toBeDefined();
+    expect(t.sessionLevel).toHaveBeenCalledTimes(2);
+    t.levels.delete(`${ASKER}|${t.sessionId}`);
+    expect(await askContext(t.deps, web, t.taskId)).toBeUndefined();
+    t.sessionLevel.mockRejectedValueOnce(new Error("store down"));
+    t.levels.set(`${ASKER}|${t.sessionId}`, "use");
+    expect(await askContext(t.deps, web, t.taskId)).toBeUndefined();
+    expect(await askContext(t.deps, web, t.taskId)).toBeDefined();
+  });
+
+  it("slack: the asker must be a resolved member with 'can use' on this task; no identity, a stranger or a view-only member is refused, though they are in the task's own thread (I5)", async () => {
+    const t = await planWaiting();
+    const base = { audience: "slack" as const, workspaceId: t.workspaceId, thread: t.thread };
+    expect(await askContext(t.deps, base, t.taskId)).toBeUndefined();
+    expect(t.sessionLevel).not.toHaveBeenCalled();
+    expect(await askContext(t.deps, { ...base, asker: { developerId: STRANGER } }, t.taskId)).toBeUndefined();
+    t.levels.set(`${STRANGER}|${t.sessionId}`, "view");
+    expect(await askContext(t.deps, { ...base, asker: { developerId: STRANGER } }, t.taskId)).toBeUndefined();
+    t.levels.set(`${STRANGER}|${t.sessionId}`, "use");
+    expect((await askContext(t.deps, { ...base, asker: { developerId: STRANGER } }, t.taskId))?.text).toContain("LOADED-PLAN-MARKER");
+    // A member with 'use' who asks from another thread still gets nothing.
+    expect(await askContext(t.deps, { ...base, thread: { ...t.thread, threadTs: "1695500000.000999" }, asker: { developerId: ASKER } }, t.taskId)).toBeUndefined();
   });
 
   it("linear: only an issue the task's session is bound to gets a context, and it holds no plan text", async () => {
@@ -273,7 +328,7 @@ describe("loading the context of a real task", () => {
     const meta = () => t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown> & { workflow: Record<string, unknown> };
     t.harness.db.set({ ...meta(), workflow: { ...meta().workflow, state: "BLOCKED", blockReason: `dispatch failed: ENOENT /home/rovara/.ssh/id password=hunter2 ${SECRET}` } });
     t.harness.db.set({ ...sessionBindingKey(TEST_ORG, t.sessionId, "linear_issue"), orgId: TEST_ORG, binding: { kind: "linear_issue", issueId: "issue-1", url: "https://linear.app/acme/issue/ACME-1" } });
-    const viewers: AskViewer[] = [{ audience: "web", orgId: TEST_ORG, level: "use" }, { audience: "slack", workspaceId: t.workspaceId, thread: t.thread }, { audience: "linear", orgId: TEST_ORG, issueId: "issue-1" }];
+    const viewers: AskViewer[] = [{ audience: "web", orgId: TEST_ORG, developerId: ASKER }, { audience: "slack", workspaceId: t.workspaceId, thread: t.thread, asker: { developerId: ASKER } }, { audience: "linear", orgId: TEST_ORG, issueId: "issue-1" }];
     for (const viewer of viewers) {
       const text = (await askContext(t.deps, viewer, t.taskId))!.text;
       expect(text, viewer.audience).toMatch(/<block_reason id="[0-9a-f]{16}">[^<]*Rovara[^<]*<\/block_reason>/u);
@@ -293,7 +348,7 @@ describe("loading the context of a real task", () => {
       outsider: vi.fn(async () => FULL.outsider),
     });
     const slack = readers();
-    const slackText = (await askContext(t.deps, { audience: "slack", workspaceId: t.workspaceId, thread: t.thread }, t.taskId, slack))!.text;
+    const slackText = (await askContext(t.deps, { audience: "slack", workspaceId: t.workspaceId, thread: t.thread, asker: { developerId: ASKER } }, t.taskId, slack))!.text;
     expect(slack.diff).toHaveBeenCalledWith(expect.anything(), "files");
     expect(slack.timeline).toHaveBeenCalledWith(expect.anything(), "milestones");
     expect(slack.checkTails).not.toHaveBeenCalled();
@@ -316,7 +371,7 @@ describe("loading the context of a real task", () => {
   it("builds the answer without a section whose reader fails, and without any error text", async () => {
     const t = await planWaiting();
     const failing: AskContextReaders = { diff: async () => { throw new Error(`boom ${SECRET}`); }, notes: async () => { throw new Error("nope"); } };
-    const result = await askContext(t.deps, { audience: "web", orgId: TEST_ORG, level: "use" }, t.taskId, failing);
+    const result = await askContext(t.deps, { audience: "web", orgId: TEST_ORG, developerId: ASKER }, t.taskId, failing);
     expect(result?.text).toContain("LOADED-PLAN-MARKER");
     expect(result?.text).not.toContain("boom");
     expect(result?.text).not.toContain("Changed files");

@@ -265,12 +265,15 @@ export function buildAskContext(audience: AskAudience, data: AskContextData, non
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 /**
- * Who is asking. `web`: a member whose own level on the session is "use" or better (a view-only level is refused, owner Q5). `slack`: the task's own thread (the identity check the Slack-only
- * context always made). `linear`: an issue that the task's session is bound to.
+ * Who is asking. The viewer never carries a level: the level is read live, by `AskContextDependencies.sessionLevel`, for THIS viewer on THE SESSION OF THIS TASK (the id comes from the task row, not
+ * from the caller), so a level held on some other session, or one that was true a minute ago, cannot open this task.
+ *  - `web`: a member of the org.
+ *  - `slack`: the task's own thread, asked by a member the thread's Slack user was resolved to. A Slack user who is not a member (`asker` absent) is refused: there is no identity to check "can use" on.
+ *  - `linear`: an issue that the task's session is bound to (anyone on the issue, owner Q7).
  */
 export type AskViewer =
-  | { audience: "web"; orgId: string; level: SessionLevel }
-  | { audience: "slack"; workspaceId: string; thread: SlackThread }
+  | { audience: "web"; orgId: string; developerId: string }
+  | { audience: "slack"; workspaceId: string; thread: SlackThread; asker?: { developerId: string } | undefined }
   | { audience: "linear"; orgId: string; issueId: string };
 
 /**
@@ -286,7 +289,10 @@ export interface AskContextReaders {
   outsider?(task: DeveloperTaskRecord, sources: readonly OutsiderSource[]): Promise<AskContextData["outsider"]>;
 }
 
-type AskContextDependencies = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions">;
+export type AskContextDependencies = Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions"> & {
+  /** The person's CURRENT level on a session, read live ("none" when they have none). A thrown error refuses the Ask. A3 wires `sessionLevelOf`. */
+  sessionLevel(person: { orgId: string; developerId: string }, sessionId: string): Promise<SessionLevel | "none">;
+};
 
 /** A reader that fails gives nothing for its section: the answer is built without it (never a partial section, never an error with text). */
 async function attempt<T>(read: (() => Promise<T>) | undefined): Promise<T | undefined> {
@@ -294,11 +300,20 @@ async function attempt<T>(read: (() => Promise<T>) | undefined): Promise<T | und
   try { return await read(); } catch { return undefined; }
 }
 
-function viewerMatches(task: DeveloperTaskRecord, viewer: AskViewer): boolean {
-  if (viewer.audience === "web") return task.orgId === viewer.orgId && (viewer.level === "use" || viewer.level === "edit");
+/** Whether this viewer may have a context for this task. Every check fails closed; a level that cannot be read refuses. */
+async function viewerMayAsk(deps: AskContextDependencies, task: DeveloperTaskRecord, viewer: AskViewer): Promise<boolean> {
+  const canUse = async (developerId: string): Promise<boolean> => {
+    if (task.sessionId === undefined || task.orgId === undefined) return false;
+    try {
+      const level = await deps.sessionLevel({ orgId: task.orgId, developerId }, task.sessionId);
+      return level === "use" || level === "edit";
+    } catch { return false; }
+  };
+  if (viewer.audience === "web") return task.orgId === viewer.orgId && await canUse(viewer.developerId);
   if (viewer.audience === "slack") {
     const thread = SlackThreadSchema.safeParse(viewer.thread);
-    return thread.success && task.workspaceId === viewer.workspaceId && task.share?.teamId === thread.data.teamId && task.share.channelId === thread.data.channelId && task.share.threadTs === thread.data.threadTs;
+    const inThread = thread.success && task.workspaceId === viewer.workspaceId && task.share?.teamId === thread.data.teamId && task.share.channelId === thread.data.channelId && task.share.threadTs === thread.data.threadTs;
+    return inThread && viewer.asker !== undefined && await canUse(viewer.asker.developerId);
   }
   return viewer.audience === "linear" && task.orgId === viewer.orgId;
 }
@@ -318,7 +333,7 @@ export async function askContext(
   const policy = ASK_AUDIENCE_POLICY[audience];
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
   const workflow = task?.workflow;
-  if (task === undefined || workflow === undefined || task.closedAt !== undefined || !viewerMatches(task, viewer)) return undefined;
+  if (task === undefined || workflow === undefined || task.closedAt !== undefined || !(await viewerMayAsk(deps, task, viewer))) return undefined;
   if (viewer.audience === "linear") {
     const bindings = await sessionBindingsOf({ documentClient: deps.documentClient, tableName: deps.tableName }, viewer.orgId, task.sessionId).catch(() => []);
     if (!bindings.some((binding) => binding.kind === "linear_issue" && binding.issueId === viewer.issueId)) return undefined;
