@@ -198,6 +198,8 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
     async scrubAudienceIds(orgId, project, ids) {
       const k = key(orgId, project);
       const gone = new Set(ids);
+      // The ids are fenced FIRST: from now on no commit (a stale reader's, a rollback's) can carry them back into a snapshot.
+      await deps.store.fence(k, { sourceIds: ids });
       for (const h of await histories(k)) await everyVersion(k, h.head.id, (l) => stripAudienceIds(l, gone));
     },
     async resumePending(orgId, project) {
