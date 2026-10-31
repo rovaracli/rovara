@@ -53,6 +53,13 @@ describe("ECS runner: start", () => {
     await runnerOf(api).start(spec({ purpose: "install", serverId: "install", approval: "", family: "rovara-mcp-install", securityGroupId: undefined }));
     expect(runs[0]!.networkConfiguration.awsvpcConfiguration.securityGroups).toEqual([DEFAULT_SG]);
   });
+  it("never starts a serve or probe task in the default group (the install task's): it needs the group made for its server", async () => {
+    const { api, runs } = fakeApi();
+    const runner = runnerOf(api);
+    await expect(runner.start(spec({ securityGroupId: undefined }))).rejects.toThrow(/own security group/u);
+    await expect(runner.start(spec({ purpose: "probe", serverId: "probe0123456789", family: "rovara-mcp-probe-probe0123456789", securityGroupId: undefined }))).rejects.toThrow(/own security group/u);
+    expect(runs).toEqual([]);
+  });
   it("refuses a family that is not rovara-mcp-, tags that are not valid, a security group that is not one, and environment that is not valid, before calling ECS", async () => {
     const { api, runs } = fakeApi();
     const runner = runnerOf(api);

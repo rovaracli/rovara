@@ -50,7 +50,7 @@ export interface EcsRunnerConfig {
   cluster: string;
   /** The runner subnets (no NAT, no internet route). */
   subnets: readonly string[];
-  /** Used when a task has no security group of its own (install tasks). */
+  /** Used by an install task, which has no security group of its own. A serve or probe task is never started in it. */
   defaultSecurityGroupId: string;
   /** The port the bridge listens on. */
   bridgePort?: number;
@@ -89,6 +89,9 @@ export function ecsTaskRunner(config: EcsRunnerConfig): TaskRunner {
       if (!FAMILY.test(spec.family) || !spec.family.startsWith(RUNNER_FAMILY_PREFIX)) throw new Error("the task family is not allowed");
       if (!RUNNER_PURPOSES.includes(spec.purpose) || !SERVER_TAG.test(spec.serverId) || !APPROVAL.test(spec.approval)) throw new Error("the task's tags are not valid");
       if (spec.securityGroupId !== undefined && !SECURITY_GROUP.test(spec.securityGroupId)) throw new Error("the security group is not valid");
+      // A serve or probe task always has the group made for its server (the approved destinations only). The default group is the install task's, which reaches the registry: a task that
+      // holds customer code never falls back to it.
+      if (spec.purpose !== "install" && spec.securityGroupId === undefined) throw new Error("a serve or probe task needs its own security group");
       const containerOverrides = Object.entries(spec.containers).map(([name, variables]) => {
         if (!CONTAINER.test(name)) throw new Error("a container name is not valid");
         const entries = Object.entries(variables);
