@@ -14,7 +14,7 @@ export function taskStopBootstrapItems(tableName: string, orgId: OrgId, nowMs: n
   const occurrence = `task-stop-bootstrap-v1#${orgId}`;
   const event = AuditEventInputSchema.parse(auditTaskStopPolicySeeded({
     orgId, actor: { kind: "system", id: "rovara" }, occurredAt: at, occurrence,
-    source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: DEFAULT_AGENT_GUARDRAILS.maxPerRunCeilingUsd * 1_000_000,
+    source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: usdToWholeMicrodollars(DEFAULT_AGENT_GUARDRAILS.maxPerRunCeilingUsd)!,
   }));
   const put = (Item: Record<string, unknown>): TransactItem => ({ Put: { TableName: tableName, Item, ConditionExpression: "attribute_not_exists(pk)" } });
   return [
@@ -57,8 +57,8 @@ export async function bootstrapTaskStopPolicy(deps: { documentClient: { send(com
   }
   const guardrails = ceiling === undefined ? DEFAULT_AGENT_GUARDRAILS : AgentGuardrailsSchema.parse(ceiling.guardrails);
   if (ceiling !== undefined && (ceiling.orgId !== orgId || ceiling.entityType !== "AGENT_GUARDRAILS" || ["ceilingMicrousd", "maxPerRunCeilingUsd", "taskStopCeilingMicrousd"].some(field => Object.hasOwn(ceiling, field)) || !Number.isSafeInteger(ceiling.revision) || Number(ceiling.revision) < 1)) throw agentXError("CONFIG_INVALID", "The spending ceiling needs repair.");
-  const ceilingMicrousd = guardrails.maxPerRunCeilingUsd * 1_000_000;
-  if (!Number.isSafeInteger(ceilingMicrousd)) throw agentXError("CONFIG_INVALID", "The spending ceiling needs repair.");
+  const ceilingMicrousd = usdToWholeMicrodollars(guardrails.maxPerRunCeilingUsd);
+  if (ceilingMicrousd === undefined) throw agentXError("CONFIG_INVALID", "The spending ceiling needs repair.");
   const at = new Date(deps.now()).toISOString(), occurrence = `task-stop-upgrade-v1#${orgId}`, outcome = policy === undefined ? "created" : "preserved", revision = policy === undefined ? 1 : Number(policy.revision);
   const baseEvent = auditTaskStopPolicySeeded({ orgId, actor: { kind: "system", id: "rovara" }, occurredAt: at, occurrence, source: "upgrade", mode: "rovara_estimate", revision, ceilingMicrousd });
   const event = AuditEventInputSchema.parse({ ...baseEvent, facts: { ...baseEvent.facts, mode: outcome === "created" ? "rovara_estimate" : "preserved", outcome } });
@@ -91,7 +91,7 @@ export async function upgradeTaskStopInheritance(deps: { documentClient: { send(
     || (resource.orgId !== orgId && (!builtin || resource.orgId !== undefined))
     || (resource.agentId !== agentId && (!builtin || resource.agentId !== undefined))
     || (builtin ? resource.status !== undefined && resource.status !== "active" : resource.status !== "active")) throw agentXError("CONFIG_INVALID", "The legacy spending resource needs repair.");
-  const revision = builtin && resource.revision === undefined ? 1 : resource.revision;
+  const revision = resource.revision === undefined ? 1 : resource.revision;
   if (!Number.isSafeInteger(revision) || Number(revision) < 1) throw agentXError("CONFIG_INVALID", "The legacy spending revision needs repair.");
   if (builtin && resource.pinnedVersion !== undefined) builtinRecipe(agentId, z.number().int().positive().parse(resource.pinnedVersion));
   const explicit = Object.hasOwn(resource, "maxPerRunUsd"), kind = explicit ? "limited" : "inherit";
@@ -108,12 +108,13 @@ export async function upgradeTaskStopInheritance(deps: { documentClient: { send(
   return { outcome: "updated" };
 }
 
-/** Explicit single-project inventory item; no missing project/settings creation. */
+/** Explicit known-project inventory item; missing settings are seeded under native absence and catalog guards. */
 export async function upgradeTaskStopProjectInheritance(deps: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now: () => number }, input: { orgId: OrgId; project: string }): Promise<{ outcome: "updated" | "preserved" }> {
   const { orgId, project } = z.object({ orgId: OrgIdSchema, project: z.string().min(1).max(256) }).strict().parse(input);
   const keys = [orgMetaKey(orgId), projectAiKey(orgId, project), orgProjectCatalogKey(orgId, project)];
   const response = z.object({ Responses: z.array(z.object({ Item: z.record(z.string(), z.unknown()).optional() })).length(3) }).parse(await deps.documentClient.send(new TransactGetCommand({ TransactItems: keys.map(Key => ({ Get: { TableName: deps.tableName, Key } })) })));
-  const rows = response.Responses.map(entry => entry.Item), [org, resource, catalog] = rows;
+  const rows = response.Responses.map(entry => entry.Item), [org, stored, catalog] = rows;
+  const resource = stored ?? { ...keys[1], orgId, project, entityType: "PROJECT_AI", revision: 1, projectPays: false };
   const guards = nativeSnapshotConditions(deps.tableName, keys, rows, ["orgId", "project", "closingAt", "closedAt", "revision", "latestRevision", "taskStopPolicy", "seedProvenance"]);
   if (org?.orgId !== orgId || org.entityType !== "ORG" || org.closingAt !== undefined || org.closedAt !== undefined || resource === undefined || (resource.orgId !== undefined && resource.orgId !== orgId) || resource.entityType !== "PROJECT_AI" || resource.project !== project || !Number.isSafeInteger(resource.revision) || Number(resource.revision) < 1 || catalog === undefined || (catalog.orgId !== undefined && catalog.orgId !== orgId) || catalog.entityType !== "PROJECT_CATALOG" || catalog.name !== project || !Number.isSafeInteger(catalog.latestRevision) || Number(catalog.latestRevision) < 1) throw agentXError("CONFIG_INVALID", "The legacy project spending setting needs repair.");
   const existingPolicy = Object.hasOwn(resource, "taskStopPolicy");
@@ -124,7 +125,9 @@ export async function upgradeTaskStopProjectInheritance(deps: { documentClient: 
   const event = AuditEventInputSchema.parse({ ...base, target: { kind: "project", name: project }, facts: { mode: policy.schemaVersion === 1 ? "limited" : "inherit", source: "upgrade", revision: resource.revision, outcome: "updated" } });
   const source = guards[1]!.ConditionCheck!, catalogSource = guards[2]!.ConditionCheck!;
   const catalogWrite: TransactItem = catalog.orgId === orgId ? guards[2]! : { Update: { ...catalogSource, TableName: deps.tableName, Key: keys[2]!, UpdateExpression: "SET #seedOrg = :seedOrg", ExpressionAttributeNames: { ...catalogSource.ExpressionAttributeNames, "#seedOrg": "orgId" }, ExpressionAttributeValues: { ...catalogSource.ExpressionAttributeValues, ":seedOrg": orgId } } };
-  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [guards[0]!, catalogWrite, { Update: { TableName: deps.tableName, Key: keys[1]!, UpdateExpression: "SET #seedOrg = :seedOrg, #seedPolicy = :seedPolicy, #seedProof = :seedProof", ConditionExpression: source.ConditionExpression, ExpressionAttributeNames: { ...source.ExpressionAttributeNames, "#seedOrg": "orgId", "#seedPolicy": "taskStopPolicy", "#seedProof": "seedProvenance" }, ExpressionAttributeValues: { ...source.ExpressionAttributeValues, ":seedOrg": orgId, ":seedPolicy": policy, ":seedProof": resource.seedProvenance ?? { source: "upgrade", occurrence, reviewRequired: true, seededAt: at } } } }, { Put: { TableName: deps.tableName, Item: auditPendingItem(event, deps.now()), ConditionExpression: "attribute_not_exists(pk)" } }] }));
+  const existingWrite: TransactItem = { Update: { TableName: deps.tableName, Key: keys[1]!, UpdateExpression: "SET #seedOrg = :seedOrg, #seedPolicy = :seedPolicy, #seedProof = :seedProof", ConditionExpression: source.ConditionExpression, ExpressionAttributeNames: { ...source.ExpressionAttributeNames, "#seedOrg": "orgId", "#seedPolicy": "taskStopPolicy", "#seedProof": "seedProvenance" }, ExpressionAttributeValues: { ...source.ExpressionAttributeValues, ":seedOrg": orgId, ":seedPolicy": policy, ":seedProof": resource.seedProvenance ?? { source: "upgrade", occurrence, reviewRequired: true, seededAt: at } } } };
+  const settingsWrite: TransactItem = stored === undefined ? { Put: { TableName: deps.tableName, Item: { ...resource, taskStopPolicy: policy, seedProvenance: { source: "upgrade", occurrence, reviewRequired: true, seededAt: at } }, ConditionExpression: "attribute_not_exists(pk)" } } : existingWrite;
+  await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [guards[0]!, catalogWrite, settingsWrite, { Put: { TableName: deps.tableName, Item: auditPendingItem(event, deps.now()), ConditionExpression: "attribute_not_exists(pk)" } }] }));
   return { outcome: "updated" };
 }
 
@@ -188,4 +191,13 @@ export async function upgradeTaskStopBuiltinInventoryPage(deps: { documentClient
   }
   const next = BUILTIN_AGENT_IDS[start + page.length];
   return { examined: page.length, updated, preserved, complete: next === undefined, ...(next === undefined ? {} : { cursor: { agentId: next, registryDigest } }) };
+}
+
+/** Joins first project registration; never overwrites an existing settings row. */
+export function taskStopProjectCreationItems(tableName: string, orgId: OrgId, project: string, nowMs: number): TransactItem[] {
+ const at = new Date(nowMs).toISOString(), occurrence = `task-stop-project-bootstrap-v1#${orgId}#${project}`;
+ const base = auditTaskStopPolicySeeded({ orgId, actor: { kind: "system", id: "rovara" }, occurredAt: at, occurrence, source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: 0 });
+ const event = AuditEventInputSchema.parse({ ...base, target: { kind: "project", name: project }, facts: { mode: "inherit", source: "bootstrap", revision: 1, outcome: "created" } });
+ return [{ Put: { TableName: tableName, Item: { ...projectAiKey(orgId, project), entityType: "PROJECT_AI", orgId, project, revision: 1, projectPays: false, taskStopPolicy: { schemaVersion: 2, kind: "inherit" }, seedProvenance: { source: "bootstrap", occurrence, reviewRequired: true, seededAt: at } }, ConditionExpression: "attribute_not_exists(pk)" } },
+ { Put: { TableName: tableName, Item: auditPendingItem(event, nowMs), ConditionExpression: "attribute_not_exists(pk)" } }];
 }

@@ -410,7 +410,7 @@ describe("the project's META item at registration", () => {
   it("is written with revision 1, the catalog entry and the creator's grant in one transaction when the name must be new", async () => {
     const h = await createSingleAnswerPlanBroker({ register: false });
     const sent: Array<Record<string, unknown>> = [];
-    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => { sent.push(input); return true; }, error: { name: "InternalServerError" } });
+    h.db.injectFault({ command: "TransactWriteCommand", match: (input) => { if (!JSON.stringify(input).includes("REV#000000000001")) return false; sent.push(input); return true; }, error: { name: "InternalServerError" } });
     await expect(registerProjectFor(h.brokerInput as never, actor, { definition: definition("web"), runtimeBinding: BINDING },
       { creatorMembership: "developer", requireNewName: true, description: "The site" })).rejects.toBeDefined();
     // Nothing was written by the failed attempt: META is part of the one transaction, not a write beside it.
@@ -451,21 +451,21 @@ describe("the project's META item at registration", () => {
   it("answers PROJECT_NAME_TAKEN when the META or the catalog condition fails between the read and the commit", async () => {
     for (const codes of [["None", "ConditionalCheckFailed", "None"], ["None", "None", "ConditionalCheckFailed"], ["ConditionalCheckFailed", "ConditionalCheckFailed", "ConditionalCheckFailed"]]) {
       const h = await createSingleAnswerPlanBroker({ register: false });
-      h.db.injectFault({ command: "TransactWriteCommand", error: cancelled(...codes) });
+      h.db.injectFault({ command: "TransactWriteCommand", match: input => JSON.stringify(input).includes("REV#000000000001"), error: cancelled(...codes) });
       await expect(createWeb(h), codes.join()).rejects.toMatchObject({ code: "PROJECT_NAME_TAKEN" });
     }
   });
 
   it("finds the META item behind the creator's grant when there is one", async () => {
     const h = await createSingleAnswerPlanBroker({ register: false });
-    h.db.injectFault({ command: "TransactWriteCommand", error: cancelled("None", "None", "ConditionalCheckFailed", "None") });
+    h.db.injectFault({ command: "TransactWriteCommand", match: input => JSON.stringify(input).includes("REV#000000000001"), error: cancelled("None", "None", "ConditionalCheckFailed", "None") });
     await expect(registerProjectFor(h.brokerInput as never, actor, { definition: definition("web"), runtimeBinding: BINDING }, { creatorMembership: "developer", requireNewName: true }))
       .rejects.toMatchObject({ code: "PROJECT_NAME_TAKEN" });
   });
 
   it("answers a retryable conflict, not PROJECT_NAME_TAKEN, when the transaction only met another in flight", async () => {
     const h = await createSingleAnswerPlanBroker({ register: false });
-    h.db.injectFault({ command: "TransactWriteCommand", error: cancelled("None", "TransactionConflict", "None") });
+    h.db.injectFault({ command: "TransactWriteCommand", match: input => JSON.stringify(input).includes("REV#000000000001"), error: cancelled("None", "TransactionConflict", "None") });
     const error = await createWeb(h).catch((caught: unknown) => caught);
     expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE", statusCode: 503 });
     // Nothing was registered, so the same request works once the conflict is gone.
@@ -474,7 +474,7 @@ describe("the project's META item at registration", () => {
 
   it("does not call a failed setup-row condition a taken name: it is the admission's own error", async () => {
     const h = await createSingleAnswerPlanBroker({ register: false });
-    h.db.injectFault({ command: "TransactWriteCommand", error: cancelled("None", "None", "None", "ConditionalCheckFailed") });
+    h.db.injectFault({ command: "TransactWriteCommand", match: input => JSON.stringify(input).includes("REV#000000000001"), error: cancelled("None", "None", "None", "ConditionalCheckFailed") });
     const error = await createWeb(h).catch((caught: unknown) => caught);
     expect(error).toMatchObject({ code: "PROJECT_REVISION_MISMATCH" });
     expect(error).not.toMatchObject({ code: "PROJECT_NAME_TAKEN" });

@@ -1,3 +1,4 @@
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { upgradeTaskStopProjectInheritance } from "../../packages/broker/src/org/task-stop-bootstrap.js";
 // Plan 2, Task 16 (replaces ruling R55): on a cloud install an owner or admin of an org creates a project from a repository its own GitHub
 // connection reaches, with POST /v1/app/projects (POST /v1/dev/projects is the same route). The project is registered through the admin
@@ -63,6 +64,7 @@ async function cloudInstall(options: { roles?: Partial<Record<"maya" | "omar", O
   const orgOf = (who: Developer): OrgId => (who === OMAR ? OTHER_ORG : TEST_ORG);
   const harness = await createDeveloperTaskBroker({
     register: false,
+    audit: capturingAuditDeps(),
     orgResolver: async ({ developerId }) => (developerId === OMAR.developerId ? OTHER_ORG : TEST_ORG),
     brokerExtra: {
       cloud: true,
@@ -558,4 +560,10 @@ it("a real registered legacy project with no PROJECT_AI can be upgraded without 
  const h = await cloudInstall();expect((await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).status).toBe(201);const key = projectAiKey(TEST_ORG, "web");h.db.delete(key);
  await upgradeTaskStopProjectInheritance({ documentClient: h.db, tableName: "state", now: Date.now }, { orgId: TEST_ORG, project: "web" });
  expect(h.db.get(key)).toMatchObject({ orgId: TEST_ORG, project: "web", revision: 1, projectPays: false, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+});
+it("Spending repairs a missing PROJECT_AI through the real project and authenticated routes", async () => {
+ const h = await cloudInstall();expect((await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).status).toBe(201);const key = projectAiKey(TEST_ORG, "web");h.db.delete(key);
+ const view = await h.dev(MAYA, "GET", "/v1/app/org/task-stop-policy/projects/web/editing");expect(view.status).toBe(200);expect(view.body.sourceState).toBe("missing");
+ const applied = await h.dev(MAYA, "PUT", "/v1/app/org/task-stop-policy/projects/web", { requestId: randomUUID(), expectedRevision: view.body.revision, expectedPolicyDigest: view.body.sourceDigest, policy: { kind: "limited", stopMicrousd: 1234567 } });
+ expect(applied.status).toBe(200);expect(h.db.get(key)).toMatchObject({ revision: 1, orgId: TEST_ORG, project: "web", taskStopPolicy: { schemaVersion: 1, stopMicrousd: 1234567 } });
 });

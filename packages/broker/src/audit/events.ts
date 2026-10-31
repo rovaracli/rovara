@@ -554,11 +554,20 @@ export function auditSlackChannelDecision(input: AuditBuilderBase & { projectNam
 export function auditTaskStopPolicyChange(input: AuditBuilderBase & {
  action: "spending.policy_changed" | "spending.policy_change_requested" | "spending.policy_change_decided";
  scopeKind: "company" | "project"; project?: string; revision: number; requestId: string; proposalId?: string;
- before: { kind: string; stopMicrousd?: number }; after: { kind: string; stopMicrousd?: number }; decision?: string;
+ before: { kind: string; stopMicrousd?: number }; after: { kind: string; stopMicrousd?: number }; decision?: string; reason?: "tightening_applied";
 }): AuditEventInput {
  return build(input.action, input, input.project === undefined ? { kind: "spend_policy", id: "task_stop" } : { kind: "project", name: input.project }, {
   scopeKind: input.scopeKind, revision: input.revision, requestId: input.requestId, beforeKind: input.before.kind, afterKind: input.after.kind,
-  ...(input.proposalId === undefined ? {} : { proposalId: input.proposalId }), ...(input.decision === undefined ? {} : { decision: input.decision }),
+  ...(input.reason === undefined ? {} : { outcomeCode: input.reason }), ...(input.proposalId === undefined ? {} : { proposalId: input.proposalId }), ...(input.decision === undefined ? {} : { decision: input.decision }),
   ...(input.before.stopMicrousd === undefined ? {} : { beforeMicrousd: input.before.stopMicrousd }), ...(input.after.stopMicrousd === undefined ? {} : { afterMicrousd: input.after.stopMicrousd }),
  });
+}
+
+/** Required decision audit, committed by the caller beside the native admission or pause. */
+export function auditTaskStopDecision(input: AuditBuilderBase & {
+ action: "spending.stop_admitted" | "spending.stop_reached";
+ taskId: string; effectiveStopMicrousd: number; approvalCapMicrousd: number; policyDigest: string; admissionId: string;
+}): AuditEventInput {
+ return build(input.action, input, { kind: "task", id: input.taskId }, { effectiveStopMicrousd: input.effectiveStopMicrousd, approvalCapMicrousd: input.approvalCapMicrousd,
+  policyDigest: input.policyDigest, workKind: "task-window", admissionId: input.admissionId });
 }

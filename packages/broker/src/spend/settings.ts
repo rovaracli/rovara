@@ -191,7 +191,7 @@ export async function writeProjectAi(
     orgId, actor: auditActorOf(by), occurredAt: updatedAt, project, revision: expected + 1, after: preserved,
     before: options.before ?? current.settings,
   }));
-  const metadata = Object.fromEntries(["orgId", "project", "pendingTaskStopChange", "seedProvenance"].filter(field => original?.[field] !== undefined).map(field => [field, original![field]]));
+  const metadata = Object.fromEntries(["orgId", "project", "pendingTaskStopChange", "lastTaskStopChange", "seedProvenance"].filter(field => original?.[field] !== undefined).map(field => [field, original![field]]));
   const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...preserved, ...metadata, updatedBy: by, updatedAt }, expected);
   if (item.Put !== undefined) {
     const source = nativeSnapshotConditions(deps.tableName, [projectAiKey(orgId, project)], [original], ["taskStopPolicy", "pendingTaskStopChange", "orgId", "project", "seedProvenance"])[0]!.ConditionCheck!;

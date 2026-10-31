@@ -1,3 +1,8 @@
+import { requirePricedTaskStopAdmission } from "../org/task-stop-unpriced.js";
+import { AuditEventInputSchema } from "@agentx/contracts";
+import { projectAiKey } from "@agentx/contracts";
+import { taskStopProjectCreationItems } from "../org/task-stop-bootstrap.js";
+import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
 import { commitRegisteredProjectAllowedDomains, type AppliedDomainProposalProof } from "../org/project-allowed-domains.js";
 import { readAllowedDomainActorConditions } from "../org/second-person-evidence.js";
 import { planLegacyDomainNarrowing } from "../org/legacy-domain-narrowing.js";
@@ -2563,6 +2568,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
 
       if (request.method === "POST" && url.pathname === "/v1/admin/projects/setup-proposals") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+        await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-setup-proposals" });
         if (!dependencies.projectSetupSource) throw agentXError("RUNTIME_UNAVAILABLE", "trusted project source capture is not configured");
         const requestBody = z.object({ repositoryUrl: z.string().url().max(500), ref: z.string().min(1).max(255) }).strict().parse(body);
         const urlParts = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(requestBody.repositoryUrl);
@@ -2623,6 +2629,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
 
       if (request.method === "POST" && url.pathname === "/v1/admin/projects/setup-approvals") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+        if ((body as { decision?: unknown } | null)?.decision !== "decline") await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-setup-approvals" });
         const approvalInput = z.object({ projectName: z.string().regex(/^[a-z][a-z0-9-]{0,62}$/), proposalRef: z.string().min(1).max(512), proposalSha256: z.string().regex(/^[a-f0-9]{64}$/), decision: z.enum(["approve", "decline"]) }).strict().parse(body);
         const expectedPrefix = `project-setup-proposals/${identity.ownerKey}/`;
         if (!approvalInput.proposalRef.startsWith(expectedPrefix) || approvalInput.proposalRef !== `${expectedPrefix}${approvalInput.proposalSha256}.json`) throw agentXError("FORBIDDEN", "setup proposal reference is outside the authenticated administrator scope");
@@ -2732,6 +2739,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const modelCheck = /^\/v1\/admin\/e2e\/model-checks(?:\/([0-9a-f-]{36}))?$/.exec(url.pathname);
       if (modelCheck !== null && ((request.method === "POST" && modelCheck[1] === undefined) || (request.method === "GET" && modelCheck[1] !== undefined) || (request.method === "GET" && url.pathname.endsWith("/model-checks")))) {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+        if (request.method === "POST") await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-model-check" });
         return await adminModelChecks(dependencies, request.method, modelCheck[1], body, request.requestId);
       }
       // #343: Sign in with ChatGPT, for rovara doctor.
@@ -3434,7 +3442,7 @@ export async function registerProjectFor(
   };
   const membershipKey = membership === undefined ? undefined : { pk: membership.pk, sk: membership.sk };
   const setupAdmissionRows = setupRuntimeAdmission && setupApprovalBinding?.decision === "approve" && definition.e2e !== undefined
-    ? await createProjectSetupAdmissionRows(dependencies, actor, record, setupApprovalBinding, setupRuntimeAdmission)
+    ? await createProjectSetupAdmissionRows(dependencies, { ...actor, auditActor: actor.auditActor ?? auditActorOf(actor.ownerKey) }, record, setupApprovalBinding, setupRuntimeAdmission)
     : undefined;
   setupExecutionCreated = setupAdmissionRows !== undefined;
   await ensureInstallOrg(dependencies, orgId);
@@ -3515,6 +3523,12 @@ export async function registerProjectFor(
       if (check.ExpressionAttributeValues !== undefined) update.ExpressionAttributeValues = { ...update.ExpressionAttributeValues, ...check.ExpressionAttributeValues };
       return false;
     }) ?? [];
+    const projectSpendingItems: TransactItems = [];
+    if (snapshot.catalog === undefined && snapshot.newestRevision === 0) {
+      const key = projectAiKey(orgId, definition.name);
+      const existing = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: key, ConsistentRead: true }))).Item;
+      projectSpendingItems.push(...(existing === undefined ? taskStopProjectCreationItems(dependencies.tableName, orgId, definition.name, Date.parse(now)) : nativeSnapshotConditions(dependencies.tableName, [key], [existing], ["taskStopPolicy"])));
+    }
     const registrationItems: TransactItems = [
       { Put: { TableName: dependencies.tableName, Item: record, ConditionExpression: "attribute_not_exists(pk)" } },
       // The operator's first registration and a takeover write the registrant's administrator membership; an administrator's own is left as it is (its grant is not reissued)
@@ -3541,12 +3555,12 @@ export async function registerProjectFor(
       ...(updateCatalog ? [{ Update: {
         TableName: dependencies.tableName,
         Key: orgProjectCatalogKey(orgId, definition.name),
-        UpdateExpression: "SET entityType = :entity, #name = :name, latestRevision = :revision, firstRegisteredAt = if_not_exists(firstRegisteredAt, :now)",
+        UpdateExpression: "SET entityType = :entity, #name = :name, latestRevision = :revision, firstRegisteredAt = if_not_exists(firstRegisteredAt, :now), orgId = if_not_exists(orgId, :spendingOrg)",
         ConditionExpression: snapshot.catalog === undefined ? "attribute_not_exists(pk)"
           : snapshot.catalog.latestRevision === undefined ? "attribute_not_exists(latestRevision)"
             : "latestRevision = :observed AND latestRevision < :revision",
         ExpressionAttributeNames: { "#name": "name" },
-        ExpressionAttributeValues: { ":entity": "PROJECT_CATALOG", ":name": definition.name, ":revision": latestRevision, ":now": now,
+        ExpressionAttributeValues: { ":entity": "PROJECT_CATALOG", ":name": definition.name, ":revision": latestRevision, ":now": now, ":spendingOrg": orgId,
           ...(snapshot.catalog?.latestRevision === undefined ? {} : { ":observed": snapshot.catalog.latestRevision }) },
       } }] : []),
       // A late older revision does not update the catalog, but must still observe its same pointer.
@@ -3558,6 +3572,7 @@ export async function registerProjectFor(
       ...(setupAdmissionRows?.transactionItems ?? []),
       ...accounts.items,
       ...repositoryIndex,
+      ...projectSpendingItems,
       // The caller's own writes that must land with the project (Task 16: the creation request's record), after every item above.
       ...(options.extraItems ?? []),
       ...membershipGeneration,
@@ -3567,7 +3582,7 @@ export async function registerProjectFor(
       ];
       if (registrationItems.length > 100) throw agentXError("CONFIG_INVALID", "This project change cannot fit one transaction.");
       await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: registrationItems }));
-      await flushAuditEvents(dependencies, [...audit.events, ...(initialDomainPlan === undefined ? [] : [initialDomainPlan.event]), ...(commonDomainPlan === undefined ? [] : [commonDomainPlan.event])]);
+      await flushAuditEvents(dependencies, [...audit.events, ...projectSpendingItems.flatMap(item => item.Put?.Item?.event === undefined ? [] : [AuditEventInputSchema.parse(item.Put.Item.event)]), ...(initialDomainPlan === undefined ? [] : [initialDomainPlan.event]), ...(commonDomainPlan === undefined ? [] : [commonDomainPlan.event])]);
       if (authority === "takeover") {
         ownershipTakenOver = true;
         console.log(JSON.stringify({ component: "broker", event: "project.ownership_taken_over", project: definition.name, revision: definition.revision, takenBy: actor.ownerKey }));
@@ -3843,13 +3858,14 @@ async function ensureProjectCatalogPointer(dependencies: AwsBrokerDependencies, 
 
 async function createProjectSetupAdmissionRows(
   dependencies: AwsBrokerDependencies,
-  identity: Pick<AuthenticatedIdentity, "ownerKey" | "orgId">,
+  identity: Pick<AuthenticatedIdentity, "ownerKey" | "orgId"> & { auditActor: AuditActor },
   project: RegisteredProjectRecord,
   setupApproval: NonNullable<RegisteredProjectRecord["setupApproval"]>,
   runtime: NonNullable<ReturnType<typeof admitProjectSetupRuntime>>,
   retry?: { attemptId: string; retryOfExecutionId: string },
 ): Promise<{ transactionItems: Array<Record<string, unknown>> } | undefined> {
   if (!dependencies.projectSetupRuntimeCatalogId || project.runtimeBinding.deploymentMode !== "ec2-ebs") return undefined;
+  await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: identity.auditActor, workKind: "admin-setup-execution" });
   const endpoint = new URL(runtime.endpoint);
   if (endpoint.protocol !== "http:" || !z.ipv4().safeParse(endpoint.hostname).success) return undefined;
   const approval = await getItem<Record<string, unknown>>(dependencies, projectSetupApprovalKey(requireOrgId(identity.orgId), project.definition.name, setupApproval.proposalSha256));
@@ -4029,6 +4045,7 @@ async function retryProjectSetupAsAdministrator(
     && priorOperation.data.fence === parked.data.fence && priorOperation.data.transportCorrelationId === parked.data.transportCorrelationId;
   if (!parkedRetry && !expiredDispatchRetry) throw agentXError("STALE_FENCE", "only an owned parked setup execution or an expired matching dispatch can be retried");
   if (identity.ownerKey !== parked.data.ownerKey) throw agentXError("FORBIDDEN", "setup retry actor must be the original project creator");
+  await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-setup-retry" });
   const project = await requireRecordProject(dependencies, parked.data, parked.data.projectName, parked.data.projectRevision);
   await requireAdministrator(dependencies, identity, parked.data.projectName);
   if (project.runtimeBinding.deploymentMode !== "ec2-ebs") throw agentXError("RUNTIME_UNAVAILABLE", "the approved setup runtime profile is unavailable");
@@ -4071,7 +4088,7 @@ async function retryProjectSetupAsAdministrator(
     return { setupExecutionId: prior.setupExecutionId, operationId: prior.operationId, status: "QUEUED", duplicate: true };
   }
   const setupApproval = project.setupApproval;
-  const rows = await createProjectSetupAdmissionRows(dependencies, identity, project, setupApproval, admittedRuntime,
+  const rows = await createProjectSetupAdmissionRows(dependencies, { ...identity, auditActor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) } }, project, setupApproval, admittedRuntime,
     { attemptId: input.requestId, retryOfExecutionId: setupExecutionId });
   if (!rows) throw agentXError("RUNTIME_UNAVAILABLE", "the approved source-interface setup run cannot be admitted");
   const executionPut = rows.transactionItems.find((item) => "Put" in item && (item as { Put: { Item?: { entityType?: unknown } } }).Put.Item?.entityType === "PROJECT_SETUP_EXECUTION") as { Put: { Item: Record<string, unknown> } } | undefined;
@@ -4153,6 +4170,7 @@ async function prepareWorkspace(
     const workspace = await requireWorkspace(dependencies, idempotency.workspaceId);
     return { operationId: idempotency.operationId, workspace: publicWorkspace(workspace), alreadyReady: workspace.status === "READY", duplicate: true };
   }
+  await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-workspace-prepare" });
   const project = await requireProject(dependencies, requireOrgId(identity.orgId), projectName, projectRevision);
   const existing = await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), targetOwnerKey, projectName);
   if (existing) {
@@ -18677,6 +18695,7 @@ async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, identity:
     const records = await listWorkflowE2EReplayRecords(store, taskId, roundId.data);
     return { sourceRoundId: roundId.data, replays: records.map(replayRecordView) };
   }
+  await requirePricedTaskStopAdmission(dependencies, { orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-e2e-replay" });
   const { roundId } = z.object({ roundId: z.string().uuid() }).strict().parse(value);
   // A replay runs a runner for the task's org, so on a cloud install it is admitted like any other launch: a locked trial, or a month of machine time used up, refuses it before anything is created.
   if (dependencies.cloud === true) {

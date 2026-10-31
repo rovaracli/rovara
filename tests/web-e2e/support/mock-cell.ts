@@ -71,7 +71,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/admin-invites" && method === "POST" && current.name === "admin") { await adminDirectory.seedInvites();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-lose-create-ack" && method === "POST" && current.name === "admin") { adminLoseCreateAck = true;json(200,{ok:true});return; }
  if (url.pathname === "/__mock/b34-slack-links" && method === "POST" && current.name === "admin") { adminDirectory.seedSlackLinks();json(200, { ok: true });return; }
- if (url.pathname === "/__mock/m47-task-stops" && method === "POST" && current.name === "admin") { adminDirectory.seedTaskStops();json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/m47-task-stops" && method === "POST" && current.name === "admin") { adminDirectory.seedTaskStops(url.searchParams.get("missingProject") === "1");json(200, { ok: true });return; }
  if (url.pathname === "/__mock/admin-evidence" && method === "GET" && current.name === "admin") { json(200, adminDirectory.evidence());return; }
  if (url.pathname === "/__mock/admin-source-drift" && method === "POST" && current.name === "admin") { adminDirectory.changeSourceOrder();json(200,{ok:true});return; }
  if (url.pathname === "/__mock/admin-target-owner" && method === "POST" && current.name === "admin") { adminDirectory.setRole("b".repeat(64), "owner");json(200, { ok: true });return; }

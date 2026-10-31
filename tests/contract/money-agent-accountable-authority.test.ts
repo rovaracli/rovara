@@ -129,6 +129,9 @@ for(const legacy of [false,true])it(`builtin approval ${legacy?"legacy request w
  expect((await t.api(ADA,"PUT",path+"/accountable",{accountable:{developerId:ADA.developerId}})).status).toBe(200);
  expect((await t.api(ADA,"PUT",path+"/budget",{monthlyUsd:30})).status).toBe(200);await t.budgeted(40,DEB);await t.budgeted(40,DEB);
  const reply=await t.api(DEB,"PUT",path+"/accountable",{accountable:{developerId:DEB.developerId}});expect(reply.status).toBe(202);const requestId=String(reply.body.spendRequestId);
- if(legacy){const key=spendRequestKey(TEST_ORG,requestId),{forOwner:_forOwner,...record}=t.db.get(key)!;void _forOwner;t.db.set(record);await t.decide(ADA,requestId);expect((await t.deps().store.getBuiltinSettings(TEST_ORG,id))?.accountable).toEqual({developerId:DEB.developerId});expect(t.requests().find(r=>r.spendRequestId===requestId)?.status).toBe("APPROVED");}
+ if(legacy){const key=spendRequestKey(TEST_ORG,requestId),{forOwner:_forOwner,...record}=t.db.get(key)!;void _forOwner;t.db.set(record);
+  await expect(t.decide(ADA,requestId)).rejects.toMatchObject({code:"SPENDING_APPROVAL_STALE"});
+  expect((await t.deps().store.getBuiltinSettings(TEST_ORG,id))?.accountable).toEqual({developerId:ADA.developerId});
+  expect(t.requests().find(r=>r.spendRequestId===requestId)?.status).toBe("EXPIRED");}
  else {await t.decide(ADA,requestId);expect((await t.deps().store.getBuiltinSettings(TEST_ORG,id))?.accountable).toEqual({developerId:DEB.developerId});expect(t.requests().find(r=>r.spendRequestId===requestId)?.status).toBe("APPROVED");}
 });

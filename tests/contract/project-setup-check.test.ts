@@ -658,12 +658,11 @@ describe("the setup check's workspace and slot (final review I3)", () => {
   });
 });
 
-it("M47 a command-only setup check keeps machine admission and never mints model budget", async () => {
+it("M47 setup-check refuses enrolled work without a trusted dollar admission basis", async () => {
   const access = fakeModelAccess(), h = await harness({ brokerExtra: { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" } } });
   h.db.set({ ...orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1,
     policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 0 } }, enrollment: { version: 1, state: "enabled" } });
-  const { workspaceId, operationId } = await started(h);
-  expect(h.db.find(row => row.entityType === "OPERATION" && row.workspaceId === workspaceId && row.id === operationId)).toHaveLength(1);
-  expect(h.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  expect(rejection(await check(h, OMAR))).toMatchObject({ status: 409, code: "TASK_STOP_CONFIG_MISSING" });
+  expect(h.db.find(row => row.entityType === "WORKSPACE" || row.entityType === "OPERATION" || row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
   expect(access.mintedKeys()).toHaveLength(0);
 });

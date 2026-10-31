@@ -1,3 +1,4 @@
+import { afterProjectBootstrap } from "../support/transaction-audit.js";
 // Task 18: the Audit Ledger's hooks in Plan 2's code. Each audited action adds its pending audit item to the DynamoDB transaction that
 // commits the action, so the action and its audit item are written together or not at all; the flush after the commit is best effort.
 //
@@ -132,8 +133,8 @@ describe("member.role_changed", () => {
       actor: { kind: "member", id: OMAR.developerId }, target: { kind: "member", id: MAYA.developerId },
       occurredAt: expect.any(String) as string, facts: { fromRole: "member", toRole: "admin" },
     }]);
-    expect(capture.flushed().map((event) => event.action)).toEqual(["member.role_changed"]);
-    expect(capture.pending()).toEqual([]);
+    expect(afterProjectBootstrap(capture.flushed()).map((event) => event.action)).toEqual(["member.role_changed"]);
+    expect(afterProjectBootstrap(capture.pending())).toEqual([]);
   });
 
   it("one request id on different targets or roles records each change (the request id alone is not the occurrence)", async () => {
@@ -162,7 +163,7 @@ describe("member.role_changed", () => {
     const refused = await change(OMAR, "member");
     expect(errorOf(refused)).toMatchObject({ code: "LAST_OWNER" });
     expect((await change({ ...MAYA, developerId: "f".repeat(64) }, "admin")).status).toBe(404);
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
   });
 
   it("commits the role and the audit item together or not at all", async () => {
@@ -172,7 +173,7 @@ describe("member.role_changed", () => {
     const failed = await h.dev(OMAR, "PUT", `/v1/app/org/members/${MAYA.developerId}/role`, { requestId: randomUUID(), role: "admin" });
     expect(failed.status).toBeGreaterThanOrEqual(500);
     expect(h.db.get(orgMemberKey(TEST_ORG, MAYA.developerId))).toMatchObject({ role: "member" });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
   });
 
   it("answers as today when the intake queue never answers; the event waits as a pending item", async () => {
@@ -183,7 +184,7 @@ describe("member.role_changed", () => {
     const changed = await settle(pending);
     expect(changed.status).toBe(200);
     expect(h.db.get(orgMemberKey(TEST_ORG, MAYA.developerId))).toMatchObject({ role: "admin" });
-    expect(capture.pending().map((event) => event.action)).toEqual(["member.role_changed"]);
+    expect(afterProjectBootstrap(capture.pending()).map((event) => event.action)).toEqual(["member.role_changed"]);
   });
 });
 
@@ -223,12 +224,12 @@ describe("member.removed and member.left", () => {
     const h = await orgBroker(capture);
     expect(errorOf(await h.dev(MAYA, "DELETE", `/v1/app/org/members/${OMAR.developerId}`))).toMatchObject({ code: "FORBIDDEN" });
     expect(errorOf(await h.dev(OMAR, "POST", "/v1/app/org/leave", { requestId: randomUUID() }))).toMatchObject({ code: "LAST_OWNER" });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
 
     h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AUDIT_PENDING#"), error: { name: "InternalServerError" } });
     expect((await h.dev(OMAR, "DELETE", `/v1/app/org/members/${MAYA.developerId}`)).status).toBeGreaterThanOrEqual(500);
     expect(h.db.get(orgMemberKey(TEST_ORG, MAYA.developerId))).toBeDefined();
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
     // The retry removes and records once.
     expect((await h.dev(OMAR, "DELETE", `/v1/app/org/members/${MAYA.developerId}`)).status).toBe(200);
     expect(capture.recordedBy("member.removed")).toHaveLength(1);
@@ -289,7 +290,7 @@ describe("org.closed", () => {
     })]);
     expect(capture.recordedBy("audit.org_shred_scheduled")).toHaveLength(1);
     // The flush sent both; nothing is left pending.
-    expect(capture.pending()).toEqual([]);
+    expect(afterProjectBootstrap(capture.pending())).toEqual([]);
   });
 
   it("a close that fails in its transaction records and schedules nothing, and the retry does both once", async () => {
@@ -299,7 +300,7 @@ describe("org.closed", () => {
     await expect(store.closeOrg(TEST_ORG, hooks)).rejects.toMatchObject({ name: "InternalServerError" });
     expect(db.get(orgMetaKey(TEST_ORG))?.closedAt).toBeUndefined();
     expect(db.find((item) => item.pk === "AUDIT_SHRED_DUE")).toEqual([]);
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
 
     await store.closeOrg(TEST_ORG, hooks);
     expect(capture.recordedBy("org.closed")).toHaveLength(1);
@@ -310,9 +311,9 @@ describe("org.closed", () => {
     const capture = capturingAuditDeps();
     const { db, store, hooks } = setup(capture);
     await store.closeOrg(TEST_ORG, hooks);
-    const before = capture.recorded().length;
+    const before = afterProjectBootstrap(capture.recorded()).length;
     await store.closeOrg(TEST_ORG, hooks);
-    expect(capture.recorded()).toHaveLength(before);
+    expect(afterProjectBootstrap(capture.recorded())).toHaveLength(before);
     expect(db.find((item) => item.pk === "AUDIT_SHRED_DUE")).toHaveLength(1);
   });
 
@@ -416,10 +417,10 @@ describe("member.joined", () => {
     capture.attach(db);
     const store = new OrgStore({ documentClient: db, tableName: AUDIT_CAPTURE_TABLE, now: () => T0, audit: capture.audit });
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "dev-owner" });
-    const before = capture.recorded().length;
+    const before = afterProjectBootstrap(capture.recorded()).length;
     await expect(store.addMember({ orgId, developerId: "dev-owner", role: "member" })).rejects.toMatchObject({ code: "ALREADY_IN_ORG" });
     await expect(store.createOrgWithOwner({ name: "Second", developerId: "dev-owner" })).rejects.toMatchObject({ code: "ALREADY_IN_ORG" });
-    expect(capture.recorded().length).toBe(before);
+    expect(afterProjectBootstrap(capture.recorded()).length).toBe(before);
   });
 
   it("records nothing for an invite that is used, expired or refused, and a second acceptance records nothing", async () => {
@@ -436,7 +437,7 @@ describe("member.joined", () => {
     const { db, store } = await inviteWorld(capture);
     db.set({ ...developerOrgKey("dev-new"), entityType: "DEVELOPER_ORG", orgId: TEST_ORG, role: "member", joinedAt: "x" });
     await expect(store.acceptInvite({ tokenHash: TOKEN_HASH(), developerId: "dev-new" })).rejects.toMatchObject({ code: "ALREADY_IN_ORG" });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
     expect(await store.acceptInvite({ tokenHash: TOKEN_HASH(), developerId: "dev-fresh" })).toMatchObject({ role: "admin" });
     expect(capture.recordedBy("member.joined")).toHaveLength(1);
   });
@@ -493,7 +494,7 @@ describe("identity.linked and identity.unlinked", () => {
       actor: { kind: "member", id: cloudId }, target: { kind: "member", id: cloudId }, occurredAt: at, facts: { provider: "github" },
     }]);
     expect(db.get(signInIdentityKey(githubId))).toMatchObject({ developerId: cloudId, provider: "github" });
-    expect(capture.pending()).toEqual([]);
+    expect(afterProjectBootstrap(capture.pending())).toEqual([]);
   });
 
   it("a repeat sign-in records nothing, and a second link that races the first records nothing", async () => {
@@ -524,7 +525,7 @@ describe("identity.linked and identity.unlinked", () => {
     const { db, store } = signInWorld(capture, { inOrg: false });
     expect(await store.linkIdentity(githubLink)).toMatchObject({ created: true });
     expect(db.get(signInIdentityKey(githubId))).toBeDefined();
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
   });
 
   it("an identity unlinked earlier and now linked to its own developer again is a new link and records one", async () => {
@@ -549,7 +550,7 @@ describe("identity.linked and identity.unlinked", () => {
       error: { name: "TransactionCanceledException" },
     });
     expect(await store.linkIdentity({ ...githubLink, developerId: githubId })).toEqual({ developerId: githubId, created: false });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
   });
 
   it("the link and its audit item are written together or not at all", async () => {
@@ -558,7 +559,7 @@ describe("identity.linked and identity.unlinked", () => {
     db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
     await expect(store.linkIdentity(githubLink)).rejects.toMatchObject({ name: "InternalServerError" });
     expect(db.get(signInIdentityKey(githubId))).toBeUndefined();
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
     expect(await store.linkIdentity(githubLink)).toMatchObject({ created: true });
     expect(capture.recordedBy("identity.linked")).toHaveLength(1);
   });
@@ -597,7 +598,7 @@ describe("identity.linked and identity.unlinked", () => {
     db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
     await expect(store.unlinkIdentity({ developerId: cloudId, sessionId: SESSION_ID, provider: "github" })).rejects.toMatchObject({ name: "InternalServerError" });
     expect(db.get(developerIdentityKey(cloudId, githubId))).toBeDefined();
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
   });
 
   it("adding a removed method back records identity.linked, in the relink's transaction", async () => {
@@ -617,7 +618,7 @@ describe("identity.linked and identity.unlinked", () => {
     const linked = await settle(store.linkIdentity(githubLink));
     expect(linked).toMatchObject({ created: true });
     expect(db.get(signInIdentityKey(githubId))).toBeDefined();
-    expect(capture.pending().map((event) => event.action)).toEqual(["identity.linked"]);
+    expect(afterProjectBootstrap(capture.pending()).map((event) => event.action)).toEqual(["identity.linked"]);
   });
 });
 
@@ -718,7 +719,7 @@ describe("github.connected: confirmGithubConnect", () => {
       facts: { accountType: "Organization", result: "connected" }, details: [{ subject: "org", fields: { accountLogin: "acme" } }],
     }]);
     expect(JSON.stringify(capture.recordedBy("github.connected")[0]!.facts)).not.toContain("acme");
-    expect(capture.pending()).toEqual([]);
+    expect(afterProjectBootstrap(capture.pending())).toEqual([]);
   });
 
   it("records connected_trial_used when the GitHub account already started another organization's trial", async () => {
@@ -745,7 +746,7 @@ describe("github.connected: confirmGithubConnect", () => {
     w.bound(502, { orgId: ORG_B });
     expect(await confirm(w, w.confirmable({ installationId: 502 }))).toMatchObject({ outcome: "taken" });
     expect(await confirm(w, sha("unknown"))).toMatchObject({ outcome: "expired" });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
 
     const connect = w.confirmable({ installationId: 503 });
     await confirm(w, connect);
@@ -760,7 +761,7 @@ describe("github.connected: confirmGithubConnect", () => {
     w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AUDIT_PENDING#"), error: { name: "InternalServerError" } });
     expect(await confirm(w, connect)).toMatchObject({ outcome: "expired" });
     expect(w.db.get(githubInstallationKey(501))).toBeUndefined();
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
   });
 
   it("answers as today when the intake queue never answers", async () => {
@@ -770,7 +771,7 @@ describe("github.connected: confirmGithubConnect", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     expect(await settle(confirm(w, connect))).toMatchObject({ outcome: "connected" });
     expect(w.db.get(githubInstallationKey(501))).toMatchObject({ orgId: TEST_ORG });
-    expect(capture.pending().map((event) => event.action)).toEqual(["github.connected"]);
+    expect(afterProjectBootstrap(capture.pending()).map((event) => event.action)).toEqual(["github.connected"]);
   });
 });
 
@@ -816,7 +817,7 @@ describe("github.connected: bindRequestedInstallation", () => {
     expect(await bindRequestedInstallation(w.deps, "d-none", { ...w.created(), requester: null })).toBe("ignored");
     expect(await bindRequestedInstallation(w.deps, "d-stranger", { ...w.created(), requester: { id: 9999, login: "stranger" } })).toBe("ignored");
     expect(await bindRequestedInstallation(w.deps, "d-early", { ...w.created(), installation: { ...w.created().installation, created_at: new Date(GH_NOW - 3 * HOUR).toISOString() } })).toBe("ignored");
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
 
     expect(await bindRequestedInstallation(w.deps, "d-good", w.created())).toBe("bound");
     expect(await bindRequestedInstallation(w.deps, "d-good", w.created())).toBe("ignored");
@@ -830,7 +831,7 @@ describe("github.connected: bindRequestedInstallation", () => {
     w.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AUDIT_PENDING#"), error: { name: "InternalServerError" } });
     await expect(bindRequestedInstallation(w.deps, "d-try", w.created())).rejects.toMatchObject({ name: "InternalServerError" });
     expect(w.db.get(githubInstallationKey(601))).toBeUndefined();
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
     expect(await bindRequestedInstallation(w.deps, "d-try", w.created())).toBe("bound");
     expect(capture.recordedBy("github.connected")).toHaveLength(1);
   });
@@ -863,7 +864,7 @@ describe("github.disconnected", () => {
     w.bound(502, { orgId: ORG_B });
     await expect(disconnectGithubInstallation(w.deps, { ...owner, orgRole: "member" }, 501)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(disconnectGithubInstallation(w.deps, owner, 502)).rejects.toMatchObject({ code: "NOT_FOUND" });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
     await disconnectGithubInstallation(w.deps, owner, 501);
     await expect(disconnectGithubInstallation(w.deps, owner, 501)).rejects.toMatchObject({ code: "NOT_FOUND" });
     expect(capture.recordedBy("github.disconnected")).toHaveLength(1);
@@ -916,7 +917,7 @@ describe("github.installation_changed", () => {
     w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
     await expect(applyInstallationLifecycle(w.deps, "delivery-1", { kind: "installation", action: "deleted", installationId: 501 })).rejects.toMatchObject({ name: "InternalServerError" });
     expect(w.db.get(githubInstallationKey(501))).toMatchObject({ status: "active" });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
     expect(await applyInstallationLifecycle(w.deps, "delivery-1", { kind: "installation", action: "deleted", installationId: 501 })).toBe("applied");
     expect(capture.recordedBy("github.installation_changed")).toHaveLength(1);
   });
@@ -1046,7 +1047,7 @@ describe("egress_domain.decided", () => {
       details: [{ subject: "org", fields: { project: "web" } }],
     });
     expect(JSON.stringify(event!.actor)).not.toContain("staff-subject");
-    expect(capture.pending()).toEqual([]);
+    expect(afterProjectBootstrap(capture.pending())).toEqual([]);
   });
 
   it("records a rejection with the reason in the details", async () => {
@@ -1090,7 +1091,7 @@ describe("egress_domain.decided", () => {
     const w = await egressWorld(capture);
     const decide = (domain: string) => decideEgressDomain(w.deps, { orgId: TEST_ORG, owner: WEB, domain, decision: "approved", operatorId: "staff-subject", requestId: randomUUID(), auditActor: { kind: "operator", id: operator } });
     await expect(decide("unknown.acme.dev")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
     await decide("a.acme.dev");
     await expect(decide("a.acme.dev")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(capture.recordedBy("egress_domain.decided")).toHaveLength(1);
@@ -1102,7 +1103,7 @@ describe("egress_domain.decided", () => {
     const decide = () => decideEgressDomain(w.deps, { orgId: TEST_ORG, owner: WEB, domain: "a.acme.dev", decision: "approved", operatorId: "staff-subject", requestId: randomUUID(), auditActor: { kind: "operator", id: operator } });
     w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
     await expect(decide()).rejects.toMatchObject({ name: "InternalServerError" });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
     expect((w.db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).domains[0]).toMatchObject({ status: "pending" });
 
     w.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }] } });
@@ -1116,7 +1117,7 @@ describe("egress_domain.decided", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await settle(decideEgressDomain(w.deps, { orgId: TEST_ORG, owner: WEB, domain: "a.acme.dev", decision: "approved", operatorId: "staff-subject", requestId: randomUUID(), auditActor: { kind: "operator", id: operator } }));
     expect((w.db.get(egressDomainsKey(TEST_ORG, WEB)) as unknown as EgressDomainsItem).domains[0]).toMatchObject({ status: "approved" });
-    expect(capture.pending().map((event) => event.action)).toEqual(["egress_domain.decided"]);
+    expect(afterProjectBootstrap(capture.pending()).map((event) => event.action)).toEqual(["egress_domain.decided"]);
   });
 
   it("POST /v1/admin/egress/approve and /reject record the decision with the staff member's pseudonym, never their subject", async () => {
@@ -1185,7 +1186,7 @@ describe("project_member.changed and project_member.removed", () => {
       eventId: auditEventId("project_member.changed", auditOccurrence(requestId, "payments", SAM, "viewer")), orgId: TEST_ORG, action: "project_member.changed", actor: { kind: "member", id: PRIYA },
       target: { kind: "project", name: "payments" }, occurredAt: "2026-10-21T12:00:00.000Z", related: [SAM], facts: { toRole: "viewer" },
     }]);
-    expect(capture.pending()).toEqual([]);
+    expect(afterProjectBootstrap(capture.pending())).toEqual([]);
   });
 
   it("a change of role records the role the person had and the role they have", async () => {
@@ -1236,7 +1237,7 @@ describe("project_member.changed and project_member.removed", () => {
     const capture = capturingAuditDeps();
     const w = memberWorld(capture);
     expect(await w.remove()).toMatchObject({ removed: false });
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
   });
 
   it("the grant and its event are written together or not at all", async () => {
@@ -1245,7 +1246,7 @@ describe("project_member.changed and project_member.removed", () => {
     w.db.injectFault({ command: "TransactWriteCommand", error: { name: "InternalServerError" } });
     await expect(w.set("viewer")).rejects.toMatchObject({ name: "InternalServerError" });
     expect(w.db.get(projectMemberKey(TEST_ORG, SAM, "payments"))).toBeUndefined();
-    expect(capture.recorded()).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded())).toEqual([]);
     await w.set("viewer");
     expect(capture.recordedBy("project_member.changed")).toHaveLength(1);
   });
@@ -1255,7 +1256,7 @@ describe("project_member.changed and project_member.removed", () => {
     const w = memberWorld(capture);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     expect(await settle(w.set("viewer"))).toEqual({ developerId: SAM, role: "viewer" });
-    expect(capture.pending().map((event) => event.action)).toEqual(["project_member.changed"]);
+    expect(afterProjectBootstrap(capture.pending()).map((event) => event.action)).toEqual(["project_member.changed"]);
   });
 
   it("through the routes: PUT and DELETE /v1/app/projects/{name}/members/{id} record the change and the removal for the maintainer who made them", async () => {
@@ -1283,8 +1284,8 @@ describe("a refusal keeps its meaning when the transaction carries an audit item
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
     await store.addMember({ orgId, developerId: "dev-2", role: "owner" });
     // The two joins that made the org are recorded too; what a test looks at is what comes after them.
-    const setupIds = new Set(capture.recorded().map(event => event.eventId));
-    const afterSetup = () => capture.recorded().filter(event => !setupIds.has(event.eventId));
+    const setupIds = new Set(afterProjectBootstrap(capture.recorded()).map(event => event.eventId));
+    const afterSetup = () => afterProjectBootstrap(capture.recorded()).filter(event => !setupIds.has(event.eventId));
     const beforeTransaction = (change: () => void) => {
       let armed = true;
       const real = db.send.bind(db) as (command: unknown) => Promise<unknown>;
@@ -1343,7 +1344,7 @@ describe("answers as today when the intake queue never answers (the remaining si
     expect((await settle(h.dev(MAYA, "POST", "/v1/app/org/leave", { requestId: randomUUID() }))).status).toBe(200);
     expect(h.db.get(orgMemberKey(TEST_ORG, carl.developerId))).toBeUndefined();
     expect(h.db.get(orgMemberKey(TEST_ORG, MAYA.developerId))).toBeUndefined();
-    expect(capture.pending().map((event) => event.action).sort()).toEqual(["member.left", "member.removed"]);
+    expect(afterProjectBootstrap(capture.pending()).map((event) => event.action).sort()).toEqual(["member.left", "member.removed"]);
   });
 
   it("closing an org", async () => {
@@ -1358,7 +1359,7 @@ describe("answers as today when the intake queue never answers (the remaining si
     await settle(store.closeOrg(TEST_ORG, { archiveProjects: async () => undefined, clearEgress: async () => undefined }));
     expect(db.get(orgMetaKey(TEST_ORG))?.closedAt).toBeDefined();
     expect(db.find((item) => item.pk === "AUDIT_SHRED_DUE")).toHaveLength(1);
-    expect(capture.pending().map((event) => event.action).sort()).toEqual(["audit.org_shred_scheduled", "org.closed"]);
+    expect(afterProjectBootstrap(capture.pending()).map((event) => event.action).sort()).toEqual(["audit.org_shred_scheduled", "org.closed"]);
   });
 
   it("accepting an invite, creating an org and joining one", async () => {
@@ -1371,8 +1372,8 @@ describe("answers as today when the intake queue never answers (the remaining si
     expect(await settle(store.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: "dev-new" }))).toMatchObject({ orgId });
     await settle(store.addMember({ orgId, developerId: "dev-third", role: "member" }));
     expect(db.get(orgMemberKey(orgId, "dev-new"))).toBeDefined();
-    expect(capture.pending().filter(event => event.action === "member.joined").map((event) => event.facts?.via).sort()).toEqual(["invite", "org_created", "sign_in"]);
-    expect(capture.pending().filter(event => event.action === "org.invite_created").length).toBe(1);
+    expect(afterProjectBootstrap(capture.pending()).filter(event => event.action === "member.joined").map((event) => event.facts?.via).sort()).toEqual(["invite", "org_created", "sign_in"]);
+    expect(afterProjectBootstrap(capture.pending()).filter(event => event.action === "org.invite_created").length).toBe(1);
   });
 
   it("binding a requested installation, disconnecting one, and GitHub's own change", async () => {
@@ -1388,7 +1389,7 @@ describe("answers as today when the intake queue never answers (the remaining si
     expect(w.db.get(githubInstallationKey(601))).toMatchObject({ orgId: TEST_ORG });
     expect(w.db.get(githubInstallationKey(501))).toBeUndefined();
     expect(w.db.get(githubInstallationKey(502))).toMatchObject({ status: "removed" });
-    expect(capture.pending().map((event) => event.action).sort()).toEqual(["github.connected", "github.disconnected", "github.installation_changed"]);
+    expect(afterProjectBootstrap(capture.pending()).map((event) => event.action).sort()).toEqual(["github.connected", "github.disconnected", "github.installation_changed"]);
   });
 });
 

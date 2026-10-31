@@ -145,7 +145,8 @@ describe("which version a task starts on", () => {
     const orgs = new OrgStore({ documentClient: db, tableName: "state", now: Date.now });
     const orgId = await orgs.createOrgWithOwner({ name: "Acme", developerId: "dev-1" });
     const key = builtinSettingsKey(orgId, "rovara-code");
-    expect(db.get(key.pk, key.sk)).toBeUndefined();
+    expect(db.get(key.pk, key.sk)).toMatchObject({ stopKind: "inherit", revision: 1 });
+    expect(db.get(key.pk, key.sk)?.pinnedVersion).toBeUndefined();
     const store = new AgentStore({ documentClient: db, tableName: "state", now: Date.now });
     expect(await store.pinnedBuiltinVersion(orgId, "rovara-code")).toBe(1);
   });
@@ -158,7 +159,8 @@ describe("which version a task starts on", () => {
     expect(db.get(key.pk, key.sk)).toMatchObject({ pinnedVersion: 2, entityType: "BUILTIN_AGENT_SETTINGS" });
     const store = new AgentStore({ documentClient: db, tableName: "state", now: Date.now });
     expect(await store.pinnedBuiltinVersion(orgId, "rovara-code")).toBe(2);
-    expect(await store.getBuiltinSettings(orgId, "ticket-triage")).toBeUndefined();
+    expect(await store.getBuiltinSettings(orgId, "ticket-triage")).toMatchObject({ stopKind: "inherit", revision: 1 });
+    expect((await store.getBuiltinSettings(orgId, "ticket-triage"))?.pinnedVersion).toBeUndefined();
   });
 
   it("R3-4: an org with no settings item sees version 1 in the roster, and (once version 2 is available) adopting it writes a pin of 2 so its next task is 1.1.0", async () => {

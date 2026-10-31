@@ -1,3 +1,4 @@
+import { afterProjectBootstrap } from "../support/transaction-audit.js";
 import { fixtureActor } from "../support/money-authority.js";
 // Task 17: the Audit Ledger's hooks in Plan 1's own code. A pull request opened (reconcilePullRequest), a pull request
 // merged (reconcileTaskPullRequestFeedback) and a budget change (writeBudgets) each add their pending audit item to the
@@ -104,7 +105,7 @@ describe("a publication callback records pull_request.opened", () => {
     reconcile.mockResolvedValue({ number: 7, url: PR_URL, reconciled: false });
     await registerSlackProject(handler);
     // M47 requires an independent, durable system bootstrap event. Publication assertions below scope to their action.
-    if (extra.orgResolver === undefined) expect(capture.recordedBy("spending.policy_seeded")).toHaveLength(1);
+    if (extra.orgResolver === undefined) expect(capture.recordedBy("spending.policy_seeded")).toHaveLength(2);
     const workspace = await ensureWorkspace(handler, thread, user);
     const workspaceId = workspace.body.workspaceId as string;
     markReady(db, workspaceId);
@@ -154,7 +155,7 @@ describe("a publication callback records pull_request.opened", () => {
       facts: { number: 7 },
       details: [{ subject: "org", fields: { repository: "example/demo" } }],
     }]);
-    expect(capture.flushed()).toEqual(events);
+    expect(afterProjectBootstrap(capture.flushed())).toEqual(events);
     expect(capture.pending().filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
   });
 
@@ -175,7 +176,7 @@ describe("a publication callback records pull_request.opened", () => {
     h.db.injectFault({ ...transactionWithPending, error: { name: "InternalServerError" } });
     expect((await sendCallback(h, start)).status).toBeGreaterThanOrEqual(500);
     expect(pullRequestRecord(h)).toBeUndefined();
-    expect(capture.recorded().filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
     // The worker's retry of the same callback records both.
     expect((await sendCallback(h, start)).status).toBe(200);
     expect(pullRequestRecord(h)).toBeDefined();
@@ -190,7 +191,7 @@ describe("a publication callback records pull_request.opened", () => {
     expect((await sendCallback(h, start)).status).toBe(200);
     expect((await sendCallback(h, start)).status).toBe(200);
     expect(capture.pendingItems().filter(item => item.event.action !== "spending.policy_seeded")).toHaveLength(1);
-    expect(capture.flushed()).toEqual([]);
+    expect(afterProjectBootstrap(capture.flushed())).toEqual([]);
     // The queue comes back: the one pending item is the event, once.
     capture.queueUp();
     expect(capture.recordedBy("pull_request.opened")).toHaveLength(1);
@@ -210,7 +211,7 @@ describe("a publication callback records pull_request.opened", () => {
     (h.brokerInput.githubPullRequests.updatePullRequest as ReturnType<typeof vi.fn>).mockResolvedValue({ number: 3, url: "https://github.com/example/demo/pull/3", state: "closed" });
     h.db.injectFault({ ...transactionWithPending, error: { name: "InternalServerError" } });
     expect((await sendCallback(h, start)).status).toBeGreaterThanOrEqual(500);
-    expect(capture.recorded().filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
     expect(h.db.get(`WORKSPACE#${h.workspaceId}`, "PULL_REQUEST#demo#000000000003")).toMatchObject({ state: "open" });
     expect((await sendCallback(h, start)).status).toBe(200);
     expect(h.db.get(`WORKSPACE#${h.workspaceId}`, "PULL_REQUEST#demo#000000000003")).toMatchObject({ state: "closed", replacedBy: 7 });
@@ -218,10 +219,10 @@ describe("a publication callback records pull_request.opened", () => {
   });
 
   it("answers as today when the intake queue never answers", async () => {
-    vi.useFakeTimers();
     const capture = hangingAuditDeps();
     const h = await harness(capture);
     const start = await startPublish(h);
+    vi.useFakeTimers();
     const pending = sendCallback(h, start);
     await vi.advanceTimersByTimeAsync(AUDIT_FLUSH_DEADLINE_MS);
     const response = await pending;
@@ -243,7 +244,7 @@ describe("a publication callback records pull_request.opened", () => {
     const response = await sendCallback(h, start);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(pullRequestRecord(h)).toBeDefined();
-    expect(capture.recorded().filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
     expect(capture.logs).toEqual([expect.objectContaining({ event: "audit.record_invalid", reason: "builder_failed" })]);
   });
 
@@ -255,7 +256,7 @@ describe("a publication callback records pull_request.opened", () => {
     const response = await sendCallback(h, start);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(pullRequestRecord(h)).toBeDefined();
-    expect(capture.recorded().filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
     expect(capture.logs).toEqual([{ event: "audit.record_invalid", level: "error", reason: "builder_failed", error: "InternalServerError" }]);
   });
 });
@@ -327,7 +328,7 @@ describe("a merge the webhook finds records pull_request.merged", () => {
   it("commits the event with the task's move to MERGED, once, however often the merge is delivered", async () => {
     const capture = capturingAuditDeps();
     const { h, gh, taskId } = await waitingForMerge(capture);
-    expect(capture.recorded().filter(event => event.action !== "spending.policy_seeded")).not.toContainEqual(expect.objectContaining({ action: "pull_request.merged" }));
+    expect(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded")).not.toContainEqual(expect.objectContaining({ action: "pull_request.merged" }));
     gh.state.pr = "merged";
     await deliver(h);
     expect(taskState(h, taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE", pullRequests: [{ state: "MERGED" }] });
@@ -344,7 +345,7 @@ describe("a merge the webhook finds records pull_request.merged", () => {
       details: [{ subject: "org", fields: { repository: "example/demo" } }],
     }]);
     // Opened and merged name one pull request by one id.
-    expect(capture.flushed()).toHaveLength(capture.recorded().filter(event => event.action !== "spending.policy_seeded").length);
+    expect(afterProjectBootstrap(capture.flushed())).toHaveLength(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded").length);
   });
 
   it("records the opening and the merge of one pull request under one target id", async () => {
@@ -352,7 +353,7 @@ describe("a merge the webhook finds records pull_request.merged", () => {
     const { h, gh } = await waitingForMerge(capture);
     gh.state.pr = "merged";
     await deliver(h);
-    const ids = new Set(capture.recorded().filter(event => event.action !== "spending.policy_seeded").filter((event) => event.action === "pull_request.merged").map((event) => JSON.stringify(event.target)));
+    const ids = new Set(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded").filter((event) => event.action === "pull_request.merged").map((event) => JSON.stringify(event.target)));
     expect([...ids]).toEqual([JSON.stringify({ kind: "pull_request", id: auditPullRequestId("example/demo", 42) })]);
   });
 
@@ -551,7 +552,7 @@ describe("a save that records landed fix pushes and merges together", () => {
     h.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("AUDIT_PENDING#"), error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "ConditionalCheckFailed" }] } });
     await deliver();
     expect(saved()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
-    expect(capture.pendingItems()).toHaveLength(mergedCount);
+    expect(afterProjectBootstrap(capture.pending())).toHaveLength(mergedCount);
   });
 });
 
@@ -631,7 +632,7 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
     const { db, capture, deps } = setup();
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberDefaultMonthlyUsd: 29, memberOverrides: {} });
     await writeBudgets(deps, TEST_ORG, settings(500, 29), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
-    expect(capture.recorded().filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
   });
 
   it("commits the settings and the pending items in one transaction", async () => {
@@ -682,7 +683,7 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
     db.set({ ...orgSettingsKey(TEST_ORG, "BUDGET"), entityType: "ORG_BUDGET", orgMonthlyUsd: 500, memberDefaultMonthlyUsd: 29, memberOverrides: { [OMAR_ID]: 29 } });
     // Maya gets an override equal to the default; Omar's override equal to the default goes away: neither limit moves.
     await writeBudgets(deps, TEST_ORG, settings(500, 29, { [MAYA_ID]: 29 }), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, AT, { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
-    expect(capture.recorded().filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
     // An override that does move the figure still records, to and from the default.
     await writeBudgets(deps, TEST_ORG, settings(500, 29, { [MAYA_ID]: 50 }), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, "2026-10-21T11:00:00.000Z", { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
     await writeBudgets(deps, TEST_ORG, settings(500, 29), fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, "2026-10-21T12:00:00.000Z", { actor: { kind: "member", id: MAYA_ID }, ...({}), authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
@@ -743,7 +744,7 @@ describe("a budget change records budget.changed in writeBudgets' transaction", 
       expect(stored()).toBeUndefined();
       expect(access.upsertOrg).not.toHaveBeenCalled();
       expect(access.upsertMember).not.toHaveBeenCalled();
-      expect(capture.recorded().filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
+      expect(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
       // 96 is changed as usual.
       await changeBudgets(deps, { ...({ orgId: TEST_ORG, body: { requestId: randomUUID(), memberOverrides: overrides(96) }, updatedBy: MAYA_ID, at: AT }), updatedBy: fixtureActor(deps, TEST_ORG, MAYA_ID, true).developerId, authority: fixtureActor(deps, TEST_ORG, MAYA_ID, true) });
       expect(capture.recordedBy("budget.changed")).toHaveLength(96);
@@ -773,7 +774,7 @@ describe("the budget routes record the change", () => {
     const access = fakeModelAccess();
     const h = await createSingleAnswerPlanBroker({ audit: capture, brokerExtra: { modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
     expect((await h.dev(OMAR, "PUT", "/v1/dev/org/budget", { requestId: randomUUID(), orgMonthlyUsd: 10 })).status).toBe(403);
-    expect(capture.recorded().filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
+    expect(afterProjectBootstrap(capture.recorded()).filter(event => event.action !== "spending.policy_seeded")).toEqual([]);
   });
 
   it("PUT /v1/admin/org/budget by an operator records the change under the operator's pseudonymous id, never their subject", async () => {

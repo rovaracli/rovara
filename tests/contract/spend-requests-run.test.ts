@@ -1117,7 +1117,7 @@ describe("fix round 1 (the Task 32 review)", () => {
       expect(t.meta(run.taskId).maxPerRunUsd).toBe(9);
     });
 
-    it("the org's only owner or admin may raise their own run's stop", async () => {
+    it("the org's only owner or admin cannot decide their own stop loosening", async () => {
       const t = await setup({ secondAdmin: false });
       const agentId = await t.agentOf(TRIAGE, { by: ADA, name: "Ada's looker" });
       await t.setBudget(ADA, agentId, { maxPerRunUsd: 4 });
@@ -1125,8 +1125,8 @@ describe("fix round 1 (the Task 32 review)", () => {
       await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 25 });
       await t.pauseAndEnd(run, { kind: "max_per_run", taskId: run.taskId });
       const request = t.requestOf(run.taskId, "max_per_run")[0]!;
-      await t.decide(ADA, request.spendRequestId);
-      expect(t.meta(run.taskId).maxPerRunUsd).toBe(9);
+      expect(await refusal(t.decide(ADA, request.spendRequestId))).toMatchObject({ code: "FORBIDDEN" });
+      expect(t.meta(run.taskId).maxPerRunUsd).toBe(4);
     });
   });
 

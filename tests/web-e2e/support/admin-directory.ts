@@ -168,9 +168,10 @@ export function createAdminDirectory() {
   setRole,
   changeSourceOrder() { const key=modelSourcesKey(FIXTURE_ORG),row=rows.get(keyOf(key));if(!row||typeof row.revision!=="number")throw new Error("No source fixture.");put({...row,revision:row.revision+1,order:["rovara","personal-chatgpt"]}); },
   seedLaneB() { seedLaneB(put); },
-  seedTaskStops() {
+  seedTaskStops(missingProject = false) {
    put({ ...orgSettingsKey(FIXTURE_ORG, "TASK_STOP_POLICY"), orgId: FIXTURE_ORG, entityType: "ORG_TASK_STOP_POLICY", revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 2000000 } }, enrollment: { version: 1, state: "disabled" } });
    put({ ...projectAiKey(FIXTURE_ORG, "payments"), orgId: FIXTURE_ORG, project: "payments", entityType: "PROJECT_AI", revision: 1, projectPays: false, monthlyBudgetUsd: 50, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 2000000 } });
+   if (missingProject) rows.delete(keyOf(projectAiKey(FIXTURE_ORG, "payments")));
   },
   damageInvite() { const ref = [...rows.values()].filter(row => row.entityType === "ORG_INVITE_DIRECTORY" && row.orgId === FIXTURE_ORG).sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1)[0];if (ref === undefined || typeof ref.tokenHash !== "string") throw new Error("No fixture invite.");const key = { pk: `ORG_INVITE#${ref.tokenHash}`, sk: "META" }, record = rows.get(keyOf(key));if (record === undefined) throw new Error("No fixture canonical record.");put({ ...record, role: "future-role" }); },
   async seedInvites() { let seedNow = Date.now() - 60_000;const store = new OrgStore({ documentClient, tableName: "mock-state", now: () => seedNow });for (let i = 0; i < 26; i++) { if (i === 20) seedNow += 60_000;await store.createInvite({ orgId: FIXTURE_ORG, createdBy: FIXTURE_DEVELOPER, role: "member", email: `private.person${i}@example.test` }); }await store.createInvite({ orgId: "org_bbbbbbbbbbbbbbbbbbbb", createdBy: "c".repeat(64), role: "admin", email: "foreign.person@foreign.test" }); },

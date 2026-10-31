@@ -40,7 +40,7 @@ export type TaskApprovalTerms = z.infer<typeof TaskApprovalTermsSchema>;
  * separate pinned terms. It never reads a newer policy during a transaction. */
 export function taskApprovalPolicyDigest(snapshot: CapturedTaskStop): string {
   const input = snapshot.calculationInput;
-  return digest([snapshot.sourceRevisions, input.companyDefault, input.ceilingMicrousd, input.projectStop, input.agentStop]);
+  return digest([snapshot.orgId, snapshot.project, snapshot.agentId, input.companyDefault, input.ceilingMicrousd, input.projectStop, input.agentStop]);
 }
 export function makeTaskApprovalTerms(task: DeveloperTaskRecord, snapshot: CapturedTaskStop, record: SpendRequestRecord): TaskApprovalTerms {
   checkedTaskMaxPerRun(task);

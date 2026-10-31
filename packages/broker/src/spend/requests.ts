@@ -23,7 +23,7 @@ import {
   projectMemberKey, agentKey, chainKey, builtinSettingsKey, AgentIdSchema, AgentXError, ChainIdSchema, orgSettingsKey, PER_TASK_BUDGET_USD, SPEND_REQUEST_REASON_MAX, SPEND_REQUEST_TTL_DAYS, OWNER_ANSWER_HOURS, SpendRequestIdSchema, agentXError, isBuiltinAgentId, ROVARA_CODE_AGENT_ID,
   newPrefixedId, openSpendRequestDueKey, openSpendRequestsKey, orgPk, ownerBudgetKey, pauseKey, pausedTasksKey, scopeKey, spendRequestKey, spendRequestSlotKey,
   suggestedMonthTopUpUsd, suggestedTopUpUsd, topUpKey, INDEX_EXPIRY_ATTRIBUTE, developerOrgKey, orgMetaKey, orgMemberKey, orgRemovedKey, isRunLimitBlockReason, RUN_LIMIT_ASK_COOLDOWN_MS, heldPlanStartKey, planRunLimitSubject, runLimitAskedKey, spendCounterKey,
-  SpendingAdmissionReferenceSchema, type SpendingAdmissionReference, type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
+  AuditEventInputSchema, SpendingAdmissionReferenceSchema, type SpendingAdmissionReference, type AuditEventInput, type AuditProof, type BudgetScope, type OrgId, type OwnerCapChange, type PauseScope, type SpendApproverRole, type SpendRequestKind, type SpendRequestRecord,
 } from "@agentx/contracts";
 import { orgRoleOf, requireAccountable, requireAgentAccess, requireAgentBudgetAllowed, requireOwnerAllowed, resolveSurvivor, type AgentCaller } from "../agents/access.js";
 import { requireChainAccess, requireChainAccountable, requireChainBudgetAllowed, requireChainOwnerAllowed } from "../chains/access.js";
@@ -40,7 +40,7 @@ import { failedIndexes, readRequest, requestMarkItem, type RequestMark, type Tra
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { auditSpendRequestCreated, auditSpendRequestDecided, auditSpendRequestEscalated, auditSpendRequestExpired, auditSpendRequestRerouted, auditSpendRequestResumeDropped, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
-import { auditPending, tryAuditEvents } from "../audit/outbox.js";
+import { auditPendingItem, auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, centsOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { endOfFailure, settleSession, type DecisionEnd } from "../developer/decide-session.js";
@@ -462,11 +462,27 @@ async function starterOf(deps: SpendRequestDependencies, request: SpendRequestRe
 /**
  * Whether a run's starter may decide their own run's request (fix round 1, I-4): a run limit or planning limit when they are the payer member, or the org's
  * only owner or admin (merge of Tasks 32 and 34: else nobody could decide it); a max per run never, even as the agent's owner, unless they are the org's only owner or admin (as an owner's cap is ruled). A month's request (Task 33 fix round 1,
- * I-3, M-11) the same as a max per run: its asker, or the starter of the task whose pause asked, never decides it unless they are the only owner or admin.
+ * I-3, M-11) the same as a max per run: its asker, or the starter of the task whose pause asked, cannot use singleton-owner status to decide a stop loosening.
  * A chain step's raise past its run's limit is never the payer's to decide; and a chain's owner who starts the run is no exception (Plan 4 Task 5, review M-5).
  */
+/** Stop loosening cannot acquire authority from an unversioned singleton admin list.
+ * Existing payer consent is retained only within a known captured stop; legacy
+ * ordinary-member payer rules do not grant an owner/admin self-raise exception. */
+async function stopRaiseNeedsDifferentPerson(deps: SpendRequestDependencies, request: SpendRequestRecord, person: string, amountUsd: number): Promise<boolean> {
+ if (request.kind !== "run_limit" && request.kind !== "max_per_run" && request.kind !== "planning") return false;
+ if (request.kind === "max_per_run") return true;
+ const role = await orgRoleOf(deps, request.orgId, person);
+ if (role !== "owner" && role !== "admin") return false;
+ const task = await readTask(deps, request.orgId, request.taskId);
+ if (task?.spendingStop !== undefined) {
+  try { const stop = checkedTaskStopSnapshot(task.spendingStop), proposed = usdToWholeMicrodollars(newLimitFor(request, amountUsd));return proposed === undefined || proposed > stop.effectiveStopMicrousd; }
+  catch { return true; }
+ }
+ return true;
+}
 async function starterMayDecide(deps: SpendRequestDependencies, request: SpendRequestRecord, starter: string, amountUsd: number = request.amountUsd): Promise<boolean> {
-  // The org's only owner or admin, whatever the kind: nobody else could decide it, and the request would wait until it expired.
+  if (await stopRaiseNeedsDifferentPerson(deps, request, starter, amountUsd)) return false;
+  // Other existing request kinds retain their independently authorized eligibility.
   const ids = await orgAdmins(deps, request.orgId);
   if (ids.length === 1 && ids[0] === starter) return true;
   if (request.kind === "max_per_run" || request.kind === "month") return false;
@@ -487,6 +503,7 @@ async function withoutStarter(deps: SpendRequestDependencies, request: SpendRequ
   if (rest.length > 0) return { ...found, ids: rest };
   const fallback = found.role === "org_admin" ? found : await admins(deps, request.orgId);
   const others = fallback.ids.filter((id) => id !== starter);
+  if (await stopRaiseNeedsDifferentPerson(deps, request, starter, amountUsd)) return { ...fallback, ids: others, who: others.length === 0 ? "a different eligible approver" : fallback.who };
   return others.length > 0 ? { ...fallback, ids: others } : fallback;
 }
 
@@ -513,6 +530,7 @@ async function mayDecideNow(deps: SpendRequestDependencies, caller: Pick<AgentCa
   const survivors = await Promise.all(approvers.ids.map((id) => resolveSurvivor(deps, caller.orgId, id)));
   if (!survivors.includes(me)) return answer(false);
   if (record.requestedBy.kind === "member" && await resolveSurvivor(deps, caller.orgId, record.requestedBy.developerId) === me) {
+    if (await stopRaiseNeedsDifferentPerson(deps, record, me, amountUsd ?? record.amountUsd)) return answer(false);
     if (record.kind === "owner_cap") return answer(survivors.every((id) => id === me));
     if (record.kind === "month") return answer(await starterMayDecide(deps, record, me));
     const payer = await taskPayerId(deps, record);
@@ -622,7 +640,7 @@ export async function createSpendRequest(deps: SpendRequestDependencies, input: 
         if (role === undefined && source.spendingStop !== undefined) throw budgetActorRefused();
         if (role !== undefined) {
           const actor = { orgId: draft.orgId, developerId, orgRole: role }, agentId = source.agent?.agentId ?? ROVARA_CODE_AGENT_ID;
-          const snapshot = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
+          const snapshot = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, purpose: "approval_terms", requireScopeAccess: async () => {
             await requireNativeProjectWorkRole(deps, source, actor);
             await requireAgentAccess(deps, actor, agentId, source.agent?.version === "draft" ? "edit" : "use");
           } }, { orgId: draft.orgId, developerId, role, project: source.project, agentId, ...savedTaskStopBounds(source.spendingStop),
@@ -1589,7 +1607,7 @@ export async function decideSpendRequest(deps: SpendRequestDependencies, caller:
     // This is a new approval, not a retrofit of the task's committed window.
     // Disabled/unseeded orgs retain the existing decision path. Eligibility was
     // checked above and is rechecked after source reads by the same decider.
-    const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, requireScopeAccess: async () => {
+    const captured = await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, purpose: "approval_terms", requireScopeAccess: async () => {
       if (!(await mayDecideNow(deps, caller, record, approvedUsd)).allowed) throw budgetActorRefused();
     } }, { orgId: record.orgId, developerId: decisionActor.developerId, role: decisionActor.role, project: task.project,
       agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID, ...savedTaskStopBounds(previous),
@@ -2242,7 +2260,7 @@ async function expireSpendingRequestPage(deps: SpendRequestDependencies, input: 
 
 async function expireOne(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName" | "now" | "audit">, record: SpendRequestRecord, because?: SpendRequestRecord["endedBecause"], nativeChecks: TransactItem[] = []): Promise<boolean> {
   const at = iso(deps.now());
-  const events = await audited(deps, () => [auditSpendRequestExpired({ orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: record.spendRequestId, ...facts(record) })]);
+  const events = [AuditEventInputSchema.parse(auditSpendRequestExpired({ orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: record.spendRequestId, ...facts(record) }))];
   const items = endItems(deps, record, { status: "EXPIRED", expiredAt: at, ...(because === undefined ? {} : { endedBecause: because }) });
   // Monthly-room requests retain their existing lifecycle; M47 expires stops
   // and owner-cap terms, and never turns an expiry into an approval.
@@ -2257,7 +2275,7 @@ async function expireOne(deps: Pick<SpendRequestDependencies, "documentClient" |
       orgId: record.orgId, spendRequestId: record.spendRequestId, kind: record.kind, status: "EXPIRED", reason: because ?? "expired",
       actor: { kind: "system" }, occurredAt: at, termsDigest: source.termsDigest }, ConditionExpression: "attribute_not_exists(pk)" } });
   }
-  const writes = [...items, ...events.flatMap((event) => auditPending(deps, event))], nativeStart = writes.length;
+  const writes = [...items, ...events.map(event => ({ Put: { TableName: deps.tableName, Item: auditPendingItem(event, deps.now()), ConditionExpression: "attribute_not_exists(pk)" } }))], nativeStart = writes.length;
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...writes, ...nativeChecks] }));
   } catch (error) {
@@ -2332,7 +2350,7 @@ export async function withdrawTaskSpendRequests(deps: SpendRequestDependencies, 
   const record = kind === undefined || task.orgId === undefined ? undefined : await openRequestFor(deps, task.orgId, `TASK#${task.taskId}`, kind);
   if (record === undefined) return { items: [], flush: () => Promise.resolve() };
   const at = iso(deps.now());
-  const events = await audited(deps, () => [auditSpendRequestExpired({ orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: record.spendRequestId, ...facts(record) })]);
+  const events = [AuditEventInputSchema.parse(auditSpendRequestExpired({ orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: record.spendRequestId, ...facts(record) }))];
   return {
     items: [...endItems(deps, record, { status: "EXPIRED", expiredAt: at, endedBecause: "continued" }), ...events.flatMap((event) => auditPending(deps, event))],
     flush: () => flushAuditEvents(deps, events),

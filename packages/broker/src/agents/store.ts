@@ -455,6 +455,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
       latestVersion: 0,
       draftRevision: 1,
+      revision: 1,
+      stopKind: "inherit",
       status: "active",
       createdBy: input.createdBy,
       createdAt: now,

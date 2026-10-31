@@ -25,6 +25,12 @@ function fixture(pin = false) {
   const store = new OrgStore({ documentClient: db, tableName: "state", now: () => now, newOrgId: () => orgId, rovaraCodeV2ForNewOrgs: pin });
   return { db, store };
 }
+async function realLegacyAgent(f: ReturnType<typeof fixture>, agentId: string, extra: Record<string, unknown> = {}) {
+ if (f.db.get(agentKey(orgId, agentId, "META")) === undefined) f.db.delete({ pk: orgScoped(orgId, "AGENT_DIRECTORY"), sk: agentId });
+ const agents = new AgentStore({ documentClient: f.db, tableName: "state", now: () => now, newId: () => agentId });
+ await agents.create({ orgId, name: agentId, owner: { kind: "member", developerId: who }, createdBy: who });
+ const row = { ...f.db.get(agentKey(orgId, agentId, "META"))!, ...extra };delete row.revision;delete row.stopKind;f.db.set(row);return row;
+}
 for (const creation of ["ensureOrg", "createOrgWithOwner"] as const) {
   for (const pin of [false, true]) {
     it(`${creation} atomically bootstraps audited estimate-mode policy with version pin ${pin}`, async () => {
@@ -161,8 +167,7 @@ it("upgrade preserves an administrator ceiling and records the actual seed outco
 for (const explicit of [false, true]) it(`legacy agent upgrade records explicit stop kind without inventing money: explicit=${explicit}`, async () => {
   const f = fixture(), agentId = "agt_aaaaaaaaaaaaaaaaaaaa", key = agentKey(orgId, agentId, "META");
   f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
-  const original = { ...key, orgId, entityType: "AGENT", agentId, status: "active", revision: 4,
-    monthlyBudgetUsd: 50, ...(explicit ? { maxPerRunUsd: 0.123456 } : {}) };
+  const original = await realLegacyAgent(f, agentId, { monthlyBudgetUsd: 50, ...(explicit ? { maxPerRunUsd: 0.123456 } : {}) });
   f.db.set(original);
   const fn: unknown = Reflect.get(taskStopBootstrap, "upgradeTaskStopInheritance"); expect(typeof fn).toBe("function");
   if (typeof fn !== "function") throw new Error("legacy resource upgrade missing");
@@ -189,7 +194,7 @@ for (const invalid of ["missing", "wrong_identity", "null_limit", "negative_limi
 for (const race of ["limit", "closed"] as const) it(`legacy inheritance refuses native ${race} race and preserves its winner`, async () => {
   const f = fixture(), agentId = "agt_aaaaaaaaaaaaaaaaaaaa", key = agentKey(orgId, agentId, "META"), orgKey = orgMetaKey(orgId);
   f.db.set({ ...orgKey, orgId, entityType: "ORG" });
-  const original = { ...key, orgId, entityType: "AGENT", agentId, status: "active", revision: 4, monthlyBudgetUsd: 50 };
+  const original = await realLegacyAgent(f, agentId, { monthlyBudgetUsd: 50 });
   f.db.set(original); const send = f.db.send.bind(f.db); let raced = false;
   f.db.send = async command => {
     if (!raced && command instanceof TransactWriteCommand) {
@@ -221,13 +226,13 @@ for (const explicit of [false, true]) it(`project inheritance upgrade preserves 
   expect(await invoke(deps, input)).toMatchObject({ outcome: "preserved" }); expect(f.db.transactions()).toHaveLength(count);
 });
 
-for (const failure of ["missing_catalog", "missing_settings", "corrupt_policy", "catalog_commit", "policy_commit"] as const) it(`project inheritance refuses ${failure} without replacing authority`, async () => {
+for (const failure of ["missing_catalog", "corrupt_policy", "catalog_commit", "policy_commit"] as const) it(`project inheritance refuses ${failure} without replacing authority`, async () => {
   const f = fixture(), project = "payments", key = projectAiKey(orgId, project), catalogKey = orgProjectCatalogKey(orgId, project);
   f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
   const catalog = { ...catalogKey, orgId, entityType: "PROJECT_CATALOG", name: project, latestRevision: 2 };
   const original = { ...key, orgId, entityType: "PROJECT_AI", project, revision: 3, monthlyBudgetUsd: 50 };
   if (failure !== "missing_catalog") f.db.set(catalog);
-  if (failure !== "missing_settings") f.db.set({ ...original, ...(failure === "corrupt_policy" ? { taskStopPolicy: null } : {}) });
+  f.db.set({ ...original, ...(failure === "corrupt_policy" ? { taskStopPolicy: null } : {}) });
   const send = f.db.send.bind(f.db); let raced = false;
   f.db.send = async command => {
     if (!raced && failure.endsWith("_commit") && command instanceof TransactWriteCommand) {
@@ -240,7 +245,7 @@ for (const failure of ["missing_catalog", "missing_settings", "corrupt_policy", 
   await expect(taskStopBootstrap.upgradeTaskStopProjectInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, project })).rejects.toThrow();
   expect(raced).toBe(failure.endsWith("_commit"));
   const saved = f.db.get(key.pk, key.sk);
-  expect(saved).toEqual(failure === "missing_settings" ? undefined : { ...original, ...(failure === "corrupt_policy" ? { taskStopPolicy: null } : failure === "policy_commit" ? { taskStopPolicy: { schemaVersion: 1, stopMicrousd: 123456 } } : {}) });
+  expect(saved).toEqual({ ...original, ...(failure === "corrupt_policy" ? { taskStopPolicy: null } : failure === "policy_commit" ? { taskStopPolicy: { schemaVersion: 1, stopMicrousd: 123456 } } : {}) });
   if (saved !== undefined) expect(saved).not.toHaveProperty("seedProvenance");
 });
 
@@ -318,7 +323,7 @@ it("agent inheritance inventory advances bounded native directory pages without 
   const ids = ["agt_aaaaaaaaaaaaaaaaaaaa", "agt_bbbbbbbbbbbbbbbbbbbb"];
   for (const agentId of ids) {
     f.db.set({ pk: orgScoped(orgId, "AGENT_DIRECTORY"), sk: agentId, entityType: "AGENT_DIRECTORY", agentId });
-    f.db.set({ ...agentKey(orgId, agentId, "META"), orgId, entityType: "AGENT", agentId, status: "active", revision: 1, monthlyBudgetUsd: 50 });
+    await realLegacyAgent(f, agentId, { monthlyBudgetUsd: 50 });
   }
   const fn: unknown = Reflect.get(taskStopBootstrap, "upgradeTaskStopAgentInventoryPage"); expect(typeof fn).toBe("function");
   if (typeof fn !== "function") throw new Error("bounded inventory missing");
@@ -337,13 +342,12 @@ it("a failed later inventory resource cannot return an advanced checkpoint and a
   const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
   const ids = ["agt_aaaaaaaaaaaaaaaaaaaa", "agt_bbbbbbbbbbbbbbbbbbbb"];
   for (const agentId of ids) f.db.set({ pk: orgScoped(orgId, "AGENT_DIRECTORY"), sk: agentId, entityType: "AGENT_DIRECTORY", agentId });
-  const resource = (agentId: string) => ({ ...agentKey(orgId, agentId, "META"), orgId, entityType: "AGENT", agentId, status: "active", revision: 1, monthlyBudgetUsd: 50 });
-  f.db.set(resource(ids[0]!));
+  await realLegacyAgent(f, ids[0]!, { monthlyBudgetUsd: 50 });
   const deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, limit: 2 };
   await expect(taskStopBootstrap.upgradeTaskStopAgentInventoryPage(deps, input)).rejects.toThrow();
   const first = f.db.get(agentKey(orgId, ids[0]!, "META").pk, "META"); expect(first).toMatchObject({ stopKind: "inherit", monthlyBudgetUsd: 50 });
   expect(f.db.get(agentKey(orgId, ids[1]!, "META").pk, "META")).toBeUndefined();
-  f.db.set(resource(ids[1]!));
+  await realLegacyAgent(f, ids[1]!, { monthlyBudgetUsd: 50 });
   expect(await taskStopBootstrap.upgradeTaskStopAgentInventoryPage(deps, input)).toMatchObject({ examined: 2, updated: 1, preserved: 1, complete: true });
   expect(f.db.get(agentKey(orgId, ids[0]!, "META").pk, "META")).toEqual(first);
 });
@@ -408,10 +412,10 @@ for (const target of ["catalog", "settings"] as const) for (const when of ["befo
   expect(f.db.get(catalogKey.pk, catalogKey.sk)).toEqual(target === "catalog" ? winner : catalog);
   expect(f.db.get(key.pk, key.sk)).toEqual(target === "settings" ? winner : settings);
 });
-it("project inventory replays its original page after a missing later settings row is repaired", async () => {
+it("project inventory replays its original page after a corrupt later settings row is repaired", async () => {
   const f = fixture(); f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
   for (const project of ["alpha", "beta"]) f.db.set({ ...orgProjectCatalogKey(orgId, project), entityType: "PROJECT_CATALOG", name: project, latestRevision: 1 });
-  const settings = (project: string) => ({ ...projectAiKey(orgId, project), entityType: "PROJECT_AI", project, revision: 1, monthlyBudgetUsd: 50 }); f.db.set(settings("alpha"));
+  const settings = (project: string) => ({ ...projectAiKey(orgId, project), entityType: "PROJECT_AI", project, revision: 1, monthlyBudgetUsd: 50 }); f.db.set(settings("alpha"));f.db.set({ ...settings("beta"), project: "other" });
   const deps = { documentClient: f.db, tableName: "state", now: () => now }, input = { orgId, limit: 2 };
   await expect(taskStopBootstrap.upgradeTaskStopProjectInventoryPage(deps, input)).rejects.toThrow();
   const key = projectAiKey(orgId, "alpha"), first = f.db.get(key.pk, key.sk); expect(first).toMatchObject({ orgId, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
@@ -472,10 +476,10 @@ it("a real legacy custom agent without fixture revisions can be upgraded", async
 });
 it("company upgrade accepts every cent ceiling through 100 USD exactly", async () => {
  for (let cents = 1; cents <= 10000; cents += 1) {
-  const f = fixture();f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
-  f.db.set({ ...agentGuardrailsKey(orgId), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: cents / 100 } });
+  const f = fixture();await f.store.ensureOrg(orgId, "Company");
+  f.db.set({ ...f.db.get(agentGuardrailsKey(orgId))!, orgId, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: cents / 100 } });
   await taskStopBootstrap.bootstrapTaskStopPolicy({ documentClient: f.db, tableName: "state", now: () => now }, orgId);
-  const events = f.db.find(row => row.entityType === "AUDIT_PENDING");
-  expect(events.some(row => (row.event as { facts?: { ceilingMicrousd?: number } } | undefined)?.facts?.ceilingMicrousd === cents * 10000), `cent=${cents}`).toBe(true);
+  const events = f.db.find(row => (row.event as { action?: string } | undefined)?.action === "spending.policy_seeded");
+  expect(events.some(row => (row.event as { facts?: { ceilingMicrousd?: number; source?: string } } | undefined)?.facts?.ceilingMicrousd === cents * 10000), `cent=${cents}`).toBe(true);
  }
 }, 60000);

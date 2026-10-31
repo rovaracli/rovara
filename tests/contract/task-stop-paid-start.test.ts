@@ -1,3 +1,4 @@
+import { transactionAuditEvent } from "../support/transaction-audit.js";
 import * as spendRequests from "../../packages/broker/src/spend/requests.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
@@ -1633,6 +1634,8 @@ it("spending-rule expiry commits an immutable terminal receipt and replays it wi
   expect(receipt).toMatchObject({ entityType: "SPEND_REQUEST_EXPIRY", version: 1, orgId: TEST_ORG, spendRequestId: f.spendRequest.spendRequestId,
     kind: "run_limit", status: "EXPIRED", reason: "spending_rules_changed", actor: { kind: "system" } });
   expect(receipt?.termsDigest).toMatch(/^[a-f0-9]{64}$/);
+  const ended = f.t.db.transactions().find(items => items.some(item => (item.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "SPEND_REQUEST_EXPIRY"));
+  expect(transactionAuditEvent(ended, "spend_request.expired")).toMatchObject({ actor: { kind: "system", id: "rovara" } });
   await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toBeDefined();
   expect(f.t.db.get(key)).toEqual(receipt); expect(f.t.meta(f.task.taskId)).toEqual(before);
   expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
@@ -2439,12 +2442,12 @@ it("accepted spending window and required admission audit commit in the same tra
  const f = await fixture(); const reply = await f.start(); expect(reply.status).toBe(200);
  const transaction = f.t.db.transactions().find(items => items.some(item => (item.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "SPENDING_ADMISSION"));
  expect(transaction).toBeDefined();
- expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Put: expect.objectContaining({ Item: expect.objectContaining({ event: expect.objectContaining({ action: "spending.stop_admitted", actor: { kind: "member", id: MAYA.developerId }, facts: expect.objectContaining({ effectiveStopMicrousd: 1234567 }) }) }) }) })]));
+ expect(transactionAuditEvent(transaction, "spending.stop_admitted")).toMatchObject({ actor: { kind: "member", id: MAYA.developerId }, facts: { effectiveStopMicrousd: 1234567 } });
 });
 
 it("zero stop refusal has a required native outbox decision before paid side effects", async () => {
  const f = await fixture(0); const reply = await f.start(); expect(reply.status).toBe(409);
- expect(f.t.db.transactions()).toEqual(expect.arrayContaining([expect.arrayContaining([expect.objectContaining({ Put: expect.objectContaining({ Item: expect.objectContaining({ event: expect.objectContaining({ action: "spending.stop_refused" }) }) }) })])]));
+ expect(f.t.db.transactions().some(items => transactionAuditEvent(items, "spending.stop_refused") !== undefined)).toBe(true);
  expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
 });
 it("a reached stop commits its pause and required audit together", async () => {
@@ -2454,7 +2457,7 @@ it("a reached stop commits its pause and required audit together", async () => {
  f.t.access.keySpend.mockResolvedValue(1.234567);
  const second = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers }); expect(second.status).not.toBe(200);
  const transaction = f.t.db.transactions().find(items => items.some(item => (item.Put as { Item?: { event?: { action?: string } } } | undefined)?.Item?.event?.action === "spending.stop_reached"));
- expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Update: expect.objectContaining({ Key: taskKey(task.taskId) }) })]));
+ expect(transaction?.map(item => (item.Update as { Key?: unknown } | undefined)?.Key)).toContainEqual(taskKey(task.taskId));
 });
 
 it("setup check is a paid start and refuses missing model admission basis before preparation", async () => {
@@ -2468,4 +2471,21 @@ for (const path of ["/v1/admin/e2e/model-checks", "/v1/admin/projects/setup-prop
  const reply = await call(f.t.handler, { method: "POST", path, user: { subject: "admin-subject", admin: true }, body: {} });
  expect(reply.status, JSON.stringify(reply.body)).toBe(409);expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
  expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
+
+it("an admission audit write failure rolls back task, window and workspace together", async () => {
+ const f = await fixture(), send = f.t.db.send.bind(f.t.db);let attempted = false;
+ f.t.db.send = async command => {
+  if (command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => (item.Put?.Item?.event as { action?: unknown } | undefined)?.action === "spending.stop_admitted")) { attempted = true;throw new Error("required audit unavailable"); }
+  return send(command);
+ };
+ expect((await f.start()).status).not.toBe(200);expect(attempted).toBe(true);
+ expect(f.t.db.find(row => ["WORKSPACE", "DEVELOPER_TASK", "SPENDING_ADMISSION"].includes(String(row.entityType)))).toEqual([]);
+});
+it("a monthly-only project revision does not expire complete run-limit terms", async () => {
+ const f = await approvalWindow(), row = f.t.db.get(f.project)!;
+ f.t.db.set({ ...row, revision: Number(row.revision) + 1, monthlyBudgetUsd: 999 });
+ f.t.db.set({ ...f.t.db.get(f.policy)!, enrollment: { version: 1, state: "disabled" } });
+ expect(await spendRequests.reviewTaskStopCutoverApproval(f.t.deps(), f.t.caller(ADA, "owner"), f.spendRequest)).toMatchObject({ kind: "retain" });
+ expect(f.t.requestOf(f.task.taskId, "run_limit")[0]?.status).toBe("PENDING");
 });

@@ -1,12 +1,14 @@
+import { randomUUID } from "node:crypto";
+import { auditPendingItem } from "../audit/outbox.js";
 import { nativeSnapshotConditions } from "./native-snapshot-conditions.js";
 import type { TransactItem } from "../agents/table-writes.js";
 // A captured numeric policy is not paid-work permission: callers still commit
 // live authority, lifecycle, monthly admission, audit and their idempotent work.
 import { createHash } from "node:crypto";
-import { TransactGetCommand } from "@aws-sdk/lib-dynamodb";
+import { TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
-  AgentGuardrailsSchema, AgentIdSchema, OrgIdSchema, OrgRoleSchema, TaskStopAdmissionInputSchema,
+  AgentXError, AuditEventInputSchema, auditEventId, AgentGuardrailsSchema, AgentIdSchema, OrgIdSchema, OrgRoleSchema, TaskStopAdmissionInputSchema,
   agentGuardrailsKey, agentKey, agentXError, builtinSettingsKey, calculateTaskStop, developerOrgKey,
   isBuiltinAgentId, orgMemberKey, orgMetaKey, orgScoped, orgProjectCatalogKey, orgSettingsKey, projectAiKey,
   type TaskStopAdmissionInput, type TaskStopBindingScope,
@@ -26,6 +28,8 @@ export interface TaskStopCaptureDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now?: () => number;
+  /** Trusted request-building read; never grants or dispatches paid work. */
+  purpose?: "approval_terms";
   /** Must perform live org/project/agent visibility and start-authority checks.
    * No API body may provide this callback or the trusted caller identity. */
   requireScopeAccess(input: TaskStopCaptureRequest): Promise<void>;
@@ -118,6 +122,7 @@ async function captureTaskStopSnapshot(deps: SnapshotDependencies, value: unknow
     if (key === undefined || found.pk !== key.pk || found.sk !== key.sk || found.orgId !== orgId) throw authority ? forbidden() : invalid();
     return found;
   }
+  try {
   const org = row(2, true);
   if (org.closingAt !== undefined || org.closedAt !== undefined) throw forbidden();
   // Immutable, non-TTL seed receipts distinguish a never-enrolled legacy org
@@ -202,6 +207,7 @@ async function captureTaskStopSnapshot(deps: SnapshotDependencies, value: unknow
   const calculation = calculateTaskStop(data.data);
   if (calculation.kind === "refused") throw agentXError(calculation.reason, "This approval is above the company ceiling. Ask an admin to raise the ceiling first; that change needs a second person.");
   if (calculation.kind !== "resolved" || !("approvalCapMicrousd" in calculation)) throw invalid();
+  if (!cutoverPreview && deps.purpose !== "approval_terms" && calculation.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
   const sourceRevisions = { company: company.revision, ceiling: ceiling.revision, projectCatalog: catalog.latestRevision, project: settings.revision, agent: agent?.revision ?? null };
   const policyDigest = createHash("sha256").update(JSON.stringify([orgId, project, agentId, sourceRevisions, data.data])).digest("hex");
   if (nativeChecks !== undefined) {
@@ -213,6 +219,23 @@ async function captureTaskStopSnapshot(deps: SnapshotDependencies, value: unknow
     bindingScopes: calculation.bindingScopes, calculationInput: data.data };
   if (agentId === undefined) return { ...captured, agentScope: "none_eval", sourceRevisions: { ...sourceRevisions, agent: null } };
   return { ...captured, agentId, sourceRevisions: { ...sourceRevisions, agent: Number(agent!.revision) } };
+  } catch (error) {
+    if (cutoverPreview || deps.purpose === "approval_terms" || !(error instanceof AgentXError) || !error.code.startsWith("TASK_STOP_")) throw error;
+    // Refusal is itself a native decision: pin the same snapshot, including
+    // missing configuration, and never emit financial facts for an untrusted actor.
+    const member = row(0, true), pointer = row(1, true), org = row(2, true);
+    if (org.closingAt !== undefined || org.closedAt !== undefined || member.developerId !== developerId
+      || member.role !== pointer.role || (role !== undefined && member.role !== role) || !OrgRoleSchema.safeParse(member.role).success) throw forbidden();
+    const occurrence = randomUUID(), at = new Date(deps.now?.() ?? Date.now()).toISOString();
+    const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", occurrence), orgId, action: "spending.stop_refused",
+      actor: { kind: "member", id: developerId }, target: { kind: "project", name: project }, occurredAt: at,
+      facts: { outcomeCode: error.code, workKind: evalScope ? "eval" : "task-window", admissionId: occurrence } });
+    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+      ...nativeSnapshotConditions(deps.tableName, keys, rows, []),
+      { Put: { TableName: deps.tableName, Item: auditPendingItem(event, Date.parse(at)), ConditionExpression: "attribute_not_exists(pk)" } },
+    ] }));
+    throw error;
+  }
 }
 
 /** Reuses one already captured economic snapshot with a proposed approval. */

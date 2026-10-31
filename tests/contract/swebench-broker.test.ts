@@ -1,3 +1,4 @@
+import { transactionAuditEvent } from "../support/transaction-audit.js";
 import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgSettingsKey, orgScoped, orgMemberKey, developerOrgKey, orgProjectCatalogKey, projectAiKey, projectMemberKey, projectMetaKey } from "@agentx/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
@@ -720,7 +721,7 @@ for (const status of ["archived", "active"] as const) it(`M47 project ${status} 
 it("M47 eval admission requires an audit in the run and slot transaction", async () => {
  const h = await enrolledEvalBroker();expect((await start(h.handler)).status).toBe(200);
  const transaction = h.db.transactions().find(items => items.some(item => (item.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "SWEBENCH_RUN"));
- expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Put: expect.objectContaining({ Item: expect.objectContaining({ event: expect.objectContaining({ action: "spending.stop_admitted", facts: expect.objectContaining({ workKind: "eval", effectiveStopMicrousd: 1234567 }) }) }) }) })]));
+ expect(transactionAuditEvent(transaction, "spending.stop_admitted")).toMatchObject({ facts: { workKind: "eval", effectiveStopMicrousd: 1234567 } });
 });
 
 it("M47 reported eval cost ceiling commits its reached audit with terminal state and slot release", async () => {
@@ -730,5 +731,6 @@ it("M47 reported eval cost ceiling commits its reached audit with terminal state
  usage: { schemaVersion: 1, outcome: "SUCCEEDED", provider: "amazon-bedrock", modelId: "m", cacheRetention: "long", tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cacheReadRatio: 0, costUsd: 1.234567 } };
  expect((await call(h.handler, { method: "POST", path: `/v1/internal/evals/${runId}/result`, headers: { "x-agentx-callback-capability": capability }, body })).status).toBe(200);
  const transaction = h.db.transactions().find(items => items.some(item => (item.Put as { Item?: { event?: { action?: string } } } | undefined)?.Item?.event?.action === "spending.stop_reached"));
- expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Update: expect.objectContaining({ Key: { pk: `SWEBENCH#${runId}`, sk: "META" } }) }), expect.objectContaining({ Delete: expect.objectContaining({ Key: { pk: "SWEBENCH#SLOT", sk: `RUN#${runId}` } }) })]));
+ expect(transaction?.map(item => (item.Update as { Key?: unknown } | undefined)?.Key)).toContainEqual({ pk: `SWEBENCH_RUN#${runId}`, sk: "META" });
+ expect(transaction?.map(item => (item.Delete as { Key?: unknown } | undefined)?.Key)).toContainEqual({ pk: "SWEBENCH#SLOT", sk: `RUN#${runId}` });
 });

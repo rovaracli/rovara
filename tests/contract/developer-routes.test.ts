@@ -663,7 +663,8 @@ describe("D2 task-person route dependencies", () => {
       ok: true as const, user: { id: request.slackUserId, teamId: "T0TEAM1", name: nativeMaya.name }, memberOf: ["C0PAY0001"],
     }));
     const route = developerTaskRouteDependencies({ documentClient: db, tableName: "state", developer: config, now: () => T0 }, nativeMaya);
-    const check = Reflect.get(route, "checkTaskPerson") as (value: DeveloperTaskRecord, id: string) => Promise<Record<string, unknown>>;
+    const check = route.checkTaskPerson;
+    if (check === undefined) throw new Error("Task-person checker is required");
 
     await expect(check(otherCreator, nativeDeveloperId)).resolves.toMatchObject({
       subject: { developerId: nativeDeveloperId, slackUserId: nativeMaya.slackUserId },

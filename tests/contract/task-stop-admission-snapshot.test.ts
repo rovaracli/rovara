@@ -1,7 +1,7 @@
 import { taskApprovalPolicyDigest } from "../../packages/broker/src/spend/task-approval-terms.js";
 import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
 import { expect, it } from "vitest";
-import { TransactGetCommand } from "@aws-sdk/lib-dynamodb";
+import { TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgSettingsKey, orgScoped, projectAiKey } from "@agentx/contracts";
 import { captureTaskStopEvalAdmission } from "../../packages/broker/src/org/task-stop-admission.js";
 import * as company from "../../packages/broker/src/org/task-stop-company.js";
@@ -25,7 +25,14 @@ function fixture() {
   const deps = { tableName: "state", now: () => now,
     requireScopeAccess: async () => { order.push("authorized"); },
     documentClient: { send: async (command: unknown) => {
-      calls.push(command); order.push("snapshot");
+      calls.push(command);
+      if (command instanceof TransactWriteCommand) {
+        order.push("refusal-audit");
+        expect(command.input.TransactItems?.at(-1)?.Put?.Item?.event).toMatchObject({ action: "spending.stop_refused", actor: { kind: "member", id: who } });
+        expect(command.input.TransactItems?.slice(0, -1).every(item => item.ConditionCheck !== undefined)).toBe(true);
+        return {};
+      }
+      order.push("snapshot");
       expect(command).toBeInstanceOf(TransactGetCommand);
       if (!(command instanceof TransactGetCommand)) throw new Error("nontransactional read");
       return { Responses: command.input.TransactItems?.map(item => ({ Item: structuredClone(rows.find(row => row.pk === item.Get?.Key?.pk && row.sk === item.Get?.Key?.sk)) })) };

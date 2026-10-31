@@ -1,3 +1,6 @@
+import { AuditEventInputSchema } from "@agentx/contracts";
+import { auditTaskStopDecision, auditOccurrence } from "../audit/events.js";
+import { auditPendingItem } from "../audit/outbox.js";
 import { createHash } from "node:crypto";
 import { usdToWholeMicrodollars } from "./budget-amount.js";
 import { requireNativeProjectWorkRole } from "../developer/task-access.js";
@@ -255,4 +258,19 @@ export interface PreparedTaskApprovalAdmission {
   receiptIndex: number;
   taskReference?: true;
   workflowRevision?: number;
+}
+
+/** The receipt and audit are one native write set; neither is optional runtime telemetry. */
+export function taskStopAdmissionAuditItem(tableName: string, receipt: TransactItem): TransactItem {
+ const row = z.union([receiptSchema, transitionSchema]).parse(receipt.Put?.Item);
+ const event = AuditEventInputSchema.parse(auditTaskStopDecision({ action: "spending.stop_admitted", orgId: row.orgId, actor: { kind: "member", id: row.actorId },
+  taskId: row.workId, admissionId: row.requestId, occurrence: auditOccurrence(row.workId, row.requestId), occurredAt: row.admittedAt,
+  effectiveStopMicrousd: row.spendingStop.effectiveStopMicrousd, approvalCapMicrousd: row.spendingStop.approvalCapMicrousd, policyDigest: row.spendingStop.policyDigest }));
+ return { Put: { TableName: tableName, Item: auditPendingItem(event, Date.parse(row.admittedAt)), ConditionExpression: "attribute_not_exists(pk)" } };
+}
+export function taskStopWindowItems(...args: Parameters<typeof taskStopWindowItem>): [TransactItem, TransactItem] {
+ const receipt = taskStopWindowItem(...args); return [receipt, taskStopAdmissionAuditItem(args[0], receipt)];
+}
+export function taskStopTransitionItems(...args: Parameters<typeof taskStopTransitionItem>): [TransactItem, TransactItem] {
+ const receipt = taskStopTransitionItem(...args); return [receipt, taskStopAdmissionAuditItem(args[0], receipt)];
 }

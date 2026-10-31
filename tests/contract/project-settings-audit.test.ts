@@ -141,7 +141,7 @@ describe("a project definition revision registered through the admin route", () 
     expect(cap.recorded()[0]).toMatchObject({ actor: { kind: "operator" }, target: { kind: "project", name: "payments" } });
     const holding = (db.transactions() as unknown as Entry[][]).filter((entries) => entries.some((entry) => entry.Put?.Item?.entityType === "PROJECT"));
     expect(holding).toHaveLength(1);
-    expect(pendingActions(holding[0]!)).toEqual(["project.checks_changed", "project.models_changed"]);
+    expect(pendingActions(holding[0]!)).toEqual(["project.checks_changed", "project.models_changed", "spending.policy_seeded"]);
   });
 
   it("records only the area a later revision changed, and nothing for a revision that changes none", async () => {
@@ -152,8 +152,8 @@ describe("a project definition revision registered through the admin route", () 
     expect(factsOf(cap, "project.checks_changed")).toHaveLength(1);
     await registerSlackProject(handler, { bind: false, revision: 3, models: { default: BALANCED, approved: [BALANCED] }, readiness: [cmd("test")] });
     // M47 adds one independent company-policy bootstrap event; these three events concern project revisions.
-    expect(cap.recordedBy("spending.policy_seeded")).toHaveLength(1);
-    expect(cap.recorded().filter(event => event.target.kind === "project")).toHaveLength(3);
+    expect(cap.recordedBy("spending.policy_seeded")).toHaveLength(2);
+    expect(cap.recorded().filter(event => event.target.kind === "project")).toHaveLength(4);
     await registerSlackProject(handler, { bind: false, revision: 4, models: { default: BALANCED, approved: [BALANCED] }, readiness: [cmd("test"), cmd("build")] });
     expect(factsOf(cap, "project.checks_changed")).toEqual([{ revision: 1, requiredCount: 1, optionalCount: 0 }, { revision: 4, requiredCount: 2, optionalCount: 0 }]);
   });

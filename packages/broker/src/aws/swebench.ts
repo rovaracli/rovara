@@ -1,3 +1,5 @@
+import { auditPendingItem } from "../audit/outbox.js";
+import { AuditEventInputSchema, auditEventId } from "@agentx/contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 import { captureTaskStopEvalAdmission } from "../org/task-stop-admission.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
@@ -287,6 +289,10 @@ export async function startSwebenchRun(
             ConditionExpression: "attribute_not_exists(pk)",
           },
         },
+        ...(snapshot.kind !== "captured" ? [] : [{ Put: { TableName: dependencies.tableName, ConditionExpression: "attribute_not_exists(pk)",
+          Item: auditPendingItem(AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_admitted", runId), orgId,
+            action: "spending.stop_admitted", actor: { kind: "member", id: context.developerId }, target: { kind: "project", name: context.projectName }, occurredAt: createdAt,
+            facts: { workKind: "eval", admissionId: runId, effectiveStopMicrousd: snapshot.effectiveStopMicrousd, approvalCapMicrousd: snapshot.approvalCapMicrousd, policyDigest: snapshot.policyDigest } }), Date.parse(createdAt)) } }]),
       ],
     }));
   } catch (error) {
@@ -488,7 +494,7 @@ export async function handleSwebenchCallback(
   }
   const result = SwebenchRunResultSchema.parse(body);
   await finishRun(dependencies, runId, result.outcome === "GRADED"
-    ? { status: "SUCCEEDED", result }
+    ? { status: "SUCCEEDED", result, stopReached: result.stopReason === "cost_ceiling" }
     : { status: "FAILED", error: result.error, ...(result.usage === undefined ? {} : { usage: result.usage }) });
   const ended = (await readRun(dependencies, runId)) ?? run;
   if (dependencies.onRunEnded !== undefined && SWEBENCH_TERMINAL_STATUSES.has(ended.status)) {
@@ -511,7 +517,7 @@ export async function handleSwebenchCallback(
 async function finishRun(
   dependencies: SwebenchDependencies,
   runId: string,
-  outcome: { status: "SUCCEEDED"; result: unknown } | { status: "FAILED"; error: string; usage?: unknown },
+  outcome: { status: "SUCCEEDED"; result: unknown; stopReached?: boolean } | { status: "FAILED"; error: string; usage?: unknown },
 ): Promise<void> {
   const at = now(dependencies).toISOString();
   const values: Record<string, unknown> = { ":status": outcome.status, ":now": at };
@@ -538,10 +544,23 @@ async function finishRun(
       ExpressionAttributeValues: values,
     },
   };
+  const reachedItems: TransactItem[] = [];
+  if (outcome.status === "SUCCEEDED" && outcome.stopReached === true) {
+    const run = await readRun(dependencies, runId), snapshot = run?.spendingStop;
+    if (run !== undefined && snapshot !== undefined) {
+      endRun.Update.ConditionExpression = `(${endRun.Update.ConditionExpression}) AND orgId = :stopOrg AND projectName = :stopProject AND maxCostUsd = :stopCap AND spendingStop = :stopSnapshot`;
+      Object.assign(values, { ":stopOrg": snapshot.orgId, ":stopProject": snapshot.project, ":stopCap": run.maxCostUsd, ":stopSnapshot": snapshot });
+      const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_reached", runId), orgId: snapshot.orgId, action: "spending.stop_reached",
+        actor: { kind: "system", id: "rovara" }, target: { kind: "project", name: snapshot.project }, occurredAt: at,
+        facts: { workKind: "eval", admissionId: runId, effectiveStopMicrousd: snapshot.effectiveStopMicrousd, approvalCapMicrousd: snapshot.approvalCapMicrousd, policyDigest: snapshot.policyDigest } });
+      reachedItems.push({ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, Date.parse(at)), ConditionExpression: "attribute_not_exists(pk)" } });
+    }
+  }
   for (let attempt = 1; ; attempt += 1) {
     try {
       await dependencies.documentClient.send(new TransactWriteCommand({
         TransactItems: [
+          ...reachedItems,
           endRun,
           { Delete: { TableName: dependencies.tableName, Key: swebenchSlotKey(runId), ConditionExpression: "attribute_exists(pk)" } },
           {
@@ -564,7 +583,7 @@ async function finishRun(
       const current = await readRun(dependencies, runId);
       if (current === undefined) throw agentXError("NOT_FOUND", "SWE-bench run not found");
       if (SWEBENCH_TERMINAL_STATUSES.has(current.status)) return;
-      if (await get(dependencies, swebenchSlotKey(runId)) === undefined) return endRunWithoutSlot(dependencies, runId, endRun);
+      if (await get(dependencies, swebenchSlotKey(runId)) === undefined) return endRunWithoutSlot(dependencies, runId, endRun, reachedItems);
       // Spec 052 Ruling 3: retryable. The runner treats any other 4xx but 429 as final and would
       // drop a graded result; the broker's catch-all would answer this cancellation 400.
       if (attempt >= RELEASE_ATTEMPTS) throw agentXError("RUNTIME_UNAVAILABLE", "the run's eval slot could not be released; try again shortly");
@@ -577,10 +596,11 @@ async function finishRun(
  * The migration case: a run that holds no slot started under the one-run lock. It is ended with that
  * lock deleted, as before spec 052, and the counter is left as it is.
  */
-async function endRunWithoutSlot(dependencies: SwebenchDependencies, runId: string, endRun: { Update: Record<string, unknown> }): Promise<void> {
+async function endRunWithoutSlot(dependencies: SwebenchDependencies, runId: string, endRun: { Update: Record<string, unknown> }, reachedItems: TransactItem[] = []): Promise<void> {
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({
       TransactItems: [
+        ...reachedItems,
         endRun as never,
         {
           Delete: {

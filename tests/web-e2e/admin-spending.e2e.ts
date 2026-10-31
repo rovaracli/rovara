@@ -39,3 +39,11 @@ test("a pending loosening still allows immediate tightening with a visible termi
  await expect(page.getByText("Current task stop: $1.00. Revision 2.")).toBeVisible();
  await expect(page.getByRole("heading", { name: "Pending task stop change" })).toHaveCount(0);
 });
+
+test("repairs missing project spending settings through the authenticated editor", async ({ page, request }) => {
+ await request.post("/__mock/m47-task-stops?missingProject=1");await page.goto("/app/admin/money/budgets");
+ await page.getByLabel("Project name for task stop").fill("payments");await activate(page.getByRole("button", { name: "Load project task stop" }));
+ await expect(page.getByText("Project spending settings are missing. Review a policy to initialize them before work can be admitted.")).toBeVisible();
+ await page.getByLabel("Task stop policy").selectOption("limited");await page.getByLabel("Task stop amount (USD)").fill("1.234567");await activate(page.getByRole("button", { name: "Review task stop change" }));
+ await activate(page.getByRole("button", { name: "Initialize task stop settings" }));await expect(page.getByText("Current task stop: $1.234567. Revision 1.")).toBeVisible();
+});
