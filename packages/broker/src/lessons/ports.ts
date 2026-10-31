@@ -73,9 +73,9 @@ export interface CorrectionJudge {
  */
 export interface CodeFacts {
   /** Identifier tokens of lines startLine..endLine of the file at the commit, without comments and string literals. Undefined when unreadable. */
-  identifiers(input: { workspaceId: string; repo: string; commit: string; path: string; startLine: number; endLine: number }): Promise<string[] | undefined>;
+  identifiers(input: { workspaceId: string; /** The project the lesson belongs to: the repository must be one of ITS repositories. Absent: nothing is read. */ project?: string; repo: string; commit: string; path: string; startLine: number; endLine: number }): Promise<string[] | undefined>;
   /** Whether the path exists in the tree at the commit; for a glob, whether its literal directory prefix does. */
-  pathExists(input: { workspaceId: string; repo: string; commit: string; path: string }): Promise<boolean | undefined>;
+  pathExists(input: { workspaceId: string; project?: string; repo: string; commit: string; path: string }): Promise<boolean | undefined>;
   /** The project's repositories (the project's own list, not the lesson's claim). */
   repositories(workspaceId: string, project: string): Promise<string[]>;
 }
