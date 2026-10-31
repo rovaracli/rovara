@@ -88,7 +88,7 @@ function blank(value: unknown): unknown {
     // A header held as an object key (`{"authorization": "..."}`): the value goes, whatever its shape.
     if (BLANK_NAMES.has(lower)) { out[key] = child === null ? null : Array.isArray(child) ? child.map(() => TRACE_BLANKED) : TRACE_BLANKED; continue; }
     if (key === "value" && headerName !== undefined && BLANK_NAMES.has(headerName)) { out[key] = TRACE_BLANKED; continue; }
-    if (lower === "cookies" && Array.isArray(child)) { out[key] = child.map((cookie) => (cookie !== null && typeof cookie === "object" ? { ...(blank(cookie) as object), value: TRACE_BLANKED } : cookie)); continue; }
+    if (lower === "cookies" && Array.isArray(child)) { out[key] = (child as unknown[]).map((cookie): unknown => (cookie !== null && typeof cookie === "object" ? { ...(blank(cookie) as object), value: TRACE_BLANKED } : cookie)); continue; }
     out[key] = blank(child);
   }
   return out;

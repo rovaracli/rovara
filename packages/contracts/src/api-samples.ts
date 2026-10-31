@@ -152,7 +152,7 @@ export function buildApiSample(input: ApiSampleInput): ApiSampleBuilt {
     const body = (bytes: Uint8Array | undefined, headers: Readonly<Record<string, string>> | undefined) => {
       const built = bodyOf(bytes, headers === undefined ? undefined : Object.entries(headers).find(([name]) => name.toLowerCase() === "content-type")?.[1], shallow ? new Set<string>() : safe);
       if (!shallow || built.kind !== "json" || built.value === null || typeof built.value !== "object") return built;
-      const top = Array.isArray(built.value) ? built.value.slice(0, 1).map((): SampleNode => "<truncated>") : Object.fromEntries(Object.keys(built.value).slice(0, 10).map((key) => [key, "<truncated>" as SampleNode]));
+      const top = Array.isArray(built.value) ? built.value.slice(0, 1).map((): SampleNode => "<truncated>") : Object.fromEntries(Object.keys(built.value).slice(0, 10).map((key) => [key, "<truncated>"]));
       return { kind: "json" as const, value: top, truncated: true as const };
     };
     return {

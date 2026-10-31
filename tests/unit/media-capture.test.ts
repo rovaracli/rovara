@@ -3,7 +3,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32 as zlibCrc32, deflateRawSync, inflateRawSync } from "node:zlib";
@@ -141,9 +142,9 @@ describe("scrubbing a trace", () => {
     const once = scrubTraceZip(goodTrace(), () => false)!;
     const twice = scrubTraceZip(once, () => false)!;
     expect([...unzipEntries(twice).entries()]).toEqual([...unzipEntries(once).entries()]);
-    const dir = require("node:fs").mkdtempSync(join(require("node:os").tmpdir(), "zipcheck-"));
+    const dir = mkdtempSync(join(tmpdir(), "zipcheck-"));
     roots.push(dir);
-    require("node:fs").writeFileSync(join(dir, "t.zip"), once);
+    writeFileSync(join(dir, "t.zip"), once);
     const checked = spawnSync("unzip", ["-t", join(dir, "t.zip")], { encoding: "utf8" });
     if (checked.error === undefined) expect(checked.status, checked.stdout).toBe(0);
   });

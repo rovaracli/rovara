@@ -37,6 +37,7 @@ export function evidenceBytesAreKind(kind: EvidenceArtifactKind, bytes: Uint8Arr
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     if (kind === "api_sample_json") return parseApiSample(bytes) !== undefined;
+    // eslint-disable-next-line no-control-regex -- the point is to refuse control characters in a text artifact
     return !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/u.test(text);
   } catch {
     return false;

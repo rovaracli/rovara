@@ -81,7 +81,7 @@ describe("provisioning", () => {
     expect(port.created).toEqual([]);
   });
   it("refuses a profile named twice", async () => {
-    expect(await provisionRunScopedAccounts({ accounts: [seed, { ...hook, profileId: "buyer" } as TestEnvAccount], roundEndsAt: ENDS, now: NOW, ports: ports(fake()) })).toMatchObject({ ok: false, code: "duplicate_profile" });
+    expect(await provisionRunScopedAccounts({ accounts: [seed, { ...hook, profileId: "buyer" }], roundEndsAt: ENDS, now: NOW, ports: ports(fake()) })).toMatchObject({ ok: false, code: "duplicate_profile" });
   });
   it("revokes the accounts already made when a later one fails, and proves they are dead", async () => {
     const port = fake({ failCreateFor: "admin" });
