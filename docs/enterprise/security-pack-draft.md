@@ -129,7 +129,7 @@ Deleting at the source (for example a message) deletes everywhere, and every rec
 ## 10. Supply chain and upgrades
 
 - Release bundle: a manifest of SHA-256 hashes of every artifact, the CDK assets, every container image (including the model proxy's), migration notes, and a signature from a Rovara KMS key whose public key you put in your install's trust list (not taken from the bundle's channel). [Built, not deployed] (task N2); the key itself does not exist yet.
-- `rovara upgrade --bundle` verifies the signature and hashes first (from a private copy it then uses), takes a restore point, then deploys in the existing order. Any changed byte is refused before anything changes. [Built, not deployed] (task N3). Enterprise end to end is blocked, see section 14, item 3.
+- `rovara upgrade --bundle` verifies the signature and hashes first (from a private copy it then uses), takes a restore point, then deploys in the existing order. Any changed byte is refused before anything changes. [Built, not deployed] (task N3). On an Enterprise install the templates are built at approval from the install's recorded settings and the signed release's pinned kit (owner decision 31 October 2026), and the deployer installs only those pinned bytes [Built, not deployed] (task N3b); the release step that produces the real kit is not built, see section 14, item 3.
 - The upgrade tool refuses to install an older release. [Built]
 - Rollback: redeploy the previous bundle and restore to the restore point. It has not been rehearsed. [Not built] (rehearsal is task N10e).
 - Software bill of materials: an open-source bill of materials exists in the platform spec. [verify it is current before sending]
@@ -161,7 +161,7 @@ A standard vendor questionnaire gets honest answers: "not certified", "not yet t
 0. Build a private path to the control plane and move the broker's Lambda functions into the VPC (section 2), or state plainly to the customer that the broker can reach the internet.
 1. Close TF16 (agent shells reaching host listeners) for the Enterprise profile.
 2. Close the dev-container gap (TF13, TF19), or refuse dev-container projects in Enterprise.
-3. Release bundle and signed upgrade (N2, N3, N6): verification, approval, the customer-owned deployer and the LiteLLM image from the install's registry are [Built, not deployed]; deploying an Enterprise install from a bundle end to end is blocked on an owner decision (per-customer templates or a source archive), and no signing key is pinned yet. See `docs/enterprise/operator-role.md`, section "What is not built".
+3. Release bundle and signed upgrade (N2, N3, N6): verification, approval, the customer-owned deployer and the LiteLLM image from the install's registry are [Built, not deployed]; an Enterprise install's templates are built at approval from the install's own recorded settings (owner decision 31 October 2026, option A) and the deployer installs only the bytes that approval pinned [Built, not deployed]; the release pipeline step that produces the signed synthesis kit is not built, and no signing key is pinned yet. See `docs/enterprise/operator-role.md`, section "What is not built".
 4. Build the operator role as designed in appendix A (N6, rescoped), and rehearse suspending it.
 5. Refuse the default public timestamp authorities in the Enterprise edition, or require an explicit choice (E2).
 6. Prove the sealed network in a test account: an allowed call works, a blocked one fails, flow logs show nothing to Rovara (N10a, N10c).

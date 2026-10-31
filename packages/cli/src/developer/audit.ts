@@ -23,7 +23,7 @@ import {
 } from "@rovara/audit-verifier";
 import { z } from "zod";
 import { ReportedFailure } from "../output.js";
-import { developerRequest } from "./commands.js";
+import { developerRequest, withFreshSignIn, type FreshSignIn } from "./commands.js";
 import { resolveDeveloperEnvironment } from "./config.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
 
@@ -286,10 +286,15 @@ const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 /** The most an export file can be: the same bound the verifier uses (records at up to 2 KiB, plus room for seals and timestamps). */
 const MAX_EXPORT_BYTES = AUDIT_EXPORT_MAX_RECORDS * 2048 + 16 * 1024 * 1024;
 
-export function developerExportTransport(deps: DeveloperSessionDeps, env: string | undefined): AuditExportTransport {
+/**
+ * Starting an export needs a sign-in from the last ten minutes (owner decision 2026-10-31, like the other high-risk actions). When the control plane says so (REAUTH_REQUIRED), and
+ * the command can sign in again (`freshSignIn`), the person signs in once more and the same request is sent once more, with the same request ID so it is the same export. A second refusal,
+ * or any other, is shown as it is. Polling and downloading a ready export need no fresh sign-in.
+ */
+export function developerExportTransport(deps: DeveloperSessionDeps, env: string | undefined, freshSignIn?: FreshSignIn): AuditExportTransport {
   return {
     pollMs: 3000,
-    start: async (request) => (await neutralised(() => developerRequest(deps, env, `${DEV_AUDIT_PATH}/exports`, AuditExportStartSchema, { method: "POST", body: request, explain: true }))).body,
+    start: async (request) => (await withFreshSignIn(deps, env, undefined, freshSignIn, () => neutralised(() => developerRequest(deps, env, `${DEV_AUDIT_PATH}/exports`, AuditExportStartSchema, { method: "POST", body: request, explain: true })))).body,
     poll: async (exportId) => (await neutralised(() => developerRequest(deps, env, `${DEV_AUDIT_PATH}/exports/${exportId}`, AuditExportViewSchema, { explain: true }))).body,
     orgId: async () => orgOfToken((await neutralised(() => developerAccessToken(deps, env))).accessToken),
   };

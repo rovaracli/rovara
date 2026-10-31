@@ -164,7 +164,7 @@ export type FreshSignIn = (input: { env: string; url: string; exclude?: "cloud" 
  * the server says so (REAUTH_REQUIRED), this signs in again once, with `freshSignIn`, and retries the request once; a second refusal is
  * the person's to read. With no `freshSignIn` the refusal is shown at once.
  */
-async function withFreshSignIn<T>(deps: DeveloperSessionDeps, env: string | undefined, exclude: "cloud" | "github" | undefined, freshSignIn: FreshSignIn | undefined, run: () => Promise<T>): Promise<T> {
+export async function withFreshSignIn<T>(deps: DeveloperSessionDeps, env: string | undefined, exclude: "cloud" | "github" | undefined, freshSignIn: FreshSignIn | undefined, run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (error) {
