@@ -46,6 +46,8 @@ export function privateMcpInstallConfig(env: Environment): PrivateMcpInstallConf
   const rovaraCidrs = (env.ROVARA_VPC_CIDRS ?? "").split(",").map((part) => part.trim()).filter((part) => part !== "");
   if (cidrBlockListOf(rovaraCidrs) === undefined) throw agentXError("CONFIG_INVALID", "ROVARA_VPC_CIDRS is not a list of ranges such as 10.42.0.0/16");
   const privateCidrs = parseInstallCidrs(env.ROVARA_PRIVATE_MCP_CIDRS, rovaraCidrs);
+  // Fail closed: ranges set by hand without the install's own network could not be checked for overlap with it (the install sets ROVARA_VPC_CIDRS with them).
+  if (privateCidrs.length > 0 && rovaraCidrs.length === 0) throw agentXError("CONFIG_INVALID", "ROVARA_PRIVATE_MCP_CIDRS needs ROVARA_VPC_CIDRS, the network Rovara itself runs in, so that an overlap can be refused");
   const stdioEnabled = env.ROVARA_STDIO_MCP_SERVERS === "1";
   const url = env.MCP_HOST_URL;
   const token = env.MCP_HOST_TOKEN;

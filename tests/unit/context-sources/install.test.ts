@@ -33,7 +33,7 @@ describe("the install's MCP settings", () => {
     for (const edition of ["Enterprise", "enterprise ", "team"]) expect(() => privateMcpInstallConfig({ ROVARA_EDITION: edition })).toThrow(/edition/iu);
   });
   it("Enterprise reads the private ranges from ROVARA_PRIVATE_MCP_CIDRS and keeps package-run servers off by default", () => {
-    expect(privateMcpInstallConfig({ ROVARA_EDITION: "enterprise", ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16, 192.168.4.0/24" })).toEqual({ edition: "enterprise", privateCidrs: ["10.1.0.0/16", "192.168.4.0/24"], rovaraCidrs: [], stdioEnabled: false });
+    expect(privateMcpInstallConfig({ ROVARA_EDITION: "enterprise", ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16, 192.168.4.0/24", ROVARA_VPC_CIDRS: "10.42.0.0/16" })).toEqual({ edition: "enterprise", privateCidrs: ["10.1.0.0/16", "192.168.4.0/24"], rovaraCidrs: ["10.42.0.0/16"], stdioEnabled: false });
     // unset gives no ranges: every test and call of a private server is then refused (fail closed)
     expect(privateMcpInstallConfig({ ROVARA_EDITION: "enterprise" })).toEqual({ edition: "enterprise", privateCidrs: [], rovaraCidrs: [], stdioEnabled: false });
     // only the exact "1" turns package-run servers on, and then only with a host
@@ -41,6 +41,14 @@ describe("the install's MCP settings", () => {
   });
   it("a range outside the private networks stops the install, never widening it", () => {
     for (const cidr of ["8.8.8.0/24", "0.0.0.0/0", "169.254.0.0/16", "not-a-range"]) expect(() => privateMcpInstallConfig({ ROVARA_EDITION: "enterprise", ROVARA_PRIVATE_MCP_CIDRS: cidr })).toThrow(/ROVARA_PRIVATE_MCP_CIDRS/u);
+  });
+  it("tidy round: private ranges without the install's own network (ROVARA_VPC_CIDRS) stop the install, since the overlap could not be checked", () => {
+    for (const vpc of [undefined, "", "  "]) {
+      expect(() => privateMcpInstallConfig({ ROVARA_EDITION: "enterprise", ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16", ...(vpc === undefined ? {} : { ROVARA_VPC_CIDRS: vpc }) }), String(vpc)).toThrow(/ROVARA_VPC_CIDRS/u);
+    }
+    // no private ranges: nothing to check, as before; Public ignores both
+    expect(privateMcpInstallConfig({ ROVARA_EDITION: "enterprise" })).toMatchObject({ privateCidrs: [] });
+    expect(privateMcpInstallConfig({ ROVARA_EDITION: "public", ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16" })).toMatchObject({ privateCidrs: [] });
   });
   it("fix round: the install's own network (ROVARA_VPC_CIDRS) is read, and a private range that overlaps it stops the install", () => {
     const base = { ROVARA_EDITION: "enterprise", ROVARA_VPC_CIDRS: "10.42.0.0/16" };
@@ -98,7 +106,7 @@ describe("the builders get what the install set", () => {
     }
   });
   it("leaves package-run servers off and passes no host by default", () => {
-    installContextSources({ env: { ROVARA_EDITION: "enterprise", ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16" }, orgConnections: connections(), documentClient: new FakeDynamoDb(), tableName: "state", registerCleanup: false })!
+    installContextSources({ env: { ROVARA_EDITION: "enterprise", ROVARA_PRIVATE_MCP_CIDRS: "10.1.0.0/16", ROVARA_VPC_CIDRS: "10.42.0.0/16" }, orgConnections: connections(), documentClient: new FakeDynamoDb(), tableName: "state", registerCleanup: false })!
       .routes({ requireProjectRole: async () => undefined });
     for (const call of [seen.runtime[0]!, seen.routes[0]!, seen.servers[0]!]) {
       expect(call.stdioEnabled).toBe(false);
