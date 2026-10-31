@@ -89,9 +89,12 @@ export interface AskContextData {
 /** Slack's mention syntax (`<@U123>`, `<@U123|name>`), which would carry a person's Slack id (or an erased person's) into the model's text. */
 const SLACK_MENTION = /<@[UW][A-Z0-9]{2,}(?:\|[^>]{0,80})?>/gu;
 
+/** A text with every Slack mention (`<@U123>`) replaced by the neutral word, so no Slack id is kept in anything stored or sent. */
+export const neutralizeSlackMentions = (text: string): string => text.replace(SLACK_MENTION, "@member");
+
 /** Text for the model: Slack mentions become a neutral word, secrets are redacted, and angle brackets are made inert so nothing can open or close a tag. */
 function safe(text: string): string {
-  return inertReplyText(redactText(text.replace(SLACK_MENTION, "@member")));
+  return inertReplyText(redactText(neutralizeSlackMentions(text)));
 }
 
 const oneLine = (text: string, max: number): string => Array.from(safe(text).replace(/\s+/gu, " ").trim()).slice(0, max).join("");
