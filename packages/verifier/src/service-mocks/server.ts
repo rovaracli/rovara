@@ -10,6 +10,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
+  ServiceMockAdditionSetSchema,
   SERVICE_MOCK_NO_RECORDING_MESSAGE,
   SERVICE_MOCK_UNMATCHED_STATUS,
   type ServiceMockEntry,
@@ -17,7 +18,7 @@ import {
   type ServiceMockUsage,
 } from "@agentx/contracts";
 import { createSyntheticGenerator } from "../data-guard.js";
-import { MOCK_BODY_MAX_BYTES, hashOfRequest, indexEntries, loadFixtureSet, sagemakerEndpointOfPath } from "./fixture-set.js";
+import { FixtureSetRefused, MOCK_BODY_MAX_BYTES, hashOfRequest, indexEntries, loadFixtureSet, sagemakerEndpointOfPath } from "./fixture-set.js";
 import { schemaAccepts, synthesizeFromSchema } from "./schema.js";
 
 export interface ServiceMockOptions {
@@ -28,16 +29,21 @@ export interface ServiceMockOptions {
   unmatched: "fail" | "schema_synth";
   host?: string;
   port?: number;
+  /** The task's new answers (owner decision Q9), served only when the pinned set has no recording. They must extend exactly this set (`baseFixtureDigest`). */
+  additions?: unknown;
   /** Wait for the recorded latency before answering (off by default: a mock should be quick). */
   replayLatency?: boolean;
   controlToken?: string;
 }
 
+/** What the mock reports: the contract's usage plus how many answers came from the task's additions (listed in the evidence by the additions listing). */
+export type ServiceMockReport = ServiceMockUsage & { additionsServed: number };
+
 export interface RunningServiceMock {
   url: string;
   /** The token the control paths need; given to the scenario runner, never to the app. */
   controlToken: string;
-  usage(): ServiceMockUsage;
+  usage(): ServiceMockReport;
   close(): Promise<void>;
 }
 
@@ -65,9 +71,16 @@ async function readBody(request: IncomingMessage): Promise<string> {
 export async function startServiceMock(options: ServiceMockOptions): Promise<RunningServiceMock> {
   const set = loadFixtureSet(options.fixtureSet, options.expectedDigest);
   const entries = indexEntries(set);
+  const additions = new Map<string, ServiceMockEntry>();
+  if (options.additions !== undefined) {
+    const added = ServiceMockAdditionSetSchema.safeParse(options.additions);
+    if (!added.success || added.data.baseFixtureDigest !== options.expectedDigest) throw new FixtureSetRefused("unreadable");
+    for (const addition of added.data.additions) if (!entries.has(addition.entry.requestHash)) additions.set(addition.entry.requestHash, addition.entry);
+  }
   const controlToken = options.controlToken ?? randomBytes(24).toString("hex");
   const armed = new Map<string, number>();
   const counts = { matched: 0, unmatchedFailed: 0, synthesized: 0 };
+  let additionsServed = 0;
   const faultsInjected = new Map<string, number>();
   const faultByName = new Map<string, ServiceMockFault>(set.faults.map((fault) => [fault.name, fault]));
 
@@ -76,7 +89,7 @@ export async function startServiceMock(options: ServiceMockOptions): Promise<Run
     const wanted = Buffer.from(controlToken);
     return given.length === wanted.length && timingSafeEqual(given, wanted);
   };
-  const usage = (): ServiceMockUsage => ({ service: set.service.name, ...counts, faultsInjected: [...faultsInjected].map(([name, count]) => ({ name, count })) });
+  const usage = (): ServiceMockReport => ({ service: set.service.name, ...counts, faultsInjected: [...faultsInjected].map(([name, count]) => ({ name, count })), additionsServed });
 
   const control = async (request: IncomingMessage, response: ServerResponse, path: string): Promise<void> => {
     if (!authorised(request)) return text(response, 403, "control token required");
@@ -167,9 +180,11 @@ export async function startServiceMock(options: ServiceMockOptions): Promise<Run
       // A SageMaker Runtime request for another endpoint, or any other path, is a request this mock has no recording for.
       const addressed = set.service.kind !== "sagemaker_runtime" || endpoint === set.service.target;
       const hash = addressed ? hashOfRequest(set, { method: request.method ?? "GET", pathAndQuery, contentType, body }) : "";
-      const entry = addressed ? entries.get(hash) : undefined;
+      const base = addressed ? entries.get(hash) : undefined;
+      const added = addressed && base === undefined ? additions.get(hash) : undefined;
+      const entry = base ?? added;
       if (entry === undefined) return unmatched(response, { contentType, body, hash: addressed ? hash : "0".repeat(64) });
-      counts.matched += 1;
+      if (added === undefined) counts.matched += 1; else additionsServed += 1;
       answer(entry, response);
     })().catch(() => { if (!response.headersSent) text(response, 500, "mock error"); else response.destroy(); });
   });

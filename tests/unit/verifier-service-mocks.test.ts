@@ -2,8 +2,9 @@
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { ServiceMockFixtureSetSchema, ServiceMockJsonSchemaSchema, awsEndpointUrlVariable, serviceMockFixtureSetDigest, serviceMockRequestHash, type ServiceMockFixtureSet, type TestEnvProdDeny } from "@agentx/contracts";
+import { ServiceMockAdditionSetSchema, serviceMockAdditionsListing } from "@agentx/contracts";
 import { createSyntheticGenerator } from "../../packages/verifier/src/data-guard.js";
-import { FixtureSetRefused, inferJsonSchema, recordFixtureSet, schemaAccepts, startServiceMock, synthesizeFromSchema, type RecordInput, type RunningServiceMock } from "../../packages/verifier/src/service-mocks/index.js";
+import { FixtureSetRefused, additionsFromPreprod, additionsFromSchema, inferJsonSchema, recordFixtureSet, schemaAccepts, startServiceMock, synthesizeFromSchema, type RecordInput, type RunningServiceMock } from "../../packages/verifier/src/service-mocks/index.js";
 
 const DENY: TestEnvProdDeny = { accountIds: ["111122223333"], hosts: ["*.prod.example.com"], arnPrefixes: [] };
 const SERVICE = { name: "partner-scorer", kind: "sagemaker_runtime" as const, target: "partner-scorer" };
@@ -76,7 +77,7 @@ describe("the mock server", () => {
     expect(first.status).toBe(200);
     expect(first.headers.get("content-type")).toBe(json);
     expect(await first.json()).toMatchObject({ score: 0.9, model: "v3" });
-    expect(mock.usage()).toEqual({ service: "partner-scorer", matched: 1, unmatchedFailed: 0, synthesized: 0, faultsInjected: [] });
+    expect(mock.usage()).toEqual({ service: "partner-scorer", matched: 1, unmatchedFailed: 0, synthesized: 0, faultsInjected: [], additionsServed: 0 });
   });
   it("fails loudly for a request it has no recording for, and for another endpoint, and counts each", async () => {
     const { set } = await recorded();
@@ -135,6 +136,59 @@ describe("unmatched requests: schema_synth", () => {
   it("never synthesizes in the default mode", async () => {
     const { set } = await recorded();
     expect((await invoke(await serve(set, "fail"), { partner: "p9", region: "latam" })).status).toBe(500);
+  });
+});
+
+describe("new cases: additions made in the task (owner decision Q9)", () => {
+  const fresh = request({ partner: "p-new", region: "latam" });
+  it("covers the old cases from the pinned set and the new case from the task's addition, and lists it", async () => {
+    const { set, digest } = await recorded();
+    const made = additionsFromSchema(set, [fresh], DENY, NOW());
+    if (!made.ok) throw new Error(made.reason);
+    expect(made.set.additions[0]?.origin).toBe("schema");
+    const mock = await startServiceMock({ fixtureSet: set, expectedDigest: digest, unmatched: "fail", additions: made.set });
+    running.push(mock);
+    expect((await invoke(mock, { partner: "p1", region: "emea" })).status).toBe(200);
+    const added = await invoke(mock, { partner: "p-new", region: "latam" });
+    expect(added.status).toBe(200);
+    expect(schemaAccepts(set.responseSchema!, await added.json())).toBe(true);
+    // A third request neither has still fails loudly.
+    expect((await invoke(mock, { partner: "p-other", region: "latam" })).status).toBe(500);
+    expect(mock.usage()).toMatchObject({ matched: 1, additionsServed: 1, unmatchedFailed: 1, synthesized: 0 });
+    const listing = serviceMockAdditionsListing(made.set);
+    expect(listing).toMatchObject({ service: "partner-scorer", baseFixtureDigest: digest, bySchema: 1, byPreprod: 0 });
+    expect(JSON.stringify(listing)).not.toContain("p-new");
+  });
+  it("records a new case from pre-prod through the same guard, and refuses one the pinned set already answers", async () => {
+    const { set } = await recorded();
+    const sent: string[] = [];
+    const context = { deny: DENY, now: NOW, send: (item: RecordInput) => { sent.push(item.body); return Promise.resolve(answer(0.7)); } };
+    const made = await additionsFromPreprod(set, [fresh], context);
+    expect(made.ok && made.set.additions.map((addition) => addition.origin)).toEqual(["preprod"]);
+    expect(await additionsFromPreprod(set, [request({ partner: "p1", region: "emea" })], context)).toEqual({ ok: false, reason: "already_recorded", at: 0 });
+    expect(await additionsFromPreprod(set, [request({ mail: "jane.roe@acme-corp.com" })], context)).toMatchObject({ ok: false, reason: "data_guard" });
+    expect(sent).toHaveLength(1);
+  });
+  it("refuses a schema answer for a request outside the schema, a body that is not JSON, a base with no response schema, and one already recorded", async () => {
+    const { set } = await recorded();
+    expect(additionsFromSchema(set, [request({ partner: 7 })], DENY, NOW())).toEqual({ ok: false, reason: "request_not_in_schema", at: 0 });
+    expect(additionsFromSchema(set, [{ ...fresh, body: "nope" }], DENY, NOW())).toEqual({ ok: false, reason: "not_json", at: 0 });
+    expect(additionsFromSchema({ ...set, responseSchema: null }, [fresh], DENY, NOW())).toEqual({ ok: false, reason: "no_response_schema" });
+    expect(additionsFromSchema(set, [request({ partner: "p1", region: "emea" })], DENY, NOW())).toEqual({ ok: false, reason: "already_recorded", at: 0 });
+    expect(additionsFromSchema(set, [], DENY, NOW())).toEqual({ ok: false, reason: "no_inputs" });
+  });
+  it("serves additions only on the base set they extend, and never over a pinned recording", async () => {
+    const { set, digest } = await recorded();
+    const made = additionsFromSchema(set, [fresh], DENY, NOW());
+    if (!made.ok) throw new Error(made.reason);
+    await expect(startServiceMock({ fixtureSet: set, expectedDigest: digest, unmatched: "fail", additions: { ...made.set, baseFixtureDigest: "f".repeat(64) } })).rejects.toThrow(FixtureSetRefused);
+    await expect(startServiceMock({ fixtureSet: set, expectedDigest: digest, unmatched: "fail", additions: { nonsense: 1 } })).rejects.toThrow(FixtureSetRefused);
+    const pinned = set.entries[0]!;
+    const sneaky = ServiceMockAdditionSetSchema.parse({ ...made.set, additions: [{ origin: "schema", entry: { ...pinned, response: { ...pinned.response, body: '{"score":0}' } } }] });
+    const mock = await startServiceMock({ fixtureSet: set, expectedDigest: digest, unmatched: "fail", additions: sneaky });
+    running.push(mock);
+    expect(await (await invoke(mock, { partner: "p1", region: "emea" })).json()).toMatchObject({ score: 0.9 });
+    expect(mock.usage()).toMatchObject({ matched: 1, additionsServed: 0 });
   });
 });
 
