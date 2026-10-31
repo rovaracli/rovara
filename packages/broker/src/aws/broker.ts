@@ -319,6 +319,7 @@ import { orgStoreOf } from "./broker/dependency-wiring.js";
 import { createAwsBrokerHandler } from "./broker/handler.js";
 import { installEditionPolicy } from "./broker/edition-wiring.js";
 import { createBrokerPlugins } from "./broker/plugin-wiring.js";
+import { portCredentialResolver } from "./broker/credential-exchange.js";
 import { ssoStoresFor } from "../developer/sso-sign-in.js";
 import { awsClientConfiguration, documentClient, ec2Sessions, stepFunctions } from "./broker/runtime-clients.js";
 export { PROJECT_SETUP_CAPTURE_POLICY, WEB_ROUTE_KEY } from "./broker/definitions.js";
@@ -374,12 +375,17 @@ const github = createGitHubAppCredentials(
   cloudOrgResolver === undefined ? undefined : { requireInstallationBound: installationBindingCheck({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }) },
 );
 const githubCredentials = github.provider;
+// Enterprise foundations E2: the edition is the deploy stamp, read once; no stamp (an install deployed before editions) is no policy, never Enterprise.
+const editionPolicy = installEditionPolicy(process.env, cloudOrgResolver !== undefined);
+// Enterprise foundations P4: GitHub is the first code host and check runner plug-in; the router is what consumers move to (tasks P5a-e).
+const plugins = createBrokerPlugins({ provider: githubCredentials, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), codeBuild, ...(editionPolicy === undefined ? {} : { policy: editionPolicy }) });
 const repositoryGrantSigningKey = createHmac("sha256", requiredEnvironment("CALLBACK_SIGNING_KEY"))
   .update("agentx:repository-grants:v3")
   .digest();
 const repositoryGrants = new RepositoryGrantService(
   repositoryGrantSigningKey,
-  (credentialRef, repositoryUrl, access, scope) => githubCredentials.resolve(credentialRef, repositoryUrl, access, scope),
+  // Enterprise foundations N-3: the credential comes from the repository's code host and must pass workerGitCredentialUsable before a worker gets it.
+  portCredentialResolver({ codeHost: plugins.codeHost, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF") }),
 );
 
 const lambdaClient = new LambdaClient(awsClientConfiguration);
@@ -501,11 +507,8 @@ const egressDomainsSync = projectAllowListId === undefined || projectAllowListId
   ? undefined
   : () => syncCellAllowList({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), resolver: new Route53ResolverClient(awsClientConfiguration), listId: projectAllowListId, now: () => new Date() });
 
-const editionPolicy = installEditionPolicy(process.env, cloudOrgResolver !== undefined);
-// Enterprise foundations P4: GitHub is the first code host and check runner plug-in; the router below is what consumers move to (tasks P5a-e).
 // Enterprise foundations I1: the group mapping and break-glass stores, built once (only where the edition has company sign-in).
 const ssoStores = ssoStoresFor({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), policy: editionPolicy, ...(audit === undefined ? {} : { audit }) });
-const plugins = createBrokerPlugins({ provider: githubCredentials, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), codeBuild, ...(editionPolicy === undefined ? {} : { policy: editionPolicy }) });
 
 export const handler = createAwsBrokerHandler({
   documentClient,
