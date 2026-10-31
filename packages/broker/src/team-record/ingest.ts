@@ -20,7 +20,7 @@ import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { Aliases } from "../agents/table-writes.js";
 import { createHash } from "node:crypto";
 import { withoutActorFields } from "./person-fields.js";
-import { observeOpenRow, observeRowAccess, unitHasList } from "./access.js";
+import { observeOpenRow, observeRowAccess, unitHasList, withoutErasedPrincipals } from "./access.js";
 import { captureIsOn, type LearningModeReader } from "./mode.js";
 import { exceedsRetention, retentionPlan, retentionRefusal } from "./retention.js";
 import { supersedeItem, wasDeletedAtSource } from "./scope-work.js";
@@ -103,7 +103,9 @@ function draftScope(draft: RecordDraft): string | undefined {
  * replaces another's. The place stays the row's `scope`; only the access unit in the snapshot moves down to the item. A comment shares its issue's unit only when its own list
  * is the issue's; a comment with its own visibility gets a child unit UNDER the issue, so it narrows only itself.
  */
-async function accessUnitAudience(deps: IngestDependencies, orgId: OrgId, draft: RecordDraft): Promise<RecordDraft["audience"]> {
+async function accessUnitAudience(deps: IngestDependencies, orgId: OrgId, original: RecordDraft): Promise<RecordDraft["audience"]> {
+  // An erased person's id is not stored in a new row's list, whoever wrote the row.
+  const draft: RecordDraft = { ...original, audience: await withoutErasedPrincipals(deps.table, orgId, original.audience) };
   if (draft.audience.kind !== "restricted" || aclUnitOfSource(draft.source) !== "item") return draft.audience;
   const hash = (id: string): string => createHash("sha256").update(`${draft.sourceRef.system}\u0000${id}`).digest("hex").slice(0, 24);
   const place = draft.audience.acl.scope;

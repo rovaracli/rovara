@@ -3,7 +3,7 @@
 // budget allows and says whether it is complete, and the walk calls again until it is. Hot rows, vectors, facts, lessons and the lake queue follow the same
 // privacy order as a source delete (`purgeItems`): the lake first, a row only after its vector.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { LESSON_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { LESSON_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, recordDeveloperHash, teamRecordPk, type OrgId } from "@agentx/contracts";
 import type { Item } from "../agents/table-writes.js";
 import { auditRecordErased } from "./audit.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
@@ -29,6 +29,9 @@ export interface EraseResult extends PurgeResult {
   complete: boolean;
   /** For a person: whether each independent step finished (row snapshots, access records, lessons). A step that did not finish is resumed by the next run. */
   steps?: Record<EraseStep, boolean>;
+  /** `complete` means every step finished in this pass. It is FINAL only after the delayed second pass (`runErasureSweeps`) has also reported complete. */
+  final?: boolean;
+  sweepDueAt?: string;
 }
 
 const finish = async (deps: PurgeDependencies, orgId: OrgId, cause: "person_erased" | "project_archived" | "org_closed", occurrence: string, result: EraseResult): Promise<void> => {
@@ -51,7 +54,7 @@ export interface ErasedPerson {
  * sources that are left, the lessons that rested on them are withdrawn (unless a valid code citation alone supports them), and the lake is told to forget them: by
  * developer id, and by each source identity for rows that never had a developer id. `occurrence` makes the audit event unique (the erase request's id).
  */
-export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: ErasedPerson, occurrence: string, budget: EraseBudget = DEFAULT_ERASE_BUDGET): Promise<EraseResult> {
+export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: ErasedPerson, occurrence: string, budget: EraseBudget = DEFAULT_ERASE_BUDGET, options: { sweep?: boolean } = {}): Promise<EraseResult> {
   const now = deps.now ?? Date.now;
   const queue = deps.lakeQueue ?? tableLakeDeleteQueue(deps.table, now);
   const identities = (who.identities ?? []).slice(0, 50).map((identity) => ({ ...identity, system: identitySystem(identity.system) }));
@@ -60,7 +63,7 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   await markPersonErased(deps.table, orgId, { developerId: who.developerId, identities }, new Date(now()).toISOString());
   await markAccessErased(deps.table, orgId, identities.map((identity) => identity.sourceId), new Date(now()).toISOString());
   await queue.enqueue(orgId, [
-    ...(who.developerId === undefined ? [] : [{ kind: "actor" as const, developerId: who.developerId }]),
+    ...(who.developerId === undefined ? [] : [{ kind: "actor" as const, developerId: recordDeveloperHash(who.developerId) }]),
     ...identities.map((identity) => ({ kind: "actor_source" as const, hash: recordActorSourceHash(identity.system, identity.sourceId) })),
   ]);
   const found: { items: Item[]; truncated: boolean } = who.developerId === undefined ? { items: [], truncated: false } : await byActor(deps.table, orgId, who.developerId, budget.maxItems);
@@ -106,8 +109,37 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   purged.lessonsWithdrawn += context.lessonsPurged;
   done.rows = !found.truncated && purged.blocked === 0;
   const result: EraseResult = { ...purged, other: 0, complete: Object.values(done).every(Boolean), steps: done };
-  await finish(deps, orgId, "person_erased", occurrence, result);
-  return result;
+  if (options.sweep !== true) await finish(deps, orgId, "person_erased", occurrence, result);
+  // "Complete" is final only after the sweep. A write that read the person's markers just before they were written (an ingest in flight, a join on another instance) can land after
+  // the pass above; so the erase schedules its OWN second pass, delayed, which the delete worker runs (`runErasureSweeps`) with no wiring of its own.
+  if (result.complete && options.sweep !== true) {
+    const dueAt = now() + ERASE_SWEEP_DELAY_MS;
+    await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { pk: teamRecordPk(orgId), sk: `${ERASE_SWEEP_PREFIX}${occurrence}`, entityType: "TEAM_RECORD_ERASE_SWEEP", occurrence, who, dueAt } }));
+    return { ...result, final: false, sweepDueAt: new Date(dueAt).toISOString() };
+  }
+  return { ...result, final: options.sweep === true && result.complete };
+}
+
+/** How long after a complete erase its second pass runs. */
+export const ERASE_SWEEP_DELAY_MS = 15 * 60_000;
+const ERASE_SWEEP_PREFIX = "ERASESWEEP#";
+
+/**
+ * The second pass of every erase that reported complete and is due: the same erase, run again (it is idempotent), which removes whatever a late write put back. Once it reports complete
+ * the sweep item is deleted and the erase is final; if it finds more work it is kept and tried again later. Called by the delete worker on every run.
+ */
+export async function runErasureSweeps(deps: PurgeDependencies, orgId: OrgId, nowMs: number): Promise<{ ran: number; final: number }> {
+  const found = await queryPrefix(deps.table, orgId, undefined, ERASE_SWEEP_PREFIX, 50);
+  let ran = 0;
+  let final = 0;
+  for (const item of found.items) {
+    if (typeof item.sk !== "string" || typeof item.dueAt !== "number" || item.dueAt > nowMs || typeof item.occurrence !== "string") continue;
+    ran += 1;
+    const result = await erasePerson(deps, orgId, item.who as ErasedPerson, item.occurrence, DEFAULT_ERASE_BUDGET, { sweep: true });
+    if (result.complete) { await deleteItem(deps.table, { pk: teamRecordPk(orgId), sk: item.sk }); final += 1; }
+    else await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { ...item, dueAt: nowMs + ERASE_SWEEP_DELAY_MS } }));
+  }
+  return { ran, final };
 }
 
 /** What a step needs. */
@@ -120,12 +152,21 @@ interface EraseContext {
 
 const developerOf = (context: EraseContext): string => context.who.developerId ?? `source:${context.identities[0]?.system ?? "x"}:${context.identities[0]?.sourceId ?? "x"}`;
 
+/** The projects an erase must cover: the ones passed, the org's project list, and those of the person's rows. `known` is false when none of the first two exists (the org's projects cannot be enumerated). */
+async function projectsOf(context: EraseContext): Promise<{ projects: string[]; known: boolean }> {
+  const listed = (await context.deps.projects?.projects(context.orgId)) ?? undefined;
+  return {
+    projects: [...new Set([...(context.who.projects ?? []), ...(listed ?? []), ...context.rows.flatMap((row) => (typeof row.project === "string" ? [row.project] : []))])],
+    known: context.who.projects !== undefined || listed !== undefined,
+  };
+}
+
 /** One handler per step of the registry. `rows` is run by `erasePerson` itself, last. */
 const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) => Promise<boolean>> = {
   // The lake forgets the person's rows by actor (the lake holds no principal list and no actor field in structured_json: see `lakeAcl` and `withoutActorFields`).
   async lake(context) {
     await context.queue.enqueue(context.orgId, [
-      ...(context.who.developerId === undefined ? [] : [{ kind: "actor" as const, developerId: context.who.developerId }]),
+      ...(context.who.developerId === undefined ? [] : [{ kind: "actor" as const, developerId: recordDeveloperHash(context.who.developerId) }]),
       ...context.identities.map((identity) => ({ kind: "actor_source" as const, hash: recordActorSourceHash(identity.system, identity.sourceId) })),
     ]);
     return true;
@@ -142,21 +183,21 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     return scrubAccessUnits(context.deps, context.orgId, context.ids, context.at, context.budget);
   },
   async config(context) {
-    for (const project of context.who.projects ?? []) {
+    // Every project of the org, like the lessons step: the ones passed, the project list, and those of the person's rows. Without a way to enumerate them it is not done.
+    const { projects, known } = await projectsOf(context);
+    for (const project of projects) {
       for (const config of await listSourceConfigs(context.deps.table, context.orgId, project)) {
         await removeFromExclude(context.deps.table, config, new Set(context.ids));
         if (context.who.developerId !== undefined) await scrubConfigDeveloper(context.deps.table, config, context.who.developerId);
       }
     }
-    return true;
+    return known;
   },
   // Lessons: those that rest on the person are HARD-deleted whatever their code citations say, the person is scrubbed from the rest (authorship, approvals), and the id leaves every
   // audience snapshot. It covers every project of the org: the ones passed, the ones the project list names, and those of the person's rows; with none of the first two it is not done.
   async lessons(context) {
     const { deps, orgId } = context;
-    const listed = (await deps.projects?.projects(orgId)) ?? undefined;
-    const known = context.who.projects !== undefined || listed !== undefined;
-    const projects = [...new Set([...(context.who.projects ?? []), ...(listed ?? []), ...context.rows.flatMap((row) => (typeof row.project === "string" ? [row.project] : []))])];
+    const { projects, known } = await projectsOf(context);
     if (deps.lessons === undefined) return projects.length === 0 && known;
     // the ids of what is being deleted: the person's rows and the facts derived from them (a lesson resting only on these came from them)
     const rowIds = new Set([...context.rows.flatMap((row) => (typeof row.id === "string" ? [row.id] : [])), ...context.links.flatMap((link) => (typeof link.factId === "string" ? [link.factId] : []))]);
@@ -222,7 +263,7 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE"] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
 /** The workspace's own items: the delete queue, rate counters, deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#"] as const;
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#"] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts

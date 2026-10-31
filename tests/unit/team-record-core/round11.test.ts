@@ -1,10 +1,11 @@
 // Fix round 11 (Opus final check): erasure walks the inventory, never code paths that happen to know. Each probe of the final review is a test, and the last one is the invariant:
 // an erase that reports complete leaves no trace of the id, hot or in the lake, and no lesson derived from the person.
+import { recordDeveloperHash } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { createAccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import { applyMemberEvents } from "../../../packages/broker/src/team-record/access.js";
 import { toLakeEventRow } from "../../../packages/broker/src/team-record/archiver.js";
-import { erasePerson } from "../../../packages/broker/src/team-record/erase.js";
+import { ERASE_SWEEP_DELAY_MS, erasePerson, runErasureSweeps } from "../../../packages/broker/src/team-record/erase.js";
 import { admitTransient } from "../../../packages/broker/src/team-record/ingest.js";
 import { ORG_A, addSource, githubDraft, rows, world, type World } from "../../support/team-record-core.js";
 import { deleteDeps } from "../../support/team-record-delete.js";
@@ -21,6 +22,8 @@ const jiraRow = (id: string, principals: string[], extra: Record<string, unknown
   scope: "jira:project/KEY", actor: { sourceId: "u-author", trust: "member" }, trust: "member", text: `Billing ${id}`, links: [], ...extra,
 });
 const everything = (w: World): string => JSON.stringify(w.db.find(() => true));
+/** The erase's own second pass, due after its delay: until it has run the erase is complete but not final (the schedule holds the ids). */
+const sweep = async (w: World, d: ReturnType<typeof deleteDeps>): Promise<void> => { w.clock.ms += ERASE_SWEEP_DELAY_MS + 1; await runErasureSweeps(d.deps, ORG_A, w.clock.ms); };
 
 describe("F1 lessons from an erased person are hard-deleted, code citations or not", () => {
   it("the learning lane's erase runs per project, before the rows go, and the source-delete rule does not run over the same rows", async () => {
@@ -51,6 +54,7 @@ describe("F2 an actor id in a structured field is never stored", () => {
     const d = deleteDeps(w);
     const result = await erasePerson(d.deps, ORG_A, { identities: [{ system: "jira.example", sourceId: "u-x" }], projects: ["web"] }, "e6");
     expect(result.complete).toBe(true);
+    await sweep(w, d);
     expect(everything(w)).not.toContain("u-x");
   });
 });
@@ -78,6 +82,7 @@ describe("F4 a place is found even when the person's join event was lost", () =>
     const d = deleteDeps(w);
     const result = await erasePerson(d.deps, ORG_A, { identities: [{ system: "slack:T1", sourceId: "UX" }], projects: ["web"] }, "e7");
     expect(result.complete).toBe(true);
+    await sweep(w, d);
     expect(everything(w)).not.toContain("UX");
   });
 });
@@ -138,13 +143,14 @@ describe("the invariant: a complete erase leaves nothing of the person, hot or i
     d.lessons.list.push({ id: "les_from_person", version: 1, status: "active", citations: [], provenance: { sourceEvents: rowIds }, counters: { citationStale: 0 } });
     const result = await erasePerson(d.deps, ORG_A, { developerId: "dev-erase", identities: [{ system: "slack:T1", sourceId: ID }, { system: "jira.example", sourceId: ID }], projects: ["web"] }, "final");
     expect(result.complete).toBe(true);
+    await sweep(w, d);
     expect(everything(w)).not.toContain(ID); // hot
     for (const row of lakeBefore.filter((lake) => lake.actor_source_hash !== null && !String(lake.id).includes("zzz"))) {
       // no lake row names the person in its list of people or its structured fields; the actor columns are erased by the queued lake targets
       expect(String(row.acl_json)).not.toContain(ID);
       expect(String(row.structured_json)).not.toContain(ID);
     }
-    expect(d.lake.enqueued).toEqual(expect.arrayContaining([{ kind: "actor", developerId: "dev-erase" }]));
+    expect(d.lake.enqueued).toEqual(expect.arrayContaining([{ kind: "actor", developerId: recordDeveloperHash("dev-erase") }]));
     expect(d.lessons.list.map((lesson) => lesson.id)).toEqual([]); // nothing derived from them remains
   });
 });

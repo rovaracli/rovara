@@ -12,8 +12,12 @@ const PHONE = /(?<![\w.])\+?\d(?:[\s().-]{0,2}\d){9,14}(?![\w])/g;
 // An AWS account id: exactly twelve digits standing alone or inside an ARN.
 const ACCOUNT_ID = /(?<![\d])\d{12}(?![\d])/g;
 
+// A mention of a person by id: Slack `<@U123>` / `<@U123|name>`, Jira `[~accountid:abc]` / `[~name]`. A person erased later must not stay in other people's words, so the id (and the
+// display name Slack puts after the bar) never reaches storage: every mention reads `@member`.
+const MENTION = /<@[A-Z0-9]+(?:\|[^>]*)?>|\[~(?:accountid:)?[^\]\s]+\]/g;
+
 export function scrubPersonalDetails(text: string): string {
-  return text.replace(EMAIL, "[email]").replace(ACCOUNT_ID, "[account-id]").replace(PHONE, (match) => (/^\d{4}-\d{2}-\d{2}/.test(match) ? match : "[phone]"));
+  return text.replace(MENTION, "@member").replace(EMAIL, "[email]").replace(ACCOUNT_ID, "[account-id]").replace(PHONE, (match) => (/^\d{4}-\d{2}-\d{2}/.test(match) ? match : "[phone]"));
 }
 
 export function cutToBytes(text: string, maxBytes: number): string {

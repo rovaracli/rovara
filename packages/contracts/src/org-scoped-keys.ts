@@ -1008,6 +1008,13 @@ export function recordSourceConfigIndexValue(orgId: OrgId, source: string, scope
 export function recordActorSourceHash(system: string, actorSourceId: string): string {
   return createHash("sha256").update(`actor\u0000${system}\u0000${actorSourceId}`).digest("hex");
 }
+/**
+ * A developer id as the erase markers and the lake keep it: hashed, never plain. The lake's `actor_developer_id` columns hold this value and the lake-delete target of an erase
+ * carries it, so an erase can find a person's lake rows without the id sitting in a queue item or a marker.
+ */
+export function recordDeveloperHash(developerId: string): string {
+  return createHash("sha256").update(`developer\u0000${developerId}`).digest("hex");
+}
 export function recordScopeHash(scope: string): string {
   return createHash("sha256").update(`scope\u0000${scope}`).digest("hex");
 }
@@ -1020,7 +1027,7 @@ export function recordActorSourceIndexValue(orgId: OrgId, system: string, actorS
  * (`recordActorSourceHash`) for someone who never had a developer id.
  */
 export function erasedPersonKey(orgId: OrgId, who: { developerId: string } | { actorSourceHash: string }): OrgKey {
-  return { pk: teamRecordPk(orgId), sk: "developerId" in who ? `ERASED#dev#${keyPart(who.developerId, "a developer id")}` : `ERASED#src#${keyPart(who.actorSourceHash, "a hash")}` };
+  return { pk: teamRecordPk(orgId), sk: "developerId" in who ? `ERASED#dev#${recordDeveloperHash(keyPart(who.developerId, "a developer id"))}` : `ERASED#src#${keyPart(who.actorSourceHash, "a hash")}` };
 }
 /** Which vector bucket holds a workspace's index, written once when the workspace gets its index and read back from then on (a second bucket must never remap a workspace). */
 export function workspaceVectorBucketKey(orgId: OrgId): OrgKey {

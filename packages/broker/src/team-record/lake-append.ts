@@ -1,7 +1,7 @@
 // R4 (review I-9): row builders and a batched writer for the lake tables other than `events` (outcomes, facts), so the lanes that own
 // those records can put them in the lake. Nothing in the storage lane decides WHEN they are written: the writers are named in report.md.
 import type { LakeClient } from "./lake.js";
-import { buildInsertIfAbsent, scopeHash, timestampText, type LakeValue } from "./lake-sql.js";
+import { buildInsertIfAbsent, developerIdHash, scopeHash, timestampText, type LakeValue } from "./lake-sql.js";
 import { lakeAcl } from "./person-fields.js";
 import type { RecordFactLike } from "./shared-types.js";
 
@@ -33,7 +33,7 @@ export function toLakeOutcomeRow(outcome: OutcomeLike): Record<string, LakeValue
     reverted: outcome.reverted ?? null,
     files_touched: outcome.filesTouched ?? null,
     ci_status: outcome.ciStatus ?? null,
-    actor_developer_id: outcome.actorDeveloperId ?? null,
+    actor_developer_id: outcome.actorDeveloperId === undefined ? null : developerIdHash(outcome.actorDeveloperId),
   };
 }
 

@@ -7,7 +7,7 @@
 import type { LakeClient } from "./lake.js";
 import { LakeError } from "./lake.js";
 import type { LakeDeleteQueue, LakeDeleteTarget } from "./lake-delete.js";
-import { actorSourceHash, buildInsertIfAbsent, scopeHash, sourceHash, type LakeValue } from "./lake-sql.js";
+import { actorSourceHash, buildInsertIfAbsent, developerIdHash, scopeHash, sourceHash, type LakeValue } from "./lake-sql.js";
 import type { RecordEventLike } from "./shared-types.js";
 import { assertSafeId } from "./shared-types.js";
 import type { VectorIndex } from "./vectors.js";
@@ -86,7 +86,7 @@ export function toLakeEventRow(event: RecordEventLike, archivedAt: string, editi
     source_hash: sourceHash(event.sourceRef.system, event.sourceRef.id),
     source_version: event.sourceRef.version ?? null,
     kind: event.kind,
-    actor_developer_id: event.actor?.developerId ?? null,
+    actor_developer_id: event.actor?.developerId === undefined ? null : developerIdHash(event.actor.developerId), // hashed: an erase queues the hash, not the id
     actor_source_hash: event.actor === undefined ? null : actorSourceHash(event.sourceRef.system, event.actor.sourceId),
     scope_hash: scopeHash(scope),
     trust: event.trust,

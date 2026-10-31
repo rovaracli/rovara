@@ -24,6 +24,11 @@ export function actorSourceHash(system: string, actorSourceId: string): string {
   return createHash("sha256").update(`actor\u0000${system}\u0000${actorSourceId}`).digest("hex");
 }
 
+/** sha256 of a developer id (the lake never holds the id itself; an erase queues this hash). The same value as `recordDeveloperHash` in the contracts. */
+export function developerIdHash(developerId: string): string {
+  return createHash("sha256").update(`developer\u0000${developerId}`).digest("hex");
+}
+
 /** sha256 of a source place such as `slack:T1/C9` or `github:repo/123`. */
 export function scopeHash(scope: string): string {
   return createHash("sha256").update(`scope\u0000${scope}`).digest("hex");

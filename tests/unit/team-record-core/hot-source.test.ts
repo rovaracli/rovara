@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { recordActorSourceHash, recordScopeHash, teamRecordSourceHash, workspaceVectorBucketKey } from "@agentx/contracts";
+import { recordActorSourceHash, recordScopeHash, teamRecordSourceHash, workspaceVectorBucketKey, recordDeveloperHash } from "@agentx/contracts";
 import { ensureWorkspaceVectorBucket, getWorkspaceVectorBucket, tableHotArchiveSource, tableHotStatsSource } from "../../../packages/broker/src/team-record/hot-source.js";
 import { expireRawText } from "../../../packages/broker/src/team-record/text-expiry.js";
 import { tableLakeDeleteQueue } from "../../../packages/broker/src/team-record/lake-queue.js";
@@ -232,7 +232,7 @@ describe("lake targets the storage lane asked for", () => {
     const result = await erasePerson(d.deps, ORG_A, { developerId: "dev-7", identities: [{ system: "github.com", sourceId: "U77" }] }, "e-7");
     expect(result).toMatchObject({ rows: 3, complete: true });
     expect(idsOf(w)).toEqual(["other"]);
-    expect(d.lake.enqueued).toEqual([{ kind: "actor", developerId: "dev-7" }, { kind: "actor_source", hash: recordActorSourceHash("github.com", "U77") }, ...d.lake.enqueued.slice(2)]);
+    expect(d.lake.enqueued).toEqual([{ kind: "actor", developerId: recordDeveloperHash("dev-7") }, { kind: "actor_source", hash: recordActorSourceHash("github.com", "U77") }, ...d.lake.enqueued.slice(2)]);
     expect(d.lake.enqueued.filter((target) => target.kind === "source")).toHaveLength(3);
     // by identity alone
     const solo = world();

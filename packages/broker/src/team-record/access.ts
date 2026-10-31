@@ -108,6 +108,17 @@ export async function erasedAccessIds(table: TeamRecordTable, orgId: OrgId, ids:
   return out;
 }
 
+/**
+ * The audience without the ids of erased people. Erasing someone in Rovara does not remove them from the Slack channel or the Jira project, so a new row from the same place
+ * would keep storing their id in its list: every incoming snapshot (a row, an audience event) goes through this first. One read of the erased markers, only when it names people.
+ */
+export async function withoutErasedPrincipals(table: TeamRecordTable, orgId: OrgId, audience: Audience): Promise<Audience> {
+  if (audience.kind !== "restricted" || (audience.acl.principals ?? []).length === 0) return audience;
+  const erased = await erasedAccessIds(table, orgId, audience.acl.principals ?? []);
+  if (erased.size === 0) return audience;
+  return { kind: "restricted", acl: { ...audience.acl, principals: (audience.acl.principals ?? []).filter((id) => !erased.has(id)) } };
+}
+
 // ---- writes
 
 /** One person's entry: the index item first (so an erase can always find the entry), then the entry itself, conditional on the stored string sorting lower. */
@@ -186,15 +197,16 @@ async function entriesOf(table: TeamRecordTable, orgId: OrgId, scope: string): P
   return found.items.flatMap((item) => (typeof item.pk === "string" && typeof item.sk === "string" && typeof item.v === "string" ? [{ key: { pk: item.pk, sk: item.sk }, value: item.v }] : []));
 }
 
-/** Deletes a unit's person entries and their index items, keeping the header. */
+/**
+ * Deletes a unit's person entries, keeping the header AND the person index items. The index grants nothing; an erase needs it to find this place for each person, because the rows
+ * stored before the clear still carry their ids (the person's own erase deletes the orphan).
+ */
 async function clearEntries(table: TeamRecordTable, orgId: OrgId, scope: string): Promise<void> {
-  const unitHash = recordAccessKey(orgId, scope).sk.slice("ACCESS#".length);
   for (;;) {
     const found = await queryPrefix(table, orgId, undefined, recordAccessMemberPrefix(orgId, scope), 500);
     await inChunks(found.items, WRITE_PARALLEL, async (item) => {
       if (typeof item.pk !== "string" || typeof item.sk !== "string") return;
       await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: item.pk, sk: item.sk } }));
-      await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: item.pk, sk: `ACCESSP#${personHashOfEntry(item.sk)}#${unitHash}` } }));
     });
     if (!found.truncated) return;
   }

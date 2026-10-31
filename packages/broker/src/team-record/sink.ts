@@ -2,7 +2,7 @@
 // lane imports another's files). `put` is the pipeline in ingest.ts. `tombstone` hides at once, then leaves a queue item the delete worker finishes (D1).
 // `changePrincipals` and `replaceScopeAudience` keep a private scope's permission snapshot current. A workspace id that is not an org id is refused.
 import { OrgIdSchema, recordDeleteQueueKey, recordScopeHash, type OrgId, type RecordSystem, type Audience } from "@agentx/contracts";
-import { accessIsSeeded, applyAudienceEvent, applyMemberEvents, observeRowAccess } from "./access.js";
+import { accessIsSeeded, withoutErasedPrincipals, applyAudienceEvent, applyMemberEvents, observeRowAccess } from "./access.js";
 import { tableLakeDeleteQueue, type LakeDeleteQueue } from "./lake-queue.js";
 import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
@@ -105,8 +105,9 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
       if (audience?.kind === "restricted" && audience.acl.scope === input.scope) await observeRowAccess(deps.table, orgId, audience.acl);
     },
 
-    async replaceScopeAudience(input) {
-      const orgId = orgOf(input.workspaceId);
+    async replaceScopeAudience(rawInput) {
+      const orgId = orgOf(rawInput.workspaceId);
+      const input = { ...rawInput, audience: await withoutErasedPrincipals(deps.table, orgId, rawInput.audience) }; // an erased person is not written back into a list
       await applyAudienceEvent(deps.table, orgId, { scope: input.scope, audience: input.audience, at: input.at }); // the access record first (see changePrincipals)
       const item = { type: "audience" as const, system: "scope", scope: input.scope, audience: input.audience, changeAt: input.at, hidePending: true };
       const behind = await olderChange(deps.table, orgId, input.scope);

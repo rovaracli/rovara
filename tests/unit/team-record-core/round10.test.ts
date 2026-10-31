@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { aclUnitOfSource, recordAccessMemberKey, recordAccessPersonPrefix, RECORD_SOURCES } from "@agentx/contracts";
 import { applyAudienceEvent, applyMemberEvents } from "../../../packages/broker/src/team-record/access.js";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
-import { erasePerson } from "../../../packages/broker/src/team-record/erase.js";
+import { ERASE_SWEEP_DELAY_MS, erasePerson, runErasureSweeps } from "../../../packages/broker/src/team-record/erase.js";
 import { recordSearch } from "../../../packages/broker/src/team-record/query.js";
 import { createCaptureModePort, createSourceConfigPort } from "../../../packages/broker/src/team-record/sink.js";
 import { createSlackRecordTap, withChannelInfoCache, type SlackChannelInfo } from "../../../packages/broker/src/team-record/sources/slack.js";
@@ -22,6 +22,8 @@ const slackRow = (id: string, scope: string, principals: string[], actor = "U-po
 const people = (id: string) => caller({ developerId: `dev-${id}`, identities: { ids: { slack: [id] }, groups: {} } });
 const search = (w: World, who: ReturnType<typeof people>) => recordSearch({ table: w.table, modes: w.deps.modes, now: () => w.clock.ms }, { kind: "caller", caller: who }, "web", { query: "layoff", limit: 20 });
 const everything = (w: World): string => JSON.stringify(w.db.find(() => true));
+/** The erase's own second pass, due after its delay: until it has run the erase is complete but not final (the schedule holds the ids). */
+const sweep = async (w: World, d: ReturnType<typeof deleteDeps>): Promise<void> => { w.clock.ms += ERASE_SWEEP_DELAY_MS + 1; await runErasureSweeps(d.deps, ORG_A, w.clock.ms); };
 async function place(w: World, scope: string, principals: string[], posters = 1) {
   await addSource(w, { source: "slack", scope });
   for (let i = 0; i < posters; i += 1) await w.sink.put(slackRow(`m${String(i)}${scope}`, scope, principals));
@@ -92,8 +94,9 @@ describe("R9-3 after a complete erase the id is nowhere", () => {
     expect(everything(w)).toContain(ID);
     const result = await erasePerson(d.deps, ORG_A, { identities: [{ system: "slack:T1", sourceId: ID }], projects: ["web"] }, "e4");
     expect(result.complete).toBe(true);
+    await sweep(w, d);
     expect(everything(w)).not.toContain(ID);
-    expect(d.lessons.audienceScrubs).toEqual([{ project: "web", ids: [ID] }]); // the lessons of the project lose the id from their audience snapshots too
+    expect(d.lessons.audienceScrubs[0]).toEqual({ project: "web", ids: [ID] }); // the lessons of the project lose the id from their audience snapshots too
     // the others keep reading both places
     expect((await search(w, people("U-poster"))).hits.length).toBeGreaterThan(0);
   });

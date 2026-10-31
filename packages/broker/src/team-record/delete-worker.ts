@@ -6,6 +6,7 @@
 import { recordDeleteQueueKey, recordScopeHash, teamRecordSourceHash, type OrgId } from "@agentx/contracts";
 import { auditRecordTombstoned, type RecordAuditSink } from "./audit.js";
 import { purgeAccessOfScope } from "./access.js";
+import { runErasureSweeps } from "./erase.js";
 import { closeScope } from "./item-head.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
@@ -34,6 +35,8 @@ export interface DeleteRunSummary extends PurgeResult {
   /** True when some request is older than an hour. */
   backlog: boolean;
   oldestAgeSeconds: number;
+  /** Second passes of completed erasures: how many ran and how many became final. */
+  erasureSweeps?: { ran: number; final: number };
 }
 
 /** The index items a request names: the rows and derivation links of its source items or scope. `truncated` means the budget cut the list. */
@@ -57,6 +60,8 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
   const now = deps.now ?? Date.now;
   const started = now();
   const summary: DeleteRunSummary = { ...emptyPurge(), requests: 0, finished: 0, stillHidden: 0, backlog: false, oldestAgeSeconds: 0 };
+  // The second pass of erasures that reported complete (due ones only): an erase is final only after it.
+  summary.erasureSweeps = await runErasureSweeps(deps, orgId, now()).catch(() => ({ ran: 0, final: 0 }));
   const work = await listScopeWork(deps.table, orgId, budget.maxRequests);
   const work0 = { table: deps.table, now };
   for (let entry of work) {
