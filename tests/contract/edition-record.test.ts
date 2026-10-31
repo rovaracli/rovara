@@ -40,7 +40,7 @@ describe("the broker and the sign-in server can read the record in every synth",
 });
 
 describe("the guard", () => {
-  const guard = (stamp: "enterprise" | "public" | undefined, value: string | undefined | Error, log = vi.fn(), backup?: string | undefined | Error) => {
+  const guard = (stamp: "enterprise" | "public" | undefined, value: string | undefined | Error, log = vi.fn(), backup?: string   | Error) => {
     const read = vi.fn(async (name: string) => {
       const answer = name.endsWith("-backup") ? backup : value;
       if (answer instanceof Error) throw answer;
