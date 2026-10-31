@@ -1,7 +1,8 @@
 // Fix round 7 (Opus final check): rollback honours the erasure fence and re-checks approvals, the single tier-0 approval switch on every path, late source
 // events, an author cannot approve their own sent-back lesson, ids compared without case.
 import { describe, expect, it } from "vitest";
-import { approveLesson, rollbackLessonSet, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
+import { approveLesson, listWaiting, rollbackLessonSet, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
+import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { DEFAULT_APPROVAL_POLICY, TIER0_APPROVAL_DEFAULT, resolveLearning } from "../../../packages/broker/src/lessons/policy.js";
 import { processDraft, resumeAndResettle, type ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
@@ -132,16 +133,40 @@ describe("one switch: the tier-0 approval default", () => {
   }
   const strong = { measured: true, authors: ["mallory"], sources: ["member:mallory"], inputSources: ["member:mallory"], supportTasks: ["t1"] };
 
-  it("is a single named setting, currently auto; the setting wins over the default; a company floor can only make it stricter", async () => {
-    expect(TIER0_APPROVAL_DEFAULT).toBe("auto");
+  it("is a single named setting, \"one\" for the pilot (replaces Q2 auto-apply, owner 2026-10-31); the setting wins over the default; a company floor can only make it stricter", async () => {
+    expect(TIER0_APPROVAL_DEFAULT).toBe("one");
     expect(DEFAULT_APPROVAL_POLICY.tier0).toBe(TIER0_APPROVAL_DEFAULT);
-    expect((await resolveLearning(settings(), "w", "p")).approval.tier0).toBe("auto");
-    expect((await resolveLearning(settings({ tier0Approval: "one" }), "w", "p")).approval.tier0).toBe("one");
+    expect((await resolveLearning(settings(), "w", "p")).approval.tier0).toBe("one");
+    expect((await resolveLearning(settings({ tier0Approval: "auto" }), "w", "p")).approval.tier0).toBe("auto");
     expect((await resolveLearning(settings({ tier0Approval: "auto", companyApproval: { tier0: "one" } }), "w", "p")).approval.tier0).toBe("one");
     expect((await resolveLearning(settings({ tier0Approval: "one", approval: { tier0: "auto" } }), "w", "p")).approval.tier0).toBe("auto");
   });
 
-  it("auto: a corroborated cited fact still goes live by itself", async () => {
+  it("a project with NO setting never auto-applies: a corroborated, measured, rendered fact waits for a person", async () => {
+    const { deps, store } = pipeline();
+    const out = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, ...strong } }));
+    expect(out.lesson).toMatchObject({ status: "pending", tier: 0, approvals: [] });
+    for (let i = 0; i < 3; i += 1) await processDraft(deps, KEY, draft({ title: `Retry helper ${i}`, provenance: { ...draft().provenance, ...strong, supportTasks: [`t${i}`], authors: ["mallory", "ann"] } }));
+    expect(await store.list(KEY, { statuses: ["active"] })).toEqual([]);
+  });
+
+  it("the weekly digest and the one-tap approval work with \"one\": the waiting lesson is listed, one maintainer approves it, and it then leads the digest as live", async () => {
+    const { deps, store, approve } = pipeline();
+    const out = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, ...strong } }));
+    const viewer = { principals: [], groups: [] };
+    const before = await buildWeeklyDigest(store, KEY, deps.now(), viewer);
+    expect(before.waiting.map((i) => i.id)).toEqual([out.lesson!.id]);
+    expect(before.top.map((i) => i.id)).toEqual([out.lesson!.id]);
+    expect(before.autoApplied).toEqual([]);
+    expect((await listWaiting(store, KEY, viewer)).map((l) => l.id)).toEqual([out.lesson!.id]);
+    expect(await approveLesson(approve, { ...KEY, lessonId: out.lesson!.id, approverId: "bob" })).toMatchObject({ ok: true, status: "active" });
+    const after = await buildWeeklyDigest(store, KEY, deps.now(), viewer);
+    expect(after.waiting).toEqual([]);
+    expect(after.top.map((i) => i.id)).toEqual([out.lesson!.id]);
+    expect(after.autoApplied).toEqual([]);
+  });
+
+  it("auto: a corroborated cited fact still goes live by itself, when the setting says so", async () => {
     const { deps } = pipeline("auto");
     expect((await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, ...strong } }))).lesson!.status).toBe("active");
   });

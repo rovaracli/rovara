@@ -10,7 +10,7 @@ import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-
 import { InMemoryLessonStore, type CommitResult, type ScopeKey } from "../../../packages/broker/src/lessons/store.js";
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings } from "./lesson-helpers.js";
 
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
 const tierOf = (over: Partial<TierInput>) => classifyTier({ ...draft({ description: "" }), citationChecks: valid, ...over });
@@ -165,7 +165,7 @@ describe("N-2: a rollback never restores approval", () => {
     const store = new InMemoryLessonStore();
     const clock = new Clock();
     let n = 0;
-    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: clock.now, verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => `les_rb${++n}` };
+    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: clock.now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => `les_rb${++n}` };
     const out = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, measured: true } }));
     expect(out.lesson!.status).toBe("active");
     const set = await store.setVersion(KEY);
@@ -214,7 +214,7 @@ describe("N-4: one rule for every measured outcome", () => {
   });
   it("end to end: a single member, one task and a self-revert does not go live", async () => {
     const store = new InMemoryLessonStore();
-    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => "les_selfrev1" };
+    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => "les_selfrev1" };
     const drafted = (await run([edit("mallory")], { initiatorId: "mallory", outcome: "reverted", revertedBy: "mallory" })).drafts[0]!;
     const out = await processDraft(deps, KEY, drafted);
     expect(out.lesson!.status).not.toBe("active");
@@ -227,7 +227,7 @@ describe("N-5: title, description and the thing slot are a real allow-list", () 
   function pipeline() {
     const store = new InMemoryLessonStore();
     let n = 0;
-    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => `les_inj${++n}` };
+    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => `les_inj${++n}` };
     return { deps };
   }
   const strong = { measured: true, authors: ["mallory"], sources: ["member:mallory"], inputSources: ["member:mallory"], supportTasks: ["t1"] };

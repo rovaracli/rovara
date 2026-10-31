@@ -15,7 +15,7 @@ import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import { isCorroborated, lessonValue } from "../../../packages/broker/src/lessons/value.js";
 import type { Audience, Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, Judge, KEY, MemoryVectors, PROJECT, Publisher, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, Judge, KEY, MemoryVectors, PROJECT, Publisher, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings } from "./lesson-helpers.js";
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 
 const restricted: Audience = { kind: "restricted", acl: { source: "slack", scope: "slack:T/C9", principals: ["U-member"], capturedAt: "x", liveCheck: "none" } };
@@ -156,7 +156,7 @@ describe("C3: the tier-0 gate", () => {
 
   it("a draft with a trivial anchor is dropped by the curator, not stored and not thrown", async () => {
     const store = new InMemoryLessonStore();
-    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => "les_triv0001" };
+    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => "les_triv0001" };
     const out = await processDraft(deps, KEY, draft({ citations: [{ ...codeCite(), anchor: "}" }] }));
     expect(out.outcome).toEqual({ outcome: "dropped", reason: "invalid" });
     expect(await store.list(KEY)).toHaveLength(0);
@@ -170,7 +170,7 @@ describe("I1: a refinement is never lower than what it replaces, and never appli
     const store = new InMemoryLessonStore();
     const vectors = new MemoryVectors();
     let n = 0;
-    const deps: ProcessDeps = { store, embedder, vectors, judgeModel: new ScriptedModel([JSON.stringify({ verdict: "refines" })]), spend: new Spend(), audit: new Audit(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => `les_new${++n}000` };
+    const deps: ProcessDeps = { store, embedder, vectors, judgeModel: new ScriptedModel([JSON.stringify({ verdict: "refines" })]), spend: new Spend(), audit: new Audit(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => `les_new${++n}000` };
     const old = lessonRecord({ id: "les_old00001", tier: 2, tierReasons: ["reviewer_stage"], title: "Retries", description: "", body: a, approvals: [{ approvalId: "x", by: "ann", at: 1, mode: "one" }, { approvalId: "y", by: "bob", at: 2, mode: "second_person" }] });
     await seed(store, old);
     await vectors.upsert(WS, PROJECT, old.id, await embedder.embed(`${old.title}\n${old.description}\n${old.body}`), { status: "active" });
@@ -291,7 +291,7 @@ describe("I5: audit that grants something is written first and fails closed", ()
   it("auto-apply: the go-live does not happen when it cannot be recorded; the lesson stays pending for a person", async () => {
     const audit = new FailingAudit();
     const store = new InMemoryLessonStore();
-    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => "les_auto0001" };
+    const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => "les_auto0001" };
     const out = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, sourceKinds: ["send_back"], measured: true } }));
     expect(out.lesson).toMatchObject({ status: "pending", tier: 0 });
     expect(out.lesson!.approvals).toEqual([]);
@@ -386,7 +386,7 @@ describe("P6: a lesson about weakening review or auth needs two people, by words
     const audit = new Audit();
     const clock = new Clock();
     let n = 0;
-    const proc: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, now: clock.now, verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => `les_p6${++n}0000` };
+    const proc: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, now: clock.now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => `les_p6${++n}0000` };
     const ap: ApproveDeps = { store, directory: directory(), settings: settings(), audit, now: clock.now, newId: () => `ap-${Math.random()}` };
     return { proc, ap, store };
   }

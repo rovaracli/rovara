@@ -90,10 +90,12 @@ describe("tier rules (design §4.5.3)", () => {
 });
 
 describe("policy (decisions Q2 and Q8)", () => {
-  it("Q2 default: tier 0 applies by itself, tier 1 needs one maintainer, tier 2 needs two; the default mode is On", async () => {
-    expect(DEFAULT_APPROVAL_POLICY).toEqual({ tier0: "auto", tier1: "one" });
+  it("pilot default (replaces Q2 auto-apply, owner 2026-10-31): tier 0 needs one person like tier 1, tier 2 needs two; the default mode is On", async () => {
+    expect(DEFAULT_APPROVAL_POLICY).toEqual({ tier0: "one", tier1: "one" });
     expect(DEFAULT_LEARNING_MODE).toBe("On");
-    expect([0, 1, 2].map((t) => approversRequired(t as 0 | 1 | 2, DEFAULT_APPROVAL_POLICY))).toEqual([0, 1, 2]);
+    expect([0, 1, 2].map((t) => approversRequired(t as 0 | 1 | 2, DEFAULT_APPROVAL_POLICY))).toEqual([1, 1, 2]);
+    // Automatic go-live is an explicit choice.
+    expect(approversRequired(0, { tier0: "auto", tier1: "one" })).toBe(0);
     expect(await resolveLearning(settings(), "w", "p")).toMatchObject({ mode: "On", approval: DEFAULT_APPROVAL_POLICY });
   });
 

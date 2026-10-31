@@ -31,7 +31,7 @@ export type ApprovalPolicy = z.infer<typeof ApprovalPolicySchema>;
  * person approves it, on every path (ingest, rollback, resume). A project or company can set `tier0Approval` in its learning settings; this is the default when it does not.
  */
 export type Tier0Approval = "auto" | "one";
-export const TIER0_APPROVAL_DEFAULT: Tier0Approval = "auto";
+export const TIER0_APPROVAL_DEFAULT: Tier0Approval = "one";
 export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = { tier0: TIER0_APPROVAL_DEFAULT, tier1: "one" };
 /** What the project runs with when nothing is set (Q2). A company lock or a project setting may choose another mode. */
 export const DEFAULT_LEARNING_MODE: LearningMode = "On";

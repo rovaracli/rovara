@@ -5,7 +5,7 @@ import { processDraft, resumeAndResettle, settleLesson, type ProcessDeps } from 
 
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
-import { Alerts, Audit, Clock, KEY, uniqueDraft, MemoryVectors, ScriptedModel, Spend, draft, embedder, settings, verifier, facts } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, uniqueDraft, MemoryVectors, ScriptedModel, Spend, draft, embedder, settings, verifier, facts, autoSettings } from "./lesson-helpers.js";
 
 function setup(over: { store?: InMemoryLessonStore; model?: ScriptedModel; settings?: ReturnType<typeof settings>; verifier?: ReturnType<typeof verifier> } = {}) {
   const store = over.store ?? new InMemoryLessonStore();
@@ -15,7 +15,7 @@ function setup(over: { store?: InMemoryLessonStore; model?: ScriptedModel; setti
   let n = 0;
   const deps: ProcessDeps = {
     store, embedder, vectors: new MemoryVectors(), judgeModel: over.model ?? new ScriptedModel(), spend: new Spend(), audit, alerts, now: clock.now,
-    verifier: over.verifier ?? verifier("valid"), facts: facts(), settings: over.settings ?? settings(), newId: () => `les_${String(++n).padStart(4, "0")}`,
+    verifier: over.verifier ?? verifier("valid"), facts: facts(), settings: over.settings ?? autoSettings(), newId: () => `les_${String(++n).padStart(4, "0")}`,
   };
   return { deps, store, audit, clock, alerts };
 }

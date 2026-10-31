@@ -77,6 +77,8 @@ export class Audit implements LessonAuditSink {
 export class Alerts implements AlertSink { sent: string[] = []; async alert(_w: string, _p: string, code: string): Promise<void> { this.sent.push(code); } }
 
 export const settings = (value: LearningSettings = {}): LearningSettingsReader => ({ read: async () => value });
+/** Settings for a test of the AUTO path: the pilot default is "one" (a person approves), so a test of automatic go-live says so explicitly. */
+export const autoSettings = (value: LearningSettings = {}): LearningSettingsReader => settings({ tier0Approval: "auto", ...value });
 
 export function directory(over: Partial<Awaited<ReturnType<ApproverDirectory["eligibility"]>>> = {}): ApproverDirectory & { value: Awaited<ReturnType<ApproverDirectory["eligibility"]>> } {
   const value = { complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner", "ann", "bob"], lastEligibleLossAtMs: null, ...over };

@@ -11,7 +11,7 @@ import { PROJECT_VOLUME_KEY } from "../../../packages/broker/src/lessons/sources
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
-import { Alerts, Audit, Clock, KEY, uniqueDraft, lessonRecord, seed, MemoryVectors, ScriptedModel, Spend, candidateJson, codeCite, draft, embedder, memberSpan, reply, settings, subject, verifier, classifyTier, facts } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, uniqueDraft, lessonRecord, seed, MemoryVectors, ScriptedModel, Spend, candidateJson, codeCite, draft, embedder, memberSpan, reply, settings, subject, verifier, classifyTier, facts, autoSettings } from "./lesson-helpers.js";
 
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
 const tierInput = (over: Partial<TierInput> = {}): TierInput => ({ ...draft(), citationChecks: valid, ...over });
@@ -64,7 +64,7 @@ function pipeline() {
   let n = 0;
   const deps: ProcessDeps = {
     store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, alerts, now: clock.now,
-    verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => `les_r2${String(++n).padStart(5, "0")}`,
+    verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => `les_r2${String(++n).padStart(5, "0")}`,
   };
   return { deps, store, audit, clock, alerts };
 }
