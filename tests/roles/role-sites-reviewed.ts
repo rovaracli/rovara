@@ -106,9 +106,12 @@ export const REVIEWED_ROLE_SITES_ROUND_1: readonly ReviewedRoleSite[] = [
   { file: "packages/contracts/src/invite-creation.ts", needle: 'role: z.enum(["admin", "member"])', why: INVITE_ROLE },
   { file: "packages/contracts/src/onboarding.ts", needle: 'role: z.enum(["admin", "member"])', why: INVITE_ROLE },
   { file: "packages/contracts/src/org.ts", needle: 'z.enum(["owner", "admin", "member", "auditor"])', why: "The role list itself." },
-  { file: "packages/contracts/src/sso.ts", needle: 'MAPPED_ORG_ROLE_PRECEDENCE: readonly MappableOrgRole[] = ["admin", "member", "auditor"]', why: "The mapping precedence, pinned by a test: a person in a member group and an Auditor group becomes a member." },
+  { file: "packages/contracts/src/sso.ts", needle: 'MAPPED_ORG_ROLE_PRECEDENCE: readonly MappableOrgRole[] = ["admin", "member", "auditor"]', why: "The mapping precedence, pinned by a test. A person in an Auditor group and a member or admin group never reaches it: the evaluator refuses them (auditor_and_writer) first." },
   { file: "packages/contracts/src/task-workflow-node.ts", needle: "includes(role", why: "A workflow reviewer role (critic, security), not a company role." },
   { file: "packages/contracts/src/task-workflow-node.ts", needle: "arrivingRoles.includes", why: "A workflow reviewer role, not a company role." },
   { file: "packages/contracts/src/task-workflow-node.ts", needle: "roles.includes(report.data.role)", why: "A workflow reviewer role, not a company role." },
+  { file: "packages/broker/src/aws/developer-routes/sso.ts", needle: 'const isAdmin = isOwner || caller.orgRole === "admin";', why: "A positive owner/admin list for the company sign-in settings: an Auditor is neither, so it is refused (and the dispatcher never lets an Auditor reach these routes)." },
+  { file: "packages/broker/src/developer/sso-bootstrap.ts", needle: 'orgRole: "member" as const', why: "The first mapping the setup command writes grants `member` to the named groups; it compares nothing. An Auditor group is added by an admin in the mapping, where a person in it and a member group is refused." },
+  { file: "packages/contracts/src/live-interaction.ts", needle: '"role", "member", "maintainer", "seat", "owner", "admin"', why: "A list of words a diagnosis may not name in a setting path; not a role check." },
   { file: "packages/worker/src/verification/review.ts", needle: "input.reviewers.includes(role)", why: "A workflow reviewer role, not a company role." },
 ];

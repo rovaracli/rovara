@@ -46,6 +46,8 @@ const ROWS: readonly Row[] = [
   // Wiring A (LR-W1): who started the task, read to tell the initiator apart from a third party's send-back or revert in a lesson's evidence; it decides nothing about who owns the task now
   ["lessons/task-subject.ts", "taskStartActor", "history", ".developerId", ".startedBy*2"],
   // I3: the reference rows of a commit's attribution store the person a reference stood for (the requester or approver of a task); it decides nothing about who owns the task
+  // I3: the publication names the person who ASKED for the work (the task's creator, as it was when the task started), not whoever owns it now; it decides nothing about who owns the task
+  ["aws/developer-tasks/publication.ts", "startTaskWorkflowPublicationFromSystem", "history", ".developerId"],
   ["attribution/links.ts", "dynamoAttributionLinkStore>put", "history", ".developerId*2"],
   ["attribution/links.ts", "linkOf", "history", ".developerId"],
   ["attribution/links.ts", "dynamoAttributionLinkStore>deletePersonRows", "history", ".developerId"],
