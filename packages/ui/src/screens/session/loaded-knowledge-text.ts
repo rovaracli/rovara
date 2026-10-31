@@ -10,7 +10,7 @@ const SKIP: Record<string, string> = {
 };
 export const SKILL_SKIP: Record<string, string> = {
  bad_front_matter: "Header could not be read", bad_name: "Name not allowed", duplicate_name: "Same name as another skill", too_large: "Too large",
- over_cap: "Over the limit of 32 skills", digest_mismatch: "Changed since it was pinned", unreadable: "Could not be read", symlink: "A link, not followed",
+ over_cap: "Over the limit of 32 skills", digest_mismatch: "Changed since it was pinned", not_pinned: "Added after the skills were pinned", unreadable: "Could not be read", symlink: "A link, not followed",
 };
 const MODES: Record<string, string> = { always: "always", fileMatch: "matching files", manual: "when named", auto: "when it applies" };
 

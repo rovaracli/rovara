@@ -11,7 +11,7 @@ const INCLUSIONS = new Set(["always", "fileMatch", "manual", "auto"]);
 
 export const kiroSteeringReader: KnowledgeFormatReader = {
   id: "kiro_steering",
-  discovery: { directories: [".kiro/steering"] },
+  discovery: { directories: [".kiro/steering"], hookDirectories: [".kiro/hooks"], skillDirectories: [".kiro/skills"] },
   accepts: (path) => path.startsWith(".kiro/steering/") && path.endsWith(".md"),
   parse: (path, text) => {
     const parsed = parseFrontMatter(text);

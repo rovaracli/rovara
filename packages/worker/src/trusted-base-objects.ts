@@ -420,14 +420,17 @@ export async function openVerifiedBaseObjects(directory: string, baseCommit: str
       }
     }
     const scratchDirectory = scratch;
-    const fetch = async (type: "commit" | "tree" | "blob", oid: string, maximum: number, keep: number): Promise<{ size: number; bytes: Buffer | undefined }> => {
+    const fetch = async (type: "commit" | "tree" | "blob", oid: string, maximum: number, keep: number, signal: AbortSignal): Promise<{ size: number; bytes: Buffer | undefined }> => {
+      const callPlacement: Placement = { ...placement, signal };
       // A loose object is linked in only for the object being read: one link per read, however many loose objects the workspace holds.
       let looseTarget: string | undefined;
       const loose = join(layout.objects, oid.slice(0, 2));
       if (await plainDirectory(loose)) {
         await mkdir(join(objectsDirectory, oid.slice(0, 2)), { recursive: true });
         const target = join(objectsDirectory, oid.slice(0, 2), oid.slice(2));
-        if (await place(join(loose, oid.slice(2)), target, placement)) looseTarget = target;
+        const placed = await place(join(loose, oid.slice(2)), target, callPlacement);
+        placement.copied = callPlacement.copied;
+        if (placed) looseTarget = target;
       }
       const attempt = async (): Promise<{ size: number; bytes: Buffer | undefined }> => {
         const sizeText = (await execFile("git", ["cat-file", "-s", oid], { cwd: scratchDirectory, env, timeout: GIT_TIMEOUT_MS, signal, encoding: "utf8", maxBuffer: 64 })).stdout.trim();
@@ -445,14 +448,27 @@ export async function openVerifiedBaseObjects(directory: string, baseCommit: str
         return attempt();
       }
     };
-    const fetchObject: VerifiedBaseObjects["fetchObject"] = async (type, oid, maximum, keep) => {
-      try {
-        return await fetch(type, oid, maximum, keep);
-      } catch (error) {
-        throw error instanceof BaseObjectsUnverified ? error : new BaseObjectsUnverified();
-      }
+    // One deadline for opening (linking the packs, reading the commit) and a fresh one for every object read afterwards: a resolve that reads
+    // many files is not cut off by a clock that has been running since the source was opened. Reads are serialised, which the placement
+    // counters rely on.
+    let reading: Promise<unknown> = Promise.resolve();
+    const fetchObject: VerifiedBaseObjects["fetchObject"] = (type, oid, maximum, keep) => {
+      const run = reading.then(async () => {
+        const each = new AbortController();
+        const timer = setTimeout(() => each.abort(), options.deadlineMs ?? OVERALL_DEADLINE_MS);
+        try {
+          return await fetch(type, oid, maximum, keep, each.signal);
+        } catch (error) {
+          throw error instanceof BaseObjectsUnverified ? error : new BaseObjectsUnverified();
+        } finally {
+          clearTimeout(timer);
+        }
+      });
+      reading = run.catch(() => undefined);
+      return run;
     };
-    const commit = (await fetch("commit", baseCommit, COMMIT_BYTES, COMMIT_BYTES)).bytes!;
+    const commit = (await fetch("commit", baseCommit, COMMIT_BYTES, COMMIT_BYTES, signal)).bytes!;
+    clearTimeout(deadline);
     const rootTreeId = commitTreeId(commit, hashBytes);
     return { rootTreeId, hashBytes, fetchObject, close: cleanUp };
   } catch (error) {

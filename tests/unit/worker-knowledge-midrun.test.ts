@@ -94,6 +94,23 @@ describe("mid-run knowledge", () => {
   });
 });
 
+describe("mid-run failures", () => {
+  it("reports a failed re-read with a fixed sentence and records it", async () => {
+    const diagnostics: string[] = [];
+    const entries = (): KnowledgeSourceEntry[] => [{ name: "engine", path: "repo/engine", layer: "repo", source: memoryKnowledgeSource(FILES, "working") }];
+    const initial = await resolveKnowledge({ stage: "build", sources: entries() });
+    const session = new MidRunKnowledge({
+      stage: "build", initial, filesInPlay: [], rendering: [{ name: "engine", path: "repo/engine" }], rootPath: "/ws",
+      onDiagnostic: (message) => diagnostics.push(message),
+      resolveAgain: () => Promise.reject(new Error("SECRET PATH /private")),
+    });
+    expect(await session.onPathTouched("repo/engine/src/ui/a.tsx")).toBeUndefined();
+    expect(diagnostics).toEqual(["could not re-read the rule files for a file the agent opened"]);
+    expect(session.allRecords().some((record) => record.status === "skipped" && record.reason === "unreadable")).toBe(true);
+    expect(JSON.stringify(diagnostics)).not.toContain("SECRET");
+  });
+});
+
 describe("read_knowledge", () => {
   const run = async (session: MidRunKnowledge, name: string): Promise<string> => {
     const tool = readKnowledgeTool(session);

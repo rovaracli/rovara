@@ -151,3 +151,34 @@ describe("loaded knowledge routes", () => {
     expect(await text({ ...t, canReadRepository: async () => true, readRuleFile: async () => undefined }, 0)).toEqual({ available: false, reason: "unreadable" });
   });
 });
+
+describe("loaded knowledge: reviewers and defence in depth", () => {
+  beforeEach(() => { access.allowed = new Set([`dev-1:${TASK}`]); });
+  it("keeps one record per reviewer, and serves each reviewer's text by its own path", async () => {
+    const t = table();
+    const deps = { ...t, now: () => Date.UTC(2026, 9, 30) } as never;
+    await recordLoadedKnowledgeFromProgress(deps, { taskId: TASK, operationId: "op1", payload: { [LOADED_KNOWLEDGE_EVENT_FIELD]: { ...manifest("review"), role: "CRITIC" } } });
+    await recordLoadedKnowledgeFromProgress(deps, { taskId: TASK, operationId: "op1", payload: { [LOADED_KNOWLEDGE_EVENT_FIELD]: { ...manifest("review"), role: "SECURITY" } } });
+    expect(t.rows.size).toBe(2);
+    expect((await listLoadedKnowledge(t as never, TASK)).map((entry) => entry.role).toSorted()).toEqual(["CRITIC", "SECURITY"]);
+    const reads = { ...t, canReadRepository: async () => true, readRuleFile: async () => RULE_TEXT };
+    const text = (segment: string) => routeLoadedKnowledge({ access: {}, ...reads } as never, caller(), { method: "GET", path: `/v1/app/tasks/${TASK}/loaded-knowledge/op1/${segment}/items/0/text` });
+    expect(await text("review.SECURITY")).toMatchObject({ available: true });
+    await expect(text("review")).rejects.toThrow("TASK_NOT_FOUND");
+    await expect(text("review.NOBODY")).rejects.toThrow("TASK_NOT_FOUND");
+  });
+
+  it("refuses a path or repository the record should not name before any reader is called", async () => {
+    const t = table();
+    const forged = manifest("review");
+    forged.items[0] = { ...forged.items[0]!, path: "../../secrets.md" };
+    forged.items[1] = { ...forged.items[1]!, repo: "another-project-repo" };
+    await recordLoadedKnowledgeFromProgress({ ...t, now: () => Date.UTC(2026, 9, 30) }, { taskId: TASK, operationId: "op1", payload: { [LOADED_KNOWLEDGE_EVENT_FIELD]: forged } });
+    const readRuleFile = vi.fn(async () => RULE_TEXT);
+    const deps = { access: {}, ...t, canReadRepository: async () => true, readRuleFile };
+    for (const index of [0, 1]) {
+      await expect(routeLoadedKnowledge(deps as never, caller(), { method: "GET", path: `/v1/app/tasks/${TASK}/loaded-knowledge/op1/review/items/${index}/text` })).rejects.toThrow("TASK_NOT_FOUND");
+    }
+    expect(readRuleFile).not.toHaveBeenCalled();
+  });
+});

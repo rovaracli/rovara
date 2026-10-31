@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { MetaSkillSnapshotSchema } from "@agentx/contracts";
 import { loadMetaSkills, mergeSkills, stripSkillExecution, SKILL_TEXT_MAX_BYTES } from "../../packages/worker/src/knowledge/skills.js";
+import { createReaderRegistry } from "../../packages/worker/src/knowledge/registry.js";
 import { memoryKnowledgeSource } from "../../packages/worker/src/knowledge/source.js";
 
 const COMMIT = "a".repeat(40);
@@ -46,6 +47,25 @@ describe("meta repo skills", () => {
     const pinned = await load(files, { pins: [good, bad] });
     expect(pinned.skills.map((entry) => entry.name)).toEqual(["a"]);
     expect(pinned.skipped).toEqual([{ path: ".agents/skills/b", reason: "digest_mismatch" }]);
+  });
+
+  it("when pins are sent, a skill folder with no pin does not load", async () => {
+    const files = { ".agents/skills/a/SKILL.md": skill("a", "A"), ".agents/skills/added-later/SKILL.md": skill("added-later", "B") };
+    const first = await load(files);
+    const pinned = await load(files, { pins: [{ path: ".agents/skills/a", digest: first.snapshots[0]!.digest }] });
+    expect(pinned.skills.map((entry) => entry.name)).toEqual(["a"]);
+    expect(pinned.skipped).toEqual([{ path: ".agents/skills/added-later", reason: "not_pinned" }]);
+  });
+
+  it("strips allowed-tools from a CRLF skill", async () => {
+    const result = await load({ ".agents/skills/c/SKILL.md": "---\r\nname: c\r\ndescription: d\r\nallowed-tools: Bash\r\n---\r\nBody\r\n" });
+    expect(result.skills[0]!.content).not.toContain("allowed-tools");
+  });
+
+  it("takes the skill folders from the readers, not from the loader", async () => {
+    const files = { "windsurf/skills/w/SKILL.md": skill("w", "d"), ".agents/skills/y/SKILL.md": skill("y", "d") };
+    const registry = createReaderRegistry([{ id: "windsurf", discovery: { skillDirectories: ["windsurf/skills"] }, accepts: () => false, parse: () => ({ ok: false as const, reason: "unreadable" as const }) }]);
+    expect((await load(files, { registry })).skills.map((entry) => entry.name)).toEqual(["w"]);
   });
 
   it("caps at 32 skills, refuses bad names and duplicates, large files and links", async () => {

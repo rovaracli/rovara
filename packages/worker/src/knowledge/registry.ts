@@ -27,6 +27,8 @@ export interface ReaderRegistry {
   directories(): string[];
   rootFiles(): string[];
   nestedNames(): string[];
+  hookDirectories(): string[];
+  skillDirectories(): string[];
 }
 
 export function createReaderRegistry(readers: readonly KnowledgeFormatReader[] = BUILT_IN_READERS): ReaderRegistry {
@@ -37,5 +39,7 @@ export function createReaderRegistry(readers: readonly KnowledgeFormatReader[] =
     directories: () => unique(readers.flatMap((reader) => [...(reader.discovery.directories ?? [])])),
     rootFiles: () => unique(readers.flatMap((reader) => [...(reader.discovery.rootFiles ?? [])])),
     nestedNames: () => unique(readers.flatMap((reader) => [...(reader.discovery.nestedNames ?? [])])),
+    hookDirectories: () => unique(readers.flatMap((reader) => [...(reader.discovery.hookDirectories ?? [])])),
+    skillDirectories: () => unique(readers.flatMap((reader) => [...(reader.discovery.skillDirectories ?? [])])),
   };
 }

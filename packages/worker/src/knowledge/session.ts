@@ -32,6 +32,8 @@ export interface MidRunKnowledgeOptions {
   /** Resolves again with the files in play so far. Opens and closes its own sources. */
   resolveAgain(filesInPlay: readonly FileInPlay[]): Promise<ResolvedKnowledge>;
   budgets?: KnowledgeBudgets;
+  /** Where a failure to re-read the rule sources is reported (a fixed sentence). */
+  onDiagnostic?: (message: string) => void;
 }
 
 const keyOf = (item: Pick<KnowledgeItem, "repo" | "path" | "name" | "layer">): string => `${item.repo ?? item.layer}\0${item.path ?? item.name ?? ""}`;
@@ -143,7 +145,9 @@ export class MidRunKnowledge {
     try {
       resolved = await this.options.resolveAgain(this.inPlay);
     } catch {
-      // A rule source that cannot be read mid-run adds nothing; the session's start-up load already proved the sources verify.
+      // A rule source that cannot be read mid-run adds nothing, but it is reported and recorded, never silent.
+      this.options.onDiagnostic?.("could not re-read the rule files for a file the agent opened");
+      this.extraRecords.push({ layer: "repo", ...(file.repo === undefined ? {} : { repo: file.repo }), scopeDir: "", format: "unknown", bytes: 0, status: "skipped", reason: "unreadable" });
       return undefined;
     }
     const fresh = resolved.items.filter((item) => !this.loaded.has(keyOf(item)));

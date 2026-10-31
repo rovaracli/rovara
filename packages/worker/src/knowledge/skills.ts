@@ -13,9 +13,9 @@ import { MAX_META_SKILLS, type MetaSkillPin, type MetaSkillSkipReason, type Meta
 import { inertContextText } from "../context-text.js";
 import type { AgentSkillFile } from "../agent-step.js";
 import { parseFrontMatter } from "./frontmatter.js";
+import { createReaderRegistry, type ReaderRegistry } from "./registry.js";
 import type { KnowledgeFileSource } from "./source.js";
 
-export const DEFAULT_SKILL_DIRECTORIES = [".agents/skills", ".claude/skills", ".kiro/skills"] as const;
 /** Matches the limit `materializeSkills` enforces on a skill's text. */
 export const SKILL_TEXT_MAX_BYTES = 32_768;
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/u;
@@ -31,7 +31,7 @@ export interface MetaSkills {
 
 /** Text with the shell pre-run syntax removed: a `!` followed by a backtick span, wherever it sits, and a front-matter `allowed-tools` line. */
 export function stripSkillExecution(text: string): string {
-  const withoutPreRun = text.replace(/!`[^`\n]*`/gu, "").replace(/^[ \t]*!`.*$/gmu, "");
+  const withoutPreRun = text.replace(/\r\n?/gu, "\n").replace(/!`[^`\n]*`/gu, "").replace(/^[ \t]*!`.*$/gmu, "");
   // Only the front matter's key is removed; a body that mentions the words is left alone.
   const match = /^---[ \t]*\n([\s\S]*?)\n(?:---|\.\.\.)[ \t]*(?:\n|$)/u.exec(withoutPreRun);
   if (match === null) return withoutPreRun;
@@ -48,6 +48,8 @@ export async function loadMetaSkills(input: {
   commit: string;
   directories?: readonly string[];
   pins?: readonly MetaSkillPin[];
+  /** Where each format keeps skills when the project names no folders (the readers know; nothing here does). */
+  registry?: ReaderRegistry;
 }): Promise<MetaSkills> {
   const skills: AgentSkillFile[] = [];
   const snapshots: MetaSkillSnapshot[] = [];
@@ -55,7 +57,7 @@ export async function loadMetaSkills(input: {
   const names = new Set<string>();
   const pinned = new Map((input.pins ?? []).map((pin) => [pin.path, pin.digest] as const));
   let listings = 0;
-  for (const directory of (input.directories ?? DEFAULT_SKILL_DIRECTORIES).map((path) => path.replace(/\/+$/u, ""))) {
+  for (const directory of (input.directories ?? (input.registry ?? createReaderRegistry()).skillDirectories()).map((path) => path.replace(/\/+$/u, ""))) {
     const entries = (await input.source.listDirectory(directory))?.toSorted((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
     for (const entry of entries ?? []) {
       if (entry.kind !== "dir") continue;
@@ -80,6 +82,8 @@ export async function loadMetaSkills(input: {
       if (names.has(name)) { skipped.push({ path: folder, reason: "duplicate_name" }); continue; }
       const digest = sha256(text);
       const expected = pinned.get(folder);
+      // When the broker pinned skills, only pinned folders load: a folder added after the pin is left out.
+      if (pinned.size > 0 && expected === undefined) { skipped.push({ path: folder, reason: "not_pinned" }); continue; }
       if (expected !== undefined && expected !== digest) { skipped.push({ path: folder, reason: "digest_mismatch" }); continue; }
       names.add(name);
       skills.push({ name, description, digest, content: text });

@@ -12,6 +12,10 @@ export interface KnowledgeDiscovery {
   rootFiles?: readonly string[];
   /** File names looked for in every folder on the way from the repository root to a file in play (nested guidance). */
   nestedNames?: readonly string[];
+  /** Folders where this tool keeps hooks. Rovara finds them and never runs them. */
+  hookDirectories?: readonly string[];
+  /** Folders where this tool keeps skills (read from the meta repo only). */
+  skillDirectories?: readonly string[];
 }
 
 export interface KnowledgeParseContext {

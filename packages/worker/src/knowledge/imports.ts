@@ -170,7 +170,7 @@ export async function expandImports(input: ExpandImportsInput): Promise<Expanded
     if (reference.kind === "folder") {
       const names = await input.listDirectory?.(target);
       if (names === undefined) { issues.push({ path: target, code: "missing" }); return undefined; }
-      const listing = `[Folder ${target}]\n${names.slice(0, MAX_FOLDER_LISTING).map((name) => `- ${name}`).join("\n")}\n[End of ${target}]`;
+      const listing = `[Folder ${target}]\n${names.slice(0, MAX_FOLDER_LISTING).map((name) => `- ${inertContextText(name).text}`).join("\n")}\n[End of ${target}]`;
       if (addedBytes + Buffer.byteLength(listing, "utf8") > input.budgetBytes) { issues.push({ path: target, code: "over_budget" }); return undefined; }
       addedBytes += Buffer.byteLength(listing, "utf8");
       return listing;

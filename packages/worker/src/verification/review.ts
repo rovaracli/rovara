@@ -676,7 +676,7 @@ export async function runWorkflowReviews(input: {
   now?: () => string;
   onProgress?: (message: string) => void;
   /** Called once per reviewer session with what it loaded and left out, as references only (K1 C5a). */
-  onLoadedKnowledge?: (manifest: LoadedKnowledgeManifest) => void;
+  onLoadedKnowledge?: (manifest: LoadedKnowledgeManifest, role: "CRITIC" | "SECURITY") => void;
   onUsage?: (usage: { role: "CRITIC" | "SECURITY"; stats: ReturnType<PiSessionHandle["getSessionStats"]>; model: WorkspaceModelConfiguration; outcome: "SUCCEEDED" | "FAILED" }) => Promise<void>;
 }): Promise<Array<ReturnType<typeof WorkflowReviewReportSchema.parse>>> {
   assertFileToolsContained(input.fileTools === undefined ? {} : { fileTools: input.fileTools });
@@ -728,7 +728,7 @@ export async function runWorkflowReviews(input: {
         contextFilesAt: "base-commit",
         baseCommits: input.ruleFileBaseCommits,
       }, input.piAdapter);
-      try { const loaded = session.loadedKnowledge?.(); if (loaded !== undefined) input.onLoadedKnowledge?.(loaded); } catch { /* a record that cannot be made is left out */ }
+      try { const loaded = session.loadedKnowledge?.(); if (loaded !== undefined) input.onLoadedKnowledge?.({ ...loaded, role }, role); } catch { /* a record that cannot be made is left out */ }
       const actualModel = session.getModel();
       provider = actualModel.provider;
       version = actualModel.modelId;

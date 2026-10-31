@@ -12,6 +12,13 @@ export type LoadedKnowledgeStage = z.infer<typeof LoadedKnowledgeStageSchema>;
 
 /** The most items one record lists: loaded ones first, then what was left out. */
 export const MAX_LOADED_KNOWLEDGE_ITEMS = 300;
+/**
+ * The most bytes a record's JSON may take. A worker event is bounded at 64 KiB and a larger payload is dropped whole, so the record is cut
+ * well inside that (the event carries a little more than the record, and credential redaction can lengthen strings).
+ */
+export const MAX_LOADED_KNOWLEDGE_BYTES = 48 * 1024;
+
+export const LoadedKnowledgeRoleSchema = z.enum(["CRITIC", "SECURITY"]);
 
 const Sha256 = z.string().regex(/^[a-f0-9]{64}$/u);
 const Label = z.string().min(1).max(200);
@@ -55,13 +62,17 @@ export type LoadedKnowledgeItem = z.infer<typeof LoadedKnowledgeItemSchema>;
 export const LoadedKnowledgeManifestSchema = z.object({
   schemaVersion: z.literal(1),
   stage: LoadedKnowledgeStageSchema,
+  /** Review only: which reviewer this record is for (each reviewer has its own session and its own record). */
+  role: LoadedKnowledgeRoleSchema.optional(),
+  /** Set when the record was cut to fit the event size limit: the lists below are then incomplete, and `omitted` counts what was left out. */
+  recordTruncated: z.literal(true).optional(),
   /** The meta repo and the commit every stage read it at. */
   metaRepo: z.object({ name: Label, knowledgeCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u) }).strict().optional(),
   /** The commit each code repository's rules were read from, when they were read from a commit (judging stages). */
   repos: z.array(z.object({ name: Label, commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u).optional(), readAt: z.enum(["base", "working"]) }).strict()).max(40),
   items: z.array(LoadedKnowledgeItemSchema).max(MAX_LOADED_KNOWLEDGE_ITEMS),
-  /** Items left out of `items` to keep the record small, by status. */
-  omitted: z.object({ skipped: z.number().int().min(0), available: z.number().int().min(0) }).strict(),
+  /** Items left out of `items` to keep the record small, by status (including loaded items, in the rare case even they do not fit). */
+  omitted: z.object({ skipped: z.number().int().min(0), available: z.number().int().min(0), loaded: z.number().int().min(0).optional() }).strict(),
   skills: z.array(MetaSkillSnapshotSchema).max(MAX_META_SKILLS),
   skippedSkills: z.array(z.object({ path: z.string().min(1).max(400), reason: MetaSkillSkipReasonSchema }).strict()).max(MAX_META_SKILLS * 4),
   /** Context sources used (lane E fills this): counts per source label, never items or quotes. */
@@ -89,6 +100,7 @@ export const LoadedKnowledgeStageRecordSchema = z.object({
   stage: LoadedKnowledgeStageSchema,
   operationId: z.string().min(1).max(80),
   recordedAt: z.string().min(1).max(40),
+  role: LoadedKnowledgeRoleSchema.optional(),
   manifest: LoadedKnowledgeManifestSchema,
 });
 export const LoadedKnowledgeResponseReaderSchema = z.object({ stages: z.array(LoadedKnowledgeStageRecordSchema).max(100) });

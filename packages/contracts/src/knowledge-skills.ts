@@ -29,6 +29,6 @@ export const MetaSkillPinSchema = z.object({ path: z.string().min(1).max(400), d
 export type MetaSkillPin = z.infer<typeof MetaSkillPinSchema>;
 
 export const MetaSkillSkipReasonSchema = z.enum([
-  "bad_front_matter", "bad_name", "duplicate_name", "too_large", "over_cap", "digest_mismatch", "unreadable", "symlink",
+  "bad_front_matter", "bad_name", "duplicate_name", "too_large", "over_cap", "digest_mismatch", "not_pinned", "unreadable", "symlink",
 ]);
 export type MetaSkillSkipReason = z.infer<typeof MetaSkillSkipReasonSchema>;

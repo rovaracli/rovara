@@ -756,6 +756,7 @@ async function loadWorkspaceContextFiles(
   const session = new MidRunKnowledge({
     stage, initial: resolved, filesInPlay: options.filesInPlay ?? [], rendering, rootPath: canonicalRoot,
     ...(options.budgets === undefined ? {} : { budgets: options.budgets }),
+    ...(onDiagnostic === undefined ? {} : { onDiagnostic }),
     resolveAgain: async (filesInPlay) => (await loadKnowledgeContext(rootPath, repositories, { ...request, filesInPlay }, canonicalRoot)).resolved,
   });
   knowledge.onLoaded?.(resolved);

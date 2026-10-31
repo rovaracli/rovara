@@ -134,3 +134,8 @@ export function matchesGlob(pattern: string, path: string): boolean {
 export function firstMatchingPattern(patterns: readonly string[], path: string): string | undefined {
   return patterns.find((pattern) => matchesGlob(pattern, path));
 }
+
+/** `text` as a literal in a pattern: every character the matcher reads as syntax is escaped. */
+export function escapeGlob(text: string): string {
+  return text.replace(/[\\*?[\]{}!^,]/gu, "\\$&");
+}

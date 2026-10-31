@@ -24,13 +24,15 @@ function LoadedKnowledgeBody({ taskId }: { taskId: string }) {
    const manifest = record.manifest;
    const loaded = manifest.items.map((item, index) => ({ item, index })).filter(entry => entry.item.status === "loaded");
    const rest = manifest.items.map((item, index) => ({ item, index })).filter(entry => entry.item.status !== "loaded");
-   return <section key={record.operationId + record.stage} aria-label={"What " + STAGE_TITLES[manifest.stage] + " loaded"}>
-    <h4>{"What " + STAGE_TITLES[manifest.stage] + " loaded"}{manifest.metaRepo !== undefined && <span className="rv-muted">{" (meta repo "}<VisibleText text={manifest.metaRepo.name} />{" @ " + manifest.metaRepo.knowledgeCommit.slice(0, 7) + ")"}</span>}</h4>
+   const title = STAGE_TITLES[manifest.stage] + (record.role === undefined ? "" : record.role === "CRITIC" ? " (code review)" : " (security review)");
+   return <section key={record.operationId + record.stage + (record.role ?? "")} aria-label={"What " + title + " loaded"}>
+    <h4>{"What " + title + " loaded"}{manifest.metaRepo !== undefined && <span className="rv-muted">{" (meta repo "}<VisibleText text={manifest.metaRepo.name} />{" @ " + manifest.metaRepo.knowledgeCommit.slice(0, 7) + ")"}</span>}</h4>
     <ul className="rv-loaded-list" aria-label="Rules loaded">{loaded.map(({ item, index }) => <KnowledgeRow key={index} taskId={taskId} record={record} item={item} index={index} target={target} setTarget={setTarget} />)}</ul>
     {rest.length > 0 && <details><summary>{String(rest.length + manifest.omitted.skipped + manifest.omitted.available) + " found and not loaded"}</summary><ul className="rv-loaded-list" aria-label="Rules not loaded">{rest.map(({ item, index }) => <KnowledgeRow key={index} taskId={taskId} record={record} item={item} index={index} target={target} setTarget={setTarget} />)}</ul></details>}
     {manifest.skills.length > 0 && <p>Skills: {manifest.skills.map(skill => <span key={skill.path}><VisibleText text={skill.path.slice(skill.path.lastIndexOf("/") + 1)} /> <span className="rv-muted">{"(" + skill.digest.slice(0, 8) + ", meta repo, no tools) "}</span></span>)}</p>}
     {manifest.skippedSkills.length > 0 && <p className="rv-muted">{manifest.skippedSkills.map(skill => skill.path + ": " + (SKILL_SKIP[skill.reason] ?? "Left out")).join("; ")}</p>}
     {manifest.sources.length > 0 && <p>Sources used: {manifest.sources.map(source => source.label + " (" + String(source.count) + ")").join(", ")}</p>}
+    {manifest.recordTruncated === true && <p className="rv-muted" role="note">This list was shortened to fit. Rules that were loaded are shown first.</p>}
     <p className="rv-muted">{budgetWords(manifest.budget)}</p>
    </section>;
   })}
@@ -38,15 +40,16 @@ function LoadedKnowledgeBody({ taskId }: { taskId: string }) {
 }
 
 type Target = { operationId: string; stage: string; index: number } | undefined;
-function KnowledgeRow({ taskId, record, item, index, target, setTarget }: { taskId: string; record: { operationId: string; stage: string }; item: LoadedKnowledgeItem; index: number; target: Target; setTarget: (value: Target) => void }) {
- const mine = target?.operationId === record.operationId && target.stage === record.stage && target.index === index;
+function KnowledgeRow({ taskId, record, item, index, target, setTarget }: { taskId: string; record: { operationId: string; stage: string; role?: "CRITIC" | "SECURITY" | undefined }; item: LoadedKnowledgeItem; index: number; target: Target; setTarget: (value: Target) => void }) {
+ const stageKey = record.role === undefined ? record.stage : record.stage + "." + record.role;
+ const mine = target?.operationId === record.operationId && target.stage === stageKey && target.index === index;
  const label = item.path ?? item.name ?? "Rule";
  const canShow = item.status !== "available" && item.repo !== undefined && item.path !== undefined && item.fileDigest !== undefined;
  return <li>
   <span aria-label={item.status === "loaded" ? "Loaded" : "Not loaded"}>{item.status === "loaded" ? "Loaded" : "Not loaded"}</span>{" "}
   {item.repo !== undefined && <span className="rv-muted"><VisibleText text={item.repo} />{" / "}</span>}<VisibleText text={label} />{" "}
   <span className="rv-muted">{[modeWords(item), item.bytes > 0 ? kilobytes(item.bytes) : "", itemWords(item)].filter(part => part !== "").join(" · ")}</span>
-  {canShow && <Button variant="quiet" aria-label={"Show the text of " + label} aria-expanded={mine} onClick={() => { setTarget(mine ? undefined : { operationId: record.operationId, stage: record.stage, index }); }}>{mine ? "Hide text" : "Show text"}</Button>}
+  {canShow && <Button variant="quiet" aria-label={"Show the text of " + label} aria-expanded={mine} onClick={() => { setTarget(mine ? undefined : { operationId: record.operationId, stage: stageKey, index }); }}>{mine ? "Hide text" : "Show text"}</Button>}
   {mine && <RuleText taskId={taskId} target={target} />}
  </li>;
 }

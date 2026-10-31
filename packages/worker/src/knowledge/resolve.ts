@@ -43,8 +43,6 @@ import type { DirectoryEntry, KnowledgeFileSource } from "./source.js";
 
 export const COMPANY_RULES_EXCEED_BUDGET_MESSAGE = "Company rules exceed the size budget";
 
-/** Folders a repository keeps tool hooks in. Rovara does not run repository hooks; the panel says so. */
-const HOOK_DIRECTORIES = [".kiro/hooks"] as const;
 const MAX_FILES_IN_PLAY = 1_000;
 const MAX_NOTICES = 20;
 
@@ -251,7 +249,8 @@ async function discover(
   for (const directory of extraDirectories) await walk(directory, 0, true);
 
   // 3. Hooks are found but never run.
-  for (const directory of HOOK_DIRECTORIES) {
+  // Hooks are found, never run: Rovara does not run repository hooks, and the panel says so. Which folders hold them is each reader's knowledge.
+  for (const directory of registry.hookDirectories()) {
     for (const entry of (await list(directory)) ?? []) if (entry.kind === "file") hooks.push(`${directory}/${entry.name}`);
   }
 
@@ -344,7 +343,8 @@ function activationDecision(
     entryName: string;
     filesInPlay: readonly FileInPlay[];
     manualNames: ReadonlySet<string>;
-    plannedAuto: ReadonlySet<string>;
+    /** The plan's auto set; undefined when it is not known (judging stages then load every auto rule, a safe superset). */
+    plannedAuto: ReadonlySet<string> | undefined;
     pathName: string | undefined;
   },
 ): { action: "load"; why: LoadReason } | { action: "skip"; reason: SkipReason } | { action: "auto" } {
@@ -366,10 +366,19 @@ function activationDecision(
     const name = (parsed.name ?? context.pathName ?? "").toLowerCase();
     return name !== "" && context.manualNames.has(name) ? { action: "load", why: { kind: "named", detail: displayPath(name) } } : { action: "skip", reason: "not_requested" };
   }
-  // auto: judging stages see exactly the plan's set; the others list them and let the model read one by name.
+  // auto: the non-judging stages list them and let the model read one by name. Judging stages (plan check, review) load, from the same
+  // commits, the rules the plan chose PLUS any whose patterns the diff hits, so a planner that drops a rule cannot hide it from them. When
+  // the plan's set is not known they load every auto rule: more rules than the plan chose, never fewer.
   if (JUDGING_STAGES_FOR_AUTO.has(context.stage)) {
     const name = (parsed.name ?? "").toLowerCase();
-    return context.plannedAuto.has(name) ? { action: "load", why: { kind: "named", detail: displayPath(name) } } : { action: "skip", reason: "not_in_plan_set" };
+    if (context.plannedAuto === undefined) return { action: "load", why: { kind: "named", detail: displayPath(name) } };
+    if (context.plannedAuto.has(name)) return { action: "load", why: { kind: "named", detail: displayPath(name) } };
+    for (const file of context.filesInPlay) {
+      if (file.repo !== undefined && file.repo !== context.entryName && item.layer !== "meta") continue;
+      const hit = firstMatchingPattern(parsed.patterns ?? [], file.path);
+      if (hit !== undefined) return { action: "load", why: { kind: "matched", detail: displayPath(file.path) } };
+    }
+    return { action: "skip", reason: "not_in_plan_set" };
   }
   return { action: "auto" };
 }
@@ -401,7 +410,7 @@ export async function resolveKnowledge(input: ResolveKnowledgeInput): Promise<Re
   const budgets = input.budgets ?? DEFAULT_KNOWLEDGE_BUDGETS;
   const filesInPlay = normalisedFilesInPlay(input.filesInPlay);
   const manualNames = new Set([...(input.manualNames ?? [])].map((name) => name.toLowerCase()));
-  const plannedAuto = new Set([...(input.plannedAuto ?? [])].map((name) => name.toLowerCase()));
+  const plannedAuto = input.plannedAuto === undefined ? undefined : new Set([...input.plannedAuto].map((name) => name.toLowerCase()));
   const records: KnowledgeRecord[] = [];
   const notices: string[] = [];
   const diagnostics: string[] = [];
@@ -462,7 +471,8 @@ export async function resolveKnowledge(input: ResolveKnowledgeInput): Promise<Re
             listDirectory: async (directory) => (await entry.source.listDirectory(directory))?.map((child) => child.name).toSorted(),
           });
       if (loading) for (const imported of expanded?.imported ?? []) included.add(imported);
-      const text = expanded?.text ?? read.text;
+      // Hidden characters are removed from the whole expanded text, so imported text and folder listings are covered as well as the file itself.
+      const text = inertContextText(expanded?.text ?? read.text).text;
       const item: KnowledgeItem = {
         layer, repo: entry.name, path: candidate.path, scopeDir: candidate.scopeDir, format: candidate.reader.id,
         activation: parsed.activation, ...(parsed.patterns === undefined ? {} : { patterns: parsed.patterns }),

@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { COMPANY_RULES_EXCEED_BUDGET_MESSAGE, externalRuleItem, resolveKnowledge, type KnowledgeSourceEntry, type ResolveKnowledgeInput } from "../../packages/worker/src/knowledge/resolve.js";
+import { createReaderRegistry } from "../../packages/worker/src/knowledge/registry.js";
 import { memoryKnowledgeSource } from "../../packages/worker/src/knowledge/source.js";
 import { DEFAULT_KNOWLEDGE_BUDGETS } from "../../packages/worker/src/knowledge/model.js";
 
@@ -74,17 +76,25 @@ describe("resolveKnowledge: activation modes", () => {
     expect(result.manualItems.get("oncall")?.text).toBe("Oncall runbook");
   });
 
-  it("lists auto rules for the model in Understand, Plan and Build but gives judging stages only the plan's set", async () => {
+  it("lists auto rules for the model in Understand, Plan and Build; judging stages load the plan's set plus rules the diff hits", async () => {
     const build = await resolve("build", [meta(META_FILES)]);
     expect(build.autoCatalog.map((entry) => entry.name)).toEqual(["api-design"]);
     expect(build.autoItems.get("api-design")?.text).toBe("API rules");
-    const reviewAlone = await resolve("review", [meta(META_FILES)]);
-    expect(reviewAlone.autoCatalog).toEqual([]);
-    expect(record(reviewAlone, ".kiro/steering/api.md")).toMatchObject({ status: "skipped", reason: "not_in_plan_set" });
+    // The plan's set is known and does not name the rule: a judging stage does not load it (nothing in the diff hits it).
+    const unplanned = await resolve("review", [meta(META_FILES)], { plannedAuto: new Set(["something-else"]) });
+    expect(unplanned.autoCatalog).toEqual([]);
+    expect(record(unplanned, ".kiro/steering/api.md")).toMatchObject({ status: "skipped", reason: "not_in_plan_set" });
     const reviewWithPlan = await resolve("review", [meta(META_FILES)], { plannedAuto: new Set(["api-design"]) });
     expect(record(reviewWithPlan, ".kiro/steering/api.md")).toMatchObject({ status: "loaded" });
     const checkWithPlan = await resolve("plan_check", [meta(META_FILES)], { plannedAuto: new Set(["API-Design"]) });
     expect(record(checkWithPlan, ".kiro/steering/api.md")?.status).toBe("loaded");
+  });
+
+  it("a judging stage that does not know the plan's set loads every auto rule, so a steered planner cannot hide one (meta Q9)", async () => {
+    for (const stage of ["review", "plan_check"] as const) {
+      const result = await resolve(stage, [meta(META_FILES)]);
+      expect(record(result, ".kiro/steering/api.md")).toMatchObject({ status: "loaded" });
+    }
   });
 
   it("leaves a Copilot rule out of the stages its excludeAgent names", async () => {
@@ -224,5 +234,57 @@ describe("resolveKnowledge: stacking order", () => {
       filesInPlay: [{ repo: "ServiceMatchingEngine", path: "src/a.ts" }],
     });
     expect(result.items.map((item) => item.layer)).toEqual(["company", "project", "meta", "repo", "folder"]);
+  });
+});
+
+
+describe("resolveKnowledge: hidden characters in the expanded text", () => {
+  it("removes zero-width and bidi characters from imported text and from folder listing names", async () => {
+    const result = await resolve("plan", [repo({
+      ".kiro/steering/a.md": "Docs: #[[folder:docs]]\nSee #[[file:notes.md]]",
+      "docs/x\u200B\u202Eevil.md": "n", "docs/ok.md": "n", "notes.md": "Note\u200B text",
+    })]);
+    const text = result.items[0]!.text;
+    expect(text).toContain("- ok.md");
+    expect(text).toContain("- xevil.md");
+    expect(text).toContain("Note text");
+    expect(text).not.toMatch(/[\u200B\u202E]/u);
+    expect(result.items[0]!.digest).toBe(createHash("sha256").update(text, "utf8").digest("hex"));
+  });
+});
+
+describe("resolveKnowledge: nested folders with glob characters", () => {
+  it("loads a nested AGENTS.md in a folder named app/[id], (group) or {x}", async () => {
+    const files = { "app/[id]/AGENTS.md": "dynamic route rules", "app/(group)/AGENTS.md": "group rules", "lib/{x}/CLAUDE.md": "brace rules", "app/i/AGENTS.md": "other" };
+    const result = await resolve("build", [repo(files)], { filesInPlay: [
+      { repo: "ServiceMatchingEngine", path: "app/[id]/page.tsx" }, { repo: "ServiceMatchingEngine", path: "app/(group)/p.tsx" }, { repo: "ServiceMatchingEngine", path: "lib/{x}/a.ts" },
+    ] });
+    expect(result.items.map((item) => item.text).toSorted()).toEqual(["brace rules", "dynamic route rules", "group rules"]);
+    // The bracket folder is a literal: it does not match the folder `app/i`.
+    const other = await resolve("build", [repo(files)], { filesInPlay: [{ repo: "ServiceMatchingEngine", path: "app/i/page.tsx" }] });
+    expect(other.items.map((item) => item.text)).toEqual(["other"]);
+  });
+});
+
+describe("resolveKnowledge: hooks come from the readers", () => {
+  it("finds hooks in the folders a reader names, and nowhere else", async () => {
+    const result = await resolve("plan", [repo({ ".kiro/hooks/a.json": "{}", "hooks/b.json": "{}" })]);
+    expect(result.records.filter((entry) => entry.reason === "found_not_run").map((entry) => entry.path)).toEqual([".kiro/hooks/a.json"]);
+  });
+});
+
+describe("resolveKnowledge: judging stages add auto rules the diff hits", () => {
+  const patterned = {
+    id: "patterned", discovery: { directories: ["rules"] },
+    accepts: (path: string) => path.startsWith("rules/"),
+    parse: (path: string, text: string) => ({ ok: true as const, value: { activation: "auto" as const, name: path.slice(6), description: "d", patterns: ["**/*.sql"], body: text, imports: "none" as const } }),
+  };
+  it("loads a patterned auto rule when the diff hits it even if the plan's set left it out, and not otherwise", async () => {
+    const registry = createReaderRegistry([patterned]);
+    const files = { "rules/sec": "security rule" };
+    const hit = await resolve("review", [repo(files)], { registry, plannedAuto: new Set(), filesInPlay: [{ repo: "ServiceMatchingEngine", path: "db/q.sql" }] });
+    expect(record(hit, "rules/sec")).toMatchObject({ status: "loaded", why: { kind: "matched", detail: "db/q.sql" } });
+    const miss = await resolve("review", [repo(files)], { registry, plannedAuto: new Set(), filesInPlay: [{ repo: "ServiceMatchingEngine", path: "a.ts" }] });
+    expect(record(miss, "rules/sec")).toMatchObject({ status: "skipped", reason: "not_in_plan_set" });
   });
 });

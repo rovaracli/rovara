@@ -47,6 +47,8 @@ export interface KnowledgeFileSource {
 export const knowledgeUnverified = () => agentXError("CONFIG_INVALID", WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE);
 
 const MAX_OBJECT_FETCHES = 4_000;
+/** Each object read has its own deadline (trusted-base-objects.ts); this bounds a whole source, so many slow reads cannot add up without end. */
+const SOURCE_TOTAL_MS = 10 * 60_000;
 
 function splitPath(path: string): string[] | undefined {
   if (path === "") return [];
@@ -63,7 +65,7 @@ export async function openBaseCommitSource(
   directory: string,
   commit: string,
   readAt: "base" | "knowledgeCommit",
-  options: ReadOptions = {},
+  options: ReadOptions & { sourceTotalMs?: number } = {},
 ): Promise<KnowledgeFileSource> {
   let objects: VerifiedBaseObjects;
   try {
@@ -72,10 +74,11 @@ export async function openBaseCommitSource(
     throw knowledgeUnverified();
   }
   const trees = new Map<string, TreeListingEntry[] | undefined>();
+  const openedAt = Date.now();
   let fetches = 0;
   const fetchObject: VerifiedBaseObjects["fetchObject"] = async (type, oid, maximum, keep) => {
     fetches += 1;
-    if (fetches > MAX_OBJECT_FETCHES) throw new BaseObjectsUnverified();
+    if (fetches > MAX_OBJECT_FETCHES || Date.now() - openedAt > (options.sourceTotalMs ?? SOURCE_TOTAL_MS)) throw new BaseObjectsUnverified();
     return objects.fetchObject(type, oid, maximum, keep);
   };
   const tree = async (path: string): Promise<TreeListingEntry[] | undefined> => {

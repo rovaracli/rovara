@@ -29,12 +29,13 @@ const PREFIX = "LOADEDKNOW#";
 const OPERATION_ID = /^[A-Za-z0-9_-]{1,80}$/u;
 const TEXT_MAX_BYTES = 64 * 1024;
 
-const sortKey = (stage: string, operationId: string): string => `${PREFIX}${stage}#${operationId}`;
+const sortKey = (stage: string, operationId: string, role?: string): string => `${PREFIX}${stage}#${operationId}${role === undefined ? "" : `#${role}`}`;
 
 export interface StoredLoadedKnowledge {
   stage: LoadedKnowledgeManifest["stage"];
   operationId: string;
   recordedAt: string;
+  role?: "CRITIC" | "SECURITY";
   manifest: LoadedKnowledgeManifest;
 }
 
@@ -54,8 +55,8 @@ export async function recordLoadedKnowledgeFromProgress(
     await deps.documentClient.send(new PutCommand({
       TableName: deps.tableName,
       Item: {
-        pk: taskKey(input.taskId).pk, sk: sortKey(manifest.stage, input.operationId), entityType: "LOADED_KNOWLEDGE",
-        taskId: input.taskId, stage: manifest.stage, operationId: input.operationId, recordedAt, manifest,
+        pk: taskKey(input.taskId).pk, sk: sortKey(manifest.stage, input.operationId, manifest.role), entityType: "LOADED_KNOWLEDGE",
+        taskId: input.taskId, stage: manifest.stage, operationId: input.operationId, recordedAt, ...(manifest.role === undefined ? {} : { role: manifest.role }), manifest,
         [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.parse(recordedAt) / 1000) + RETENTION_SECONDS,
       },
     }));
@@ -79,7 +80,7 @@ export async function listLoadedKnowledge(deps: Table, taskId: string): Promise<
       const manifest = LoadedKnowledgeManifestSchema.safeParse(item.manifest);
       // A record that no longer parses (an older shape) is left out, never shown half-read.
       if (manifest.success && typeof item.operationId === "string" && typeof item.recordedAt === "string") {
-        found.push({ stage: manifest.data.stage, operationId: item.operationId, recordedAt: item.recordedAt, manifest: manifest.data });
+        found.push({ stage: manifest.data.stage, operationId: item.operationId, recordedAt: item.recordedAt, ...(manifest.data.role === undefined ? {} : { role: manifest.data.role }), manifest: manifest.data });
       }
     }
     start = response.LastEvaluatedKey;
@@ -113,7 +114,7 @@ async function recordsFor(deps: LoadedKnowledgeRouteDependencies, caller: Develo
   }
 }
 
-const TASK_PATH = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/loaded-knowledge(?:\/([A-Za-z0-9_-]{1,80})\/([a-z_]{1,20})\/items\/(\d{1,3})\/text)?$/u;
+const TASK_PATH = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/loaded-knowledge(?:\/([A-Za-z0-9_-]{1,80})\/([a-z_]{1,20}(?:\.[A-Z]{1,10})?)\/items\/(\d{1,3})\/text)?$/u;
 
 /**
  * `GET /v1/app/tasks/{taskId}/loaded-knowledge` and `GET /v1/app/tasks/{taskId}/loaded-knowledge/{operationId}/{stage}/items/{n}/text`.
@@ -133,10 +134,15 @@ export async function routeLoadedKnowledge(
 
   // The text of one listed file.
   if (viaAuditor) throw agentXError("FORBIDDEN", "Auditors see which rules a task loaded, not their text.");
-  if (!(LOADED_KNOWLEDGE_STAGES as readonly string[]).includes(stage!)) throw notFound();
-  const record = records.find((entry) => entry.operationId === operationId && entry.stage === stage);
+  // The stage segment is the stage, or `stage.ROLE` for one of the two reviewers.
+  const [stageName, roleName] = stage!.split(".");
+  if (!(LOADED_KNOWLEDGE_STAGES as readonly string[]).includes(stageName!)) throw notFound();
+  const record = records.find((entry) => entry.operationId === operationId && entry.stage === stageName && entry.role === roleName);
   const item = record?.manifest.items[Number(index)];
   if (record === undefined || item === undefined || item.status === "available" || item.repo === undefined || item.path === undefined || item.fileDigest === undefined) throw notFound();
+  // Defence in depth: the record is worker-written, so what it names is checked before it goes to a reader.
+  const knownRepo = record.manifest.metaRepo?.name === item.repo || record.manifest.repos.some((repository) => repository.name === item.repo);
+  if (!knownRepo || item.path.startsWith("/") || item.path.includes("\0") || item.path.split("/").some((part) => part === ".." || part === "")) throw notFound();
   if (deps.canReadRepository === undefined || deps.readRuleFile === undefined) {
     throw agentXError("FORBIDDEN", "The text of this rule is not available here.");
   }

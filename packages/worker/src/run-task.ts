@@ -610,6 +610,15 @@ async function runTask(
    * checks on someone else's words in a workspace a coding session may have written, so they read the base commit as well (A5).
    */
   const reviewerRuleBases = { contextFilesAt: "base-commit" as const, baseCommits: invocation.payload.workflowBase ?? [] };
+  /**
+   * The Plan stage reads the base commit too when the broker sent one (workflowBase on the PLAN operation), so a working tree an earlier build
+   * round wrote cannot steer which rules the plan, and through it the plan check, sees. A broker that sends no base leaves Plan reading the
+   * working tree as before, and says so once.
+   */
+  const planningOnly = invocation.payload.workflowMode === "PLAN";
+  const planReadsBase = planningOnly && (invocation.payload.workflowBase?.length ?? 0) > 0;
+  if (planningOnly && !planReadsBase) onDiagnostic("the plan read the repositories' rule files from the working tree: no base commit was sent for this planning run");
+  const ruleBases = reviewing || planCritique || understanding ? reviewerRuleBases : planReadsBase ? { ...reviewerRuleBases, knowledge: { stage: "plan" as const } } : {};
   let graphFinalItemReady = workflowDependencies === undefined;
   const recorder = new CommandRecorder({
     fingerprint: (signal) => recorderFingerprint(
@@ -680,7 +689,7 @@ async function runTask(
         sessionFile: registered.sessionFile,
         onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
-        ...(reviewing || planCritique || understanding ? reviewerRuleBases : {}),
+        ...ruleBases,
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),
@@ -693,7 +702,7 @@ async function runTask(
       {
         rootPath: dependencies.rootPath, model: dependencies.model, workflowMode: piMode, conversationId, onDiagnostic,
         extensionFactories: planning || reviewing || understanding ? [] : [verification],
-        ...(reviewing || planCritique || understanding ? reviewerRuleBases : {}),
+        ...ruleBases,
         ...(agentShell === undefined ? {} : { bashOperations: agentShell }),
         ...(containerPaths === undefined ? {} : { devcontainerPaths: containerPaths }),
         ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}),

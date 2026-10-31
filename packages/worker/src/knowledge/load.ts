@@ -17,6 +17,7 @@ import { resolveKnowledge, type FileInPlay, type KnowledgeSourceEntry, type Reso
 import { openBaseCommitSource, openWorkingTreeSource, type KnowledgeFileSource } from "./source.js";
 import type { ReadOptions } from "../trusted-base-objects.js";
 import type { AgentSkillFile } from "../agent-step.js";
+import { createReaderRegistry } from "./registry.js";
 import { loadMetaSkills } from "./skills.js";
 
 export interface KnowledgeSessionInput {
@@ -59,7 +60,7 @@ interface OpenedKnowledge {
 /** Opens every source the stage reads (the meta repo at its pinned commit first, then each code repository). The caller must `close()`. */
 export async function openKnowledgeSources(
   repositories: readonly WorkspaceRepositoryReference[],
-  input: Pick<KnowledgeSessionInput, "at" | "meta" | "baseReadOptions">,
+  input: Pick<KnowledgeSessionInput, "at" | "meta" | "baseReadOptions" | "registry">,
   canonicalRoot: string,
 ): Promise<OpenedKnowledge> {
   const diagnostics: string[] = [];
@@ -68,6 +69,7 @@ export async function openKnowledgeSources(
   const rendering: RenderRepository[] = [];
   const close = async (): Promise<void> => { await Promise.all(opened.map((source) => source.close().catch(() => undefined))); };
   const baseOptions: ReadOptions = { workspaceRoot: canonicalRoot, ...(input.baseReadOptions ?? {}) };
+  const registry = input.registry ?? createReaderRegistry();
   try {
     // The meta repo first: a project that has one never runs without it.
     if (input.meta !== undefined) {
@@ -77,7 +79,7 @@ export async function openKnowledgeSources(
       if (located.directory === undefined) throw agentXError("CONFIG_INVALID", `${META_REPOSITORY_UNAVAILABLE_MESSAGE} ${AgentXNameSchema.safeParse(input.meta.name).success ? input.meta.name : ""}`.trim());
       const source = await openBaseCommitSource(located.directory, input.meta.knowledgeCommit, "knowledgeCommit", baseOptions);
       opened.push(source);
-      const defaults = new Set([".kiro/steering", ".rovara/rules", ".cursor/rules", ".claude/rules", ".github/instructions"]);
+      const defaults = new Set(registry.directories());
       const custom = (input.meta.knowledge?.steering ?? []).map((path) => path.replace(/\/+$/u, "")).filter((path) => path !== "" && !defaults.has(path));
       sources.push({ name: input.meta.name, path: input.meta.path, layer: "meta", source, extraRuleDirectories: custom });
       rendering.push({ name: input.meta.name, path: input.meta.path, meta: { knowledgeCommit: input.meta.knowledgeCommit } });
@@ -140,6 +142,7 @@ export async function loadKnowledgeContext(
         source: metaEntry.source, repo: input.meta.name, commit: input.meta.knowledgeCommit,
         ...(input.meta.knowledge?.skills === undefined ? {} : { directories: input.meta.knowledge.skills }),
         ...(input.meta.skillPins === undefined ? {} : { pins: input.meta.skillPins }),
+        ...(input.registry === undefined ? {} : { registry: input.registry }),
       });
       skills = found.skills;
       resolved.skills = found.snapshots;
