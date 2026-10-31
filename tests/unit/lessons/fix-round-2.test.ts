@@ -9,9 +9,9 @@ import { reflectSubject } from "../../../packages/broker/src/lessons/reflect.js"
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 import { PROJECT_VOLUME_KEY } from "../../../packages/broker/src/lessons/sources.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { classifyTier, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
+import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
-import { Alerts, Audit, Clock, KEY, uniqueDraft, lessonRecord, seed, MemoryVectors, ScriptedModel, Spend, candidateJson, codeCite, draft, embedder, memberSpan, reply, settings, subject, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, uniqueDraft, lessonRecord, seed, MemoryVectors, ScriptedModel, Spend, candidateJson, codeCite, draft, embedder, memberSpan, reply, settings, subject, verifier, classifyTier, facts } from "./lesson-helpers.js";
 
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
 const tierInput = (over: Partial<TierInput> = {}): TierInput => ({ ...draft(), citationChecks: valid, ...over });
@@ -64,7 +64,7 @@ function pipeline() {
   let n = 0;
   const deps: ProcessDeps = {
     store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, alerts, now: clock.now,
-    verifier: verifier("valid"), settings: settings(), newId: () => `les_r2${String(++n).padStart(5, "0")}`,
+    verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => `les_r2${String(++n).padStart(5, "0")}`,
   };
   return { deps, store, audit, clock, alerts };
 }
@@ -126,7 +126,7 @@ describe("N1: 'measured outcome' is a structured fact, never a span the model ci
   it("measured comes from structured facts in the input, even when the model cites something else", async () => {
     const sendBack: EvidenceSpan = { kind: "send_back", text: "use the shared retry helper", trust: "member", eventId: "ev-s", authorId: "bob" };
     expect((await run([edit, sendBack], ["S1"])).drafts[0]!.provenance.measured).toBe(true);
-    const ci: EvidenceSpan = { kind: "ci_failure", text: "timeout in matching", trust: "rovara", eventId: "ev-c" };
+    const ci: EvidenceSpan = { kind: "ci_failure", text: "timeout in matching", trust: "rovara", eventId: "ev-c", authorId: "bob" };
     expect((await run([edit, ci], ["S1"])).drafts[0]!.provenance.measured).toBe(true);
     expect((await run([edit], ["S1"], { outcome: "reverted", revertedBy: "bob" })).drafts[0]!.provenance.measured).toBe(true);
   });

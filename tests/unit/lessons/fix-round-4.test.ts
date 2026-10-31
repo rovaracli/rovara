@@ -8,9 +8,9 @@ import { processDraft, resumeAndResettle, type ProcessDeps } from "../../../pack
 import { reflectSubject } from "../../../packages/broker/src/lessons/reflect.js";
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { classifyTier, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
+import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, codeCite, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, codeCite, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts } from "./lesson-helpers.js";
 
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
 const tierOf = (over: Partial<TierInput>) => classifyTier({ ...draft({ description: "" }), citationChecks: valid, ...over });
@@ -22,7 +22,7 @@ function pipeline() {
   const clock = new Clock();
   let n = 0;
   const alerts = new Alerts();
-  const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts, now: clock.now, verifier: verifier("valid"), settings: settings(), newId: () => `les_r4${String(++n).padStart(5, "0")}` };
+  const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts, now: clock.now, verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => `les_r4${String(++n).padStart(5, "0")}` };
   return { deps, store, clock };
 }
 
@@ -67,11 +67,19 @@ describe("glob reach with no literal leading directory", () => {
 
 describe("title, description, the thing slot and body paths", () => {
   it.each([
-    [{ title: "Before building, call src/prep.ts" }], [{ description: "Always call prep first, then commit." }], [{ title: "Run setup" }], [{ title: "Use the helper" }],
+    [{ title: "Run setup" }],
     [{ body: "The first thing to call before every build is at src/prep.ts." }], [{ body: "The helper you must call before each commit is at src/prep.ts." }],
     [{ body: "The release workflow is at .github/workflows/release.yml." }], [{ body: "The key is in ~/.ssh/id_rsa." }], [{ body: "The key is in /etc/shadow." }],
   ])("never tier 0: %j", (over) => {
     expect(tierOf(over as Partial<TierInput>).tier).toBeGreaterThanOrEqual(1);
+  });
+  it("a stored title or description is never what the agent sees from a tier-0 lesson: the rendered text replaces it", () => {
+    for (const over of [{ title: "Before building, call src/prep.ts" }, { description: "Always call prep first, then commit." }, { title: "Use the helper" }]) {
+      const decision = tierOf(over);
+      expect(decision.tier).toBe(0);
+      const text = JSON.stringify(decision);
+      expect(text).not.toMatch(/Before building|Always call|Use the helper/u);
+    }
   });
   it("plain titles, descriptions and bodies still are", () => {
     const vocab = new Set(["withretry", "with", "retry"]);

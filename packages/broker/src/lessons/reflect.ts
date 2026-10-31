@@ -10,6 +10,18 @@ import {
   type Audience, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type TrustClass,
 } from "./types.js";
 
+/** An outcome event and the person who caused it: whoever reverted, sent back, or pushed the revision that failed CI. */
+export interface OutcomeEvent { kind: "revert" | "send_back" | "ci_failure"; actor: string | undefined }
+/**
+ * The one rule for a measured outcome, the same for every kind: a person stands behind the lesson, and the event's actor is KNOWN and is neither one of the
+ * lesson's authors nor the task's initiator. Missing ids never count (fail closed): a revert, a send-back or a CI failure of someone's own making is not
+ * independent evidence.
+ */
+export function isMeasured(input: { authors: readonly string[]; initiatorId: string | undefined; events: readonly OutcomeEvent[] }): boolean {
+  if (input.authors.length === 0 || input.initiatorId === undefined) return false;
+  return input.events.some((e) => e.actor !== undefined && !input.authors.includes(e.actor) && e.actor !== input.initiatorId);
+}
+
 /** A lesson as the reflector proposes it, checked by code, with its provenance. It is not yet in any store. */
 export interface LessonDraft {
   type: LessonType; title: string; description: string; body: string; scope: LessonScope; stages: LessonStage[]; citations: LessonCitation[];
@@ -155,15 +167,17 @@ async function toDraft(
   // Independence is counted in people: the canonical member ids of spans a PERSON wrote. Agent text (plan), system text, outcomes and channel or bucket keys
   // never make an author.
   const authors = [...new Set(evidence.flatMap((s) => (s.trust === "member" && s.authorId !== undefined && PERSON_KINDS.has(s.kind) ? [s.authorId] : [])))];
-  const authorsOf = new Set(authors);
-  // Measured outcomes come from structured facts in the input, never from which spans the model cited.
+    // Measured outcomes come from structured facts in the input, never from which spans the model cited.
   // A send-back counts only when someone other than the lesson's own authors made it (a person cannot create a "measured outcome" by correcting their own task).
-  // ONE rule for every kind of measured outcome (a revert, a send-back, a CI failure): a person stands behind the lesson, and whoever caused the outcome is neither
-  // one of the lesson's authors nor the task's initiator. A CI failure recorded by Rovara has no human actor, so only the first condition applies to it.
-  const outsideActor = (actor: string | undefined): boolean => actor !== undefined && subject.initiatorId !== undefined && !authorsOf.has(actor) && actor !== subject.initiatorId;
-  const measured = authors.length > 0 && (
-    (subject.outcome === "reverted" && outsideActor(subject.revertedBy))
-    || everything.some((s) => (s.kind === "send_back" && s.trust === "member" && outsideActor(s.authorId)) || (s.kind === "ci_failure" && s.trust === "rovara")));
+  // ONE function decides whether anything was measured, for every kind of outcome (a revert, a send-back, a CI failure).
+  const measured = isMeasured({
+    authors, initiatorId: subject.initiatorId,
+    events: [
+      ...(subject.outcome === "reverted" ? [{ kind: "revert" as const, actor: subject.revertedBy }] : []),
+      ...everything.filter((s) => s.kind === "send_back" && s.trust === "member").map((s) => ({ kind: "send_back" as const, actor: s.authorId })),
+      ...everything.filter((s) => s.kind === "ci_failure" && s.trust === "rovara").map((s) => ({ kind: "ci_failure" as const, actor: s.authorId })),
+    ],
+  });
   return {
     type: candidate.type, title, description, body, scope: candidate.scope, stages: [...new Set(candidate.stages)], citations,
     provenance: {

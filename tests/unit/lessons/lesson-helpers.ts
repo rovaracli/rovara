@@ -7,6 +7,9 @@ import type { LearningSettings, LearningSettingsReader } from "../../../packages
 import type { ReflectSubject, EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
+import type { CodeFacts } from "../../../packages/broker/src/lessons/ports.js";
+import { pathsToVerify, type VerifiedMaterial } from "../../../packages/broker/src/lessons/render.js";
+import { classifyTier as realClassifyTier, type TierContext, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 
 export const WS = "ws-1";
 export const PROJECT = "proj-1";
@@ -80,6 +83,7 @@ export function directory(over: Partial<Awaited<ReturnType<ApproverDirectory["el
   return { value, eligibility: async () => value, identity: async () => ({ principals: [], groups: [] }) };
 }
 
+export const facts = (): FakeFacts => defaultFacts;
 export const verifier = (result: "valid" | "moved" | "stale" | "unknown" = "valid"): CitationVerifier & { calls: number } => ({
   calls: 0,
   async verify() { this.calls += 1; return result === "moved" ? { result, startLine: 20, endLine: 30 } : { result }; },
@@ -110,7 +114,10 @@ export function draft(over: Partial<LessonDraft> = {}): LessonDraft {
 /** A tier-0-shaped draft whose words are all distinct (so the curator does not merge a run of them) and all repeated from its own cited anchor (so the slot allow-list accepts them). */
 export function uniqueDraft(i: number, prov: Partial<LessonDraft["provenance"]> = {}, over: Partial<LessonDraft> = {}): LessonDraft {
   const tokens = Array.from({ length: 6 }, (_, j) => `w${i}x${j}q${i * 31 + j}`);
-  return draft({ title: `Helper ${i}`, description: "", body: `The ${tokens.join(" ")} is in src/m${i}/index.ts.`, citations: [codeCite({ anchor: `const ${tokens.join("_")} = load();` })], provenance: { ...draft().provenance, ...prov }, ...over });
+  defaultFacts.addFile(`src/m${i}/index.ts`);
+  defaultFacts.addIdentifiers(...tokens);
+  // Two words of the cited code in the thing slot (the most a slot may take); the rest of the distinct words sit in the description, which tier 0 replaces.
+  return draft({ title: `Helper ${i}`, description: tokens.join(" "), body: `The ${tokens.slice(0, 2).join(" ")} is in src/m${i}/index.ts.`, citations: [codeCite({ anchor: `const ${tokens.join("_")} = load();` })], provenance: { ...draft().provenance, ...prov }, ...over });
 }
 
 export function subject(spans: EvidenceSpan[], over: Partial<ReflectSubject> = {}): ReflectSubject {
@@ -142,4 +149,32 @@ export function lessonRecord(over: LessonOver = {}): Lesson {
 }
 export async function seed(store: InMemoryLessonStore, ...lessons: Lesson[]): Promise<void> {
   for (const lesson of lessons) await store.commit({ workspaceId: lesson.workspaceId, project: lesson.project }, await store.setVersion({ workspaceId: lesson.workspaceId, project: lesson.project }), [lesson], 1);
+}
+
+/**
+ * The repository as the tests see it: files at the cited commit, the identifiers of the cited code, and the project's repositories. Everything a tier-0 lesson
+ * renders must be found here; tests that need more add it (`uniqueDraft` does). Real code reads the base objects instead.
+ */
+export class FakeFacts implements CodeFacts {
+  files = new Set<string>(["src/retry/index.ts", "src/billing/money.ts", "config/sagemaker.py", "docs/pr.md", "src/a.ts", "packages/api/client.ts", "src/lib.ts"]);
+  idSet = new Set<string>(["withRetry", "retry", "axios", "buildId", "timeout", "handler", "load"]);
+  repos = ["api"];
+  addFile(path: string): void { this.files.add(path); }
+  addIdentifiers(...ids: string[]): void { for (const id of ids) this.idSet.add(id); }
+  exists(path: string): boolean {
+    const prefix = path.split(/[*?]/u)[0]!.replace(/\/$/u, "");
+    return prefix === "" || [...this.files].some((f) => f === path || f === prefix || f.startsWith(`${prefix}/`));
+  }
+  async identifiers(): Promise<string[]> { return [...this.idSet]; }
+  async pathExists(input: { path: string }): Promise<boolean> { return this.exists(input.path); }
+  async repositories(): Promise<string[]> { return this.repos; }
+}
+export const defaultFacts = new FakeFacts();
+/** Verified material the way the settle step builds it, synchronously, for tests that call `classifyTier` directly. */
+export function materialFor(lesson: { scope: Lesson["scope"]; citations: readonly Lesson["citations"][number][]; body: string }, facts: FakeFacts = defaultFacts): VerifiedMaterial {
+  return { identifiers: new Set(facts.idSet), paths: new Set(pathsToVerify(lesson).filter((p) => facts.exists(p))), repos: new Set((lesson.scope.repos ?? []).filter((r) => facts.repos.includes(r))) };
+}
+/** `classifyTier` with the default verified material (a lesson whose words and paths exist in the fake repository). */
+export function classifyTier(input: TierInput, context?: TierContext, floor?: { tier: 0 | 1 | 2; reasons: readonly string[] }) {
+  return realClassifyTier(input.material === undefined ? { ...input, material: materialFor(input) } : input, context, floor);
 }

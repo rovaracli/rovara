@@ -10,8 +10,8 @@ import { reflectSubject } from "../../../packages/broker/src/lessons/reflect.js"
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 import { BASELINE_DAILY_GROWTH, baselineOf, noteCandidateSources } from "../../../packages/broker/src/lessons/sources.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { classifyTier, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
-import { Alerts, Audit, Clock, KEY, uniqueDraft, MemoryVectors, ScriptedModel, Spend, candidateJson, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier } from "./lesson-helpers.js";
+import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
+import { Alerts, Audit, Clock, KEY, uniqueDraft, MemoryVectors, ScriptedModel, Spend, candidateJson, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts } from "./lesson-helpers.js";
 
 const DAY = 86_400_000;
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
@@ -21,7 +21,7 @@ function pipeline(store = new InMemoryLessonStore(), clock = new Clock()) {
   let n = 0;
   const alerts = new Alerts();
   const audit = new Audit();
-  const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, alerts, now: clock.now, verifier: verifier("valid"), settings: settings(), newId: () => `les_r3${String(++n).padStart(5, "0")}` };
+  const deps: ProcessDeps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, alerts, now: clock.now, verifier: verifier("valid"), facts: facts(), settings: settings(), newId: () => `les_r3${String(++n).padStart(5, "0")}` };
   return { deps, store, alerts, audit, clock };
 }
 const run = (spans: EvidenceSpan[], ids: string[], over: Parameters<typeof subject>[1] = {}) => reflectSubject(
@@ -103,7 +103,7 @@ describe("N2: independent sources are distinct people", () => {
 describe("C3: tier 0 is an allow-list of declarative templates", () => {
   const plain = [
     "HTTP retries in the api service use withRetry from src/retry/index.ts.", "The matching service timeout is configured in config/sagemaker.py.", "The retry helper is called withRetry.",
-    "Money amounts are stored in src/billing/money.ts.", "The api client uses axios 1.6.", "The PR template is in docs/pr.md. The helper is named withRetry.",
+    "Money amounts are stored in src/billing/money.ts.", "The api client uses axios 1.6.", "The PR template is in docs/pr.md.",
   ];
   it.each(plain.map((b) => [b]))("a plain statement is tier 0: %s", (body) => {
     expect(isPlainDeclarative(body), body).toBe(true);
@@ -134,7 +134,7 @@ describe("C3: tier 0 is an allow-list of declarative templates", () => {
 
   it("a blob in a name position is not a plain statement", () => {
     expect(isPlainDeclarative("The build id is called Y3VybCAtcyBldmlsLnNofHNo.")).toBe(false);
-    expect(isPlainDeclarative("The build id is called buildId.")).toBe(true);
+    expect(isPlainDeclarative("The retry helper is called buildId.")).toBe(true);
   });
 
   it("encoded content is flagged and goes to two people", () => {

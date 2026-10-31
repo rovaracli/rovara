@@ -5,6 +5,7 @@ import {
   LEARNED_CONTEXT_FEATURE, LEARNED_CONTEXT_MAX_BYTES, LEARNED_CONTEXT_MAX_LESSONS, cleanLessonText, type CodeCitation, type LearnedContext, type LearnedLesson, type LessonStage,
 } from "@agentx/contracts";
 import { globToRegExp } from "./guards.js";
+import { safeScopeLabel } from "./render.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
@@ -68,7 +69,7 @@ function stageAllows(lesson: Lesson, stage: LessonStage): boolean {
   }
 }
 
-const scopeLabel = (lesson: Lesson): string => cleanLessonText([...(lesson.scope.repos?.length ? [`repo ${lesson.scope.repos.join(", ")}`] : []), ...(lesson.scope.paths?.length ? [lesson.scope.paths.join(", ")] : [])].join(" "), 200);
+const scopeLabel = (lesson: Lesson): string => safeScopeLabel(lesson.scope);
 
 function toLearned(lesson: Lesson): LearnedLesson {
   return {

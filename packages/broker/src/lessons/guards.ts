@@ -98,11 +98,11 @@ const IMPERATIVE_START = /^(?:use|run|call|add|set|make|keep|avoid|never|always|
  */
 const FIXED_WORDS: ReadonlySet<string> = new Set((
   "the a an of for in on at under and or to by with from api http json yaml sql html css url id ids pr " +
-  "service helper module package library client server config configuration setting option flag timeout limit retry handler function class method endpoint route model schema table queue cache " +
-  "worker job parser validator formatter logger logging utility wrapper adapter interface type constant default value field file directory folder repo repository code data request response " +
-  "database db billing matching money amount cent date time name template test fixture script version release build workflow pipeline component screen page view store state event message " +
-  "error exception result input output param parameter argument key token session user account customer order payment invoice item list array map set string number boolean object " +
-  "layer shared common base core internal public private main module middleware plugin hook feature metric report query command cli app web mobile backend frontend project team policy rule"
+  "service helper module package library client server config configuration setting option flag timeout limit retry handler function class method endpoint route model schema table queue " +
+  "worker job parser validator formatter logger utility wrapper adapter interface type constant default value field file directory folder repo repository code data response " +
+  "database db billing matching money amount cent date time name template test fixture script version workflow pipeline component screen page state event " +
+  "error exception result input output param parameter argument key token session user account customer payment invoice item array string number boolean object " +
+  "layer shared common base core internal public private middleware plugin feature metric app web mobile backend frontend project team policy rule"
 ).split(/\s+/u));
 const CONNECTIVE: ReadonlySet<string> = new Set(["is", "are", "use", "uses", "called", "named", "known", "as", "lives", "live", "located", "stored", "defined", "configured", "implemented", "declared", "built", "depends", "inside"]);
 
@@ -125,8 +125,10 @@ const knownWord = (word: string, vocab: ReadonlySet<string>): boolean => {
 const SLOT_CHARS = /^[A-Za-z0-9 _'-]{1,80}$/u;
 /** A slot (the thing of a template) holds at most nine words, from the closed character set, every one of them accepted by `knownWord`. */
 export function isPlainSlot(slot: string, vocab: ReadonlySet<string>): boolean {
-  const words = slot.trim().split(/\s+/u).filter((w) => w !== "");
-  return words.length >= 1 && words.length <= 9 && SLOT_CHARS.test(slot.trim()) && words.every((w) => knownWord(w.replace(/^'+|'+$/gu, ""), vocab));
+  const words = slot.trim().split(/\s+/u).filter((w) => w !== "").map((w) => w.replace(/^'+|'+$/gu, ""));
+  // At most two words may come from the lesson's code; every other word is on the fixed list.
+  const fromCode = words.filter((w) => !knownWord(w, new Set()));
+  return words.length >= 1 && words.length <= 9 && SLOT_CHARS.test(slot.trim()) && fromCode.length <= 2 && words.every((w) => knownWord(w, vocab));
 }
 
 /** A title is a short noun phrase made only of accepted words (the closed list plus the lesson's own cited words, and the template verbs): no instruction, no path. */
@@ -158,6 +160,30 @@ function plainToken(token: string, kind: "name" | "path"): boolean {
   return kind === "name" || segments.length > 0;
 }
 const isNameTemplate = (template: RegExp): boolean => template === TEMPLATES[1];
+export interface ParsedFact { kind: "location" | "name" | "uses"; thing: string; name?: string; version?: string; path?: string }
+/** One declarative sentence in one of the three templates, split into its slots (no vocabulary or code checks here). Undefined for anything else. */
+export function parseDeclarative(text: string): ParsedFact | undefined {
+  const folded = normaliseForScan(text).replace(/[`"\u201C\u201D]/gu, "").trim();
+  if (folded === "" || folded.length > 200 || /[\n\r]/u.test(folded) || hasEncodedBlob(folded)) return undefined;
+  const sentences = folded.split(/[.!?](?:\s+|$)/u).map((s) => s.trim()).filter((s) => s !== "");
+  if (sentences.length !== 1) return undefined;
+  const sentence = sentences[0]!;
+  for (const [index, template] of TEMPLATES.entries()) {
+    const m = template.exec(sentence);
+    if (m === null) continue;
+    const thing = (m.groups?.thing ?? "").trim();
+    if (THING_FORBIDDEN.test(thing.replace(/\b(?:retries|uses?)\b/giu, "")) || IMPERATIVE_START.test(thing)) continue;
+    const tokens = m.slice(1).filter((t): t is string => t !== undefined && t !== m.groups?.thing);
+    if (index === 0) return { kind: "location", thing, path: tokens[0]! };
+    if (index === 1) return { kind: "name", thing, name: tokens[0]! };
+    const version = /\s(?:v|version )?(\d+(?:\.\d+){0,2})(?:\s|$)/iu.exec(sentence.slice(sentence.indexOf(tokens[0]!) + tokens[0]!.length))?.[1];
+    const path = tokens.length > 1 ? tokens[tokens.length - 1] : undefined;
+    return { kind: "uses", thing, name: tokens[0]!, ...(version === undefined ? {} : { version }), ...(path === undefined ? {} : { path }) };
+  }
+  return undefined;
+}
+/** plainToken for callers outside this file. */
+export const isPlainToken = (token: string, kind: "name" | "path"): boolean => plainToken(token, kind);
 export function isPlainDeclarative(text: string, vocab: ReadonlySet<string> = new Set()): boolean {
   const folded = normaliseForScan(text).replace(/[`"\u201C\u201D]/gu, "").trim();
   if (folded === "" || folded.length > 400 || /[\n\r]/u.test(folded) || hasEncodedBlob(folded)) return false;

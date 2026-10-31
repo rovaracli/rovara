@@ -67,6 +67,19 @@ export interface CorrectionJudge {
   rate(input: { lesson: Pick<Lesson, "id" | "title" | "description" | "body" | "type">; correctionKind: CorrectionKind; correctionText: string }): Promise<CorrectionRating>;
 }
 
+/**
+ * What the broker can read of the repository at a CITED commit (base objects, never a working tree) so a tier-0 lesson's words can be checked against real code.
+ * Implemented beside the citation verifier (`trusted-base-objects.ts`); `identifiers` lexes the cited lines and drops comments and string literals.
+ */
+export interface CodeFacts {
+  /** Identifier tokens of lines startLine..endLine of the file at the commit, without comments and string literals. Undefined when unreadable. */
+  identifiers(input: { workspaceId: string; repo: string; commit: string; path: string; startLine: number; endLine: number }): Promise<string[] | undefined>;
+  /** Whether the path exists in the tree at the commit; for a glob, whether its literal directory prefix does. */
+  pathExists(input: { workspaceId: string; repo: string; commit: string; path: string }): Promise<boolean | undefined>;
+  /** The project's repositories (the project's own list, not the lesson's claim). */
+  repositories(workspaceId: string, project: string): Promise<string[]>;
+}
+
 export interface LessonDeps {
   now: Clock;
   audit: LessonAuditSink;

@@ -167,3 +167,14 @@ export const LESSON_AUDIT_ACTIONS = [
   "lesson.sole_owner_exception", "lesson.citation_moved", "lesson.contradiction", "lesson.withdrawn", "lesson.promote_failed", "lesson.held_source_paused",
 ] as const;
 export type LessonAuditAction = (typeof LESSON_AUDIT_ACTIONS)[number];
+
+/** Marks that stand for a removed person in stored text; they are not people. */
+export const ERASED_MARK = "erased";
+/** Every person a version names: its authors, `member:` source keys, and anyone who approved or asked to promote it. System and erased marks are not people. */
+export const peopleOf = (l: Pick<Lesson, "provenance" | "approvals" | "promotionApprovals">): string[] => [
+  ...l.provenance.authors, ...[...l.provenance.sources, ...l.provenance.inputSources].filter((s) => s.startsWith("member:")).map((s) => s.slice("member:".length)),
+  ...l.approvals.map((a) => a.by), ...(l.promotionApprovals ?? []).map((a) => a.by),
+].filter((p) => p !== ERASED_MARK && !p.startsWith("system:"));
+/** Every record row a version rests on: its source events and the record citations. */
+export const recordIdsOf = (l: Pick<Lesson, "provenance" | "citations">): string[] =>
+  [...l.provenance.sourceEvents, ...l.citations.flatMap((c) => (c.kind === "record" ? [c.eventId] : []))];

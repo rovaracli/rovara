@@ -2,15 +2,15 @@
 import { describe, expect, it } from "vitest";
 import { hasEscalationWords, requestsCapabilityChange } from "../../../packages/broker/src/lessons/guards.js";
 import { DEFAULT_APPROVAL_POLICY, DEFAULT_LEARNING_MODE, approversRequired, learningCaps, modeAllows, resolveLearning } from "../../../packages/broker/src/lessons/policy.js";
-import { classifyTier, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
-import { draft, lessonRecord, settings } from "./lesson-helpers.js";
+import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
+import { draft, lessonRecord, settings, classifyTier } from "./lesson-helpers.js";
 
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
 const input = (over: Partial<TierInput> = {}): TierInput => ({ ...draft(), citationChecks: valid, ...over });
 
 describe("tier rules (design §4.5.3)", () => {
   it("tier 0: a cited fact from a trusted source, one repo, safe stages, verified citations", () => {
-    expect(classifyTier(input())).toEqual({ tier: 0, reasons: ["cited_fact"] });
+    expect(classifyTier(input())).toMatchObject({ tier: 0, reasons: ["cited_fact"] });
     expect(classifyTier(input({ provenance: { minTrust: "rovara", audience: { kind: "project" } } })).tier).toBe(0);
   });
 

@@ -15,8 +15,10 @@
 import { emitAudit } from "./policy.js";
 import type { LessonAuditSink, LessonVectors } from "./ports.js";
 import { pendingExpiry } from "./expiry.js";
-import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
-import type { Lesson, LessonCitation } from "./types.js";
+import { randomUUID } from "node:crypto";
+import { nextVersion, type DeletionIntent, type LessonStore, type ScopeKey } from "./store.js";
+import { ERASED_MARK, peopleOf, recordIdsOf, type Lesson, type LessonCitation } from "./types.js";
+export { ERASED_MARK };
 
 export type DeletionCause = "sources_deleted" | "source_deleted" | "person_erased";
 export interface ErasedPerson { developerId: string }
@@ -28,21 +30,16 @@ export interface LessonDeletionPort {
   affected(orgId: string, project: string, deleted: ReadonlySet<string>, erased?: ErasedPerson): Promise<LessonForDeletion[]>;
   withdraw(orgId: string, project: string, lessonId: string, cause: string): Promise<void>;
   forgetSources(orgId: string, project: string, lessonId: string, deleted: ReadonlySet<string>, cause?: DeletionCause, erased?: ErasedPerson): Promise<void>;
+  /** Finishes every deletion that was started and not finished (a retry, or a sweeper): the original intent is resumed, never switched. Returns how many it finished. */
+  resumePending(orgId: string, project: string): Promise<number>;
   /** The whole erasure of one person in one project: purge what they wrote or alone support, scrub them from the rest. Returns what was purged and scrubbed. */
   erasePerson(orgId: string, project: string, erased: ErasedPerson, deleted: ReadonlySet<string>): Promise<{ purged: string[]; scrubbed: string[] }>;
 }
 
 const DONE: ReadonlySet<string> = new Set(["withdrawn", "retired", "rejected"]);
 const MAX_TRIES = 3;
-export const ERASED_MARK = "erased";
 
-const recordIds = (lesson: Pick<Lesson, "provenance" | "citations">): string[] =>
-  [...lesson.provenance.sourceEvents, ...lesson.citations.flatMap((c) => (c.kind === "record" ? [c.eventId] : []))];
-/** Every person a version names: its authors, `member:` source keys, and anyone who approved or asked to promote it. System and erased marks are not people. */
-const peopleOf = (l: Lesson): string[] => [
-  ...l.provenance.authors, ...[...l.provenance.sources, ...l.provenance.inputSources].filter((s) => s.startsWith("member:")).map((s) => s.slice("member:".length)),
-  ...l.approvals.map((a) => a.by), ...(l.promotionApprovals ?? []).map((a) => a.by),
-].filter((p) => p !== ERASED_MARK && !p.startsWith("system:"));
+const recordIds = recordIdsOf;
 const mentions = (l: Lesson, dev: string): boolean => peopleOf(l).includes(dev);
 
 /** A lesson with everything ever stored for it: the head and every version. Deletion and erasure judge the whole history, never only the current version. */
@@ -71,11 +68,12 @@ export function scrubLesson(lesson: Lesson, deleted: ReadonlySet<string>, dev?: 
   return out;
 }
 
-export interface DeletionDeps { store: LessonStore; vectors: LessonVectors; audit: LessonAuditSink; now: () => number }
+export interface DeletionDeps { store: LessonStore; vectors: LessonVectors; audit: LessonAuditSink; now: () => number; newId?: () => string }
 
 export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
   const key = (orgId: string, project: string): ScopeKey => ({ workspaceId: orgId, project });
   const everyVersion = (k: ScopeKey, id: string, fn: (l: Lesson) => Lesson) => deps.store.scrub(k, id, fn);
+  const stripAllRecords = (l: Lesson): Lesson => scrubLesson(l, new Set(recordIds(l)));
 
   /** The one walk over history: every stored head of the project, with all its versions, whether or not a rollback dropped it from the current set. */
   async function histories(k: ScopeKey): Promise<LessonHistory[]> {
@@ -98,82 +96,102 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
     return wrote || allGone || (people.size > 0 && [...people].every((p) => p === dev));
   }
 
-  async function purge(orgId: string, project: string, lessonId: string, cause: string): Promise<void> {
-    const k = key(orgId, project);
-    await deps.store.purge(k, lessonId);
-    await deps.vectors.remove(orgId, project, lessonId);
-    await emitAudit(deps.audit, { action: "lesson.withdrawn", workspaceId: orgId, project, lessonId, facts: { cause, purged: true } });
+  // ---- the durable intent: written first, then idempotent steps, finished only when every step is done ----
+  const STEPS: Record<DeletionIntent["outcome"], (inSet: boolean) => string[]> = {
+    scrub: (inSet) => (inSet ? ["commit", "versions"] : ["versions"]),
+    downgrade: (inSet) => (inSet ? ["commit", "versions"] : ["versions"]),
+    withdraw: (inSet) => (inSet ? ["commit", "versions", "tombstone", "vector"] : ["versions", "tombstone", "vector"]),
+    purge: () => ["vector", "rows"],
+  };
+  /** The one rewrite of a lesson for an intent. Pure and idempotent, so the head commit and the in-place rewrite of every version agree. */
+  function rewrite(intent: DeletionIntent, l: Lesson): Lesson {
+    const deleted = new Set(intent.deleted);
+    if (intent.outcome === "withdraw") return { ...stripAllRecords(l), status: "withdrawn" };
+    const scrubbed = scrubLesson(l, deleted, intent.erased);
+    return intent.outcome === "downgrade" ? backToPerson(scrubbed, deps.now()) : scrubbed;
+  }
+  async function perform(k: ScopeKey, intent: DeletionIntent, step: string): Promise<void> {
+    const { workspaceId: orgId, project } = k;
+    if (step === "vector") { await deps.vectors.remove(orgId, project, intent.lessonId); return; }
+    if (step === "rows") { await deps.store.purge(k, intent.lessonId); return; }
+    if (step === "tombstone") { await deps.store.markGone(k, intent.lessonId, "withdrawn"); return; }
+    if (step === "versions") { await everyVersion(k, intent.lessonId, (l) => rewrite(intent, l)); return; }
+    // "commit": one conditional write that carries the scrub AND the decision (status, review mark) together.
+    for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
+      const fresh = await deps.store.get(k, intent.lessonId);
+      if (fresh === undefined) return;
+      const next = rewrite(intent, fresh);
+      if (JSON.stringify(next) === JSON.stringify(fresh)) return;
+      const setVersion = await deps.store.setVersion(k);
+      if ((await deps.store.commit(k, setVersion, [{ ...next, version: nextVersion(fresh, await deps.store.versions(k, intent.lessonId)), updatedAt: deps.now() }], deps.now())).ok) return;
+    }
+    throw new Error("deletion step not committed");
+  }
+  async function execute(k: ScopeKey, intent: DeletionIntent): Promise<void> {
+    for (const step of STEPS[intent.outcome](intent.inSet)) {
+      if (intent.done.includes(step)) continue;
+      await perform(k, intent, step);
+      intent.done.push(step);
+      await deps.store.putIntent(k, intent);
+    }
+    intent.finished = true;
+    await deps.store.putIntent(k, intent);
+    if (intent.outcome === "withdraw" || intent.outcome === "purge") {
+      await emitAudit(deps.audit, { action: "lesson.withdrawn", workspaceId: k.workspaceId, project: k.project, lessonId: intent.lessonId, facts: { cause: intent.cause, ...(intent.outcome === "purge" ? { purged: true } : {}) } });
+    }
+  }
+  /** Starts an intent: the fence first (so a stale writer cannot put anything back), then the record, then the steps. */
+  async function start(k: ScopeKey, partial: Omit<DeletionIntent, "id" | "done" | "finished" | "at">): Promise<void> {
+    // A deletion that was started and not finished is finished first, as it was decided.
+    for (const open of await deps.store.listIntents(k, { finished: false })) if (open.lessonId === partial.lessonId) await execute(k, open);
+    await deps.store.fence(k, { ...(partial.erased === undefined ? {} : { people: [partial.erased] }), ids: partial.deleted });
+    const intent: DeletionIntent = { ...partial, id: (deps.newId ?? randomUUID)(), done: [], finished: false, at: deps.now() };
+    await deps.store.putIntent(k, intent);
+    await execute(k, intent);
   }
 
-  /** All or nothing: if the status change cannot be committed, NOTHING else changes (no scrub, no tombstone, no vector removal) and the call fails. */
+  async function purge(orgId: string, project: string, lessonId: string, cause: string, erased?: string, deleted: readonly string[] = []): Promise<void> {
+    const k = key(orgId, project);
+    await start(k, { lessonId, kind: "purge", cause, deleted: [...deleted], ...(erased === undefined ? {} : { erased }), outcome: "purge", inSet: false });
+  }
+
   async function withdraw(orgId: string, project: string, lessonId: string, cause: string): Promise<void> {
     if (cause === "person_erased") return purge(orgId, project, lessonId, cause);
     const k = key(orgId, project);
     const h = await historyOf(k, lessonId);
     if (h === undefined) return;
-    if (h.head.status !== "withdrawn") {
-      if (h.inSet) {
-        let done = false;
-        for (let attempt = 0; attempt < MAX_TRIES && !done; attempt += 1) {
-          const lesson = await deps.store.get(k, lessonId);
-          if (lesson === undefined) break;
-          const setVersion = await deps.store.setVersion(k);
-          done = (await deps.store.commit(k, setVersion, [{ ...lesson, version: nextVersion(lesson, await deps.store.versions(k, lessonId)), status: "withdrawn", updatedAt: deps.now() }], deps.now())).ok;
-        }
-        if (!done) throw new Error("withdraw not committed");
-      } else {
-        // Outside the current set a commit would bring it back in: its head and versions are marked in place.
-        await everyVersion(k, lessonId, (l) => ({ ...l, status: "withdrawn" }));
-      }
-      await emitAudit(deps.audit, { action: "lesson.withdrawn", workspaceId: orgId, project, lessonId, facts: { cause } });
+    if (h.head.status === "withdrawn" && !h.all.some((l) => recordIds(l).length > 0)) {
+      // Already withdrawn and clean: only the idempotent cleanup, with no new intent and no second audit record.
+      await deps.store.markGone(k, lessonId, "withdrawn");
+      await deps.vectors.remove(orgId, project, lessonId);
+      return;
     }
-    // Nothing is left to rest on: the record sources go from every version, the lesson cannot be restored by a rollback, and its vector is removed.
-    await everyVersion(k, lessonId, (l) => scrubLesson(l, new Set(recordIds(l))));
-    await deps.store.markGone(k, lessonId, "withdrawn");
-    await deps.vectors.remove(orgId, project, lessonId);
+    await start(k, { lessonId, kind: "withdraw", cause, deleted: [...new Set(h.all.flatMap(recordIds))], outcome: "withdraw", inSet: h.inSet });
   }
 
   async function forgetSources(orgId: string, project: string, lessonId: string, deleted: ReadonlySet<string>, cause: DeletionCause = "sources_deleted", erased?: ErasedPerson): Promise<void> {
     const k = key(orgId, project);
+    // Finish anything left half-done for this lesson, as it was decided, before looking at it again.
+    for (const open of await deps.store.listIntents(k, { finished: false })) if (open.lessonId === lessonId) await execute(k, open);
     const h = await historyOf(k, lessonId);
     if (h === undefined) return;
+    const dev = erased?.developerId;
     if (cause === "person_erased") {
-      const dev = erased?.developerId;
       if (!namesDeleted(h, deleted) && (dev === undefined || !h.all.some((l) => mentions(l, dev)))) return;
-      if (restsOnPerson(h, deleted, dev)) return purge(orgId, project, lessonId, cause);
-      await everyVersion(k, lessonId, (l) => scrubLesson(l, deleted, dev));
+      if (restsOnPerson(h, deleted, dev)) return purge(orgId, project, lessonId, cause, dev, [...deleted]);
+      await start(k, { lessonId, kind: "forget", cause, deleted: [...deleted], ...(dev === undefined ? {} : { erased: dev }), outcome: "scrub", inSet: h.inSet });
       return;
     }
     if (!namesDeleted(h, deleted)) return;
-    // A lesson that is finished (retired, rejected, withdrawn) is only scrubbed, in every version.
-    if (DONE.has(h.head.status)) { await everyVersion(k, lessonId, (l) => scrubLesson(l, deleted)); return; }
+    // The decision is made ONCE, here, before any write, and is stored with the intent: a retry never decides again from a half-written lesson.
     const lesson = h.head;
-    const hadSources = h.all.some((l) => l.provenance.sourceEvents.length > 0);
-    const remaining = scrubLesson(lesson, deleted);
-    const empty = hadSources && remaining.provenance.sourceEvents.length === 0;
-    const supported = empty && supportedByCode(lesson);
-    if (!h.inSet) {
-      // Not in the current set: scrub in place, never commit (a commit would bring it back).
-      await everyVersion(k, lessonId, (l) => scrubLesson(l, deleted));
-      if (empty && !supported) await withdraw(orgId, project, lessonId, "sources_deleted");
-      else if (supported) await everyVersion(k, lessonId, (l) => backToPerson(l, deps.now()));
-      return;
+    let outcome: DeletionIntent["outcome"] = "scrub";
+    if (!DONE.has(lesson.status)) {
+      const hadSources = h.all.some((l) => l.provenance.sourceEvents.length > 0);
+      const empty = hadSources && scrubLesson(lesson, deleted).provenance.sourceEvents.length === 0;
+      if (empty) outcome = supportedByCode(lesson) ? "downgrade" : "withdraw";
     }
-    for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
-      const fresh = await deps.store.get(k, lessonId);
-      if (fresh === undefined) return;
-      let next = scrubLesson(fresh, deleted);
-      // Kept on code alone: a person decides again. A lesson that was only ever auto-applied goes back to pending (its corroboration is gone).
-      if (supported) next = backToPerson(next, deps.now());
-      next = { ...next, version: nextVersion(fresh, await deps.store.versions(k, lessonId)), updatedAt: deps.now() };
-      const setVersion = await deps.store.setVersion(k);
-      if (!(await deps.store.commit(k, setVersion, [next], deps.now())).ok) continue;
-      // Old versions lose the deleted ids too: a rollback cannot restore them.
-      await everyVersion(k, lessonId, (l) => scrubLesson(l, deleted));
-      if (empty && !supported) await withdraw(orgId, project, lessonId, "sources_deleted");
-      return;
-    }
-    throw new Error("forgetSources not committed");
+    await start(k, { lessonId, kind: "forget", cause, deleted: [...deleted], outcome, inSet: h.inSet });
   }
 
   return {
@@ -191,15 +209,24 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
     },
     withdraw,
     forgetSources,
+    async resumePending(orgId, project) {
+      const k = key(orgId, project);
+      let finished = 0;
+      for (const intent of await deps.store.listIntents(k, { finished: false })) { await execute(k, intent); finished += 1; }
+      return finished;
+    },
     async erasePerson(orgId, project, erased, deleted) {
       const k = key(orgId, project);
+      // The fence goes up first: from now on no write that names this person or these rows can be committed, however stale its read.
+      await deps.store.fence(k, { people: [erased.developerId], ids: [...deleted] });
+      await this.resumePending(orgId, project);
       const purged: string[] = [];
       const scrubbed: string[] = [];
       for (const h of await histories(k)) {
         const touches = namesDeleted(h, deleted) || h.all.some((l) => mentions(l, erased.developerId));
         if (!touches) continue;
-        if (restsOnPerson(h, deleted, erased.developerId)) { await purge(orgId, project, h.head.id, "person_erased"); purged.push(h.head.id); continue; }
-        await everyVersion(k, h.head.id, (l) => scrubLesson(l, deleted, erased.developerId));
+        if (restsOnPerson(h, deleted, erased.developerId)) { await purge(orgId, project, h.head.id, "person_erased", erased.developerId, [...deleted]); purged.push(h.head.id); continue; }
+        await start(k, { lessonId: h.head.id, kind: "forget", cause: "person_erased", deleted: [...deleted], erased: erased.developerId, outcome: "scrub", inSet: h.inSet });
         scrubbed.push(h.head.id);
       }
       await deps.store.forgetSource(k, `member:${erased.developerId}`);

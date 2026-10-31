@@ -6,11 +6,24 @@
 //   - counters and expiry bookkeeping change in place (`mutate`) without a new version.
 // Every key carries the workspace and the project, so one workspace's call can never read or change another's lessons.
 import { CHANGE_APPROVAL_TTL_DAYS } from "@agentx/contracts";
-import { LessonSchema, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
+import { LessonSchema, peopleOf, recordIdsOf, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
 import type { LessonStage } from "@agentx/contracts";
 
 export interface ScopeKey { workspaceId: string; project: string }
-export type CommitResult = { ok: true; setVersion: number; /** Lessons a rollback brought back; each comes back needing a person. */ restored?: string[] } | { ok: false; reason: "conflict" };
+export type CommitResult = { ok: true; setVersion: number; /** Lessons a rollback brought back; each comes back needing a person. */ restored?: string[] } | { ok: false; reason: "conflict" | "erased" };
+
+/**
+ * A durable record of a multi-step deletion (forget, withdraw, purge). It is written BEFORE the first step and marked finished only after the last, and each
+ * step is idempotent, so a retry or a sweeper resumes the ORIGINAL intent: it never switches it (for example from keep to withdraw), and nothing is orphaned.
+ */
+export interface DeletionIntent {
+  id: string; lessonId: string; kind: "forget" | "withdraw" | "purge"; cause: string; deleted: string[]; erased?: string;
+  /** Decided once, before any write: scrub only, kept on code alone (back to a person), withdrawn, or hard-deleted. */
+  outcome: "scrub" | "downgrade" | "withdraw" | "purge";
+  /** Whether the lesson was in the current set when the intent was made (decides commit versus in-place rewrite). */
+  inSet: boolean;
+  done: string[]; finished: boolean; at: number;
+}
 
 export interface LoadManifestEntry {
   id: string; version: number; score: number; why: "scope" | "similar" | "path";
@@ -62,6 +75,15 @@ export interface LessonStore {
   purge(key: ScopeKey, id: string): Promise<void>;
   /** Forgets a source's counters and its pause (erasure of a person, deletion of a channel). */
   forgetSource(key: ScopeKey, source: string): Promise<void>;
+  /**
+   * The fence of a deletion or an erasure, written BEFORE anything is removed: a person is erased, or record ids are deleted. A commit that carries an erased
+   * person or a deleted id is refused (a writer that read before the scrub cannot put them back). The Dynamo store does this with a conditional write on the
+   * project's fence item.
+   */
+  fence(key: ScopeKey, fence: { people?: readonly string[]; ids?: readonly string[] }): Promise<void>;
+  putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void>;
+  getIntent(key: ScopeKey, id: string): Promise<DeletionIntent | undefined>;
+  listIntents(key: ScopeKey, filter?: { finished?: boolean }): Promise<DeletionIntent[]>;
   /** One candidate from a source (for the source's own baseline). */
   recordSourceEvent(key: ScopeKey, event: { at: number; source: string }): Promise<void>;
   /** Candidates per day from one source, newest day first (index 0 is the last 24 hours). */
@@ -79,6 +101,7 @@ interface ProjectState {
   manifests: Map<string, LoadManifest>; once: Set<string>; pending: Map<string, PendingOutcome>; flags: ProjectFlags;
   sourceEvents: Array<{ at: number; source: string }>;
   gone: Map<string, "withdrawn" | "purged">;
+  erased: Set<string>; deletedIds: Set<string>; intents: Map<string, DeletionIntent>;
 }
 
 export class InMemoryLessonStore implements LessonStore {
@@ -88,7 +111,7 @@ export class InMemoryLessonStore implements LessonStore {
     const id = scopeId(key);
     let value = this.state.get(id);
     if (value === undefined) {
-      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map() };
+      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map(), erased: new Set(), deletedIds: new Set(), intents: new Map() };
       this.state.set(id, value);
     }
     return value;
@@ -127,6 +150,8 @@ export class InMemoryLessonStore implements LessonStore {
       const existing = s.versions.get(lesson.id)?.at(-1);
       if (lesson.version !== (existing?.version ?? 0) + 1) return { ok: false, reason: "conflict" };
       if (staged.some((x) => x.id === lesson.id)) throw new Error("one commit writes a lesson once");
+      // The fence: nothing that names an erased person or a deleted record may be written back, whatever the writer read earlier.
+      if (s.gone.get(lesson.id) === "purged" || peopleOf(lesson).some((p) => s.erased.has(p)) || recordIdsOf(lesson).some((id) => s.deletedIds.has(id))) return { ok: false, reason: "erased" };
       staged.push(lesson);
     }
     const members = new Map(s.members);
@@ -160,6 +185,9 @@ export class InMemoryLessonStore implements LessonStore {
       const fate = s.gone.get(m.id);
       if (fate === "purged") continue;
       if (fate === "withdrawn") { const head = s.heads.get(m.id); if (head !== undefined) members.set(m.id, head.version); continue; }
+      // A lesson a person retired (or that was rejected) is not brought back by a rollback.
+      const head = s.heads.get(m.id);
+      if (head !== undefined && (head.status === "retired" || head.status === "rejected")) { members.set(m.id, head.version); continue; }
       const content = s.versions.get(m.id)?.find((v) => v.version === m.version);
       if (content === undefined) return { ok: false, reason: "conflict" };
       const current = s.heads.get(m.id);
@@ -168,6 +196,14 @@ export class InMemoryLessonStore implements LessonStore {
       if (current !== undefined) for (const field of [...USAGE_FIELDS, "expiresAt"]) (restored as Record<string, unknown>)[field] = clone((current as Record<string, unknown>)[field]);
       // A rollback never restores approval. Automatic approval is dropped and the lesson comes back needing a person; without a person's approval it is pending, so it
       // is not loaded until the normal tier check and approval have run again.
+      // A tier can only rise: the restored tier is the higher of the old version's and the head's, with the reasons of both, and a contradiction stays flagged.
+      if (current !== undefined) {
+        restored.tier = Math.max(restored.tier, current.tier) as Lesson["tier"];
+        restored.tierReasons = [...new Set([...restored.tierReasons, ...current.tierReasons])].slice(0, 12);
+        if (current.contradictsWith !== undefined) restored.contradictsWith = current.contradictsWith;
+        // Approval given for a lower tier does not carry to a higher one.
+        if (restored.tier > content.tier) restored.approvals = [];
+      }
       restored.approvals = restored.approvals.filter((a) => a.mode !== "auto");
       restored.reviewRequired = true;
       if ((restored.status === "active" || restored.status === "stale") && restored.approvals.length === 0) { restored.status = "pending"; restored.pendingExpiresAt = at + CHANGE_APPROVAL_TTL_DAYS * DAY; }
@@ -221,6 +257,16 @@ export class InMemoryLessonStore implements LessonStore {
       s.flags = { ...s.flags, pausedSources: rest };
     }
   }
+  async fence(key: ScopeKey, fence: { people?: readonly string[]; ids?: readonly string[] }): Promise<void> {
+    const s = this.of(key);
+    for (const p of fence.people ?? []) s.erased.add(p);
+    for (const id of fence.ids ?? []) s.deletedIds.add(id);
+  }
+  async putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void> { this.of(key).intents.set(intent.id, clone(intent)); }
+  async getIntent(key: ScopeKey, id: string): Promise<DeletionIntent | undefined> { const i = this.of(key).intents.get(id); return i === undefined ? undefined : clone(i); }
+  async listIntents(key: ScopeKey, filter?: { finished?: boolean }): Promise<DeletionIntent[]> {
+    return [...this.of(key).intents.values()].filter((i) => filter?.finished === undefined || i.finished === filter.finished).map(clone).sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  }
   async putManifest(manifest: LoadManifest): Promise<boolean> {
     const s = this.of(manifest);
     const id = `${manifest.taskId}#${manifest.stage}#${manifest.round}`;
@@ -236,6 +282,8 @@ export class InMemoryLessonStore implements LessonStore {
     const id = `${manifest.taskId}#${manifest.stage}#${manifest.round}`;
     if (s.manifests.has(id)) s.manifests.set(id, clone(manifest));
   }
+  /** For tests: the names of the idempotency keys written so far. */
+  onceNames(key: ScopeKey): string[] { return [...this.of(key).once]; }
   async markOnce(key: ScopeKey, name: string): Promise<boolean> {
     const s = this.of(key);
     if (s.once.has(name)) return false;

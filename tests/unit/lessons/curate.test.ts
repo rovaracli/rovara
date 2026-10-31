@@ -211,8 +211,8 @@ describe("atomic delta writes and rollback", () => {
     const v1 = await store.setVersion(KEY);
     const head = (await store.get(KEY, "les_aaaa1111"))!;
     await store.mutate(KEY, "les_aaaa1111", (l) => ({ counters: { ...l.counters, helpful: 4 } }));
-    await store.commit(KEY, v1, [{ ...head, version: nextVersion(head, await store.versions(KEY, head.id)), title: "Changed", status: "retired" }, lessonRecord({ id: "les_bbbb2222" })], 2);
-    expect((await store.get(KEY, "les_aaaa1111"))).toMatchObject({ title: "Changed", status: "retired", version: 2 });
+    await store.commit(KEY, v1, [{ ...head, version: nextVersion(head, await store.versions(KEY, head.id)), title: "Changed" }, lessonRecord({ id: "les_bbbb2222" })], 2);
+    expect((await store.get(KEY, "les_aaaa1111"))).toMatchObject({ title: "Changed", version: 2 });
     expect((await store.get(KEY, "les_aaaa1111"))!.counters.helpful).toBe(4);
     const current = await store.setVersion(KEY);
     expect(await store.rollback(KEY, v1, current, 3)).toEqual({ ok: true, setVersion: current + 1, restored: ["les_aaaa1111"] });

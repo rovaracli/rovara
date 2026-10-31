@@ -4,7 +4,8 @@ import { AuditUnavailable, activateLesson } from "./approve.js";
 import { curateDraft, type CurateDeps, type CurateOutcome } from "./curate.js";
 import { pendingExpiry } from "./expiry.js";
 import { approversRequired, emitAudit, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
-import type { CitationVerifier } from "./ports.js";
+import type { CitationVerifier, CodeFacts } from "./ports.js";
+import { gatherMaterial } from "./material.js";
 import { attributableSources, clearSourcePause, isHeldBySource } from "./sources.js";
 import { lessonValue } from "./value.js";
 import { isCorroborated } from "./value.js";
@@ -14,7 +15,7 @@ import { nextVersion, type ScopeKey } from "./store.js";
 import { classifyTier, type TierContext } from "./tier.js";
 import type { Lesson } from "./types.js";
 
-export interface ProcessDeps extends CurateDeps { verifier: CitationVerifier; settings: LearningSettingsReader }
+export interface ProcessDeps extends CurateDeps { verifier: CitationVerifier; facts: CodeFacts; settings: LearningSettingsReader }
 const VERIFY_TIMEOUT_MS = 3000;
 
 /**
@@ -71,7 +72,9 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     // A refinement is at least as risky as the lesson it replaces. A lesson already tiered keeps its tier and reasons: settling again only raises.
     const superseded = current.supersedes === undefined ? undefined : await deps.store.get(key, current.supersedes);
     if (superseded !== undefined) context.supersedesTier = superseded.tier;
-    const decision = classifyTier(verified, context, current.tierReasons.length > 0 ? { tier: current.tier, reasons: current.tierReasons } : undefined);
+    // What the renderer may rely on: identifiers and paths read from the repository at the cited commit.
+    const material = await gatherMaterial(deps.facts, verified);
+    const decision = classifyTier({ ...verified, ...(material === undefined ? {} : { material }) }, context, current.tierReasons.length > 0 ? { tier: current.tier, reasons: current.tierReasons } : undefined);
     const now = deps.now();
     const setVersion = await deps.store.setVersion(key);
     const version = nextVersion(current, await deps.store.versions(key, lessonId));
@@ -90,7 +93,7 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     // A higher tier than before means earlier approvals were for less risk: they no longer count.
     const approvals = decision.tier > current.tier ? [] : current.approvals;
     const next: Lesson = {
-      ...verified, version, tier: decision.tier, tierReasons: decision.reasons.slice(0, 12), approvals, updatedAt: now,
+      ...verified, ...(decision.tier === 0 && decision.rendered !== undefined ? { title: decision.rendered.title, description: decision.rendered.description, body: decision.rendered.body } : {}), version, tier: decision.tier, tierReasons: decision.reasons.slice(0, 12), approvals, updatedAt: now,
       ...(options.noAutoApply === true || held || current.reviewRequired === true ? { reviewRequired: true } : {}),
       status: earned ? "pending" : "candidate", ...(earned ? { pendingExpiresAt: current.pendingExpiresAt ?? pendingExpiry(now) } : {}),
     };

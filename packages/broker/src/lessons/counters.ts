@@ -1,6 +1,7 @@
 // Learning v2 L5: helpful and harmful counters, stale handling and auto-retire (design §4.6). Counters come from outcomes (merge, send-backs, reviews,
 // reverts) and from two buttons on the task page ("Helpful", "Wrong here"). Every mark is idempotent per task and lesson. The judge model is tool-less and
 // answers a fixed code; it can only add a harmful mark or withhold a helpful one, never approve or lower a tier.
+import { createHash } from "node:crypto";
 import { resolveLearning, emitAudit, modeAllows, type LearningSettingsReader } from "./policy.js";
 import type { AlertSink, CorrectionJudge, CorrectionKind, LessonDeps } from "./ports.js";
 import { renewLesson } from "./expiry.js";
@@ -123,7 +124,7 @@ export async function recordFeedback(deps: CounterDeps, input: { workspaceId: st
   const manifests = await deps.store.manifests(key, input.taskId);
   if (!reached(manifests).has(input.lessonId)) return { ok: false, code: "not_loaded" };
   if ((await deps.store.get(key, input.lessonId)) === undefined) return { ok: false, code: "not_found" };
-  if (!(await deps.store.markOnce(key, `feedback:${input.kind}:${input.taskId}:${input.lessonId}:${input.userId}`))) return { ok: false, code: "repeat" };
+  if (!(await deps.store.markOnce(key, `feedback:${input.kind}:${input.taskId}:${input.lessonId}:${createHash("sha256").update(`${key.workspaceId}\u0001${input.userId}`).digest("hex").slice(0, 24)}`))) return { ok: false, code: "repeat" };
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
   if (input.kind === "helpful") await addHelpful(deps, key, input.lessonId, resolved.expiryDays);
   else await addHarmful(deps, key, input.lessonId, true);

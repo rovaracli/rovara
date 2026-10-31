@@ -204,3 +204,4 @@ export * from "./app-service-status.js";
 export * from "./lesson-text.js";
 export * from "./learned-context.js";
 export * from "./lesson-citation.js";
+export * from "./code-identifiers.js";

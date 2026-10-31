@@ -1,12 +1,13 @@
 // Learning v2 L3a: risk tiers (design §4.5.3). Evaluated by code. The classifier flags (escalation words, the judge's escalate flag, reviewer stages)
 // can only raise a tier, never lower it. A lesson that asks for a capability change, or comes from an outsider or an ineligible task, is "never".
 import { isMeaningfulAnchor } from "@agentx/contracts";
-import { isPlainTitle, vocabularyOf, hasCommandOrUrl, hasEncodedBlob, hasEscalationWords, isPlainDeclarative, requestsCapabilityChange, touchesRiskyPath } from "./guards.js";
+import { hasCommandOrUrl, hasEncodedBlob, hasEscalationWords, requestsCapabilityChange, touchesRiskyPath } from "./guards.js";
+import { renderTier0, type Tier0Text, type VerifiedMaterial } from "./render.js";
 import { isRestricted, trustAtLeast, type Lesson, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type Tier } from "./types.js";
 
 export interface TierInput {
   type: LessonType; stages: readonly LessonStage[]; scope: LessonScope; citations: readonly LessonCitation[];
-  citationChecks?: Lesson["citationChecks"]; title: string; description: string; body: string; provenance: Pick<LessonProvenance, "minTrust" | "audience">;
+  citationChecks?: Lesson["citationChecks"]; /** What was verified against the repository; without it nothing is tier 0. */ material?: VerifiedMaterial; title: string; description: string; body: string; provenance: Pick<LessonProvenance, "minTrust" | "audience">;
 }
 export interface TierContext {
   /** The lesson contradicts another; always goes to a person. */
@@ -19,7 +20,7 @@ export interface TierContext {
   supersedesTier?: Tier;
 }
 export type TierDecision =
-  | { tier: Tier; reasons: string[] }
+  | { tier: Tier; reasons: string[]; /** For tier 0: the text the agent will see. */ rendered?: Tier0Text }
   | { tier: "never"; reasons: string[]; refused: boolean };
 
 const SAFE_STAGES: ReadonlySet<LessonStage> = new Set(["UNDERSTAND", "PLAN", "IMPLEMENT"]);
@@ -49,14 +50,11 @@ function classifyBase(input: TierInput, context: TierContext): TierDecision {
   // Tier 0: a cited, factual lesson from a trusted source, small in scope. Everything else needs one person.
   const why: string[] = [];
   if (input.type !== "fact") why.push("not_a_fact");
-  // An allow-list, not a deny-list: only a plain "<thing> is in <path> / is called <name> / uses <library>" statement can go live without a person.
-  // The words a slot may repeat are the lesson's own cited material: its code paths and anchors, its scope.
-  const vocab = vocabularyOf(...input.citations.flatMap((c) => (c.kind === "code" ? [c.path, c.anchor, c.repo] : [])), ...(input.scope.paths ?? []), ...(input.scope.repos ?? []));
-  if (!isPlainDeclarative(input.body, vocab)) why.push("not_plain_declarative");
-  // The title and description reach the agent too: the description is held to the same templates, and the title is a noun phrase.
-  if (input.description.trim() !== "" && !isPlainDeclarative(input.description, vocab)) why.push("description_not_plain");
-  if (!isPlainTitle(input.title, vocab)) why.push("title_not_plain");
   if (!validCodeCitations(input)) why.push("citations_not_verified");
+  // Tier 0 is RENDERED, not stored: the agent sees only fixed wording plus slots that were checked against the cited code and the repository tree. A lesson that
+  // cannot be rendered is not tier 0, and its stored text never reaches the agent without a person.
+  const rendered = renderTier0(input, input.material);
+  if (rendered === undefined) why.push("not_plain_declarative");
   if (!trustAtLeast(input.provenance.minTrust, "rovara")) why.push("source_not_trusted");
   const repos = input.scope.repos ?? [];
   const cited = new Set(input.citations.flatMap((c) => (c.kind === "code" ? [c.repo] : [])));
@@ -64,7 +62,7 @@ function classifyBase(input: TierInput, context: TierContext): TierDecision {
   if (!input.stages.every((stage) => SAFE_STAGES.has(stage))) why.push("stage_not_allowed");
   if (context.contradiction === true) why.push("contradiction");
   if (isRestricted({ provenance: input.provenance as LessonProvenance })) why.push("restricted_source");
-  return why.length === 0 ? { tier: 0, reasons: ["cited_fact"] } : { tier: 1, reasons: why };
+  return why.length === 0 && rendered !== undefined ? { tier: 0, reasons: ["cited_fact"], rendered } : { tier: 1, reasons: why };
 }
 
 /**
@@ -77,5 +75,5 @@ export function classifyTier(input: TierInput, context: TierContext = {}, floor?
   const floors: Tier[] = [...(floor === undefined ? [] : [floor.tier]), ...(context.supersedesTier === undefined ? [] : [context.supersedesTier])];
   const tier = Math.max(base.tier, ...floors) as Tier;
   const kept = tier > 0 ? [...base.reasons.filter((r) => r !== "cited_fact"), ...(floor?.reasons ?? []).filter((r) => r !== "cited_fact"), ...(context.supersedesTier !== undefined && context.supersedesTier > base.tier ? ["supersedes_higher_tier"] : [])] : base.reasons;
-  return { tier, reasons: [...new Set(kept)].slice(0, 12) };
+  return { tier, reasons: [...new Set(kept)].slice(0, 12), ...(tier === 0 && base.tier === 0 && base.rendered !== undefined ? { rendered: base.rendered } : {}) };
 }
