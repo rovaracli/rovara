@@ -13,6 +13,7 @@ import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CON
 import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@agentx/contracts";
 import { EditionEnvironment } from "./edition-env.js";
 import { BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
+import { parseOperatorAccessContext } from "./operator-access.js";
 import { parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
@@ -133,6 +134,8 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   const enterpriseCidrs = parseEnterpriseEgressCidrs(enterpriseEgressCidrsContext, { allowPublicRanges: isTrue(app.node.tryGetContext(ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY)) });
   // The access stack holds the roles every other environment stack is deployed with, so it comes
   // first. The deployment that predates environments has none.
+  // The standing Rovara operator role (task N6): Enterprise only, and only when the install asks for it. Checked here so a wrong setting stops the synth.
+  const operatorAccess = parseOperatorAccessContext({ edition: explicitEdition, env: naming.env, workerLogGroup: naming.ec2.workerLogGroupName, get: (key) => app.node.tryGetContext(key) as unknown });
   let accessStack: AccessStack | undefined;
   if (naming.env !== undefined) {
     const region = deploymentRegion ?? "us-east-1";
@@ -146,6 +149,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       stackName: naming.stackName("access"),
       naming,
       ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }),
+      ...(operatorAccess === undefined ? {} : { operatorAccess }),
       ...(explicitEdition === "enterprise" ? { bundleImageRepositories: BUNDLE_IMAGE_NAMES.map((name) => bundleImageRepository(naming.env!, name)) } : {}),
       terminationProtection: true,
       env: { region },

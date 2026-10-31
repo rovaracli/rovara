@@ -54,6 +54,7 @@ export * from "./redaction.js";
 export * from "./review-output.js";
 export * from "./release.js";
 export * from "./bundle.js";
+export * from "./operator-access.js";
 export * from "./session.js";
 export * from "./ssm-parameters.js";
 export * from "./runtime-installation.js";

@@ -2,7 +2,7 @@
 // target release's notes and every change, deploy in upgrade order (stopping at the first failure,
 // which leaves earlier stacks upgraded and is safe to re-run), then run doctor.
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
-import { agentXError, environmentStackName } from "@agentx/contracts";
+import { agentXError, environmentStackName, isRovaraOperatorArn } from "@agentx/contracts";
 import { CONFIG_KEYS } from "../config/keys.js";
 import { CLOUD_NEEDS_CDK_MESSAGE, bootStage2ImagesProblem } from "../deploy/answer-schemas.js";
 import { progressLine, type Ask, type PreparedDeployment } from "../deploy/commands.js";
@@ -224,6 +224,11 @@ export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependenc
   if (options.exportDir === undefined && !options.yes && !deps.isInteractive()) throw agentXError("CONFIG_INVALID", "agentx upgrade needs --yes when stdin is not a terminal");
 
   const caller = await deps.identity.get();
+  // N6: the standing Rovara operator role runs upgrades of a signed bundle the customer approved, and nothing else. The bundle was verified at the top
+  // (signature, every hash); here its id must also be the one the customer approved, named on the command line.
+  if (isRovaraOperatorArn(caller.arn, env) && (bundle === undefined || options.approvedBundleSha256 === undefined)) {
+    throw agentXError("CONFIG_INVALID", "the Rovara operator role runs only `agentx upgrade --bundle <dir> --approved-bundle-sha256 <id>` for a bundle your team approved; nothing was changed");
+  }
   const operator = isOperatorRole(caller.arn, env);
   // Ruling F20: the cdk engine reads CDK's bootstrap version parameter and deploys through the
   // bootstrap roles and bucket, none of which the operator role may use.

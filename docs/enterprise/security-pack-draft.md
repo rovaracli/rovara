@@ -18,7 +18,7 @@ Marks are about the software at commit `fd7cd3c35` plus the Wave 1 work of the e
 - Models are your own Bedrock, reached through a private endpoint in your VPC. Another provider is used only if your admin adds it. [Built, not deployed] (endpoint); [Designed] (model proxy and image supply, task N2).
 - People sign in with your identity provider. Group claims decide their Rovara role, and a person in no mapped group has no access, owners included. An owner is never granted by a mapping. Sessions last at most 8 hours, so removing someone from a group takes effect within 8 hours. [Built] (evaluator, store and session cap, task I1 and the edition table); [Designed] (wiring into sign-in, which waits for task E3 to turn off the other sign-in methods; SAML task I4).
 - Rovara merges only when a person with the right role presses Merge. The merge call is made by Rovara's service identity and is audited. [Built]
-- **Who runs it.** Under the managed-VPC agreement, Rovara runs upgrades and watches the install. For that, your account holds one standing operator role that you approve and can suspend at any moment, whose every use lands in your CloudTrail and in your alert topic. The operator can trigger only the deployment of a signed bundle whose hash you approved; your own deploy role does the work. [Designed] (task N6, rescoped from a break-glass role; see appendix A, which also says what this does not promise).
+- **Who runs it.** Under the managed-VPC agreement, Rovara runs upgrades and watches the install. For that, your account holds one standing operator role that you approve and can suspend at any moment, whose every use lands in your CloudTrail and in your alert topic. The operator can trigger only the deployment of a signed bundle whose hash you approved; your own deploy role does the work. [Built, not deployed] as infrastructure code and tests (task N6, rescoped from a break-glass role; see appendix A and `docs/enterprise/operator-role.md`, which also say what this does not promise). The command that places an approved bundle and the deploy path from the approval bucket are [Designed].
 - What is not ready yet is in section 14. It is a short list and it is honest.
 
 ## 2. Architecture and data flows
@@ -124,7 +124,7 @@ Deleting at the source (for example a message) deletes everywhere, and every rec
 
 - Hash-chained ledger, owner and admin read, asynchronous export, and a third-party verifier that recomputes the chain. [Built]
 - Auditor role, and continuous export to your own S3. [Designed] (task I2 and the export design).
-- The operator role's every use is in your CloudTrail, and an alert goes to your topic on each assumption. [Designed] (task N6).
+- The operator role's every use is in your CloudTrail, and an alert goes to your topic on each assumption. [Built, not deployed] (task N6).
 
 ## 10. Supply chain and upgrades
 
@@ -171,7 +171,7 @@ A standard vendor questionnaire gets honest answers: "not certified", "not yet t
 
 ## Appendix A. Operator access under the managed-VPC agreement
 
-Decision (owner, 2026-10-30): Rovara operates the install and runs upgrades. That needs a standing role in your account, approved and audited by you, not break-glass access only. The design file's earlier text "no standing access; break-glass only" is superseded by that decision. Proposed shape, [Designed], to be built as task N6 (which was a break-glass role, disabled by default). Nothing here exists yet, and it needs your security team's review before any of it is built.
+Decision (owner, 2026-10-30): Rovara operates the install and runs upgrades. That needs a standing role in your account, approved and audited by you, not break-glass access only. The design file's earlier text "no standing access; break-glass only" is superseded by that decision. Shape approved by the owner on 31 October 2026 and built as task N6 (which was a break-glass role, disabled by default): [Built, not deployed], described in full in `docs/enterprise/operator-role.md`. It has not run in an account, and it needs your security team's agreement per install.
 
 **What the pack promises, and what it does not.** The promise that Rovara cannot read your content does not rest on a list of denied actions on one role, because code deployed to your account runs under the application's own roles, which can read every store. It rests on three things together:
 

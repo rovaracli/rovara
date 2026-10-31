@@ -346,3 +346,34 @@ describe("rovara upgrade --bundle", () => {
   });
 });
 
+
+describe("the Rovara operator role (N6) runs only approved bundles", () => {
+  const OPERATOR = "arn:aws:sts::123456789012:assumed-role/agentx-staging-rovara-operator/alice@example.com";
+  const asOperator = (bundle: BuiltBundle) => harness(bundle, { identity: { get: async () => ({ account: "123456789012", arn: OPERATOR }) } });
+
+  it("runs a bundle upgrade when the bundle's id is named and matches", async () => {
+    const bundle = await build();
+    const h = await asOperator(bundle);
+    await expect(runUpgrade(options(bundle, { approvedBundleSha256: bundle.bundleSha256 }), h.deps)).resolves.toMatchObject({ to: "1.4.0" });
+  });
+
+  it("is refused a bundle upgrade without the approved id, an unapproved id, and every non-bundle upgrade, before any change", async () => {
+    const bundle = await build();
+    const without = await asOperator(bundle);
+    await expect(runUpgrade(options(bundle), without.deps)).rejects.toThrow(/runs only `agentx upgrade --bundle/);
+    expect(without.events).toEqual([]);
+    expect([...without.store.values.keys()].some((name) => name.includes("restore-points"))).toBe(false);
+    const wrong = await asOperator(bundle);
+    await expect(runUpgrade(options(bundle, { approvedBundleSha256: "e".repeat(64) }), wrong.deps)).rejects.toThrow(/not the approved bundle/);
+    nothingTouched(wrong);
+    const plain = await asOperator(bundle);
+    await expect(runUpgrade({ env: "staging", yes: true, allowReplace: [], releaseDir: "/x" }, { ...plain.deps, loadRelease: async () => { throw new Error("must not load"); } })).rejects.toThrow(/runs only `agentx upgrade --bundle/);
+    expect(plain.events).toEqual([]);
+  });
+
+  it("is not mistaken for the customer's own operator role (a different role name)", async () => {
+    const bundle = await build();
+    const own = await harness(bundle, { identity: { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/bob" }) } });
+    await runUpgrade(options(bundle), own.deps);
+  });
+});
