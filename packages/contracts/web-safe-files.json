@@ -38,6 +38,7 @@
   "packages/contracts/src/org-budget.ts",
   "packages/contracts/src/org-slack-workspace-evidence.ts",
   "packages/contracts/src/org.ts",
+  "packages/contracts/src/outcomes.ts",
   "packages/contracts/src/pending-api.ts",
   "packages/contracts/src/project-playbook.ts",
   "packages/contracts/src/project.ts",

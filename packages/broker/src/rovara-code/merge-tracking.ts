@@ -38,6 +38,8 @@ import type { TaskOwnerSource } from "../developer/task-records.js";
 import { readCodeSettings } from "./code-settings.js";
 import { humanApprovalOf, latestReviewers, linkedAmong, requesterGithubIds, type RepositoryPermission } from "./approval.js";
 import { runReviewNudges } from "./nudges.js";
+import { changesRequestedCommits, observeCandidateCode, outcomeRoundOf, roundsOfCommits, scoreChangesRequested } from "./outcome-hooks.js";
+import type { OutcomeDependencies } from "./outcomes.js";
 
 /** The definition version whose tasks are tracked (Rovara Code version 2). Version 1 tasks keep their kind-less merge-recovery rows and today's behaviour. */
 export const TRACKED_DEFINITION_VERSION = "1.1.0";
@@ -80,7 +82,7 @@ export interface TrackedTask extends TaskOwnerSource {
   /** Who asked for the task (Plan 6 Task 19): the approval rule tells a requester's own approval from a reviewer's. */
   startedBy?: { developerId?: string | undefined } | undefined;
   /** The task's frozen agent: its recipe's digest, which an automatic decision is bound to. */
-  agent?: { digest?: string | undefined } | undefined;
+  agent?: { agentId?: string | undefined; version?: number | "draft" | undefined; digest?: string | undefined } | undefined;
 }
 
 export interface MergeTrackingDependencies {
@@ -115,6 +117,8 @@ export interface MergeTrackingDependencies {
   /** The origin session links are made from (the control plane's own): the approved milestone links to the session with it. Without it the milestone says no link. */
   origin?: string | undefined;
   log?(event: string, fields: Record<string, unknown>): void;
+  /** Track record: where a person's request for changes, a person-started feedback round and a closed-unmerged pull request are scored. Absent: nothing is recorded. */
+  outcomes?: OutcomeDependencies;
 }
 
 export class TrackingRequestCapError extends Error {
@@ -688,6 +692,33 @@ async function trackOne(
   const fields = reviewsOf(reviews);
   if (markedReady) fields.draft = false;
 
+  // Track record (best effort, after the item is written, never changes the pass): what this pass saw of the code the candidate published (its head; its checks on that head), a person's first
+  // request for changes (about the candidate whose head the review is on), and a round of fixes started from people's comments. A close is not scored here (it may be reopened), and a merge is scored
+  // where it is recorded (the webhook path), which also has the merge commit.
+  const observeOutcomes = async (): Promise<void> => {
+    if (deps.outcomes === undefined) return;
+    try {
+      const when = new Date(now).toISOString();
+      const outcomeTask = { taskId: task.taskId, orgId: task.orgId, project: task.project, agent: task.agent };
+      const currentRound = outcomeRoundOf(pullRequest.candidateDigest);
+      await observeCandidateCode(deps.outcomes, outcomeTask, {
+        candidateDigest: pullRequest.candidateDigest, head: pullRequest.headSha, ci: ci.ci, ciIsOnHead: pullRequest.headSha !== undefined && status.headSha === pullRequest.headSha, now: when,
+      });
+      if (fields.review === "changes_requested" && prior?.review !== "changes_requested") {
+        const rounds = await roundsOfCommits(deps.outcomes, outcomeTask, await changesRequestedCommits(status, permission), currentRound);
+        await scoreChangesRequested(deps.outcomes, outcomeTask, { rounds, reason: "changes_requested_by_person", now: when });
+      }
+      // A round of fixes made from people's comments (a person decided it, or Rovara's autonomy did on their comments) means a person asked for changes to the code they commented on.
+      for (const decision of task.workflow.feedbackDecisions ?? []) {
+        if (decision.decision !== "APPROVE") continue;
+        const rounds = decision.candidates.filter((binding) => binding.repositoryId === pullRequest.repositoryId && binding.number === pullRequest.number).map((binding) => outcomeRoundOf(binding.candidateDigest));
+        if (rounds.length > 0) await scoreChangesRequested(deps.outcomes, outcomeTask, { rounds, reason: "feedback_round_approved", now: when });
+      }
+    } catch (error) {
+      deps.log?.("outcomes.observe_failed", { taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
+    }
+  };
+
   // Plan 6 Task 19: an approval that counts (a person with write access who is a member and not a requester, unless the org allows self-approval, on the head) is announced once,
   // once for each approval of each head. It is judged on every pass, because an approval that did not count can start to (the org allows self-approval, the reviewer is linked to a member), and
   // the milestone's own key says whether it was said already. It uses the permissions the pass has just read, so it asks GitHub for nothing more.
@@ -760,6 +791,7 @@ async function trackOne(
           if (!isCancelled(error)) throw error;
         }
       }
+      await observeOutcomes();
       if (capped) throw new TrackingRequestCapError();
       return { changed: false, notOpen: status.state !== "open", acted: false, ...(ci.recheckAt === undefined ? {} : { recheckAt: ci.recheckAt }) };
     }
@@ -804,6 +836,7 @@ async function trackOne(
       // After the commit: the handlers are told (a failure is theirs, and the sweep tells them again).
       await deliverCodeMilestones({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task.taskId).catch(() => undefined);
     }
+    await observeOutcomes();
     if (capped) throw new TrackingRequestCapError();
     return { changed: true, notOpen: status.state !== "open", acted: action !== undefined, ...(ci.recheckAt === undefined ? {} : { recheckAt: ci.recheckAt }) };
   }

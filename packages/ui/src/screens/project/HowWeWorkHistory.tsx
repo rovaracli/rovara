@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAgentVersions } from "../../api/agents.js";
 import { useBuilderApi } from "../../api/builder.js";
-import { howWeWorkKey, useHowWeWorkApi } from "../../api/how-we-work.js";
+import { howWeWorkKey, useHowWeWork, useHowWeWorkApi } from "../../api/how-we-work.js";
 import type { SendResult } from "../../api/client.js";
 import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";
@@ -30,7 +30,7 @@ export function HowWeWorkHistory({ project, agentId, canEdit, inUse = true, onCh
 }
 function RollbackDialog({ project, agentId, version, current, opener, onClose, onChanged }: { project: string; agentId: string; version: number; current: number | undefined; opener: { current: HTMLElement | null }; onClose: () => void; onChanged: () => void }) {
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState(false), [pending, setPending] = useState<Exclude<SendResult<unknown>, { kind: "done" }>>(), [checking, setChecking] = useState(false);
- const sending = useRef(false), requestId = useRef(crypto.randomUUID()), builder = useBuilderApi(), how = useHowWeWorkApi(), query = useQueryClient(), from = current ?? "base", diff = useRecipeDiff(agentId, from, version);
+ const stages = useHowWeWork(project).data?.stages, sending = useRef(false), requestId = useRef(crypto.randomUUID()), builder = useBuilderApi(), how = useHowWeWorkApi(), query = useQueryClient(), from = current ?? "base", diff = useRecipeDiff(agentId, from, version);
  async function run() {
   if (sending.current || pending !== undefined || done || diff.isPending || diff.isError) return;
   sending.current = true;setBusy(true);setError(undefined);
@@ -53,6 +53,6 @@ function RollbackDialog({ project, agentId, version, current, opener, onClose, o
   <Button variant="primary" busy={busy} disabled={pending !== undefined || done || diff.isPending || diff.isError} onClick={() => { void run(); }}>Roll back</Button>
   {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
   {done && <p role="status">{rolledBackMessage(version)}</p>}
-  {pending !== undefined && <PendingConfirmation result={pending} checking={checking} onCheck={() => { void check(); }} />}
+  {pending !== undefined && <PendingConfirmation result={pending} checking={checking} onCheck={() => { void check(); }} stages={stages} />}
  </Dialog>;
 }

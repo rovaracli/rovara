@@ -1,4 +1,5 @@
 import { clearProjectAllowedDomainProposals } from "./project-allowed-domains-cleanup.js";
+import { clearTrackRecordData } from "./track-record-cleanup.js";
 import { approvalGrantChange, approvalCompanyChange } from "./approval-membership.js";
 import { clearWorkingBranchSaveReceipts } from "./project-working-branch-receipt-cleanup.js";
 import { budgetDocumentFence } from "./budget-snapshot.js";
@@ -588,6 +589,7 @@ export class OrgStore {
     // Mandatory before teardown/final close: failures retain closingAt so a fresh close resumes bounded cleanup.
     await clearWorkingBranchSaveReceipts(this.input, orgId);
     await clearProjectAllowedDomainProposals(this.input, orgId);
+    await clearTrackRecordData(this.input, orgId);
     for (const binding of await this.queryPartition(orgPk(orgId), "GITHUB_INSTALLATION#")) {
       const installationId = Number(String(binding.sk).slice("GITHUB_INSTALLATION#".length));
       await this.deleteIfOurs(githubInstallationKey(installationId), orgId);

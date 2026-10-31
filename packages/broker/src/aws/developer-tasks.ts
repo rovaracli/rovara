@@ -284,6 +284,7 @@ import type { AdaptedHttpRequest } from "./lambda.js";
 import { setupWatchKey } from "./stuck-setup.js";
 import { appendOperationEvent } from "./operation-events.js";
 import { setupNoteForStart, withFirstEvent } from "../rovara-code/setup-status.js";
+import { readEarlyRiskSignal } from "../rovara-code/early-risk-signal.js";
 import { operationKey } from "./cancellation.js";
 import { resumeTaskDispatch } from "./task-dispatch-access.js";
 import { feedbackReviewNoticeId } from "../developer/notifications.js";
@@ -343,7 +344,8 @@ import { recomputeRisk, rovaraPullRequestBody, rovaraStatusLines, type ChangedFi
 import { loadProofContext } from "../rovara-code/proof-inputs.js";
 import { proofTableView } from "../rovara-code/proof-view.js";
 import { breakLinearKeys, linearIssueKeyOfTask } from "../rovara-code/linear-close.js";
-import { loadTestProofLines } from "../developer/test-proof-lines.js";
+import { loadTestProofLines, readTestProofForCandidate } from "../developer/test-proof-lines.js";
+import { outcomeDepsOf, recordPlanOutcome, recordPublicationOutcomes, settleSuperseded, settleTaskOutcomes, abandonTaskOutcomes, type EndedPullRequestReader } from "../rovara-code/outcome-hooks.js";
 
 export interface DeveloperTaskRouteDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -1758,6 +1760,9 @@ export async function taskView(
   const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
   const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
+  // v1.2 track record: the early "PR risk low" score is the task owner's alone. It is read only for a view built for the owner (an explicit `actor: "owner"`; no named actor and a viewer never get it), on a
+  // full read, and only when this task's pull request was published with risk low.
+  const earlyRiskSignal = rovaraCodeV2 && options.details && options.actor === "owner" ? await readEarlyRiskSignal(deps, task) : undefined;
   return {
     modelFallbacks:modelFallbacks.data,
     taskId: task.taskId,
@@ -1771,6 +1776,7 @@ export async function taskView(
     ...(reviewRound === undefined ? {} : { reviewRound }),
     ...(tracked.length === 0 ? {} : { mergeTracking: tracked.map(publicTrackingItem) }),
     ...(merge === undefined ? {} : { merge }),
+    ...(earlyRiskSignal === undefined ? {} : { earlyRiskSignal }),
     ...(e2ePresentation === undefined ? {} : { e2ePresentation }),
     ...(derived.failure === undefined ? {} : { failure: derived.failure }),
     ...(removedReason === undefined ? {} : { outcome: "creator_removed" as const, outcomeReason: capText(removedReason, 1000).text }),
@@ -2325,7 +2331,8 @@ async function readTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperC
     task = await loadOwnedTask(deps, caller, taskId);
     loaded = undefined;
   }
-  const view = await taskView(deps, task, { events, details: true, ...(loaded === undefined ? {} : { loaded }) });
+  // `loadOwnedTask` has just proved the caller is the task's owner, so this view is built for the owner.
+  const view = await taskView(deps, task, { events, details: true, actor: "owner", ...(loaded === undefined ? {} : { loaded }) });
   await syncIndex(deps, task, view.status, view.updatedAt);
   return { task: view };
 }
@@ -2870,6 +2877,37 @@ async function decidableTask(deps: DeveloperTaskRouteDependencies, caller: Devel
   return access as AuthorizedTask;
 }
 
+/** Track record: the hooks' own table access and logger. */
+const outcomeDeps = (deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "log">) =>
+  outcomeDepsOf(deps, (event, fields) => deps.log?.({ event, ...fields }));
+
+/**
+ * Track record: the plan check's claim, written once the person's decision has committed (never for a stale or failed decision, or a repeat). `workflow` is the snapshot read before the decision, which still holds
+ * the plan check (a request for changes drops it); `committed` is the snapshot the decision produced. Best effort: it never throws.
+ */
+async function recordPlanDecisionOutcome(
+  deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, committed: WorkflowSnapshot, documentType: string | undefined,
+): Promise<void> {
+  const decision = committed.decisions.at(-1);
+  if (documentType !== "plan" || decision === undefined || decision.closedAs !== undefined) return;
+  await recordPlanOutcome(outcomeDeps(deps), task, { critique: workflow.critique, revision: workflow.revision, decision: decision.decision, at: decision.at });
+}
+
+/**
+ * Track record: the claims about a candidate the pull request is published with. When it replaces an earlier candidate on the pull request (`replaces`), what is still open about that one is settled
+ * first, by what was seen of it. Best effort: it never throws, and a proof that cannot be read is recorded as such.
+ */
+async function recordPublishedCandidateOutcomes(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, now: string, replaces?: string): Promise<void> {
+  try {
+    if (workflow.definitionVersion !== "1.1.0") return;
+    if (replaces !== undefined && replaces !== workflow.candidate?.digest) await settleSuperseded(outcomeDeps(deps), { ...task, workflow }, { candidateDigest: replaces, now });
+    const proof = await readTestProofForCandidate(deps.actions, task, workflow.candidate?.digest);
+    await recordPublicationOutcomes(outcomeDeps(deps), task, { workflow, proof, now });
+  } catch (error) {
+    deps.log?.({ event: "outcomes.publication_failed", error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
 /**
  * The one transition for a plan decision, from Slack, MCP and the task page alike. A page decision (`via: "PAGE"`) carries
  * the owner's answer to every decision and the comments they chose to send; Slack and MCP send neither, so an approval
@@ -3062,6 +3100,7 @@ export async function decideTaskWorkflow(
       ExpressionAttributeNames: { "#state": "state" },
       ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":waiting": "WAITING" },
     } }, accessFence(deps, access), ...answeredItems]);
+    await recordPlanDecisionOutcome(deps, task, workflow, next, documentType);
     // A rejected plan ends the task: it gives back its slot and its workspace now.
     await releaseFinishedTaskQuietly(deps, taskId);
     const fresh = (await authorizeTaskActor(deps, caller, taskId, "decide")).task;
@@ -3167,6 +3206,7 @@ export async function decideTaskWorkflow(
       }
       return busyOrClosing(deps, task, error);
     }
+    await recordPlanDecisionOutcome(deps, task, workflow, decidedNext, documentType);
     const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
     const view = await taskView(deps, fresh, { events: 0, details: false });
     await syncIndex(deps, fresh, view.status, view.updatedAt);
@@ -3219,6 +3259,7 @@ export async function decideTaskWorkflow(
     }
     return busyOrClosing(deps, task, error);
   }
+  await recordPlanDecisionOutcome(deps, task, workflow, decidedNext, documentType);
   const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
   // M1.3 Task 3.7 (owner decision D2): the approved application plan asks for its informational baseline round. Best effort and after the approval is committed: whatever
   // happens to the baseline, the approval and the checks stand exactly as they are.
@@ -6533,6 +6574,7 @@ export async function startTaskWorkflowPublicationFromSystem(
       if (!isConditional(error)) throw error;
     }
   }
+  await recordPublishedCandidateOutcomes(deps, task, judged, receivedAt);
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
@@ -6622,6 +6664,7 @@ async function startTaskWorkflowPullRequestUpdate(
     }
     throw error;
   }
+  await recordPublishedCandidateOutcomes(deps, task, judged, receivedAt, pullRequest.candidateDigest);
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
@@ -7922,6 +7965,7 @@ export async function finishTaskClose(
       await deps.actions.transact([...(release ? releaseItems(deps.tableName, task.charge, task.taskId) : []), ...closing(current)]);
       await endAgentRunOfClosedTask(deps, task);
       await tellClosedTaskEnd(deps, task);
+      await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
       return;
     } catch (error) {
       if (!isConditional(error)) throw error;
@@ -7931,6 +7975,7 @@ export async function finishTaskClose(
       if (fresh?.closedAt !== undefined) {
         await endAgentRunOfClosedTask(deps, task);
         await tellClosedTaskEnd(deps, task);
+        await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
         return;
       }
       // Ruling F4: the notifier changed the share (it recorded the thread) meanwhile: close that one.
@@ -8050,6 +8095,12 @@ export type ReleaseDeps = {
   tableName: string; actions: DeveloperTaskActions; documentClient: { send(command: unknown): Promise<unknown> };
   /** The model proxy: what a finished run's keys spent, for the estimates (Task 34). Without it no cost is written. */
   modelAccess?: ModelAccess;
+  /** Track record: a fresh GitHub read of one of the task's pull requests, for settling a merged candidate's samples when the task ends. Without it such samples are `github_unavailable`. */
+  outcomeReader?: (task: DeveloperTaskRecord) => EndedPullRequestReader | undefined;
+  /** How long the settle's reads may take in all (default 8 seconds). */
+  outcomeSettleBudgetMs?: number;
+  /** An absolute time (ms) after which a pass over many tasks settles no more: the rest stay open, with their release mark, for the next pass. */
+  outcomeSettleUntil?: number;
 };
 
 /**
@@ -8099,6 +8150,20 @@ function releaseTurnId(taskId: string): string {
  * the slot alone.
  */
 export async function releaseFinishedTask(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<FinishedTaskRelease> {
+  const outcome = await releaseFinishedTaskNow(deps, task);
+  if (outcome === "released" || outcome === "already_released") await settleReleasedTask(deps, task);
+  return outcome;
+}
+
+/**
+ * Track record, after the release is done (it never waits on GitHub): samples still open when the task ends are settled, from fresh reads that share one short deadline (and, in a pass over many
+ * tasks, the pass's own: `outcomeSettleUntil`). `done` when nothing is left open; `skipped` when the pass's time was up (nothing was touched); else `incomplete`. Never throws.
+ */
+async function settleReleasedTask(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<"done" | "incomplete" | "skipped"> {
+  return settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString(), deps.outcomeReader?.(task), deps.outcomeSettleBudgetMs, deps.outcomeSettleUntil);
+}
+
+async function releaseFinishedTaskNow(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<FinishedTaskRelease> {
   const closed = task.closedAt !== undefined;
   if (!closed && !workflowTaskFinished(task)) return "not_finished";
   await recordFinishedRunCost(deps, task);
@@ -8265,8 +8330,10 @@ const RELEASE_SWEEP_SCAN = 200;
 /** After a release that did not go through, the next try waits this long, doubling each time up to the cap. */
 const RELEASE_RETRY_FIRST_MS = 5 * 60_000;
 const RELEASE_RETRY_MAX_MS = 6 * 3_600_000;
+/** After this many settles of their own that did not finish, a released task's open samples are closed out as `github_unavailable` by writes alone, and its mark goes. */
+const SETTLE_ATTEMPTS_MAX = 5;
 
-interface FinishedReleaseMark { taskId: string; markedAt?: string; attempts?: number; nextAttemptAt?: string }
+interface FinishedReleaseMark { taskId: string; markedAt?: string; attempts?: number; settleAttempts?: number; nextAttemptAt?: string }
 
 /**
  * Durably queues a finished task for the existing release worker. This intentionally performs no workspace or compute
@@ -8307,19 +8374,47 @@ export async function releaseFinishedTaskQuietly(deps: ReleaseDeps, taskId: stri
       UpdateExpression: "SET attempts = :attempts, nextAttemptAt = :next",
       ExpressionAttributeValues: { ":attempts": attempts, ":next": new Date(Date.now() + wait).toISOString() } }));
   };
+  /** A settle that did not finish: tried again later, counted on its own (a task that was busy before keeps its full tries), with the same backoff. */
+  const putOffSettle = async (tries: number) => {
+    const wait = Math.min(RELEASE_RETRY_FIRST_MS * 2 ** (tries - 1), RELEASE_RETRY_MAX_MS);
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key,
+      UpdateExpression: "SET settleAttempts = :tries, nextAttemptAt = :next", ExpressionAttributeValues: { ":tries": tries, ":next": new Date(Date.now() + wait).toISOString() } }));
+  };
+  /** A settle the pass had no time for: due again at once, but behind the marks already waiting. */
+  const requeue = async () => {
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET nextAttemptAt = :now", ExpressionAttributeValues: { ":now": new Date().toISOString() } }));
+  };
   let marked = false;
   try {
     const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
     if (task !== undefined && task.closedAt === undefined && task.releasedAt === undefined && !workflowTaskFinished(task)) return "not_finished";
-    if (task === undefined || task.closedAt !== undefined || task.releasedAt !== undefined) {
-      // Nothing to release (any more): a mark the sweep left is removed.
+    if (task === undefined) {
       await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
+      return undefined;
+    }
+    if (task.closedAt !== undefined || task.releasedAt !== undefined) {
+      // Nothing to release (any more). A mark the sweep left is removed once the task's track record is settled (a release that stopped before its settle ended leaves its mark for this).
+      const left = await get<FinishedReleaseMark>(deps, key);
+      if (left === undefined) return undefined;
+      const settled = await settleReleasedTask(deps, task);
+      const tries = (left.settleAttempts ?? 0) + 1;
+      if (settled === "incomplete" && tries >= SETTLE_ATTEMPTS_MAX) {
+        // The settle keeps failing: what is still open is closed out by writes alone, and the mark goes.
+        await abandonTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
+        await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
+      } else if (settled === "done") await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
+      else if (settled === "incomplete") await putOffSettle(tries);
+      else await requeue();
       return undefined;
     }
     await enqueueFinishedTaskRelease(deps, taskId);
     marked = true;
-    const outcome = await releaseFinishedTask(deps, task);
+    const outcome = await releaseFinishedTaskNow(deps, task);
+    // The mark stays until the release is done AND the task's open samples are settled (or the pass ran out of time for it: then it stays due).
+    const settled = outcome === "released" || outcome === "already_released" ? await settleReleasedTask(deps, task) : "done";
     if (outcome === "busy") await putOff();
+    else if (settled === "incomplete") await putOffSettle(1);
+    else if (settled === "skipped") await requeue();
     else await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: key }));
     if (outcome === "released" || outcome === "busy") console.log(JSON.stringify({ component: "broker", event: `developer.finished_task_${outcome}`, taskId }));
     return outcome;
