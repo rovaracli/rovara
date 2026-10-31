@@ -1,4 +1,5 @@
 import {
+  attributionBodyLines,
   workflowReviewsSawPartialDiff,
   redactText,
   type WorkflowSnapshot,
@@ -52,6 +53,7 @@ export function workflowPullRequestBody(task: DeveloperTaskRecord, workflow: Wor
     PULL_REQUEST_STATUS_START,
     ...workflowPullRequestStatusLines(workflow, undefined, proofLines),
     PULL_REQUEST_STATUS_END,
+    ...attributionBodyLines(context?.attribution),
     ...(pageUrl === undefined ? [] : [`AgentX task: ${pageUrl}`]),
     "",
     `Opened as a draft by AgentX after the owner-approved plan${reviewOnly ? " and reviews" : ", checks and reviews"} passed. Merge it on GitHub.`,

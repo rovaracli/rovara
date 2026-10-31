@@ -1420,6 +1420,23 @@ describe("ec2-ebs delivery", () => {
       expect(postedPayload(accepted.post).workflowBaseCommit).toBe("c".repeat(40));
     });
 
+    it("refuses a publication carrying the requester and approver before POST unless the worker advertises publish.attribution, and never drops it (I3)", async () => {
+      const attribution = { requester: { state: "named", name: "Maya Chen", ref: "0123456789abcdef" } };
+      const record = publishRecord({ attribution });
+      for (const features of [[], ["publish.reportChecks"], ["publish.candidateTree"]]) {
+        const refused = delivery({ workerFeatures: async () => features });
+        await expect(refused.deliver(record, record.invocation)).rejects.toThrow(/requester and approver named/);
+        expect(refused.post).not.toHaveBeenCalled();
+      }
+      const accepted = delivery({ workerFeatures: async () => ["publish.attribution"] });
+      expect(await accepted.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(accepted.post).attribution).toEqual(attribution);
+      // A publication that carries none is not held back by the feature.
+      const plain = publishRecord({});
+      const unaffected = delivery({ workerFeatures: async () => [] });
+      expect(await unaffected.deliver(plain, plain.invocation)).toBe("DELIVERED");
+    });
+
     it("keeps reportChecks for a worker whose /ping lists it", async () => {
       const { deliver, post } = delivery({ workerFeatures: async () => ["publish.reportChecks"] });
       const record = publishRecord({ reportChecks: true });

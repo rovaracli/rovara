@@ -332,6 +332,32 @@ const context = (extra: Record<string, unknown> = {}) => ({
 const planOf = "# Plan\n\n1. Add the retry flag.\n2. Add a regression test.\n";
 
 describe("the version 2 pull request description", () => {
+  it("names who asked and who approved the plan, outside the marked block, before the session link (I3)", () => {
+    const attribution = {
+      requester: { state: "named", name: "Maya Chen", ref: "0123456789abcdef" }, approver: { state: "former" },
+      auditUrl: "https://rovara.example/v1/app/audit/view?action=pull_request.opened",
+    } as const;
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context({ attribution }));
+    const lines = ["Requested by: Maya Chen", "Plan approved by: a former member", "Audit record: https://rovara.example/v1/app/audit/view?action=pull_request.opened"];
+    for (const line of lines) {
+      expect(body.split(line), line).toHaveLength(2);
+      expect(body.indexOf(line), line).toBeGreaterThan(body.indexOf(END));
+      expect(body.indexOf(line), line).toBeLessThan(body.indexOf(`Rovara session: ${SESSION}`));
+    }
+    // Only the name: never the person's reference.
+    expect(body).not.toContain("0123456789abcdef");
+    expect(body.trimEnd().endsWith(CLOSING)).toBe(true);
+    // Without attribution the description is exactly what it was.
+    expect(workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context())).not.toContain("Requested by");
+  });
+
+  it("keeps the attribution when the body is cut to its size: the lists shrink, the attribution stays (I3)", () => {
+    const files = Array.from({ length: 4_000 }, (_, index) => file(`src/very/long/path/number/${String(index)}/module-with-a-long-name.ts`, 5, 1));
+    const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context({ changedFiles: { files, complete: true }, attribution: { requester: { state: "named", name: "Maya Chen", ref: "0123456789abcdef" } } }));
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(30_000);
+    expect(body).toContain("Requested by: Maya Chen");
+  });
+
   it("has its sections in order, the plan summary first, the session link and the closing line last, and never says AgentX", () => {
     const body = workflowPullRequestBody(task, workflowWith(), planOf, SESSION, context());
     const at = (text: string) => body.indexOf(text);
@@ -1468,5 +1494,17 @@ describe("the version 2 description carries the test proof", () => {
     const lines = workflowPullRequestStatusLines(workflowWith(), context(), [PROOF]);
     expect(lines).toContain(`- ${PROOF}`);
     expect(workflowPullRequestStatusLines(workflowWith(), context())).not.toContain(`- ${PROOF}`);
+  });
+});
+
+describe("the version 1 pull request description names who asked (I3)", () => {
+  it("adds the lines after the status block, and nothing when there is no attribution", () => {
+    const v1 = workflowWith({}, "1.0.0");
+    const plain = workflowPullRequestBody({ title: "Add a retry flag" } as never, v1, planOf, "https://rovara.example/review/x/task");
+    expect(plain).not.toContain("Requested by");
+    const body = workflowPullRequestBody({ title: "Add a retry flag" } as never, v1, planOf, "https://rovara.example/review/x/task", { attribution: { requester: { state: "named", name: "Maya Chen", ref: "0123456789abcdef" }, approver: { state: "named", name: "Priya Raman", ref: "fedcba9876543210" } } });
+    expect(body).toContain("Requested by: Maya Chen\nPlan approved by: Priya Raman\n");
+    expect(body.indexOf("Requested by")).toBeGreaterThan(body.indexOf("<!-- /agentx:checks-and-reviews -->"));
+    expect(body).not.toContain("0123456789abcdef");
   });
 });

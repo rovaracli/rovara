@@ -46,4 +46,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   // Meta repo lane D: the spec write run (spec-write.ts) .
   "task.specWrite.v1",
   "task.workflowReviewSpec.v1",
+  // Enterprise foundations I3: the commit a publication makes carries Requested-by / Approved-by trailers (publish.ts).
+  "publish.attribution",
 ] as const satisfies readonly WorkerInvocationFeature[];
