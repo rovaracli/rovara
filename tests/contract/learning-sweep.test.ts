@@ -159,7 +159,7 @@ describe("learning sweep", () => {
       const racing = {
         send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
           const before = stored();
-          const answer = await world.db.send(command as never);
+          const answer = await world.db.send(command);
           if (stored() < before) {
             removed += before - stored();
             if (removed === raceAfter && captured === undefined) captured = await captureCorrection(world.deps, world.scope, input);
