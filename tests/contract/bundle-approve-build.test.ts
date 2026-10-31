@@ -42,6 +42,11 @@ describe("building the install's templates at approval", () => {
     expect(foundation.Metadata.Inputs.context).toMatchObject({ agentxEnv: "ent", agentxRegion: "us-east-1", agentxSynthesizer: "legacy", rovaraEdition: "enterprise", rovaraEnterpriseEgressCidrs: "10.20.0.0/16" });
     const control = JSON.parse(built.files.find((f) => f.file === "built/templates/control-plane.template.json")!.body.toString("utf8"));
     expect(control.Resources.Marker.Properties.Value).toContain("10.20.0.0/16");
+    // The kit's hash is made from the SIGNED manifest's own entries for it: what a deployer holding only the signed manifest computes too.
+    const { readFile } = await import("node:fs/promises");
+    const { BundleManifestSchema, synthKitSha256 } = await import("@agentx/contracts");
+    const signed = BundleManifestSchema.parse(JSON.parse(await readFile(join(world.bundle.dir, "bundle.json"), "utf8")));
+    expect(built.manifest.kitSha256).toBe(synthKitSha256(signed.files));
     expect(built.manifest.kitSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(built.resultSha256).toBe(sha256OfBytes(built.manifestBytes));
   });
@@ -62,6 +67,15 @@ describe("building the install's templates at approval", () => {
     expect(second.resultSha256).toBe(first.resultSha256);
     expect(second.manifestBytes.equals(first.manifestBytes)).toBe(true);
     for (const file of first.files) expect(second.files.find((f) => f.file === file.file)!.body.equals(file.body)).toBe(true);
+  });
+
+  it("does not let the formatting or the order a kit chose change the hash: keys sorted, packages ordered by id", async () => {
+    const plain = await buildWith(await EnterpriseWorld.create(made, { kit: { twoPackages: true } }));
+    const reversed = await buildWith(await EnterpriseWorld.create(made, { kit: { twoPackages: true, reverseKeys: true } }));
+    expect(plain.manifest.packages.map((p) => p.assetId)).toEqual(["abcdef0123456789", "zzzzzzzz01"]);
+    // The two bundles differ in the kit (and so in its hash and the bundle id), but the templates and packages are the same bytes, in the same order.
+    expect(reversed.manifest.templates).toEqual(plain.manifest.templates);
+    expect(reversed.manifest.packages).toEqual(plain.manifest.packages);
   });
 
   it("changes the hash when a setting changes (the build is of THIS install's settings)", async () => {
@@ -103,6 +117,9 @@ describe("building the install's templates at approval", () => {
     await refused(buildWith(await EnterpriseWorld.create(made, { kit: false })), /carries no synthesis kit/);
     await refused(buildWith(await EnterpriseWorld.create(made, { kit: { nodeMajor: 18 } })), /built for Node 18/);
     await refused(buildWith(await EnterpriseWorld.create(made, { kit: { fail: true } })), /synthesis kit failed/);
+    // A kit cannot bring settings of its own: kit.json takes no field beyond the ones it names.
+    // (The builder refuses to sign such a kit, and the build refuses one signed by anyone else: both read kit.json with the same strict schema.)
+    await expect(EnterpriseWorld.create(made, { kit: { kitJsonExtra: { context: { rovaraEnterpriseEgressCidrs: "0.0.0.0/0" } } } })).rejects.toThrow(/unrecognized/i);
     await refused(buildWith(await EnterpriseWorld.create(made, { kit: { strayFile: "extra.txt" } })), /wrote a file the build does not use/);
   });
 
@@ -110,6 +127,8 @@ describe("building the install's templates at approval", () => {
     await refused(buildWith(await EnterpriseWorld.create(made, { kit: { placeholder: true } })), /placeholder/);
     await refused(buildWith(await EnterpriseWorld.create(made, { kit: { unknownAsset: true } })), /asks for code/);
     await refused(buildWith(await EnterpriseWorld.create(made, { kit: { omitParameters: true } })), /does not declare/);
+    await refused(buildWith(await EnterpriseWorld.create(made, { kit: { badTemplate: "array" } })), /not a template/);
+    await refused(buildWith(await EnterpriseWorld.create(made, { kit: { badTemplate: "no-resources" } })), /not a template/);
   });
 });
 
@@ -119,6 +138,8 @@ describe("the recorded settings are the install's own", () => {
     const s = store();
     await refused(readSynthSettings(s, INSTALL), /no recorded build settings/);
     await s.put("/agentx/ent/synth-settings", "{not json");
+    await refused(readSynthSettings(s, INSTALL), /not valid/);
+    await s.put("/agentx/ent/synth-settings", JSON.stringify({ schemaVersion: 1 }));
     await refused(readSynthSettings(s, INSTALL), /not valid/);
     await s.put("/agentx/ent/synth-settings", JSON.stringify({ ...SETTINGS_ENT(), env: "other" }));
     await refused(readSynthSettings(s, INSTALL), /environment other/);
@@ -158,6 +179,7 @@ describe("agentx bundle approve, Enterprise", () => {
     expect(world.puts.some((key) => /\/(images|notes|synth-kit|legal|packages)\//.test(key) && !key.includes("/built/"))).toBe(false);
     expect(world.puts).toEqual(expect.arrayContaining([`approved/${world.bundle.bundleSha256}/built/manifest.json`, `approved/${world.bundle.bundleSha256}/built/templates/control-plane.template.json`, `approved/${world.bundle.bundleSha256}/release.json`]));
     expect(world.puts[world.puts.length - 1]).toBe(`approvals/${world.bundle.bundleSha256}.json`);
+    expect(world.puts.filter((key) => key.startsWith("approvals/"))).toHaveLength(1);
     expect(order).toEqual(["images after 0 puts"]);
     expect(record.build).toMatchObject({ settingsSha256: synthSettingsSha256(SETTINGS_ENT({ rovaraEnterpriseEgressCidrs: "10.20.0.0/16", rovaraOperatorExternalId: "x".repeat(4) + "externalid-secret-12" })) });
     expect(record.build!.settings.context.rovaraEnterpriseEgressCidrs).toBe("10.20.0.0/16");
@@ -172,6 +194,9 @@ describe("agentx bundle approve, Enterprise", () => {
   });
 
   it("is refused for an install that is not recorded as Enterprise, and for a bundle with no kit, before anything is placed", async () => {
+    const garbage = await EnterpriseWorld.create(made, { edition: "something else" });
+    await refused(garbage.approve(), /edition recorded for ent is not "enterprise" or "public"/);
+    expect(garbage.puts).toEqual([]);
     const notEnterprise = await EnterpriseWorld.create(made, { edition: "public" });
     await refused(notEnterprise.approve(), /not recorded as an Enterprise install/);
     expect(notEnterprise.puts).toEqual([]);
@@ -236,6 +261,13 @@ describe("agentx bundle approve, Enterprise", () => {
 });
 
 describe("the kit is part of the signed bundle", () => {
+  it("names its entry as a .mjs file under synth-kit/, nothing else", async () => {
+    const { SynthKitManifestSchema } = await import("@agentx/contracts");
+    const kit = { schemaVersion: 1, format: "rovara-synth-kit", nodeMajor: 22 };
+    expect(SynthKitManifestSchema.safeParse({ ...kit, entry: "synth-kit/synth.mjs" }).success).toBe(true);
+    for (const entry of ["synth-kit/synth.js", "other/synth.mjs", "synth.mjs", "synth-kit/../x.mjs"]) expect(SynthKitManifestSchema.safeParse({ ...kit, entry }).success, entry).toBe(false);
+  });
+
   it("is listed, hashed and signed with the other files, and a changed kit file is refused like any changed file", async () => {
     const { readFile, writeFile } = await import("node:fs/promises");
     const { BundleManifestSchema } = await import("@agentx/contracts");

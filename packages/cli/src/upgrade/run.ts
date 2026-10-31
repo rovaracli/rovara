@@ -387,7 +387,6 @@ async function runBuiltBundleUpgrade(input: { options: UpgradeOptions; deps: Upg
   refusePrereleaseTarget(target);
   upgradeDirection(first.env, first.version, target);
   if (deps.approveAndDeploy === undefined) throw agentXError("CONFIG_INVALID", "this agentx cannot build an install's templates at approval; the bundle was refused and nothing was changed");
-  if (!options.yes && !deps.isInteractive()) throw agentXError("CONFIG_INVALID", "agentx upgrade needs --yes when stdin is not a terminal");
   deps.write(`Upgrading ${first.env} from ${first.version} to ${target} with bundle ${bundle.bundleId}: its templates are built from the settings recorded for this install, then installed by your own deployer`);
   const outcome = await deps.approveAndDeploy({ bundle, settings: first, yes: options.yes });
   if (outcome.status !== "done") {

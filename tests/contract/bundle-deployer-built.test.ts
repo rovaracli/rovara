@@ -102,6 +102,7 @@ describe("the deployer installs a build made at approval", () => {
       ["env", (m) => { m.env = "other"; }, /not of this bundle for this install/],
       ["region", (m) => { m.region = "eu-west-1"; }, /not of this bundle for this install/],
       ["settings", (m) => { m.settingsSha256 = "d".repeat(64); }, /settings other than the ones now recorded/],
+      ["commit", (m) => { m.gitCommit = "9".repeat(40); }, /not of this bundle for this install/],
     ];
     for (const [name, edit, pattern] of cases) {
       const { ew, record, id } = await approved();
@@ -112,6 +113,37 @@ describe("the deployer installs a build made at approval", () => {
     const { ew, record, id } = await approved();
     writeRecord(ew, id, { ...record, build: { ...record.build!, kitSha256: "c".repeat(64) } });
     expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/kit other than the signed bundle's/) });
+  });
+
+  it("checks the record's own copy of the settings: its hash, and the settings it shows the approver", async () => {
+    let { ew, record, id } = await approved();
+    writeRecord(ew, id, { ...record, build: { ...record.build!, settingsSha256: "d".repeat(64) } });
+    expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/settings other than the ones now recorded/) });
+    ({ ew, record, id } = await approved());
+    writeRecord(ew, id, { ...record, build: { ...record.build!, settings: { ...record.build!.settings, context: { ...record.build!.settings.context, rovaraEnterpriseEgressCidrs: "10.0.0.0/8" } } } });
+    expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/settings shown in the approval are not the recorded ones/) });
+  });
+
+  it("refuses a settings record of another environment even when the approval was built from exactly it", async () => {
+    // Someone copies another install's settings record in and approves a build of it: every hash agrees, so only the record's own environment can stop it.
+    const { ew, record, id } = await approved();
+    const other = { ...SETTINGS_ENT(), env: "other" };
+    await ew.setSettings(other);
+    const { synthSettingsSha256, redactedSynthSettings } = await import("@agentx/contracts");
+    const rewritten = rewriteManifest(ew, id, record, (m) => { m.settingsSha256 = synthSettingsSha256(other); });
+    writeRecord(ew, id, { ...rewritten, build: { ...rewritten.build!, settingsSha256: synthSettingsSha256(other), settings: redactedSynthSettings(other) } });
+    expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/recorded build settings are not this install's/) });
+  });
+
+  it("refuses an approval whose release.json is not the signed one, and one that leaves out the build's manifest", async () => {
+    let { ew, record, id } = await approved();
+    const swapped = replace(ew, id, record, "release.json", Buffer.from(bodyOf(ew, id, record, "release.json").toString("utf8").replace('"gitCommit"', '"gitCommit ":"x","gitCommit"')));
+    writeRecord(ew, id, swapped);
+    expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/release.json is not the file the signed manifest lists/) });
+    ({ ew, record, id } = await approved());
+    writeRecord(ew, id, { ...record, files: record.files.filter((entry) => entry.file !== "built/manifest.json") });
+    expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/does not include the build's manifest/) });
+    expect(changes(ew)).toEqual([]);
   });
 
   it("refuses a build that does not hold exactly the install's stacks, and an approval that pins a file the build does not list", async () => {

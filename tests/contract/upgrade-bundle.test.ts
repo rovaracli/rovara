@@ -1,6 +1,6 @@
 // Enterprise foundations, N3: `rovara upgrade --bundle` verifies the signature and every hash before it changes anything, and records a restore point.
 // Every verification step has a test that goes red when the step is removed (see the lane report's mutation table).
-import { link, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
@@ -353,6 +353,10 @@ describe("rovara upgrade --bundle", () => {
       const h = await cdkHarness(bundle);
       const result = await runUpgrade(options(bundle), h.deps);
       expect(h.calls).toEqual([{ bundleId: bundle.bundleSha256, yes: true, engine: "cdk" }]);
+      // Without --yes the build asks the approver itself (yes: false reaches it).
+      const asking = await cdkHarness(bundle);
+      await runUpgrade(options(bundle, { yes: false }), asking.deps);
+      expect(asking.calls).toEqual([{ bundleId: bundle.bundleSha256, yes: false, engine: "cdk" }]);
       expect(result).toMatchObject({ env: "staging", from: "1.2.3", to: "1.4.0", parts: ["foundation", "runtime"], doctor: { failed: 0 } });
       // The engine, the prebuilt templates and the restore point of the local path are untouched: the deployer owns them.
       expect(h.events).toEqual([]);
@@ -384,6 +388,13 @@ describe("rovara upgrade --bundle", () => {
       operator.deps.identity = { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/agentx-staging-rovara-operator/ana" }) };
       await expect(runUpgrade(options(bundle), operator.deps)).rejects.toThrow(/Rovara operator role starts approved deployments/);
       expect(operator.calls).toEqual([]);
+    });
+
+    it("refuses a prerelease bundle before anything is built", async () => {
+      const bundle = await build({ version: "1.5.0-rc.1" });
+      const h = await cdkHarness(bundle);
+      await expect(runUpgrade(options(bundle), h.deps)).rejects.toThrow(/prerelease|release/i);
+      expect(h.calls).toEqual([]);
     });
 
     it("needs --yes without a terminal, before anything is built", async () => {
@@ -448,15 +459,24 @@ describe("the bytes that were verified are the bytes used (review I4)", () => {
   });
 
   it("removes the private copy when verification fails, and when the upgrade ends", async () => {
-    const bundle = await build();
-    const before = (await readdir(tmpdir())).filter((name) => name.startsWith("rovara-bundle-")).length;
-    await writeFile(join(bundle.dir, "legal", "LICENSE"), "changed");
-    await refused(verifyBundle({ dir: bundle.dir, trustedKeys: trust(bundle) }), /does not match the signed manifest/);
-    expect((await readdir(tmpdir())).filter((name) => name.startsWith("rovara-bundle-")).length).toBe(before);
-    const good = await build();
-    const h = await harness(good);
-    await runUpgrade(options(good), h.deps);
-    expect((await readdir(tmpdir())).filter((name) => name.startsWith("rovara-bundle-")).length).toBe(before);
+    // A temp directory of its own: other test files make private copies at the same time, so the shared one cannot be counted.
+    const own = await mkdtemp(join(tmpdir(), "copy-count-"));
+    const previous = process.env.TMPDIR;
+    process.env.TMPDIR = own;
+    try {
+      const copies = async () => (await readdir(own)).filter((name) => name.startsWith("rovara-bundle-")).length;
+      const bundle = await build();
+      await writeFile(join(bundle.dir, "legal", "LICENSE"), "changed");
+      await refused(verifyBundle({ dir: bundle.dir, trustedKeys: trust(bundle) }), /does not match the signed manifest/);
+      expect(await copies()).toBe(0);
+      const good = await build();
+      const h = await harness(good);
+      await runUpgrade(options(good), h.deps);
+      expect(await copies()).toBe(0);
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous;
+      await rm(own, { recursive: true, force: true });
+    }
   });
 
   it("refuses a file with another name on the disk (a hard link), which the checks cannot tell apart from the original", async () => {
