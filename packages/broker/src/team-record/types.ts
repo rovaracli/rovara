@@ -22,7 +22,7 @@ export interface RecordDraft {
   repo?: string;
   source: RecordSystem;
   /** `system` names the source instance (a Slack team, a code host, an MCP server id); `id` and `version` make the write idempotent. */
-  sourceRef: { system: string; id: string; url?: string; parentId?: string; version: string };
+  sourceRef: { system: string; id: string; url?: string; parentId?: string; version: string; versionAt?: string; nativeId?: string };
   kind: RecordEventKind;
   occurredAt: string;
   actor?: { sourceId: string; developerId?: string; trust: TrustClass };
@@ -38,9 +38,11 @@ export interface RecordDraft {
    * the Slack rules (Public: no text kept) follow the text into the Rovara row.
    */
   origin?: "slack";
-  /** The trust of every piece the text is made of (the author, a quoted author, a forwarded message). The row takes the lowest. */
+  /** The trust of every author whose own words are in the text (a ticket's creator and its last editor). The row takes the lowest. */
   pieceTrusts?: TrustClass[];
-  /** The message carries attachments or shared messages from other authors. Without `pieceTrusts` they count as an outsider's. */
+  /** The trust of every quoted or forwarded author the tap could identify. Without it, quoted text, forwarded text or attachments count as an outsider's. */
+  quotedTrusts?: TrustClass[];
+  /** The message carries attachments or shared messages from other authors. Without `quotedTrusts` they count as an outsider's. */
   hasAttachments?: boolean;
 }
 

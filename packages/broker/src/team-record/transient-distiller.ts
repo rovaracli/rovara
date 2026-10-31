@@ -10,6 +10,7 @@ import type { TransientDistillerPort } from "./sources/ports.js";
 import { distillBundle, type DistillDeps, type DistillItem } from "./distill.js";
 import { admitTransient, type IngestDependencies } from "./ingest.js";
 import { splitQuotedSpans } from "./quotes.js";
+import { supersedeItem } from "./scope-work.js";
 import { putDerivationLinks, putRecordFact } from "./store.js";
 
 export interface TransientDistillerDependencies {
@@ -29,6 +30,10 @@ export function createTransientDistiller(deps: TransientDistillerDependencies): 
       const admitted = await admitTransient(deps.ingest, draft);
       if (!admitted.admitted) return { accepted: false };
       const { item } = admitted;
+      // A newer version of an item replaces the older one: the notes made from the older words are hidden at once and removed by the delete worker.
+      if (item.supersedes !== undefined) {
+        await supersedeItem({ table: deps.ingest.table, ...(deps.ingest.now === undefined ? {} : { now: deps.ingest.now }) }, item.orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: item.supersedes.version, rows: item.supersedes.rows });
+      }
       const itemId = derivedItemId(draft.sourceRef.system, draft.sourceRef.id);
       const spans = splitQuotedSpans({ text: item.text, trust: item.baseTrust, ...(draft.hasAttachments === true ? { attachments: [{ text: "(attachment)" }] } : {}) });
       const distillItem: DistillItem = { id: itemId, trust: item.baseTrust, audience: item.audience, links: item.links, spans };

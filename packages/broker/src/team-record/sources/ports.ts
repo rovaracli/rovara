@@ -71,11 +71,15 @@ export interface RecordDraft {
   /**
    * Set by the record core's contract (`RecordDraft` in ../types.ts), filled in here so the taps can say them:
    * - `origin: "slack"`: a Rovara row made from Slack words (`rovara.ask`, `rovara.remembered` from a thread). The Slack rule follows the words: no text kept in Public.
-   * - `pieceTrusts`: the trust of every piece the text is made of (author, quoted author, forwarded message); the row takes the lowest.
+   * - `pieceTrusts`: the trust of every author whose own words are in the text (a ticket's creator and its last editor); the row takes the lowest.
    * - `hasAttachments`: the message carries attachments or shared messages from other authors; without `pieceTrusts` they count as an outsider's.
    */
   origin?: "slack";
+  /** The place the item came from (`slack:T1/C9`, `jira:project/SHOP`, `rovara:project/web`). A restricted audience's snapshot names it too; a project-wide row needs it here. */
+  scope?: string;
   pieceTrusts?: TrustClass[];
+  /** Trust of the quoted or forwarded authors the tap could identify; without it quoted text counts as an outsider's. */
+  quotedTrusts?: TrustClass[];
   hasAttachments?: boolean;
 }
 

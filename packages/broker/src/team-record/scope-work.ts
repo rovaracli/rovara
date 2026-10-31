@@ -15,6 +15,7 @@ import {
 } from "@agentx/contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import { bySource, byScope, putScopeWork, tombstoneItem, type ScopeWork } from "./store.js";
+import { clearSupersedes } from "./item-head.js";
 import type { TeamRecordTable, TombstoneCause } from "./types.js";
 
 export interface WorkBudget {
@@ -227,3 +228,24 @@ export async function queueScopeWork(dependencies: WorkDependencies, orgId: OrgI
   return entry;
 }
 
+
+/**
+ * A newer version of a source item replaced an older one (the ingest contract: text a person edited away is not kept). At once: the older rows are hidden and their text
+ * removed, and the notes made from the item before `at` are hidden too (their links and facts are tombstoned). Then a `replaced` queue item makes the delete worker remove the
+ * rows, their vectors and those notes for good. Notes made from the NEW version are newer than `at` and are left alone.
+ */
+export async function supersedeItem(dependencies: WorkDependencies, orgId: OrgId, input: { system: string; sourceId: string; version: string; rows: ReadonlyArray<{ pk: string; sk: string }> }): Promise<void> {
+  const { at: nowIso } = clock(dependencies);
+  const at = nowIso();
+  const tombstone = { at, cause: "source_deleted" };
+  for (const row of input.rows) await tombstoneItem(dependencies.table, row, tombstone);
+  const found = await bySource(dependencies.table, orgId, input.system, input.sourceId, ITEMS_PER_SOURCE_MAX);
+  for (const item of found.items) {
+    if (item.entityType !== "TEAM_RECORD_DERIVATION" || typeof item.pk !== "string" || typeof item.sk !== "string" || typeof item.factId !== "string") continue;
+    if (typeof item.createdAt === "string" && item.createdAt > at) continue;
+    await tombstoneItem(dependencies.table, { pk: item.pk, sk: item.sk }, tombstone);
+    await tombstoneItem(dependencies.table, recordFactKey(orgId, projectOfPk(item.pk), item.factId), tombstone);
+  }
+  await queueScopeWork(dependencies, orgId, { type: "replaced", system: input.system, sourceIds: [input.sourceId], rowKeys: [...input.rows], cause: "source_deleted", hidePending: false });
+  await clearSupersedes(dependencies.table, orgId, input.system, input.sourceId, input.version);
+}

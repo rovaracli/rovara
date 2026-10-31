@@ -36,6 +36,7 @@ import {
   type SourceConfig,
 } from "@agentx/contracts";
 import { Aliases, NOT_EXISTS, errorName, withoutUndefined, type Item } from "../agents/table-writes.js";
+import { reopenScope } from "./item-head.js";
 import { retentionRefusal } from "./retention.js";
 import type { Edition, PendingHides, TeamRecordTable } from "./types.js";
 
@@ -266,6 +267,8 @@ export async function putSourceConfig(table: TeamRecordTable, config: SourceConf
   const existing = await queryIndex(table, TEAM_RECORD_GSI1, recordSourceConfigIndexValue(parsed.data.workspaceId, parsed.data.source, parsed.data.scope), 3);
   const elsewhere = existing.items.some((item) => sourceConfigFromItem(item)?.project !== parsed.data.project);
   if (elsewhere) return { status: "refused", reason: "scope_in_other_project" };
+  // An admin saving a source row for a place opens it again (a repository transferred back, a channel brought back): the closed-place marker goes.
+  await reopenScope(table, parsed.data.workspaceId, parsed.data.scope);
   await table.documentClient.send(new PutCommand({
     TableName: table.tableName,
     Item: withoutUndefined({
@@ -288,10 +291,12 @@ export async function listSourceConfigs(table: TeamRecordTable, orgId: OrgId, pr
 /** A piece of work on a scope or on source items that must finish: hide, change an ACL, then delete. The delete worker (D1) finishes it. */
 export interface ScopeWork {
   requestId: string;
-  type: "tombstone" | "principals" | "audience";
+  type: "tombstone" | "principals" | "audience" | "replaced";
   system: string;
   scope?: string;
   sourceIds?: string[];
+  /** `replaced`: the rows of the versions a newer version replaced (hidden already); the worker removes them, their vectors and the notes made from them. */
+  rowKeys?: Array<{ pk: string; sk: string }>;
   cause?: "source_deleted" | "person_erased" | "project_archived" | "excluded";
   add?: string[];
   remove?: string[];

@@ -294,7 +294,7 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
       workspaceId: bound.workspaceId, ...(project === undefined ? {} : { project }), source: "slack", kind: "slack.message", occurredAt: at,
       sourceRef: { system: teamId, id: messageId(channelId, ts), url: link, ...(threadTs === undefined ? {} : { parentId: messageId(channelId, threadTs) }), version, ...(versionAt === undefined ? {} : { versionAt }) },
       actor: { sourceId: userId, ...(who.developerId === undefined ? {} : { developerId: who.developerId }), trust: isBot ? "system" : who.trust },
-      trust: isBot ? "system" : who.trust, audience: audienceOf(teamId, channelId, info, config, at), text,
+      trust: isBot ? "system" : who.trust, scope, pieceTrusts: [isBot ? "system" : who.trust], audience: audienceOf(teamId, channelId, info, config, at), text,
       structured: scalars({ channelKind: info.kind, edited: subtype === "message_changed", threadReply: threadTs !== undefined }),
       links: linksOf(link), retention, ...(hasAttachments ? { hasAttachments: true } : {}),
     };

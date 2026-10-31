@@ -62,7 +62,7 @@ export function createRovaraEmitter(deps: RovaraEmitterDependencies): RovaraEmit
       const draft: RecordDraft = {
         workspaceId: base.workspaceId, project: base.project, source: "rovara", kind, occurredAt: base.at,
         sourceRef: { system: "rovara", id: parts.id, ...(base.url === undefined ? {} : { url: base.url }), parentId: `task:${base.taskId}`, version: parts.version },
-        ...(parts.actor === undefined ? {} : { actor: parts.actor }), trust: parts.trust, audience: audienceOfVisibility(base),
+        ...(parts.actor === undefined ? {} : { actor: parts.actor }), trust: parts.trust, scope: rovaraScope(base.project), audience: audienceOfVisibility(base),
         ...(text === undefined ? {} : { text }), structured: scalars({ taskId: base.taskId, ...parts.structured }), links: linksOf(base.url), retention: config.retention,
         ...(parts.origin === undefined ? {} : { origin: parts.origin }),
       };

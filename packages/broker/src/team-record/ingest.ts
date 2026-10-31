@@ -19,7 +19,8 @@ import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { Aliases } from "../agents/table-writes.js";
 import { captureIsOn, type LearningModeReader } from "./mode.js";
 import { exceedsRetention, retentionPlan, retentionRefusal } from "./retention.js";
-import { wasDeletedAtSource } from "./scope-work.js";
+import { supersedeItem, wasDeletedAtSource } from "./scope-work.js";
+import { advanceItemHead, getItemHead, isScopeClosed, versionTimeOf } from "./item-head.js";
 import { hasQuotedOrForwarded } from "./quoted.js";
 import { isErasedActor } from "./erased.js";
 import { deterministicEventId, getSourceConfigByScope, putRecordEvent } from "./store.js";
@@ -46,7 +47,7 @@ const ACL_PRINCIPALS_MAX = 500;
 /** The fixed reasons a draft can be refused for. */
 export type IngestRefusal =
   | "workspace" | "project" | "capture_off" | "no_scope" | "no_source_row" | "source_disabled" | "project_mismatch" | "retention_exceeds_source"
-  | "slack_public_fixed_a_b" | "slack_notes_need_opt_in" | "actor_erased" | "excluded" | "retention_not_stored" | "time" | "acl_too_large" | "deleted_at_source" | "invalid";
+  | "slack_public_fixed_a_b" | "slack_notes_need_opt_in" | "actor_erased" | "scope_closed" | "stale_version" | "excluded" | "retention_not_stored" | "time" | "acl_too_large" | "deleted_at_source" | "invalid";
 
 const refused = (reason: IngestRefusal): IngestOutcome => ({ status: "refused", reason });
 
@@ -107,6 +108,8 @@ export interface AdmittedTransient {
   audience: RecordDraft["audience"];
   links: string[];
   occurredAt: string;
+  /** An earlier version of this item was replaced: the distiller must clear the notes made from it before it writes the new ones. */
+  supersedes?: { rows: Array<{ pk: string; sk: string }>; version: string };
 }
 
 export type AdmitOutcome = { admitted: true; item: AdmittedTransient } | { admitted: false; reason: IngestRefusal };
@@ -177,13 +180,17 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   // 3. Retention routing. An outside source under A or B stores no row.
   // Trust is the lowest of every piece: the row, its actor, every quoted or forwarded piece, and (no actor on an outside source's text) at most "system".
   const quoted = hasQuotedOrForwarded(draft.text) || draft.hasAttachments === true;
-  const trust = minTrust(
+  let trust = minTrust(
     draft.trust,
     ...(draft.actor === undefined ? [] : [draft.actor.trust]),
     ...(draft.pieceTrusts ?? []),
-    ...(quoted && draft.pieceTrusts === undefined ? ["outsider" as const] : []),
+    // Quoted or forwarded words, or attachments, keep their own author's trust; the tap says whose when it knows, otherwise they are an outsider's.
+    ...(quoted ? (draft.quotedTrusts ?? ["outsider" as const]) : []),
     ...(draft.actor === undefined && draft.source !== "rovara" && draft.text !== undefined ? ["system" as const] : []),
   );
+  // A late edit by someone else never raises what an item was: the lowest trust any version had is kept (the ingest lane's `RecordHistoryPort`).
+  const head = await getItemHead(deps.table, orgId, draft.sourceRef.system, draft.sourceRef.id);
+  if (head !== undefined) trust = minTrust(trust, head.lowestTrust);
   // The Slack rule follows Slack's words into a Rovara row: in Public they are never kept as text.
   const keptText = deps.edition === "public" && draft.origin === "slack" ? undefined : draft.text;
   const plan = retentionPlan({ retention: draft.retention, source: draft.source, hasText: keptText !== undefined, occurredAtSeconds: Math.floor(occurred.getTime() / 1000), nowSeconds: Math.floor(now() / 1000) });
@@ -194,8 +201,13 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
       const clean = cleanRecordText(draft.text);
       const transientScope = scope;
       if (clean === undefined || transientScope === undefined) return refused("invalid");
+      if (await isScopeClosed(deps.table, orgId, transientScope)) return refused("scope_closed");
+      // Versions are ordered by source time here too, and a newer version clears the notes made from the older one.
+      const moved = await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt: versionTimeOf(draft), trust, indexExpiresAt: plan.indexExpiresAt });
+      if (moved.status === "stale") return refused("stale_version");
+      const owedRows = moved.status === "advanced" ? (moved.previous === undefined ? undefined : [moved.previous.row, moved.previous.supersedes?.row]) : moved.owed === undefined ? undefined : [moved.owed.row];
       const baseTrust = minTrust(draft.trust, ...(draft.actor === undefined ? [] : [draft.actor.trust]), ...(draft.actor === undefined && draft.source !== "rovara" ? ["system" as const] : []));
-      return { admitted: true, item: { orgId, project, scope: transientScope, trust, baseTrust, text: clean, audience: draft.audience, links: draft.links.filter(validLink).slice(0, LINKS_MAX), occurredAt } };
+      return { admitted: true, item: { orgId, project, scope: transientScope, trust, baseTrust, text: clean, audience: draft.audience, links: draft.links.filter(validLink).slice(0, LINKS_MAX), occurredAt, ...(owedRows === undefined ? {} : { supersedes: { rows: owedRows.flatMap((row) => (row === undefined ? [] : [row])), version: draft.sourceRef.version } }) } };
     }
     return refused("retention_not_stored");
   }
@@ -238,14 +250,24 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   }
   const event = parsed.data;
 
-  // 5. An item deleted at its source stays deleted: a late retry of its create is refused.
+  // 5. An item deleted at its source stays deleted, and so does a place that was deleted or excluded: a late retry or a backfill is refused.
   if (await wasDeletedAtSource(deps.table, orgId, draft.sourceRef.system, draft.sourceRef.id)) return refused("deleted_at_source");
+  if (await isScopeClosed(deps.table, orgId, eventScope)) return refused("scope_closed");
 
-  // 6. The idempotent write.
+  // 6. Versions are ordered by the source's own time. A version older than the one stored changes nothing (it only lowers the item's remembered trust).
+  const versionAt = versionTimeOf(draft);
+  const moved = await advanceItemHead(deps.table, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, versionAt, trust, row: recordEventKey(orgId, project, occurredAt, id), indexExpiresAt: plan.indexExpiresAt });
+  if (moved.status === "stale") return { status: "duplicate" };
+
+  // 7. The idempotent write; then the older version it replaces (text, vector and notes) is hidden and queued for removal.
   const result = await putRecordEvent(deps.table, event);
+  const owed = moved.status === "advanced" ? (moved.previous === undefined ? undefined : [moved.previous.row, moved.previous.supersedes?.row]) : moved.owed === undefined ? undefined : [moved.owed.row];
+  if (owed !== undefined) {
+    await supersedeItem({ table: deps.table, now }, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, rows: owed.flatMap((row) => (row === undefined || row.sk === recordEventKey(orgId, project, occurredAt, id).sk ? [] : [row])) });
+  }
   if (result === "duplicate") return { status: "duplicate" };
 
-  // 7. The vector. A failure leaves the row with `embedPending`, which the nightly retry picks up; it never loses the row or blocks the tap.
+  // 8. The vector. A failure leaves the row with `embedPending`, which the nightly retry picks up; it never loses the row or blocks the tap.
   if (embed && deps.embedder !== undefined && deps.vectors !== undefined && text !== undefined) {
     await embedRow(deps, event, text, log);
   }

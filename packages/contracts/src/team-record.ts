@@ -119,6 +119,10 @@ export const RecordSourceRefSchema = z.object({
   url: z.string().url().max(2_048).optional(),
   parentId: z.string().min(1).max(300).optional(),
   version: z.string().min(1).max(100).optional(),
+  /** When this VERSION was made at the source (an edit's time). Versions are ordered by it, never by arrival. Absent: the row's `occurredAt`. */
+  versionAt: z.string().datetime().optional(),
+  /** The source's own id for the item, for asking the source again (the existence sweep). Absent: `id`. */
+  nativeId: z.string().min(1).max(300).optional(),
 }).strict();
 export type RecordSourceRef = z.infer<typeof RecordSourceRefSchema>;
 

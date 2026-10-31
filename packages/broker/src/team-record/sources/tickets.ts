@@ -150,7 +150,7 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
           workspaceId: context.workspaceId, ...(project === undefined ? {} : { project }), source: item.source, kind: item.kind, occurredAt: item.occurredAt,
           sourceRef: { system: item.system, id: item.id, nativeId: item.nativeId ?? item.id, ...(linksOf(item.url)[0] === undefined ? {} : { url: linksOf(item.url)[0]! }), ...(item.parentId === undefined ? {} : { parentId: item.parentId }), version: item.version },
           ...(item.authorId === undefined ? {} : { actor: { sourceId: item.authorId, ...(who.developerId === undefined ? {} : { developerId: who.developerId }), trust: who.trust } }),
-          trust, audience: ticketAudience({ source: item.source, scope: item.scope, restricted }, item.acl, config, item.occurredAt), ...(text === undefined ? {} : { text }),
+          trust, scope: item.scope, pieceTrusts: [who.trust, ...(updater === undefined ? [] : [updater.trust]), ...(previous === undefined ? [] : [previous])], audience: ticketAudience({ source: item.source, scope: item.scope, restricted }, item.acl, config, item.occurredAt), ...(text === undefined ? {} : { text }),
           structured: scalars({ state: item.state, labels: item.labels?.slice(0, 20).join(","), updatedBy: item.updaterId, restricted }), links: linksOf(item.url), retention: config.retention,
         };
         const outcome = await deps.sink.put(withRetention(draft, config.retention));

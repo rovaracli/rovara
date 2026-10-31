@@ -6,6 +6,7 @@ import { tableLakeDeleteQueue, type LakeDeleteQueue } from "./lake-queue.js";
 import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
 import { DEFAULT_WORK_BUDGET, changeScopePrincipals, queueScopeWork, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
+import { closeScope, getItemHead } from "./item-head.js";
 import { getSourceConfigByScope, putScopeWork } from "./store.js";
 import type { IngestOutcome, RecordDraft, TombstoneCause } from "./types.js";
 
@@ -34,6 +35,8 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
       const orgId = orgOf(input.workspaceId);
       // The lake first: a deleted place is queued for the lake before any hot row is touched, so a crash cannot lose it.
       if (input.scope !== undefined) await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(input.scope) }]);
+      // A deleted or excluded place stays closed (and so does every place under it): a late message or a backfill is refused. Written first, so a crash cannot reopen it.
+      if (input.scope !== undefined && (input.cause === "source_deleted" || input.cause === "excluded")) await closeScope(deps.table, orgId, input.scope, input.cause, new Date((deps.now ?? Date.now)()).toISOString());
       // Chunks of at most 500 source items, each named in the queue BEFORE it is hidden: reads hide what a queue item names, so a crash or a spent budget in the
       // middle of the hide never leaves an item visible.
       const chunks: Array<readonly string[] | undefined> = input.sourceIds === undefined ? [undefined] : Array.from({ length: Math.max(1, Math.ceil(input.sourceIds.length / 500)) }, (_, i) => input.sourceIds!.slice(i * 500, (i + 1) * 500));
@@ -100,3 +103,17 @@ export function createCaptureModePort(deps: Pick<IngestDependencies, "modes">) {
  * above already reads a Public Slack row as live-only (A) unless it is B with the opt-in, so by the time the tap asks, the answer is yes. Wire this as the tap's `notesOptIn`.
  */
 export const NOTES_OPT_IN_FROM_SOURCE_ROW = async (): Promise<boolean> => true;
+
+/**
+ * The ingest lane's `RecordHistoryPort`: the lowest trust any stored or transient version of the item ever had (kept in the item's head, even after newer versions replaced
+ * the text). `undefined` when the item was never seen. A read error throws, and the ticket tap reads that as "outsider" (fail closed).
+ */
+export function createRecordHistoryPort(deps: Pick<IngestDependencies, "table">) {
+  return {
+    async lowestTrust(input: { workspaceId: string; source: string; system: string; id: string }) {
+      const parsed = OrgIdSchema.safeParse(input.workspaceId);
+      if (!parsed.success) return undefined;
+      return (await getItemHead(deps.table, parsed.data, input.system, input.id))?.lowestTrust;
+    },
+  };
+}

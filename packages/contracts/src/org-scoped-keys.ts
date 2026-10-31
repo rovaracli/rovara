@@ -932,6 +932,32 @@ export const RECORD_EVENT_SK_PREFIX = "REC#";
 export function recordSourceIndexValue(orgId: OrgId, system: string, sourceId: string): string {
   return `WS#${OrgIdSchema.parse(orgId)}#SRC#${keyPart(system, "a source system")}#${teamRecordSourceHash(system, sourceId)}`;
 }
+/**
+ * The head of one source item (in the workspace partition): the version time of the newest version stored, its version, the LOWEST trust any version ever had, and where the
+ * newest row is. It orders versions by source time (an older version arriving late is a no-op), says which row a newer version replaces, and answers the ingest lane's
+ * "lowest trust this item ever had". Keyed by the source system and item id; the same hash as the lake's `source_hash`.
+ */
+export function recordItemHeadKey(orgId: OrgId, system: string, sourceId: string): OrgKey {
+  return { pk: teamRecordPk(orgId), sk: `ITEM#${teamRecordSourceHash(system, sourceId)}` };
+}
+/**
+ * A place that was deleted or excluded (a channel, a repository, a whole workspace of one source: `slack:T1`). It covers every place under it (`slack:T1/C9`), is
+ * permanent, and stops any later put under it. Saving a source row for the place again clears it.
+ */
+export function recordScopeMarkerKey(orgId: OrgId, scope: string): OrgKey {
+  return { pk: teamRecordPk(orgId), sk: `SCOPEDEL#${createHash("sha256").update(scope).digest("hex")}` };
+}
+/** The places a scope sits under, itself first: `slack:T1/C9` -> `slack:T1/C9`, `slack:T1`. */
+export function scopeAndAncestors(scope: string): string[] {
+  const out = [scope];
+  let current = scope;
+  for (;;) {
+    const at = current.lastIndexOf("/");
+    if (at <= 0) return out;
+    current = current.slice(0, at);
+    out.push(current);
+  }
+}
 /** A marker that one source item was deleted at its source (kept for a while, in the workspace partition), so a late retry of its create cannot bring it back. */
 export function recordDeletedMarkerKey(orgId: OrgId, system: string, sourceId: string): OrgKey {
   return { pk: teamRecordPk(orgId), sk: `DELETED#${teamRecordSourceHash(system, sourceId)}` };

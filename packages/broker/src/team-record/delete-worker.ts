@@ -8,6 +8,7 @@ import { auditRecordTombstoned, type RecordAuditSink } from "./audit.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
 import { changeScopePrincipals, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { bySource, byScope, deleteItem, listScopeWork, putScopeWork, type ScopeWork } from "./store.js";
 import type { Item } from "../agents/table-writes.js";
 
@@ -68,6 +69,26 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
         ? await changeScopePrincipals(work0, orgId, { scope: entry.scope ?? "", ...(entry.add === undefined ? {} : { add: entry.add }), ...(entry.remove === undefined ? {} : { remove: entry.remove }), at: new Date(now()).toISOString() }, remaining)
         : await replaceScopeAudience(work0, orgId, { scope: entry.scope ?? "", audience: entry.audience as never, at: new Date(now()).toISOString() }, remaining);
       if (done.complete) { await deleteItem(deps.table, key); summary.finished += 1; } else summary.stillHidden += 1;
+      continue;
+    }
+
+    if (entry.type === "replaced") {
+      // Older versions of an item that a newer version replaced (already hidden): remove their rows and vectors, and the notes made from the item before this was queued.
+      const rows: Item[] = [];
+      for (const rowKey of entry.rowKeys ?? []) {
+        const response = await deps.table.documentClient.send(new GetCommand({ TableName: deps.table.tableName, Key: rowKey, ConsistentRead: true })) as { Item?: Item };
+        if (response.Item !== undefined) rows.push(response.Item);
+      }
+      const links: Item[] = [];
+      for (const sourceId of entry.sourceIds ?? []) {
+        const found = await bySource(deps.table, orgId, entry.system, sourceId, remaining.maxItems);
+        // Notes made after the replacement belong to the new version and stay.
+        links.push(...found.items.filter((item) => item.entityType === "TEAM_RECORD_DERIVATION" && item.tombstone !== undefined && typeof item.createdAt === "string" && item.createdAt <= entry.at));
+      }
+      const purged = await purgeItems(deps, orgId, [...rows, ...links]);
+      summary.rows += purged.rows; summary.facts += purged.facts; summary.redistilled += purged.redistilled; summary.vectors += purged.vectors;
+      summary.lessonsWithdrawn += purged.lessonsWithdrawn; summary.lessonsKept += purged.lessonsKept; summary.blocked += purged.blocked;
+      if (purged.blocked === 0) { await deleteItem(deps.table, key); summary.finished += 1; } else summary.stillHidden += 1;
       continue;
     }
 
