@@ -184,6 +184,10 @@ describe("a task's operation is routed to the first source that serves its model
     expect(t.access.mintKey.mock.calls[0]![0].models).toEqual([alias]);
   });
 
+  it("retains an unscoped key before agents are configured when no company model policy applies",async()=>{
+    const t=await taskSetup({agents:false});const r=await t.running();
+    expect((await r.ask()).status).toBe(200);expect(t.access.mintKey.mock.calls[0]![0]).not.toHaveProperty("models");
+  });
   it("C53 refuses an unavailable governed default even before agents are configured", async () => {
     const t = await taskSetup({ agents: false });
     await t.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC] });
@@ -535,4 +539,14 @@ describe("the models a recipe may name are the ones the org's sources serve", ()
     await withRovara.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"] });
     expect((await publishWith(withRovara, opus)).status).toBe(200);
   });
+});
+
+for(const policy of ["none","source-order","lock"] as const)it(`keeps the personal-plan key policy frozen while source eligibility is live (${policy})`,async()=>{
+ const t=await taskSetup({agents:false,plan:true}),r=await t.running();
+ if(policy==="source-order")t.db.set({...modelSourcesKey(TEST_ORG),revision:1,sources:[],credentials:[],removing:[],order:["rovara"]});
+ if(policy==="lock")t.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model:SONNET,thinkingLevel:null,locked:true}}});
+ const response=await r.ask();
+ if(policy==="none"){expect(response.status).toBe(200);expect(t.access.mintKey.mock.calls[0]![0]).not.toHaveProperty("models");}
+ else if(policy==="source-order"){expect(response).toMatchObject({status:409,body:{error:{code:"MODEL_NOT_VERIFIED",stage:"build",fixHref:"/app/admin/models/sources"}}});expect(t.access.mintKey).not.toHaveBeenCalled();}
+ else{expect(response.status).toBe(200);expect(r.payload().modelPolicy).toMatchObject({companyRevision:0});}
 });

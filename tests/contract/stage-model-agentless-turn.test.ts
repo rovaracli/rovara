@@ -24,8 +24,8 @@ it("refuses an agentless project turn when the company Build lock is unavailable
  const conversationId=(conversation.body.conversation as {id:string}).id;
  const priorOutboxCount=db.find(row=>row.entityType==="OUTBOX").length;
  const result=await serviceCall(handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Fix the project."});
- expect(result.status).toBe(403);
- expect(result.body).toMatchObject({error:{code:"MODEL_NOT_ALLOWED"}});
+ expect(result.status).toBe(409);
+ expect(result.body).toMatchObject({error:{code:"LOCK_UNSATISFIABLE",stage:"build",fixHref:"/app/admin/how-we-work"}});
  expect(db.find(row=>row.entityType==="OUTBOX")).toHaveLength(priorOutboxCount);
 });
 

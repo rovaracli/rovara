@@ -44,10 +44,14 @@ export async function readTurnActorChecks(deps:Deps,input:{orgId:OrgId;project:s
   if(task.orgId!==input.orgId||task.project!==input.project||effectiveTaskOwner(task).developerId!==input.developerId||task.closedAt!==undefined||task.outcome!==undefined)throw refused();
   const owner=ownerFenceOf(task);
   checks.push({ConditionCheck:{TableName:deps.tableName,Key:taskKey(task.taskId),ConditionExpression:"orgId = :turnTaskOrg AND taskId = :turnTaskId AND workspaceId = :turnTaskWorkspace AND #turnProject = :turnProject AND attribute_not_exists(closedAt) AND attribute_not_exists(outcome) AND "+owner.expression,ExpressionAttributeNames:{...owner.names,"#turnProject":"project"},ExpressionAttributeValues:{...owner.values,":turnTaskOrg":input.orgId,":turnTaskId":task.taskId,":turnTaskWorkspace":task.workspaceId,":turnProject":input.project}}},{ConditionCheck:{TableName:deps.tableName,Key:taskPointerKey(task.workspaceId),ConditionExpression:"taskId = :turnTaskId",ExpressionAttributeValues:{":turnTaskId":task.taskId}}});
- } else if(orgRole!=="owner"&&orgRole!=="admin") {
+ }
+ if(orgRole!=="owner"&&orgRole!=="admin") {
   const Key=projectMemberKey(input.orgId,input.developerId,input.project),grant=await read(deps,Key);
   let channelAccess=false;
-  if(grant===undefined&&input.threadChannel!==undefined) {
+  if(grant===undefined&&input.task!==undefined) {
+   checks.push({ConditionCheck:{TableName:deps.tableName,Key,ConditionExpression:"attribute_not_exists(pk)"}});
+   channelAccess=true;
+  } else if(grant===undefined&&input.threadChannel!==undefined) {
    const {teamId,channelId}=input.threadChannel,bindingKey=slackBindingKey(input.orgId,teamId,channelId),binding=await read(deps,bindingKey);
    if(binding?.teamId!==teamId||binding.channelId!==channelId||binding.projectName!==input.project||typeof binding.updatedAt!=="string")throw refused();
    checks.push({ConditionCheck:{TableName:deps.tableName,Key:bindingKey,ConditionExpression:"teamId = :team AND channelId = :channel AND projectName = :project AND updatedAt = :updated",ExpressionAttributeValues:{":team":teamId,":channel":channelId,":project":input.project,":updated":binding.updatedAt}}},{ConditionCheck:{TableName:deps.tableName,Key,ConditionExpression:"attribute_not_exists(pk)"}});
