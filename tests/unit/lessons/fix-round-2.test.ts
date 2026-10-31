@@ -10,7 +10,8 @@ import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-
 import { PROJECT_VOLUME_KEY } from "../../../packages/broker/src/lessons/sources.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { classifyTier, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, candidateJson, codeCite, draft, embedder, memberSpan, reply, settings, subject, verifier } from "./lesson-helpers.js";
+import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
+import { Alerts, Audit, Clock, KEY, lessonRecord, seed, MemoryVectors, ScriptedModel, Spend, candidateJson, codeCite, draft, embedder, memberSpan, reply, settings, subject, verifier } from "./lesson-helpers.js";
 
 const valid = [{ index: 0, result: "valid" as const, at: 1 }];
 const tierInput = (over: Partial<TierInput> = {}): TierInput => ({ ...draft(), citationChecks: valid, ...over });
@@ -239,6 +240,44 @@ describe("owner decision M8: company locks only make things stricter", () => {
 
   it("a bad lock fails closed", async () => {
     expect((await resolveLearning(settings({ companyLock: "Loose" as never }), "w", "p")).mode).toBe("Off");
+  });
+});
+
+describe("the digest never names a restricted source to people who cannot see it", () => {
+  const restrictedAudience = { kind: "restricted" as const, acl: { source: "slack" as const, scope: "slack:T/CSECRET", principals: ["U-member"], capturedAt: "x", liveCheck: "none" as const } };
+  const secretLesson = () => lessonRecord({ id: "les_secr0001", status: "candidate", provenance: { ...lessonRecord().provenance, audience: restrictedAudience, sources: ["slack:CSECRET"], inputSources: ["slack:CSECRET"] } });
+  const openLesson = () => lessonRecord({ id: "les_open0001", status: "candidate", provenance: { ...lessonRecord().provenance, sources: ["slack:CPUBLIC"], inputSources: ["slack:CPUBLIC"] } });
+  const flags = { pausedSources: { "slack:CSECRET": { at: 1, reason: "spike" }, "slack:CPUBLIC": { at: 1, reason: "spike" }, "member:ann": { at: 1, reason: "spike" }, "slack:CUNKNOWN": { at: 1, reason: "spike" } } };
+
+  it("a stranger sees the public and member keys, a count for the rest, and nothing that identifies the restricted source anywhere in the digest", async () => {
+    const store = new InMemoryLessonStore();
+    await seed(store, secretLesson(), openLesson());
+    await store.setFlags(KEY, flags);
+    const digest = await buildWeeklyDigest(store, KEY, new Clock().now(), { principals: ["U-stranger"], groups: [] });
+    expect(digest.pausedSources).toEqual(["member:ann", "slack:CPUBLIC"]);
+    expect(digest.pausedSourcesHidden).toBe(2);
+    const text = JSON.stringify(digest);
+    expect(text).not.toContain("CSECRET");
+    expect(text).not.toContain("CUNKNOWN");
+    expect(text).not.toContain("les_secr0001");
+  });
+
+  it("a person who can see the source gets its key; a key no known lesson mentions stays hidden for everyone (fail closed)", async () => {
+    const store = new InMemoryLessonStore();
+    await seed(store, secretLesson(), openLesson());
+    await store.setFlags(KEY, flags);
+    const digest = await buildWeeklyDigest(store, KEY, new Clock().now(), { principals: ["U-member"], groups: [] });
+    expect(digest.pausedSources).toEqual(["member:ann", "slack:CPUBLIC", "slack:CSECRET"]);
+    expect(digest.pausedSourcesHidden).toBe(1);
+  });
+
+  it("a source key is hidden if even one lesson mentioning it is restricted to someone else", async () => {
+    const store = new InMemoryLessonStore();
+    await seed(store, secretLesson(), { ...openLesson(), id: "les_mixed001", provenance: { ...openLesson().provenance, inputSources: ["slack:CSECRET"] } });
+    await store.setFlags(KEY, { pausedSources: { "slack:CSECRET": { at: 1, reason: "spike" } } });
+    const digest = await buildWeeklyDigest(store, KEY, new Clock().now(), { principals: ["U-stranger"], groups: [] });
+    expect(digest.pausedSources).toEqual([]);
+    expect(digest.pausedSourcesHidden).toBe(1);
   });
 });
 

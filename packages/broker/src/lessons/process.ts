@@ -5,7 +5,8 @@ import { curateDraft, type CurateDeps, type CurateOutcome } from "./curate.js";
 import { pendingExpiry } from "./expiry.js";
 import { approversRequired, emitAudit, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { CitationVerifier } from "./ports.js";
-import { isHeldBySource } from "./sources.js";
+import { isHeldBySource, resumeSource } from "./sources.js";
+import { lessonValue } from "./value.js";
 import { isCorroborated } from "./value.js";
 import { isMeaningfulAnchor } from "@agentx/contracts";
 import type { LessonDraft } from "./reflect.js";
@@ -51,7 +52,7 @@ async function verifyCitations(deps: ProcessDeps, lesson: Lesson): Promise<Lesso
   return { ...lesson, citations, citationChecks: checks };
 }
 
-export interface SettleOptions { contradiction?: boolean; judgeEscalate?: boolean }
+export interface SettleOptions { contradiction?: boolean; judgeEscalate?: boolean; /** Never apply by itself: used when a pause lifts, so a person decides. */ noAutoApply?: boolean }
 
 /**
  * Verifies, tiers and routes one lesson that the curator just wrote or changed. A lesson that is not yet supported stays a candidate. A lesson that is
@@ -98,7 +99,7 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
 
     // Auto-apply: tier 0, corroborated, not held, not a refinement of an existing lesson, and the policy and mode allow it.
     if (next.status === "pending" && next.tier === 0 && next.supersedes === undefined && isCorroborated(next.provenance) && !held
-      && approversRequired(0, resolved.approval) === 0 && modeAllows(resolved.mode, "auto_apply")) {
+      && options.noAutoApply !== true && approversRequired(0, resolved.approval) === 0 && modeAllows(resolved.mode, "auto_apply")) {
       try {
         const active = await activateLesson(deps, key, next, [{ approvalId: `auto-${lessonId}`, by: "system:auto", at: deps.now(), mode: "auto" }], resolved.expiryDays, "lesson.auto_applied");
         if (active !== undefined) return active;
@@ -121,4 +122,24 @@ export async function processDraft(deps: ProcessDeps, key: ScopeKey, draft: Less
   const options: SettleOptions = outcome.outcome === "contradiction" ? { contradiction: true } : outcome.outcome === "added" || outcome.outcome === "updated" ? { judgeEscalate: outcome.judgeEscalate } : {};
   const lesson = await settleLesson(deps, key, outcome.lesson.id, options);
   return lesson === undefined ? { outcome } : { outcome, lesson };
+}
+
+export const RESUME_RESETTLE_LIMIT = 200;
+/**
+ * A maintainer resumes a paused source, and the candidates held while it was paused are settled again, most valuable first, under the rules in force now
+ * (tier, corroboration, spike holds from OTHER sources that are still paused). Nothing is applied just because the pause lifted: a held lesson that has
+ * earned attention goes to people as pending; it never goes live from here. Bounded at RESUME_RESETTLE_LIMIT lessons per call.
+ */
+export async function resumeAndResettle(deps: ProcessDeps, key: ScopeKey, source: string, actor: string): Promise<{ resumed: boolean; settled: string[] }> {
+  if (!(await resumeSource(deps, deps.store, key, source, actor))) return { resumed: false, settled: [] };
+  const held = (await deps.store.list(key, { statuses: ["candidate"] }))
+    .filter((l) => l.provenance.sources.includes(source) || l.provenance.inputSources.includes(source))
+    .sort((a, b) => lessonValue(b) - lessonValue(a) || a.id.localeCompare(b.id))
+    .slice(0, RESUME_RESETTLE_LIMIT);
+  const settled: string[] = [];
+  for (const lesson of held) {
+    const result = await settleLesson(deps, key, lesson.id, { noAutoApply: true });
+    if (result !== undefined) settled.push(lesson.id);
+  }
+  return { resumed: true, settled };
 }

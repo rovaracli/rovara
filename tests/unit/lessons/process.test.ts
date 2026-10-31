@@ -1,8 +1,8 @@
 // L3a (routing part): promotion to pending, tier-0 auto-apply and the settle step, run through the whole draft-to-lesson pipeline.
 import { describe, expect, it } from "vitest";
 import { curateDraft } from "../../../packages/broker/src/lessons/curate.js";
-import { processDraft, settleLesson, type ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
-import { resumeSource } from "../../../packages/broker/src/lessons/sources.js";
+import { processDraft, resumeAndResettle, settleLesson, type ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
+
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, draft, embedder, settings, verifier } from "./lesson-helpers.js";
@@ -75,16 +75,41 @@ describe("per-source spike detection (owner decision 'Lesson limits': no flat ca
     expect(Object.keys((await store.flags(KEY)).pausedSources ?? {})).toEqual(["slack:new"]);
   });
 
-  it("a maintainer resumes the source, and its held lesson moves on at the next settle", async () => {
+  it("a maintainer resumes the source, and the lesson held meanwhile is re-settled: it goes to people, never live by itself", async () => {
     const { deps, store, audit } = setup();
     await store.setFlags(KEY, { pausedSources: { "member:ann": { at: 1, reason: "spike" } } });
     const held = await processDraft(deps, KEY, unique(1, ["member:ann"]));
     expect(held.lesson!.status).toBe("candidate");
-    expect(await resumeSource(deps, store, KEY, "member:ann", "owner")).toBe(true);
-    expect(await resumeSource(deps, store, KEY, "member:ann", "owner")).toBe(false);
+    expect(await resumeAndResettle(deps, KEY, "member:ann", "owner")).toEqual({ resumed: true, settled: [held.lesson!.id] });
+    expect(await resumeAndResettle(deps, KEY, "member:ann", "owner")).toEqual({ resumed: false, settled: [] });
     expect(audit.actions()).toContain("lesson.source_resumed");
-    const settled = await settleLesson(deps, KEY, held.lesson!.id);
-    expect(settled!.status).toBe("active");
+    const after = (await store.get(KEY, held.lesson!.id))!;
+    expect(after.status).toBe("pending");
+    expect(after.approvals).toEqual([]);
+  });
+
+  it("re-settling follows the rules in force now: a lesson also tied to another paused source stays held", async () => {
+    const { deps, store } = setup();
+    await store.setFlags(KEY, { pausedSources: { "member:ann": { at: 1, reason: "spike" }, "slack:C9": { at: 1, reason: "spike" } } });
+    const both = await processDraft(deps, KEY, unique(1, ["member:ann"], { inputSources: ["member:ann", "slack:C9"] }));
+    const onlyAnn = await processDraft(deps, KEY, unique(2, ["member:ann"]));
+    const unrelated = await processDraft(deps, KEY, unique(9, ["member:bob"], { measured: false }));
+    expect(unrelated.lesson!.status).toBe("candidate");
+    const result = await resumeAndResettle(deps, KEY, "member:ann", "owner");
+    expect(await store.get(KEY, unrelated.lesson!.id)).toEqual(unrelated.lesson);
+    expect(result.settled.sort()).toEqual([both.lesson!.id, onlyAnn.lesson!.id].sort());
+    expect((await store.get(KEY, both.lesson!.id))!.status).toBe("candidate");
+    expect((await store.get(KEY, onlyAnn.lesson!.id))!.status).toBe("pending");
+  });
+
+  it("a held tier-0 corroborated fact is not applied by the resume (the lift alone never grants), though the same fact arriving unheld would be", async () => {
+    const { deps, store } = setup();
+    const fresh = await processDraft(setup().deps, KEY, unique(5, ["member:zed"]));
+    expect(fresh.lesson!.status).toBe("active");
+    await store.setFlags(KEY, { pausedSources: { "member:ann": { at: 1, reason: "spike" } } });
+    const held = await processDraft(deps, KEY, unique(5, ["member:ann"]));
+    await resumeAndResettle(deps, KEY, "member:ann", "owner");
+    expect((await store.get(KEY, held.lesson!.id))!.status).toBe("pending");
   });
 });
 

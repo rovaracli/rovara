@@ -16,8 +16,10 @@ export interface WeeklyDigest {
   autoApplied: DigestItem[]; waiting: DigestItem[]; retired: DigestItem[]; staleOrRetireProposed: DigestItem[];
   /** Candidates collected and not yet in front of people. Nothing is dropped. */
   queuedCount: number;
-  /** Sources paused by spike detection and waiting for the maintainer. */
+  /** Sources paused by spike detection and waiting for the maintainer. A key is named only when the viewer can see every lesson that mentions it. */
   pausedSources: string[];
+  /** Paused sources whose key is withheld because naming it could identify a restricted source the viewer cannot see. */
+  pausedSourcesHidden: number;
   /** Lessons left out because the viewer could not see their source. */
   restrictedHidden: number;
 }
@@ -37,7 +39,19 @@ export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: 
     retired: shown.filter((l) => (l.status === "retired" || l.status === "expired") && l.updatedAt >= since).map(item),
     staleOrRetireProposed: shown.filter((l) => l.status === "stale" || (l.status === "active" && l.retireProposedAt !== undefined)).map(item),
     queuedCount: all.filter((l) => l.status === "candidate").length,
-    pausedSources: Object.keys((await store.flags(key)).pausedSources ?? {}).sort(),
+    ...(await pausedSourcesFor(store, key, all, visible)),
     restrictedHidden: all.length - shown.length,
   };
+}
+
+/** Keys that are plainly about a project member or CI are always safe to name; anything else (a channel, a tracker folder) only if known lessons mention it and the viewer sees all of them. */
+const ALWAYS_NAMEABLE = /^(member:|ci$|kind:)/u;
+async function pausedSourcesFor(store: LessonStore, key: ScopeKey, all: readonly Lesson[], visible: (l: Lesson) => boolean): Promise<{ pausedSources: string[]; pausedSourcesHidden: number }> {
+  const keys = Object.keys((await store.flags(key)).pausedSources ?? {}).sort();
+  const named: string[] = [];
+  for (const source of keys) {
+    const mentions = all.filter((l) => l.provenance.sources.includes(source) || l.provenance.inputSources.includes(source));
+    if (ALWAYS_NAMEABLE.test(source) || (mentions.length > 0 && mentions.every(visible))) named.push(source);
+  }
+  return { pausedSources: named, pausedSourcesHidden: keys.length - named.length };
 }

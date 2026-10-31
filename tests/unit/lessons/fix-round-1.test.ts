@@ -456,7 +456,7 @@ describe("owner decision 'Lesson limits': ranking by value", () => {
 
   it("the digest shows paused sources and the number of collected, queued candidates", async () => {
     const { store, clock } = approveSetup();
-    await seed(store, rec("les_cand0001", { status: "candidate" }));
+    await seed(store, rec("les_cand0001", { status: "candidate" }, { sources: ["slack:C1"], inputSources: ["slack:C1"] }));
     await store.setFlags(KEY, { pausedSources: { "slack:C1": { at: 1, reason: "spike" } } });
     const digest = await buildWeeklyDigest(store, KEY, clock.now(), inACL);
     expect(digest).toMatchObject({ queuedCount: 1, pausedSources: ["slack:C1"] });
