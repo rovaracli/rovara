@@ -31,6 +31,12 @@ const QUOTE_LINE = /^\s{0,3}(?:>|&gt;)/;
 const MULTI_LINE_QUOTE_START = /^\s{0,3}(?:>>>|&gt;&gt;&gt;)/;
 const FORWARD_MARKER = /^\s*(?:-{3,}\s*)?(?:forwarded message|begin forwarded message|original message|forwarded from)\b/i;
 const FWD_SUBJECT = /^\s*(?:fwd?|fw):/i;
+/** "On Mon, 3 Mar 2025 at 10:00, Name <a@b> wrote:" and similar reply headers: the rest is the quoted thread. */
+const REPLY_HEADER = /^\s*(?:on\s.{1,200}\swrote:|le\s.{1,200}\sa\s\u00e9crit\s*:)\s*$/i;
+const OUTLOOK_FROM = /^\s*(?:from|de):\s/i;
+const OUTLOOK_SENT = /^\s*(?:sent|date|envoy\u00e9):\s/i;
+/** Four spaces or a tab: an indented block is treated as quoted (fail closed; code samples lose member trust). */
+const INDENTED = /^(?: {4,}|\t)\S/;
 
 /**
  * Splits a message into spans. Own lines keep the author's trust. Block-quote lines (`>`), everything after `>>>`, everything after a
@@ -66,13 +72,14 @@ export function splitQuotedSpans(message: MessageInput, idPrefix = "s"): TextSpa
       quote.push(line);
       return;
     }
-    if (MULTI_LINE_QUOTE_START.test(line) || FORWARD_MARKER.test(line) || (index === 0 && FWD_SUBJECT.test(line))) {
+    const outlook = OUTLOOK_FROM.test(line) && lines.slice(index + 1, index + 4).some((next) => OUTLOOK_SENT.test(next));
+    if (MULTI_LINE_QUOTE_START.test(line) || FORWARD_MARKER.test(line) || REPLY_HEADER.test(line) || outlook || (index === 0 && FWD_SUBJECT.test(line))) {
       flushOwn();
       rest = true;
       quote.push(line);
       return;
     }
-    if (QUOTE_LINE.test(line)) {
+    if (QUOTE_LINE.test(line) || INDENTED.test(line)) {
       flushOwn();
       quote.push(line);
       return;

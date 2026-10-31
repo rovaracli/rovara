@@ -10,7 +10,7 @@ import { redactText } from "@agentx/contracts";
 import { z } from "zod";
 import type { Audience, RecordFactLike, RetentionMode, TrustClass } from "./shared-types.js";
 import { assertSafeId } from "./shared-types.js";
-import { taintOf } from "./taint.js";
+import { taintOfItems, trustRank } from "./taint.js";
 import type { TextSpan } from "./quotes.js";
 
 export const FACT_TEXT_MAX = 400;
@@ -46,7 +46,7 @@ export interface DistillDeps {
 
 export type DistillOutcome =
   | { facts: RecordFactLike[]; included: string[]; failed?: undefined }
-  | { facts: []; included: string[]; failed: "retention_a" | "no_input" | "model_error" | "bad_output" | "mixed_audience" };
+  | { facts: []; included: string[]; failed: "retention_a" | "no_input" | "bad_input" | "model_error" | "bad_output" | "mixed_audience" };
 
 const ModelAnswer = z.strictObject({
   facts: z
@@ -80,16 +80,24 @@ export function cleanNoteText(text: string): string {
   return redactText(text.replace(HIDDEN, "").replace(TAGS, " ").replace(EMAIL, "[email]").replace(PHONE, "[phone]")).replace(/\s+/g, " ").trim();
 }
 
-/** Makes span text safe to place between span markers: the markers cannot be forged from inside. */
+/** Makes span text safe to place between span markers: every angle bracket becomes a look-alike, so the markers cannot be forged from inside. */
 function escapeSpanText(text: string): string {
-  return text.replace(HIDDEN, "").replaceAll("<<", "< <").replaceAll(">>", "> >");
+  return text.replace(HIDDEN, "").replaceAll("<", "\u2039").replaceAll(">", "\u203a");
+}
+
+const SAFE_ITEM_ID = /^[A-Za-z0-9][A-Za-z0-9._:/#@-]{0,199}$/;
+const SAFE_LINK = /^https?:\/\/[^\s<>"'`]{1,2000}$/;
+
+/** Links that are plain URLs with no whitespace or markup: only these reach the prompt header and the `links` a fact may carry. */
+function safeLinks(links: readonly string[]): string[] {
+  return links.filter((link) => SAFE_LINK.test(link));
 }
 
 /** Spotlighting: each span is delimited and carries its id and trust, and every line is prefixed so it cannot pass for the prompt. */
 export function renderSpans(items: readonly DistillItem[]): string {
   const out: string[] = [];
   for (const item of items) {
-    out.push(`Source item ${item.id} links: ${item.links.join(" ") || "(none)"}`);
+    out.push(`Source item ${item.id} links: ${safeLinks(item.links).join(" ") || "(none)"}`);
     for (const span of item.spans) {
       out.push(`<<span id=${item.id}/${span.id} trust=${span.trust}${span.quoted ? " quoted=yes" : ""}>>`);
       for (const line of escapeSpanText(span.text).split("\n")) out.push(`| ${line}`);
@@ -115,13 +123,26 @@ export async function distillBundle(deps: DistillDeps, bundle: DistillBundle): P
   if (bundle.retention === "A") return { facts: [], included: [], failed: "retention_a" };
   assertSafeId(bundle.workspaceId, "workspace id");
   if (bundle.project !== undefined) assertSafeId(bundle.project, "project");
-  const items = takeWithinBudget(bundle.items.filter((item) => item.spans.length > 0), deps.maxInputChars ?? DISTILL_INPUT_CHARS_MAX);
-  if (items.length === 0) return { facts: [], included: [], failed: "no_input" };
+  // Malformed input: an item id that is not plain, or a span more trusted than the item that holds it.
+  for (const item of bundle.items) {
+    if (!SAFE_ITEM_ID.test(item.id) || item.spans.some((span) => trustRank(span.trust) > trustRank(item.trust))) {
+      return { facts: [], included: [], failed: "bad_input" };
+    }
+  }
+  // Control C1: outsider spans never reach the model. An item with nothing left is not used at all. What was removed still counts for
+  // trust below (taintOfItems reads the full spans), so a fact from a mixed item stays `outsider`.
+  const candidates = bundle.items
+    .map((item) => ({ full: item, shown: { ...item, links: safeLinks(item.links), spans: item.spans.filter((span) => span.trust !== "outsider") } }))
+    .filter((entry) => entry.shown.spans.length > 0);
+  const chosen = takeWithinBudget(candidates.map((entry) => entry.shown), deps.maxInputChars ?? DISTILL_INPUT_CHARS_MAX);
+  if (chosen.length === 0) return { facts: [], included: [], failed: "no_input" };
+  const items = chosen;
   const included = items.map((item) => item.id);
+  const full = candidates.filter((entry) => included.includes(entry.full.id)).map((entry) => entry.full);
 
   let taint;
   try {
-    taint = taintOf(items);
+    taint = taintOfItems(full);
   } catch {
     return { facts: [], included, failed: "mixed_audience" };
   }

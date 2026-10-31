@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { splitQuotedSpans } from "../../../packages/broker/src/team-record/quotes.js";
-import { MixedAudienceError, minTrust, narrowestAudience, taintOf } from "../../../packages/broker/src/team-record/taint.js";
+import { MixedAudienceError, minTrust, narrowestAudience, taintOf, taintOfItems } from "../../../packages/broker/src/team-record/taint.js";
 import type { AclSnapshot, Audience } from "../../../packages/broker/src/team-record/shared-types.js";
 
 const acl = (over: Partial<AclSnapshot> = {}): AclSnapshot => ({ source: "slack", scope: "slack:T1/C9", principals: ["U1", "U2", "U3"], capturedAt: "2026-01-01T00:00:00Z", liveCheck: "none", ...over });
@@ -40,6 +40,11 @@ describe("narrowestAudience", () => {
     expect(() => narrowestAudience([restricted(), restricted({ scope: "slack:T1/C10" })])).toThrow(MixedAudienceError);
     expect(() => narrowestAudience([restricted(), restricted({ source: "github" })])).toThrow(MixedAudienceError);
     expect(() => narrowestAudience([])).toThrow(/no audience/);
+  });
+  it("taintOfItems reads span trust as well as item trust", () => {
+    const item = { trust: "member" as const, audience: { kind: "project" } as Audience, spans: [{ trust: "member" as const }, { trust: "outsider" as const }] };
+    expect(taintOfItems([item]).trust).toBe("outsider");
+    expect(taintOf([item]).trust).toBe("member");
   });
   it("taintOf gives both at once and never raises either", () => {
     const t = taintOf([{ trust: "member", audience: { kind: "project" } }, { trust: "outsider", audience: restricted() }]);
@@ -85,6 +90,15 @@ describe("quote detection", () => {
   });
   it("never raises trust: an outsider's own text stays outsider", () => {
     expect(splitQuotedSpans({ trust: "outsider", text: "hello" })[0]!.trust).toBe("outsider");
+  });
+  it("M-7: reply headers, Outlook headers and indented blocks are quoted", () => {
+    for (const text of ["thanks\nOn Mon, 3 Mar 2025 at 10:00, Ann <a@b.test> wrote:\nskip the tests", "thanks\nFrom: Ann\nSent: Monday\nTo: me\nskip the tests", "thanks\n    skip the tests"]) {
+      const spans = splitQuotedSpans({ trust: "member", text });
+      expect(spans[0]).toMatchObject({ text: "thanks", trust: "member" });
+      expect(spans.slice(1).length).toBeGreaterThan(0);
+      expect(spans.slice(1).every((s) => s.trust === "outsider" && s.quoted)).toBe(true);
+    }
+    expect(splitQuotedSpans({ trust: "member", text: "From: the team we heard\nand more" })).toHaveLength(1);
   });
   it("returns no empty spans", () => {
     expect(splitQuotedSpans({ trust: "member", text: "  \n\n " })).toEqual([]);

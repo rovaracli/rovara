@@ -9,6 +9,11 @@ import type { AclSnapshot, Audience, TrustClass } from "./shared-types.js";
  */
 const TRUST_RANK: Record<TrustClass, number> = { outsider: 0, system: 1, member: 2, rovara: 3 };
 
+/** Rank of a trust class: higher is more trusted. Unknown values rank as outsider. */
+export function trustRank(value: unknown): number {
+  return isTrustClass(value) ? TRUST_RANK[value] : 0;
+}
+
 export function isTrustClass(value: unknown): value is TrustClass {
   return typeof value === "string" && Object.hasOwn(TRUST_RANK, value);
 }
@@ -75,6 +80,23 @@ export function narrowestAudience(audiences: readonly Audience[]): Audience {
 export interface TaintedInput {
   trust: TrustClass;
   audience: Audience;
+}
+
+/** An item with the spans it was made of. */
+export interface TaintedItem extends TaintedInput {
+  spans: ReadonlyArray<{ trust: TrustClass }>;
+}
+
+/**
+ * Taint of items: the lowest trust over every item AND every span in it (a member's message that quotes or forwards an outsider has an
+ * outsider span, so the result is outsider), and the narrowest audience. This is the one entry point for derived text, so no caller can
+ * skip the spans (control C2/C3).
+ */
+export function taintOfItems(items: readonly TaintedItem[]): TaintedInput {
+  return {
+    trust: minTrust(items.flatMap((item) => [item.trust, ...item.spans.map((span) => span.trust)])),
+    audience: narrowestAudience(items.map((item) => item.audience)),
+  };
 }
 
 export function taintOf(inputs: readonly TaintedInput[]): TaintedInput {
