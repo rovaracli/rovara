@@ -252,11 +252,40 @@ describe("the text guard and JSON (ME-17: runs split across newlines inside JSON
     const redacted = guard.redact(JSON.stringify({ summary: `before ${SOURCE} after`, other: "x" }));
     expect(JSON.parse(redacted)).toEqual({ summary: `before ${REMOVED} after`, other: "x" });
   });
-  it("fix round: text that is not JSON (or is cut off) is still cut in place, and a run across object KEYS is not caught (best effort)", async () => {
+  it("fix round: text that is not JSON (or is cut off) is still cut in place", async () => {
     const guard = await guardOf(SOURCE);
     expect(guard.redact(`He wrote: ${SOURCE}. Thanks.`)).toBe(`He wrote: ${REMOVED} Thanks.`);
     expect(guard.redact(`{"summary":"${SOURCE.replace(/\n/gu, " ")}`)).toContain(REMOVED);
-    const keys = JSON.stringify(Object.fromEntries(SOURCE.split(/\s+/u).map((word, index) => [`${word}${index}x`.slice(0, 40), 1])));
-    expect(() => JSON.parse(guard.redact(keys)) as unknown).not.toThrow();
+  });
+  it("tidy round: a run that sits in object KEYS is removed, each touched key gets a neutral name unique in its object, and the JSON still parses", async () => {
+    const guard = await guardOf(SOURCE);
+    const words = SOURCE.split(/\s+/u);
+    const byKeys = JSON.stringify({ ...Object.fromEntries(words.map((word, index) => [word, index])), keep: "me", "[key removed 1]": "already here" });
+    const redacted = guard.redact(byKeys);
+    const parsed = JSON.parse(redacted) as Record<string, unknown>;
+    expect(redacted).not.toMatch(/bravo|november|whiskey/u);
+    // every key of the run is replaced; none collides with the key that was already called "[key removed 1]"
+    expect(Object.keys(parsed)).toHaveLength(words.length + 2);
+    expect(parsed.keep).toBe("me");
+    expect(parsed["[key removed 1]"]).toBe("already here");
+    expect(Object.keys(parsed).filter((key) => key.startsWith("[key removed "))).toHaveLength(words.length + 1);
+    expect(Object.values(parsed).filter((value) => typeof value === "number")).toHaveLength(words.length);
+    // a run that starts in a key and ends in the value after it
+    const mixed = JSON.parse(guard.redact(JSON.stringify({ [words.slice(0, 12).join(" ")]: words.slice(12).join(" "), other: 1 }))) as Record<string, unknown>;
+    expect(mixed).toEqual({ "[key removed 1]": REMOVED, other: 1 });
+    // keys that are not part of any run are left alone
+    const clean = JSON.stringify({ alpha: 1, bravo: 2 });
+    expect(guard.redact(clean)).toBe(clean);
+  });
+  it("tidy round: JSON nested deeper than 64 levels that holds a run is replaced whole, never cut as text; deep JSON with no run is untouched", async () => {
+    const guard = await guardOf(SOURCE);
+    const deep = (leaf: string, levels: number) => `${'{"a":['.repeat(levels)}${JSON.stringify(leaf)}${"]}".repeat(levels)}`;
+    expect(guard.redact(deep(`x ${SOURCE} y`, 70))).toBe(REMOVED);
+    const harmless = deep("nothing to see here, only a few harmless words that are long enough to be checked against the source", 70);
+    expect(guard.redact(harmless)).toBe(harmless);
+    // at the limit it is still walked and cut inside its string
+    const shallow = guard.redact(deep(`x ${SOURCE} y`, 20));
+    expect(shallow).toContain(`x ${REMOVED} y`);
+    expect(() => JSON.parse(shallow) as unknown).not.toThrow();
   });
 });

@@ -18,7 +18,8 @@ const word = (raw: string): string => raw.toLowerCase().replace(/[^\p{L}\p{N}]+/
 // structure JSON (`{ } [ ] " : ,`) are read as spaces. The view is as long as the text, so a range found in it is cut out of the original text, and what is cut never ends inside an escape:
 // the JSON that comes back still parses. The same view is used for the source text and the model's text, so a source that itself came back as JSON matches too.
 // Text that parses as JSON is redacted by walking the parsed value instead of cutting the text: a run inside one string is cut out of that string; a run that spans several strings
-// (array elements, object values) replaces each string it touches in full, so the structure survives. A run that spans object KEYS is not caught (keys are not read): best effort.
+// (array elements, object values, object keys) replaces each string it touches in full (a key: its name becomes a neutral placeholder, unique in its object), so the structure survives.
+// JSON nested deeper than 64 levels that holds a run is replaced whole rather than cut as text.
 const JSON_WHITESPACE_CODES = "0009|000[aAbBcCdD]|0020|0085|00[aA]0|1680|200[0-9aA]|202[89]|202[fF]|205[fF]|3000";
 const JSON_NOISE = new RegExp(`(?<!\\\\)\\\\+(?:[nrt"/]|u(?:${JSON_WHITESPACE_CODES}))|[{}\\[\\]":,]`, "gu");
 const jsonView = (text: string): string => text.replace(JSON_NOISE, (match) => " ".repeat(match.length));
@@ -70,52 +71,70 @@ export function createSourceTextGuard(runWords = RUN_WORDS): SourceTextGuard {
 
   const MAX_JSON_DEPTH = 64;
   const MAX_NESTED_JSON = 4;
-  /** The strings of a parsed JSON value in document order (keys are not read); undefined when it nests too deeply to walk. */
-  function leavesOf(value: unknown, into: string[], depth: number): boolean {
-    if (depth > MAX_JSON_DEPTH) return false;
-    if (typeof value === "string") { into.push(value); return true; }
-    if (Array.isArray(value)) return value.every((item) => leavesOf(item, into, depth + 1));
-    if (typeof value === "object" && value !== null) return Object.values(value as Record<string, unknown>).every((item) => leavesOf(item, into, depth + 1));
-    return true;
-  }
-  function mapLeaves(value: unknown, replace: (leaf: string) => string): unknown {
-    if (typeof value === "string") return replace(value);
-    if (Array.isArray(value)) return value.map((item) => mapLeaves(item, replace));
-    if (typeof value === "object" && value !== null) return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, mapLeaves(item, replace)]));
+  class TooDeep extends Error {}
+  /**
+   * Visits every string of a parsed JSON value in document order, object keys (before their values) included, and rebuilds the value from what `visit` returns. A key that `visit`
+   * changed gets a neutral placeholder name, unique within its object, so the object stays an object and the JSON still parses. Throws TooDeep past MAX_JSON_DEPTH.
+   */
+  function rebuild(value: unknown, visit: (text: string, kind: "key" | "value") => string, depth: number): unknown {
+    if (depth > MAX_JSON_DEPTH) throw new TooDeep();
+    if (typeof value === "string") return visit(value, "value");
+    if (Array.isArray(value)) return value.map((item) => rebuild(item, visit, depth + 1));
+    if (typeof value === "object" && value !== null) {
+      const taken = new Set(Object.keys(value));
+      let placeholders = 0;
+      const out: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+        let name = key;
+        if (visit(key, "key") !== key) {
+          do { placeholders += 1; name = `[key removed ${String(placeholders)}]`; } while (taken.has(name));
+          taken.add(name);
+        }
+        out[name] = rebuild(item, visit, depth + 1);
+      }
+      return out;
+    }
     return value;
   }
 
   /**
    * Text that parses as JSON is redacted by walking the parsed value, so the structure always survives: a run inside one string is cut out of that string; a run that spans several
-   * strings replaces each of them in full. Returns undefined when the text is not JSON (or is too deeply nested to walk), and the caller cuts the text itself.
+   * strings, or touches an object key, replaces each string (a key: its name) it touches in full. JSON nested deeper than MAX_JSON_DEPTH is replaced whole if it holds a run, never
+   * cut as text. Returns undefined when the text is not JSON, and the caller cuts the text itself.
    */
   function redactJson(text: string, depth: number): string | undefined {
     let parsed: unknown;
     try { parsed = JSON.parse(text) as unknown; } catch { return undefined; }
     if (typeof parsed !== "object" && typeof parsed !== "string") return undefined;
     if (parsed === null) return undefined;
-    const leaves: string[] = [];
-    if (!leavesOf(parsed, leaves, 0)) return undefined;
-    // Runs over the words of all the strings in order: a window that starts in one string and ends in another touches both.
-    const words: string[] = [];
-    const leafOfWord: number[] = [];
-    leaves.forEach((leaf, index) => { for (const w of normalised(leaf)) { words.push(w); leafOfWord.push(index); } });
+    const leaves: Array<{ text: string; kind: "key" | "value" }> = [];
+    try { rebuild(parsed, (leaf, kind) => { leaves.push({ text: leaf, kind }); return leaf; }, 0); } catch (error) {
+      if (!(error instanceof TooDeep)) throw error;
+      return cutRuns(text) === text ? text : REMOVED;
+    }
+    // Runs over the words of the strings in order: a window that starts in one string and ends in another touches both. A key between two values would break a run that only the
+    // values make, and a value between two keys one that only the keys make, so the words are read three ways: everything, the values alone, the keys alone.
     const whole = new Set<number>();
-    for (let i = 0; i + runWords <= words.length; i += 1) {
-      if (!shingles.has(words.slice(i, i + runWords).join(" "))) continue;
-      if (leafOfWord[i] === leafOfWord[i + runWords - 1]) continue;
-      for (let k = i; k < i + runWords; k += 1) whole.add(leafOfWord[k]!);
+    for (const take of [() => true, (kind: "key" | "value") => kind === "value", (kind: "key" | "value") => kind === "key"]) {
+      const words: string[] = [];
+      const leafOfWord: number[] = [];
+      leaves.forEach((leaf, index) => { if (take(leaf.kind)) for (const w of normalised(leaf.text)) { words.push(w); leafOfWord.push(index); } });
+      for (let i = 0; i + runWords <= words.length; i += 1) {
+        if (!shingles.has(words.slice(i, i + runWords).join(" "))) continue;
+        if (leafOfWord[i] === leafOfWord[i + runWords - 1]) continue;
+        for (let k = i; k < i + runWords; k += 1) whole.add(leafOfWord[k]!);
+      }
     }
     let index = 0;
     let changed = false;
-    const next = mapLeaves(parsed, (leaf) => {
+    const next = rebuild(parsed, (leaf) => {
       const own = index;
       index += 1;
       const out = whole.has(own) ? REMOVED : redactAt(leaf, depth + 1);
       if (out !== leaf) changed = true;
       return out;
-    });
-    // JSON with nothing to remove comes back exactly as it was. (It is not cut as text either: a run that only shows across object keys is not caught, and cutting it would break the JSON.)
+    }, 0);
+    // JSON with nothing to remove comes back exactly as it was.
     if (!changed) return text;
     const indent = /^\s*[[{]\s*\n([ \t]+)/u.exec(text)?.[1];
     return JSON.stringify(next, null, indent);
