@@ -3116,6 +3116,28 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 },
               ],
             },
+            {
+              "ExpirationInDays": 14,
+              "Id": "ExpireEvidenceShort",
+              "Status": "Enabled",
+              "TagFilters": [
+                {
+                  "Key": "rovara-retention",
+                  "Value": "evidence-short",
+                },
+              ],
+            },
+            {
+              "ExpirationInDays": 30,
+              "Id": "ExpireEvidenceStd",
+              "Status": "Enabled",
+              "TagFilters": [
+                {
+                  "Key": "rovara-retention",
+                  "Value": "evidence-std",
+                },
+              ],
+            },
           ],
         },
         "PublicAccessBlockConfiguration": {
