@@ -149,3 +149,14 @@ it("the Spending editor retains the explicit seeded-policy review label without 
  const f = fixture();f.db.set({ ...f.db.get(f.key)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, seedProvenance: { occurrence: "bootstrap-original-occurrence", source: "bootstrap", reviewRequired: true, seededAt: "2026-10-01T00:00:00.000Z" } });
  const view = await f.call("GET", `${base}/editing`);expect(view.status).toBe(200);expect(view.body.seedReview).toEqual({ source: "bootstrap", reviewRequired: true, seededAt: "2026-10-01T00:00:00.000Z" });expect(view.body.policy).toEqual({ kind: "rovara_estimate" });
 });
+it("a monthly write cannot erase a concurrent task-stop upgrade seed", async () => {
+ const f = fixture(), key = projectAiKey(orgId, "web"), legacy = { ...f.db.get(key)! };delete legacy.taskStopPolicy;delete legacy.orgId;delete legacy.project;f.db.set(legacy);
+ const send = f.db.send.bind(f.db);let raced = false;
+ f.db.send = async command => { if (!raced && command instanceof TransactWriteCommand) { raced = true;f.db.set({ ...f.db.get(key)!, orgId, project: "web", taskStopPolicy: { schemaVersion: 2, kind: "inherit" }, seedProvenance: { source: "upgrade", occurrence: "original-upgrade", reviewRequired: true, seededAt: "2026-10-30T23:00:00.000Z" } }); }return send(command); };
+ await expect(writeProjectAi({ ...f.deps, projectAiSignInTableName: "signin" }, orgId, "web", { projectPays: false, monthlyBudgetUsd: 51 }, a, { actor: { developerId: a, role: "owner" }, expectedRevision: 1 })).rejects.toThrow();
+ expect(f.db.get(key)).toMatchObject({ orgId, project: "web", monthlyBudgetUsd: 50, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+});
+it("a monthly write preserves the original project seed review provenance", async () => {
+ const f = fixture(), key = projectAiKey(orgId, "web"), seedProvenance = { source: "upgrade", occurrence: "original-upgrade", reviewRequired: true, seededAt: "2026-10-30T23:00:00.000Z" };f.db.set({ ...f.db.get(key)!, seedProvenance });
+ await writeProjectAi({ ...f.deps, projectAiSignInTableName: "signin" }, orgId, "web", { projectPays: false, monthlyBudgetUsd: 51 }, a, { actor: { developerId: a, role: "owner" }, expectedRevision: 1 });expect(f.db.get(key)?.seedProvenance).toEqual(seedProvenance);
+});
