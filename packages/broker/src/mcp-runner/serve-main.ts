@@ -7,7 +7,7 @@ import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createServer, type Server } from "node:http";
 import { McpStdioProposalSchema } from "@agentx/contracts";
-import { CONFINE_LIMITS, DEFAULT_CONFINE_TOOLS, confinedCommand, createBridge, runnerTokenWellFormed, type Bridge, type ConfineTools } from "@agentx/gateway";
+import { CONFINE_LIMITS, DEFAULT_CONFINE_TOOLS, bootstrapEnvironment, confinedCommand, createBridge, runnerTokenWellFormed, type Bridge, type ConfineTools } from "@agentx/gateway";
 
 export interface ServeConfig {
   token: string;
@@ -54,6 +54,8 @@ export interface ServeDependencies {
   getgid?: () => number | undefined;
   /** A test seam only: production never passes it, and the environment cannot. */
   tools?: ConfineTools;
+  /** How the one-time nonce is redeemed (tests: no waiting). */
+  bootstrap?: Parameters<typeof bootstrapEnvironment>[1];
   /** Called if the program stops. The default exits the process with 1. */
   onChildExit?: () => void;
   log?: (event: string, fields: Record<string, string | number>) => void;
@@ -61,6 +63,8 @@ export interface ServeDependencies {
 
 /** Starts the bridge and its listener. Rejects (with nothing left running) if the bundle is not the approved one or the program does not start. */
 export async function start(dependencies: ServeDependencies): Promise<{ bridge: Bridge; server: Server }> {
+  // The task's token is not in its environment: the one-time nonce is redeemed at the controller first (nothing is read from the bundle, started or opened before that).
+  await bootstrapEnvironment(dependencies.env, dependencies.bootstrap);
   const config = readServeConfig(dependencies.env);
   // The token is held here only. The program never sees this process's environment (the bridge builds its own).
   delete dependencies.env.MCP_RUNNER_TOKEN;

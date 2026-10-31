@@ -21,7 +21,7 @@ import { request as httpsRequest } from "node:https";
 import { dirname, isAbsolute, join } from "node:path";
 import { McpStdioProposalSchema, type McpStdioProposal } from "@agentx/contracts";
 import {
-  BUNDLE_LIMITS, BundleError, INSTALL_STEPS_SENTENCE, LOCKFILE_LIMITS, runnerTokenWellFormed, runsAsRoot, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
+  BUNDLE_LIMITS, BundleError, INSTALL_STEPS_SENTENCE, bootstrapEnvironment, LOCKFILE_LIMITS, runnerTokenWellFormed, runsAsRoot, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
   type LockfileRule, type LockfileVerdict,
 } from "@agentx/gateway";
 
@@ -435,6 +435,8 @@ export interface MainDependencies {
   /** One line per call. The result line holds fixed codes and hashes, never a token or npm's text. */
   write?: (line: string) => void;
   uploader?: BundleUploader;
+  /** How the one-time nonce is redeemed (tests: no waiting). */
+  bootstrap?: Parameters<typeof bootstrapEnvironment>[1];
   /** Where the result goes. Default: the controller (`PUT /result`). */
   reporter?: ResultReporter;
   exec?: Exec;
@@ -445,6 +447,11 @@ export async function main(dependencies: MainDependencies): Promise<number> {
   const env = dependencies.env;
   const write = dependencies.write ?? ((line: string) => { process.stdout.write(`${line}\n`); });
   if (runsAsRoot({ getuid: dependencies.getuid, getgid: dependencies.getgid })) throw new Error("the install task must not run as root");
+  // The task's token and request are not in its environment: the one-time nonce is redeemed at the controller first. If that fails there is nothing to report to.
+  try { await bootstrapEnvironment(env, dependencies.bootstrap); } catch {
+    write(`${RESULT_PREFIX}${JSON.stringify({ ok: false, code: "invalid_request", sentence: INSTALL_FAILURES.invalid_request })}`);
+    return 1;
+  }
   const token = env.MCP_RUNNER_TOKEN;
   // The token is held here only; the environment npm gets is built from nothing (npmEnvironment), so it never reaches a child.
   delete dependencies.env.MCP_RUNNER_TOKEN;

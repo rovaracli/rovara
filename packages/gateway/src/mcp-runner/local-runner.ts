@@ -7,6 +7,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createBridge, type Bridge } from "./bridge.js";
+import { bootstrapEnvironment } from "./bootstrap.js";
 import { fetchBundle } from "./fetch.js";
 import type { RunnerTaskInfo, RunnerTaskSpec, RunnerTaskStatus, StopReason, TaskRunner } from "./task-runner.js";
 
@@ -54,8 +55,11 @@ export function localTaskRunner(options: LocalRunnerOptions): TaskRunner & { sto
     const home = join(task.folder, "home");
     const temp = join(task.folder, "tmp");
     await Promise.all([bundleDir, home, temp].map((directory) => mkdir(directory)));
-    const fetchEnvironment = spec.containers.fetch ?? {};
-    const serverEnvironment = spec.containers.server ?? {};
+    // Each container redeems its one-time nonce at the controller, from this machine's loopback address (the task's address here), as a real container does.
+    const fetchEnvironment = { ...(spec.containers.fetch ?? {}) };
+    const serverEnvironment = { ...(spec.containers.server ?? {}) };
+    await bootstrapEnvironment(fetchEnvironment, { delayMs: 20 });
+    await bootstrapEnvironment(serverEnvironment, { delayMs: 20 });
     // Step 1, the `fetch` container: the real fetch step.
     await fetchBundle({ controllerUrl: fetchEnvironment.MCP_CONTROLLER_URL ?? options.controllerUrl, token: fetchEnvironment.MCP_RUNNER_TOKEN ?? "", bundleHash: fetchEnvironment.MCP_BUNDLE_HASH ?? "", destination: bundleDir, getuid: () => 10_002, getgid: () => 10_002 });
     if (task.stopped) return;
@@ -71,7 +75,7 @@ export function localTaskRunner(options: LocalRunnerOptions): TaskRunner & { sto
     const server = createServer((req, res) => { void bridge.handle(req, res); });
     task.server = server;
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => resolve()); });
-    task.state = { state: "running", endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+    task.state = { state: "running", address: "127.0.0.1", endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
     await bridge.start();
   }
 
@@ -81,14 +85,14 @@ export function localTaskRunner(options: LocalRunnerOptions): TaskRunner & { sto
       counter += 1;
       const taskId = `local-${counter}`;
       const task: LocalTask = {
-        spec, state: { state: "pending" }, stopped: false,
+        spec, state: { state: "pending", address: "127.0.0.1" }, stopped: false,
         info: { taskId, purpose: spec.purpose, serverId: spec.serverId, approval: spec.approval, family: spec.family, owner: "local", startedAt: Date.now(), state: "pending" },
       };
       tasks.set(taskId, task);
       options.onStart?.(taskId, spec);
       const finish = (code: number): void => { if (task.state.state !== "stopped") task.state = { state: "stopped", exitCode: code }; };
       if (spec.purpose === "install") {
-        task.state = { state: "running" };
+        task.state = { state: "running", address: "127.0.0.1" };
         void (options.installStep?.({ ...(spec.containers.install ?? {}) }) ?? Promise.resolve(1)).then(finish, () => finish(1));
       } else {
         void runServe(task).catch(() => { finish(1); void teardown(task); });

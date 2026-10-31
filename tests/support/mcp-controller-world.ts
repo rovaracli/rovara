@@ -71,5 +71,6 @@ export const post = (url: string, path: string, token: string | undefined, body:
 export const CALL = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "echo", arguments: {} } };
 /** The MCP request the broker makes: the transport sends initialize first, but a stateless server answers any request. */
 export const mcp = (url: string, id: string, body: unknown = CALL, token: string | undefined = BROKER) => post(url, `/servers/${id}/mcp`, token, body, { accept: "application/json, text/event-stream" });
-export const tokenOf = (spec: { containers: Record<string, Record<string, string>> }, container = "server"): string => spec.containers[container]!.MCP_RUNNER_TOKEN!;
+/** The token a container of a task got by redeeming its nonce (the spec holds only the nonce). */
+export const tokenOf = (runner: FakeRunner, taskId: string, container: "fetch" | "server" | "install" = "server"): string => runner.tokenOf(taskId, container);
 

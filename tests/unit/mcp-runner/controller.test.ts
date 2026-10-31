@@ -36,7 +36,7 @@ describe("T6 controller: the two listeners", () => {
     // a task's token is not the broker's: the broker listener refuses it, and has no bundle routes
     const started = await mcp(w.brokerUrl, "mcpsim000001");
     expect(started.status).toBe(200);
-    const token = tokenOf(w.runner.started("serve")[0]!.spec);
+    const token = tokenOf(w.runner, w.runner.started("serve")[0]!.taskId);
     expect((await mcp(w.brokerUrl, "mcpsim000001", CALL, token)).status).toBe(401);
     expect((await fetch(`${w.brokerUrl}/bundles/${BUNDLE}`, { headers: { authorization: `Bearer ${BROKER}` } })).status).toBe(404);
     expect((await fetch(`${w.brokerUrl}/result`, { method: "PUT", headers: { authorization: `Bearer ${BROKER}` } })).status).toBe(404);
@@ -92,13 +92,21 @@ describe("T6 controller: starting a serve task", () => {
     expect(spec.containers.fetch).toMatchObject({ MCP_CONTROLLER_URL: w.runnerUrl, MCP_BUNDLE_HASH: BUNDLE });
     expect(spec.containers.server).toMatchObject({ MCP_BUNDLE_HASH: BUNDLE, MCP_PACKAGE_NAME: "@acme/sim-mcp", MCP_SERVER_ARGS: '["--read-only"]', MCP_SECRET_ENV: '["JIRA_TOKEN"]', MCP_MEMORY_MIB: "512" });
     // the task's token is 256 bits and is the same in both containers; the broker's token is in neither
-    expect(tokenOf(spec)).toMatch(/^[A-Za-z0-9_-]{43}$/u);
-    expect(tokenOf(spec, "fetch")).toBe(tokenOf(spec));
+    const token = tokenOf(w.runner, tasks[0]!.taskId);
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(tokenOf(w.runner, tasks[0]!.taskId, "fetch")).toBe(token);
     expect(JSON.stringify(spec)).not.toContain(BROKER);
+    // RunTask carried no token, only a nonce for each container (their own, and not the token)
+    expect(spec.containers.fetch!.MCP_RUNNER_TOKEN).toBeUndefined();
+    expect(spec.containers.server!.MCP_RUNNER_TOKEN).toBeUndefined();
+    expect(JSON.stringify(spec)).not.toContain(token);
+    expect(spec.containers.fetch!.MCP_BOOTSTRAP_NONCE).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(spec.containers.server!.MCP_BOOTSTRAP_NONCE).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(spec.containers.fetch!.MCP_BOOTSTRAP_NONCE).not.toBe(spec.containers.server!.MCP_BOOTSTRAP_NONCE);
     // the bridge was shown the task's token and never the broker's
     const bridge = w.runner.tasks.get(tasks[0]!.taskId)!.bridge!;
     expect(bridge.seen.length).toBeGreaterThan(0);
-    expect(new Set(bridge.seen)).toEqual(new Set([`Bearer ${tokenOf(spec)}`]));
+    expect(new Set(bridge.seen)).toEqual(new Set([`Bearer ${token}`]));
     expect(bridge.calls).toEqual(["echo", "echo", "echo", "echo"]);
   });
   it("gives every task a token of its own", async () => {
@@ -106,7 +114,7 @@ describe("T6 controller: starting a serve task", () => {
     await mcp(w.brokerUrl, "mcpone0000001");
     await mcp(w.brokerUrl, "mcptwo0000001");
     const [first, second] = w.runner.started("serve");
-    expect(tokenOf(first!.spec)).not.toBe(tokenOf(second!.spec));
+    expect(tokenOf(w.runner, first!.taskId)).not.toBe(tokenOf(w.runner, second!.taskId));
   });
   it("relays the bridge's JSON answer", async () => {
     const w = await world({ runner: { reply: () => "hello from the bridge" } });
@@ -241,7 +249,7 @@ describe("T6 controller: warm", () => {
 describe("T6 controller: the runner listener and the scope of a token (T4 review I4)", () => {
   async function serveToken(w: Awaited<ReturnType<typeof world>>): Promise<string> {
     await mcp(w.brokerUrl, "mcpsim000001");
-    return tokenOf(w.runner.started("serve")[0]!.spec);
+    return tokenOf(w.runner, w.runner.started("serve")[0]!.taskId);
   }
   const get = (url: string, path: string, token: string) => fetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
   const put = (url: string, path: string, token: string, body: Buffer | string = "") => fetch(`${url}${path}`, { method: "PUT", headers: { authorization: `Bearer ${token}` }, body });
@@ -267,7 +275,7 @@ describe("T6 controller: the runner listener and the scope of a token (T4 review
     const w = await world({ runner: { reportedBundle: () => OTHER } });
     await w.bundles.put(BUNDLE, (async function* () { yield BYTES; })(), 1_000);
     expect((await mcp(w.brokerUrl, "mcpsim000001")).status).toBe(503);
-    const token = tokenOf(w.runner.started("serve")[0]!.spec);
+    const token = tokenOf(w.runner, w.runner.started("serve")[0]!.taskId);
     expect((await get(w.runnerUrl, `/bundles/${BUNDLE}`, token)).status).toBe(401);
   });
   it("answers 404 for a bundle that is approved but not stored", async () => {
@@ -308,9 +316,11 @@ describe("T6 controller: install", () => {
   };
   async function installWorld(steps: Parameters<typeof installer>[0] = {}, controller: Partial<McpControllerOptions> = {}) {
     let url = "";
-    const w = await world({ runner: { install: installer(steps)(() => url) }, controller });
+    const requests: Array<Record<string, unknown>> = [];
+    const run = installer(steps)(() => url);
+    const w = await world({ runner: { install: async (input) => { requests.push(input.request); await run(input); } }, controller });
     url = w.runnerUrl;
-    return w;
+    return { ...w, requests };
   }
 
   it("runs an install task with the proposal and the registry, reports the hashes, and stops the task", async () => {
@@ -321,8 +331,12 @@ describe("T6 controller: install", () => {
     expect(task!.spec).toMatchObject({ purpose: "install", serverId: "install", approval: "", family: "rovara-mcp-install" });
     const environment = task!.spec.containers.install!;
     expect(environment).toMatchObject({ MCP_CONTROLLER_URL: w.runnerUrl, ROVARA_MCP_NPM_REGISTRY: "https://registry.example/" });
-    expect(JSON.parse(environment.MCP_INSTALL_REQUEST!)).toEqual({ registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: ["--read-only"] });
-    expect(environment.MCP_RUNNER_TOKEN).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    // the request is told to the task when it redeems its nonce, not carried by RunTask; and RunTask holds no token
+    expect(environment.MCP_INSTALL_REQUEST).toBeUndefined();
+    expect(environment.MCP_RUNNER_TOKEN).toBeUndefined();
+    expect(environment.MCP_BOOTSTRAP_NONCE).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(w.requests).toEqual([{ registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: ["--read-only"] }]);
+    expect(JSON.stringify(task!.spec)).not.toContain(w.runner.tokenOf(task!.taskId, "install"));
     expect(JSON.stringify(task!.spec)).not.toContain(BROKER);
     expect(w.runner.stoppedFor(task!.taskId)).toBe("done");
     expect(await w.bundles.has(BUNDLE)).toBe(true);
@@ -330,7 +344,7 @@ describe("T6 controller: install", () => {
   it("passes the admin's typed integrity on to the install", async () => {
     const w = await installWorld();
     await post(w.brokerUrl, "/install", BROKER, { spec: { ...proposal, integrity: INTEGRITY } });
-    expect(JSON.parse(w.runner.started("install")[0]!.spec.containers.install!.MCP_INSTALL_REQUEST!)).toMatchObject({ integrity: INTEGRITY });
+    expect(w.requests[0]).toMatchObject({ integrity: INTEGRITY });
   });
   it("lets an install token PUT one bundle once: a second PUT is refused", async () => {
     let seen: number[] = [];
@@ -412,7 +426,7 @@ describe("T6 controller: install", () => {
   it("stops honouring the install token after the install", async () => {
     const w = await installWorld();
     await post(w.brokerUrl, "/install", BROKER, { spec: proposal });
-    const token = tokenOf({ containers: { server: w.runner.started("install")[0]!.spec.containers.install! } });
+    const token = tokenOf(w.runner, w.runner.started("install")[0]!.taskId, "install");
     expect((await fetch(`${w.runnerUrl}/bundles/${OTHER}`, { method: "PUT", headers: { authorization: `Bearer ${token}` }, body: OTHER_BYTES })).status).toBe(401);
   });
   it("refuses a proposal that is not valid, and one that carries the hashes only an install may compute", async () => {

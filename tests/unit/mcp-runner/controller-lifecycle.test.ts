@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ServerResources, RunnerSpec } from "../../../packages/gateway/src/mcp-controller.js";
 import type { RunnerTaskInfo } from "../../../packages/gateway/src/mcp-runner/task-runner.js";
 import { toolsHashOfNames } from "../../support/mcp-controller-fixtures.js";
-import { BROKER, BUNDLE, ECHO, OTHER, approvedOf, mcp, post, specOf, tokenOf, useControllerWorld, world } from "../../support/mcp-controller-world.js";
+import { BROKER, BUNDLE, ECHO, OTHER, approvedOf, mcp, post, specOf, useControllerWorld, world } from "../../support/mcp-controller-world.js";
 
 useControllerWorld();
 
@@ -438,7 +438,7 @@ describe("T7 lifecycle: disable and remove", () => {
     expect((await post(w.brokerUrl, `/servers/${ID}/release`, "x".repeat(48))).status).toBe(401);
     expect((await fetch(`${w.brokerUrl}/servers/${ID}/release`, { headers: { authorization: `Bearer ${BROKER}` } })).status).toBe(405);
     expect((await post(w.brokerUrl, "/servers/..%2Fx/release", BROKER)).status).toBe(404);
-    expect((await post(w.brokerUrl, `/servers/${ID}/release`, tokenOf({ containers: { server: { MCP_RUNNER_TOKEN: "t".repeat(43) } } }))).status).toBe(401);
+    expect((await post(w.brokerUrl, `/servers/${ID}/release`, "t".repeat(43))).status).toBe(401);
   });
   it("stops serving a server the moment it is released, even when the broker's request for the call arrives later", async () => {
     const w = await lifecycle();

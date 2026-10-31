@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ProbedTool } from "../../packages/gateway/src/mcp-controller.js";
+import { bootstrapEnvironment } from "../../packages/gateway/src/mcp-runner/bootstrap.js";
 import type { RunnerTaskInfo, RunnerTaskSpec, RunnerTaskStatus, StopReason, TaskRunner } from "../../packages/gateway/src/mcp-runner/task-runner.js";
 
 export const sha256 = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
@@ -61,6 +62,8 @@ export interface FakeRunnerOptions {
   failStart?: boolean;
   replyStatus?: number;
   callStatus?: number;
+  /** The address the task reports (default the loopback, where the tests run). `null`: it has none yet. */
+  taskAddress?: string | null;
   redirect?: { to: string; on: Array<"ready" | "list" | "call"> };
   /** `start` takes this long to answer; the task already exists (and is listed) meanwhile, as an ECS task does. */
   startDelayMs?: number;
@@ -84,30 +87,63 @@ export class FakeRunner implements TaskRunner {
   listDelayMs = 0;
   constructor(readonly options: FakeRunnerOptions = {}) {}
 
+  /** The tokens each container got by redeeming its nonce, by task. */
+  readonly tokens = new Map<string, { fetch?: string; server?: string; install?: string }>();
+  tokenOf(taskId: string, container: "fetch" | "server" | "install" = "server"): string {
+    const found = this.tokens.get(taskId)?.[container];
+    if (found === undefined) throw new Error("that container has not redeemed its nonce");
+    return found;
+  }
+
   async start(spec: RunnerTaskSpec): Promise<string> {
     if (this.options.failStart === true) throw new Error("no capacity");
     this.counter += 1;
     const taskId = `fake-${this.counter}`;
-    const task: FakeTask = { spec, state: { state: "pending" }, startedAt: Date.now() };
+    // Like an ECS task, it has an address from the start (the loopback of this machine) and is pending until its containers are up.
+    const task: FakeTask = { spec, state: { state: "pending", ...this.addressField() }, startedAt: Date.now() };
     this.tasks.set(taskId, task);
     if (this.options.startDelayMs !== undefined) await new Promise((resolve) => setTimeout(resolve, this.options.startDelayMs));
-    if (spec.purpose === "install") {
-      task.state = { state: "running" };
-      const environment = spec.containers.install ?? {};
-      void (this.options.install?.({ taskId, token: environment.MCP_RUNNER_TOKEN ?? "", request: JSON.parse(environment.MCP_INSTALL_REQUEST ?? "{}") as Record<string, unknown>, environment }) ?? Promise.resolve()).then(
-        () => { if (task.state.state !== "stopped") task.state = { state: "stopped", exitCode: 0 }; }, () => { if (task.state.state !== "stopped") task.state = { state: "stopped", exitCode: 1 }; },
-      );
-      return taskId;
-    }
-    if (this.options.neverRunning === true) return taskId;
-    const server = spec.containers.server ?? {};
-    const bridge = await fakeBridge({
-      token: server.MCP_RUNNER_TOKEN ?? "", bundleHash: this.options.reportedBundle?.(spec) ?? server.MCP_BUNDLE_HASH ?? "", tools: this.options.tools?.(spec) ?? [{ name: "echo", inputSchema: { type: "object" } }],
-      ...(this.options.replyStatus === undefined ? {} : { replyStatus: this.options.replyStatus }), ...(this.options.callStatus === undefined ? {} : { callStatus: this.options.callStatus }), ...(this.options.redirect === undefined ? {} : { redirect: this.options.redirect }), ...(this.options.reply === undefined ? {} : { reply: this.options.reply }),
-    });
-    task.bridge = bridge;
-    task.state = { state: "running", endpoint: bridge.url };
+    if (this.options.neverRunning === true && spec.purpose !== "install") return taskId;
+    // The containers redeem their nonces once the controller has answered RunTask (until then it says "not yet").
+    void this.boot(taskId, task);
     return taskId;
+  }
+
+  private addressField(): { address?: string } {
+    const address = this.options.taskAddress === undefined ? "127.0.0.1" : this.options.taskAddress;
+    return address === null ? {} : { address };
+  }
+
+  private async boot(taskId: string, task: FakeTask): Promise<void> {
+    const spec = task.spec;
+    const redeem = async (container: string): Promise<Record<string, string>> => {
+      const environment = { ...(spec.containers[container] ?? {}) } as Record<string, string | undefined>;
+      await bootstrapEnvironment(environment, { delayMs: 10 });
+      return environment as Record<string, string>;
+    };
+    try {
+      if (spec.purpose === "install") {
+        const environment = await redeem("install");
+        this.tokens.set(taskId, { install: environment.MCP_RUNNER_TOKEN! });
+        task.state = { state: "running", ...this.addressField() };
+        await this.options.install?.({ taskId, token: environment.MCP_RUNNER_TOKEN!, request: JSON.parse(environment.MCP_INSTALL_REQUEST ?? "{}") as Record<string, unknown>, environment });
+        if (task.state.state !== "stopped") task.state = { state: "stopped", exitCode: 0 };
+        return;
+      }
+      const fetchEnvironment = await redeem("fetch");
+      const server = await redeem("server");
+      this.tokens.set(taskId, { fetch: fetchEnvironment.MCP_RUNNER_TOKEN!, server: server.MCP_RUNNER_TOKEN! });
+      if (task.state.state === "stopped") return;
+      const bridge = await fakeBridge({
+        token: server.MCP_RUNNER_TOKEN!, bundleHash: this.options.reportedBundle?.(spec) ?? server.MCP_BUNDLE_HASH ?? "", tools: this.options.tools?.(spec) ?? [{ name: "echo", inputSchema: { type: "object" } }],
+        ...(this.options.replyStatus === undefined ? {} : { replyStatus: this.options.replyStatus }), ...(this.options.callStatus === undefined ? {} : { callStatus: this.options.callStatus }), ...(this.options.redirect === undefined ? {} : { redirect: this.options.redirect }), ...(this.options.reply === undefined ? {} : { reply: this.options.reply }),
+      });
+      if (task.state.state === "stopped") { await bridge.close(); return; }
+      task.bridge = bridge;
+      task.state = { state: "running", ...this.addressField(), endpoint: bridge.url };
+    } catch {
+      if (task.state.state !== "stopped") task.state = { state: "stopped", exitCode: 1 };
+    }
   }
 
   async stop(taskId: string, reason: StopReason): Promise<void> {

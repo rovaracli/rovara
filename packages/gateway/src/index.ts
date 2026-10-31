@@ -33,3 +33,4 @@ export * from "./mcp-runner/bundle-store.js";
 export * from "./mcp-runner/ecs-runner.js";
 export * from "./mcp-runner/install-result.js";
 export * from "./mcp-runner/ecs-resources.js";
+export * from "./mcp-runner/bootstrap.js";

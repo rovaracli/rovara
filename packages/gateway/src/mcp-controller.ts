@@ -111,6 +111,8 @@ export interface ControllerLimits {
   callMs: number;
   bodyBytes: number;
   replyBytes: number;
+  /** A bootstrap nonce is good this long. */
+  nonceMs: number;
   /** A server idle this long is stopped. */
   idleMs: number;
   /** A serve task older than this is stopped (the next call starts a fresh one). */
@@ -125,7 +127,7 @@ export interface ControllerLimits {
 }
 
 export const CONTROLLER_LIMITS: ControllerLimits = {
-  maxServeTasks: 16, installMs: 4 * 60_000, startMs: 120_000, callMs: 60_000, bodyBytes: 1_048_576, replyBytes: 1_048_576, idleMs: 10 * 60_000, maxLifetimeMs: 12 * 3_600_000, jobMaxMs: 5 * 60_000,
+  nonceMs: 3 * 60_000, maxServeTasks: 16, installMs: 4 * 60_000, startMs: 120_000, callMs: 60_000, bodyBytes: 1_048_576, replyBytes: 1_048_576, idleMs: 10 * 60_000, maxLifetimeMs: 12 * 3_600_000, jobMaxMs: 5 * 60_000,
   maxFailures: 3, failureWindowMs: 10 * 60_000, backoffMs: 10 * 60_000,
 };
 
@@ -213,6 +215,17 @@ interface Grant {
   onResult?: ((outcome: InstallOutcome | undefined) => void) | undefined;
 }
 
+interface Nonce {
+  grantKey: string;
+  token: string;
+  /** What the task is told besides the token (the install request). */
+  request: string | undefined;
+  /** The task this nonce was issued to; unknown until RunTask has answered. */
+  taskId: string | undefined;
+  expiresAt: number;
+  redeemed: boolean;
+}
+
 interface Serving {
   serverId: string;
   /** The first 12 hex characters of the bundle hash this task was started for. */
@@ -266,6 +279,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   const runner = options.runner;
   const grants = new Map<string, Grant>();
   const serving = new Map<string, Serving>();
+  const nonces = new Map<string, Nonce>();
   const jobs = new Set<Promise<unknown>>();
   const failures = new Map<string, number[]>();
   const backoffUntil = new Map<string, number>();
@@ -318,7 +332,22 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     grants.set(key, { scope, bundleAttempted: false, resultAttempted: false, onResult });
     return { token, key };
   }
-  const revoke = (key: string): void => { grants.delete(key); };
+  const revoke = (key: string): void => {
+    grants.delete(key);
+    for (const [hash, nonce] of nonces) if (nonce.grantKey === key) nonces.delete(hash);
+  };
+
+  // ---- bootstrap nonces: what RunTask carries instead of a token ---------------------------------------------
+  /**
+   * A one-time nonce for one container of one task. RunTask parameters are readable (DescribeTasks, CloudTrail), so they carry only this: it is redeemed once, within minutes, over TLS, from the
+   * task's own address, for the real token. Read afterwards by anyone else it is worth nothing.
+   */
+  function issueNonce(grantKey: string, token: string, request?: string): { nonce: string; entry: Nonce } {
+    const nonce = generateRunnerToken();
+    const entry: Nonce = { grantKey, token, request, taskId: undefined, expiresAt: now() + limits.nonceMs, redeemed: false };
+    nonces.set(sha256Hex(nonce), entry);
+    return { nonce, entry };
+  }
 
   // ---- starting a task and waiting for it --------------------------------------------------------------
   async function waitRunning(taskId: string, isCancelled: () => boolean): Promise<string> {
@@ -380,6 +409,9 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   /** Starts a serve or probe task for a bundle and waits until its bridge is ready. On any failure the task is stopped and its token revoked. */
   async function launch(input: { kind: "serve" | "probe"; id: string; spec: RunnerSpec; secretRef?: string | undefined; isCancelled: () => boolean; onTask: (taskId: string) => void; reason: () => StopReason }): Promise<Launched> {
     const { token, key } = addGrant({ purpose: input.kind, bundleHash: input.spec.bundleHash });
+    // One nonce for each container that needs the token. RunTask carries these and nothing secret.
+    const fetchNonce = issueNonce(key, token);
+    const serverNonce = issueNonce(key, token);
     let taskId: string | undefined;
     try {
       let made: { family: string; taskDefinition: string; securityGroupId?: string | undefined };
@@ -389,14 +421,14 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       taskId = await startTask({
         purpose: input.kind, serverId: input.id, approval: approvalOf(bundleHash), family: made.family, taskDefinition: made.taskDefinition, securityGroupId: made.securityGroupId, size: input.spec.size,
         containers: {
-          // The fetch container gets the controller's address and the token; the server container gets the token (the bridge's own bearer) and what it needs to start the package.
-          fetch: { MCP_CONTROLLER_URL: options.controllerUrl, MCP_RUNNER_TOKEN: token, MCP_BUNDLE_HASH: bundleHash, ...(options.controllerCa === undefined ? {} : { ROVARA_MCP_CONTROLLER_CA: options.controllerCa }) },
+          // Each container gets the controller's address and its own one-time nonce, and what it needs to start; the token comes only from redeeming the nonce.
+          fetch: { MCP_CONTROLLER_URL: options.controllerUrl, MCP_BOOTSTRAP_NONCE: fetchNonce.nonce, MCP_BUNDLE_HASH: bundleHash, ...(options.controllerCa === undefined ? {} : { ROVARA_MCP_CONTROLLER_CA: options.controllerCa }) },
           server: {
-            MCP_RUNNER_TOKEN: token, MCP_BUNDLE_HASH: bundleHash, MCP_PACKAGE_NAME: input.spec.name, MCP_SERVER_ARGS: JSON.stringify(input.spec.args), MCP_SECRET_ENV: JSON.stringify(input.spec.secretEnv),
+            MCP_CONTROLLER_URL: options.controllerUrl, MCP_BOOTSTRAP_NONCE: serverNonce.nonce, ...(options.controllerCa === undefined ? {} : { ROVARA_MCP_CONTROLLER_CA: options.controllerCa }), MCP_BUNDLE_HASH: bundleHash, MCP_PACKAGE_NAME: input.spec.name, MCP_SERVER_ARGS: JSON.stringify(input.spec.args), MCP_SECRET_ENV: JSON.stringify(input.spec.secretEnv),
             MCP_MEMORY_MIB: String(input.spec.size.memoryMiB), PORT: "8080",
           },
         },
-      }, (started) => { input.onTask(started); if (input.kind !== "serve") activeTaskIds.add(started); });
+      }, (started) => { fetchNonce.entry.taskId = started; serverNonce.entry.taskId = started; input.onTask(started); if (input.kind !== "serve") activeTaskIds.add(started); });
       log("mcp_controller.task_started", { serverId: input.id, taskId, purpose: input.kind });
       if (input.isCancelled()) throw new ControllerError("task_stopped");
       const base = await waitRunning(taskId, input.isCancelled);
@@ -484,18 +516,19 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     let settle!: (outcome: InstallOutcome | undefined) => void;
     const result = new Promise<InstallOutcome | undefined>((resolve) => { settle = resolve; });
     const { token, key } = addGrant({ purpose: "install" }, (outcome) => settle(outcome));
+    // The request (the package name and version) is told to the task by the bootstrap, with the token; the override carries only the nonce.
+    const installNonce = issueNonce(key, token, JSON.stringify({ registry: "npm", name: proposal.name, version: proposal.version, args: proposal.args, ...(proposal.integrity === undefined ? {} : { integrity: proposal.integrity }) }));
     let taskId: string | undefined;
     try {
       taskId = await startTask({
         purpose: "install", serverId: "install", approval: "", family: installFamily, taskDefinition: installFamily, securityGroupId: options.installSecurityGroupId, size: { cpu: 512, memoryMiB: 1_024 },
         containers: {
           install: {
-            MCP_RUNNER_TOKEN: token, MCP_CONTROLLER_URL: options.controllerUrl, ROVARA_MCP_NPM_REGISTRY: options.npmRegistry,
-            MCP_INSTALL_REQUEST: JSON.stringify({ registry: "npm", name: proposal.name, version: proposal.version, args: proposal.args, ...(proposal.integrity === undefined ? {} : { integrity: proposal.integrity }) }),
+            MCP_BOOTSTRAP_NONCE: installNonce.nonce, MCP_CONTROLLER_URL: options.controllerUrl, ROVARA_MCP_NPM_REGISTRY: options.npmRegistry,
             ...(options.controllerCa === undefined ? {} : { ROVARA_MCP_CONTROLLER_CA: options.controllerCa }),
           },
         },
-      }, (started) => { activeTaskIds.add(started); });
+      }, (started) => { installNonce.entry.taskId = started; activeTaskIds.add(started); });
       log("mcp_controller.task_started", { serverId: "install", taskId, purpose: "install" });
       const watched = taskId;
       const deadline = Date.now() + limits.installMs;
@@ -704,10 +737,42 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   }
 
   // ---- the runner's routes -----------------------------------------------------------------------------------
+  /**
+   * `POST /bootstrap {nonce}`: a task's container exchanges its one-time nonce for the token. Only from the address ECS reports for the task the nonce was issued to (the runner listener
+   * is reached directly, so the peer address is the task's own), only once, and only before it expires. The nonce is not consumed by a request from any other address, so a copy read
+   * from CloudTrail cannot be used to spend it. A second redemption from the right address is a task that is running twice: the task is stopped.
+   */
+  async function handleBootstrap(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== "POST") { res.writeHead(405, { allow: "POST" }); res.end(); return; }
+    let nonce: unknown;
+    try { nonce = (JSON.parse((await readBytes(req, 1_024)).toString("utf8")) as { nonce?: unknown }).nonce; } catch { send(res, 400, { error: "bad_request" }); return; }
+    const entry = typeof nonce === "string" && /^[A-Za-z0-9_-]{43}$/u.test(nonce) ? nonces.get(sha256Hex(nonce)) : undefined;
+    if (entry === undefined || now() >= entry.expiresAt || !grants.has(entry.grantKey) || closed) { send(res, 401, { error: "unauthorized" }); return; }
+    // The task's address, from the cloud's record of the task. Until the controller knows the task and its address the container is told to try again.
+    if (entry.taskId === undefined) { send(res, 409, { error: "not_yet" }); return; }
+    let status: Awaited<ReturnType<TaskRunner["describe"]>>;
+    try { status = await runner.describe(entry.taskId); } catch { send(res, 409, { error: "not_yet" }); return; }
+    if (status === undefined || status.state === "stopped") { send(res, 401, { error: "unauthorized" }); return; }
+    if (status.address === undefined) { send(res, 409, { error: "not_yet" }); return; }
+    const peer = (req.socket.remoteAddress ?? "").replace(/^::ffff:/u, "");
+    if (peer === "" || peer !== status.address) { send(res, 403, { error: "forbidden" }); return; }
+    if (entry.redeemed) {
+      // Spent already, and asked for again from the task's own address: stop the task and everything it holds.
+      log("mcp_controller.bootstrap_replayed", { taskId: entry.taskId });
+      revoke(entry.grantKey);
+      await runner.stop(entry.taskId, "failed").catch(() => undefined);
+      send(res, 401, { error: "unauthorized" });
+      return;
+    }
+    entry.redeemed = true;
+    send(res, 200, { token: entry.token, ...(entry.request === undefined ? {} : { request: entry.request }) });
+  }
+
   async function handleRunner(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const pathname = (req.url ?? "/").split("?")[0] ?? "/";
     try {
       if (req.method === "GET" && pathname === "/healthz") { send(res, 200, { status: "ok" }); return; }
+      if (pathname === "/bootstrap") { await handleBootstrap(req, res); return; }
       const bundle = BUNDLE_PATH.exec(pathname);
       if (bundle === null && pathname !== "/result") { send(res, 404, { error: "not_found" }); return; }
       const header = req.headers.authorization;

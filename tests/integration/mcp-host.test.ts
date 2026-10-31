@@ -63,7 +63,7 @@ beforeAll(async () => {
       installs += 1;
       counter += 1;
       // The install task's real program, with the registry's own certificate authority and a work folder of its own.
-      return installMain({ env: { ...environment, MCP_INSTALL_WORKDIR: join(work, `install-${counter}`), ROVARA_MCP_NPM_CAFILE: registry.caFile }, getuid: () => 10_002, getgid: () => 10_002, write: () => undefined });
+      return installMain({ env: { ...environment, MCP_INSTALL_WORKDIR: join(work, `install-${counter}`), ROVARA_MCP_NPM_CAFILE: registry.caFile }, getuid: () => 10_002, getgid: () => 10_002, write: () => undefined, bootstrap: { delayMs: 20 } });
     },
     secrets: () => ({ JIRA_TOKEN: "s3cret-value" }),
   });

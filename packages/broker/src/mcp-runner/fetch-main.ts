@@ -2,7 +2,7 @@
 // it into the bundle volume, and exits 0; any failure exits 1 and leaves nothing behind, so the `server` container (which depends on this one succeeding) never starts.
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { FetchError, fetchBundle, runnerTokenWellFormed } from "@agentx/gateway";
+import { BootstrapError, FetchError, bootstrapEnvironment, fetchBundle, runnerTokenWellFormed } from "@agentx/gateway";
 
 export interface FetchConfig { controllerUrl: string; token: string; bundleHash: string; destination: string; ca?: string | undefined }
 
@@ -18,8 +18,10 @@ export function readFetchConfig(env: Record<string, string | undefined>): FetchC
 }
 
 /** Returns the exit code, and writes one line that holds a fixed code only (never the controller's text, a path, or the token). */
-export async function main(dependencies: { env: Record<string, string | undefined>; getuid?: () => number | undefined; getgid?: () => number | undefined; write?: (line: string) => void }): Promise<number> {
+export async function main(dependencies: { env: Record<string, string | undefined>; getuid?: () => number | undefined; getgid?: () => number | undefined; write?: (line: string) => void; bootstrap?: Parameters<typeof bootstrapEnvironment>[1] }): Promise<number> {
   const write = dependencies.write ?? ((line: string) => { process.stdout.write(`${line}\n`); });
+  // The task's token is not in its environment: the one-time nonce is redeemed at the controller first.
+  try { await bootstrapEnvironment(dependencies.env, dependencies.bootstrap); } catch (error) { write(JSON.stringify({ component: "mcp-fetch", ok: false, code: error instanceof BootstrapError ? `bootstrap_${error.code}` : "bootstrap_failed" })); return 1; }
   let config: FetchConfig;
   try { config = readFetchConfig(dependencies.env); } catch { write(JSON.stringify({ component: "mcp-fetch", ok: false, code: "bad_request" })); return 1; }
   delete dependencies.env.MCP_RUNNER_TOKEN;
