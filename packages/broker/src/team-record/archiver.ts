@@ -6,7 +6,7 @@
 // Bounded per run by rows and milliseconds. Raw text goes to the lake only for retention D; C keeps structured metadata only (design 4.3).
 import type { LakeClient } from "./lake.js";
 import { LakeError } from "./lake.js";
-import type { LakeDeleteQueue } from "./lake-delete.js";
+import type { LakeDeleteQueue, LakeDeleteTarget } from "./lake-delete.js";
 import { actorSourceHash, buildInsertIfAbsent, scopeHash, sourceHash, type LakeValue } from "./lake-sql.js";
 import type { RecordEventLike } from "./shared-types.js";
 import { assertSafeId } from "./shared-types.js";
@@ -54,7 +54,9 @@ export interface ArchiveSummary {
   vectorsMissing: number;
   /** Rows written to the lake but left unmarked (the re-tag failed); the next run retries them. */
   retryLater: number;
-  halted?: "lake_unavailable" | "lake_query_failed" | "lake_timeout" | "budget" | "hot_unavailable";
+  /** Source hashes of rows that died during the run but whose lake delete could not be queued: the job must queue them again (review N-3). */
+  unqueued?: string[];
+  halted?: "lake_unavailable" | "lake_query_failed" | "lake_timeout" | "budget" | "hot_unavailable" | "queue_unavailable";
   cursor?: string;
 }
 
@@ -146,38 +148,52 @@ export async function runArchive(deps: ArchiverDeps, request: { workspaceId: str
 
     for (let i = 0; i < rows.length; i += perInsert) {
       const batch = rows.slice(i, i + perInsert);
+      // The insert may have written the rows even when it reports a failure (a timeout), so from here on every row of the batch counts as
+      // "possibly in the lake" and is covered by the re-check below, whatever happens to its vector.
+      let insertError: unknown;
       try {
         const insert = buildInsertIfAbsent(deps.tableBucket, "events", batch.map((row) => toLakeEventRow(row, archivedAt, deps.edition)));
         await deps.lake.execute(insert.sql, insert.parameters);
       } catch (error) {
-        summary.halted = error instanceof LakeError ? error.code : "lake_unavailable";
-        if (cursor !== undefined) summary.cursor = cursor;
-        return summary;
+        insertError = error;
       }
-      const { ready, retagged, missing } = await retag(deps.vectors, batch);
+      const { ready, retagged, missing } =
+        insertError === undefined ? await retag(deps.vectors, batch) : { ready: [] as RecordEventLike[], retagged: 0, missing: 0 };
       summary.vectorsRetagged += retagged;
       summary.vectorsMissing += missing;
-      summary.retryLater += batch.length - ready.length;
+      summary.retryLater += insertError === undefined ? batch.length - ready.length : 0;
 
       // Race: a source delete can land after the first check and before the insert and re-tag finished. The hourly lake delete may already
-      // have run (and found nothing), and the hot delete worker may have removed the vector that the re-tag just wrote again. So ask again,
-      // and for any row that died meanwhile queue its lake delete and delete its vector now.
+      // have run (and found nothing), and the hot delete worker may have removed the vector that the re-tag just wrote again. So ask again
+      // about the WHOLE batch (ready or not: a row whose re-tag failed is in the lake too), and for any row that died meanwhile queue its
+      // lake delete and delete its vector now (review I-4, N-1).
+      const sourceHashOf = (row: RecordEventLike): LakeDeleteTarget => ({ kind: "source", sourceHash: sourceHash(row.sourceRef.system, row.sourceRef.id) });
       let stillLive: Set<string>;
       try {
-        stillLive = await deps.source.filterLive(request.workspaceId, ready.map((row) => row.id));
+        stillLive = await deps.source.filterLive(request.workspaceId, batch.map((row) => row.id));
       } catch {
-        // Cannot tell: queue the lake delete of the whole batch (idempotent; the rows are archived again next run), keep them unmarked, stop.
-        await deps.lakeDeletes.enqueue(request.workspaceId, ready.map((row) => ({ kind: "source", sourceHash: sourceHash(row.sourceRef.system, row.sourceRef.id) })));
-        summary.halted = "hot_unavailable";
+        // Cannot tell. Queue the lake delete of the whole batch (idempotent; the rows are archived again on a later run), keep them
+        // unmarked, stop. A live row may lose its lake copy if this delete runs after a later re-insert: history only, never privacy; the
+        // lake delete job should run before the archiver in each cycle (review N-2).
+        summary.halted = (await enqueueWithRetry(deps, request.workspaceId, batch.map(sourceHashOf), summary)) ? "hot_unavailable" : "queue_unavailable";
         if (cursor !== undefined) summary.cursor = cursor;
         return summary;
       }
-      const dead = ready.filter((row) => !stillLive.has(row.id));
+      const dead = batch.filter((row) => !stillLive.has(row.id));
       if (dead.length > 0) {
-        await deps.lakeDeletes.enqueue(request.workspaceId, dead.map((row) => ({ kind: "source", sourceHash: sourceHash(row.sourceRef.system, row.sourceRef.id) })));
+        if (!(await enqueueWithRetry(deps, request.workspaceId, dead.map(sourceHashOf), summary))) {
+          summary.halted = "queue_unavailable";
+          if (cursor !== undefined) summary.cursor = cursor;
+          return summary;
+        }
         const keys = dead.flatMap((row) => (row.embeddingRef === undefined ? [] : [row.embeddingRef]));
         if (keys.length > 0) await deps.vectors.delete(keys).catch(() => ({ done: 0, failed: keys }));
         summary.lateTombstoned += dead.length;
+      }
+      if (insertError !== undefined) {
+        summary.halted = insertError instanceof LakeError ? insertError.code : "lake_unavailable";
+        if (cursor !== undefined) summary.cursor = cursor;
+        return summary;
       }
       const markable = ready.filter((row) => stillLive.has(row.id));
       if (markable.length > 0) {
@@ -187,6 +203,20 @@ export async function runArchive(deps: ArchiverDeps, request: { workspaceId: str
     }
     if (cursor === undefined) return summary;
   }
+}
+
+/** Queues lake deletes, retrying a few times. On failure the hashes are left in `summary.unqueued` for the caller to retry (review N-3). */
+async function enqueueWithRetry(deps: ArchiverDeps, workspaceId: string, targets: LakeDeleteTarget[], summary: ArchiveSummary): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await deps.lakeDeletes.enqueue(workspaceId, targets);
+      return true;
+    } catch {
+      // try again
+    }
+  }
+  summary.unqueued = [...(summary.unqueued ?? []), ...targets.flatMap((target) => (target.kind === "source" ? [target.sourceHash] : []))];
+  return false;
 }
 
 /** Re-tags the vectors of retention-D rows as `lake`. Returns the rows that are safe to mark archived. */

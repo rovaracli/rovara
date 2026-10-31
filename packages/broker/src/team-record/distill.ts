@@ -132,7 +132,7 @@ export async function distillBundle(deps: DistillDeps, bundle: DistillBundle): P
   // Control C1: outsider spans never reach the model. An item with nothing left is not used at all. What was removed still counts for
   // trust below (taintOfItems reads the full spans), so a fact from a mixed item stays `outsider`.
   const candidates = bundle.items
-    .map((item) => ({ full: item, shown: { ...item, links: safeLinks(item.links), spans: item.spans.filter((span) => span.trust !== "outsider") } }))
+    .map((item) => ({ full: item, shown: { ...item, links: safeLinks(item.links), spans: item.spans.filter((span) => trustRank(span.trust) > 0) } }))
     .filter((entry) => entry.shown.spans.length > 0);
   const chosen = takeWithinBudget(candidates.map((entry) => entry.shown), deps.maxInputChars ?? DISTILL_INPUT_CHARS_MAX);
   if (chosen.length === 0) return { facts: [], included: [], failed: "no_input" };

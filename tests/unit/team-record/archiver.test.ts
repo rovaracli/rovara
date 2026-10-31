@@ -12,7 +12,7 @@ const event = (id: string, over: Partial<RecordEventLike> = {}): RecordEventLike
 });
 const meta = { audience_kind: "project", scope: "s", project: "p1", trust: "member", tier: "hot", kind: "event", ref: "x" } as const;
 
-function harness(rows: RecordEventLike[], opts: { liveOverride?: (ids: string[], call: number) => string[]; filterLiveThrowsOn?: number; lakeFail?: boolean; putFail?: string[]; missingVectors?: string[] } = {}) {
+function harness(rows: RecordEventLike[], opts: { liveOverride?: (ids: string[], call: number) => string[]; filterLiveThrowsOn?: number; enqueueFails?: boolean; lakeFail?: boolean; putFail?: string[]; missingVectors?: string[] } = {}) {
   const marked: string[] = [];
   const sql: Array<{ sql: string; parameters: readonly string[] }> = [];
   const archived = new Set<string>();
@@ -41,7 +41,7 @@ function harness(rows: RecordEventLike[], opts: { liveOverride?: (ids: string[],
     get: async (keys) => keys.filter((k) => !opts.missingVectors?.includes(k)).map((key) => ({ key, vector: [1, 0, 0, 0], metadata: { ...meta } })),
     query: async () => [], delete: async (keys) => { vectorDeletes.push(...keys); return { done: keys.length, failed: [] }; },
   };
-  const lakeDeletes = { enqueue: async (_ws: string, targets: Array<{ kind: string; sourceHash?: string }>) => { queued.push(...targets); } };
+  const lakeDeletes = { enqueue: async (_ws: string, targets: Array<{ kind: string; sourceHash?: string }>) => { if (opts.enqueueFails) throw new Error("queue down"); queued.push(...targets); } };
   return { deps: { source, lake, vectors, lakeDeletes: lakeDeletes as never, tableBucket: "rovara-lake", rowsPerInsert: 2 }, marked, sql, puts, queued, vectorDeletes };
 }
 const budget = { maxRows: 100, maxMs: 60_000 };
@@ -92,6 +92,37 @@ describe("archiver: delete during the run (I-4)", () => {
     expect(h.marked).toEqual(["a"]);
     expect(h.queued).toEqual([{ kind: "source", sourceHash: sourceHash("github", "pr-b") }]);
     expect(h.vectorDeletes).toEqual(["event:b"]);
+  });
+  it("N-1: a row whose vector re-tag FAILED is in the lake too, so a delete that landed meanwhile is queued for it", async () => {
+    const h = harness([event("a"), event("b")], { putFail: ["event:b"], liveOverride: (ids, call) => (call === 2 ? ids.filter((id) => id !== "b") : ids) });
+    const summary = await runArchive(h.deps, { workspaceId: "ws1", budget });
+    expect(summary).toMatchObject({ archived: 1, lateTombstoned: 1 });
+    expect(h.queued).toEqual([{ kind: "source", sourceHash: sourceHash("github", "pr-b") }]);
+    expect(h.vectorDeletes).toEqual(["event:b"]);
+    expect(h.marked).toEqual(["a"]);
+  });
+  it("N-1: the same when the vector lookup itself failed for the batch (no row is ready)", async () => {
+    const h = harness([event("a")], { liveOverride: (ids, call) => (call === 2 ? [] : ids) });
+    h.deps.vectors.get = async () => { throw new Error("vectors down"); };
+    expect(await runArchive(h.deps, { workspaceId: "ws1", budget })).toMatchObject({ archived: 0, lateTombstoned: 1 });
+    expect(h.queued).toHaveLength(1);
+  });
+  it("N-1: an insert that reported a failure may have written the rows, so a row that died is queued before the run stops", async () => {
+    const h = harness([event("a"), event("b")], { lakeFail: true, liveOverride: (ids, call) => (call === 2 ? ids.filter((id) => id !== "b") : ids) });
+    const summary = await runArchive(h.deps, { workspaceId: "ws1", budget });
+    expect(summary).toMatchObject({ halted: "lake_unavailable", archived: 0, lateTombstoned: 1 });
+    expect(h.queued).toEqual([{ kind: "source", sourceHash: sourceHash("github", "pr-b") }]);
+  });
+  it("N-1: when the second check cannot be made, the deletes of the WHOLE batch are queued, not only the rows that were ready", async () => {
+    const h = harness([event("a"), event("b")], { putFail: ["event:b"], filterLiveThrowsOn: 2 });
+    expect((await runArchive(h.deps, { workspaceId: "ws1", budget })).halted).toBe("hot_unavailable");
+    expect(h.queued.map((t) => t.sourceHash).sort()).toEqual([sourceHash("github", "pr-a"), sourceHash("github", "pr-b")].sort());
+  });
+  it("N-3: if the delete cannot be queued the run stops with a fixed code and hands back the hashes to queue again", async () => {
+    const h = harness([event("a")], { liveOverride: (ids, call) => (call === 2 ? [] : ids), enqueueFails: true });
+    const summary = await runArchive(h.deps, { workspaceId: "ws1", budget });
+    expect(summary).toMatchObject({ halted: "queue_unavailable", unqueued: [sourceHash("github", "pr-a")] });
+    expect(h.marked).toEqual([]);
   });
   it("when the second check cannot be made it queues the batch's lake deletes, marks nothing and stops", async () => {
     const h = harness([event("a"), event("b")], { filterLiveThrowsOn: 2 });
