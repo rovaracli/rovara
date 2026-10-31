@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { dynamoLearningSettings, DynamoTier0Settings } from "../../../packages/broker/src/lessons/dynamo-settings.js";
 import { approversRequired, resolveLearning } from "../../../packages/broker/src/lessons/policy.js";
 import { approveTier0Change, requestTier0Change, type Tier0Deps, type Tier0Scope } from "../../../packages/broker/src/lessons/tier0-setting.js";
-import { eraseWorkspace } from "../../../packages/broker/src/team-record/erase.js";
+import { eraseWorkspace, erasePerson } from "../../../packages/broker/src/team-record/erase.js";
 import { ORG_A, ORG_B, world } from "../../support/team-record-core.js";
 import { deleteDeps } from "../../support/team-record-delete.js";
 import { Audit, Clock } from "./lesson-helpers.js";
@@ -19,7 +19,7 @@ function setup(autoEnabled = true) {
   const audit = new Audit();
   const group = { complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner", "ann", "bob"], lastEligibleLossAtMs: null };
   const deps: Tier0Deps = { settings: store, changes: store, audit, authority: { eligibility: async () => group }, now: clock.now, autoApplyEnabled: () => autoEnabled };
-  return { w, store, deps, clock, audit, reader: dynamoLearningSettings(w.table, store) };
+  return { w, store, deps, clock, audit, reader: dynamoLearningSettings(w.table, store, () => autoEnabled) };
 }
 
 describe("the stored setting and its proposals", () => {
@@ -86,12 +86,25 @@ describe("the whole path, through the settings reader", () => {
     expect((await resolveLearning(reader, ORG_A, "web")).mode).toBe("Collect");
     w.db.set({ ...learningModeKey(ORG_A, "web"), entityType: "TEAM_RECORD_MODE", mode: "banana" });
     expect((await resolveLearning(reader, ORG_A, "web")).mode).toBe("Off");
-    const broken = dynamoLearningSettings({ documentClient: { send: async () => { throw new Error("down"); } }, tableName: "x" }, new DynamoTier0Settings(w.table));
+    const broken = dynamoLearningSettings({ documentClient: { send: async () => { throw new Error("down"); } }, tableName: "x" }, new DynamoTier0Settings(w.table), () => true);
     expect((await resolveLearning(broken, ORG_A, "web")).mode).toBe("Off");
   });
 });
 
 describe("erasing", () => {
+  it("erasing a person replaces them on the settings and proposal rows (project and company) with the stand-in id, and keeps everyone else", async () => {
+    const { w, store } = setup();
+    await store.write(project(), "two", { by: "dev-ann", at: 1 }, "one");
+    await store.write(company(), "one", { by: "dev-ann", at: 1 }, "auto");
+    await store.create({ id: "c1", scope: project(), from: "two", to: "one", proposedBy: "dev-ann", at: 1, expiresAt: 100, state: "pending" });
+    await store.create({ id: "c2", scope: company(), from: "one", to: "auto", proposedBy: "dev-bob", at: 1, expiresAt: 100, state: "pending" });
+    await erasePerson(deleteDeps(w).deps, ORG_A, { developerId: "dev-ann" }, "e1");
+    const dump = JSON.stringify(w.db.find((item) => String(item.pk).startsWith(`WS#${ORG_A}#`) && !String(item.sk).startsWith("LAKEDEL#") && !String(item.sk).startsWith("ERASE")));
+    expect(dump).not.toContain("dev-ann");
+    expect(dump).toContain("dev-bob");
+    expect(await store.read(project())).toBe("two");
+    expect(await store.get(project(), "c1")).toMatchObject({ proposedBy: "0".repeat(64), state: "pending" });
+  });
   it("the workspace erase wipes the company setting and the proposals", async () => {
     const { w, store } = setup();
     await store.write(company(), "one", { by: "owner", at: 1 }, "auto");

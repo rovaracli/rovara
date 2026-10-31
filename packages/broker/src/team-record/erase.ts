@@ -13,7 +13,7 @@ import { identitySystem, markPersonErased } from "./erased.js";
 import { changeScopePrincipals } from "./scope-work.js";
 import { REQUIRED_ERASE_STEPS, type EraseStep } from "./person-fields.js";
 import type { ScopeCursor } from "./store.js";
-import { scrubConfigDeveloper, bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
+import { scrubConfigDeveloper, scrubTier0Developer, bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
 
 export interface EraseBudget {
   /** The most items one call reads and removes. */
@@ -190,7 +190,10 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
         await removeFromExclude(context.deps.table, config, new Set(context.ids));
         if (context.who.developerId !== undefined) await scrubConfigDeveloper(context.deps.table, config, context.who.developerId);
       }
+      if (context.who.developerId !== undefined) await scrubTier0Developer(context.deps.table, context.orgId, project, context.who.developerId);
     }
+    // The company's own tier-0 floor and proposals live in the workspace's project-less partition.
+    if (context.who.developerId !== undefined) await scrubTier0Developer(context.deps.table, context.orgId, undefined, context.who.developerId);
     return known;
   },
   // Lessons: those that rest on the person are HARD-deleted whatever their code citations say, the person is scrubbed from the rest (authorship, approvals), and the id leaves every
