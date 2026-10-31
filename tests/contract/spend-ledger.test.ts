@@ -15,7 +15,7 @@ import {
   ScopeFullError, blockOperationKeys, checkAlerts, finalizeKey, forgetKey, registerKey, reserve, settleKey, sweepSpend,
   type KeyInput, type LedgerDependencies, type ModelKeyRecord,
 } from "../../packages/broker/src/spend/ledger.js";
-import { runSettlementJobs, runSpendSweep } from "../../packages/broker/src/spend/settlement-job.js";
+import { learningFirstTick, runSettlementJobs, runSpendSweep } from "../../packages/broker/src/spend/settlement-job.js";
 import { agentUsageCounter, mintTagsFor, paymentOfTask } from "../../packages/broker/src/spend/payer.js";
 import { indexActivity, putCountedUsage, type IndexStore } from "../../packages/broker/src/aws/activity-index.js";
 import type { StreamRecord } from "../../packages/broker/src/developer/notifications.js";
@@ -43,6 +43,14 @@ const MODEL = "claude-sonnet-4-6";
 const ORG: BudgetScope = { kind: "org" };
 const WEB: BudgetScope = { kind: "project", project: "web" };
 const MEMBER: BudgetScope = { kind: "member", developerId: MAYA };
+
+const SETTLEMENT_TICK_MS = 300_000;
+/** Fakes Date only (it still advances) from the start of a coming 5-minute tick where `learningFirstTick` is `first`; when `first` is false the tick after it is not one either. */
+function pinSettlementTick(first: boolean): void {
+  let tick = Math.floor(Date.now() / SETTLEMENT_TICK_MS) + 1;
+  while (learningFirstTick(tick * SETTLEMENT_TICK_MS) !== first || (!first && learningFirstTick((tick + 1) * SETTLEMENT_TICK_MS))) tick += 1;
+  vi.useFakeTimers({ toFake: ["Date"], now: tick * SETTLEMENT_TICK_MS, shouldAdvanceTime: true });
+}
 
 /** A fake table and proxy with a clock the test moves; `key(n)` is the secret of the nth key and its id is what the ledger holds. */
 function setup(options: { orgId?: typeof TEST_ORG; pageSize?: number } = {}) {
@@ -1103,6 +1111,8 @@ describe("a key the broker mints", () => {
   });
 
   it("runs the key audit last, with a time budget, and says when it stopped short (Task 26 review I2)", async () => {
+    // Every third tick the learning job takes the audit's share (`learningFirstTick`): pin a tick, and the one after it, where the audit runs.
+    pinSettlementTick(false);
     const t = await brokerSetup();
     t.access.auditKeys.mockResolvedValueOnce({ checked: 7, blocked: 1, truncated: true });
     const logged = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -1122,7 +1132,20 @@ describe("a key the broker mints", () => {
       t.access.auditKeys.mockRejectedValueOnce(Object.assign(new Error("MODEL_PROXY_UNAVAILABLE: the audit could not block 1 of 3 drifted keys (checked 9, blocked 2)"), { name: "AgentXError" }));
       await t.sweep();
       expect(logged.mock.calls.map((call) => String(call[0])).some((line) => line.includes("model_keys.audit_failed") && line.includes("checked 9, blocked 2"))).toBe(true);
-    } finally { logged.mockRestore(); }
+    } finally { logged.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it("skips the key audit on a learning-first tick: the learning job takes its share, and the audit is reported as skipped", async () => {
+    pinSettlementTick(true);
+    try {
+      const t = await brokerSetup();
+      const run = await t.sweep();
+      const jobs = (JSON.parse(run.body) as { jobs: Array<{ name: string; ok: boolean; result?: unknown }> }).jobs;
+      expect(t.access.auditKeys).not.toHaveBeenCalled();
+      expect(jobs.at(-2)).toMatchObject({ name: "audit-model-keys", ok: true, result: { skipped: "no time left in this run" } });
+      expect(jobs.at(-1)).toMatchObject({ name: "resume-learning-walks", ok: true });
+      expect(jobs.at(-1)?.result).not.toMatchObject({ skipped: expect.anything() as unknown });
+    } finally { vi.useRealTimers(); }
   });
 
   it("is left alone by the scheduled run on an install without agents or a model proxy", async () => {
