@@ -372,15 +372,21 @@ describe("T3 install: what npm is given", () => {
 describe("T3 install: handing the bundle to the controller", () => {
   let received: { method?: string | undefined; url?: string | undefined; auth?: string | undefined; body: Buffer } | undefined;
   let status = 200;
+  /** What the install told the controller with `PUT /result` (the controller reads its result from there, not from a log). */
+  let reports: Array<{ auth?: string | undefined; body: string }> = [];
+  let resultStatus = 200;
   const controller = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => { received = { method: req.method, url: req.url, auth: req.headers.authorization, body: Buffer.concat(chunks) }; res.writeHead(status); res.end(); });
+    req.on("end", () => {
+      if (req.url === "/result") { reports.push({ auth: req.headers.authorization, body: Buffer.concat(chunks).toString("utf8") }); res.writeHead(resultStatus); res.end(); return; }
+      received = { method: req.method, url: req.url, auth: req.headers.authorization, body: Buffer.concat(chunks) }; res.writeHead(status); res.end();
+    });
   });
   let controllerUrl = "";
   beforeAll(async () => { await new Promise<void>((resolve) => controller.listen(0, "127.0.0.1", resolve)); controllerUrl = `http://127.0.0.1:${(controller.address() as AddressInfo).port}/`; });
   afterAll(() => { controller.close(); controller.closeAllConnections(); });
-  afterEach(() => { received = undefined; status = 200; });
+  afterEach(() => { received = undefined; status = 200; reports = []; resultStatus = 200; });
 
   const env = (over: Record<string, string | undefined> = {}) => ({
     MCP_INSTALL_REQUEST: JSON.stringify(proposal(NAME, "1.4.2")), ROVARA_MCP_NPM_REGISTRY: registry.url, ROVARA_MCP_NPM_CAFILE: registry.caFile, MCP_CONTROLLER_URL: controllerUrl,
@@ -400,6 +406,20 @@ describe("T3 install: handing the bundle to the controller", () => {
     expect(received).toMatchObject({ method: "PUT", url: `/bundles/${report.bundleHash}`, auth: `Bearer ${"t".repeat(43)}` });
     expect(createHash("sha256").update(received!.body).digest("hex")).toBe(report.bundleHash);
     expect(lines.join("\n")).not.toContain("t".repeat(43));
+    // the same result goes to the controller, once, with the task's token
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.auth).toBe(`Bearer ${"t".repeat(43)}`);
+    expect(JSON.parse(reports[0]!.body)).toEqual(JSON.parse(lines[0]!.replace("ROVARA_MCP_INSTALL_RESULT ", "")));
+  });
+  it("reports upload_failed, and not success, when the controller takes the bundle but not the result (it has not been told to use it)", async () => {
+    resultStatus = 500;
+    const lines: string[] = [];
+    const dir = join(work, `main-${(counter += 1)}`);
+    await mkdir(dir, { recursive: true });
+    expect(await main({ env: env({ MCP_INSTALL_WORKDIR: dir }), getuid: () => 10_002, write: (line) => lines.push(line) })).toBe(1);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('"code":"upload_failed"');
+    expect(lines[0]).not.toContain('"ok":true');
   });
   it("reports upload_failed, and not success, when the controller refuses or cannot be reached", async () => {
     for (const refuse of [500, 401]) {
@@ -425,6 +445,11 @@ describe("T3 install: handing the bundle to the controller", () => {
     expect(code).toBe(1);
     expect(received).toBeUndefined();
     expect(lines[0]).toContain('"code":"git_dependency"');
+    // the failure is told to the controller, with its fixed code and sentence
+    expect(reports).toHaveLength(1);
+    const told = JSON.parse(reports[0]!.body) as { ok: boolean; code: string; sentence: string };
+    expect(told).toMatchObject({ ok: false, code: "git_dependency" });
+    expect(told.sentence).toContain("your registry");
   });
   it("refuses to run as root, and says nothing was started", async () => {
     const lines: string[] = [];

@@ -31,9 +31,10 @@ export interface McpProber {
   http(address: string, token: string | undefined): Promise<DiscoveredTool[]>;
   /**
    * Asks the MCP host to install the package for a moment and list its tools. `integrity` is the tarball's, computed by the host from the bytes it installed. `lockfileHash` and
-   * `bundleHash` are the install's: the approval binds them. A host that returns neither (the lane E host) cannot complete a proposal.
+   * `bundleHash` are the install's: the approval binds them. A host that returns neither cannot complete a proposal. With `pinned` (an approval) nothing is installed: the host tests the
+   * bundle that was pinned, and says which bundle it tested.
    */
-  stdio(spec: McpStdioProposal): Promise<{ tools: DiscoveredTool[]; integrity: string; lockfileHash?: string | undefined; bundleHash?: string | undefined }>;
+  stdio(spec: McpStdioProposal, pinned?: { lockfileHash: string; bundleHash: string }): Promise<{ tools: DiscoveredTool[]; integrity: string; lockfileHash?: string | undefined; bundleHash?: string | undefined }>;
 }
 
 export interface McpServerStore {
@@ -243,11 +244,14 @@ async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpSe
     if (transport.kind === "http") {
       tools = await deps.prober.http(transport.address, token);
     } else {
-      // The spec is passed on as the admin's proposal: the install computes the hashes, so the ones an entry holds are not sent back to be trusted.
+      // The spec is passed on as the admin's proposal: the install computes the hashes, so a proposal carries none. An approval passes the pinned pair apart from the proposal, so the host
+      // tests that bundle and does not install again; what it answers is compared with the pin below.
       const proposal: Record<string, unknown> = { ...transport.spec };
+      const held = proposal as { lockfileHash?: unknown; bundleHash?: unknown };
+      const pinned = typeof held.lockfileHash === "string" && typeof held.bundleHash === "string" ? { lockfileHash: held.lockfileHash, bundleHash: held.bundleHash } : undefined;
       delete proposal.lockfileHash;
       delete proposal.bundleHash;
-      ({ tools, integrity, lockfileHash, bundleHash } = await deps.prober.stdio(proposal as McpStdioProposal));
+      ({ tools, integrity, lockfileHash, bundleHash } = await deps.prober.stdio(proposal as McpStdioProposal, pinned));
     }
   } catch (error) {
     // Only a fixed sentence is shown: a server's own error can hold addresses, banners and paths.

@@ -15,8 +15,12 @@ describe("runner token scope", () => {
     expect(runnerTokenWellFormed("t".repeat(43))).toBe(true);
     for (const bad of ["t".repeat(42), "", "short", `${"t".repeat(42)} `, `${"t".repeat(42)}+`, `${"t".repeat(42)}\n`, "t".repeat(129), 5, undefined, null]) expect(runnerTokenWellFormed(bad), String(bad)).toBe(false);
   });
-  it("lets an install token PUT a bundle and nothing else", () => {
+  it("lets an install token PUT a bundle and its result and nothing else", () => {
     expect(runnerTokenAllows({ purpose: "install" }, "PUT", `/bundles/${A}`)).toBe(true);
+    expect(runnerTokenAllows({ purpose: "install" }, "PUT", "/result")).toBe(true);
+    for (const method of ["GET", "POST", "DELETE", "HEAD"]) expect(runnerTokenAllows({ purpose: "install" }, method, "/result"), method).toBe(false);
+    for (const purpose of ["fetch", "serve", "probe"] as const) expect(runnerTokenAllows({ purpose, bundleHash: A }, "PUT", "/result"), purpose).toBe(false);
+    expect(runnerTokenAllows({ purpose: "install" }, "PUT", "/result/")).toBe(false);
     for (const [method, path] of [["GET", `/bundles/${A}`], ["DELETE", `/bundles/${A}`], ["POST", `/bundles/${A}`], ["PUT", "/bundles/short"], ["PUT", `/bundles/${A}/x`], ["PUT", "/servers/mcpabcdef/mcp"], ["PUT", `/bundles/${A.toUpperCase()}`]] as const) {
       expect(runnerTokenAllows({ purpose: "install" }, method, path), `${method} ${path}`).toBe(false);
     }
