@@ -40,7 +40,7 @@ import type { AgentRouteDependencies } from "../../agents/routes.js";
 import { ChainStore } from "../../chains/store.js";
 import { TriggerStore } from "../../triggers/store.js";
 import { dispatchTriggerEvent, type TriggerDispatchContext } from "../../triggers/dispatch.js";
-import type { IntakePorts } from "../../intake/engine.js";
+import { ingestIntake, type IntakePorts } from "../../intake/engine.js";
 import { writeIntakeNotice } from "../../intake/notices.js";
 import { intakePortsOf } from "../../intake/wiring.js";
 import { listProjectMembers } from "../../org/project-members.js";
@@ -542,8 +542,11 @@ export function eventDispatchOf(dependencies: AwsBrokerDependencies, tasks: Deve
   if (given !== undefined) return given;
   const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
   const githubApp = dependencies.githubPullRequests;
+  const intake = intakePortsFrom(dependencies, tasks, agents);
   return chainDependencies === undefined ? undefined : (orgId, event, context) => dispatchTriggerEvent({
     ...chainDependencies, ...(githubApp.appSlug === undefined ? {} : { githubAppSlug: () => githubApp.appSlug!() }),
+    // Meta repo lane F: a label or an assignment on an issue asks Rovara Code for work through the intake engine.
+    ...(intake === undefined ? {} : { intake: { ingest: (candidate) => ingestIntake(intake, candidate) } }),
   }, orgId, event, context);
 }
 

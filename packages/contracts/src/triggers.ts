@@ -27,6 +27,9 @@ const HttpsUrl = z.string().max(2048).refine((value) => {
   }
 }, "must be an https link without a user name or password");
 
+/** The most characters of an issue description an event may carry. */
+export const TRIGGER_SUBJECT_BODY_MAX = 20_000;
+
 export const TRIGGER_SUBJECT_KINDS = ["pull_request", "issue", "incident", "alert", "deployment", "workflow_run"] as const;
 
 /**
@@ -47,10 +50,14 @@ export const TriggerEventSchema = z
         id: z.string().min(1).max(200),
         title: z.string().refine((text) => [...text].length <= RUN_START_TITLE_MAX && NoControls(text), `must be at most ${String(RUN_START_TITLE_MAX)} characters, with no control characters`),
         url: HttpsUrl.optional(),
+        /** An issue's description, for the events that ask for work on it (intake). Untrusted text: it is cut here, redacted and made inert before a session sees it, and never stored with the event. */
+        body: z.string().max(TRIGGER_SUBJECT_BODY_MAX).optional(),
       })
       .strict(),
     fields: z.record(z.string(), z.array(z.string().max(200)).max(50)),
-    actor: z.object({ kind: z.enum(["rovara", "external", "unknown"]), id: z.string().min(1).max(200).optional() }).strict(),
+    // `accountId` is the vendor's stable id for the account (GitHub's numeric user id, Jira's account id), which intake looks up among the org's linked members; `id` is the name shown (a login).
+    // `bot` is set when the vendor says the account is an automation that is not Rovara's own.
+    actor: z.object({ kind: z.enum(["rovara", "external", "unknown"]), id: z.string().min(1).max(200).optional(), accountId: z.string().min(1).max(200).optional(), bot: z.literal(true).optional() }).strict(),
   })
   .strict()
   .superRefine((event, context) => {

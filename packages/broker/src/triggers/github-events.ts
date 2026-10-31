@@ -9,7 +9,7 @@
 // Only ids, codes and counts are logged: never a title, a branch, a label or a body.
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { OrgIdSchema, RUN_START_TITLE_MAX, TriggerEventSchema, githubInstallationKey, githubRepoProjectKey, metaRepositoryOf, type OrgId, type StoredProjectDefinition, type TriggerEvent } from "@agentx/contracts";
+import { OrgIdSchema, RUN_START_TITLE_MAX, TRIGGER_SUBJECT_BODY_MAX, TriggerEventSchema, githubInstallationKey, githubRepoProjectKey, metaRepositoryOf, type OrgId, type StoredProjectDefinition, type TriggerEvent } from "@agentx/contracts";
 import { GithubWebhookRetryableError } from "../aws/github-webhooks.js";
 import { latestRevision } from "../org/project-settings.js";
 import type { AuthorVerdict, TriggerDispatchContext } from "./dispatch.js";
@@ -63,8 +63,10 @@ const AUTHOR_CHECK_TIMEOUT_MS = 10_000;
 /** What GitHub allows as an account or repository name, so nothing else is put into a path of the API. */
 const GITHUB_ACCOUNT = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 const GITHUB_REPOSITORY = /^[A-Za-z0-9._-]{1,100}$/;
+/** `owner/repo` as GitHub spells it (lower-cased): what an issue's identity is built from. */
+const GITHUB_FULL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?\/[a-z0-9._-]{1,100}$/;
 
-const Account = z.object({ login: z.string().min(1).max(200), type: z.string().max(40).optional() }).passthrough();
+const Account = z.object({ login: z.string().min(1).max(200), type: z.string().max(40).optional(), id: z.number().int().positive().optional() }).passthrough();
 const Labels = z.array(z.object({ name: z.string() }).passthrough()).optional();
 const Time = z.string().min(1).max(64);
 const Common = z.object({
@@ -85,8 +87,11 @@ const PullRequestBody = Common.extend({
 });
 const IssueBody = Common.extend({
   action: z.string().max(64),
+  /** Meta repo lane F: the label a `labeled` event added, and who an `assigned` event assigned the issue to. */
+  label: z.object({ name: z.string().min(1).max(200) }).passthrough().optional(),
+  assignee: Account.nullish(),
   issue: z.object({
-    number: z.number().int().positive(), title: z.string().max(10_000).optional(), html_url: z.string().max(2048).optional(), created_at: Time.optional(), updated_at: Time.optional(),
+    number: z.number().int().positive(), title: z.string().max(10_000).optional(), html_url: z.string().max(2048).optional(), created_at: Time.optional(), updated_at: Time.optional(), body: z.string().max(200_000).nullish(),
     author_association: z.string().max(40).optional(), user: Account.optional(), labels: Labels, pull_request: z.unknown().optional(),
   }).passthrough(),
 });
@@ -151,6 +156,34 @@ interface Mapped {
   involved: Array<z.infer<typeof Account>>;
   /** The login of the pull request's or issue's author, for the events that have an association to check. */
   author?: string;
+  /** An event that asks for work on an issue (meta repo lane F): the actor carries the sender's numeric account id and whether the sender is an automation, for intake to judge. */
+  intake?: true;
+}
+
+/**
+ * An issue that was labeled or assigned asks for work. The event is the CHANGE (the label that was added, the person it was assigned to), not the issue's state, so a trigger filters on the
+ * label it was told to listen for. The subject is `<owner>/<repo>/<number>` in lower case (the issue's identity across repositories), the description is carried as text for intake, and the
+ * actor says who did it (their numeric account id, and whether it is an automation), which is what decides whether work starts.
+ */
+function mapIssueRequest(body: z.infer<typeof IssueBody>): Mapped | undefined {
+  const { issue, repository, sender, action } = body;
+  const occurredAt = isoOf(issue.updated_at ?? issue.created_at);
+  if (occurredAt === undefined) return undefined;
+  const change = action === "labeled" ? body.label?.name : body.assignee?.login;
+  // A label or login longer than 100 characters is not one a person set to ask for work; it also keeps the event key inside its limit.
+  if (change === undefined || change.length > 100 || /[\p{Cc}\p{Cf}]/u.test(change)) return undefined;
+  const where = (repository.full_name ?? `${repository.owner?.login ?? ""}/${repository.name ?? ""}`).toLowerCase();
+  const subjectId = GITHUB_FULL_NAME.test(where) ? `${where}/${String(issue.number)}` : `${String(repository.id)}/${String(issue.number)}`;
+  return {
+    type: `issues.${action}`, eventKey: `gh:issue:${String(repository.id)}:${String(issue.number)}:${action}:${change}:${issue.updated_at ?? issue.created_at ?? ""}`, occurredAt,
+    subject: {
+      kind: "issue", id: subjectId, title: titleOf(issue.title, `Issue ${String(issue.number)}`), ...urlOf(issue.html_url),
+      ...(typeof issue.body === "string" && issue.body !== "" ? { body: issue.body.slice(0, TRIGGER_SUBJECT_BODY_MAX) } : {}),
+    },
+    fields: action === "labeled" ? { label: valuesOf([change]) } : { assignee: valuesOf([change]) },
+    involved: sender === undefined ? [] : [sender],
+    intake: true,
+  };
 }
 
 function mapEvent(eventName: string, payload: unknown, repositoryUrl: string | undefined): Mapped | undefined {
@@ -171,7 +204,9 @@ function mapEvent(eventName: string, payload: unknown, repositoryUrl: string | u
   if (eventName === "issues") {
     const parsed = IssueBody.safeParse(payload);
     // An issue that is a pull request is the pull request's event (GitHub sends a pull request's own).
-    if (!parsed.success || parsed.data.action !== "opened" || parsed.data.issue.pull_request !== undefined) return undefined;
+    if (!parsed.success || parsed.data.issue.pull_request !== undefined) return undefined;
+    if (parsed.data.action === "labeled" || parsed.data.action === "assigned") return mapIssueRequest(parsed.data);
+    if (parsed.data.action !== "opened") return undefined;
     const { issue, repository, sender } = parsed.data;
     const occurredAt = isoOf(issue.updated_at ?? issue.created_at);
     if (occurredAt === undefined) return undefined;
@@ -219,12 +254,14 @@ function mapEvent(eventName: string, payload: unknown, repositoryUrl: string | u
  * Who the event says it was: Rovara when any account it involves is a bot that is the App's (`<slug>[bot]`). Without the slug no bot can be told from Rovara's, so every bot is taken
  * for it: a loop is worse than a missed event from another bot. Dispatch checks the actor's id against Rovara's accounts again, whatever this says.
  */
-async function actorOf(deps: Pick<GithubTriggerDependencies, "githubAppSlug">, involved: Mapped["involved"]): Promise<TriggerEvent["actor"]> {
+async function actorOf(deps: Pick<GithubTriggerDependencies, "githubAppSlug">, involved: Mapped["involved"], intake: boolean = false): Promise<TriggerEvent["actor"]> {
   const slug = await deps.githubAppSlug?.();
   const own = involved.find((account) => account.type === "Bot" && (slug === undefined || slug === "" || account.login === `${slug}[bot]`));
   if (own !== undefined) return { kind: "rovara", id: own.login };
   const sender = involved[0];
-  return sender === undefined ? { kind: "unknown" } : { kind: "external", id: sender.login };
+  if (sender === undefined) return { kind: "unknown" };
+  // An event that asks for work also says who the sender is to GitHub (their account id: what a linked member is found by) and whether it is an automation of someone else's.
+  return { kind: "external", id: sender.login, ...(intake && sender.id !== undefined ? { accountId: String(sender.id) } : {}), ...(intake && sender.type === "Bot" ? { bot: true as const } : {}) };
 }
 
 /** Who the API is to be asked about, when the payload names the author and the repository's account in a form that is safe to put in a path. */
@@ -315,7 +352,7 @@ export async function githubTriggerEvents(deps: Pick<GithubTriggerDependencies, 
     log(deps)("github.trigger_unbound", { installationId: input.installationId });
     return [];
   }
-  const actor = await actorOf(deps, mapped.involved);
+  const actor = await actorOf(deps, mapped.involved, mapped.intake === true);
   const author = authorOf(input.installationId, common.data.repository, mapped.author);
   const found: Array<{ orgId: OrgId; event: TriggerEvent; author?: AuthorQuery }> = [];
   for (const project of await projectsOf(deps, orgId, input.installationId, common.data.repository.id)) {

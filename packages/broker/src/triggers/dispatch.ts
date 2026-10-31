@@ -35,12 +35,15 @@ import { readChainRun, startChainRun, type ChainRunnerDependencies } from "../ch
 import { connectionServiceActorIds } from "../connections/store.js";
 import { resolvePayer } from "../spend/payer.js";
 import { disableTrigger } from "./lifecycle.js";
+import { isIntakeTrigger, startIntakeFor, type IntakeDispatch } from "./intake-dispatch.js";
 import { runOwnerFor, triggerProblems } from "./requirements.js";
 import type { TriggerRecord } from "./store.js";
 
 export type TriggerDispatchDependencies = ChainRunnerDependencies & {
   /** The GitHub App's slug, to tell its own bot from a person (`<slug>[bot]`); without it GitHub's own events are told by the provider's `actor.kind` alone. */
   githubAppSlug?: () => Promise<string | undefined>;
+  /** Meta repo lane F: the intake engine, which starts Rovara Code from an issue that a label or an assignment asked for. Absent, such an event is recorded as failed and starts nothing. */
+  intake?: IntakeDispatch;
 };
 
 /** What GitHub's API says of a pull request's or issue's author, asked now: a member of the repository's org, an outside collaborator with write access, nobody of those, or an error (which counts as nobody). */
@@ -379,8 +382,15 @@ async function dispatchOne(work: Work, trigger: TriggerRecord): Promise<{ outcom
   // 6. The start. A refusal is a recorded outcome; a fault that may pass is the event's to be sent again.
   let started: { runId?: string; taskId?: string };
   try {
-    const source = eventSourceOf(event, trigger.triggerId);
-    started = trigger.target.kind === "chain" ? await startChainFor(deps, orgId, trigger, identity, source) : await startAgentFor(deps, orgId, trigger, identity, source);
+    if (isIntakeTrigger(trigger)) {
+      // Rovara Code asked for by a label or an assignment: the intake engine decides from who did it (a member starts it, anyone else makes it wait).
+      const result = await startIntakeFor(deps.intake, orgId, event);
+      if (result.outcome !== "started") return { outcome: await settle(work, trigger, result) };
+      started = { taskId: result.taskId };
+    } else {
+      const source = eventSourceOf(event, trigger.triggerId);
+      started = trigger.target.kind === "chain" ? await startChainFor(deps, orgId, trigger, identity, source) : await startAgentFor(deps, orgId, trigger, identity, source);
+    }
   } catch (error) {
     const refusal = await refusalOf(deps, orgId, trigger, error);
     if ("transient" in refusal) {

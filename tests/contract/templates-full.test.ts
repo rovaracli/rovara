@@ -353,7 +353,13 @@ describe("the suggested triggers", () => {
       { kind: "event", source: "github", type: "pull_request.opened", filter: { authorAssociation: MEMBERS } },
       { kind: "event", source: "github", type: "pull_request.ready_for_review", filter: { authorAssociation: MEMBERS } },
     ]);
-    expect(BUILTIN_TRIGGER_SUGGESTIONS["rovara-code"]).toEqual([]);
+    // Meta repo lane F replaces "none": a label or an assignment on a Jira or GitHub issue asks Rovara Code for work (no filter in the suggestion: the trigger must name the label).
+    expect(BUILTIN_TRIGGER_SUGGESTIONS["rovara-code"]).toEqual([
+      { kind: "event", source: "github", type: "issues.labeled" },
+      { kind: "event", source: "github", type: "issues.assigned" },
+      { kind: "event", source: "jira", type: "issue.labeled" },
+      { kind: "event", source: "jira", type: "issue.assigned" },
+    ]);
   });
 
   it("every one parses with the schemas a person's trigger does, and passes its type and filter tables", () => {
