@@ -1,5 +1,6 @@
 import { writeProjectAi } from "../../packages/broker/src/spend/settings.js";
 import { fixtureProject } from "../support/project-ai-source.js";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { AgentXError, errorStatus, orgSettingsKey, orgMemberKey, developerOrgKey, orgMetaKey, projectAiKey, orgProjectCatalogKey, projectMetaKey } from "@agentx/contracts";
@@ -61,4 +62,60 @@ it("monthly project edits preserve pending Spending terms and migrated identity"
  f.db.set({ ...before, pendingTaskStopChange: pending });
  await writeProjectAi({ ...f.deps, projectAiSignInTableName: "signin" }, orgId, "web", { projectPays: false, monthlyBudgetUsd: 51 }, a, { actor: { developerId: a, role: "owner" }, expectedRevision: 1 });
  expect(f.db.get(key)).toMatchObject({ orgId, project: "web", monthlyBudgetUsd: 51, revision: 2, pendingTaskStopChange: pending, taskStopPolicy: before.taskStopPolicy });
+});
+
+async function proposal(f: ReturnType<typeof fixture>, project = false) {
+ const path = project ? `${base}/projects/web` : base, view = await f.call("GET", `${path}/editing`), proposalId = randomUUID();
+ const response = await f.call("PUT", path, { requestId: proposalId, expectedRevision: view.body.revision, expectedPolicyDigest: view.body.sourceDigest, policy: project ? { kind: "inherit" } : { kind: "rovara_estimate" } });
+ expect(response.body.state).toBe("pending");
+ const pending = (await f.call("GET", `${path}/editing`)).body.pending as { proposalDigest: string };
+ return { path, body: { requestId: randomUUID(), proposalId, decision: "approve", expectedProposalDigest: pending.proposalDigest } };
+}
+for (const loss of ["proposer-role", "approver-role", "pointer", "identity", "closing", "generation", "proposal", "source", "archive"])
+it(`Spending approval refuses native ${loss} loss at commit without policy or audit`, async () => {
+ const f = fixture(), project = loss === "archive", p = await proposal(f, project), send = f.db.send.bind(f.db);let raced = false;
+ const key = project ? projectAiKey(orgId, "web") : f.key, original = f.db.get(key)!;
+ f.db.send = async command => {
+  if (!raced && command instanceof TransactWriteCommand) {
+   raced = true;
+   if (loss.endsWith("role")) { const id = loss === "proposer-role" ? a : b, k = orgMemberKey(orgId, id); f.db.set({ ...f.db.get(k)!, role: "member" }); }
+   else if (loss === "pointer") { const k = developerOrgKey(b);f.db.set({ ...f.db.get(k)!, orgId: "org_bbbbbbbbbbbbbbbbbbbb" }); }
+   else if (loss === "identity") f.db.set({ pk: `DEVELOPER#${b}`, sk: "META", developerId: b, provider: "cloud", revoked: true });
+   else if (loss === "closing" || loss === "generation") { const k = orgMetaKey(orgId);f.db.set({ ...f.db.get(k)!, ...(loss === "closing" ? { closingAt: "now" } : { approvalMembershipVersion: 1 }) }); }
+   else if (loss === "proposal") f.db.set({ ...original, pendingTaskStopChange: { ...(original.pendingTaskStopChange as object), proposedPolicy: { kind: "limited", stopMicrousd: 999999999 } } });
+   else if (loss === "source") f.db.set({ ...original, revision: 2 });
+   else { const k = projectMetaKey(orgId, "web");f.db.set({ ...f.db.get(k)!, archivedAt: "now" }); }
+  }
+  return send(command);
+ };
+ expect((await f.call("POST", `${p.path}/decisions`, p.body, b)).status).not.toBe(200);
+ expect(f.db.get(key)?.[project ? "taskStopPolicy" : "policy"]).toEqual(original[project ? "taskStopPolicy" : "policy"]);
+ expect(f.capture.recordedBy("spending.policy_change_decided")).toHaveLength(0);
+});
+it("Spending approval refuses a proposal changed after the displayed digest", async () => {
+ const f = fixture(), p = await proposal(f), row = f.db.get(f.key)!;
+ f.db.set({ ...row, pendingTaskStopChange: { ...(row.pendingTaskStopChange as object), proposedPolicy: { kind: "limited", stopMicrousd: 100000000 } } });
+ expect((await f.call("POST", `${base}/decisions`, p.body, b)).status).not.toBe(200);
+});
+for (const decision of ["reject", "cancel"]) it(`Spending ${decision} ends only the pending change and replays`, async () => {
+ const f = fixture(), p = await proposal(f), body = { ...p.body, decision }, actor = decision === "cancel" ? a : b;
+ if (decision === "cancel") expect((await f.call("POST", `${base}/decisions`, body, b)).status).not.toBe(200);
+ const answer = await f.call("POST", `${base}/decisions`, body, actor);expect(answer.status).toBe(200);
+ expect((await f.call("POST", `${base}/decisions`, body, actor)).body).toEqual(answer.body);
+ expect(f.db.get(f.key)?.pendingTaskStopChange).toBeUndefined();expect(f.db.get(f.key)?.revision).toBe(1);
+ expect(f.capture.recordedBy("spending.policy_change_decided")).toHaveLength(1);
+});
+it("Spending zero is exact and an identical policy is a no-op", async () => {
+ const f = fixture(), view = await f.call("GET", `${base}/editing`);
+ const body = { requestId: randomUUID(), expectedRevision: 1, expectedPolicyDigest: view.body.sourceDigest, policy: { kind: "limited", stopMicrousd: 0 } };
+ expect((await f.call("PUT", base, body)).body.state).toBe("applied");
+ const next = await f.call("GET", `${base}/editing`);
+ expect((await f.call("PUT", base, { ...body, requestId: randomUUID(), expectedRevision: 2, expectedPolicyDigest: next.body.sourceDigest })).body.state).toBe("unchanged");
+ expect(f.db.get(f.key)?.revision).toBe(2);expect(f.capture.recordedBy("spending.policy_changed")).toHaveLength(1);
+});
+it("monthly writes fence a proposal inserted after their read", async () => {
+ const f = fixture(), send = f.db.send.bind(f.db), key = projectAiKey(orgId, "web");let raced = false;
+ f.db.send = async command => { if (!raced && command instanceof TransactWriteCommand) { raced = true;f.db.set({ ...f.db.get(key)!, pendingTaskStopChange: { unexpected: "concurrent proposal" } }); }return send(command); };
+ await expect(writeProjectAi({ ...f.deps, projectAiSignInTableName: "signin" }, orgId, "web", { projectPays: false, monthlyBudgetUsd: 51 }, a, { actor: { developerId: a, role: "owner" }, expectedRevision: 1 })).rejects.toThrow();
+ expect(f.db.get(key)?.monthlyBudgetUsd).toBe(50);expect(f.db.get(key)?.pendingTaskStopChange).toEqual({ unexpected: "concurrent proposal" });
 });
