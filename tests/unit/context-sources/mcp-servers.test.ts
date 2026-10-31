@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MCP_PROBE_FAILURES, orgScoped } from "@agentx/contracts";
-import { type McpServerSecrets, McpProbeError, STDIO_OFF_MESSAGE, stdioAvailable, allowedTargets, approveMcpServer, disableMcpServer, clearOrgMcpServers, dynamoMcpServerStore, listMcpServers, proposeMcpServer, removeMcpServer, summariseProbe, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
+import { type McpServerSecrets, McpProbeError, STDIO_OFF_MESSAGE, stdioAvailable, allowedTargets, approveMcpServer, disableMcpServer, clearOrgMcpServers, dynamoMcpServerStore, listMcpServers, probeLimiter, proposeMcpServer, removeMcpServer, summariseProbe, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { routeMcpServers } from "../../../packages/broker/src/context-sources/mcp-server-routes.js";
 import { StatusReply } from "../../../packages/broker/src/aws/status-reply.js";
 import type { AgentCaller } from "../../../packages/broker/src/agents/access.js";
@@ -231,6 +231,18 @@ describe("adding a server is easy: paste, test, see, approve", () => {
     // the entry that can be read is not touched either: the close stops as a whole and can be run again once the item is dealt with
     expect((await store.listAll(ORG)).unreadable).toBe(1);
     expect((await store.listAll(ORG)).entries.map((entry) => entry.serverId)).toEqual(["mcpgood00001"]);
+  });
+  it("tidy round: the limiter forgets orgs that have been idle for a whole window, so its map does not grow without bound", () => {
+    let now = NOW;
+    const limiter = probeLimiter({ max: 2, windowMs: 600_000, now: () => now });
+    for (let index = 0; index < 1000; index += 1) expect(limiter(`org_${String(index).padStart(20, "0")}`)).toBe(true);
+    expect(limiter.size()).toBe(1000);
+    now += 600_001;
+    expect(limiter(ORG)).toBe(true);
+    expect(limiter.size()).toBe(1);
+    // the limit itself still holds
+    expect(limiter(ORG)).toBe(true);
+    expect(limiter(ORG)).toBe(false);
   });
   it("does not add the same host and port twice", async () => {
     const { deps } = world();

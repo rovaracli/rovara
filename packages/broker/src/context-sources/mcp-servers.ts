@@ -206,16 +206,25 @@ export function summariseProbe(tools: readonly DiscoveredTool[], now: number): M
   return { at: new Date(now).toISOString(), toolsHash: createHash("sha256").update(canonicalJson(shown.map((tool) => [tool.name, tool.schemaHash]))).digest("hex"), tools: shown };
 }
 
-/** At most `max` tests per org in `windowMs`, counted in this process. */
-export function probeLimiter(options: { max: number; windowMs: number; now: () => number }): (orgId: OrgId) => boolean {
+/**
+ * At most `max` tests per org in `windowMs`, counted in this process. An org that has been idle for a whole window is forgotten (swept at most once a window), so the map
+ * holds only orgs seen recently; `size()` says how many.
+ */
+export function probeLimiter(options: { max: number; windowMs: number; now: () => number }): ((orgId: OrgId) => boolean) & { size(): number } {
   const seen = new Map<string, number[]>();
-  return (orgId) => {
+  let sweptAt = options.now();
+  const limiter = (orgId: OrgId): boolean => {
     const at = options.now();
+    if (at - sweptAt >= options.windowMs) {
+      for (const [key, times] of seen) if (times.every((time) => at - time >= options.windowMs)) seen.delete(key);
+      sweptAt = at;
+    }
     const recent = (seen.get(orgId) ?? []).filter((time) => at - time < options.windowMs);
     if (recent.length >= options.max) { seen.set(orgId, recent); return false; }
     seen.set(orgId, [...recent, at]);
     return true;
   };
+  return Object.assign(limiter, { size: () => seen.size });
 }
 
 async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerTransport | { kind: "stdio"; spec: McpStdioProposal }, token: string | undefined): Promise<{ probe: McpServerProbe; integrity?: string }> {
