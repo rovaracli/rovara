@@ -1161,3 +1161,17 @@ export function intakeEventKey(orgId: OrgId, project: string, itemId: string, ev
   if (eventId.length === 0) throw new Error("an event id can't be empty");
   return { pk: orgScoped(orgId, `INTAKE_EVENT#${keyPart(project, "a project name")}`), sk: `${itemId}#${createHash("sha256").update(eventId, "utf8").digest("hex").slice(0, 32)}` };
 }
+
+/**
+ * A note that Rovara itself wrote to a ticket (a label, an assignment, or any other change), so that the event the tracker sends back for it is told apart from a member's act whatever
+ * account the write went through (a member's own key, an app acting as them). `kind` is what was written: `label` or `assignee` (with the value, hashed here) or `touch` (some other
+ * change to the ticket; no value). `ticketId` is the ticket's intake item id, or for a write that made a new ticket, the id of its scope (the repository).
+ */
+export const INTAKE_OWN_WRITE_KINDS = ["label", "assignee", "touch"] as const;
+export type IntakeOwnWriteKind = (typeof INTAKE_OWN_WRITE_KINDS)[number];
+export function intakeOwnWriteKey(orgId: OrgId, ticketItemId: string, kind: IntakeOwnWriteKind, value: string): OrgKey {
+  if (!/^[a-f0-9]{32}$/u.test(ticketItemId)) throw new Error("an intake item id is 32 hex characters");
+  if (!(INTAKE_OWN_WRITE_KINDS as readonly string[]).includes(kind)) throw new Error("an own write is a label, an assignee or a touch");
+  const part = kind === "touch" ? "-" : createHash("sha256").update(value.normalize("NFC").trim().toLowerCase(), "utf8").digest("hex").slice(0, 32);
+  return { pk: orgScoped(orgId, "INTAKE_OWN"), sk: `${ticketItemId}#${kind}#${part}` };
+}

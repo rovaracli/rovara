@@ -36,7 +36,12 @@ export function intakeCandidateOf(orgId: OrgId, event: TriggerEvent): IntakeCand
   const types = Object.hasOwn(INTAKE_EVENT_TYPES, event.source) ? (INTAKE_EVENT_TYPES[event.source as keyof typeof INTAKE_EVENT_TYPES] as readonly string[]) : [];
   if (mapped === undefined || !types.includes(event.type) || event.subject.url === undefined) return undefined;
   const { actor } = event;
+  // What the act put on the ticket: the label added, or the assignee set (the first value the event names).
+  const field = event.type.endsWith(".labeled") ? "label" : "assignee";
+  const named = Object.hasOwn(event.fields, field) ? event.fields[field] : undefined;
+  const value = Array.isArray(named) && typeof named[0] === "string" ? named[0] : undefined;
   return {
+    ...(value === undefined ? {} : { act: { kind: field, value } }),
     orgId, project: event.project, channel: mapped.channel,
     externalRef: { system: mapped.system, id: event.subject.id, url: event.subject.url },
     title: event.subject.title, body: event.subject.body, occurredAt: event.occurredAt, eventId: event.eventKey,

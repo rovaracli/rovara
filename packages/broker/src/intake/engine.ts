@@ -27,6 +27,7 @@ import {
 } from "@agentx/contracts";
 import { ticketRunInput, inertTitle, inertTicketLine, inertWriter, prepareTicketBody, WAITING_BODY_MAX_BYTES } from "./ticket-text.js";
 import { intakeRequestId } from "./ids.js";
+import { ownWriteVerdictOf } from "./own-writes.js";
 import { claimIntakeEvent, claimIntakeItem, claimIntakeStart, giveBackIntakeItem, intakeItemIsTakeable, listWaitingIntakeItems, markIntakeStarted, readIntakeItem, releaseIntakeEvent, releaseIntakeItem, reopenIntakeItem, INTAKE_MAX_WAITING_PER_PROJECT, type IntakeItemRecord, type IntakeTable } from "./store.js";
 
 /** Who made the act that asks for work, as the tracker's adapter knows them. Only `accountId` can ever make them a member, and only through a link the org holds. */
@@ -56,6 +57,8 @@ export interface IntakeCandidate {
    * that the ticket carries a label) never restarts a ticket whose task ended: only a new label event does.
    */
   eventId?: string | undefined;
+  /** What the act put on the ticket (a label, or an assignee): so that a label or assignment Rovara wrote itself is told from a member's (`own-writes.ts`). Absent for a poll. */
+  act?: { kind: "label" | "assignee"; value: string } | undefined;
 }
 
 export type IntakeOutcome =
@@ -100,7 +103,9 @@ interface Resolved {
  * Who asked, as the org knows them. A `person` with a linked account who holds a role that starts tasks is a member who may start. A linked member without that role is a member who
  * waits for someone who has it. Everything else is an outsider or a bot; an actor that is Rovara's own never reaches here.
  */
-async function resolveStanding(ports: IntakePorts, candidate: IntakeCandidate): Promise<Resolved> {
+async function resolveStanding(ports: IntakePorts, candidate: IntakeCandidate, unattributed: boolean): Promise<Resolved> {
+  // An act that can't be told from Rovara's own change, or that its tracker would not confirm, is not taken for a member's (fail closed): the ticket waits for someone to say "Start".
+  if (unattributed) return { standing: "outsider", reason: "unverified" };
   const actor = candidate.actor;
   if (actor === undefined || actor.kind === "unknown") return { standing: "outsider", reason: "outsider" };
   if (actor.kind === "bot") return { standing: "bot", reason: "bot" };
@@ -179,6 +184,11 @@ export interface IngestContext {
   waiting?: { count: number };
   /** Asked just before work would start (a member's act, or a member pressing Start from a ticket's event): false means "not now", and the ticket waits instead of being dropped. Dispatch counts its allowances here. */
   admit?: () => Promise<boolean>;
+  /**
+   * The tracker's own word on who made the act, asked only for an act that looks like a person's and would start work (never for one that waits anyway): "person" (it confirms it), "rovara" (it
+   * was done through Rovara's own app) or "unverified" (it can't say). A fault or any other answer counts as "unverified", so the ticket waits. Absent where the tracker has no such word.
+   */
+  confirmActor?: () => Promise<"person" | "rovara" | "unverified">;
 }
 
 /**
@@ -191,7 +201,23 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
   // The loop guard: what Rovara's own account did never starts what Rovara does.
   if (candidate.actor?.kind === "rovara") return { outcome: "skipped", reason: "caused_by_rovara" };
   const { orgId, project, eventId } = candidate;
-  if (eventId === undefined || eventId === "") return ingestOnce(ports, candidate, context);
+  // Rovara's own writes, whatever account they went through: an event for a label or assignment Rovara wrote itself starts nothing. (A read that fails throws, and the delivery is made again.)
+  const own = await ownWriteVerdictOf(ports.table, { orgId, externalRef: ref.data, act: candidate.act, occurredAt: candidate.occurredAt });
+  if (own === "own") {
+    ports.log("intake.own_write", { orgId, project, system: ref.data.system });
+    return { outcome: "skipped", reason: "caused_by_rovara" };
+  }
+  let unattributed = own === "touched";
+  // The tracker's own word on who did it, where it has one: asked only when the act looks like a person's and would start work.
+  if (!unattributed && context.confirmActor !== undefined && candidate.actor?.kind === "person" && candidate.actor.accountId !== undefined && await wouldStart(ports, candidate)) {
+    const word = await context.confirmActor().catch(() => "unverified" as const);
+    if (word === "rovara") {
+      ports.log("intake.own_write", { orgId, project, system: ref.data.system, by: "tracker" });
+      return { outcome: "skipped", reason: "caused_by_rovara" };
+    }
+    unattributed = word !== "person";
+  }
+  if (eventId === undefined || eventId === "") return ingestOnce(ports, candidate, context, unattributed);
   // Each label event counts once: an event handed over again (a webhook delivered twice, a replay) is the same event. A fault that may pass gives the event back, so the redelivery is handled.
   const itemId = intakeItemIdOf(ref.data.system, ref.data.id);
   if (!await claimIntakeEvent(ports.table, orgId, project, itemId, eventId)) {
@@ -199,14 +225,20 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
     return { outcome: "duplicate", state: seen?.state ?? "started" };
   }
   try {
-    return await ingestOnce(ports, candidate, context);
+    return await ingestOnce(ports, candidate, context, unattributed);
   } catch (error) {
     await releaseIntakeEvent(ports.table, orgId, project, itemId, eventId);
     throw error;
   }
 }
 
-async function ingestOnce(ports: IntakePorts, candidate: IntakeCandidate, context: IngestContext): Promise<IntakeOutcome> {
+/** Whether the act, taken at its word, is a linked member's who may start tasks on the project (so that it is worth asking the tracker to confirm it). */
+async function wouldStart(ports: IntakePorts, candidate: IntakeCandidate): Promise<boolean> {
+  const resolved = await resolveStanding(ports, candidate, false);
+  return resolved.reason === undefined && resolved.developerId !== undefined;
+}
+
+async function ingestOnce(ports: IntakePorts, candidate: IntakeCandidate, context: IngestContext, unattributed: boolean): Promise<IntakeOutcome> {
   const ref = IntakeExternalRefSchema.parse(candidate.externalRef);
   const { orgId, project } = candidate;
   const itemId = intakeItemIdOf(ref.system, ref.id);
@@ -214,7 +246,7 @@ async function ingestOnce(ports: IntakePorts, candidate: IntakeCandidate, contex
   // A ticket that is started or being started is done with, whoever asks again, unless a new label EVENT asks for a ticket whose task has ended (below). (A start whose lease ran out was cut short; it is taken over like a waiting ticket.)
   const relabeling = known?.state === "started" && candidate.eventId !== undefined && candidate.eventId !== "";
   if (known !== undefined && !relabeling && !intakeItemIsTakeable(known, ports.table.now())) return { outcome: "duplicate", state: known.state };
-  const resolved = await resolveStanding(ports, candidate);
+  const resolved = await resolveStanding(ports, candidate, unattributed);
   const title = inertTitle(candidate.title, ref.id).slice(0, INTAKE_TITLE_MAX);
   const writer = inertWriter(candidate.reporter?.display);
   const input = ticketRunInput({ system: ref.system, id: ref.id, title, body: prepareTicketBody(candidate.body), writer });

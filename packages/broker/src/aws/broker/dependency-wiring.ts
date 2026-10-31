@@ -42,6 +42,7 @@ import { TriggerStore } from "../../triggers/store.js";
 import { dispatchTriggerEvent, type TriggerDispatchContext } from "../../triggers/dispatch.js";
 import { ingestIntake, type IntakePorts } from "../../intake/engine.js";
 import { writeIntakeNotice } from "../../intake/notices.js";
+import { noteOwnWrite, registerOwnWriteRecorder } from "../../intake/own-writes.js";
 import { intakePortsOf } from "../../intake/wiring.js";
 import { listProjectMembers } from "../../org/project-members.js";
 import type { IntakePollDependencies } from "../../triggers/poll-intake.js";
@@ -824,4 +825,12 @@ export function developerTaskActions(dependencies: AwsBrokerDependencies): Devel
 export function serviceStatusRouteDependencies(dependencies: AwsBrokerDependencies): Pick<DeveloperRouteDependencies, "serviceStatus"> {
  const runtimeCatalogId = dependencies.e2eFeatureRuntimeCatalogId;if (runtimeCatalogId === undefined) return {};
  return { serviceStatus: { runtimeStatus: () => readServiceStatusEvidence({ runtimeCatalogId, read: key => getItem<Record<string, unknown>>(dependencies, key) }) } };
+}
+
+/**
+ * Wire lane D (MF-4): what Rovara writes to a ticket through a connector is noted in the broker's table before it is sent, so the tracker's event for it is never taken for a member's act.
+ * Registered once per handler; the note is the intake engine's to read (`intake/own-writes.ts`).
+ */
+export function installOwnWriteRecorder(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">): void {
+  registerOwnWriteRecorder((orgId, note) => noteOwnWrite({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, note));
 }

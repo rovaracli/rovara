@@ -13,6 +13,7 @@ import {
   type ScopeCatalog,
   type SkippedTool,
 } from "@agentx/gateway";
+import { recordOwnWriteOfCall } from "../intake/own-writes.js";
 import type { ConnectorScope, ResolvedConnector } from "./connector-types.js";
 
 /** One scope's discovered tools and the approved tools it could not offer. */
@@ -153,6 +154,8 @@ export async function callConnector(input: {
       text: `${connector.label} is not connected for this project. An administrator must configure its credential.`,
     };
   }
+  // Wire lane D (MF-4): what Rovara writes to a ticket is noted BEFORE it is sent, so the tracker's event for it is never taken for a member's act. A note that can't be made stops the call.
+  await recordOwnWriteOfCall({ orgId: context.orgId, connectorType: connector.type, tool: request.tool, args: request.arguments });
   return executeTool(
     { requestId: request.requestId, scope: scope.alias, tool: request.tool, schemaHash: request.schemaHash, arguments: request.arguments },
     definition,
