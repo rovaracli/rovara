@@ -722,3 +722,13 @@ it("M47 eval admission requires an audit in the run and slot transaction", async
  const transaction = h.db.transactions().find(items => items.some(item => (item.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "SWEBENCH_RUN"));
  expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Put: expect.objectContaining({ Item: expect.objectContaining({ event: expect.objectContaining({ action: "spending.stop_admitted", facts: expect.objectContaining({ workKind: "eval", effectiveStopMicrousd: 1234567 }) }) }) }) })]));
 });
+
+it("M47 reported eval cost ceiling commits its reached audit with terminal state and slot release", async () => {
+ const h = await enrolledEvalBroker(), reply = await start(h.handler), runId = (reply.body.run as { runId: string }).runId;
+ const capability = h.launches.get(`evals/${runId}/launch.json`)!.run.capability;
+ const body = { outcome: "GRADED", resolved: false, stopReason: "cost_ceiling", patchBytes: 0, agentSeconds: 1, imageDigest: "swebench/x@sha256:abc", artifactsPrefix: `evals/${runId}/`,
+ usage: { schemaVersion: 1, outcome: "SUCCEEDED", provider: "amazon-bedrock", modelId: "m", cacheRetention: "long", tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cacheReadRatio: 0, costUsd: 1.234567 } };
+ expect((await call(h.handler, { method: "POST", path: `/v1/internal/evals/${runId}/result`, headers: { "x-agentx-callback-capability": capability }, body })).status).toBe(200);
+ const transaction = h.db.transactions().find(items => items.some(item => (item.Put as { Item?: { event?: { action?: string } } } | undefined)?.Item?.event?.action === "spending.stop_reached"));
+ expect(transaction).toEqual(expect.arrayContaining([expect.objectContaining({ Update: expect.objectContaining({ Key: { pk: `SWEBENCH#${runId}`, sk: "META" } }) }), expect.objectContaining({ Delete: expect.objectContaining({ Key: { pk: "SWEBENCH#SLOT", sk: `RUN#${runId}` } }) })]));
+});
