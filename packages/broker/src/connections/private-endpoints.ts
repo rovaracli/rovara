@@ -18,6 +18,8 @@ import { pinnedFetch, type McpEndpointGuard, type RequestFunction } from "./pinn
 const NEVER: ReadonlyArray<[string, number, "ipv4" | "ipv6"]> = [
   ["0.0.0.0", 8, "ipv4"], ["127.0.0.0", 8, "ipv4"], ["169.254.0.0", 16, "ipv4"], ["224.0.0.0", 4, "ipv4"], ["240.0.0.0", 4, "ipv4"],
   ["::", 128, "ipv6"], ["::1", 128, "ipv6"], ["fe80::", 10, "ipv6"], ["ff00::", 8, "ipv6"], ["fd00:ec2::", 32, "ipv6"],
+  // Other metadata services, and the IPv6 forms that carry an IPv4 address inside (so 169.254.169.254 cannot be written another way): NAT64, IPv4-compatible, 6to4, Teredo.
+  ["100.100.100.200", 32, "ipv4"], ["64:ff9b::", 96, "ipv6"], ["64:ff9b:1::", 48, "ipv6"], ["::", 96, "ipv6"], ["2002::", 16, "ipv6"], ["2001::", 32, "ipv6"],
 ];
 const NEVER_LIST = (() => {
   const list = new BlockList();
@@ -33,6 +35,32 @@ export function isNeverCalledAddress(address: string): boolean {
   const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/iu.exec(address);
   if (mapped?.[1] !== undefined) return NEVER_LIST.check(mapped[1], "ipv4");
   return NEVER_LIST.check(address, family === 4 ? "ipv4" : "ipv6");
+}
+
+/** The private ranges an install may point at (RFC 1918, shared address space as EKS uses it, unique local). */
+const PRIVATE_RANGES: ReadonlyArray<[string, number, "ipv4" | "ipv6"]> = [["10.0.0.0", 8, "ipv4"], ["172.16.0.0", 12, "ipv4"], ["192.168.0.0", 16, "ipv4"], ["100.64.0.0", 10, "ipv4"], ["fc00::", 7, "ipv6"]];
+
+/**
+ * The install-level ranges the operator sets once (`ROVARA_PRIVATE_MCP_CIDRS`, comma separated), outside which no private MCP server is tested or called. Each must lie
+ * inside a private range: a public range, a broad one, or a loopback/link-local range is a mistake and stops the install, never a silent widening. Unset gives none,
+ * and then every test and call is refused.
+ */
+export function parseInstallCidrs(raw: string | undefined): string[] {
+  if (raw === undefined || raw.trim() === "") return [];
+  return raw.split(",").map((part) => part.trim()).filter((part) => part !== "").map((cidr) => {
+    const [network, prefixText, extra] = cidr.split("/");
+    const family = network === undefined ? 0 : isIP(network);
+    if (network === undefined || prefixText === undefined || extra !== undefined || family === 0 || !/^\d{1,3}$/u.test(prefixText)) throw agentXError("CONFIG_INVALID", `ROVARA_PRIVATE_MCP_CIDRS: "${cidr.slice(0, 60)}" is not a range such as 10.0.0.0/8`);
+    const prefix = Number(prefixText);
+    const inside = PRIVATE_RANGES.some(([base, basePrefix, baseFamily]) => {
+      if (baseFamily !== (family === 4 ? "ipv4" : "ipv6") || prefix < basePrefix || prefix > (family === 4 ? 32 : 128)) return false;
+      const list = new BlockList();
+      list.addSubnet(base, basePrefix, baseFamily);
+      return list.check(network, baseFamily);
+    });
+    if (!inside || isNeverCalledAddress(network)) throw agentXError("CONFIG_INVALID", `ROVARA_PRIVATE_MCP_CIDRS: "${cidr.slice(0, 60)}" is not inside a private range`);
+    return cidr;
+  });
 }
 
 export interface AllowedTarget {
@@ -84,10 +112,19 @@ async function addressesOf(host: string, resolveHost: ResolveHost): Promise<stri
 }
 
 /** The address, checked for a TEST of a pasted address: the form and the never-called list, but no allow-list (nothing is approved yet). */
-export async function checkPrivateEndpointForProbe(value: string, resolveHost: ResolveHost = dnsResolveHost): Promise<CheckedEndpoint> {
+export async function checkPrivateEndpointForProbe(value: string, installCidrs: readonly string[], resolveHost: ResolveHost = dnsResolveHost): Promise<CheckedEndpoint> {
   const target = parsePrivateTarget(value);
   if ("problem" in target) throw agentXError("CONFIG_INVALID", target.problem);
-  return { url: target.url, addresses: await addressesOf(target.host, resolveHost) };
+  const addresses = await addressesOf(target.host, resolveHost);
+  insideRanges(addresses, installCidrs);
+  return { url: target.url, addresses };
+}
+
+/** Every address must be inside one of the ranges; no ranges, or a range that does not parse, is a refusal. */
+function insideRanges(addresses: readonly string[], cidrs: readonly string[]): void {
+  const ranges = cidrs.length === 0 ? undefined : cidrBlockList(cidrs);
+  if (ranges === undefined) throw agentXError("FORBIDDEN", "no address range is set for MCP servers on this network; the operator sets ROVARA_PRIVATE_MCP_CIDRS");
+  if (!addresses.every((address) => ranges.check(address, isIP(address) === 4 ? "ipv4" : "ipv6"))) throw agentXError("FORBIDDEN", "the MCP server's host resolves outside the address ranges set for this install");
 }
 
 /** The address, checked for a CALL: it must be on the allow-list, and its addresses must pass the never-called list and the entry's ranges. */
@@ -97,12 +134,9 @@ export async function checkAllowedPrivateEndpoint(value: string, allowed: readon
   const entry = allowed.find((item) => item.host.toLowerCase() === target.host && item.port === target.port);
   if (entry === undefined) throw agentXError("FORBIDDEN", "that MCP server is not on this install's allow-list");
   const addresses = await addressesOf(target.host, resolveHost);
-  if (entry.cidrs !== undefined && entry.cidrs.length > 0) {
-    const ranges = cidrBlockList(entry.cidrs);
-    // A range that does not parse is a refusal, never "any address".
-    if (ranges === undefined) throw agentXError("CONFIG_INVALID", "the allow-list entry's address ranges are not valid");
-    if (!addresses.every((address) => ranges.check(address, isIP(address) === 4 ? "ipv4" : "ipv6"))) throw agentXError("FORBIDDEN", "the MCP server's host resolves outside the ranges approved for it");
-  }
+  // An entry with no ranges is refused, and so is a range that does not parse: a name is never trusted to resolve inside the network (review I2).
+  if (entry.cidrs === undefined || entry.cidrs.length === 0 || cidrBlockList(entry.cidrs) === undefined) throw agentXError("CONFIG_INVALID", "no valid address range is set for this MCP server");
+  insideRanges(addresses, entry.cidrs);
   return { url: target.url, addresses };
 }
 
@@ -115,9 +149,9 @@ export function privateMcpEndpointGuard(options: { allowed: () => Promise<readon
 }
 
 /** The guard for the TEST of a pasted address. It is used only by the settings route, never for a stage's call. */
-export function probeMcpEndpointGuard(options: { resolveHost?: ResolveHost; request?: RequestFunction } = {}): McpEndpointGuard {
+export function probeMcpEndpointGuard(options: { installCidrs: readonly string[]; resolveHost?: ResolveHost; request?: RequestFunction }): McpEndpointGuard {
   return async (endpoint) => {
-    const checked = await checkPrivateEndpointForProbe(endpoint.href, options.resolveHost);
+    const checked = await checkPrivateEndpointForProbe(endpoint.href, options.installCidrs, options.resolveHost);
     return pinnedFetch(checked.addresses, { origin: checked.url.origin, ...(options.request === undefined ? {} : { request: options.request }) });
   };
 }

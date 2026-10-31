@@ -9,7 +9,7 @@ import { connectMcp, listMcpTools, type McpConnection, type McpToolResult } from
 import { agentXError, editionPolicy, featureEnabled, type ContextSourceServer, type Edition, type McpAuth, type OrgId } from "@agentx/contracts";
 import { mcpEndpointGuard, type McpEndpointGuard } from "../connections/pinned-endpoint.js";
 import { privateMcpEndpointGuard, probeMcpEndpointGuard } from "../connections/private-endpoints.js";
-import { McpProbeError, allowedTargets, type McpProber, type McpServerStore } from "./mcp-servers.js";
+import { McpProbeError, allowedTargets, authConnectionFits, type McpProber, type McpServerStore } from "./mcp-servers.js";
 import type { ContextServerPort, ContextServerSession } from "./routes.js";
 import type { DiscoveredTool, SourceEnvironment } from "./settings.js";
 
@@ -31,6 +31,8 @@ export interface ServerPortDependencies {
   connections: ConnectionLookup;
   servers: Pick<McpServerStore, "get" | "list">;
   mcpHost?: McpHostEndpoint | undefined;
+  /** The install's private address ranges (`parseInstallCidrs(process.env.ROVARA_PRIVATE_MCP_CIDRS)`). None: no private server is called. */
+  privateCidrs?: readonly string[] | undefined;
   /** For a public connection. Default: the existing guard. */
   publicGuard?: McpEndpointGuard | undefined;
   /** For an approved private server. Default: the allow-list guard over `servers`. */
@@ -59,9 +61,11 @@ async function targetOf(deps: ServerPortDependencies, orgId: OrgId, server: Cont
   if (entry === undefined || entry.status !== "approved") throw agentXError("FORBIDDEN", "that MCP server is not approved");
   if (entry.transport.kind === "http") {
     const endpoint = new URL(entry.transport.address);
-    const guard = (deps.privateGuard ?? ((org: OrgId) => privateMcpEndpointGuard({ allowed: () => allowedTargets(deps.servers, org) })))(orgId);
+    const guard = (deps.privateGuard ?? ((org: OrgId) => privateMcpEndpointGuard({ allowed: () => allowedTargets(deps.servers, org, deps.privateCidrs ?? []) })))(orgId);
     let token: string | undefined;
     if (entry.authConnectionId !== undefined) {
+      // Read now: the connection must still be read-only and still made for this same server (authConnectionFits), or its token is not sent.
+      if (!authConnectionFits(await deps.connections.read(orgId, entry.authConnectionId), entry.transport.address)) throw agentXError("FORBIDDEN", "this server's connection cannot be used");
       token = await deps.connections.token(orgId, entry.authConnectionId);
       if (token === undefined) throw agentXError("CONFIG_INVALID", "this server's connection has no key");
     }
@@ -151,13 +155,13 @@ function classify(error: unknown): McpProbeError {
  * Tests a pasted address: the form and the never-called list apply, the allow-list does not (nothing is approved yet), and the connection is pinned to the checked
  * addresses. `host` serves stdio specs. Every failure is one of the fixed codes.
  */
-export function gatewayProber(deps: { host?: HostProbeClient | undefined; guard?: McpEndpointGuard | undefined; list?: typeof listMcpTools | undefined; timeoutMs?: number | undefined }): McpProber {
+export function gatewayProber(deps: { host?: HostProbeClient | undefined; privateCidrs?: readonly string[] | undefined; guard?: McpEndpointGuard | undefined; list?: typeof listMcpTools | undefined; timeoutMs?: number | undefined }): McpProber {
   const list = deps.list ?? listMcpTools;
   return {
     async http(address, token) {
       try {
         const endpoint = new URL(address);
-        const fetchImplementation = await (deps.guard ?? probeMcpEndpointGuard())(endpoint);
+        const fetchImplementation = await (deps.guard ?? probeMcpEndpointGuard({ installCidrs: deps.privateCidrs ?? [] }))(endpoint);
         return toDiscovered(await list({ endpoint, token: token ?? "", signal: AbortSignal.timeout(deps.timeoutMs ?? 15_000), ...(token === undefined ? { auth: NO_TOKEN_AUTH } : {}), fetchImplementation }));
       } catch (error) {
         throw classify(error);

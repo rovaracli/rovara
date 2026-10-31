@@ -74,7 +74,7 @@ describe("a registered http server", () => {
     expect(w.connects).toEqual([]);
   });
   it("sends its auth connection's token", async () => {
-    const w = world({ entries: [{ ...http(), authConnectionId: "con_aaaaaaaaaaaaaaaaaaaa" }] });
+    const w = world({ entries: [{ ...http(), authConnectionId: "con_aaaaaaaaaaaaaaaaaaaa" }], connections: connection({ endpoint: "https://sim.corp.example:8443/mcp" }) });
     await w.seed();
     await w.port.open(ORG, server, signal(), ["x"]);
     expect(w.connects[0]).toMatchObject({ token: "secret-token" });
@@ -132,5 +132,34 @@ describe("testing a pasted address", () => {
     [new Error("Unexpected token < in JSON"), "not_mcp"],
   ])("maps %s to the fixed code %s", async (error, code) => {
     await expect(gatewayProber({ guard: async () => { throw error; } }).http("https://sim.corp.example/mcp", undefined)).rejects.toMatchObject({ code });
+  });
+});
+
+describe("review I1: the token of an auth connection is sent only to its own host", () => {
+  const server = { kind: "registered_server" as const, serverId: "mcpsim000001" };
+  const withAuth = (): McpServerEntry => ({ ...http(), authConnectionId: "con_aaaaaaaaaaaaaaaaaaaa" });
+  it("is refused when the connection can also write, or points at another host", async () => {
+    for (const bad of [connection({ access: "read_write", endpoint: "https://sim.corp.example:8443/mcp" }), connection({ endpoint: "https://api.linear.app/mcp" }), connection({ type: "linear" })]) {
+      const w = world({ entries: [withAuth()], connections: bad });
+      await w.seed();
+      await expect(w.port.open(ORG, server, signal(), ["x"])).rejects.toBeDefined();
+      expect(w.connects).toEqual([]);
+    }
+  });
+  it("is sent when the connection is read-only and on the same host and port", async () => {
+    const w = world({ entries: [withAuth()], connections: connection({ endpoint: "https://sim.corp.example:8443/mcp" }) });
+    await w.seed();
+    await w.port.open(ORG, server, signal(), ["x"]);
+    expect(w.connects[0]).toMatchObject({ token: "secret-token" });
+  });
+});
+
+describe("review I2: the default private guard uses the install's ranges", () => {
+  it("refuses a registered server when the install has set no ranges", async () => {
+    const table = new FakeDynamoDb();
+    const store = dynamoMcpServerStore({ documentClient: table, tableName: "state" });
+    await store.create(ORG, http());
+    const port = gatewayServerPort({ edition: "enterprise", connections: connection(), servers: store, connect: (async () => { throw new Error("must not connect"); }) as never });
+    await expect(port.open(ORG, { kind: "registered_server", serverId: "mcpsim000001" }, signal(), ["x"])).rejects.toBeDefined();
   });
 });

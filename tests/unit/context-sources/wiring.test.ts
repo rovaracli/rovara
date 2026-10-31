@@ -26,7 +26,8 @@ describe("the builders the broker's wiring calls", () => {
   });
   it("make the MCP servers flow, which Public refuses", async () => {
     const deps = createMcpServerDependencies(base("public"));
-    await expect(deps.authConnectionUsable(ORG, "con_aaaaaaaaaaaaaaaaaaaa")).resolves.toBe(true);
+    await expect(deps.authConnectionUsable(ORG, "con_aaaaaaaaaaaaaaaaaaaa", "https://mcp.vendor.example/mcp")).resolves.toBe(true);
+    await expect(deps.authConnectionUsable(ORG, "con_aaaaaaaaaaaaaaaaaaaa", "https://other.example/mcp")).resolves.toBe(false);
     const { listMcpServers } = await import("../../../packages/broker/src/context-sources/mcp-servers.js");
     await expect(listMcpServers(deps, { orgId: ORG, developerId: "d", orgRole: "admin" })).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(listMcpServers(createMcpServerDependencies(base("enterprise")), { orgId: ORG, developerId: "d", orgRole: "admin" })).resolves.toEqual([]);

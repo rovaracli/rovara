@@ -8,7 +8,7 @@ import { readConnection, readConnectionToken, type OrgConnectionDeps } from "../
 import type { AgentCaller } from "../agents/access.js";
 import type { Edition, OrgId } from "@agentx/contracts";
 import { dynamoCitationStore } from "./citations.js";
-import { dynamoMcpServerStore, type McpServerDependencies } from "./mcp-servers.js";
+import { authConnectionFits, dynamoMcpServerStore, probeLimiter, type McpServerDependencies } from "./mcp-servers.js";
 import { dynamoResultStore } from "./quotes.js";
 import type { ContextSourcesRuntime } from "./runtime.js";
 import { gatewayProber, gatewayServerPort, hostProbeClient, sourceEnvironment, type ConnectionLookup, type McpHostEndpoint } from "./server-port.js";
@@ -25,6 +25,8 @@ interface Common {
   connections: ConnectionLookup;
   /** The MCP host's private URL and token, when the install runs one (stdio servers). */
   mcpHost?: McpHostEndpoint | undefined;
+  /** `parseInstallCidrs(process.env.ROVARA_PRIVATE_MCP_CIDRS)`: the ranges outside which no private MCP server is tested or called. */
+  privateCidrs?: readonly string[] | undefined;
 }
 
 /** The connection lookup the port needs, from the broker's connection store. A connection that is not an MCP connection carries no endpoint. */
@@ -45,7 +47,7 @@ export function connectionLookupFromStore(deps: OrgConnectionDeps): ConnectionLo
 export function createContextSourcesRuntime(deps: Common & { teamSink?: ContextSourcesRuntime["teamSink"]; teamSearch?: ContextSourcesRuntime["teamSearch"] }): ContextSourcesRuntime {
   const servers = dynamoMcpServerStore(deps);
   return {
-    servers: gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }) }),
+    servers: gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }) }),
     citations: dynamoCitationStore(deps), results: dynamoResultStore(deps),
     ...(deps.teamSink === undefined ? {} : { teamSink: deps.teamSink }), ...(deps.teamSearch === undefined ? {} : { teamSearch: deps.teamSearch, teamRecordAvailable: true }),
   };
@@ -53,7 +55,7 @@ export function createContextSourcesRuntime(deps: Common & { teamSink?: ContextS
 
 export function createContextSourceRouteDependencies(deps: Common & { requireProjectRole: ContextSourceRouteDependencies["requireProjectRole"]; audit?: ContextSourceRouteDependencies["audit"] }): ContextSourceRouteDependencies {
   const servers = dynamoMcpServerStore(deps);
-  const port = gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }) });
+  const port = gatewayServerPort({ edition: deps.edition, connections: deps.connections, servers, ...(deps.mcpHost === undefined ? {} : { mcpHost: deps.mcpHost }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }) });
   return {
     store: dynamoContextSourceStore(deps), env: sourceEnvironment({ edition: deps.edition, connections: deps.connections, servers, port }), now: deps.now,
     requireProjectRole: deps.requireProjectRole, table: { documentClient: deps.documentClient, tableName: deps.tableName }, ...(deps.audit === undefined ? {} : { audit: deps.audit }),
@@ -62,10 +64,10 @@ export function createContextSourceRouteDependencies(deps: Common & { requirePro
 
 export function createMcpServerDependencies(deps: Common & { audit?: McpServerDependencies["audit"]; secondAdminToApprove?: boolean }): McpServerDependencies {
   return {
-    store: dynamoMcpServerStore(deps), edition: deps.edition, now: deps.now,
-    prober: gatewayProber({ ...(deps.mcpHost === undefined ? {} : { host: hostProbeClient(deps.mcpHost) }) }),
+    store: dynamoMcpServerStore(deps), edition: deps.edition, now: deps.now, probeAllowed: probeLimiter({ max: 10, windowMs: 600_000, now: deps.now }),
+    prober: gatewayProber({ ...(deps.mcpHost === undefined ? {} : { host: hostProbeClient(deps.mcpHost) }), ...(deps.privateCidrs === undefined ? {} : { privateCidrs: deps.privateCidrs }) }),
     authToken: (orgId: OrgId, connectionId: string) => deps.connections.token(orgId, connectionId),
-    authConnectionUsable: async (orgId: OrgId, connectionId: string) => (await deps.connections.read(orgId, connectionId))?.type === "mcp",
+    authConnectionUsable: async (orgId: OrgId, connectionId: string, address: string) => authConnectionFits(await deps.connections.read(orgId, connectionId), address),
     ...(deps.audit === undefined ? {} : { audit: deps.audit }), ...(deps.secondAdminToApprove === undefined ? {} : { secondAdminToApprove: deps.secondAdminToApprove }),
   };
 }

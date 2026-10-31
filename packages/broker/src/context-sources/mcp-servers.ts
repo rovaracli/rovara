@@ -107,13 +107,15 @@ export function dynamoMcpServerStore(deps: { documentClient: DocumentClient; tab
 // ---------------------------------------------------------------------------------------------
 
 /** The hosts and ports the broker may call for this org: the approved HTTP entries, read now. A disabled entry is not in it. */
-export async function allowedTargets(store: Pick<McpServerStore, "list">, orgId: OrgId): Promise<AllowedTarget[]> {
+export async function allowedTargets(store: Pick<McpServerStore, "list">, orgId: OrgId, installCidrs: readonly string[]): Promise<AllowedTarget[]> {
+  // No install ranges, no allow-list: an approved name alone never makes an address callable (review I2).
+  if (installCidrs.length === 0) return [];
   const targets: AllowedTarget[] = [];
   for (const entry of await store.list(orgId)) {
     if (entry.status !== "approved" || entry.transport.kind !== "http") continue;
     const target = parsePrivateTarget(entry.transport.address);
     if ("problem" in target) continue;
-    targets.push({ host: target.host, port: target.port });
+    targets.push({ host: target.host, port: target.port, cidrs: installCidrs });
   }
   return targets;
 }
@@ -121,6 +123,17 @@ export async function allowedTargets(store: Pick<McpServerStore, "list">, orgId:
 // ---------------------------------------------------------------------------------------------
 // Add, test, show, approve
 // ---------------------------------------------------------------------------------------------
+
+/**
+ * Review I1: a connection's token goes only to that connection's own host. A server's auth connection must be a read-only MCP connection whose own address is on the
+ * same host and port as the server's, so an admin cannot send another system's token (a tracker's, say) to an address they typed. Another server needs its own token.
+ */
+export function authConnectionFits(connection: { type: string; access: "read" | "read_write"; endpoint?: string | undefined } | undefined, address: string): boolean {
+  if (connection === undefined || connection.type !== "mcp" || connection.access !== "read" || connection.endpoint === undefined) return false;
+  const own = parsePrivateTarget(connection.endpoint);
+  const target = parsePrivateTarget(address);
+  return !("problem" in own) && !("problem" in target) && own.host === target.host && own.port === target.port;
+}
 
 export interface McpServerActor { orgId: OrgId; developerId: string; orgRole: string }
 
@@ -131,8 +144,10 @@ export interface McpServerDependencies {
   now: () => number;
   /** The token of the org connection an http entry authenticates with; absent when the entry has none. Throws or answers undefined when it cannot be read. */
   authToken(orgId: OrgId, connectionId: string): Promise<string | undefined>;
-  /** Whether the connection exists in this org and is a plain MCP connection. */
-  authConnectionUsable(orgId: OrgId, connectionId: string): Promise<boolean>;
+  /** Whether the connection may authenticate the server at `address`: see `authConnectionFits`. */
+  authConnectionUsable(orgId: OrgId, connectionId: string, address: string): Promise<boolean>;
+  /** Called before every test of a server (add and approve); false refuses it. The test is a network call from inside the customer's network, so it is bounded (review I2). */
+  probeAllowed?: ((orgId: OrgId) => boolean) | undefined;
   /** Install setting: the admin who added a server may not be the one who approves it. Off by default, because adding one must be easy. */
   secondAdminToApprove?: boolean;
   newId?: () => string;
@@ -156,7 +171,20 @@ export function summariseProbe(tools: readonly DiscoveredTool[], now: number): M
   return { at: new Date(now).toISOString(), toolsHash: createHash("sha256").update(canonicalJson(shown.map((tool) => [tool.name, tool.schemaHash]))).digest("hex"), tools: shown };
 }
 
+/** At most `max` tests per org in `windowMs`, counted in this process. */
+export function probeLimiter(options: { max: number; windowMs: number; now: () => number }): (orgId: OrgId) => boolean {
+  const seen = new Map<string, number[]>();
+  return (orgId) => {
+    const at = options.now();
+    const recent = (seen.get(orgId) ?? []).filter((time) => at - time < options.windowMs);
+    if (recent.length >= options.max) { seen.set(orgId, recent); return false; }
+    seen.set(orgId, [...recent, at]);
+    return true;
+  };
+}
+
 async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerTransport, authConnectionId: string | undefined): Promise<McpServerProbe> {
+  if (deps.probeAllowed !== undefined && !deps.probeAllowed(orgId)) throw agentXError("TOO_MANY_REQUESTS", "Too many server tests just now. Wait a few minutes and try again.");
   let tools: DiscoveredTool[];
   try {
     if (transport.kind === "http") {
@@ -191,8 +219,8 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
   } else if (body.authConnectionId !== undefined) {
     throw agentXError("CONFIG_INVALID", "a stdio server is reached through the MCP host and takes no connection");
   }
-  if (body.authConnectionId !== undefined && !await deps.authConnectionUsable(actor.orgId, body.authConnectionId)) {
-    throw agentXError("CONFIG_INVALID", "authConnectionId: that connection does not exist in this organisation or is not an MCP connection");
+  if (body.authConnectionId !== undefined && !await deps.authConnectionUsable(actor.orgId, body.authConnectionId, transport.data.kind === "http" ? transport.data.address : "")) {
+    throw agentXError("CONFIG_INVALID", "authConnectionId: that must be a read-only MCP connection made for this same server address");
   }
   const shown = await probe(deps, actor.orgId, transport.data, body.authConnectionId);
   const entry: McpServerEntry = McpServerEntrySchema.parse({

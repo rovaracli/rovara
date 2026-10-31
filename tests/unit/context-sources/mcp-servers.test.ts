@@ -37,24 +37,24 @@ describe("adding a server is easy: paste, test, see, approve", () => {
     const entry = await proposeMcpServer(deps, admin(), { label: "SIM", transport: HTTP });
     expect(entry.status).toBe("awaiting_approval");
     expect(entry.probe.tools.map((tool) => [tool.name, tool.annotation])).toEqual([["get_ticket", "read_only"], ["search_tickets", "read_only"]]);
-    expect(await allowedTargets(deps.store, ORG)).toEqual([]);
+    expect(await allowedTargets(deps.store, ORG, ["10.0.0.0/8"])).toEqual([]);
     const approved = await approveMcpServer(deps, admin(), entry.serverId);
     expect(approved.status).toBe("approved");
-    expect(await allowedTargets(deps.store, ORG)).toEqual([{ host: "sim.corp.example", port: 443 }]);
+    expect(await allowedTargets(deps.store, ORG, ["10.0.0.0/8"])).toEqual([{ host: "sim.corp.example", port: 443, cidrs: ["10.0.0.0/8"] }]);
   });
   it("updates the allow-list by itself on approval and by itself on disabling, with no other step", async () => {
     const { deps, audit } = world();
     const entry = await proposeMcpServer(deps, admin(), { label: "SIM", transport: HTTP });
     await approveMcpServer(deps, admin("dev2", "owner"), entry.serverId);
     await disableMcpServer(deps, admin(), entry.serverId);
-    expect(await allowedTargets(deps.store, ORG)).toEqual([]);
+    expect(await allowedTargets(deps.store, ORG, ["10.0.0.0/8"])).toEqual([]);
     expect(audit).toEqual([`mcp_server.added:${entry.serverId}`, `mcp_server.approved:${entry.serverId}`, `mcp_server.disabled:${entry.serverId}`]);
   });
   it("allows a stdio server to be added without putting anything in the allow-list (the host serves it)", async () => {
     const { deps } = world();
     const entry = await proposeMcpServer(deps, admin(), { label: "Wiki", transport: STDIO });
     await approveMcpServer(deps, admin(), entry.serverId);
-    expect(await allowedTargets(deps.store, ORG)).toEqual([]);
+    expect(await allowedTargets(deps.store, ORG, ["10.0.0.0/8"])).toEqual([]);
     expect((await listMcpServers(deps, admin())).map((item) => [item.transport.kind, item.status])).toEqual([["stdio", "approved"]]);
   });
   it("is for an owner or admin, and for Enterprise only", async () => {
@@ -107,7 +107,7 @@ describe("the approval is bound to what was shown", () => {
     const entry = await proposeMcpServer(deps, admin(), { label: "SIM", transport: HTTP });
     state.tools = [SEARCH_TOOL, GET_TOOL, { name: "delete_ticket", inputSchema: { type: "object" } }];
     await expect(approveMcpServer(deps, admin(), entry.serverId)).rejects.toMatchObject({ code: "CHANGE_STALE" });
-    expect(await allowedTargets(deps.store, ORG)).toEqual([]);
+    expect(await allowedTargets(deps.store, ORG, ["10.0.0.0/8"])).toEqual([]);
     expect((await deps.store.get(ORG, entry.serverId))!.status).toBe("awaiting_approval");
   });
   it("lands only once: a second approval, an approval of an unknown id, and one of a disabled entry are refused", async () => {
@@ -144,7 +144,7 @@ describe("the approval is bound to what was shown", () => {
     // damage the stored address
     const raw = (table as unknown as { items: Map<string, Record<string, unknown>> }).items;
     for (const item of raw.values()) item.transport = { kind: "http", address: "http://not-https/" };
-    expect(await allowedTargets(store, ORG)).toEqual([]);
+    expect(await allowedTargets(store, ORG, ["10.0.0.0/8"])).toEqual([]);
   });
   it("keeps one org's servers from another's", async () => {
     const { deps } = world();
@@ -163,9 +163,9 @@ describe("the routes", () => {
     expect(added).toBeInstanceOf(StatusReply);
     expect((added as StatusReply).statusCode).toBe(202);
     const serverId = ((added as StatusReply).body as { server: { serverId: string } }).server.serverId;
-    expect(await allowedTargets(deps.store, ORG)).toEqual([]);
+    expect(await allowedTargets(deps.store, ORG, ["10.0.0.0/8"])).toEqual([]);
     await send(deps, "POST", `/v1/app/org/mcp-servers/${serverId}/approve`);
-    expect(await allowedTargets(deps.store, ORG)).toHaveLength(1);
+    expect(await allowedTargets(deps.store, ORG, ["10.0.0.0/8"])).toHaveLength(1);
     expect(((await send(deps, "GET", "/v1/app/org/mcp-servers")) as { servers: unknown[] }).servers).toHaveLength(1);
     await send(deps, "POST", `/v1/app/org/mcp-servers/${serverId}/disable`);
     await send(deps, "DELETE", `/v1/app/org/mcp-servers/${serverId}`);
@@ -175,5 +175,59 @@ describe("the routes", () => {
     const { deps } = world();
     await expect(send(deps, "GET", "/v1/app/org/mcp-servers", undefined, caller("member"))).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(send(deps, "POST", "/v1/app/org/mcp-servers", { label: "SIM", transport: HTTP, token: "sk-live-xyz" })).rejects.toSatisfy((error: Error) => !error.message.includes("sk-live-xyz"));
+  });
+});
+
+describe("review I2: no install ranges, no allow-list", () => {
+  it("gives no target for an approved entry when the operator has set no ranges", async () => {
+    const { deps } = world();
+    const entry = await proposeMcpServer(deps, admin(), { label: "SIM", transport: HTTP });
+    await approveMcpServer(deps, admin(), entry.serverId);
+    expect(await allowedTargets(deps.store, ORG, [])).toEqual([]);
+  });
+});
+
+describe("review I1: an auth connection belongs to its own server", () => {
+  it("fits only a read-only MCP connection whose own address is on the same host and port as the server", async () => {
+    const { authConnectionFits } = await import("../../../packages/broker/src/context-sources/mcp-servers.js");
+    const mcp = (over: Record<string, unknown> = {}) => ({ type: "mcp", access: "read" as const, endpoint: "https://sim.corp.example/mcp", ...over });
+    expect(authConnectionFits(mcp(), "https://sim.corp.example/other")).toBe(true);
+    expect(authConnectionFits(mcp({ access: "read_write" }), ADDRESS)).toBe(false);
+    expect(authConnectionFits(mcp({ type: "linear" }), ADDRESS)).toBe(false);
+    expect(authConnectionFits(mcp({ endpoint: "https://api.linear.app/mcp" }), "https://collector.attacker.example/mcp")).toBe(false);
+    expect(authConnectionFits(mcp({ endpoint: "https://sim.corp.example:8443/mcp" }), ADDRESS)).toBe(false);
+    expect(authConnectionFits(mcp({ endpoint: undefined }), ADDRESS)).toBe(false);
+    expect(authConnectionFits(undefined, ADDRESS)).toBe(false);
+  });
+  it("is asked at propose time with the address, and a connection that does not fit is refused before any test is sent", async () => {
+    const { deps, state } = world();
+    const asked: string[] = [];
+    deps.authConnectionUsable = async (_org, _id, address) => { asked.push(address); return false; };
+    await expect(proposeMcpServer(deps, admin(), { label: "Anything", transport: { kind: "http", address: "https://collector.attacker.example/mcp" }, authConnectionId: "con_aaaaaaaaaaaaaaaaaaaa" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(asked).toEqual(["https://collector.attacker.example/mcp"]);
+    expect(state.httpProbes).toBe(0);
+    expect(state.tokens).toEqual([]);
+  });
+});
+
+describe("review I2: tests of an address are rate limited", () => {
+  it("refuses a test over the limit before sending it", async () => {
+    const { deps, state } = world();
+    let allowed = 2;
+    deps.probeAllowed = () => allowed-- > 0;
+    await proposeMcpServer(deps, admin(), { label: "A", transport: { kind: "http", address: "https://a.corp.example/mcp" } });
+    await proposeMcpServer(deps, admin(), { label: "B", transport: { kind: "http", address: "https://b.corp.example/mcp" } });
+    await expect(proposeMcpServer(deps, admin(), { label: "C", transport: { kind: "http", address: "https://c.corp.example/mcp" } })).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+    expect(state.httpProbes).toBe(2);
+  });
+  it("the default limiter allows ten tests in ten minutes for one org and counts orgs apart", async () => {
+    const { probeLimiter } = await import("../../../packages/broker/src/context-sources/mcp-servers.js");
+    let clock = 0;
+    const limit = probeLimiter({ max: 10, windowMs: 600_000, now: () => clock });
+    for (let i = 0; i < 10; i += 1) expect(limit(ORG)).toBe(true);
+    expect(limit(ORG)).toBe(false);
+    expect(limit("org_bbbbbbbbbbbbbbbbbbbb" as never)).toBe(true);
+    clock = 600_001;
+    expect(limit(ORG)).toBe(true);
   });
 });

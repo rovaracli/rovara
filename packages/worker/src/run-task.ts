@@ -73,6 +73,7 @@ import type { WorkflowE2EApplicationRuntime } from "./workflow-e2e-application-c
 import { READ_ONLY_STEP_MODES, STOPS_PROGRAMS_FIRST_MODES, stopProgramsBeforeReading, type StopBeforeReadingOptions } from "./stop-before-reading.js";
 import { createContextTools, type ContextBridgeCall } from "./context-sources/bridge.js";
 import { contextSourcesNote } from "./context-sources/frame.js";
+import { stubContextEvent } from "./context-sources/events.js";
 import { isContextSourceStage, type ContextToolCatalog } from "@agentx/contracts";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 
@@ -841,7 +842,7 @@ async function runTask(
   let lastModelNote: ModelCallNote | undefined;
   const unsubscribe = session.subscribe((event) => {
     monitor.observe(event);
-    if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(event));
+    if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(stubContextEvent(event)));
     fileChanges.observe(event);
     activeFindings.observe(event);
     // A failed or stopped model call and Pi's retries reach the task as one sanitized note each. The raw events (the provider's message, the model's thinking, the final error
@@ -857,7 +858,7 @@ async function runTask(
     // A tool's streaming update (tool_execution_update) likewise repeats its arguments and its output so far; the finished
     // call (tool_execution_end) is kept.
     const streamed = (event as { type?: unknown } | undefined)?.type;
-    if (streamed !== "message_update" && streamed !== "tool_execution_update" && !isModelFailureEvent(event)) void events.append(eventType(event), withoutModelFailureText(event)).catch(() => undefined);
+    if (streamed !== "message_update" && streamed !== "tool_execution_update" && !isModelFailureEvent(event)) void events.append(eventType(event), stubContextEvent(withoutModelFailureText(event))).catch(() => undefined);
     const outcome = assistantOutcome(event);
     if (outcome !== undefined) {
       lastAssistant = outcome;
@@ -1104,7 +1105,7 @@ async function runTask(
             const guard = new ToolLoopGuard();
             let stoppedBy: Error | undefined;
             unsubscribe = open.subscribe((event) => {
-              if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(event));
+              if (eventType(event) === "tool_end") toolEvidence.push(redactCredentials(stubContextEvent(event)));
               fileChanges.observe(event);
               partFindings.observe(event);
               const note = sanitizeModelCallEvent(event, 0);
@@ -1113,7 +1114,7 @@ async function runTask(
                 void emit("progress", note);
               }
               const streamed = (event as { type?: unknown } | undefined)?.type;
-              if (streamed !== "message_update" && streamed !== "tool_execution_update" && !isModelFailureEvent(event)) void events.append(eventType(event), withoutModelFailureText(event)).catch(() => undefined);
+              if (streamed !== "message_update" && streamed !== "tool_execution_update" && !isModelFailureEvent(event)) void events.append(eventType(event), stubContextEvent(withoutModelFailureText(event))).catch(() => undefined);
               const outcome = assistantOutcome(event);
               if (outcome !== undefined) {
                 lastOutcome = outcome;

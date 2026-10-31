@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { checkAllowedPrivateEndpoint, checkPrivateEndpointForProbe, isNeverCalledAddress, parsePrivateTarget, privateMcpEndpointGuard } from "../../../packages/broker/src/connections/private-endpoints.js";
+import { checkAllowedPrivateEndpoint, checkPrivateEndpointForProbe, isNeverCalledAddress, parseInstallCidrs, parsePrivateTarget, privateMcpEndpointGuard } from "../../../packages/broker/src/connections/private-endpoints.js";
 
 const resolves = (...addresses: string[]) => async () => addresses;
-const allowed = [{ host: "sim.corp.example", port: 443 }];
+const INSTALL = ["10.0.0.0/8"];
+const allowed = [{ host: "sim.corp.example", port: 443, cidrs: INSTALL }];
 
 describe("addresses Rovara never calls", () => {
-  it.each(["127.0.0.1", "127.8.8.8", "0.0.0.0", "169.254.169.254", "169.254.170.2", "::1", "::", "fe80::1", "fd00:ec2::254", "224.0.0.1", "255.255.255.255", "::ffff:169.254.169.254", "::ffff:127.0.0.1", "not-an-address"])("%s", (address) => {
+  it.each(["127.0.0.1", "127.8.8.8", "0.0.0.0", "169.254.169.254", "169.254.170.2", "::1", "::", "fe80::1", "fd00:ec2::254", "224.0.0.1", "255.255.255.255", "::ffff:169.254.169.254", "::ffff:127.0.0.1", "not-an-address", "64:ff9b::a9fe:a9fe", "::a9fe:a9fe", "2002:a9fe:a9fe::1", "100.100.100.200", "2001:0:4136:e378:8000:63bf:3fff:fdd2"])("%s", (address) => {
     expect(isNeverCalledAddress(address)).toBe(true);
   });
   it.each(["10.1.2.3", "172.16.5.5", "192.168.1.1", "100.64.1.1", "8.8.8.8", "fd12:3456::1"])("%s is an address a private server may have", (address) => {
@@ -47,6 +48,10 @@ describe("a call goes only where the allow-list says", () => {
     await expect(checkAllowedPrivateEndpoint("https://sim.corp.example/mcp", allowed, resolves())).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(checkAllowedPrivateEndpoint("https://sim.corp.example/mcp", allowed, async () => { throw new Error("SERVFAIL"); })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
+  it("holds an entry to its ranges, and refuses an entry with none (the install's ranges are what bound a call)", async () => {
+    await expect(checkAllowedPrivateEndpoint("https://sim.corp.example/mcp", [{ host: "sim.corp.example", port: 443 }], resolves("10.1.2.3"))).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(checkAllowedPrivateEndpoint("https://sim.corp.example/mcp", allowed, resolves("203.0.113.5"))).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
   it("holds an entry to its ranges when it names some, and refuses a range that does not parse", async () => {
     const ranged = [{ host: "sim.corp.example", port: 443, cidrs: ["10.2.0.0/16"] }];
     await expect(checkAllowedPrivateEndpoint("https://sim.corp.example/mcp", ranged, resolves("10.2.9.9"))).resolves.toBeDefined();
@@ -72,8 +77,22 @@ describe("a call goes only where the allow-list says", () => {
 
 describe("testing a pasted address before it is approved", () => {
   it("needs no allow-list, but still never calls the never-called addresses", async () => {
-    await expect(checkPrivateEndpointForProbe("https://sim.corp.example/mcp", resolves("10.1.2.3"))).resolves.toMatchObject({ addresses: ["10.1.2.3"] });
-    await expect(checkPrivateEndpointForProbe("https://sim.corp.example/mcp", resolves("169.254.169.254"))).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    await expect(checkPrivateEndpointForProbe("http://sim.corp.example/mcp", resolves("10.1.2.3"))).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(checkPrivateEndpointForProbe("https://sim.corp.example/mcp", INSTALL, resolves("10.1.2.3"))).resolves.toMatchObject({ addresses: ["10.1.2.3"] });
+    await expect(checkPrivateEndpointForProbe("https://sim.corp.example/mcp", INSTALL, resolves("169.254.169.254"))).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(checkPrivateEndpointForProbe("http://sim.corp.example/mcp", INSTALL, resolves("10.1.2.3"))).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});
+
+describe("review I2: the install's address ranges bound a test and a call", () => {
+  it("refuses a test of a host that resolves outside them (a public host, or another private range), and every test when none are set", async () => {
+    await expect(checkPrivateEndpointForProbe("https://collector.attacker.example/mcp", INSTALL, resolves("203.0.113.5"))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(checkPrivateEndpointForProbe("https://sim.corp.example/mcp", ["172.16.0.0/12"], resolves("10.1.2.3"))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(checkPrivateEndpointForProbe("https://sim.corp.example/mcp", [], resolves("10.1.2.3"))).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+  it("reads the ranges from the operator's setting, and accepts private ranges only", () => {
+    expect(parseInstallCidrs(" 10.0.0.0/8, 172.20.0.0/16 ,fd12::/16")).toEqual(["10.0.0.0/8", "172.20.0.0/16", "fd12::/16"]);
+    expect(parseInstallCidrs(undefined)).toEqual([]);
+    expect(parseInstallCidrs("")).toEqual([]);
+    for (const bad of ["0.0.0.0/0", "8.8.8.0/24", "10.0.0.0/7", "10.0.0.0", "garbage", "10.0.0.0/8,203.0.113.0/24", "169.254.0.0/16", "127.0.0.0/8"]) expect(() => parseInstallCidrs(bad), bad).toThrow();
   });
 });
