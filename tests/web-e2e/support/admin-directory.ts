@@ -77,8 +77,8 @@ export function createAdminDirectory() {
    if (input.UpdateExpression === "SET #count = #count + :one" && input.ConditionExpression === "windowStart = :window AND #count < :limit") {
     if (row === undefined || row.windowStart !== values[":window"] || typeof row.count !== "number" || typeof values[":limit"] !== "number" || row.count >= values[":limit"]) throw Object.assign(new Error("Fixture rate conflict"), { name: "ConditionalCheckFailedException" });if (typeof values[":one"] !== "number") throw new Error("Invalid fixture rate weight");put({ ...row, count: row.count + values[":one"] });return {};
    }
-   if (input.UpdateExpression === "SET entityType = :type, windowStart = :window, #count = :one" && input.ConditionExpression === "attribute_not_exists(windowStart) OR windowStart < :window") {
-    if (row?.windowStart !== undefined && !(typeof row.windowStart === "number" && typeof values[":window"] === "number" && row.windowStart < values[":window"])) throw Object.assign(new Error("Fixture rate conflict"), { name: "ConditionalCheckFailedException" });put({ ...key, entityType: values[":type"], windowStart: values[":window"], count: values[":one"] });return {};
+   if (input.UpdateExpression === "SET entityType = :type, windowStart = :window, #count = :one, #expires = :expires" && input.ConditionExpression === "attribute_not_exists(windowStart) OR windowStart < :window" && input.ExpressionAttributeNames?.["#expires"] === "indexExpiresAt") {
+    if (typeof values[":expires"] !== "number") throw new Error("Invalid fixture rate expiry");if (row?.windowStart !== undefined && !(typeof row.windowStart === "number" && typeof values[":window"] === "number" && row.windowStart < values[":window"])) throw Object.assign(new Error("Fixture rate conflict"), { name: "ConditionalCheckFailedException" });put({ ...key, entityType: values[":type"], windowStart: values[":window"], count: values[":one"], indexExpiresAt: values[":expires"] });return {};
    }
    throw new Error("Unsupported fixture rate update.");
   }

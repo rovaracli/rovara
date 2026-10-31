@@ -72,13 +72,22 @@ describe("capturing a part never reads its object directory", () => {
     await mkdir(join(objects, "pack"), { recursive: true });
     await symlink(secret, join(objects, "pack", `pack-${"d".repeat(40)}.pack`));
     await symlink(secret, join(objects, "pack", `pack-${"d".repeat(40)}.idx`));
+    // The linked directory holds a loose-object-shaped host file; if the link were followed, it would be copied under the same name.
+    const hostLoose = "e".repeat(38);
+    await writeFile(join(outside, hostLoose), "HOST LOOSE BYTES");
     await symlink(outside, join(objects, "cd"));
     execFileSync("mkfifo", [join(objects, "pack", `pack-${"e".repeat(40)}.pack`)]);
     await writeFile(join(copy.directory, "a.txt"), "from a\n");
     await capturePartTree(copy, repository);
     expect(await readdir(join(repository, ".git/objects/pack"))).toEqual([]);
-    expect(existsSync(join(repository, ".git/objects/cd"))).toBe(false);
-    expect(await readdir(outside)).toEqual(["pack-source"]);
+    // Not "objects/cd is absent": the project repository may hold a real object whose id starts with cd (the fixture's own commit id depends on its timestamp). What must never
+    // happen is the planted link's file reaching the project repository, or the link itself being copied.
+    expect(existsSync(join(repository, ".git/objects/cd", hostLoose))).toBe(false);
+    expect((await lstat(join(repository, ".git/objects/cd")).catch(() => undefined))?.isSymbolicLink() ?? false).toBe(false);
+    for (const name of await looseFiles(join(repository, ".git/objects"))) {
+      expect((await readFile(join(repository, ".git/objects", name.slice(0, 2), name.slice(2)))).includes(Buffer.from("HOST LOOSE"))).toBe(false);
+    }
+    expect((await readdir(outside)).sort()).toEqual([hostLoose, "pack-source"].sort());
   });
 
   it("objects the agent created in the part (a commit it made itself) still reach the project repository, because the snapshot is taken again from the files", async () => {
