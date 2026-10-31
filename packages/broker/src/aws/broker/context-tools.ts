@@ -4,7 +4,8 @@
 // a source is asked, is `context-sources/routes.ts`.
 import { agentXError, type OrgId } from "@agentx/contracts";
 import { TERMINAL, requireOperation, type CallbackClaims } from "../cancellation.js";
-import { droppingSink, emptySearch } from "../../context-sources/team-record.js";
+import { boundedSink, droppingSink, emptySearch, type TeamRecordSink } from "../../context-sources/team-record.js";
+import type { ContextSourcesRuntime } from "../../context-sources/runtime.js";
 import { callContextTool, listContextTools, type ContextToolsDependencies, type ContextToolsRun } from "../../context-sources/routes.js";
 import { dynamoContextSourceStore } from "../../context-sources/store.js";
 import { dynamoUsageStore } from "../../context-sources/usage.js";
@@ -15,6 +16,17 @@ import { requireProjectAuthority, requireWorkspace } from "./records.js";
 import { creatorCheckOf } from "./scope-helpers.js";
 import { requireCreatorStillMember } from "../../developer/creator-member.js";
 import { workspaceTask } from "./task-operations.js";
+
+/** One bounded queue to the Team record per install runtime, kept across requests so that its limit means something. */
+const sinks = new WeakMap<ContextSourcesRuntime, TeamRecordSink>();
+function sinkOf(runtime: ContextSourcesRuntime): TeamRecordSink {
+  let sink = sinks.get(runtime);
+  if (sink === undefined) {
+    sink = boundedSink(runtime.teamSink ?? droppingSink, { onDrop: (orgId, reason, total) => console.log(JSON.stringify({ component: "broker", event: "context_source.team_sink_dropped", orgId, reason, total })) });
+    sinks.set(runtime, sink);
+  }
+  return sink;
+}
 
 /** The dependencies of the context-tool routes, built from the broker's own table and what the install supplied (`dependencies.contextSources`). */
 export function contextToolsDependencies(dependencies: AwsBrokerDependencies): ContextToolsDependencies | undefined {
@@ -29,7 +41,7 @@ export function contextToolsDependencies(dependencies: AwsBrokerDependencies): C
     sources: (orgId, project) => store.readDocument(orgId, project),
     servers: runtime.servers,
     usage: dynamoUsageStore(table),
-    teamSink: runtime.teamSink ?? droppingSink,
+    teamSink: sinkOf(runtime),
     teamSearch: runtime.teamSearch ?? emptySearch,
     teamRecordAvailable: runtime.teamRecordAvailable === true,
     citations: runtime.citations,
