@@ -35,7 +35,7 @@ import { feedbackReplyItems } from "../../rovara-code/feedback-autonomy.js";
 import { prHeadItems } from "../../rovara-code/tracking-events.js";
 import { workflowRunEndedReason } from "../outbox-failure.js";
 import { autofixBlockRows } from "../workflow-autofix-dispatch-exhaust.js";
-import { setupDraftEndItems } from "../../rovara-code/setup-draft.js";
+import { setupDraftEndItems, setupDraftRepositoriesOf } from "../../rovara-code/setup-draft.js";
 import { githubRepositoryFullName, pullRequestKey, pullRequestMatchesRepository } from "./admin-and-helpers.js";
 import { MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES, type AwsBrokerDependencies, type PullRequestRecord } from "./definitions.js";
 import { knowledgeCommitToStore, taskPreparedUpdate } from "../../meta-repo/prepare-meta.js";
@@ -463,7 +463,7 @@ export async function completedWorkflowItems(
   // Plan 6 Task 10: a setup draft's result is its draft (or the reason there is none), written with the result.
   if (task?.purpose === "setup_draft") {
     const repositories = terminalStatus === "SUCCEEDED" && operation.kind === "task"
-      ? (await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition.repositories.map((repository) => repository.name) : [];
+      ? setupDraftRepositoriesOf((await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition) : { names: [], urls: {} };
     return setupDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now);
   }
   if (task?.workflow === undefined) return [];

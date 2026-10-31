@@ -103,6 +103,15 @@ describe("what a worker is sent", () => {
     expect(StoredProjectDefinitionSchema.safeParse(sent).success).toBe(true);
   });
 
+  it("keeps a pure meta repository, without its role or pins, only when asked to (the setup draft reads it in full)", () => {
+    const definition = ProjectDefinitionSchema.parse(project([repo("service-meta", { role: "meta", installationId: 5, githubRepositoryId: 9 }), repo("api", { role: "code", installationId: 5, githubRepositoryId: 10 })], { origins: { setup: "file" } }));
+    const sent = workerProjectDefinition(definition, { includeMeta: true }) as { repositories: Array<Record<string, unknown>>; origins?: unknown };
+    expect(sent.origins).toBeUndefined();
+    expect(sent.repositories.map((entry) => entry.name)).toEqual(["service-meta", "api"]);
+    for (const entry of sent.repositories) expect(Object.keys(entry).sort()).toEqual(["credentialRef", "defaultBranch", "name", "path", "url"]);
+    expect(StoredProjectDefinitionSchema.safeParse(sent).success).toBe(true);
+  });
+
   it("keeps a repository that is both meta and code, without its role", () => {
     const definition = ProjectDefinitionSchema.parse(project([repo("app", { role: "meta", alsoCode: true })]));
     const sent = workerProjectDefinition(definition) as { repositories: Array<Record<string, unknown>> };

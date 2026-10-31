@@ -157,8 +157,16 @@ export interface CodeSettingsSubject { kind: "code_settings"; project: string; s
  */
 export interface PlaybookDefaultProcessSubject { kind: "playbook_default_process"; project: string; agentId: AgentId; layerVersion: number; expectedRevision: number }
 
-/** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5), merges and code settings (Plan 6), a project's process (How we work). */
-export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject;
+/**
+ * Meta repo lane B: a person's consent to ONE risky item of the setup agent's proposal (a repository to add, a dev container pull request, a source, an intake trigger, a
+ * secret). Each such item gets its own card. The card is bound to the draft (`draftTaskId`), the item (`itemId`) and a digest of the value that was shown (`digest`); approving it
+ * records consent and changes nothing. The project's maintainer then applies the item from the setup page, through the same save every other change uses, and only while the
+ * proposal still holds exactly that value.
+ */
+export interface SetupItemSubject { kind: "setup_item"; project: string; draftTaskId: string; itemId: string; itemKind: "repository" | "devcontainer" | "source" | "intake" | "secret"; digest: string }
+
+/** The kinds of change that are not about an agent itself: connector widenings (Task 13), comment-trigger opt-outs (Task 14b), company-wide session shares and session take-overs (Plan 5), merges and code settings (Plan 6), a project's process (How we work), a setup suggestion (meta repo lane B). */
+export type OtherChangeSubject = ConnectorWidenSubject | OptOutChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject | SetupItemSubject;
 
 /** Plan 4 Task 4: a chain's publish or rollback that makes something less safe, bound to the draft revision and digest (or the version) that was shown. */
 export type ChainChangeSubject =
@@ -173,7 +181,7 @@ export type ChainChangeSubject =
  */
 export type TriggerChangeSubject = { kind: "trigger_enable"; triggerId: string; specDigest: string; triggerRevision: number };
 
-export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject;
+export type ChangeSubject = AgentChangeSubject | ConnectorWidenSubject | OptOutChangeSubject | ChainChangeSubject | TriggerChangeSubject | SessionShareOrgSubject | SessionOwnerSubject | PullRequestMergeSubject | CodeSettingsSubject | PlaybookDefaultProcessSubject | SetupItemSubject;
 
 export interface ChangeApprovalRecord extends DecidedFields {
   orgId: OrgId;
@@ -407,6 +415,10 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("agent_run_version"), agentId: AgentIdSchema, version: z.number().int().min(1), digest: Hex64, expectedCurrentVersion: z.number().int().min(1),
     project: z.string(), runRequestId: z.string().uuid(), origin: z.enum(WORK_ORIGINS), input: RunInputSchema,
+  }).strict(),
+  z.object({
+    kind: z.literal("setup_item"), project: z.string().min(1).max(63), draftTaskId: z.string().uuid(), itemId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+    itemKind: z.enum(["repository", "devcontainer", "source", "intake", "secret"]), digest: Hex64,
   }).strict(),
   z.object({ kind: z.literal("playbook_default_process"), project: z.string().min(1).max(63), agentId: AgentIdSchema, layerVersion: z.number().int().min(1), expectedRevision: z.number().int().min(0) }).strict(),
   z.object({ kind: z.literal("trigger_enable"), triggerId: TriggerIdSchema, specDigest: Hex64, triggerRevision: z.number().int().min(1) }).strict(),

@@ -22,6 +22,7 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowPlanCritique",
   // Rovara Code (Plan 6 Task 10): a read-only run that drafts a project's dev setup.
   "task.setupDraft",
+  "task.setupProposal.v2",
   // Plan 6 Task 13: the code review of a Rovara Code version 2 task states a risk level.
   "task.workflowReviewRisk",
   // Plan 6 Task 15: a coding run that fixes a pull request that is already open (CI, a conflict or comments).

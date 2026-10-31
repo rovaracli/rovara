@@ -3,7 +3,7 @@ import { CodeIntentBodySchema } from "@agentx/contracts";
 import { taskPageFixture,TASK_PAGE_FIXTURE_ID } from "./task-page-fixture.js";
 import { joinDonePage } from "../../../packages/broker/src/developer/join-page.js";
 import { escapeHtml } from "../../../packages/broker/src/aws/web-session.js";
-import { AppProjectDetailSchema,CreateProjectBodySchema,CloudProjectCreatedResponseSchema,RenameOrganizationBodySchema,RenameOrganizationResponseSchema,GithubConnectResponseSchema,GithubInstallationsResponseSchema,GithubRepositoriesResponseSchema,ProjectSettingsBodySchema,ProjectSettingsResponseSchema,ProjectSetupCheckBodySchema,ProjectSetupCheckResponseSchema,ProjectRosterAddedResponseSchema } from "@agentx/contracts";
+import { SetupApplyBodySchema,SetupApplyResponseSchema,SetupDraftResponseSchema,AppProjectDetailSchema,CreateProjectBodySchema,CloudProjectCreatedResponseSchema,RenameOrganizationBodySchema,RenameOrganizationResponseSchema,GithubConnectResponseSchema,GithubInstallationsResponseSchema,GithubRepositoriesResponseSchema,ProjectSettingsBodySchema,ProjectSettingsResponseSchema,ProjectSetupCheckBodySchema,ProjectSetupCheckResponseSchema,ProjectRosterAddedResponseSchema } from "@agentx/contracts";
 import { builderFixture } from "../../web/support/builder-fixture.js";
 import { agentDirectory, agentProfile, AGENT_FIXTURE_ID } from "../../web/support/agent-fixture.js";
 import { taskFixture } from "../../web/support/session-fixture.js";
@@ -43,6 +43,8 @@ let current = scenario("shell"), revoked = false, expired = false, refusedSignIn
 let adminMemberName = "Maya", adminDirectory = createAdminDirectory(), adminFailAfterWrite = false, adminReadFailures = 0;
 let onboardingConnected=false;
 let onboardingProject:ReturnType<typeof AppProjectDetailSchema.parse>|undefined;
+/** Meta repo lane B: the setup agent's draft for the onboarding project: asked, then ready on the next read. */
+let onboardingDraft:"none"|"drafting"|"ready"='none';
 const taskPage=taskPageFixture(origin);
 const requests: Array<{ method: string; path: string; body?: unknown }> = [];
 const unavailable = async (): Promise<never> => { throw new Error("Mock operation is not configured."); };
@@ -63,7 +65,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  const url = new URL(request.url ?? "/", origin), method = request.method ?? "GET", headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(",") : value]));
  function json(status: number, body: unknown) { response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });response.end(JSON.stringify(body)); }
  try {
- if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);adminMemberName = "Maya";adminDirectory = createAdminDirectory();if (current.name === "admin") adminDirectory.seedLaneB();adminLoseCreateAck = false;adminFailAfterWrite = false;adminReadFailures = 0;resetHowWeWork();resetCompanyPolicy();taskPage.reset();onboardingConnected=false;onboardingProject=undefined;revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);adminMemberName = "Maya";adminDirectory = createAdminDirectory();if (current.name === "admin") adminDirectory.seedLaneB();adminLoseCreateAck = false;adminFailAfterWrite = false;adminReadFailures = 0;resetHowWeWork();resetCompanyPolicy();taskPage.reset();onboardingConnected=false;onboardingProject=undefined;onboardingDraft="none";revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/live-state" && method === "POST" && current.live !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { step: string; revision: number };current.live = current.live.map(tile => LiveTileSchema.parse({ ...tile, step: input.step, updatedAt: "2026-10-23T12:" + String(input.revision).padStart(2, "0") + ":00.000Z" }));current.changes = [{ type: "session.updated", sessionId: current.live[0]!.sessionId, revision: input.revision, at: "2026-10-23T12:00:00.000Z", sk: "live-" + input.revision }];json(200, { ok: true });return; }
  if (url.pathname === "/__mock/auth" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const state = JSON.parse(body) as { expired?: boolean; refused?: boolean };expired = state.expired === true;refusedSignIn = state.refused === true;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/session-state" && method === "POST" && current.session !== undefined) { let body = "";for await (const chunk of request) body += String(chunk);const changes = JSON.parse(body) as Record<string, unknown>;current.session = SessionViewSchema.parse({ ...current.session, ...changes });json(200, { ok: true });return; }
@@ -156,6 +158,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if(onboardingProject&&url.pathname.startsWith("/v1/web/projects/"+onboardingProject.name)){
  if(url.pathname.endsWith("/settings")&&method==="PUT"){const input=ProjectSettingsBodySchema.parse(await body());evidence.body=input;onboardingProject=AppProjectDetailSchema.parse({...onboardingProject,latestRevision:onboardingProject.latestRevision+1,settings:{...onboardingProject.settings,...input}});json(200,ProjectSettingsResponseSchema.parse({project:onboardingProject,warnings:[]}));return;}
  if(url.pathname.endsWith("/setup-check")&&method==="POST"){evidence.body=ProjectSetupCheckBodySchema.parse(await body());onboardingProject={...onboardingProject,setup:{status:"ready",checkedRevision:onboardingProject.latestRevision}};json(202,ProjectSetupCheckResponseSchema.parse({project:onboardingProject}));return;}
+ if(url.pathname.endsWith("/setup-draft")&&method==="POST"){const input=await body() as {requestId?:unknown};evidence.body=input;onboardingDraft="drafting";json(202,SetupDraftResponseSchema.parse({status:"drafting",basedOnRevision:onboardingProject.latestRevision}));return;}
+ if(url.pathname.endsWith("/setup-draft")&&method==="GET"){if(onboardingDraft==="drafting")onboardingDraft="ready";if(onboardingDraft!=="ready"){json(200,SetupDraftResponseSchema.parse({status:"none",basedOnRevision:onboardingProject.latestRevision}));return;}json(200,SetupDraftResponseSchema.parse(setupDraftFixture(onboardingProject)));return;}
+ if(url.pathname.endsWith("/setup-draft/apply")&&method==="POST"){const input=SetupApplyBodySchema.parse(await body());evidence.body=input;const picked=new Set(input.items.map(entry=>entry.id));onboardingProject=AppProjectDetailSchema.parse({...onboardingProject,latestRevision:onboardingProject.latestRevision+1,settings:{...onboardingProject.settings,...(picked.has("setup-payments")?{setupCommands:["npm ci"]}:{}),...(picked.has("tests-payments")?{testCommands:["npm test"]}:{})}});json(200,SetupApplyResponseSchema.parse({project:onboardingProject,warnings:[],setupCheck:"not_needed",results:input.items.map(entry=>({id:entry.id,kind:entry.id.startsWith("tests")?"tests":"setup",outcome:"applied"}))}));return;}
  if(url.pathname.endsWith("/agents/rovara-code")&&method==="PUT"){json(200,ProjectRosterAddedResponseSchema.parse({agent:{agentId:"rovara-code",name:"Rovara Code"}}));return;}
  if(method==="GET"&&!url.pathname.endsWith("/overview")){json(200,onboardingProject);return;}
  }
@@ -267,3 +272,15 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 const server = createServer({ key: readFileSync(key), cert: readFileSync(cert) }, (request, response) => { void handleRequest(request, response).catch(() => { if (!response.headersSent) response.writeHead(500);response.end("Mock cell unavailable."); }); });
 server.listen(mockCellPort(), "127.0.0.1");
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => { server.close(() => process.exit(0)); });
+
+/** The setup agent's proposal for the onboarding project: a setting with a verified source, an item whose source could not be found, and a risky item that gets its own card. */
+function setupDraftFixture(project:{latestRevision:number}){
+ const place=(path:string,line:number,quote:string)=>({kind:"file",repo:"payments",path,commit:"a".repeat(40),line,quote});
+ const entry=(id:string,value:unknown,from:unknown[],risk:string)=>({id,value,from,confidence:"high",risk});
+ return {status:"ready",basedOnRevision:project.latestRevision,proposal:{version:2,basedOnRevision:project.latestRevision,
+  repositories:[entry("repo-https-github.com-acme-ledger",{name:"ledger",url:"https://github.com/acme/ledger"},[place("README.md",3,"ledger holds the books")],"needs_admin")],
+  setup:[entry("setup-payments",{repo:"payments",commands:["npm ci"]},[place("package.json",4,"\"ci\": \"npm ci\"")],"safe")],
+  tests:[entry("tests-payments",{repo:"payments",commands:["npm test"]},[place(".github/workflows/ci.yml",5,"run: npm test")],"safe")],
+  checks:[],testEnvironment:[],knowledge:[],sources:[],intake:[],allowedDomains:[],secretsNeeded:[],flaggedCommands:[],foundNotUsed:[],notes:"Node 22 is needed."},
+  review:[{id:"repo-https-github.com-acme-ledger",handling:"approval",verification:"verified",current:{state:"empty"}},{id:"setup-payments",handling:"settings",verification:"verified",current:{state:"empty"}},{id:"tests-payments",handling:"settings",verification:"unverified",current:{state:"empty"}}]};
+}

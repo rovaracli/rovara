@@ -113,7 +113,7 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
   if (held === undefined) return;
   const project = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
   if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", `project \`${task.project}\` revision ${task.startingRevision} is no longer registered`);
-  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, { ...(held.checkout === undefined ? {} : { checkout: held.checkout }), ...(held.readOnly === true ? { readOnly: true } : {}) });
+  const { workspace, items: outbox } = await deps.actions.preparationDispatch(project, task.workspaceId, held.operationId, task.ownerKey, { ...(held.checkout === undefined ? {} : { checkout: held.checkout }), ...(held.readOnly === true ? { readOnly: true } : {}), ...(task.purpose === "setup_draft" ? { setupDraft: true } : {}) });
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
   const charge = task.charge ?? developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
   const items: TransactItems = [

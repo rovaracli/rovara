@@ -118,3 +118,9 @@ export * from "./test-environment.js";
 // K1 C5b: what the agent loaded (browser-safe readers).
 export * from "./knowledge-skills.js";
 export * from "./loaded-knowledge.js";
+
+// Meta repo lane B: the setup agent's proposal, its review rows and the per-item apply, and the contracts they cite (provenance, the meta project body).
+export * from "./provenance.js";
+export * from "./setup-proposal.js";
+export { CreateProjectFromMetaBodySchema, type CreateProjectFromMetaBody, META_KNOWLEDGE_DEFAULTS } from "./meta-project.js";
+export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseReaderSchema, SetupDraftStartBodySchema, type SetupDraftStartBody, SETUP_DRAFT_STATUSES } from "./rovara-code.js";
