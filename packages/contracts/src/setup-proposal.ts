@@ -204,7 +204,11 @@ export const SetupReviewEntrySchema = z.object({
   id: ItemId,
   handling: z.enum(SETUP_ITEM_HANDLINGS),
   verification: z.enum(SETUP_VERIFICATION_STATES),
-  current: z.object({ state: z.enum(["empty", "same", "differs"]), yours: z.array(z.string().max(600)).max(64).optional() }).strict().optional(),
+  /**
+   * What the project has now. `managed_by_file`: the meta repo's config file manages this setting, so it is changed there. `setBy` (with `differs`): who set the value the project has,
+   * a person or an earlier Rovara proposal; a person's value is replaced only on that item's own tick.
+   */
+  current: z.object({ state: z.enum(["empty", "same", "differs", "managed_by_file"]), yours: z.array(z.string().max(600)).max(64).optional(), setBy: z.enum(["person", "agent"]).optional() }).strict().optional(),
   /** Why the item cannot be applied from here (fixed words), when it cannot. */
   unavailable: z.string().max(200).optional(),
   /** The asker's own approval card for this item, when one was made: `approved` means a maintainer may now apply the item. */

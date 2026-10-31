@@ -89,7 +89,7 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
       const latest = await latestRevision({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, project);
       return latest === undefined ? undefined : { revision: latest.definition.revision, allowedDomains: latest.definition.network?.allowedDomains ?? [], definition: latest.definition };
     },
-    updateSettings: (who, project, body) => putProjectSettings(deps, who, encodeURIComponent(project), body),
+    updateSettings: (who, project, body, options) => putProjectSettings(deps, who, encodeURIComponent(project), body, options),
     startSetupCheck: async (who, project, requestId) => { await startProjectSetupCheck(deps, who, encodeURIComponent(project), { requestId }); },
     startPullRequest: async (who, request) => {
       const started = await startCodeIntent(codeIntentDependenciesOf(deps, who), who, { requestId: request.requestId, project: request.project, input: { text: request.text }, path: "QUICK", source: "app" });

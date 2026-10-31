@@ -128,6 +128,18 @@ it("never ticks or replaces a value the person typed: it says what they have, an
   f.close();
 });
 
+it("says a value Rovara suggested earlier is its own (no \"Use Rovara's\" tick is needed), and offers no tick for a setting the meta repo's file manages", async () => {
+  const review = REVIEW.map((entry) => (entry.id === "tests-web" ? { ...entry, verification: "verified", current: { state: "differs", yours: ["make old-test"], setBy: "agent" } }
+    : entry.id === "setup-web" ? { ...entry, current: { state: "managed_by_file", yours: ["make old-setup"] }, unavailable: "The meta repo's config file manages this setting. Change it there." } : entry));
+  const f = setup(h(OnboardScreen), { draft: { ...READY, review } });
+  await screen.findByText("Rovara suggested this earlier: make old-test");
+  expect(screen.queryByRole("checkbox", { name: /^Use Rovara's for tests/ })).toBeNull();
+  expect(screen.queryByText("You have: make old-test")).toBeNull();
+  expect(screen.getByText("The meta repo's config file manages this setting. Change it there.")).toBeTruthy();
+  expect(screen.queryByRole("checkbox", { name: /^setup: In web:/ })).toBeNull();
+  f.close();
+});
+
 it("gives a risky suggestion its own approval card with its own button, and sends only that item", async () => {
   const f = setup(h(OnboardScreen), { draft: READY, applied: { results: [{ id: "repo-https-github.com-acme-lib", kind: "repository", outcome: "approval_needed", approval: { approvalId: "apr_1", confirmUrl: "https://cell.example/v1/app/approve/apr_1" } }] } });
   const card = await screen.findByRole("group", { name: /^Approval for repository:/ });

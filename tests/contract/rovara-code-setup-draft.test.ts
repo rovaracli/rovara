@@ -582,6 +582,78 @@ describe("re-reading where each item came from (GET)", () => {
   });
 });
 
+// ---- who set each setting (meta repo lane A's origins)
+
+describe("setting origins", () => {
+  it("marks what the setup agent's apply changes as set by the agent (not typed by a person), and only what it changed", async () => {
+    const t = await setup();
+    await t.drafted();
+    const reply = await t.apply([{ id: "setup-web", useSuggestion: true }]);
+    expect(outcomeOf(reply, "setup-web")?.outcome, JSON.stringify(reply.body)).toBe("applied");
+    expect(t.latestDefinition()).toMatchObject({ revision: 2, origins: { setup: "agent" } });
+    expect(t.latestDefinition().origins).toEqual({ setup: "agent" });
+    // A repository added through an approved card is the agent's too.
+    const repo = itemId(await t.proposal(), "repository");
+    const asked = outcomeOf(await t.apply([{ id: repo }], { expectedRevision: 2 }), repo)!;
+    t.approve(asked.approval!.approvalId);
+    expect(outcomeOf(await t.apply([{ id: repo }], { expectedRevision: 2 }), repo)?.outcome).toBe("applied");
+    expect(t.latestDefinition().origins).toEqual({ setup: "agent", repositories: "agent" });
+  });
+
+  it("does not let a person's own save claim the agent's mark through the request (the settings route has no such field)", async () => {
+    const t = await setup();
+    const saved = await t.dev(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, setupCommands: ["make setup"], origin: "agent" });
+    expect(saved.status).toBe(400);
+    const plain = await t.dev(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: randomUUID(), expectedRevision: 1, setupCommands: ["make setup"] });
+    expect(plain.status, JSON.stringify(plain.body)).toBe(200);
+    expect(t.latestDefinition()).not.toHaveProperty("origins");
+  });
+
+  it("replaces a value an earlier proposal set without that item's tick, but keeps one a person typed", async () => {
+    const t = await setup();
+    await t.drafted();
+    withDefinition(t, { origins: { setup: "agent" } });
+    const review = (view(await t.read()).review ?? []).find((entry) => entry.id === "setup-web")!;
+    expect(review.current).toMatchObject({ state: "differs", setBy: "agent" });
+    expect(outcomeOf(await t.apply([{ id: "setup-web" }]), "setup-web")?.outcome).toBe("applied");
+    expect(t.latestSettings().setup.map((entry) => [entry.executable, ...entry.args])).toEqual([["npm", "ci"]]);
+    expect(t.latestDefinition().origins).toEqual({ setup: "agent" });
+    // The same value with no mark was typed by a person: kept.
+    const typed = await setup();
+    await typed.drafted();
+    expect((view(await typed.read()).review ?? []).find((entry) => entry.id === "setup-web")!.current).toMatchObject({ state: "differs", setBy: "person" });
+    expect(outcomeOf(await typed.apply([{ id: "setup-web" }]), "setup-web")?.outcome).toBe("kept_yours");
+  });
+
+  it("reports a setting the meta repo's config file manages as managed by the file before it tries a save, and still applies the others", async () => {
+    const t = await setup();
+    await t.drafted();
+    withDefinition(t, { origins: { setup: "file" } });
+    const review = (view(await t.read()).review ?? []);
+    const entry = review.find((item) => item.id === "setup-web")!;
+    expect(entry.current).toMatchObject({ state: "managed_by_file" });
+    expect(entry.unavailable).toBe(SETUP_ITEM_WORDS.managedByFile);
+    expect(review.find((item) => item.id === "tests-web")!.current).toMatchObject({ state: "differs", setBy: "person" });
+    const reply = await t.apply([{ id: "setup-web", useSuggestion: true }, { id: "tests-web", useSuggestion: true }]);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(outcomeOf(reply, "setup-web")).toMatchObject({ outcome: "managed_by_file", message: SETUP_ITEM_WORDS.managedByFile });
+    expect(outcomeOf(reply, "tests-web")?.outcome).toBe("applied");
+    expect(t.latestSettings().setup.map((command) => command.args)).toEqual([["old-setup"]]);
+    expect(t.latestSettings().readiness.map((command) => [command.executable, ...command.args])).toEqual([["npm", "test"]]);
+    expect(t.latestDefinition().origins).toEqual({ setup: "file", readiness: "agent" });
+  });
+
+  it("makes no approval card for a repository the file manages", async () => {
+    const t = await setup();
+    await t.drafted();
+    withDefinition(t, { origins: { repositories: "file" } });
+    const repo = itemId(await t.proposal(), "repository");
+    const reply = await t.apply([{ id: repo }]);
+    expect(outcomeOf(reply, repo)).toMatchObject({ outcome: "managed_by_file" });
+    expect(t.approvals()).toEqual([]);
+  });
+});
+
 // ---- apply
 
 /** A project of two repositories, so a setting can be for the repository commands do not run in. */

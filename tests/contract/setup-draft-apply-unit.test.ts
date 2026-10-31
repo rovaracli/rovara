@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { StoredProjectDefinitionSchema, agentXError, setupDraftKey, type AppProjectDetail, type SetupProposal, sanitizeSetupProposal } from "@agentx/contracts";
+import { ManagedByFileError } from "../../packages/broker/src/org/project-settings.js";
 import { applySetupDraft, type SetupDraftDependencies } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { changeTitleOf } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
@@ -60,7 +61,7 @@ const outcomes = (reply: { body: unknown }) => (reply.body as { results: Array<{
 
 describe("applying a proposal against stub dependencies", () => {
   it("says a setting the meta repo's config file manages is changed there, for each item in that save, and does not start a check", async () => {
-    const { deps, startSetupCheck } = stubDeps({ updateSettings: vi.fn(async () => { throw agentXError("FORBIDDEN", "readiness is managed by the meta repo's config file; change it there"); }) });
+    const { deps, startSetupCheck } = stubDeps({ updateSettings: vi.fn(async () => { throw new ManagedByFileError(["setup", "readiness"]); }) });
     const reply = await applySetupDraft(deps, caller, "web", body([{ id: "setup-web" }, { id: "tests-web" }]));
     expect(reply.statusCode).toBe(200);
     expect(outcomes(reply).map((entry) => [entry.id, entry.outcome, entry.message])).toEqual([
@@ -68,6 +69,18 @@ describe("applying a proposal against stub dependencies", () => {
     ]);
     expect(startSetupCheck).not.toHaveBeenCalled();
     expect((reply.body as { setupCheck: string }).setupCheck).toBe("not_needed");
+  });
+
+  it("does not read the words of a refusal: the same sentence from any other source is the person's answer, not a managed-by-file outcome", async () => {
+    const { deps } = stubDeps({ updateSettings: vi.fn(async () => { throw agentXError("FORBIDDEN", "readiness is managed by the meta repo's config file; change it there"); }) });
+    await expect(applySetupDraft(deps, caller, "web", body([{ id: "setup-web" }]))).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("makes every settings save as the setup agent, and tells the appliers' settings host to do the same", async () => {
+    const { deps, updateSettings } = stubDeps();
+    await applySetupDraft(deps, caller, "web", body([{ id: "setup-web" }]));
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect((updateSettings.mock.calls[0] as unknown[])[3]).toEqual({ origin: "agent" });
   });
 
   it("does not hide any other refusal of the settings save: it is the person's answer", async () => {

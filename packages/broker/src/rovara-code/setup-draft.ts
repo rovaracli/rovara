@@ -48,7 +48,7 @@ import {
   type SetupVerification,
   type StoredProjectDefinition,
 } from "@agentx/contracts";
-import { SETTINGS_STALE_MESSAGE } from "../org/project-settings.js";
+import { ManagedByFileError, SETTINGS_STALE_MESSAGE, type UpdateProjectSettingsOptions } from "../org/project-settings.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { approvalIdFor, getApproval, registerApprovalSubjectHandler, type ApprovalDependencies } from "../agents/approvals.js";
 import { createPendingChange } from "../agents/approvals-store.js";
@@ -272,7 +272,7 @@ export interface SetupDraftDependencies {
   /** The project's newest revision, with the domains it allows now and its definition. */
   latest(orgId: OrgId, project: string): Promise<{ revision: number; allowedDomains: readonly string[]; definition: StoredProjectDefinition } | undefined>;
   /** Plan 2's settings save, as the caller. */
-  updateSettings(caller: DeveloperCaller, project: string, body: ProjectSettingsBody): Promise<{ project: AppProjectDetail; warnings: string[] }>;
+  updateSettings(caller: DeveloperCaller, project: string, body: ProjectSettingsBody, options?: UpdateProjectSettingsOptions): Promise<{ project: AppProjectDetail; warnings: string[] }>;
   /** Plan 2's setup check, as the caller; throws what that route would answer. */
   startSetupCheck(caller: DeveloperCaller, project: string, requestId: string): Promise<void>;
   /** `startCodeIntent`, as the caller. */
@@ -570,7 +570,8 @@ async function releasePullRequestClaim(deps: SetupDraftDependencies, orgId: OrgI
   }
 }
 
-const isManagedByFile = (error: unknown): boolean => error instanceof AgentXError && error.code === "FORBIDDEN" && /managed by the meta repo/u.test(error.message);
+/** A refusal because the meta repo's config file manages a setting (a typed error: nothing reads the words). */
+const isManagedByFile = (error: unknown): boolean => error instanceof ManagedByFileError;
 
 /**
  * `POST /v1/app/projects/{name}/setup-draft/apply`: applies the items the person ticked, each by id, and says what happened to each.
@@ -627,11 +628,14 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
     if (handling === "info") { result(item, "not_available", { message: SETUP_ITEM_WORDS.info }); continue; }
     if (handling === "website_proposal") { result(item, "website_proposal", { message: SETUP_APPLY_WORDS.websiteProposal, domains: [String(item.proposed.value)] }); continue; }
     if (handling !== "settings") continue;
+    // A setting the meta repo's config file manages is changed by changing the file: said before any save is tried.
+    const current = currentOf(latest.definition, item);
+    if (current?.state === "managed_by_file") { result(item, "managed_by_file", { message: SETUP_ITEM_WORDS.managedByFile }); continue; }
     const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined });
     if (unavailable !== undefined) { result(item, "not_available", { message: unavailable }); continue; }
-    const current = currentOf(latest.definition, item);
     if (current?.state === "same") { result(item, "already_set", { message: SETUP_APPLY_WORDS.alreadySet }); continue; }
-    if (current?.state === "differs" && !useSuggestion) { result(item, "kept_yours", { message: SETUP_APPLY_WORDS.keptYours }); continue; }
+    // A value a person typed is replaced only on that item's own tick; one an earlier Rovara proposal set may be replaced by a newer one.
+    if (current?.state === "differs" && current.setBy !== "agent" && !useSuggestion) { result(item, "kept_yours", { message: SETUP_APPLY_WORDS.keptYours }); continue; }
     const value = item.proposed.value as Record<string, unknown>;
     if (item.kind === "setup") settings["setupCommands"] = value["commands"];
     else if (item.kind === "tests") settings["testCommands"] = value["commands"];
@@ -644,7 +648,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   let appliedRevision: number | undefined;
   if (settingItems.length > 0) {
     try {
-      const saved = await deps.updateSettings(caller, name, { requestId: body.requestId, expectedRevision: body.expectedRevision, ...settings });
+      const saved = await deps.updateSettings(caller, name, { requestId: body.requestId, expectedRevision: body.expectedRevision, ...settings }, { origin: "agent" });
       project = saved.project;
       warnings.push(...saved.warnings);
       for (const item of settingItems) result(item, "applied");
@@ -666,9 +670,11 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   // 2. Items that need a person's approval card (and, once approved, their application).
   for (const { item } of requested) {
     if (setupItemHandling(item.kind, item.proposed.value) !== "approval") continue;
+    const currently = currentOf(latest.definition, item);
+    if (currently?.state === "managed_by_file") { result(item, "managed_by_file", { message: SETUP_ITEM_WORDS.managedByFile }); continue; }
     const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined });
     if (unavailable !== undefined) { result(item, "not_available", { message: unavailable }); continue; }
-    if (currentOf(latest.definition, item)?.state === "same") { result(item, "already_set", { message: SETUP_APPLY_WORDS.alreadySet }); continue; }
+    if (currently?.state === "same") { result(item, "already_set", { message: SETUP_APPLY_WORDS.alreadySet }); continue; }
     const approvals = deps.approvals!;
     try {
       const card = await askCard(deps, approvals, caller, name, pointer.taskId, item);
@@ -688,7 +694,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
         applied = await applier.apply({
           project: name, taskId: pointer.taskId, item, proposal, approvedBy: card.approvedBy ?? "", requestId: applyRequestId, revision,
           host: {
-            updateSettings: (settings) => deps.updateSettings(caller, name, settings),
+            updateSettings: (settings) => deps.updateSettings(caller, name, settings, { origin: "agent" }),
             startPullRequest: (request) => deps.startPullRequest(caller, { requestId: request.requestId, project: name, text: request.text }),
             claimPullRequest: (requestId) => claimPullRequest(deps, caller.orgId, name, pointer.taskId, requestId),
             releasePullRequestClaim: (requestId) => releasePullRequestClaim(deps, caller.orgId, name, pointer.taskId, requestId),

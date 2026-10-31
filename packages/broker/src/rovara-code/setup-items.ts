@@ -6,8 +6,8 @@
 //     applier, the item is shown as "can't be set up from here yet" and gets no card, because a card for something nobody can apply would be theatre.
 import { createHash } from "node:crypto";
 import {
-  canonicalJson, codeRepositoriesOf, formatCommandLine, setupItemHandling,
-  type ProjectSettingsBody, type SetupItem, type SetupItemKind, type SetupProposal, type SetupReviewEntry, type StoredProjectDefinition,
+  canonicalJson, codeRepositoriesOf, formatCommandLine, setupItemHandling, settingOriginOf,
+  type ProjectOriginField, type ProjectSettingsBody, type SetupItem, type SetupItemKind, type SetupProposal, type SetupReviewEntry, type StoredProjectDefinition,
 } from "@agentx/contracts";
 
 /** What a person is told when an item cannot be applied from here (fixed words, never a model's or a repository's). */
@@ -43,26 +43,50 @@ export function githubFullNameOf(url: string): string | undefined {
   }
 }
 
-/** What the project holds now for an item's setting; undefined for an item that is not a setting (nothing to compare). */
+/** The project setting an item sets, by the name settings origins use; undefined for an item that is not a setting. */
+export function settingFieldOf(item: Pick<SetupItem, "kind">): ProjectOriginField | undefined {
+  switch (item.kind) {
+    case "setup": return "setup";
+    case "tests": return "readiness";
+    case "devcontainer": return "devcontainer";
+    case "repository": return "repositories";
+    default: return undefined;
+  }
+}
+
+/**
+ * What the project holds now for an item's setting; undefined for an item that is not a setting (nothing to compare). The setting's ORIGIN is read from the project, never
+ * guessed from the value:
+ *   - set by the meta repo's config file (`file`) and not already the suggestion: `managed_by_file`, changed by changing the file (a save would be refused);
+ *   - a different value set by a person (no mark, or `person`): `differs` with `setBy: "person"`, kept unless that item's own tick says to replace it;
+ *   - a different value Rovara itself set earlier (`agent`): `differs` with `setBy: "agent"`, which a new proposal may replace.
+ */
 export function currentOf(definition: StoredProjectDefinition, item: SetupItem): SetupReviewEntry["current"] | undefined {
   const value = item.proposed.value as Record<string, unknown>;
+  const field = settingFieldOf(item);
+  const origin = field === undefined ? "person" : settingOriginOf(definition, field);
+  const held = (state: "empty" | "same" | "differs", yours?: string[]): SetupReviewEntry["current"] => {
+    if (state === "same") return { state };
+    if (origin === "file") return { state: "managed_by_file", ...(yours === undefined ? {} : { yours }) };
+    return state === "empty" ? { state } : { state, ...(yours === undefined ? {} : { yours }), setBy: origin === "agent" ? "agent" : "person" };
+  };
   if (item.kind === "setup" || item.kind === "tests") {
     const now = (item.kind === "setup" ? definition.setup : definition.readiness).map((command) => cut(formatCommandLine(command)));
     const wanted = (value["commands"] as string[]).map((line) => cut(line));
-    if (now.length === 0) return { state: "empty" };
-    return { state: same(now, wanted) ? "same" : "differs", yours: now.slice(0, 64) };
+    if (now.length === 0) return held("empty");
+    return held(same(now, wanted) ? "same" : "differs", now.slice(0, 64));
   }
   if (item.kind === "devcontainer") {
     const now = definition.devcontainer;
-    if (now === undefined) return { state: "empty" };
+    if (now === undefined) return held("empty");
     const line = `${now.repository}:${now.configPath ?? ""}`;
     const wanted = `${String(value["repository"])}:${String(value["configPath"])}`;
-    return { state: line === wanted ? "same" : "differs", yours: [cut(line)] };
+    return held(line === wanted ? "same" : "differs", [cut(line)]);
   }
   if (item.kind === "repository") {
     const wanted = githubFullNameOf(String(value["url"]))?.toLowerCase();
     const present = wanted !== undefined && definition.repositories.some((repository) => githubFullNameOf(repository.url)?.toLowerCase() === wanted);
-    return present ? { state: "same" } : { state: "empty" };
+    return held(present ? "same" : "empty");
   }
   return undefined;
 }
@@ -71,6 +95,7 @@ export function currentOf(definition: StoredProjectDefinition, item: SetupItem):
 export function unavailableReason(definition: StoredProjectDefinition, item: SetupItem, options: { cards: boolean }): string | undefined {
   const handling = setupItemHandling(item.kind, item.proposed.value);
   if (handling === "info") return SETUP_ITEM_WORDS.info;
+  if (currentOf(definition, item)?.state === "managed_by_file") return SETUP_ITEM_WORDS.managedByFile;
   if (item.kind === "setup" || item.kind === "tests") {
     return (item.proposed.value as { repo: string }).repo === commandRepositoryOf(definition) ? undefined : SETUP_ITEM_WORDS.otherRepository;
   }
@@ -98,7 +123,7 @@ export interface SetupItemApplyContext {
   /** The project's settings revision now. */
   revision: number;
   host: {
-    /** Plan 2's settings save, as the maintainer applying. */
+    /** Plan 2's settings save, as the maintainer applying. What it changes is marked as set by the setup agent (`origin: "agent"`), not as typed by a person. */
     updateSettings(body: ProjectSettingsBody): Promise<{ warnings: string[] }>;
     /** `startCodeIntent`, as the maintainer applying. */
     startPullRequest(request: { requestId: string; text: string }): Promise<{ taskId: string; sessionId?: string; sessionUrl?: string }>;
