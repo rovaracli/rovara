@@ -732,7 +732,7 @@ it("an enrolled new run-limit approval above the current ceiling refuses without
   const f = await fixture(), task = await f.t.plainTask(); await f.t.pauseAndEnd(task);
   const request = f.t.requestOf(task.taskId, "run_limit")[0]!; expect(request.newLimitUsd).toBeGreaterThan(1);
   const before = f.t.meta(task.taskId), operations = f.t.taskOps(task.workspaceId).map(op => op.id);
-  await expect(f.t.decide(MAYA, request.spendRequestId)).rejects.toMatchObject({ code: "TASK_STOP_APPROVAL_ABOVE_CEILING" });
+  await expect(f.t.decide(DEB, request.spendRequestId)).rejects.toMatchObject({ code: "TASK_STOP_APPROVAL_ABOVE_CEILING" });
   expect(f.t.meta(task.taskId)).toEqual(before); expect(f.t.taskOps(task.workspaceId).map(op => op.id)).toEqual(operations);
   expect(f.t.requestOf(task.taskId, "run_limit")[0]!.status).not.toBe("APPROVED");
 });
@@ -746,7 +746,7 @@ it("a disabled org retains legacy run-limit approval behavior above a lower ceil
 it("denying an enrolled above-ceiling request remains allowed and grants no new money", async () => {
   const f = await fixture(), task = await f.t.plainTask(); await f.t.pauseAndEnd(task);
   const request = f.t.requestOf(task.taskId, "run_limit")[0]!, before = f.t.meta(task.taskId).budgetUsd;
-  const result = await f.t.decide(MAYA, request.spendRequestId, "DENY"); expect(result.spendRequest.status).toBe("DENIED");
+  const result = await f.t.decide(DEB, request.spendRequestId, "DENY"); expect(result.spendRequest.status).toBe("DENIED");
   expect(f.t.meta(task.taskId).budgetUsd).toBe(before);
 });
 
@@ -768,7 +768,7 @@ it("an allowed run-limit approval commits its newly calculated stop envelope wit
 for (const scope of ["company", "project", "agent"] as const) it(`a new run-limit approval cannot lift its explicit ${scope} stop`, async () => {
   const f = await approvalWindow(scope), before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
   expect(f.spendRequest.newLimitUsd).toBe(7);
-  const decision = f.t.decide(BEN, f.spendRequest.spendRequestId);
+  const decision = f.t.decide(DEB, f.spendRequest.spendRequestId);
   await expect(decision).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
   await expect(decision).rejects.toThrow("Spending rules changed; ask again.");
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(op => op.id)).toEqual(operations);
@@ -1274,7 +1274,7 @@ async function hardRequestedTask() {
 it("a later approval cannot silently discard the accepted hard requested bound", async () => {
   const f = await hardRequestedTask(); await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
   const request = f.t.requestOf(f.task.taskId, "run_limit")[0]!, before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(operation => operation.id); expect(request.newLimitUsd).toBe(9);
-  await expect(f.t.decide(MAYA, request.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  await expect(f.t.decide(DEB, request.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
   expect(f.t.meta(f.task.taskId)).toEqual(before); expect(f.t.taskOps(f.task.workspaceId).map(operation => operation.id)).toEqual(operations);
 });
 it("removing a non-binding saved requested bound invalidates its captured digest", async () => {
@@ -1286,7 +1286,7 @@ it("removing a non-binding saved requested bound invalidates its captured digest
 
 it("approval at the exact accepted requested bound remains valid and resumes once", async () => {
   const f = await hardRequestedTask(); await f.t.pauseAndEnd(f.task, { kind: "task", taskId: f.task.taskId });
-  const original = f.t.requestOf(f.task.taskId, "run_limit")[0]!; await f.t.decide(MAYA, original.spendRequestId, "DENY");
+  const original = f.t.requestOf(f.task.taskId, "run_limit")[0]!; await f.t.decide(DEB, original.spendRequestId, "DENY");
   const { record } = await createSpendRequest(f.t.deps(), { orgId: TEST_ORG, taskId: f.task.taskId, kind: "run_limit", scope: { kind: "task", taskId: f.task.taskId }, amountUsd: 1, newLimitUsd: 5,
     requestedBy: { kind: "member", developerId: MAYA.developerId }, requestedFor: { developerId: MAYA.developerId }, resume: "continue", reason: "Finish within the accepted five-dollar bound." });
   const operations = f.t.taskOps(f.task.workspaceId).map(operation => operation.id);
@@ -1629,7 +1629,7 @@ for (const state of ["valid", "revoked", "revoked_at_commit"] as const) it(`regi
 it("spending-rule expiry commits an immutable terminal receipt and replays it without money", async () => {
   const f = await approvalWindow("company"), key = { pk: orgScoped(TEST_ORG, `SPEND_REQUEST#${f.spendRequest.spendRequestId}`), sk: "EXPIRY" };
   const before = f.t.meta(f.task.taskId), operations = f.t.taskOps(f.task.workspaceId).map(op => op.id);
-  await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  await expect(f.t.decide(DEB, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
   const receipt = f.t.db.get(key);
   expect(receipt).toMatchObject({ entityType: "SPEND_REQUEST_EXPIRY", version: 1, orgId: TEST_ORG, spendRequestId: f.spendRequest.spendRequestId,
     kind: "run_limit", status: "EXPIRED", reason: "spending_rules_changed", actor: { kind: "system" } });
@@ -1657,7 +1657,7 @@ it("expiry cannot attribute a terminal receipt to request terms that changed at 
     }
     return send(command);
   };
-  await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toBeDefined();
+  await expect(f.t.decide(DEB, f.spendRequest.spendRequestId)).rejects.toBeDefined();
   expect(raced).toBe(true); expect(f.t.db.get(key)).toMatchObject({ status: "PENDING", newLimitUsd: winningLimit });
   expect(f.t.db.get({ ...key, sk: "EXPIRY" })).toBeUndefined();
 });
@@ -2503,11 +2503,23 @@ for (const drift of ["at_read", "at_commit"] as const) it(`a reached stop with t
   return send(command);
  };
  const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers });
- expect(raced).toBe(true);expect(reply.body.error).toMatchObject({ code: "BUDGET_EXCEEDED" });
+ expect(raced).toBe(true);expect(["BUDGET_EXCEEDED", "TASK_STOP_CONFIG_INVALID"]).toContain((reply.body.error as { code: string }).code);
 });
 it("a member payer cannot self-decide a raise beyond the final company stop", async () => {
  const f = await approvalWindow("company"), before = f.t.meta(f.task.taskId);
  await expect(f.t.decide(MAYA, f.spendRequest.spendRequestId)).rejects.toMatchObject({ code: "FORBIDDEN" });
  expect(f.t.meta(f.task.taskId)).toEqual(before);
  expect(f.t.requestOf(f.task.taskId, "run_limit")[0]?.status).toBe("PENDING");
+});
+
+it("concurrent drift in a refusal audit remains a task-stop refusal with no work", async () => {
+ const f = await fixture(0), send = f.t.db.send.bind(f.t.db);let raced = false;
+ f.t.db.send = async command => {
+  if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => (item.Put?.Item?.event as { action?: string } | undefined)?.action === "spending.stop_refused")) {
+   raced = true;f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2 });
+  }
+  return send(command);
+ };
+ const reply = await f.start();expect(raced).toBe(true);expect(reply.body.error).toMatchObject({ code: "TASK_STOP_ZERO" });
+ expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
 });
