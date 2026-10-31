@@ -29,6 +29,7 @@ import { attachEvidence, planEvidenceJobItem } from "../../packages/broker/src/d
 import { noticesFromStream } from "../../packages/broker/src/developer/notifications.js";
 import { DEV_ISSUER, MAYA, OMAR, createSingleAnswerPlanBroker, markThreadPosted, recordStream, teammate } from "../support/developer-task-broker.js";
 import type { Developer } from "../support/developer-task-broker.js";
+import { registerHumanSendBackListener } from "../../packages/broker/src/lessons/send-back-events.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call, registerSlackProject } from "../support/slack-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
@@ -2331,6 +2332,29 @@ describe("exits for blocked work (Task 16)", () => {
     expect(outboxPrompt(harness, String(third.id))).toContain(fixed.digest);
     await passReviews(harness, workspaceId, fixed, String(third.id));
     expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "PULL_REQUEST", state: "READY" });
+  });
+
+  it("tells the learning lane WHO sent the task back, once, and only after the send-back was accepted (WA-2)", async () => {
+    const harness = await createSingleAnswerPlanBroker();
+    const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
+    await finishImplementation();
+    const review = operations(harness, workspaceId).find((item) => item.workflowMode === "REVIEW")!;
+    await harness.finish(workspaceId, String(review.id), "SUCCEEDED", findingsReview(String(review.id), candidate, false));
+    const seen: Array<{ taskId: string; requestId: string; actorDeveloperId: string; instructions: string; round: number; shared: boolean; ownerDeveloperId: string }> = [];
+    const remove = registerHumanSendBackListener(async (event) => { seen.push(event); });
+    try {
+      const requestId = randomUUID();
+      const body = { requestId, expectedRevision: taskWorkflow(harness, taskId).revision, instructions: "Fix what the reviews found." };
+      // Refused sends tell nobody.
+      expect((await harness.dev(OMAR, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, body)).status).toBe(404);
+      expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, { ...body, expectedRevision: body.expectedRevision - 1 })).status).toBe(409);
+      expect(seen).toEqual([]);
+      expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, body)).status).toBe(200);
+      expect(seen).toEqual([expect.objectContaining({ taskId, requestId, actorDeveloperId: MAYA.developerId, instructions: "Fix what the reviews found.", round: 1, ownerDeveloperId: MAYA.developerId })]);
+      // A replay answers from the first and tells nobody again.
+      expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, body)).status).toBe(200);
+      expect(seen).toHaveLength(1);
+    } finally { remove(); }
   });
 
   it("retries blocked planning only at the current revision, and a repeated retry starts nothing new", async () => {
