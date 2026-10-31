@@ -7,7 +7,7 @@
 const HIDDEN = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF9-\uFFFB]|[\u{E0000}-\u{E007F}]|[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/gu;
 
 /** Removes hidden and control characters. */
-export function stripHiddenCharacters(text: string): string {
+export function stripLessonHiddenCharacters(text: string): string {
   return text.normalize("NFKC").replace(HIDDEN, "");
 }
 
@@ -35,13 +35,13 @@ const CONFUSABLES: Record<string, string> = {
 export function foldForMatching(text: string): string {
   let out = "";
   // Decompose and drop combining marks (an accent over a letter must not hide a word), then map look-alikes.
-  for (const ch of stripHiddenCharacters(text).normalize("NFD").replace(/\p{M}/gu, "")) out += CONFUSABLES[ch] ?? ch;
+  for (const ch of stripLessonHiddenCharacters(text).normalize("NFD").replace(/\p{M}/gu, "")) out += CONFUSABLES[ch] ?? ch;
   return out;
 }
 
 /** Hidden characters out, then markup out, then trimmed and cut to `maxChars` (code points). */
 export function cleanLessonText(text: string, maxChars: number): string {
-  const cleaned = neutraliseMarkup(stripHiddenCharacters(text)).trim();
+  const cleaned = neutraliseMarkup(stripLessonHiddenCharacters(text)).trim();
   const points = [...cleaned];
   return points.length <= maxChars ? cleaned : points.slice(0, maxChars).join("").trimEnd();
 }
