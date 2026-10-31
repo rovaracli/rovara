@@ -360,6 +360,19 @@ export class GitHubAppCredentialProvider {
   }
 
   /**
+   * `resolve`, and the expiry GitHub stated for the token it minted (`expires_at`), so the credential handed to a worker carries the real expiry and not one made up for it.
+   * `expiresAt` is absent when GitHub's answer named none.
+   */
+  async resolveWithExpiry(credentialRef: string, repositoryUrl: string, access: RepositoryAccess, scope: GitHubTokenScope): Promise<RepositoryCredential & { expiresAt?: string }> {
+    if (credentialRef !== this.options.credentialRef) return {};
+    const repository = parseGitHubRepository(repositoryUrl);
+    const expiry: { expiresAt?: string } = {};
+    const token = await this.createInstallationToken(repository, { contents: access === "push" ? "write" : "read" }, scope, false, {}, false, expiry);
+    await this.waitUntilGitAccepts(repository, token, access);
+    return { username: "x-access-token", password: token, ...(expiry.expiresAt === undefined ? {} : { expiresAt: expiry.expiresAt }) };
+  }
+
+  /**
    * Asks GitHub's git endpoint for the repository's refs with the new token, as `git clone` does, until it stops answering 404 (a few seconds at most).
    * It never refuses: a token that stays unaccepted is handed over all the same, so the worker reports GitHub's own error, and a failed probe changes nothing.
    */
@@ -2068,6 +2081,8 @@ export class GitHubAppCredentialProvider {
     retried = false,
     options: AgentTokenOptions = {},
     minting = false,
+    /** Receives the expiry GitHub states for the minted token (Enterprise foundations M-7), when the caller wants it. */
+    expiry?: { expiresAt?: string },
   ): Promise<string> {
     const installed = "installationId" in repository ? repository : await this.installed(repository, scope);
     requirePinnedInstallation(installed, options);
@@ -2086,10 +2101,10 @@ export class GitHubAppCredentialProvider {
     const response = await this.postInstallationToken(installed.installationId, { repositories: [installed.name], permissions });
     if (response.status === 404 && !retried) {
       this.installations.delete(installed.owner.toLowerCase());
-      return this.createInstallationToken({ owner: installed.owner, name: installed.name }, permissions, scope, true, options);
+      return this.createInstallationToken({ owner: installed.owner, name: installed.name }, permissions, scope, true, options, false, expiry);
     }
     if (response.status === 422 && "orgId" in scope) throw agentXError("GITHUB_NOT_CONNECTED", githubNotConnectedMessage(`${installed.owner}/${installed.name}`));
-    return this.tokenOf(response, { installationId: installed.installationId, repository: `${installed.owner}/${installed.name}`, requested: permissions });
+    return this.tokenOf(response, { installationId: installed.installationId, repository: `${installed.owner}/${installed.name}`, requested: permissions }, expiry);
   }
 
   /** `POST /app/installations/{id}/access_tokens` with the App's JWT; the caller reads the status. */
@@ -2100,7 +2115,7 @@ export class GitHubAppCredentialProvider {
   }
 
   /** The token of a successful token response; anything else is GitHub being unavailable. */
-  private async tokenOf(response: Response, issued?: Pick<GitHubTokenIssued, "installationId" | "repository" | "requested">): Promise<string> {
+  private async tokenOf(response: Response, issued?: Pick<GitHubTokenIssued, "installationId" | "repository" | "requested">, expiry?: { expiresAt?: string }): Promise<string> {
     if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub App installation token request failed with HTTP ${response.status}`);
     const body: unknown = await response.json();
     if (!body || typeof body !== "object" || !("token" in body) || typeof body.token !== "string") {
@@ -2108,6 +2123,10 @@ export class GitHubAppCredentialProvider {
     }
     if (issued !== undefined && this.options.onTokenIssued !== undefined) {
       try { this.options.onTokenIssued({ ...issued, ...grantOf(body) }); } catch { /* a report that cannot be made never fails the mint */ }
+    }
+    if (expiry !== undefined) {
+      const stated = grantOf(body as Record<string, unknown>).expiresAt;
+      if (stated !== undefined) expiry.expiresAt = stated;
     }
     return body.token;
   }

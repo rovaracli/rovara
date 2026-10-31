@@ -147,9 +147,21 @@ describe("GitHub adapter specifics", () => {
     expect(feedback.comments[0]!.body).toHaveLength(65_536);
   });
 
+  it("hands over the expiry GitHub stated for the token, not one of its own; no stated expiry is refused", async () => {
+    const world = githubCodeHostWorld();
+    const stated = new Date(Date.now() + 50 * 60_000).toISOString();
+    world.api.tokenExpiry = stated;
+    expect(await world.host.issueGitCredential(world.repository, "clone", world.scope)).toMatchObject({ kind: "basic", expiresAt: stated });
+    world.api.tokenExpiry = null;
+    await expect(world.host.issueGitCredential(world.repository, "clone", world.scope)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    // A token GitHub says has already expired is handed over as it is: the exchange refuses it (credential-exchange.test.ts).
+    world.api.tokenExpiry = "2020-01-01T00:00:00Z";
+    expect(await world.host.issueGitCredential(world.repository, "clone", world.scope)).toMatchObject({ expiresAt: "2020-01-01T00:00:00.000Z" });
+  });
+
   it("refuses the credential when the provider does not serve the reference (an empty answer is never a credential)", async () => {
     const world = githubCodeHostWorld();
-    const stub = githubCodeHost({ ...providerOver(world.api), resolve: async () => ({}) } as never, { credentialRef: "other" });
+    const stub = githubCodeHost({ ...providerOver(world.api), resolveWithExpiry: async () => ({}) } as never, { credentialRef: "other" });
     await expect(stub.issueGitCredential(world.repository, "clone", world.scope)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 });

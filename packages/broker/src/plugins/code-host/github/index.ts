@@ -31,7 +31,7 @@ export const GITHUB_CODE_HOST_CAPABILITIES: CodeHostCapabilities = {
 
 /** The provider methods the adapter uses: a narrow type, so a test can stand in for the rest. */
 export type GitHubCodeHostProvider = Pick<GitHubAppCredentialProvider,
-  | "getRepositoryIdentity" | "checkRepository" | "getRepositoryStanding" | "resolve" | "getFileAtCommit" | "getCommitTree" | "getBranchHead" | "listWorkingBranches"
+  | "getRepositoryIdentity" | "checkRepository" | "getRepositoryStanding" | "resolveWithExpiry" | "getFileAtCommit" | "getCommitTree" | "getBranchHead" | "listWorkingBranches"
   | "installationForRepository" | "readCodeOwners" | "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "getPullRequestStatus" | "listPullRequestFiles"
   | "getPullRequestFeedback" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest">;
 
@@ -41,9 +41,6 @@ export interface GitHubCodeHostOptions {
   /** The clock, in milliseconds. Default `Date.now`. */
   now?: () => number;
 }
-
-/** GitHub's installation tokens last an hour; the adapter states the expiry a little short of that, so a credential is never used on its last minutes. */
-export const GITHUB_CREDENTIAL_LIFETIME_MS = 55 * 60_000;
 
 function checkedScope(scope: HostScope): HostScope {
   const parsed = HostScopeSchema.safeParse(scope);
@@ -73,12 +70,15 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
     },
 
     async issueGitCredential(repository: RepositoryRef, access: GitAccess, scope: HostScope): Promise<GitCredential> {
-      const credential = await provider.resolve(options.credentialRef, repository.url, access, checkedScope(scope));
+      const credential = await provider.resolveWithExpiry(options.credentialRef, repository.url, access, checkedScope(scope));
       // An empty answer means the provider does not serve this credential reference: never hand out nothing as if it were a credential.
       if (credential.username === undefined || credential.password === undefined || credential.username === "" || credential.password === "") {
         throw agentXError("CONFIG_INVALID", "the repository does not use the configured GitHub App");
       }
-      return { kind: "basic", username: credential.username, password: credential.password, expiresAt: new Date((options.now ?? Date.now)() + GITHUB_CREDENTIAL_LIFETIME_MS).toISOString() };
+      // The expiry GitHub stated for the token. A token that came with none is refused: an expiry made up here would let `workerGitCredentialUsable` pass what it cannot check.
+      const stated = credential.expiresAt === undefined ? Number.NaN : Date.parse(credential.expiresAt);
+      if (!Number.isFinite(stated)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub gave no expiry for the repository credential");
+      return { kind: "basic", username: credential.username, password: credential.password, expiresAt: new Date(stated).toISOString() };
     },
 
     async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, fileOptions?: { untilLine?: number; timeoutMs?: number }): Promise<string | undefined> {
