@@ -13,6 +13,7 @@ import { MEDIA_DIR, MEDIA_LISTING_FILE, MEDIA_VIDEO_MAX_BYTES, MEDIA_TRACE_MAX_B
 import { TRACE_BLANKED, scrubTraceLines, scrubTraceZip } from "../../packages/verifier/src/executor/trace-scrub.js";
 import { createCredentialRedactor } from "../../packages/verifier/src/executor/redact.js";
 import { finishWebCaseMedia, startWebCaseTrace, type E2EWebMediaPorts } from "../../packages/verifier/src/web-runtime.js";
+import type { RevocationReport } from "../../packages/broker/src/e2e/run-scoped-accounts.js";
 import { attachMedia, prepareMediaArtifacts, publicationMediaFor } from "../../packages/broker/src/e2e/media-evidence.js";
 import { buildEvidencePack } from "../../packages/broker/src/rovara-code/evidence-pack.js";
 
@@ -215,24 +216,27 @@ describe("the zip structure and the new scrub rules (C2, M3, M4)", () => {
     expect(scrubTraceZip(bytes, () => false)).toBeNull();
   });
   it("refuses entries that overlap: a second entry whose local header sits inside the first entry's data (a zip within a zip)", () => {
-    const inner = zip([{ name: "b.bin", data: "y".repeat(40), method: 0 }]);
-    const innerLocal = inner.subarray(0, 30 + "b.bin".length + 40);
-    const nameA = Buffer.from("a.bin");
-    const crcOf = (data: Uint8Array) => zlibCrc32(data) >>> 0;
-    const localA = Buffer.alloc(30); localA.writeUInt32LE(0x04034b50, 0); localA.writeUInt16LE(20, 4); localA.writeUInt32LE(crcOf(innerLocal), 14);
-    localA.writeUInt32LE(innerLocal.length, 18); localA.writeUInt32LE(innerLocal.length, 22); localA.writeUInt16LE(nameA.length, 26);
-    const centralOf = (name: Buffer, crc: number, size: number, offset: number) => {
-      const head = Buffer.alloc(46); head.writeUInt32LE(0x02014b50, 0); head.writeUInt16LE(20, 4); head.writeUInt16LE(20, 6);
-      head.writeUInt32LE(crc, 16); head.writeUInt32LE(size, 20); head.writeUInt32LE(size, 24); head.writeUInt16LE(name.length, 28); head.writeUInt32LE(offset, 42);
-      return Buffer.concat([head, name]);
-    };
+    const inner = zip([{ name: "resources/b.bin", data: "y".repeat(40), method: 0 }]);
+    const innerLocal = inner.subarray(0, 30 + "resources/b.bin".length + 40);
     const bData = Buffer.from("y".repeat(40));
-    const directory = Buffer.concat([centralOf(nameA, crcOf(innerLocal), innerLocal.length, 0), centralOf(Buffer.from("b.bin"), crcOf(bData), bData.length, 30 + nameA.length)]);
-    const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(2, 8); end.writeUInt16LE(2, 10); end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(30 + nameA.length + innerLocal.length, 16);
-    const nested = Buffer.concat([localA, nameA, innerLocal, directory, end]);
+    const trace = Buffer.from("{}\n");
+    const crcOf = (data: Uint8Array) => zlibCrc32(data) >>> 0;
+    const localOf = (name: string, data: Uint8Array) => { const head = Buffer.alloc(30); head.writeUInt32LE(0x04034b50, 0); head.writeUInt16LE(20, 4); head.writeUInt32LE(crcOf(data), 14); head.writeUInt32LE(data.length, 18); head.writeUInt32LE(data.length, 22); head.writeUInt16LE(name.length, 26); return Buffer.concat([head, Buffer.from(name), data]); };
+    const centralOf = (name: string, data: Uint8Array, offset: number) => {
+      const head = Buffer.alloc(46); head.writeUInt32LE(0x02014b50, 0); head.writeUInt16LE(20, 4); head.writeUInt16LE(20, 6);
+      head.writeUInt32LE(crcOf(data), 16); head.writeUInt32LE(data.length, 20); head.writeUInt32LE(data.length, 24); head.writeUInt16LE(name.length, 28); head.writeUInt32LE(offset, 42);
+      return Buffer.concat([head, Buffer.from(name)]);
+    };
+    const endOf = (count: number, directory: Buffer, offset: number) => { const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(count, 8); end.writeUInt16LE(count, 10); end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16); return end; };
+    // nested: a.bin's data holds b.bin's whole local entry, and the central directory lists b.bin at that inner offset
+    const localA = localOf("resources/a.bin", innerLocal);
+    const localT = localOf("trace.trace", trace);
+    const innerOffset = 30 + "resources/a.bin".length;
+    const dirNested = Buffer.concat([centralOf("resources/a.bin", innerLocal, 0), centralOf("resources/b.bin", bData, innerOffset), centralOf("trace.trace", trace, localA.length)]);
+    const nested = Buffer.concat([localA, localT, dirNested, endOf(3, dirNested, localA.length + localT.length)]);
     expect(scrubTraceZip(nested, () => false)).toBeNull();
-    // positive control: the same two entries side by side, not nested, are read
-    const side = zip([{ name: "a.bin", data: innerLocal, method: 0 }, { name: "b.bin", data: bData, method: 0 }]);
+    // positive control: the same entries side by side, each with its own bytes, are read
+    const side = zip([{ name: "resources/a.bin", data: innerLocal, method: 0 }, { name: "resources/b.bin", data: bData, method: 0 }, { name: "trace.trace", data: "{}\n", method: 0 }]);
     expect(scrubTraceZip(side, () => false)).not.toBeNull();
   });
   it("writes zero external attributes and no extra field, so a mode or a symlink in the input is dropped (M3)", () => {
@@ -253,7 +257,8 @@ describe("the zip structure and the new scrub rules (C2, M3, M4)", () => {
     const line = JSON.stringify({ type: "before", params: { url: "https://app.test/cb?code=abc123def456&state=x&code=again99#frag-tok", note: "see https://other.test/p?a=1" } });
     const out = JSON.parse(scrubTraceLines(`${line}\n`)!) as { params: { url: string; note: string } };
     expect(out.params.url).toBe(`https://app.test/cb?code=${TRACE_BLANKED}&state=${TRACE_BLANKED}`);
-    expect(out.params.note).toBe("see https://other.test/p?a=1");
+    // a URL inside a longer string is blanked too (the text pass)
+    expect(out.params.note).toBe(`see https://other.test/p?a=${TRACE_BLANKED}`);
     expect(scrubTraceLines(`${JSON.stringify({ u: "https://user:pw@app.test/x?y=1" })}\n`)).toBe(`${JSON.stringify({ u: `https://app.test/x?y=${TRACE_BLANKED}` })}\n`);
   });
   it("keeps only allow-listed header values in a request, whatever the header is called", () => {
@@ -293,6 +298,15 @@ describe("the executor's media recorder", () => {
     expect(sha(onDisk)).toBe(trace?.sha256);
     expect(unzipEntries(onDisk).get("trace.network")).not.toContain(SESSION);
     expect(await readFile(join(root, MEDIA_DIR, mediaFileName(1, "video")))).toEqual(WEBM);
+  });
+  it("records what the scrub did on the trace's entry, and the listing keeps the counts", async () => {
+    const root = await temp();
+    const recorder = createMediaRecorder({ root, policy: { video: false, trace: true }, caseIds: ["a"], redactor: redactor() });
+    const entry = await recorder.record({ caseId: "a", kind: "trace", bytes: goodTrace() });
+    expect(entry?.scrub).toMatchObject({ blankedValues: expect.any(Number) as number, droppedSnapshots: 0, droppedFrames: 0, droppedEntries: 0, secrets: expect.any(Number) as number });
+    expect(entry?.scrub?.blankedValues).toBeGreaterThan(0);
+    const listing = await finalizeMedia({ outDir: root, policy: { video: false, trace: true }, caseIds: ["a"] });
+    expect(listing[0]?.scrub).toEqual(entry?.scrub);
   });
   it("drops a file that is not the kind it says, over its cap, or one a second time", async () => {
     const root = await temp();
@@ -407,7 +421,7 @@ describe("the broker keeps its own bytes and the pack applies the gate", () => {
     expect(none.problems.map((item) => item.problem)).toEqual(["gate_refused", "gate_refused"]);
   });
   it("scrubs a worker's trace again and stores the broker's copy under the digest of what it stores", () => {
-    const dirty = zip([{ name: "trace.network", data: `${networkLine()}\n` }]);
+    const dirty = zip([{ name: "trace.trace", data: "{}\n" }, { name: "trace.network", data: `${networkLine()}\n` }]);
     const prepared = prepareMediaArtifacts([{ scenarioId: "checkout", kind: "trace", bytes: dirty }], { contains, gate: OPEN_GATE });
     expect(prepared.problems).toEqual([]);
     const stored = prepared.artifacts[0]!;
@@ -428,6 +442,11 @@ describe("the broker keeps its own bytes and the pack applies the gate", () => {
     expect(prepared.rows.map((row) => row.scenarioId)).toEqual(["e"]);
     expect(prepared.artifacts).toHaveLength(1);
   });
+  it("hands back what the broker's own scrub did to each trace it kept", () => {
+    const prepared = prepareMediaArtifacts([{ scenarioId: "checkout", kind: "trace", bytes: goodTrace() }, { scenarioId: "checkout", kind: "video", bytes: WEBM }], { contains, gate: OPEN_GATE });
+    expect(prepared.scrubbed).toHaveLength(1);
+    expect(prepared.scrubbed[0]).toMatchObject({ scenarioId: "checkout", stats: { blankedValues: expect.any(Number) as number } });
+  });
   it("adds media to the rows, with a row of its own for a scenario that had no strip", () => {
     const strip = [{ scenarioId: "s1", strip: { before: [], after: [] }, consoleErrors: 0 }] as NonNullable<EvidenceRaw["browser"]>;
     const ref = { kind: "webm" as const, sha256: "a".repeat(64), bytes: 10, retentionClass: "evidence-short" as const };
@@ -438,26 +457,45 @@ describe("the broker keeps its own bytes and the pack applies the gate", () => {
   const DIGEST = "c".repeat(64);
   const env = (kind: "run_scoped" | "registered"): EvidenceEnvironment => ({ tier: "sandbox", envRevision: 1, services: [], data: "synthetic", accounts: [{ profileId: "buyer", kind }] });
   const gateInput = { capture: { video: true, traces: true }, tier: "sandbox" as const, accounts: [{ provisioner: "seed_command" as const, profileId: "buyer" }], data: "synthetic" as const, companyAllows: { video: true, trace: true } };
-  function pack(kind: "run_scoped" | "registered", revocationConfirmed: boolean | undefined, companyAllows = { video: true, trace: true }, over: { data?: "synthetic" | "unknown" } = {}) {
+  /** A revocation report: whole (settled at once), held until a given time, refused, or missing. */
+  const WHOLE: RevocationReport = { confirmed: true, accounts: [{ profileId: "buyer", sessionsEnded: true, revoked: true, accountGone: true, existenceControl: true, sessionProof: "dead", recorded: true }] };
+  const HELD: RevocationReport = { confirmed: false, heldUntil: "2026-11-03T11:00:00.000Z", accounts: [{ ...WHOLE.accounts[0]!, sessionProof: "not_possible" }] };
+  const REFUSED: RevocationReport = { confirmed: false, holdRefused: "token_lifetime_over_max_hold", accounts: [{ ...WHOLE.accounts[0]!, sessionProof: "not_possible" }] };
+  const AT = Date.parse("2026-11-03T10:30:00.000Z");
+  function pack(kind: "run_scoped" | "registered", revocation: RevocationReport | undefined, companyAllows = { video: true, trace: true }, over: { data?: "synthetic" | "unknown"; now?: number } = {}) {
     // The caller here stored both kinds (a gate that said yes at that moment); the pack builder applies the publication gate again, so what it keeps never depends on the earlier call.
     const prepared = prepareMediaArtifacts([{ scenarioId: "checkout", kind: "video", bytes: WEBM }, { scenarioId: "checkout", kind: "trace", bytes: goodTrace() }], { contains, gate: OPEN_GATE });
     const browser = attachMedia([], prepared.rows);
     const built = buildEvidencePack({ candidateDigest: DIGEST, checks: [], environment: env(kind), rawText: JSON.stringify({ schemaVersion: 1, candidateDigest: DIGEST, checks: [], browser }),
       storedArtifacts: new Map(prepared.artifacts.map((item) => [item.ref.sha256, { kind: item.ref.kind, bytes: item.ref.bytes }])),
-      media: publicationMediaFor({ ...gateInput, companyAllows, revocationConfirmed, ...(over.data === undefined ? {} : { data: over.data }) }).media });
+      media: publicationMediaFor({ ...gateInput, companyAllows, revocation, now: over.now ?? AT, ...(over.data === undefined ? {} : { data: over.data }) }).media });
     return { built, prepared };
   }
   it("keeps the video and the trace only with run-scoped accounts, the company's switch and the revocation proof", () => {
-    const { built } = pack("run_scoped", true);
+    const { built } = pack("run_scoped", WHOLE);
     expect(built.pack?.browser[0]?.video?.kind).toBe("webm");
     expect(built.pack?.browser[0]?.trace?.kind).toBe("trace_zip");
     expect(built.withheldArtifacts).toEqual([]);
   });
   it("withholds both, and lists both for deletion, when the revocation is not confirmed", () => {
-    const { built, prepared } = pack("run_scoped", false);
+    const { built, prepared } = pack("run_scoped", REFUSED);
     expect(built.pack?.browser[0]?.video).toBeUndefined();
     expect(built.pack?.browser[0]?.withheld).toEqual([{ artifact: "video", reason: "revocation_not_confirmed" }, { artifact: "trace", reason: "revocation_not_confirmed" }]);
     expect(built.withheldArtifacts.map((ref) => ref.sha256).sort()).toEqual(prepared.artifacts.map((item) => item.ref.sha256).sort());
+  });
+  it("publication reads the proof through revocationSettledAt only: a held report keeps both withheld until its hold has run out, then keeps them (fix round 2)", () => {
+    const early = pack("run_scoped", HELD, undefined, { now: Date.parse("2026-11-03T10:59:59.000Z") });
+    expect(early.built.pack?.browser[0]?.video).toBeUndefined();
+    expect(early.built.pack?.browser[0]?.withheld?.map((item) => item.reason)).toEqual(["revocation_not_confirmed", "revocation_not_confirmed"]);
+    const settled = pack("run_scoped", HELD, undefined, { now: Date.parse("2026-11-03T11:00:00.000Z") });
+    expect(settled.built.pack?.browser[0]?.video?.kind).toBe("webm");
+    expect(settled.built.pack?.browser[0]?.trace?.kind).toBe("trace_zip");
+    // a report taken as `confirmed: true` is not taken at its word: a flag that disagrees with its parts does not publish
+    const lying = pack("run_scoped", { ...HELD, confirmed: true }, undefined, { now: AT });
+    expect(lying.built.pack?.browser[0]?.video).toBeUndefined();
+  });
+  it("a refused hold never publishes, however long one waits", () => {
+    expect(pack("run_scoped", REFUSED, undefined, { now: AT + 400 * 24 * 3_600_000 }).built.pack?.browser[0]?.video).toBeUndefined();
   });
   it("withholds both when the revocation proof is missing (undefined), not only when it is false (I2)", () => {
     const { built } = pack("run_scoped", undefined);
@@ -465,7 +503,7 @@ describe("the broker keeps its own bytes and the pack applies the gate", () => {
     expect(built.pack?.browser[0]?.withheld?.map((item) => item.reason)).toEqual(["revocation_not_confirmed", "revocation_not_confirmed"]);
   });
   it("re-applies the data check at publication: data not known to be synthetic withholds both, though the pack's own schema says synthetic (I2)", () => {
-    const { built, prepared } = pack("run_scoped", true, { video: true, trace: true }, { data: "unknown" });
+    const { built, prepared } = pack("run_scoped", WHOLE, { video: true, trace: true }, { data: "unknown" });
     expect(built.pack?.browser[0]?.video).toBeUndefined();
     expect(built.pack?.browser[0]?.trace).toBeUndefined();
     expect(built.pack?.browser[0]?.withheld?.map((item) => item.reason)).toEqual(["data_not_synthetic", "data_not_synthetic"]);
@@ -473,7 +511,7 @@ describe("the broker keeps its own bytes and the pack applies the gate", () => {
   });
   it("never keeps a kind when the gate result says no, whatever the other three inputs say", () => {
     const prepared = prepareMediaArtifacts([{ scenarioId: "checkout", kind: "video", bytes: WEBM }], { contains, gate: OPEN_GATE });
-    const media = publicationMediaFor({ ...gateInput, companyAllows: { video: true, trace: true }, revocationConfirmed: true }).media;
+    const media = publicationMediaFor({ ...gateInput, companyAllows: { video: true, trace: true }, revocation: WHOLE, now: AT }).media;
     const built = buildEvidencePack({ candidateDigest: DIGEST, checks: [], environment: env("run_scoped"), rawText: JSON.stringify({ schemaVersion: 1, candidateDigest: DIGEST, checks: [], browser: attachMedia([], prepared.rows) }),
       storedArtifacts: new Map(prepared.artifacts.map((item) => [item.ref.sha256, { kind: item.ref.kind, bytes: item.ref.bytes }])),
       media: { ...media, gate: { allowed: { video: false, trace: true }, reasons: { video: "data_not_synthetic" } } } });
@@ -481,8 +519,8 @@ describe("the broker keeps its own bytes and the pack applies the gate", () => {
     expect(built.pack?.browser[0]?.withheld).toEqual([{ artifact: "video", reason: "data_not_synthetic" }]);
   });
   it("withholds for a registered account and for a company that has not switched the kind on", () => {
-    expect(pack("registered", true).built.pack?.browser[0]?.withheld?.map((item) => item.reason)).toEqual(["account_not_run_scoped", "account_not_run_scoped"]);
-    const off = pack("run_scoped", true, { video: false, trace: true }).built.pack?.browser[0];
+    expect(pack("registered", WHOLE).built.pack?.browser[0]?.withheld?.map((item) => item.reason)).toEqual(["account_not_run_scoped", "account_not_run_scoped"]);
+    const off = pack("run_scoped", WHOLE, { video: false, trace: true }).built.pack?.browser[0];
     expect(off?.video).toBeUndefined();
     expect(off?.withheld).toEqual([{ artifact: "video", reason: "company_setting_off" }]);
     expect(off?.trace?.kind).toBe("trace_zip");

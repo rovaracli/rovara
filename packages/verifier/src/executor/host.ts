@@ -249,7 +249,7 @@ export function createE2EApplicationCliHost(input: { launchContext: E2EApplicati
     },
   };
 
-  const mediaWanted = resolved.suite.runtimeAdmissionContext.selectionInput.policy.capture.video === true;
+  const mediaWanted = resolved.suite.runtimeAdmissionContext.selectionInput.policy.capture.video === true || resolved.suite.runtimeAdmissionContext.selectionInput.policy.capture.traces === true;
   if (launchContext.selectedTarget.kind === "web") {
     // Screenshots and traces of failed cases follow the admitted capture policy and nothing else; with both off the case adapter is given no capture port at all.
     const screenshots = fileLedger.capture.enabled("screenshot");

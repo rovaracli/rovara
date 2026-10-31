@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CredentialRedactor } from "./redact.js";
-import { scrubTraceZip } from "./trace-scrub.js";
+import { scrubTrace, type ScrubStats } from "./trace-scrub.js";
 
 /**
  * Proof and evidence B4: video and trace capture of a browser case, behind the gate. This recorder is the executor's half of the gate: it takes a file only when the policy it was made with says the media is
@@ -23,7 +23,8 @@ const MAGIC = { video: [0x1a, 0x45, 0xdf, 0xa3], trace: [0x50, 0x4b, 0x03, 0x04]
 export type MediaKind = "video" | "trace";
 /** Why a file that was offered is not kept. Fixed words. */
 export type MediaOmitted = "size_over_cap" | "unsafe_content" | "not_that_kind";
-export type MediaEntry = Readonly<{ caseId: string; kind: MediaKind; sha256: string; bytes: number; omitted?: MediaOmitted }>;
+/** `scrub` is what the trace scrub did (counts only), so a reviewer can see that a trace was altered. Absent on a video. */
+export type MediaEntry = Readonly<{ caseId: string; kind: MediaKind; sha256: string; bytes: number; omitted?: MediaOmitted; scrub?: ScrubStats }>;
 export type MediaPolicy = Readonly<{ video: boolean; trace: boolean }>;
 
 /**
@@ -67,7 +68,7 @@ export function createMediaRecorder(input: { root: string; policy: MediaPolicy; 
       if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) return null;
       if (taken.has(`${caseId}:${kind}`)) throw new Error("one file of each media kind a case");
       taken.add(`${caseId}:${kind}`);
-      const entry = (data: Uint8Array, omitted?: MediaOmitted): MediaEntry => Object.freeze({ caseId, kind, sha256: sha(data), bytes: data.byteLength, ...(omitted === undefined ? {} : { omitted }) });
+      const entry = (data: Uint8Array, omitted?: MediaOmitted, scrub?: ScrubStats): MediaEntry => Object.freeze({ caseId, kind, sha256: sha(data), bytes: data.byteLength, ...(omitted === undefined ? {} : { omitted }), ...(scrub === undefined ? {} : { scrub }) });
       const name = mediaFileName(index, kind);
       const list = async (row: MediaEntry) => {
         await mkdir(join(root, MEDIA_DIR, "entries"), { recursive: true, mode: 0o755 });
@@ -78,15 +79,32 @@ export function createMediaRecorder(input: { root: string; policy: MediaPolicy; 
       if (bytes.byteLength > (kind === "video" ? MEDIA_VIDEO_MAX_BYTES : MEDIA_TRACE_MAX_BYTES)) return list(entry(bytes, "size_over_cap"));
       if (kind === "video" && videoBytes + bytes.byteLength > MEDIA_VIDEO_ROUND_MAX_BYTES) return list(entry(bytes, "size_over_cap"));
       // A trace is scrubbed and scanned inflated; a video can only be scanned as the bytes it is.
-      const kept = kind === "trace" ? scrubTraceZip(bytes, (data) => redactor.contains(data)) : redactor.contains(bytes) ? null : bytes;
+      // The redactor holds every account credential AND every cookie and localStorage value of the round (host.ts registers them); its "accounts" scope separates the account's own credentials, which a
+      // snapshot may legitimately hold (a password input), from the session secrets, which mean the page rendered one.
+      const scrubbed = kind === "trace" ? scrubTrace(bytes, (data) => redactor.contains(data), { accountContains: (data) => redactor.contains(data, "accounts") }) : undefined;
+      const kept = kind === "trace" ? scrubbed?.zip ?? null : redactor.contains(bytes) ? null : bytes;
       if (kept === null) return list(entry(bytes, "unsafe_content"));
-      if (kept.byteLength > MEDIA_TRACE_MAX_BYTES) return list(entry(kept, "size_over_cap"));
+      if (kept.byteLength > MEDIA_TRACE_MAX_BYTES) return list(entry(kept, "size_over_cap", scrubbed?.stats));
       if (kind === "video") videoBytes += kept.byteLength;
       await mkdir(join(root, MEDIA_DIR), { recursive: true, mode: 0o755 });
       await writeExclusive(join(root, MEDIA_DIR, name), kept);
-      return list(entry(kept));
+      return list(entry(kept, undefined, scrubbed?.stats));
     },
   });
+}
+
+const SCRUB_KEYS = ["droppedSnapshots", "droppedFrames", "droppedEntries", "blankedValues", "blankedResources", "secrets"] as const;
+/** The scrub counts of a working file, or undefined when they are not exactly six bounded counts. */
+function scrubStatsOf(value: unknown): ScrubStats | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  const out: Partial<Record<(typeof SCRUB_KEYS)[number], number>> = {};
+  for (const key of SCRUB_KEYS) {
+    const count = record[key];
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > 100_000_000) return undefined;
+    out[key] = count;
+  }
+  return out as ScrubStats;
 }
 
 /**
@@ -105,7 +123,8 @@ export async function finalizeMedia(input: { outDir: string; policy: MediaPolicy
       const row = JSON.parse(await readFile(join(dir, "entries", name), "utf8")) as Partial<MediaEntry>;
       if ((row.kind === "video" || row.kind === "trace") && (row.kind === "video" ? policy.video : policy.trace) && typeof row.caseId === "string" && caseIds.includes(row.caseId)
         && typeof row.sha256 === "string" && /^[a-f0-9]{64}$/u.test(row.sha256) && Number.isSafeInteger(row.bytes) && (row.omitted === undefined || ["size_over_cap", "unsafe_content", "not_that_kind"].includes(row.omitted))) {
-        entries.push({ caseId: row.caseId, kind: row.kind, sha256: row.sha256, bytes: row.bytes!, ...(row.omitted === undefined ? {} : { omitted: row.omitted }) });
+        const scrub = scrubStatsOf(row.scrub);
+        entries.push({ caseId: row.caseId, kind: row.kind, sha256: row.sha256, bytes: row.bytes!, ...(row.omitted === undefined ? {} : { omitted: row.omitted }), ...(scrub === undefined ? {} : { scrub }) });
       }
     } catch { /* an unreadable working file lists nothing */ }
   }

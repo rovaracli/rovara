@@ -8,8 +8,13 @@
 //   2. an EXISTENCE probe says the account is gone (the user is not found, the hook answers 404);
 //   3. a SESSION probe replays a real credential the round held (a cookie or bearer, kept in memory by the round controller, never persisted) against an authenticated endpoint the environment names and
 //      gets 401/403 for every one.
-// Where the session probe cannot be run (no credential kept, no endpoint named, the port has none, the answer is unclear), publication is HELD until the longest token lifetime has passed since the revocation
-// (`heldUntil`); `confirmed` stays false until then. A replayed credential that still WORKS is never confirmed, however long one waits.
+// A probe that proves nothing must never confirm (fix round 2): a replay with no secret, the wrong scheme, or an endpoint that answers 401/404 to everyone looks "dead" for ever. So BEFORE anything is revoked each
+// credential is replayed and must answer ALIVE, and the account must answer PRESENT; only a credential that was alive before can show "dead" after, and only a probe that saw the account can show it gone.
+// Where that positive control is missing, or the session probe cannot be run at all (no credential kept, no endpoint named, the port has none, the answer is unclear), publication is HELD until the stated token
+// lifetime has passed since the revocation (`heldUntil`; an unstated lifetime is assumed to be a day and the report says so); `confirmed` stays false until then. A stated lifetime above the configured
+// maximum hold REFUSES (the media is not published) rather than being shortened. A replayed credential that still WORKS is never confirmed, however long one waits.
+// The replay endpoint must be the APP's own authenticated route. A Cognito resource server that checks JWTs offline accepts an access token until `exp` even after AdminUserGlobalSignOut, so a "dead" answer from a
+// Cognito API proves nothing about the app. Publication reads the report ONLY through `revocationSettledAt(report, now)`.
 //
 // Durable leases (Opus review I3). Before `create` is called, a lease record is written (the id doubles as the handle the remote side is told to use, so a create that times out can still be revoked), and
 // `sweepRunScopedLeases` revokes the leases a crash left behind once they are past their expiry. The record holds no secret: the approved account entry (pool id, role ARN, hook URLs, a secret NAME), the
@@ -33,9 +38,13 @@ export const RUN_SCOPED_MAX_ROUND_MS = 4 * 3_600_000;
 export const RUN_SCOPED_CALL_MS = 30_000;
 /** A revoke (and an end-sessions) is tried this many times before it counts as failed. */
 export const RUN_SCOPED_REVOKE_ATTEMPTS = 3;
-/** The longest a token the round held can stay valid when the environment does not say: a day, the most a Cognito access or ID token can last. The environment may say less. */
-export const RUN_SCOPED_DEFAULT_MAX_TOKEN_TTL_MS = 24 * 3_600_000;
-const MAX_TOKEN_TTL_FLOOR_MS = 60_000;
+/** The token lifetime ASSUMED when the environment states none: a day, the most a Cognito access or ID token can last. It is a guess for any other app, and the report says it was assumed. */
+export const RUN_SCOPED_ASSUMED_TOKEN_TTL_MS = 24 * 3_600_000;
+/** The longest hold publication will wait out by default (two weeks). A stated lifetime above the configured maximum refuses media instead of shortening the wait. */
+export const RUN_SCOPED_DEFAULT_MAX_HOLD_MS = 14 * 24 * 3_600_000;
+const MIN_HOLD_MS = 60_000;
+/** A store write is tried this many times before it is an alert. */
+export const RUN_SCOPED_STORE_ATTEMPTS = 3;
 /** At most this many replayed credentials per account (the round's session cookie and its bearer, say). */
 export const RUN_SCOPED_SESSION_PROBES_MAX = 3;
 const SECRETS_MAX = 8;
@@ -122,6 +131,19 @@ export interface LeaseStore {
 
 const LEASE_ID = /^rvl-[A-Za-z0-9-]{8,60}$/u;
 
+/** A lease write that failed every attempt: for the caller's alarm. Fixed code and the lease id only. */
+export interface LeaseAlert { code: "lease_update_failed"; leaseId: string }
+export type LeaseAlertHook = (alert: LeaseAlert) => void;
+
+/** Writes a lease update, tried a few times. A failure is never swallowed: it is an alert, and the caller learns it from the `false`. */
+async function updateLease(store: LeaseStore, leaseId: string, patch: Parameters<LeaseStore["update"]>[1], onAlert: LeaseAlertHook | undefined): Promise<boolean> {
+  for (let attempt = 0; attempt < RUN_SCOPED_STORE_ATTEMPTS; attempt += 1) {
+    try { await store.update(leaseId, patch); return true; } catch { /* tried again, then an alert */ }
+  }
+  try { onAlert?.({ code: "lease_update_failed", leaseId }); } catch { /* the alarm failing changes nothing here */ }
+  return false;
+}
+
 async function bounded<T>(call: (signal: AbortSignal) => Promise<T>, outer?: AbortSignal): Promise<T> {
   const signal = outer === undefined ? AbortSignal.timeout(RUN_SCOPED_CALL_MS) : AbortSignal.any([outer, AbortSignal.timeout(RUN_SCOPED_CALL_MS)]);
   if (signal.aborted) throw new Error("aborted");
@@ -139,10 +161,16 @@ export function runScopedExpiry(roundEndsAt: string): string {
   return new Date(Date.parse(roundEndsAt) + RUN_SCOPED_GRACE_MS).toISOString();
 }
 
-/** The environment's longest token lifetime, held to a sane range: unset or invalid is the day-long default, never shorter than a minute. */
-export function maxTokenTtlOf(configured: number | undefined): number {
-  if (configured === undefined || !Number.isFinite(configured)) return RUN_SCOPED_DEFAULT_MAX_TOKEN_TTL_MS;
-  return Math.min(RUN_SCOPED_DEFAULT_MAX_TOKEN_TTL_MS, Math.max(MAX_TOKEN_TTL_FLOOR_MS, Math.floor(configured)));
+export interface HoldPlan { ms: number; assumed: boolean }
+/**
+ * How long publication is held when the session proof is not whole. The STATED token lifetime is used as it is (never capped down; at least a minute); unstated or unusable is assumed to be a day
+ * (`assumed: true`). Above `maxHoldMs` (the configured maximum) there is no hold at all: `refused`, and the media is not published.
+ */
+export function holdFor(input: { statedTtlMs?: number | undefined; maxHoldMs?: number | undefined }): HoldPlan | { refused: "token_lifetime_over_max_hold" } {
+  const stated = input.statedTtlMs !== undefined && Number.isFinite(input.statedTtlMs) && input.statedTtlMs > 0 ? Math.max(MIN_HOLD_MS, Math.floor(input.statedTtlMs)) : undefined;
+  const ms = stated ?? RUN_SCOPED_ASSUMED_TOKEN_TTL_MS;
+  const max = input.maxHoldMs !== undefined && Number.isFinite(input.maxHoldMs) && input.maxHoldMs > 0 ? input.maxHoldMs : RUN_SCOPED_DEFAULT_MAX_HOLD_MS;
+  return ms > max ? { refused: "token_lifetime_over_max_hold" } : { ms, assumed: stated === undefined };
 }
 
 /** Fixed reasons, never a provisioner's or an error's own words. */
@@ -166,7 +194,7 @@ async function retried(call: (signal: AbortSignal) => Promise<unknown>, signal: 
  * AND the one being made (by its pre-known lease id) are revoked first.
  */
 export async function provisionRunScopedAccounts(input: { accounts: readonly TestEnvAccount[]; roundId: string; roundEndsAt: string; now: number; ports: AccountProvisionerPorts; store: LeaseStore;
-  newLeaseId(): string; signal?: AbortSignal }): Promise<ProvisionResult> {
+  newLeaseId(): string; onAlert?: LeaseAlertHook; signal?: AbortSignal }): Promise<ProvisionResult> {
   const accounts = input.accounts.map((account) => TestEnvAccountSchema.parse(account));
   const registered = accounts.filter((account) => !provisionerIsRunScoped(account.provisioner)).map((account) => account.profileId);
   const scoped = accounts.filter((account): account is RunScopedAccount => provisionerIsRunScoped(account.provisioner));
@@ -180,9 +208,22 @@ export async function provisionRunScopedAccounts(input: { accounts: readonly Tes
   const leases: RunScopedLease[] = [];
   const records: LeaseRecord[] = [];
   const secrets: string[] = [];
-  const cleanUp = async (): Promise<boolean> => {
-    const report = await revokeRunScopedAccounts({ leases: records.map(leaseOf), accounts, ports: input.ports, store: input.store, now: input.now, ...(input.signal === undefined ? {} : { signal: input.signal }) });
-    return report.accounts.every((item) => item.sessionsEnded && item.revoked && item.accountGone);
+  const cleaned = (report: RevocationReport) => report.accounts.every((item) => item.sessionsEnded && item.revoked && item.accountGone);
+  const revokeAll = (leasesToRevoke: readonly RunScopedLease[], store: LeaseStore | undefined) => revokeRunScopedAccounts({ leases: leasesToRevoke, accounts, ports: input.ports, ...(store === undefined ? {} : { store }), now: input.now, control: false,
+    ...(input.onAlert === undefined ? {} : { onAlert: input.onAlert }), ...(input.signal === undefined ? {} : { signal: input.signal }) });
+  /**
+   * Revokes what was made. `claimed` is a handle the provisioner named in an answer that was refused: the account may live under it, so it is revoked by it too, and when that cannot be proven the
+   * durable record is pointed at it (state "active"), so the sweeper reaches the real account and alarms until it is gone.
+   */
+  const cleanUp = async (claimed?: string): Promise<boolean> => {
+    const last = records.at(-1);
+    if (claimed === undefined || last === undefined) return cleaned(await revokeAll(records.map(leaseOf), input.store));
+    const ofOthers = cleaned(await revokeAll(records.slice(0, -1).map(leaseOf), input.store));
+    // by the lease id it was told to use (no record update: a 404 here proves nothing about an account under another handle) and by the handle it claimed
+    const byLeaseId = cleaned(await revokeAll([leaseOf(last)], undefined));
+    const byClaim = cleaned(await revokeAll([{ ...leaseOf(last), revokeHandle: claimed }], input.store));
+    if (!byClaim) await updateLease(input.store, last.leaseId, { state: "active", revokeHandle: claimed }, input.onAlert);
+    return ofOthers && byLeaseId && byClaim;
   };
   for (const account of scoped) {
     const port = input.ports[account.provisioner]!;
@@ -194,27 +235,30 @@ export async function provisionRunScopedAccounts(input: { accounts: readonly Tes
     try { await input.store.put(record); } catch { return { ok: false, code: "lease_store_failed", cleanedUp: records.length === 0 || (await cleanUp()) }; }
     records.push(record);
     let failure: RunScopedFailure | undefined;
+    let claimed: string | undefined;
     try {
       const created = await bounded((signal) => port.create({ account, leaseId, expiresAt, signal }), input.signal);
       const parsed = CreatedSchema.safeParse(created);
-      if (!parsed.success) {
+      // The account's handle IS the lease id (Opus re-check C1-c): the durable record names it before the account exists, so a revoke by the record (the sweeper, after a crash) always reaches the real
+      // account. An answer that names another handle is refused, and the account is revoked by the lease id it was told to use.
+      if (!parsed.success || parsed.data.revokeHandle !== leaseId) {
         failure = "provisioner_answer_invalid";
-        // An account was made but its answer cannot be used: its handle, if there is one, is revoked in place of the lease id.
-        const handle = (created as { revokeHandle?: unknown } | undefined)?.revokeHandle;
-        if (typeof handle === "string" && REF.test(handle)) record.revokeHandle = handle;
+        if (parsed.success) claimed = parsed.data.revokeHandle;
       } else {
         record.state = "active";
-        record.revokeHandle = parsed.data.revokeHandle;
         record.loginRef = parsed.data.loginRef;
-        try { await input.store.update(leaseId, { state: "active", revokeHandle: record.revokeHandle, loginRef: record.loginRef }); } catch { /* the "creating" record already names the lease id; the sweeper revokes by it */ }
-        leases.push(leaseOf(record));
-        secrets.push(...(parsed.data.secrets ?? []));
+        // A failed update is not swallowed: the record would say "creating" for an account that is now live. It is retried, alerted, and the round is cleaned up and refused.
+        if (!(await updateLease(input.store, leaseId, { state: "active", loginRef: record.loginRef }, input.onAlert))) failure = "lease_store_failed";
+        else {
+          leases.push(leaseOf(record));
+          secrets.push(...(parsed.data.secrets ?? []));
+        }
       }
     } catch {
       // The remote side may have made the account before the call failed (a timeout): it is revoked by the lease id it was told to use.
       failure = "provision_failed";
     }
-    if (failure !== undefined) return { ok: false, code: failure, cleanedUp: await cleanUp() };
+    if (failure !== undefined) return { ok: false, code: failure, cleanedUp: await cleanUp(claimed) };
   }
   return { ok: true, leases, secrets, registered };
 }
@@ -228,66 +272,104 @@ export interface RevokedAccount {
   /** Every session of the account was ended before it was deleted. */
   sessionsEnded: boolean;
   revoked: boolean;
-  /** The existence probe said the account is not there. */
+  /** The existence probe said the account is not there AFTER the revoke. */
   accountGone: boolean;
-  /** What replaying the round's real credentials showed: "dead" (all refused), "alive" (one still works), "unclear" (a probe could not say), "not_possible" (no credential kept, no probe or no endpoint). */
+  /** The same probe said the account WAS there before the revoke: the positive control. Without it a "gone" proves nothing (a route that 404s for everyone). */
+  existenceControl: boolean;
+  /**
+   * What replaying the round's real credentials showed. "dead": every credential was ALIVE before the revoke and refused after. "alive": one still works after. "unclear": a probe could not say, or a credential
+   * had no positive control (it was not alive before). "not_possible": no valid credential, no probe, or no endpoint.
+   */
   sessionProof: "dead" | "alive" | "unclear" | "not_possible";
+  /** The lease record says revoked. False when the store could not be written (after retries, with an alert): the lease must not be called swept. */
+  recorded: boolean;
 }
 
 export interface RevocationReport {
   /**
-   * True only when every account passed all three parts of the proof, and where the session probe could not prove it, the token lifetime has passed. This is what the evidence pack requires before it keeps a
-   * video or a trace.
+   * True only when every account passed all three parts of the proof WITH their positive controls, and where a control or the session probe was missing, the hold has run out. This is the value at the moment
+   * the report was made; publication must ask `revocationSettledAt(report, now)` instead.
    */
   confirmed: boolean;
-  /** When the session probe could not be run for some account: the instant after which every token the round held has expired (revocation time plus the longest token lifetime). Absent when the probe ran for all. */
+  /** When a proof was not whole for some account: the instant after which every token the round held has expired (revocation time plus the token lifetime). Absent when every proof was whole. */
   heldUntil?: string;
+  /** The hold used the day ASSUMED because the environment states no token lifetime. Say so wherever the hold is shown. */
+  ttlAssumed?: true;
+  /** The environment's stated token lifetime is above the configured maximum hold: the media is refused, never published, whatever is waited. */
+  holdRefused?: "token_lifetime_over_max_hold";
   accounts: RevokedAccount[];
 }
 
-/** Whether a report is confirmed at `now`: its parts all hold, and any hold has run out. Lets a held publication settle later without revoking again. A replayed credential that still works never settles. */
+const wholeProof = (item: RevokedAccount) => item.sessionProof === "dead" && item.existenceControl;
+
+/**
+ * Whether a report is confirmed at `now`: its parts all hold, and any hold has run out. Publication reads the proof through THIS and nothing else. A replayed credential that still works never settles, and neither
+ * does a refused hold or a report with no account.
+ */
 export function revocationSettledAt(report: RevocationReport, now: number): boolean {
-  if (report.accounts.length === 0 || !report.accounts.every((item) => item.sessionsEnded && item.revoked && item.accountGone && item.sessionProof !== "alive")) return false;
-  if (report.accounts.every((item) => item.sessionProof === "dead")) return true;
+  if (report.holdRefused !== undefined || report.accounts.length === 0 || !report.accounts.every((item) => item.sessionsEnded && item.revoked && item.accountGone && item.sessionProof !== "alive")) return false;
+  if (report.accounts.every(wholeProof)) return true;
   return report.heldUntil !== undefined && Number.isFinite(Date.parse(report.heldUntil)) && now >= Date.parse(report.heldUntil);
 }
 
 /**
  * Ends the sessions of every lease, revokes the account, and proves it (see the top of the file). `sessions` are the credentials the round really held, by profile id, in memory only. Retried and bounded;
- * never throws, and keeps going after a failure so one stuck account does not leave the others alive. Marks each fully revoked lease in the store.
+ * never throws, and keeps going after a failure so one stuck account does not leave the others alive. Marks each fully revoked lease in the store (retried; a failure is an alert and `recorded: false`).
+ * `control: false` skips the positive controls (the sweeper and a failed provision's cleanup have no proof to give, only a cleanup to make). `clock` reads the time AFTER the revocations, for the hold.
  */
 export async function revokeRunScopedAccounts(input: { leases: readonly RunScopedLease[]; accounts: readonly TestEnvAccount[]; ports: AccountProvisionerPorts; store?: LeaseStore; now: number;
-  sessions?: ReadonlyMap<string, readonly SessionCredential[]>; maxTokenTtlMs?: number; signal?: AbortSignal }): Promise<RevocationReport> {
+  sessions?: ReadonlyMap<string, readonly SessionCredential[]>; maxTokenTtlMs?: number; maxHoldMs?: number; control?: boolean; clock?: () => number; onAlert?: LeaseAlertHook; signal?: AbortSignal }): Promise<RevocationReport> {
   const report: RevokedAccount[] = [];
+  const control = input.control !== false;
   let needsHold = false;
   for (const lease of input.leases) {
     const account = input.accounts.find((item) => item.profileId === lease.profileId && item.provisioner === lease.provisioner);
     const port = input.ports[lease.provisioner];
-    if (account === undefined || !provisionerIsRunScoped(account.provisioner) || port === undefined) { report.push({ profileId: lease.profileId, sessionsEnded: false, revoked: false, accountGone: false, sessionProof: "not_possible" }); continue; }
+    if (account === undefined || !provisionerIsRunScoped(account.provisioner) || port === undefined) { report.push({ profileId: lease.profileId, sessionsEnded: false, revoked: false, accountGone: false, existenceControl: false, sessionProof: "not_possible", recorded: false }); continue; }
     const scoped = account as RunScopedAccount;
-    const sessionsEnded = await retried((signal) => port.endSessions({ account: scoped, revokeHandle: lease.revokeHandle, signal }), input.signal);
-    const revoked = await retried((signal) => port.revoke({ account: scoped, revokeHandle: lease.revokeHandle, signal }), input.signal);
-    let accountGone = false;
-    if (revoked) {
-      try { accountGone = (await bounded((signal) => port.accountExists({ account: scoped, revokeHandle: lease.revokeHandle, signal }), input.signal)) === "gone"; } catch { accountGone = false; }
-    }
-    let sessionProof: RevokedAccount["sessionProof"] = "not_possible";
-    const credentials = (input.sessions?.get(lease.profileId) ?? []).slice(0, RUN_SCOPED_SESSION_PROBES_MAX);
-    if (sessionsEnded && revoked && port.sessionState !== undefined && credentials.length > 0) {
-      sessionProof = "dead";
+    const probe = <T>(call: (signal: AbortSignal) => Promise<T>, fallback: T) => bounded(call, input.signal).catch(() => fallback);
+
+    // The positive controls, BEFORE anything is revoked: the account must be seen PRESENT, and each credential seen ALIVE. A probe that cannot see them proves nothing afterwards.
+    let existenceControl = false;
+    const controlled: SessionCredential[] = [];
+    let uncontrolled = 0;
+    const credentials = (input.sessions?.get(lease.profileId) ?? []).filter((credential) => (credential.kind === "cookie" || credential.kind === "bearer") && typeof credential.value === "string" && credential.value.length > 0).slice(0, RUN_SCOPED_SESSION_PROBES_MAX);
+    if (control) {
+      existenceControl = (await probe((signal) => port.accountExists({ account: scoped, revokeHandle: lease.revokeHandle, signal }), "unclear")) === "present";
       for (const credential of credentials) {
-        const state: SessionState = await bounded((signal) => port.sessionState!({ account: scoped, credential, signal }), input.signal).catch((): SessionState => "unclear");
-        if (state === "alive") { sessionProof = "alive"; break; }
-        if (state !== "dead") sessionProof = "unclear";
+        const before = port.sessionState === undefined ? "unclear" : await probe((signal) => port.sessionState!({ account: scoped, credential, signal }), "unclear");
+        if (before === "alive") controlled.push(credential); else uncontrolled += 1;
       }
     }
-    if (sessionsEnded && revoked && accountGone && (sessionProof === "not_possible" || sessionProof === "unclear")) needsHold = true;
-    if (sessionsEnded && revoked && accountGone && input.store !== undefined) { try { await input.store.update(lease.leaseId, { state: "revoked" }); } catch { /* the sweeper revokes it again, harmlessly */ } }
-    report.push({ profileId: lease.profileId, sessionsEnded, revoked, accountGone, sessionProof });
+
+    const sessionsEnded = await retried((signal) => port.endSessions({ account: scoped, revokeHandle: lease.revokeHandle, signal }), input.signal);
+    const revoked = await retried((signal) => port.revoke({ account: scoped, revokeHandle: lease.revokeHandle, signal }), input.signal);
+    const accountGone = revoked && (await probe((signal) => port.accountExists({ account: scoped, revokeHandle: lease.revokeHandle, signal }), "unclear")) === "gone";
+
+    let sessionProof: RevokedAccount["sessionProof"] = "not_possible";
+    if (control && sessionsEnded && revoked && controlled.length > 0) {
+      sessionProof = uncontrolled > 0 ? "unclear" : "dead";
+      for (const credential of controlled) {
+        const after = await probe((signal) => port.sessionState!({ account: scoped, credential, signal }), "unclear");
+        if (after === "alive") { sessionProof = "alive"; break; }
+        if (after !== "dead") sessionProof = "unclear";
+      }
+    } else if (control && sessionsEnded && revoked && credentials.length > 0) {
+      sessionProof = "unclear";
+    }
+    if (control && sessionsEnded && revoked && accountGone && (sessionProof === "not_possible" || sessionProof === "unclear" || !existenceControl)) needsHold = true;
+    let recorded = input.store === undefined;
+    if (sessionsEnded && revoked && accountGone && input.store !== undefined) recorded = await updateLease(input.store, lease.leaseId, { state: "revoked" }, input.onAlert);
+    report.push({ profileId: lease.profileId, sessionsEnded, revoked, accountGone, existenceControl, sessionProof, recorded });
   }
-  const heldUntil = needsHold ? new Date(input.now + maxTokenTtlOf(input.maxTokenTtlMs)).toISOString() : undefined;
-  const result: RevocationReport = { confirmed: false, accounts: report, ...(heldUntil === undefined ? {} : { heldUntil }) };
-  return { ...result, confirmed: revocationSettledAt(result, input.now) };
+  const revokedAt = (input.clock ?? (() => input.now))();
+  const plan = needsHold ? holdFor({ statedTtlMs: input.maxTokenTtlMs, maxHoldMs: input.maxHoldMs }) : undefined;
+  const refused = plan !== undefined && "refused" in plan;
+  const result: RevocationReport = { confirmed: false, accounts: report,
+    ...(plan === undefined || refused ? {} : { heldUntil: new Date(revokedAt + plan.ms).toISOString() }),
+    ...(plan !== undefined && !refused && plan.assumed ? { ttlAssumed: true as const } : {}),
+    ...(refused ? { holdRefused: plan.refused } : {}) };
+  return { ...result, confirmed: control && revocationSettledAt(result, revokedAt) };
 }
 
 /** The pack's `environment.accounts` for a round: run-scoped for each lease, registered for the rest. */
@@ -298,28 +380,30 @@ export function evidenceAccountsOf(result: Extract<ProvisionResult, { ok: true }
 // ---- the sweeper (Opus review I3)
 
 export interface SweepResult {
-  /** Leases that were past their expiry and are now revoked and proved gone. */
+  /** Leases that were past their expiry and are now revoked, proved gone and RECORDED as revoked. */
   swept: string[];
-  /** Leases that are past their expiry and could not be revoked: the caller raises an alarm for each. */
+  /** Leases that are past their expiry and could not be cleared (or whose record could not be written): the caller raises an alarm for each. */
   stuck: string[];
+  /** The store could not list its outstanding leases: nothing was swept, and this is NOT "nothing to do". Alarm on it. */
+  listFailed?: true;
 }
 
 /**
- * Revokes the leases a crash or a timeout left behind: every outstanding lease past its `expiresAt` has its sessions ended, is revoked, and must be proved gone before it is marked revoked. A lease whose
- * round may still be running (not yet expired) is left alone. Never throws; a lease it cannot clear is `stuck`, for the caller's alarm, and is tried again by the next sweep.
+ * Revokes the leases a crash or a timeout left behind: every outstanding lease past its `expiresAt` has its sessions ended, is revoked by the lease id, and must be proved gone AND recorded before it is called
+ * swept. A lease whose round may still be running (not yet expired) is left alone. Never throws; a lease it cannot clear is `stuck`, for the caller's alarm, and is tried again by the next sweep.
  */
-export async function sweepRunScopedLeases(input: { store: LeaseStore; ports: AccountProvisionerPorts; now: number; signal?: AbortSignal }): Promise<SweepResult> {
+export async function sweepRunScopedLeases(input: { store: LeaseStore; ports: AccountProvisionerPorts; now: number; onAlert?: LeaseAlertHook; signal?: AbortSignal }): Promise<SweepResult> {
   const swept: string[] = [];
   const stuck: string[] = [];
   let outstanding: LeaseRecord[];
-  try { outstanding = await input.store.listOutstanding(); } catch { return { swept, stuck }; }
+  try { outstanding = await input.store.listOutstanding(); } catch { return { swept, stuck, listFailed: true }; }
   for (const record of outstanding) {
     if (record.state === "revoked" || !(Date.parse(record.expiresAt) <= input.now)) continue;
     const port = input.ports[record.provisioner];
     if (port === undefined) { stuck.push(record.leaseId); continue; }
-    const report = await revokeRunScopedAccounts({ leases: [leaseOf(record)], accounts: [record.account], ports: input.ports, store: input.store, now: input.now, ...(input.signal === undefined ? {} : { signal: input.signal }) });
+    const report = await revokeRunScopedAccounts({ leases: [leaseOf(record)], accounts: [record.account], ports: input.ports, store: input.store, now: input.now, control: false, ...(input.onAlert === undefined ? {} : { onAlert: input.onAlert }), ...(input.signal === undefined ? {} : { signal: input.signal }) });
     const item = report.accounts[0];
-    if (item !== undefined && item.sessionsEnded && item.revoked && item.accountGone) swept.push(record.leaseId); else stuck.push(record.leaseId);
+    if (item !== undefined && item.sessionsEnded && item.revoked && item.accountGone && item.recorded) swept.push(record.leaseId); else stuck.push(record.leaseId);
   }
   return { swept, stuck };
 }
@@ -327,7 +411,7 @@ export async function sweepRunScopedLeases(input: { store: LeaseStore; ports: Ac
 // ---- the three provisioner kinds, each over injected clients
 
 /**
- * `seed_command`: the approved command creates a user in the sandbox's synthetic database and prints one JSON line `{loginRef, revokeHandle, secrets?}`. The account dies with the sandbox; revoking it removes
+ * `seed_command`: the approved command creates a user in the sandbox's synthetic database and prints one JSON line `{loginRef, revokeHandle, secrets?}`. `revokeHandle` MUST be the `ROVARA_ACCOUNT_LEASE` it was given (an answer with another handle is refused). The account dies with the sandbox; revoking it removes
  * it and its sessions from the database now so the proof does not wait for teardown. `replaySession` replays a credential against the sandbox app's authenticated endpoint (the environment names it).
  */
 export function seedCommandProvisioner(clients: {
@@ -390,7 +474,7 @@ export function cognitoTestPoolProvisioner(clients: {
 
 /**
  * `http_hook`: the customer's own endpoints, called with a short-lived token read by NAME from the project's secrets (the token itself is only ever in the client's header). The hook's protocol:
- *   POST <createUrl> {profile, leaseId, expiresAt}      -> 2xx {loginRef, revokeHandle, secrets?}
+ *   POST <createUrl> {profile, leaseId, expiresAt}      -> 2xx {loginRef, revokeHandle, secrets?}  (the hook uses `leaseId` as the account's handle: `revokeHandle` must equal it)
  *   POST <deleteUrl> {action: "end_sessions", revokeHandle} -> 2xx once every session of the account is ended
  *   DELETE <deleteUrl> {revokeHandle}                    -> 2xx, or 404 when it is already gone
  *   GET <createUrl>/<revokeHandle>                       -> 404 once the account is gone (the existence proof); 2xx while it exists
@@ -430,4 +514,13 @@ export function httpHookProvisioner(clients: {
     },
     ...(clients.replaySession === undefined ? {} : { async sessionState({ credential, signal }: { account: RunScopedAccount; credential: SessionCredential; signal: AbortSignal }) { return clients.replaySession!({ credential, signal }); } }),
   };
+}
+
+/**
+ * The only error that means "no such user" for an existence probe: Cognito's `UserNotFoundException`. Any other failure (`ResourceNotFoundException` for the wrong pool, `AccessDeniedException`, a timeout) is
+ * "unclear", never "not_found": a probe that cannot see the pool must not prove a deletion. The injected `adminGetUser` client maps its errors through this.
+ */
+export function cognitoPresenceOf(errorName: string | undefined): "exists" | "not_found" | "unclear" {
+  if (errorName === undefined) return "exists";
+  return errorName === "UserNotFoundException" ? "not_found" : "unclear";
 }

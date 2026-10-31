@@ -88,7 +88,10 @@ describe.each([["the committed fixture", FIXTURE], ...(live === undefined ? [] :
     const blobs = [...out.entries()].filter(([name]) => name.startsWith("resources/"));
     expect(blobs.some(([, text]) => text === TRACE_BLANKED)).toBe(true);
     expect(blobs.some(([, text]) => text === JSON.stringify({ name: "buyer" }))).toBe(true);
-    expect([...original.keys()].sort()).toEqual([...out.keys()].sort());
+    // every entry is kept except the screencast frames that showed the token (dropped with their frames)
+    const kept = [...out.keys()];
+    expect(kept.filter((name) => !name.startsWith("screencast/"))).toEqual([...original.keys()].filter((name) => !name.startsWith("screencast/")));
+    expect(kept.length).toBeLessThan(original.size);
   });
 
   it("writes a zip with no external attributes, no extra fields, and the same names in the same order", () => {
@@ -100,7 +103,9 @@ describe.each([["the committed fixture", FIXTURE], ...(live === undefined ? [] :
       expect(zip.readUInt16LE(at + 30), "extra length").toBe(0);
       const nameLength = zip.readUInt16LE(at + 28); names.push(zip.toString("utf8", at + 46, at + 46 + nameLength)); at += 46 + nameLength;
     }
-    expect(names).toEqual([...entriesOf(trace).keys()]);
+    const original = [...entriesOf(trace).keys()];
+    expect(names.every((name) => original.includes(name))).toBe(true);
+    expect(names).toEqual(original.filter((name) => names.includes(name)));
   });
 });
 
@@ -135,5 +140,7 @@ describe("the executor's case adapter orders authentication before tracing (C2)"
     expect(started).toBeGreaterThan(applied);
     const host = readFileSync("packages/verifier/src/executor/host.ts", "utf8");
     expect(host).toMatch(/if \(screenshots \|\| mediaWanted\) \{[\s\S]*registerSessionSecret\(cookie\.value\)[\s\S]*registerSessionSecret\(entry\.value\)/u);
+    // `mediaWanted` is video OR traces (a round with traces on and video and screenshots off must still register the round's secrets)
+    expect(host).toMatch(/const mediaWanted = [^;]*capture\.video === true \|\| [^;]*capture\.traces === true;/u);
   });
 });
