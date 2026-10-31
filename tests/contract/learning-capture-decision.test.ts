@@ -193,8 +193,16 @@ describe("send-back capture: I1b, the decider is an outsider (review Critical 1)
       const t = await waitingPlan();
       seedPerson(t.harness.db, OMAR_CALLER, grant);
       t.takeOver(OMAR_CALLER);
-      await t.page(OMAR_CALLER, NOTE);
-      expect(corrections(t.harness)).toMatchObject([{ source: "send_back", standing: "outsider", author: OMAR.developerId }]);
+      const requestId = randomUUID();
+      // Since C53 (0.4.24) a viewer may not start the next model turn, so the page refuses the send-back and nothing reaches capture; a person with no grant gets through and is an outsider.
+      if (grant === "none") {
+        await t.page(OMAR_CALLER, NOTE, [], requestId);
+        expect(corrections(t.harness)).toMatchObject([{ source: "send_back", standing: "outsider", author: OMAR.developerId }]);
+      } else {
+        await expect(t.page(OMAR_CALLER, NOTE, [], requestId)).rejects.toMatchObject({ code: "MODEL_NOT_ALLOWED" });
+        expect(requested(t.harness, t.taskId, requestId)).toBe(false);
+        expect(corrections(t.harness)).toEqual([]);
+      }
     });
 
     it(`on the developer API and MCP: an owner who took the task over as ${label} is stored as outsider`, async () => {
@@ -241,9 +249,11 @@ describe("send-back capture: I1b, the decider is an outsider (review Critical 1)
 
   it("the standing is not taken from the decision's role: an outsider's correction never counts as a member's", async () => {
     const t = await waitingPlan();
-    seedPerson(t.harness.db, OMAR_CALLER, "viewer");
+    // A person with no grant: since C53 a viewer's send-back is refused before capture (above).
+    seedPerson(t.harness.db, OMAR_CALLER, "none");
     t.takeOver(OMAR_CALLER);
     await t.page(OMAR_CALLER, NOTE);
+    expect(corrections(t.harness)).toHaveLength(1);
     expect(corrections(t.harness).filter((c) => c.standing === "member")).toEqual([]);
   });
 
@@ -497,13 +507,13 @@ describe("send-back capture: what is not a correction", () => {
     expect(learningItems(t.harness.db)).toEqual([]);
   });
 
-  it("an archived project stores nothing: since 0.4.24 the send-back itself is refused (PROJECT_ARCHIVED)", async () => {
+  it("an archived project stores nothing; the send-back of a task already running still happens (C53 lifecycle authority)", async () => {
     const t = await waitingPlan();
     seedPerson(t.harness.db, MAYA_CALLER, "contributor");
     seedProject(t.harness.db, PROJECT, "archived");
     const requestId = randomUUID();
-    await expect(t.page(MAYA_CALLER, NOTE, [], requestId)).rejects.toMatchObject({ code: "PROJECT_ARCHIVED" });
-    expect(requested(t.harness, t.taskId, requestId)).toBe(false);
+    await t.page(MAYA_CALLER, NOTE, [], requestId);
+    expect(requested(t.harness, t.taskId, requestId)).toBe(true);
     expect(learningItems(t.harness.db)).toEqual([]);
   });
 
@@ -670,7 +680,7 @@ describe("send-back capture: grouping", () => {
 
   it("an outsider's send-back never opens a suggestion, even beside a similar member correction", async () => {
     const t = await waitingPlan();
-    seedPerson(t.harness.db, OMAR_CALLER, "viewer");
+    seedPerson(t.harness.db, OMAR_CALLER, "none");
     t.takeOver(OMAR_CALLER);
     const salt = learningSalt(scope);
     const text = "Always run the linter before committing changes to the repository.";
@@ -679,6 +689,7 @@ describe("send-back capture: grouping", () => {
       text, signature: [...signatureOf(text, salt)], author: SAM_ID, standing: "member", limit: "automatic",
     });
     await t.page(OMAR_CALLER, "Run the linter before you commit any changes to the repository.");
+    expect(corrections(t.harness).filter((c) => c.standing === "outsider")).toHaveLength(1);
     expect(items(t.harness, "SUGGESTION#")).toEqual([]);
   });
 
