@@ -1,7 +1,9 @@
 // The `agentx upgrade` command (FR-042 to FR-044, FR-026's upgrade --export), kept out of main.ts.
 import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { ECRClient } from "@aws-sdk/client-ecr";
 import { STSClient } from "@aws-sdk/client-sts";
+import { readFile } from "node:fs/promises";
 import type { Command } from "commander";
 import { cdkDiff } from "../deploy/cdk-engine.js";
 import { prepareDeployment, readlineAsk, realCommandRunner, type DeployCliDependencies } from "../deploy/commands.js";
@@ -16,6 +18,9 @@ import type { TextWriter } from "../init/prompts.js";
 import { fetchRelease, sourceRelease } from "../init/release-fetch.js";
 import { formatSuccess } from "../output.js";
 import { RELEASE_VERSION } from "../version.js";
+import { loadBundleImages } from "./bundle/load-images.js";
+import { PINNED_BUNDLE_SIGNING_KEYS } from "./bundle/trusted-keys.js";
+import { verifyBundle } from "./bundle/verify.js";
 import { runUpgrade, type UpgradeDependencies } from "./run.js";
 import { releaseNotes } from "./target.js";
 
@@ -37,6 +42,9 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .description("upgrade an environment to a newer release: shows the release notes and every change, stops on a data replacement unless you name it, then runs doctor (operator role; the cdk engine needs admin credentials)")
     .option("--to <version>", "the release to upgrade to; default: this agentx's own release, or for an agentx built from source upgrading a cdk environment, the --source tag")
     .option("--release <dir>", "a release directory (agentx release build output) instead of downloading one")
+    .option("--bundle <dir>", "a signed release bundle (Enterprise): its signature and every hash are checked before anything changes, a restore point is recorded, its images are loaded into your registry; instead of --release and --to")
+    .option("--approved-bundle-sha256 <hex>", "with --bundle: the bundle id (SHA-256 of bundle.json) your team approved; any other bundle is refused")
+    .option("--bundle-public-key <file>", "with --bundle: a PEM public key to trust for bundle signatures, besides the ones this agentx pins; repeat for each", collect, [])
     .option("--source <dir>", "the cdk engine only: a clean checkout of the target release's tag; --to or --release, when given, must match it")
     .option("--allow-replace <logical-id>", "accept replacing or deleting this table, user pool, bucket, key or secret; repeat for each", collect, [])
     .option("--export <dir>", "write the upgrade for a platform team's pipeline instead of deploying it")
@@ -46,7 +54,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .option("--yes", "apply without asking; every change and the release notes are still printed", false)
     .option("--no-reserved-concurrency", "the cdk engine only: deploy with no Lambda reserved concurrency, for an AWS account whose Lambda concurrency limit is too low to reserve any (a new account's limit of 10); keep it on in production")
     .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
-    .action(async (options: { to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean }, command: Command) => {
+    .action(async (options: { bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean }, command: Command) => {
       const globals = command.optsWithGlobals<{ env: string; json: boolean; configDir: string }>();
       const overrides = context.overrides ?? {};
       const aws = options.region === undefined ? {} : { region: options.region };
@@ -59,6 +67,13 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         cloudFormation: overrides.cloudFormation ?? new CloudFormationClient(aws),
         identity: overrides.identity ?? stsCallerIdentity(new STSClient(aws)),
         loadRelease: overrides.loadRelease ?? (async (input) => loadRelease(input.releaseDir ?? await fetchRelease({ version: input.version, home: context.home, fetch: context.fetch, runner, write }))),
+        verifyBundle: overrides.verifyBundle ?? (async (input) => {
+          // A key file that cannot be read is a refusal, never a smaller set of trusted keys.
+          const extra: string[] = [];
+          for (const file of options.bundlePublicKey) extra.push(await readFile(file, "utf8").catch(() => { throw new Error(`bundle refused: the public key file ${file} could not be read; nothing was changed`); }));
+          return verifyBundle({ ...input, trustedKeys: [...PINNED_BUNDLE_SIGNING_KEYS, ...extra] });
+        }),
+        loadBundleImages: overrides.loadBundleImages ?? (async ({ bundle, settings }) => loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner })),
         sourceRelease: overrides.sourceRelease ?? (async (input) => (await sourceRelease({ runner, source: input.source, images: input.images, fetch: context.fetch })).release),
         notes: overrides.notes ?? ((version) => releaseNotes({ fetch: context.fetch, version })),
         prepare: overrides.prepare ?? ((input) => prepareDeployment({
@@ -81,6 +96,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       };
       const result = await runUpgrade({
         env: globals.env, yes: options.yes, allowReplace: options.allowReplace,
+        ...(options.bundle === undefined ? {} : { bundleDir: options.bundle }), ...(options.approvedBundleSha256 === undefined ? {} : { approvedBundleSha256: options.approvedBundleSha256 }),
         ...(options.to === undefined ? {} : { to: options.to }), ...(options.release === undefined ? {} : { releaseDir: options.release }),
         ...(options.source === undefined ? {} : { source: options.source }), ...(options.export === undefined ? {} : { exportDir: options.export }),
         ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),

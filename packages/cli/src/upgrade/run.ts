@@ -22,11 +22,13 @@ import { githubAppJwt, githubAppSecretName, githubWebhookUrl, parseAppSecret, ty
 import { plainMessage } from "../output.js";
 import { readStoredDeveloperSignIn } from "../signin/settings.js";
 import { upgradeAnswers } from "./answers.js";
+import { recordInstalledBundle, recordRestorePoint } from "./bundle/restore-point.js";
+import type { VerifiedBundle } from "./bundle/verify.js";
 import { writeUpgradeBundle } from "./export.js";
 import { cdkDiffRisks, cdkReviewedDeployer, guardData, upgradeConfirm } from "./review.js";
 import { notesText, refusePrereleaseTarget, upgradeDirection, type ReleaseNotes } from "./target.js";
 
-export interface UpgradeOptions { env: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
+export interface UpgradeOptions { env: string; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
 
 export interface UpgradeDependencies {
   store: ParameterStore;
@@ -35,6 +37,10 @@ export interface UpgradeDependencies {
   cloudFormation: { send(command: unknown): Promise<unknown> };
   identity: CallerIdentity;
   loadRelease(input: { releaseDir?: string; version?: string }): Promise<LoadedRelease>;
+  /** N3: verifies a bundle against the trusted keys; throws a refusal on any mismatch. Required for `--bundle`. */
+  verifyBundle?(input: { dir: string; approvedBundleSha256?: string }): Promise<VerifiedBundle>;
+  /** N3: loads a verified bundle's images into the install's ECR, digests preserved. Required when the bundle carries images. */
+  loadBundleImages?(input: { bundle: VerifiedBundle; settings: EnvironmentSettings }): Promise<void>;
   /** Issue 152: a source-built CLI's cdk upgrade with no --release or --to builds its release from
    * the --source checkout (release-fetch.ts's sourceRelease): the tag's version, the images from the
    * image flags or the tag's published release.json. */
@@ -176,8 +182,26 @@ async function setUpGithubWebhook(env: string, deps: UpgradeDependencies): Promi
   }
 }
 
+/** N3: the bundle path, checked before anything else is read: nothing in AWS is touched until the signature and every hash have passed. */
+async function verifiedBundle(options: UpgradeOptions, deps: UpgradeDependencies): Promise<VerifiedBundle | undefined> {
+  if (options.bundleDir === undefined) {
+    if (options.approvedBundleSha256 !== undefined) throw agentXError("CONFIG_INVALID", "--approved-bundle-sha256 applies to --bundle only");
+    return undefined;
+  }
+  if (options.releaseDir !== undefined || options.to !== undefined || options.source !== undefined || options.exportDir !== undefined || options.images !== undefined) {
+    throw agentXError("CONFIG_INVALID", "--bundle carries its own release and images; do not combine it with --release, --to, --source, --export, --worker-image, --slack-image or --boot-stage2-sha256");
+  }
+  if (deps.verifyBundle === undefined) throw agentXError("CONFIG_INVALID", "this agentx cannot verify bundles; bundle refused, nothing was changed");
+  return deps.verifyBundle({ dir: options.bundleDir, ...(options.approvedBundleSha256 === undefined ? {} : { approvedBundleSha256: options.approvedBundleSha256 }) });
+}
+
 export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependencies): Promise<UpgradeResult> {
   const { env } = options;
+  // N3: first of all, before the environment, the account or the lock is looked at.
+  const bundle = await verifiedBundle(options, deps);
+  if (bundle !== undefined && bundle.manifest.images.length > 0 && deps.loadBundleImages === undefined) {
+    throw agentXError("CONFIG_INVALID", "this agentx cannot load the bundle's images into your registry; bundle refused, nothing was changed");
+  }
   // Task 10: a hand-supplied worker image brings the hash of the stage 2 boot script it carries, before anything is read or changed.
   const imagesProblem = bootStage2ImagesProblem(options.images);
   if (imagesProblem !== undefined) throw agentXError("CONFIG_INVALID", imagesProblem);
@@ -190,6 +214,9 @@ export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependenc
   // The templates engine deploys the release's prebuilt templates, whose reservations are fixed; saying nothing would leave them on.
   if (options.reservedConcurrency === false && first.engine !== "cdk") {
     throw agentXError("CONFIG_INVALID", "--no-reserved-concurrency (reserved concurrency off) needs the cdk engine: this environment deploys the release's prebuilt templates, which reserve Lambda concurrency");
+  }
+  if (bundle !== undefined && first.engine === "cdk") {
+    throw agentXError("CONFIG_INVALID", "a bundle upgrade deploys the bundle's prebuilt templates, which the templates engine deploys; this environment uses the cdk engine, so the bundle was refused and nothing was changed");
   }
   if (first.engine === "cdk" && options.source === undefined) {
     throw agentXError("CONFIG_INVALID", "the cdk engine upgrades from a checkout of the target release's tag; pass --source <dir>");
@@ -204,15 +231,15 @@ export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependenc
     throw agentXError("CONFIG_INVALID", "a cdk environment upgrades with admin credentials (the operator role cannot use CDK's bootstrap resources); run agentx upgrade again with admin credentials");
   }
 
-  const version = options.releaseDir === undefined ? options.to ?? deps.cliVersion : undefined;
+  const version = options.releaseDir === undefined && bundle === undefined ? options.to ?? deps.cliVersion : undefined;
   // Issue 152: a source-built CLI's cdk upgrade needs no release: the version is the source's tag.
   // With --to or --release, that release is loaded as before, and prepare refuses one that is not
   // the source's tag before anything deploys.
   const source = first.engine === "cdk" && options.releaseDir === undefined && version === undefined ? options.source : undefined;
-  if (options.releaseDir === undefined && version === undefined && source === undefined) {
+  if (options.releaseDir === undefined && version === undefined && source === undefined && bundle === undefined) {
     throw agentXError("CONFIG_INVALID", "this agentx was built from source, so it has no release of its own; pass --to <version> or --release <dir>");
   }
-  const release = source !== undefined
+  const release = bundle !== undefined ? bundle.release : source !== undefined
     ? await deps.sourceRelease({ source, ...(options.images === undefined ? {} : { images: options.images }) })
     : await deps.loadRelease({ ...(options.releaseDir === undefined ? {} : { releaseDir: options.releaseDir }), ...(version === undefined ? {} : { version }) });
   const target = release.manifest.version;
@@ -266,6 +293,15 @@ export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependenc
         deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; nothing replaces it`);
       }
 
+      // N3: the restore point is written (and read back) before the first image or stack changes; if it cannot be, nothing has been.
+      if (bundle !== undefined) {
+        const point = await recordRestorePoint({ store: deps.store, env, now: deps.now(), fromVersion: settings.version, targetVersion: target, targetBundleId: bundle.bundleId });
+        deps.write(`Restore point recorded: tables can be restored to ${point.pitrTimestamp} (point-in-time recovery); this install ran ${point.previousBundleId === null ? "no bundle before" : `bundle ${point.previousBundleId}`}`);
+        if (bundle.manifest.images.length > 0) {
+          await deps.loadBundleImages!({ bundle, settings });
+          deps.write(`Loaded ${bundle.manifest.images.length} image${bundle.manifest.images.length === 1 ? "" : "s"} from bundle ${bundle.bundleId} into your registry`);
+        }
+      }
       const deployer = settings.engine === "templates" ? prepared.deployer : cdkReviewedDeployer(prepared.deployer, async (request) => {
         const risks = cdkDiffRisks(await deps.cdkDiff(request, settings, options.source ?? "", options.reservedConcurrency));
         if (risks.iam) deps.write(`${request.stackName} changes IAM; the changes are in the diff above.`);
@@ -295,6 +331,8 @@ export async function runUpgrade(options: UpgradeOptions, deps: UpgradeDependenc
     } finally {
       await prepared.cleanup();
     }
+    // The bundle is recorded as installed only after every stack deployed.
+    if (bundle !== undefined) await recordInstalledBundle({ store: deps.store, env, now: deps.now(), version: target, bundleId: bundle.bundleId });
     return { settings, parts };
   });
 
