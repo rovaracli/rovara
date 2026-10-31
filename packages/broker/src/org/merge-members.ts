@@ -69,7 +69,7 @@ export interface MergeDuplicateMemberResult {
 
 type Item = Record<string, unknown>;
 type Deps = MergeDuplicateMemberDependencies;
-const ROLE_RANK: Record<OrgRole, number> = { owner: 3, admin: 2, member: 1 };
+const ROLE_RANK: Record<OrgRole, number> = { owner: 3, admin: 2, member: 1, auditor: 0 };
 const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
 const errorName = (error: unknown) => (error instanceof Error ? error.name : undefined);
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);

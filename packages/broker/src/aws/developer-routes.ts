@@ -139,6 +139,7 @@ import { requireReviewedModelSourceWebWrite } from "../model-sources/routes.js";
 import { restoreProjectReviewedWithEffects, archiveProjectReviewedWithEffects } from "../org/project-archive.js";
 import { effectiveProjectRole, requireNewWorkAllowed } from "../developer/project-roles.js";
 import { isAuditOrgPath, routeAuditRequest } from "../audit/routes.js";
+import { requireAuditorRoute } from "../org/auditor.js";
 import { createAuditViewPage, isAuditViewPath } from "../audit/view-page.js";
 import {
   createPageComment,
@@ -278,7 +279,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     try { return await authenticateDeveloperSessionId(deps, sessionId); }
     catch { return undefined; }
   };
-  // The audit page (Task 13): a read-only view for the org's owners and admins; the org is the session's own.
+  // I2: the task and review pages are not for the Auditor, which reads the audit log and nothing else; a session that holds that role is signed out of them.
+  const authenticatePersonSession = async (sessionId: string) => {
+    const who = await authenticateSession(sessionId);
+    return who?.orgRole === "auditor" ? undefined : who;
+  };
+  // The audit page (Task 13): a read-only view for the org's owners, admins and Auditors; the org is the session's own.
   if (isAuditViewPath(url.pathname)) {
     return createAuditViewPage({ origin: new URL(deps.developer.issuer).origin, authenticateSession, ledger: deps.auditLedger })(request, url);
   }
@@ -291,7 +297,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     if (TASK_PAGE.test(url.pathname) || TASK_PEOPLE_CONFIRMATION.test(url.pathname) || TASK_STATUS.test(url.pathname) || TASK_PAGE_API_PREFIX.test(url.pathname)) {
       const routeDeps = (caller: DeveloperCaller) => developerTaskRouteDependencies(deps, caller);
       return createTaskWeb({
-        authenticateSession,
+        authenticateSession: authenticatePersonSession,
         getTaskDocumentView: (caller, taskId) => getTaskDocumentView(routeDeps(caller), caller, taskId),
         getTaskFreshness: (caller, taskId) => getTaskFreshness(routeDeps(caller), caller, taskId),
         getTaskPeople: (caller, taskId) => getTaskPeopleForPage(routeDeps(caller), caller, taskId),
@@ -302,7 +308,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
         api: createTaskWebApi({
           origin: deps.developer.issuer,
           log: logDeveloperEvent,
-          authenticateSession,
+          authenticateSession: authenticatePersonSession,
           taskState: (caller, taskId) => getTaskPageState(routeDeps(caller), caller, taskId),
           listComments: (caller, taskId) => listPageComments(routeDeps(caller), caller, taskId),
           createComment: (caller, taskId, input) => createPageComment(routeDeps(caller), caller, taskId, input),
@@ -325,7 +331,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     }
     const web = createFeedbackReviewWeb({
       origin: new URL(deps.developer.issuer).origin,
-      authenticateSession,
+      authenticateSession: authenticatePersonSession,
       getWorkflowFeedbackReview: (caller, taskId) => getWorkflowFeedbackReview(developerTaskRouteDependencies(deps, caller), caller, taskId),
       submitWorkflowFeedbackDecision: (caller, taskId, input) => submitWorkflowFeedbackDecision(developerTaskRouteDependencies(deps, caller), caller, taskId, input),
       now: deps.now,
@@ -334,6 +340,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
   const caller = authenticated?.caller ?? await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
+  // I2: before any route is matched, an Auditor is held to its allow-list (the audit log, its exports, its own identity). Nothing below this line runs for it otherwise.
+  requireAuditorRoute(caller, request.method, url.pathname);
   // Lane C6: only the trusted cookie adapter supplies authenticated; source guards share the handlers' paths.
   if (authenticated !== undefined) requireReviewedModelSourceWebWrite(request, url);
   // Plan 3's paths, project sub-paths included, are matched before Plan 2's `/v1/app/projects/{name}*` handlers (PF24).

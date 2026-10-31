@@ -1,4 +1,4 @@
-import type { CreateProjectFromMetaBody } from "@agentx/contracts";
+import type { CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
 import type { MetaProjectCreated } from "../../org/create-from-meta.js";
 import type { MetaConfigDependencies } from "../../meta-repo/config-import.js";
 import type { ServiceStatusDependencies } from "../../org/service-status.js";
@@ -103,6 +103,11 @@ export interface DeveloperApiConfiguration {
   slackRequestQueue?: SlackRequestQueue;
 }
 export interface DeveloperRouteDependencies {
+  /**
+   * Enterprise foundations (E2): the install's edition policy, read once at start. The Auditor role needs it: without a policy, or with one that has no
+   * `auditorRole`, an Auditor's session is refused and the role cannot be given.
+   */
+  editionPolicy?: EditionPolicy;
   /**
    * Meta repo lane B: a file of one of an org's repositories at a commit, as GitHub holds it (undefined when it is not there; throws when GitHub cannot answer). The setup agent's
    * citations are re-read through it. Without it every citation reads `unchecked` and nothing is pre-ticked.

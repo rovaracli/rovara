@@ -40,7 +40,7 @@ export type AppMeResponse = z.infer<typeof AppMeResponseSchema>;
 export const AppMeResponseReaderSchema = forwardReader(AppMeResponseSchema);
 
 /** Org directory: active members see id/name/role; live owners/admins additionally receive private details. */
-export const AppOrgMembersResponseSchema = z.object({ members: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string(), email: z.string().optional(), role: z.enum(["owner", "admin", "member", "unknown"]), joinedAt: z.string().optional(), identities: z.array(DeveloperSignInMethodSchema).optional() }).strict()) }).strict();
+export const AppOrgMembersResponseSchema = z.object({ members: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), name: z.string(), email: z.string().optional(), role: z.enum(["owner", "admin", "member", "auditor", "unknown"]), joinedAt: z.string().optional(), identities: z.array(DeveloperSignInMethodSchema).optional() }).strict()) }).strict();
 export const AppOrgMembersResponseReaderSchema = forwardReader(AppOrgMembersResponseSchema);
 
 /** Lookup is exact and org scoped. Input is a body, never a URL query or a list filter. */

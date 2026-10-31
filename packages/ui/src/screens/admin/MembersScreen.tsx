@@ -12,7 +12,7 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { useAdminContext } from "./AdminLayout.js";
 import { RoleChangeDialog } from "./RoleChangeDialog.js";
-const roleNames: Record<string, string> = { owner: "Owner", admin: "Admin", member: "Member" };
+const roleNames: Record<string, string> = { owner: "Owner", admin: "Admin", member: "Member", auditor: "Auditor" };
 const methodNames: Record<string, string> = { cloud: "Rovara sign-in", github: "GitHub", slack: "Slack", oidc: "Organization sign-in" };
 type Role = "owner" | "admin" | "member";
 type Receipt = { scope: string; focus: boolean } & ({ kind: "verified"; person: string; role: Role; checkedAt: string } | { kind: "denied" });
@@ -36,6 +36,8 @@ export function MembersScreen() {
  const accessChecking = checking || read.isFetching;
  function action(member: (typeof members)[number]) {
   if (member.role === "unknown") return "Role unavailable";
+  // The Auditor is set by the company sign-in mapping or by an owner through the API; this screen does not change it.
+  if (member.role === "auditor") return "Set outside this screen";
   return <RoleChangeDialog key={`${scope}:${role}:${member.developerId}`} company={company} member={{ developerId: member.developerId, name: member.name, role: member.role }} self={member.developerId === developerId} ownerCount={members.filter(person => person.role === "owner").length} checking={accessChecking} staleData={dataStale} checkingReasonId={reasonId}
    verify={async () => { const result = await read.refetch({ throwOnError: true });const actual = result.data?.members.find(person => person.developerId === member.developerId)?.role;return actual === "owner" || actual === "admin" || actual === "member" ? actual : undefined; }}
    onDenied={() => { void query.invalidateQueries({ queryKey: ["admin", "identity"] }).then(() => { setReceipt({ scope, focus: true, kind: "denied" }); });void query.invalidateQueries({ queryKey: ["nav"] }); }}

@@ -18,6 +18,7 @@ export async function readTurnActorChecks(deps:Deps,input:{orgId:OrgId;project:s
  const slackBasis=input.threadChannel!==undefined&&input.slackUserId!==undefined;
  const checks:TransactItem[]=[];
  let orgRole:"owner"|"admin"|"member";
+ // The Auditor reads the audit log and nothing else: it never acts for a task turn, whatever grant or channel it may also hold.
  if(!role.success||member?.orgId!==input.orgId||member.developerId!==input.developerId) {
   // Single-org Slack service callers existed before browser sign-in. Never infer
   // this authority for a CLI caller, a tenant-resolving install, or a removed/banned person.
@@ -26,7 +27,9 @@ export async function readTurnActorChecks(deps:Deps,input:{orgId:OrgId;project:s
   for(const Key of keys){if(await read(deps,Key)!==undefined)throw refused();checks.push({ConditionCheck:{TableName:deps.tableName,Key,ConditionExpression:"attribute_not_exists(pk)"}});}
   checks.push({ConditionCheck:{TableName:deps.tableName,Key:orgMetaKey(input.orgId),ConditionExpression:"orgId = :org AND attribute_not_exists(closingAt) AND attribute_not_exists(closedAt)",ExpressionAttributeValues:{":org":input.orgId}}});
   orgRole="member";
- } else {orgRole=role.data;checks.push(...budgetActorChecks(deps.tableName,input.orgId,{developerId:input.developerId,role:role.data}));}
+ } else {
+  if(role.data==="auditor")throw refused();
+  orgRole=role.data;checks.push(...budgetActorChecks(deps.tableName,input.orgId,{developerId:input.developerId,role:role.data}));}
  const person=await deps.signInStore?.getDeveloper(input.developerId);
  if(person!==undefined) {
   if(deps.signInStore===undefined||deps.modelSignInTableName===undefined)throw refused();

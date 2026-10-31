@@ -51,6 +51,8 @@ export function evaluateGroupMapping(input: { policy: EditionPolicy; config: unk
   const orgRole = MAPPED_ORG_ROLE_PRECEDENCE.find((role) => matched.some((rule) => rule.orgRole === role));
   // Every mappable role is in the precedence list (pinned by a test); a role that is not is refused, never ranked last.
   if (orgRole === undefined) return { ok: false, reason: "config_invalid" };
+  // A mapping that grants the Auditor in an edition without it is a broken mapping, not a member: it is refused.
+  if (orgRole === "auditor" && !featureEnabled(input.policy, "auditorRole")) return { ok: false, reason: "config_invalid" };
   const byProject = new Map<string, (typeof PROJECT_ROLE_PRECEDENCE)[number]>();
   for (const rule of matched) {
     for (const { project, role } of rule.projectRoles) {
@@ -131,6 +133,7 @@ export function dynamoGroupMappingStore(input: { documentClient: DocumentClient;
       requireFeature(policy, "sso");
       if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) throw agentXError("CONFIG_INVALID", "the mapping version is invalid");
       const next = GroupMappingConfigSchema.parse({ ...config, version: expectedVersion + 1 });
+      if (next.rules.some((rule) => rule.orgRole === "auditor")) requireFeature(policy, "auditorRole");
       try {
         await documentClient.send(new PutCommand({
           TableName: tableName, Item: { ...groupMappingKey(orgId), ...next },

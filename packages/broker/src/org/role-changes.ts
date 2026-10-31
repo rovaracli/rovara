@@ -7,7 +7,8 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/develop
 import { auditMemberRoleChanged, auditOccurrence } from "../audit/events.js";
 import { auditPending, type TransactItem } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
-type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "orgs" | "now" | "audit">;
+import { requireAuditorEdition } from "./auditor.js";
+type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "orgs" | "now" | "audit" | "editionPolicy">;
 type Change = { requestId: string; role: OrgRole; expectedRole: OrgRole };
 async function read(deps: Deps, key: { pk: string; sk: string }) {
  const result = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> };return result.Item;
@@ -20,6 +21,8 @@ export async function changeReviewedMemberRole(deps: Deps, caller: DeveloperCall
  const { orgId, developerId: actor } = caller, actorKey = orgMemberKey(orgId, actor), targetKey = orgMemberKey(orgId, target);
  const liveActor = await read(deps, actorKey);
  if (liveActor?.orgId !== orgId || liveActor.developerId !== actor || liveActor.role !== "owner") throw forbidden();
+ // I2: the Auditor is given only where the edition has it. A role that stays the Auditor is no change and needs no check.
+ if (change.role === "auditor" && change.expectedRole !== "auditor") requireAuditorEdition(deps.editionPolicy);
  if (deps.audit === undefined || deps.audit.tableName !== deps.tableName) throw unavailable();
  const receiptKey = { pk: orgScoped(orgId, "ROLE_CHANGE"), sk: change.requestId };
  const digest = createHash("sha256").update(JSON.stringify([orgId, actor, target, change.expectedRole, change.role])).digest("hex");
@@ -58,7 +61,7 @@ export async function changeReviewedMemberRole(deps: Deps, caller: DeveloperCall
   add("owner", roleFence(otherOwner, "owner"));
  }
  if (changing) {
-  const generation = await approvalCompanyChange({ ...deps, now: () => new Date(deps.now()) }, orgId, (change.expectedRole === "owner" || change.expectedRole === "admin") && change.role === "member");
+  const generation = await approvalCompanyChange({ ...deps, now: () => new Date(deps.now()) }, orgId, (change.expectedRole === "owner" || change.expectedRole === "admin") && (change.role === "member" || change.role === "auditor"));
   for (const item of generation) add("membership_generation", item);
  }
  add("receipt", { Put: { TableName: deps.tableName, Item: { ...receiptKey, digest, developerId: target, role: change.role, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(deps.now() / 1000) + 30 * 86400 }, ConditionExpression: "attribute_not_exists(pk)" } });

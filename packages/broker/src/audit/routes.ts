@@ -18,6 +18,7 @@ import {
   type OrgId,
   type OrgRole,
 } from "@agentx/contracts";
+import { canReadAuditLog } from "../org/auditor.js";
 import { indexedQueryOf, readIndexedAudit } from "./indexed-reader.js";
 import { z } from "zod";
 import { assertExportRange, exportDownloadUrl, getAuditExport, startAuditExport, type AuditExportClientDeps, type AuditExportRequest, type AuditExportView } from "./export.js";
@@ -179,8 +180,8 @@ export async function routeAuditRequest(ledger: AuditExportClientDeps | undefine
   const matched = ORG_AUDIT_PATH.exec(url.pathname);
   if (matched === null) throw notFound();
   const rest = matched[1] ?? "";
-  // Owners and admins only; the check comes before anything else is said about the route.
-  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", AUDIT_ORG_FORBIDDEN);
+  // Owners, admins and the Auditor only; the check comes before anything else is said about the route.
+  if (!canReadAuditLog(caller.orgRole)) throw agentXError("FORBIDDEN", AUDIT_ORG_FORBIDDEN);
   if (ledger === undefined) throw agentXError("NOT_FOUND", NOT_SET_UP);
   const orgId = caller.orgId;
   const actor: AuditActor = { kind: "member", id: caller.developerId };

@@ -12,7 +12,7 @@ function fixture() {
  const db = new FakeDynamoDb();
  db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG", createdAt: "2026-10-01T00:00:00.000Z", approvalMembershipVersion: 7, approvalTrackingSince: "2026-10-01T00:00:00.000Z" });
  db.set({ ...projectMetaKey(orgId, "payments"), entityType: "PROJECT_META", name: "payments", status: "active", createdAt: "2026-10-01T00:00:00.000Z", archiveRevision: 0 });
- function person(id: string, role: "owner" | "admin" | "member") {
+ function person(id: string, role: "owner" | "admin" | "member" | "auditor") {
   db.set({ ...orgMemberKey(orgId, id), orgId, developerId: id, role, joinedAt: "2026-10-01T00:00:00.000Z" });
   db.set({ ...developerOrgKey(id), orgId, role });
   db.set({ pk: `DEVELOPER#${id}`, sk: "META", developerId: id, revoked: false });
@@ -28,6 +28,18 @@ describe("live shared approval evidence", () => {
   const f = fixture();f.person(admin, "admin");
   const proof = await f.read(admin);
   expect(decideSecondPersonApproval(proof.decisionInput).mode).toBe("second_person");
+ });
+ it("never counts an Auditor as a second person, and refuses one as the approver (I2)", async () => {
+  const f = fixture();f.person("d".repeat(64), "auditor");
+  const proof = await f.read();
+  // The only owner with an Auditor beside them is still the sole eligible person: the exception applies, a second person does not.
+  expect(decideSecondPersonApproval(proof.decisionInput).mode).toBe("sole_owner_exception");
+  await expect(f.read("d".repeat(64))).rejects.toMatchObject({ code: "FORBIDDEN" });
+  // The control: the same company with an admin in the Auditor's place has a second person.
+  const g = fixture();g.person("d".repeat(64), "admin");
+  const alone = (await g.read()).decisionInput;
+  expect(() => decideSecondPersonApproval(alone)).toThrow("FORBIDDEN");
+  expect(decideSecondPersonApproval((await g.read("d".repeat(64))).decisionInput).mode).toBe("second_person");
  });
  it("permits a sole-owner exception only with complete eligibility and history", async () => {
   const f = fixture();const proof = await f.read();

@@ -1,6 +1,7 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { DEVELOPER_TOKEN_AUDIENCE, agentXError, type DeveloperSignInMethod, type OrgId, type OrgRole, OrgIdSchema, OrgRoleSchema } from "@agentx/contracts";
 import { safeDisplayName } from "../../developer/person-name.js";
+import { requireAuditorEdition } from "../../org/auditor.js";
 import { readChosenName } from "../../developer/chosen-name.js";
 import {
   META,
@@ -86,6 +87,8 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
   // while their token is still valid. The role is the current one, so a demotion applies at once.
   const membership = await deps.orgs?.orgForDeveloper(token.developerId);
   if (membership === undefined || (token.orgId !== undefined && membership.orgId !== token.orgId)) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
+  // I2: the Auditor is an Enterprise role. A membership that holds it where the edition does not (or is not known) is refused, not treated as a member.
+  if (membership.role === "auditor") requireAuditorEdition(deps.editionPolicy);
   return {
     developerId: token.developerId,
     sessionId: token.sessionId,

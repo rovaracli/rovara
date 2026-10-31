@@ -16,7 +16,7 @@ export type MappableOrgRole = z.infer<typeof MappableOrgRoleSchema>;
  * Which mapped org role wins when a person is in several mapped groups, strongest first. Every mappable role must be listed (a test pins it), so adding a role
  * to the org roles without deciding where it ranks fails a test instead of silently ranking last.
  */
-export const MAPPED_ORG_ROLE_PRECEDENCE: readonly MappableOrgRole[] = ["admin", "member"];
+export const MAPPED_ORG_ROLE_PRECEDENCE: readonly MappableOrgRole[] = ["admin", "member", "auditor"];
 export const PROJECT_ROLE_PRECEDENCE = ["maintainer", "contributor", "viewer"] as const;
 
 const NO_CONTROL = /^[^\p{Cc}\p{Cf}]*$/u;
