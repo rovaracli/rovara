@@ -22,3 +22,8 @@
 /* An Answered task (R1b): the answer is a block of plain text; its sources wrap, so nothing widens the page on a phone. */
 .rv-answered{display:grid;gap:var(--rv-space-3);padding:var(--rv-space-4);margin:var(--rv-space-3) 0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised);min-width:0}.rv-answered h3,.rv-answered h4,.rv-answered p{margin:0}.rv-answered h4{font-size:var(--rv-font-sm);color:var(--rv-text-muted)}.rv-answered-sources{margin:0;padding-left:var(--rv-space-5);overflow-wrap:anywhere}.rv-answered .rv-actions{margin-top:var(--rv-space-2)}
 .rv-model-fallbacks ul{list-style:none;margin:0 0 var(--rv-space-4);padding:0;display:grid;gap:var(--rv-space-2);font-size:var(--rv-font-sm)}.rv-model-fallbacks li{min-width:0;overflow-wrap:anywhere}
+
+.rv-loaded-knowledge { margin-block: var(--space-3, 12px); }
+.rv-loaded-knowledge summary { cursor: pointer; font-weight: 600; }
+.rv-loaded-list { list-style: none; margin: 0; padding-inline-start: 0; display: grid; gap: var(--space-2, 8px); }
+.rv-loaded-list li { overflow-wrap: anywhere; }

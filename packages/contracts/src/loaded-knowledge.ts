@@ -83,3 +83,19 @@ export function loadedKnowledgeOfProgress(payload: unknown): LoadedKnowledgeMani
   const parsed = LoadedKnowledgeManifestSchema.safeParse((payload as Record<string, unknown>)[LOADED_KNOWLEDGE_EVENT_FIELD]);
   return parsed.success ? parsed.data : undefined;
 }
+
+// What the task page reads. `requestId` rides on every answer and is left out by the readers (zod objects drop unknown keys).
+export const LoadedKnowledgeStageRecordSchema = z.object({
+  stage: LoadedKnowledgeStageSchema,
+  operationId: z.string().min(1).max(80),
+  recordedAt: z.string().min(1).max(40),
+  manifest: LoadedKnowledgeManifestSchema,
+});
+export const LoadedKnowledgeResponseReaderSchema = z.object({ stages: z.array(LoadedKnowledgeStageRecordSchema).max(100) });
+export type LoadedKnowledgeResponse = z.infer<typeof LoadedKnowledgeResponseReaderSchema>;
+
+export const LoadedKnowledgeTextReaderSchema = z.union([
+  z.object({ available: z.literal(true), repo: Label, path: z.string().max(400), commit: z.string().max(64), truncated: z.boolean(), text: z.string().max(70_000) }),
+  z.object({ available: z.literal(false), reason: z.enum(["not_kept", "unreadable", "changed"]) }),
+]);
+export type LoadedKnowledgeText = z.infer<typeof LoadedKnowledgeTextReaderSchema>;
