@@ -115,6 +115,10 @@ export const ContextToolCatalogSchema = z.object({
   tools: z.array(ContextToolPresentationSchema).max(CONTEXT_SOURCE_LIMITS.sourcesPerProject * CONTEXT_SOURCE_LIMITS.toolsPerSource),
   /** `search_team_knowledge` is offered when the stage has a `search` tool or the Team record can answer. */
   searchTeamKnowledge: z.boolean(),
+  /** Sources that could not be reached when the list was made: the plan says "<label> was not reachable". */
+  unavailable: z.array(ContextSourceIdSchema).max(CONTEXT_SOURCE_LIMITS.sourcesPerProject),
+  /** Ticked tools that are off until an admin ticks them again (their schema or annotations changed, or they no longer read only). */
+  disabled: z.array(z.object({ sourceId: ContextSourceIdSchema, tool: McpToolNameSchema }).strict()).max(CONTEXT_SOURCE_LIMITS.sourcesPerProject * CONTEXT_SOURCE_LIMITS.toolsPerSource),
 }).strict();
 export type ContextToolCatalog = z.infer<typeof ContextToolCatalogSchema>;
 

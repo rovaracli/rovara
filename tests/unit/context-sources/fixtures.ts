@@ -37,3 +37,57 @@ export function environment(over: Partial<SourceEnvironment> & { tools?: Discove
     ...over,
   };
 }
+
+// ---- the broker route's world (E2)
+import { vi } from "vitest";
+import type { ContextToolsDependencies, ContextToolsRun, ContextServerSession } from "../../../packages/broker/src/context-sources/routes.js";
+import { dynamoUsageStore } from "../../../packages/broker/src/context-sources/usage.js";
+import type { ContextItemSeen } from "../../../packages/broker/src/context-sources/team-record.js";
+import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
+import type { Citation } from "@agentx/contracts";
+
+export type Answer = { isError?: boolean; content?: Array<{ type: string; text?: string }>; structuredContent?: unknown };
+
+export function routeWorld(options: {
+  sources?: ContextSource[]; tools?: DiscoveredTool[]; answer?: (name: string, args: Record<string, unknown>) => Answer | Promise<Answer>; openFails?: boolean;
+  hosts?: string[]; mode?: string; memberCheck?: () => Promise<void>;
+} = {}) {
+  const table = new FakeDynamoDb();
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const seen: ContextItemSeen[] = [];
+  const citations: Citation[] = [];
+  const kept: Array<{ text: string; retention: string }> = [];
+  const logs: string[] = [];
+  let opens = 0;
+  const tools = options.tools ?? [SEARCH_TOOL, GET_TOOL];
+  const deps: ContextToolsDependencies = {
+    now: () => NOW,
+    requireCreatorStillMember: options.memberCheck ?? (async () => undefined),
+    requireProjectAuthority: async () => undefined,
+    sources: async () => ({ revision: 1, sources: options.sources ?? [source()] }),
+    servers: {
+      open: async () => {
+        opens += 1;
+        if (options.openFails === true) throw new Error("connect ECONNREFUSED 10.0.0.9:443");
+        const session: ContextServerSession = {
+          hosts: options.hosts ?? ["sim.example.com"], tools,
+          call: async (name, args) => { calls.push({ name, args }); return (await (options.answer ?? (() => ({ content: [{ type: "text", text: "ok" }] })))(name, args)); },
+          close: async () => undefined,
+        };
+        return session;
+      },
+    },
+    usage: dynamoUsageStore({ documentClient: table, tableName: "state", now: () => NOW }),
+    teamSink: { seen: async (item) => { seen.push(item); } },
+    teamSearch: { search: async () => [] },
+    citations: { record: async (input) => { citations.push(input.citation); } },
+    results: { keep: async (input) => { kept.push({ text: input.text, retention: input.retention }); } },
+    log: (event) => { logs.push(event); },
+  };
+  const run = (over: Partial<ContextToolsRun["operation"]> = {}): ContextToolsRun => ({
+    orgId: ORG, task: { taskId: "task1", project: "proj", ownerKey: "owner1" } as ContextToolsRun["task"],
+    operation: { id: "op1", workflowMode: options.mode ?? "PLAN", ...over },
+  });
+  return { deps, run, calls, seen, citations, kept, logs, opens: () => opens, table };
+}
+void vi;

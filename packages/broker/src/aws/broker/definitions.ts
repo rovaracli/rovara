@@ -39,6 +39,7 @@ import type { ChainTriggerHooks } from "../../chains/routes.js";
 import type { SessionAccessDependencies } from "../../agent-sessions/access.js";
 import type { SessionTakeOverDependencies } from "../../agent-sessions/take-over.js";
 import type { AgentToolsDependencies } from "../../agents/agent-tools-routes.js";
+import type { ContextSourcesRuntime } from "../../context-sources/runtime.js";
 import type { DecideKinds } from "../../developer/decide-kinds.js";
 import type { DeveloperApiConfiguration } from "../developer-routes.js";
 import type { AutofixConfig } from "../workflow-autofix-runner.js";
@@ -310,6 +311,8 @@ export interface AwsBrokerDependencies {
    * replaces the write gate there (`gate`), and a test replaces a check or a lister with its own.
    */
   agentTools?: { configure?: (base: AgentToolsDependencies) => AgentToolsDependencies };
+  /** Lane E: the MCP context sources' servers, Team record hooks and result keeper (`/v1/internal/context-tools*`). Absent: the routes answer that no sources are set up. */
+  contextSources?: ContextSourcesRuntime;
   /** Spec 025 C14: the Slack threads table, read for a shared thread's waiting messages; absent in legacy. */
   slackThreadsTableName?: string;
   /** Spec 025 phase 25d: the admin read routes' injected probes and clock; the defaults serve production. */
