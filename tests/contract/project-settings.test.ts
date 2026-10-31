@@ -817,7 +817,7 @@ it("B33 refuses an atomic registration above 100 actions before sending any tran
   extraItems: Array.from({ length: 100 }, (_, i) => ({ Put: { TableName: "state", Item: { pk: `B33_BOUND#${i}`, sk: "EXTRA" } } })),
  })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
  const later = h.db.transactions().slice(count);
- expect(later.every(items => items.some(item => (item.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "TASK_STOP_SEED"))).toBe(true);
+ expect(later).toHaveLength(0);
  expect(later.every(items => !JSON.stringify(items).includes("B33_BOUND#"))).toBe(true);expect(h.revision(2)).toBeUndefined();
 });
 

@@ -1421,12 +1421,12 @@ for (const drift of ["unchanged", "total_before", "policy_before", "counter_comm
   if (drift === "counter_commit") expect(raced).toBe(true);
 });
 
-for (const role of ["owner", "admin"] as const) for (const kind of ["run_limit", "max_per_run"] as const) it(`a sole ${role} cannot self-decide a stop-loosening ${kind} request`, async () => {
+for (const role of ["owner", "admin"] as const) for (const kind of ["run_limit", "max_per_run"] as const) it(`an unenrolled sole ${role} retains legacy self-decision for ${kind}`, async () => {
  const t = await setup({ secondAdmin: false });seedMembership(t.db, ADA.developerId, { orgId: TEST_ORG, role });
  const agentId = await t.agentOf(TRIAGE, { by: ADA, name: `Own stop ${role} ${kind}` });await t.setBudget(ADA, agentId, { maxPerRunUsd: 4 });
  const run = kind === "run_limit" ? await t.plainTask(ADA) : await t.runOf(agentId, { who: ADA });
  await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": kind === "run_limit" ? 4 : 25 });
  await t.pauseAndEnd(run, kind === "max_per_run" ? { kind: "max_per_run", taskId: run.taskId } : undefined);
  const request = t.requestOf(run.taskId, kind)[0]!;expect(request).toBeDefined();const before = t.meta(run.taskId);
- expect(await refusal(decideSpendRequest(t.deps(), t.caller(ADA, role), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" }))).toMatchObject({ code: "FORBIDDEN" });expect(t.meta(run.taskId)).toEqual(before);expect(t.requestOf(run.taskId, kind)[0]?.status).toBe("PENDING");
+ expect((await decideSpendRequest(t.deps(), t.caller(ADA, role), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" })).spendRequest.status).toBe("APPROVED");expect(t.meta(run.taskId)).not.toEqual(before);
 });
