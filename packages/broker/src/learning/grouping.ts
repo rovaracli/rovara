@@ -473,10 +473,11 @@ async function openStep(deps: LearningDeps, scope: LearningScope, context: Conte
 export async function groupCorrections(deps: LearningDeps, rawScope: LearningScope, options: GroupingOptions = {}): Promise<GroupingResult> {
   const scope = normalized(rawScope);
   const result: GroupingResult = { judged: 0, opened: [], joined: [], withdrawn: [], capped: false };
-  // The master switch comes first: while it is off nothing is judged, opened, joined or withdrawn, and the corrections wait ungrouped for the day it is turned on.
-  if (await (options.suggestionsOff ?? suggestionsOff)(deps, scope)) return result;
+  // The master switch comes first: while it is off corrections are still judged (counted in the month's metric, `repeatOf` set), but nothing is opened, joined or withdrawn; the judged
+  // corrections group on the first run after it is turned on.
+  const suggestionsAreOff = await (options.suggestionsOff ?? suggestionsOff)(deps, scope);
   const off = await (options.prCaptureOff ?? prCaptureOff)(deps, scope);
-  if (off) result.withdrawn.push(...await withdrawPrDependentSuggestions(deps, scope));
+  if (off && !suggestionsAreOff) result.withdrawn.push(...await withdrawPrDependentSuggestions(deps, scope));
 
   const cache = newCache();
   const first = await readContext(deps, scope, off, cache);
@@ -484,6 +485,7 @@ export async function groupCorrections(deps: LearningDeps, rawScope: LearningSco
   for (const entry of first.corrections.filter((candidate) => candidate.c.groupedAt === undefined && !(candidate.c.source === "pr_comment" && off)).slice(0, JUDGE_MAX)) {
     if (await judge(deps, scope, first, entry)) result.judged += 1;
   }
+  if (suggestionsAreOff) return result;
 
   let conflicts = 0;
   for (let round = 0; round < FORM_ROUNDS_MAX; round += 1) {

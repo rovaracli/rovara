@@ -223,7 +223,7 @@ describe("the event catalog", () => {
     "rule.rolled_back": { target: { kind: "project", name: "web" }, keys: ["ruleId", "processAgentId", "processVersion"], sample: { ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 } },
     "rule.correction_remembered": { target: { kind: "project", name: "web" }, keys: ["correctionId", "stage", "standing", "op"], sample: { correctionId: "cor_1", stage: "build", standing: "member", op: "remember" } },
     "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
-    "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source"], sample: { setting: "on", previous: "off", source: "company" } },
+    "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source", "previousSource"], sample: { setting: "on", previous: "off", source: "company", previousSource: "install_default" } },
   } as const;
 
   // I10: the learning events hold no text.

@@ -56,5 +56,5 @@ export const rememberedEvent = (deps: Pick<LearningDeps, "now">, scope: Learning
   auditRuleCorrectionRemembered({ ...base(deps, scope, actor, input.correctionId), ...input });
 
 /** The company's master suggestions switch changed (a person, in both directions). Company-wide, so there is no project; the occurrence is the new settings revision. */
-export const suggestionsSetEvent = (deps: Pick<LearningDeps, "now">, input: { orgId: LearningScope["orgId"]; actor: AuditActor; revision: number; setting: "on" | "off"; previous: "on" | "off" }): AuditEventInput =>
-  auditRuleSuggestionsSet({ orgId: input.orgId, actor: input.actor, occurredAt: new Date(deps.now()).toISOString(), occurrence: auditOccurrence(input.orgId, String(input.revision)), setting: input.setting, previous: input.previous, source: "company" });
+export const suggestionsSetEvent = (deps: Pick<LearningDeps, "now">, input: { orgId: LearningScope["orgId"]; actor: AuditActor; revision: number; setting: "on" | "off"; previous: "on" | "off"; previousSource: "company" | "install_default" }): AuditEventInput =>
+  auditRuleSuggestionsSet({ orgId: input.orgId, actor: input.actor, occurredAt: new Date(deps.now()).toISOString(), occurrence: auditOccurrence(input.orgId, String(input.revision)), setting: input.setting, previous: input.previous, source: "company", previousSource: input.previousSource });

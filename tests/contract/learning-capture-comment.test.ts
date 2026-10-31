@@ -416,7 +416,7 @@ describe("audit: Remember and Forget emit rule.correction_remembered", () => {
 });
 
 describe("the company's master suggestions switch does not stop capture", () => {
-  it("Remember still stores the correction and counts it while suggestions are off, and grouping then does nothing", async () => {
+  it("Remember still stores the correction and counts it while suggestions are off, and grouping then only judges it (opens nothing)", async () => {
     const fixture = membersTask();
     fixture.db.set({ ...orgLearningSettingsKey(TEST_ORG), entityType: "LEARNING_COMPANY_SETTINGS", orgId: TEST_ORG, revision: 1, suggestions: "off", changedBy: PRIYA.developerId, changedAt: new Date(0).toISOString() });
     const comment = seedComment(fixture, SAM, RETRY_TEXT);
@@ -424,8 +424,8 @@ describe("the company's master suggestions switch does not stop capture", () => 
     expect(answer.correction.standing).toBe("member");
     expect(corrections(fixture)).toHaveLength(1);
     expect((await readLearningState(learningDeps(fixture), scope))?.liveCorrections).toBe(1);
-    expect(await groupCorrections(learningDeps(fixture), scope)).toMatchObject({ judged: 0, opened: [] });
-    expect(corrections(fixture)[0]).not.toHaveProperty("groupedAt");
+    expect(await groupCorrections(learningDeps(fixture), scope)).toMatchObject({ judged: 1, opened: [] });
+    expect(corrections(fixture)[0]).toHaveProperty("groupedAt");
     // Forget keeps working too.
     const forgotten = await forget(fixture, PRIYA, comment.commentId);
     expect(forgotten).toEqual({ forgotten: true });

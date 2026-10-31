@@ -354,7 +354,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "rule.correction_remembered": ["correctionId", "stage", "standing", "op"],
   "project.learning_changed": ["revision", "enabled", "selfConfirmedSoleOwner"],
   // The company's master suggestions switch: `setting` and `previous` are `on` or `off`, `source` is `company`.
-  "rule.suggestions_set": ["setting", "previous", "source"],
+  "rule.suggestions_set": ["setting", "previous", "source", "previousSource"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
