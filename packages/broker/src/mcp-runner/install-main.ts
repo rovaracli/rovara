@@ -37,6 +37,7 @@ export const INSTALL_FAILURES = {
   bad_package: "The package file is not one Rovara can unpack.",
   wrong_package: "Your registry returned a different package from the one asked for.",
   git_dependency: "This package needs a git dependency. Rovara installs only from your registry.",
+  unsupported_manifest: "This package changes the versions of its dependencies with overrides or resolutions. Rovara does not support that in this version.",
   install_scripts: "This package needs install steps or a native build. Rovara does not run install steps, so this package cannot be used yet.",
   lockfile_policy: "This package's dependencies are not allowed.",
   resolve_failed: "Rovara could not work out this package's dependencies from your registry.",
@@ -269,14 +270,18 @@ export async function runInstall(requested: unknown, options: InstallOptions): P
   await rm(join(pkg, "package-lock.json"), { force: true });
 
   // 3. The lockfile: the package's own shrinkwrap, or one made now from the registry. Either way it is checked before a single dependency is fetched.
+  // Before npm runs at all (with a shipped shrinkwrap as much as without): `overrides` and `resolutions` can send any dependency to any address, and a dependency range that is
+  // a git address, a path or a URL is not a registry range. Neither is looked at by the lockfile check until npm has already tried to fetch it.
+  if (manifest.overrides !== undefined || manifest.resolutions !== undefined) return failure("unsupported_manifest");
+  for (const field of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
+    const table = manifest[field];
+    if (table === undefined) continue;
+    if (typeof table !== "object" || table === null || Array.isArray(table) || Object.values(table as Record<string, unknown>).some(specIsNotRegistry)) return failure("git_dependency", { sentence: "This package needs a dependency that does not come from your registry. Rovara installs only from your registry." });
+  }
   const shrinkwrap = join(pkg, "npm-shrinkwrap.json");
   let lockfilePath = shrinkwrap;
   if (!await exists(shrinkwrap)) {
-    // Only what a production install needs: dev dependencies, workspaces and scripts are removed from the copy of package.json that npm resolves. Registry ranges only.
-    for (const field of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
-      const table = manifest[field];
-      if (typeof table === "object" && table !== null && Object.values(table as Record<string, unknown>).some(specIsNotRegistry)) return failure("git_dependency", { sentence: "This package needs a dependency that does not come from your registry. Rovara installs only from your registry." });
-    }
+    // Only what a production install needs: dev dependencies, workspaces and scripts are removed from the copy of package.json that npm resolves.
     for (const field of ["devDependencies", "workspaces", "scripts"]) delete manifest[field];
     await writeFile(join(pkg, "package.json"), JSON.stringify(manifest));
     const made = await npm(["install", "--package-lock-only", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund"], pkg, "resolve_failed");

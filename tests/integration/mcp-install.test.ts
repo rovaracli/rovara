@@ -54,6 +54,12 @@ function packages(): FixturePackage[] {
     // a dependency written as a git address in package.json
     { name: "git-direct", version: "1.0.0", bin: "i.js", dependencies: { thing: "github:acme/thing#main" }, files: { "i.js": "x" } },
     { name: "git-shorthand", version: "1.0.0", bin: "i.js", dependencies: { thing: "acme/thing" }, files: { "i.js": "x" } },
+    // `overrides` and `resolutions` can send a dependency anywhere; a non-registry range next to a shipped shrinkwrap is just as much a fetch npm would try
+    { name: "with-overrides", version: "1.0.0", bin: "i.js", dependencies: { "dep-b": "^1.0.0" }, files: { "i.js": "x" }, manifest: { overrides: { "dep-b": "https://127.0.0.1:1/dep-b.tgz" } } },
+    { name: "with-resolutions", version: "1.0.0", bin: "i.js", dependencies: { "dep-b": "^1.0.0" }, files: { "i.js": "x" }, manifest: { resolutions: { "dep-b": "1.0.0" } } },
+    { name: "shrink-overrides", version: "1.0.0", bin: "i.js", dependencies: { "dep-b": "1.0.0" }, files: { "i.js": "x" }, manifest: { overrides: { "dep-b": "1.0.0" } }, shrinkwrap: (url, integrityOf) => ({ name: "shrink-overrides", version: "1.0.0", lockfileVersion: 3, packages: { "": { name: "shrink-overrides", version: "1.0.0", dependencies: { "dep-b": "1.0.0" } }, "node_modules/dep-b": { version: "1.0.0", resolved: `${url}dep-b/-/dep-b-1.0.0.tgz`, integrity: integrityOf("dep-b", "1.0.0") } } }) },
+    { name: "shrink-git-spec", version: "1.0.0", bin: "i.js", dependencies: { thing: "github:acme/thing" }, files: { "i.js": "x" }, shrinkwrap: { name: "shrink-git-spec", version: "1.0.0", lockfileVersion: 3, packages: { "": { name: "shrink-git-spec", version: "1.0.0" } } } },
+    { name: "weird-deps", version: "1.0.0", bin: "i.js", files: { "i.js": "x" }, manifest: { dependencies: ["dep-b"] } },
     { name: "file-dep", version: "1.0.0", bin: "i.js", dependencies: { thing: "file:../thing" }, files: { "i.js": "x" } },
     // a dependency that is itself on the registry, but whose own dependency is a git address (found only when npm reads its metadata)
     { name: "git-transitive", version: "1.0.0", bin: "i.js", dependencies: { "has-git": "^1.0.0" }, files: { "i.js": "x" } },
@@ -128,7 +134,7 @@ describe("T3 install: a package and its dependencies", () => {
   it("does not fetch the dev dependency at all", async () => {
     const { result } = await install(proposal(NAME, "1.4.2"));
     expect(result.ok).toBe(true);
-    expect(registry.requests.some((path) => path.includes("dev-only"))).toBe(false);
+    expect(registry.requests.filter((path) => path.includes("dev-only"))).toEqual([]);
     expect(registry.requests.some((path) => path.endsWith("dep-b-1.0.0.tgz"))).toBe(true);
   });
   it("gives the same bundle hash when the same package is installed again", async () => {
@@ -202,6 +208,20 @@ describe("T3 install: dependencies that do not come from the registry are refuse
       expect(await exists(join(dir, "pkg", "node_modules")), name).toBe(false);
       expect(registry.requests.every((path) => path === `/${name}` || path === `/${name}/-/${name}-1.0.0.tgz`), name).toBe(true);
     }
+  });
+  it("refuses `overrides` and `resolutions` before npm runs, with a shipped shrinkwrap or without, so no override address is ever fetched", async () => {
+    for (const name of ["with-overrides", "with-resolutions", "shrink-overrides"]) {
+      registry.requests.length = 0;
+      const { result, dir } = await install(proposal(name));
+      expect(failed(result), name).toMatchObject({ code: "unsupported_manifest", sentence: INSTALL_FAILURES.unsupported_manifest });
+      expect(await exists(join(dir, "pkg", "package-lock.json")), name).toBe(false);
+      expect(await exists(join(dir, "pkg", "node_modules")), name).toBe(false);
+      expect(registry.requests.every((path) => path === `/${name}` || path === `/${name}/-/${name}-1.0.0.tgz`), name).toBe(true);
+    }
+  });
+  it("refuses a non-registry dependency range even when the package ships a shrinkwrap (npm would try to fetch it), and a dependencies field that is not a table", async () => {
+    expect(failed((await install(proposal("shrink-git-spec"))).result).code).toBe("git_dependency");
+    expect(failed((await install(proposal("weird-deps"))).result).code).toBe("git_dependency");
   });
   it("refuses a git dependency that only a dependency's own metadata reveals, with no `npm ci` run and the sentence naming git", async () => {
     const { result, dir } = await install(proposal("git-transitive"));
