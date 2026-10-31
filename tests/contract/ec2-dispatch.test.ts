@@ -439,6 +439,22 @@ describe("ec2-ebs delivery", () => {
       expect(await plain.deliver(build, build.invocation)).toBe("DELIVERED");
     });
 
+    it("never sends an owner redirect to a worker that does not list task.ownerRedirect.v1: it is refused, not run without the re-approval stop, and the field is not dropped (live interaction R1)", async () => {
+      const ownerRedirect = { messageId: "msg_0123456789abcdefghij", sender: "person p_a1b2c3", text: "use the retry helper" };
+      const record = taskRecord({ workflowMode: "IMPLEMENT", ownerRedirect });
+      const base = ["task.workflowMode"];
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.ownerRedirect.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).ownerRedirect).toEqual(ownerRedirect);
+      // An ordinary build is delivered to either.
+      const build = taskRecord({ workflowMode: "IMPLEMENT" });
+      const plain = delivery({ workerFeatures: async () => base });
+      expect(await plain.deliver(build, build.invocation)).toBe("DELIVERED");
+    });
+
     it("asks for the code review's risk level only on a worker that lists it; an older worker reviews as before (Plan 6 Task 13)", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const workflowBase = [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }];

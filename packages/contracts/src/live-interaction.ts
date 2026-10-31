@@ -83,10 +83,12 @@ export const REDIRECT_SLACK_STATUS_LINE = "stopped the agent and gave a new inst
 
 /**
  * The invocation field the broker adds to a coding step it restarts after a keep_plan redirect. The worker pre-records the message as taken (owner_instruction) and puts the framed text in the
- * prompt in place of "Owner note". Strict, and carrying only the message id and its text (the id is server-made, the text is the owner's own).
+ * prompt in place of "Owner note". Strict, and carrying only the message id, the sender's fixed label and the text (the id is server-made, the text is the owner's own).
  */
 export const OwnerRedirectInvocationSchema = z.object({
   messageId: z.string().regex(/^msg_[0-9a-z]{20}$/),
+  /** Who sent it, as the model is told: a fixed word and a short id (never the name the person chose). The same shape a live steer carries. */
+  sender: z.string().regex(/^person p_[0-9a-f]{6}$/),
   text: z.string().min(1).max(REDIRECT_TEXT_MAX_CHARS),
 }).strict();
 export type OwnerRedirectInvocation = z.infer<typeof OwnerRedirectInvocationSchema>;

@@ -62,9 +62,12 @@ describe("redirect payloads", () => {
 
   it("gives the worker a strict owner-redirect invocation with a server-made message id", () => {
     expect(OWNER_REDIRECT_FEATURE).toBe("task.ownerRedirect.v1");
-    expect(OwnerRedirectInvocationSchema.safeParse({ messageId: MESSAGE, text: "go" }).success).toBe(true);
-    expect(OwnerRedirectInvocationSchema.safeParse({ messageId: "msg_short", text: "go" }).success).toBe(false);
-    expect(OwnerRedirectInvocationSchema.safeParse({ messageId: MESSAGE, text: "go", authority: "owner_instruction" }).success).toBe(false);
+    const sender = "person p_a1b2c3";
+    expect(OwnerRedirectInvocationSchema.safeParse({ messageId: MESSAGE, sender, text: "go" }).success).toBe(true);
+    expect(OwnerRedirectInvocationSchema.safeParse({ messageId: "msg_short", sender, text: "go" }).success).toBe(false);
+    expect(OwnerRedirectInvocationSchema.safeParse({ messageId: MESSAGE, text: "go" }).success).toBe(false);
+    expect(OwnerRedirectInvocationSchema.safeParse({ messageId: MESSAGE, sender: "Alice", text: "go" }).success).toBe(false);
+    expect(OwnerRedirectInvocationSchema.safeParse({ messageId: MESSAGE, sender, text: "go", authority: "owner_instruction" }).success).toBe(false);
   });
 
   it("stores no instruction text on the REDIRECT# record", () => {
