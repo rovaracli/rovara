@@ -105,11 +105,6 @@ export interface DeveloperApiConfiguration {
 }
 export interface DeveloperRouteDependencies {
   /**
-   * Enterprise foundations (E2): the install's edition policy, read once at start. The Auditor role needs it: without a policy, or with one that has no
-   * `auditorRole`, an Auditor's session is refused and the role cannot be given.
-   */
-  editionPolicy?: EditionPolicy;
-  /**
    * Meta repo lane B: a file of one of an org's repositories at a commit, as GitHub holds it (undefined when it is not there; throws when GitHub cannot answer). The setup agent's
    * citations are re-read through it. Without it every citation reads `unchecked` and nothing is pre-ticked.
    */
@@ -163,7 +158,7 @@ export interface DeveloperRouteDependencies {
   cloud?: boolean;
   /** Enterprise foundations I1: the group mapping and break-glass stores behind the company sign-in routes. Absent where the edition has no company sign-in. */
   sso?: SsoStores;
-  /** Enterprise foundations E2: the edition's feature table. Absent on an install deployed before editions (no gates, today's behaviour). */
+  /** Enterprise foundations E2: the edition's feature table. Absent on an install deployed before editions (no gates, today's behaviour). The Auditor role (I2) needs it: without a policy, or with one that has no `auditorRole`, an Auditor's session is refused and the role cannot be given. */
   editionPolicy?: EditionPolicy;
   /**
    * Plan 2, Task 16: creates a project in the caller's org from a repository the org's GitHub connection reaches, through the broker's

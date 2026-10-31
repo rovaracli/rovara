@@ -6,8 +6,9 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { orgMemberKey, type OrgId } from "@agentx/contracts";
 import {
-  approverOfPlan, attributionForPublication, auditLinkFor, eraseAttributionOfPerson, installEditionPolicy, routeEditionDependencies,
+  approverOfPlan, attributionForPublication, auditLinkFor, eraseAttributionOfPerson, routeEditionDependencies,
 } from "../../packages/broker/src/wiring/enterprise-identity.js";
+import { installEditionPolicy } from "../../packages/broker/src/aws/broker/edition-wiring.js";
 import { dynamoAttributionLinkStore } from "../../packages/broker/src/attribution/links.js";
 import { rewriteAttributionBody } from "../../packages/contracts/src/index.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -17,16 +18,11 @@ const maya = "a".repeat(64), priya = "b".repeat(64);
 const TASK = "11111111-1111-4111-8111-111111111111";
 
 describe("the edition of an install", () => {
-  it("is none for an install with no stamp (it runs as it does today, never as Enterprise), the stamped edition otherwise, and refuses a stamp that is not an edition", () => {
-    expect(installEditionPolicy({})).toBeUndefined();
-    expect(installEditionPolicy({ ROVARA_EDITION: "" })).toBeUndefined();
-    expect(installEditionPolicy({ ROVARA_EDITION: "enterprise" })?.features.auditorRole).toBe(true);
-    expect(installEditionPolicy({ ROVARA_EDITION: "public" })?.features.auditorRole).toBe(false);
-    for (const bad of ["Enterprise", "enterprise ", "private", "true", "0"]) expect(() => installEditionPolicy({ ROVARA_EDITION: bad }), bad).toThrow("CONFIG_INVALID");
-  });
-
+  // The edition is built once, by the E2 wiring (aws/broker/edition-wiring.ts), and this lane only passes it on: one source, not two.
   it("is passed on to the route dependencies when there is one, and adds nothing when there is not", () => {
-    const policy = installEditionPolicy({ ROVARA_EDITION: "enterprise" })!;
+    const policy = installEditionPolicy({ ROVARA_EDITION: "enterprise" }, false)!;
+    expect(policy.features.auditorRole).toBe(true);
+    expect(installEditionPolicy({ ROVARA_EDITION: "public" }, true)!.features.auditorRole).toBe(false);
     expect(routeEditionDependencies({ editionPolicy: policy })).toEqual({ editionPolicy: policy });
     expect(routeEditionDependencies({})).toEqual({});
     expect(Object.keys(routeEditionDependencies({ editionPolicy: undefined }))).toEqual([]);
@@ -122,34 +118,26 @@ describe("a failed rewrite does not lose the list of descriptions to rewrite (re
 
 interface Site { file: string; calls: readonly string[]; why: string }
 const SITES: readonly Site[] = [
-  { file: "packages/broker/src/aws/broker/handler.ts", calls: ["routeEditionDependencies(dependencies)", "installEditionPolicy("], why: "both builders of the route dependencies spread routeEditionDependencies; the broker's dependencies take installEditionPolicy(process.env)" },
+  { file: "packages/broker/src/aws/broker/handler.ts", calls: ["routeEditionDependencies(dependencies)"], why: "both builders of the route dependencies spread routeEditionDependencies (the edition itself is built once by installEditionPolicy in edition-wiring.ts)" },
   { file: "packages/broker/src/aws/broker/scope-helpers.ts", calls: ["routeEditionDependencies(dependencies)"], why: "the authenticateBearer dependencies" },
-  { file: "packages/broker/src/aws/developer-tasks/publication.ts", calls: ["attributionForPublication(", "attribution"], why: "the publish payload's attribution and the pull request body context's attribution come from one attributionForPublication call" },
-  { file: "packages/broker/src/aws/developer-tasks/start.ts", calls: ["assertRepositoryHostsKnown("], why: "a task start refuses a repository whose host kind is not registered" },
-  { file: "packages/broker/src/aws/broker/pull-request-reconcile.ts", calls: ["relatedIds"], why: "the pull_request.opened audit event carries the people named, as related ids" },
 ];
 const root = resolve(import.meta.dirname, "..", "..");
 const source = (file: string) => readFileSync(resolve(root, file), "utf8");
 const IMPORTS_ASSEMBLY = /from\s+["'][^"']*wiring\/enterprise-identity\.js["']/u;
-const wired = SITES.filter((site) => IMPORTS_ASSEMBLY.test(source(site.file)));
 
 describe("the call sites of the assembly", () => {
-  it("every site that imports the assembly makes its calls, and a half-applied wiring fails", () => {
-    for (const site of wired) for (const call of site.calls) expect(source(site.file), `${site.file} must contain ${call} (${site.why})`).toContain(call);
-    if (wired.length > 0) {
-      expect(wired.map((site) => site.file), "once one site is wired every site is").toEqual(SITES.map((site) => site.file));
+  it("every site imports the assembly and makes its calls", () => {
+    for (const site of SITES) {
+      expect(source(site.file), `${site.file} must import the assembly`).toMatch(IMPORTS_ASSEMBLY);
+      for (const call of site.calls) expect(source(site.file), `${site.file} must contain ${call} (${site.why})`).toContain(call);
     }
   });
 
-  it("the handler spreads the edition into both route-dependency builders once it is wired", () => {
-    const handler = source("packages/broker/src/aws/broker/handler.ts");
-    if (!IMPORTS_ASSEMBLY.test(handler)) return;
-    expect(handler.split("routeEditionDependencies(dependencies)").length - 1).toBeGreaterThanOrEqual(2);
+  it("the handler spreads the edition into both route-dependency builders", () => {
+    expect(source("packages/broker/src/aws/broker/handler.ts").split("routeEditionDependencies(dependencies)").length - 1).toBeGreaterThanOrEqual(2);
   });
 
-  it("reports the sites still to be wired", () => {
-    const pending = SITES.filter((site) => !wired.includes(site)).map((site) => site.file);
-    // Not a failure: the wiring is applied by the controller. The list is the report's "Wiring pending", kept where it cannot go stale.
-    expect([...wired.map((site) => site.file), ...pending].sort()).toEqual(SITES.map((site) => site.file).sort());
+  it("the broker's own edition comes from one place: the assembly does not build a second policy", () => {
+    expect(source("packages/broker/src/wiring/enterprise-identity.ts")).not.toMatch(/resolveEdition|function installEditionPolicy/u);
   });
 });

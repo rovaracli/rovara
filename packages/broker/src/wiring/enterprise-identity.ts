@@ -1,26 +1,13 @@
 // Enterprise foundations, Wave 2 (P7, I2, I3): the one place the pieces of this lane are put together for the broker. The handler and the publication step call THESE functions, a line each, and
-// `tests/contract/enterprise-identity-wiring.test.ts` checks that every call site that has been wired still calls them, so a wiring line that is later lost fails a test. The lines still to be
-// applied (they are in hot files another builder is editing) are listed in `.superpowers/sdd/ent-w2-identity/report.md`; once a file imports this module the test requires all of its lines.
-import {
-  WorkflowDecisionRecordSchema, editionPolicy, resolveEdition,
-  type EditionPolicy, type OrgId,
-} from "@agentx/contracts";
+// `tests/contract/enterprise-identity-wiring.test.ts` checks that every call site that has been wired still calls them, so a wiring line that is later lost fails a test. The lines are applied in the
+// broker's files; the test requires all of them.
+import { WorkflowDecisionRecordSchema, type EditionPolicy, type OrgId } from "@agentx/contracts";
 import { dynamoAttributionLinkStore, type AttributionLinkStore } from "../attribution/links.js";
 import { dynamoAttributionReader, resolveActingAttribution, type ResolvedAttribution } from "../attribution/resolve.js";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };
 
-/**
- * The install's edition policy from its environment (`ROVARA_EDITION`, stamped at deploy time). An install with NO stamp is an existing install: it gets no policy, and so runs as today
- * (no Auditor can sign in, a Slack identity with no record stays an implicit member); it is never read as Enterprise. A stamp that is not an edition refuses to start.
- */
-export function installEditionPolicy(env: Readonly<Record<string, string | undefined>>): EditionPolicy | undefined {
-  const configured = env["ROVARA_EDITION"];
-  if (configured === undefined || configured === "") return undefined;
-  return editionPolicy(resolveEdition({ configured, cloud: undefined, allowDerivedFromCloud: false }));
-}
-
-/** What the route dependencies and the broker's own dependencies take from the install: the edition policy, when the install has one. Spread into every object that becomes `DeveloperRouteDependencies`. */
+/** What the route dependencies take from the broker's dependencies: the edition policy (built once at start by `installEditionPolicy` in `aws/broker/edition-wiring.ts`, the one source), when the install has one. Spread into every object that becomes `DeveloperRouteDependencies`. */
 export function routeEditionDependencies(dependencies: { editionPolicy?: EditionPolicy | undefined }): { editionPolicy?: EditionPolicy } {
   return dependencies.editionPolicy === undefined ? {} : { editionPolicy: dependencies.editionPolicy };
 }

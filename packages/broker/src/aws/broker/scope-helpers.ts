@@ -38,6 +38,7 @@ import { authenticateBearer } from "../developer-routes.js";
 import { connectedAwsAccountsOf, workspaceKey } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 import { orgStoreOf } from "./dependency-wiring.js";
+import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
 
 /** The install's environment name: what its single org (ruling R3) and the default org resolver derive from. */
 export function brokerEnvironmentName(dependencies: Pick<AwsBrokerDependencies, "environmentName" | "developer">): string {
@@ -260,7 +261,7 @@ export function decideRequestContext(dependencies: AwsBrokerDependencies, agents
     cellOrigin: new URL(developer.issuer).origin,
     // `apr_`: write, step and change approvals, over the same dependencies as the agent routes; without them nothing is registered, so every approval is not found.
     kinds: { ...(agents === undefined ? {} : { apr: approvalDecideKind(agents), spr: spendDecideKind(agents) }), ...decide.kinds },
-    authenticateBearer: (authorization) => authenticateBearer({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, orgs: orgStoreOf(dependencies) }, authorization),
+    authenticateBearer: (authorization) => authenticateBearer({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, orgs: orgStoreOf(dependencies), ...routeEditionDependencies(dependencies) }, authorization),
     // I2: an Auditor decides nothing, whatever approval still names them.
     requireWriter: async (orgId, developerId) => { await liveWriterRole({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName: developer.signInTableName }, orgId, developerId); },
   };

@@ -194,8 +194,6 @@ export interface CodeBuildRecord {
 
 export interface AwsBrokerDependencies {
   documentClient: DynamoDBDocumentClient;
-  /** Enterprise foundations (E2): the install's edition policy, read once at start. Absent until E2 is wired; see `slackCallerFor` for what Enterprise does with it. */
-  editionPolicy?: EditionPolicy;
   /** The Audit Ledger's outbox (named environments only); absent on a legacy install, where every audit function does nothing. */
   audit?: AuditRuntime;
   /** What reading the Audit Ledger and starting its exports needs (Task 11); absent on a legacy install. The broker builds no export: its own function does. */
@@ -257,7 +255,7 @@ export interface AwsBrokerDependencies {
   editionGuard?: () => Promise<void>;
   /** Enterprise foundations I1: the group mapping and break-glass stores, built once. Absent where the edition has no company sign-in. */
   sso?: SsoStores;
-  /** Enterprise foundations E2: the edition's feature table, from the deploy stamp. Absent on an install deployed before editions, which keeps today's behaviour and is never Enterprise. */
+  /** Enterprise foundations E2: the edition's feature table, from the deploy stamp. Absent on an install deployed before editions, which keeps today's behaviour and is never Enterprise. The Auditor role (I2) is refused where it is absent (fail closed); see `slackCallerFor`. */
   editionPolicy?: EditionPolicy;
   /**
    * Ruling R55: where, and with which credential, a cloud org's owner or admin creates a project (the foundation's launch template and
