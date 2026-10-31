@@ -17,6 +17,8 @@ const word = (raw: string): string => raw.toLowerCase().replace(/[^\p{L}\p{N}]+/
 // escapes that stand for white space (`\n`, `\r`, `\t`, a `\u000a`-style break, an escaped `"` or `/`, however many backslashes a nested encoding put in front) and the characters that only
 // structure JSON (`{ } [ ] " : ,`) are read as spaces. The view is as long as the text, so a range found in it is cut out of the original text, and what is cut never ends inside an escape:
 // the JSON that comes back still parses. The same view is used for the source text and the model's text, so a source that itself came back as JSON matches too.
+// Text that parses as JSON is redacted by walking the parsed value instead of cutting the text: a run inside one string is cut out of that string; a run that spans several strings
+// (array elements, object values) replaces each string it touches in full, so the structure survives. A run that spans object KEYS is not caught (keys are not read): best effort.
 const JSON_WHITESPACE_CODES = "0009|000[aAbBcCdD]|0020|0085|00[aA]0|1680|200[0-9aA]|202[89]|202[fF]|205[fF]|3000";
 const JSON_NOISE = new RegExp(`(?<!\\\\)\\\\+(?:[nrt"/]|u(?:${JSON_WHITESPACE_CODES}))|[{}\\[\\]":,]`, "gu");
 const jsonView = (text: string): string => text.replace(JSON_NOISE, (match) => " ".repeat(match.length));
@@ -40,7 +42,15 @@ export function createSourceTextGuard(runWords = RUN_WORDS): SourceTextGuard {
     },
     active: () => shingles.size > 0,
     redact(text) {
-      if (shingles.size === 0 || text.length < runWords * 2) return text;
+      return redactAt(text, 0);
+    },
+    scrub<T>(value: T): T {
+      return scrubValue(value);
+    },
+  };
+
+  /** Cuts every run out of the text itself. */
+  function cutRuns(text: string): string {
       const tokens = [...jsonView(text).matchAll(/\S+/gu)].map((m) => ({ start: m.index, end: m.index + m[0].length, w: word(m[0]) })).filter((t) => t.w !== "");
       const ranges: Array<[number, number]> = [];
       for (let i = 0; i + runWords <= tokens.length; i += 1) {
@@ -56,8 +66,70 @@ export function createSourceTextGuard(runWords = RUN_WORDS): SourceTextGuard {
       let at = 0;
       for (const [start, end] of merged) { out += text.slice(at, start) + REMOVED; at = end; }
       return out + text.slice(at);
-    },
-    scrub<T>(value: T): T {
+  }
+
+  const MAX_JSON_DEPTH = 64;
+  const MAX_NESTED_JSON = 4;
+  /** The strings of a parsed JSON value in document order (keys are not read); undefined when it nests too deeply to walk. */
+  function leavesOf(value: unknown, into: string[], depth: number): boolean {
+    if (depth > MAX_JSON_DEPTH) return false;
+    if (typeof value === "string") { into.push(value); return true; }
+    if (Array.isArray(value)) return value.every((item) => leavesOf(item, into, depth + 1));
+    if (typeof value === "object" && value !== null) return Object.values(value as Record<string, unknown>).every((item) => leavesOf(item, into, depth + 1));
+    return true;
+  }
+  function mapLeaves(value: unknown, replace: (leaf: string) => string): unknown {
+    if (typeof value === "string") return replace(value);
+    if (Array.isArray(value)) return value.map((item) => mapLeaves(item, replace));
+    if (typeof value === "object" && value !== null) return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, mapLeaves(item, replace)]));
+    return value;
+  }
+
+  /**
+   * Text that parses as JSON is redacted by walking the parsed value, so the structure always survives: a run inside one string is cut out of that string; a run that spans several
+   * strings replaces each of them in full. Returns undefined when the text is not JSON (or is too deeply nested to walk), and the caller cuts the text itself.
+   */
+  function redactJson(text: string, depth: number): string | undefined {
+    let parsed: unknown;
+    try { parsed = JSON.parse(text) as unknown; } catch { return undefined; }
+    if (typeof parsed !== "object" && typeof parsed !== "string") return undefined;
+    if (parsed === null) return undefined;
+    const leaves: string[] = [];
+    if (!leavesOf(parsed, leaves, 0)) return undefined;
+    // Runs over the words of all the strings in order: a window that starts in one string and ends in another touches both.
+    const words: string[] = [];
+    const leafOfWord: number[] = [];
+    leaves.forEach((leaf, index) => { for (const w of normalised(leaf)) { words.push(w); leafOfWord.push(index); } });
+    const whole = new Set<number>();
+    for (let i = 0; i + runWords <= words.length; i += 1) {
+      if (!shingles.has(words.slice(i, i + runWords).join(" "))) continue;
+      if (leafOfWord[i] === leafOfWord[i + runWords - 1]) continue;
+      for (let k = i; k < i + runWords; k += 1) whole.add(leafOfWord[k]!);
+    }
+    let index = 0;
+    let changed = false;
+    const next = mapLeaves(parsed, (leaf) => {
+      const own = index;
+      index += 1;
+      const out = whole.has(own) ? REMOVED : redactAt(leaf, depth + 1);
+      if (out !== leaf) changed = true;
+      return out;
+    });
+    // JSON with nothing to remove comes back exactly as it was. (It is not cut as text either: a run that only shows across object keys is not caught, and cutting it would break the JSON.)
+    if (!changed) return text;
+    const indent = /^\s*[[{]\s*\n([ \t]+)/u.exec(text)?.[1];
+    return JSON.stringify(next, null, indent);
+  }
+
+  function redactAt(text: string, depth: number): string {
+    if (shingles.size === 0 || text.length < runWords * 2) return text;
+    const viaJson = depth < MAX_NESTED_JSON && /^\s*["[{]/u.test(text) ? redactJson(text, depth) : undefined;
+    if (viaJson !== undefined) return viaJson;
+    // Not JSON (a message with prose around it, a document that was cut off): cut the runs out of the text itself.
+    return cutRuns(text);
+  }
+
+  function scrubValue<T>(value: T): T {
       if (shingles.size === 0) return value;
       const walk = (entry: unknown, depth: number): unknown => {
         if (depth > 12) return entry;
@@ -82,8 +154,7 @@ export function createSourceTextGuard(runWords = RUN_WORDS): SourceTextGuard {
         return entry;
       };
       return walk(value, 0) as T;
-    },
-  };
+  }
   return guard;
 }
 
