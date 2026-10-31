@@ -149,7 +149,7 @@ describe("task page: remembered flags", () => {
     const comment = seedComment(fixture, SAM, RETRY_TEXT);
     const { deps } = withBatchGet(fixture, () => new Promise(() => undefined));
     const started = Date.now();
-    const flags = await commentLearningFlags(deps, { caller: PRIYA, access: { task: fixture.db.get(`DEVTASK#${fixture.taskId}`, "META") as never, role: "owner", ownerActorIds: [] } },
+    const flags = await commentLearningFlags(deps, { caller: PRIYA, access: { task: fixture.db.get(`DEVTASK#${fixture.taskId}`, "META") as never, role: "owner" } },
       fixture.taskId, [comment.commentId], { timeoutMs: 40 });
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(flags).toEqual({ canRemember: true });

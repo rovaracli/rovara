@@ -1,3 +1,4 @@
+import {bedrockClaudeModelIds} from "@agentx/model-runtime/catalog";
 // Plan 3 Task 24b: company AI sources, the store and the admin routes (`/v1/app/org/model-sources*`), through the broker's handler with two orgs.
 // A key is write-only: it goes to the model proxy and appears nowhere else. Every change commits with its request item and its audit item in one
 // transaction. An endpoint's host is an egress item that waits for Rovara staff on cloud. The kinds are off at launch, so most tests turn them on.
@@ -28,7 +29,7 @@ import { MODEL_SOURCE_SWEEP_BUDGET_MS, sweepModelSources } from "../../packages/
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { listEgressItems, putEgressDomains } from "../../packages/broker/src/org/egress-domains.js";
 import { developerOrgKey, orgMemberKey, orgMetaKey } from "../../packages/contracts/src/org-node.js";
-import { createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
+import { createAuditedSlackBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { chatGptConnections, type ChatGptSealer } from "../../packages/broker/src/chatgpt/connections.js";
 import type { ChatGptConnectionView } from "../../packages/contracts/src/index.js";
 
@@ -1006,8 +1007,10 @@ describe("the store", () => {
 describe("what a task does with the org's order", () => {
   const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
   const maya = "U0123456789";
-  const models = { default: { provider: "amazon-bedrock", modelId: "default-model", label: "Balanced" }, approved: [{ provider: "amazon-bedrock", modelId: "default-model", label: "Balanced" }] };
-  const connected: ChatGptConnectionView = { connected: true, status: "connected", email: "maya@acme.com", models: ["gpt-5.5", "gpt-6.1-sol"] };
+  // C53 requires source-verified candidates and the project allowlist covers the personal plan too.
+  const defaultModel={provider:"amazon-bedrock",modelId:bedrockClaudeModelIds("us")[0]!,label:"Balanced"};
+  const models = { default: defaultModel, approved: [defaultModel,{provider:"openai",modelId:"gpt-6.1-sol",label:"Personal plan"}] };
+  const connected: ChatGptConnectionView = { connected: true, status: "connected", connectedAt:"2026-10-01T00:00:00Z", email: "maya@acme.com", models: ["gpt-5.5", "gpt-6.1-sol"] };
 
   /** A Slack task whose owner has a working plan, on an install with the model proxy; `prepare` plants the org's sources and the install-wide switch. */
   async function task(prepare: (db: FakeDynamoDb) => void, options: { proxy?: boolean; installSwitch?: boolean; unavailable?:boolean; explicit?:boolean } = {}) {
@@ -1015,7 +1018,7 @@ describe("what a task does with the org's order", () => {
       settings: vi.fn(async () => ({ enabled: options.installSwitch ?? true, preferredModel: "gpt-6.1-sol" })),
       view: vi.fn(async () => connected),
     } as unknown as ChatGptConnections;
-    const { handler, db } = createBroker({ extra: { chatgpt: service, ...(options.proxy === false ? {} : { modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.com" } }) } });
+    const { handler, db } = createAuditedSlackBroker({ extra: { chatgpt: service, ...(options.proxy === false ? {} : { modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.com" } }) } });
     prepare(db);
     await registerSlackProject(handler, { models });
     if(options.explicit){const {projectSelectionKey}=await import("../../packages/contracts/src/index.js");db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:models.default.provider,modelId:models.default.modelId}});}

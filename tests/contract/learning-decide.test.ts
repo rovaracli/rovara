@@ -720,7 +720,7 @@ function interleaved(w: MergeWorld) {
       const items = (command as RawCommand).input?.TransactItems;
       if (hooks.afterDraftSave !== undefined && items?.some((entry) => entry.Update?.Key?.sk === "DRAFT")) {
         const run = hooks.afterDraftSave;
-        hooks.afterDraftSave = undefined;
+        delete hooks.afterDraftSave;
         await run();
       }
       return result;

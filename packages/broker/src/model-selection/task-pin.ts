@@ -4,7 +4,7 @@ import {StageModelApprovalProofSchema,parseStageModelApprovalProof,processApprov
 import {z} from "zod";
 import {GetCommand,QueryCommand} from "@aws-sdk/lib-dynamodb";
 import {OrgIdSchema,AgentIdSchema,ProjectModelsSchema,ModelSelectionSchema,StageIdSchema,StageModelChoiceSchema,projectSelectionKey,ModelSelectionPolicyResponseSchema,StoredProjectDefinitionSchema,PROJECT_REVISION_SK_PREFIX,projectPk,projectRevisionKey,modelSourcesKey,orgSettingsKey,recipeDigest,agentXError,type OrgId,type AgentId,type ResolvedRecipe,type RecipeOverlay} from "@agentx/contracts";
-import {readModelSelectionPolicy,type ModelPolicyReader} from "./policy-store.js";
+import {readModelSelectionPolicy,inactiveModelSourcesRevision,type ModelPolicyReader} from "./policy-store.js";
 import {effectiveSources,type RoutingDependencies} from "../model-sources/routing.js";
 import type {TransactItem} from "../agents/table-writes.js";
 const Policy=ModelSelectionPolicyResponseSchema.omit({candidates:true});
@@ -30,7 +30,7 @@ export async function prepareTaskModelPolicyPin(deps:ModelPolicyReader&{modelRou
  const selected=selection.Item===undefined?undefined:ModelSelectionSchema.safeParse(selection.Item.model);
  if(selected!==undefined&&!selected.success)throw unavailable();
  const frozenInputs={projectRevision:definition.data.revision,...(definition.data.models===undefined?{}:{projectModels:definition.data.models}),...(selected?.success?{projectSelection:selected.data}:{}),...frozenRecipeModelInputs(input.recipe,input.projectOverlay)};
- return parseTaskModelPolicyPin({frozenInputs,version:1,orgId:input.orgId,project:input.project,registeredAt:row.registeredAt,processAgentId:input.agentId,recipeDigest:input.digest,policy,...(input.approvalProof===undefined?{}:{approvalProof:input.approvalProof}),sourcesRevision:sources?.stored.revision??0},{orgId:input.orgId,project:input.project,agentId:input.agentId,recipe:input.recipe,digest:input.digest});
+ return parseTaskModelPolicyPin({frozenInputs,version:1,orgId:input.orgId,project:input.project,registeredAt:row.registeredAt,processAgentId:input.agentId,recipeDigest:input.digest,policy,...(input.approvalProof===undefined?{}:{approvalProof:input.approvalProof}),sourcesRevision:sources?.stored.revision??await inactiveModelSourcesRevision(deps,input.orgId)},{orgId:input.orgId,project:input.project,agentId:input.agentId,recipe:input.recipe,digest:input.digest});
 }
 export function taskModelPolicyAdmissionChecks(tableName:string,pin:TaskModelPolicyPin):TransactItem[] {
  return ([[orgSettingsKey(pin.orgId,"MODEL_SELECTION_POLICY"),pin.policy.revision],[modelSourcesKey(pin.orgId),pin.sourcesRevision]] as const).map(([Key,revision])=>({ConditionCheck:{TableName:tableName,Key,...(revision===0?{ConditionExpression:"attribute_not_exists(pk)"}:{ConditionExpression:"#revision = :revision",ExpressionAttributeNames:{"#revision":"revision"},ExpressionAttributeValues:{":revision":revision}})}}));

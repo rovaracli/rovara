@@ -498,6 +498,7 @@ async function forWorkerFeatures(
   }
   // #341: an older worker cannot fetch a ChatGPT token, so its task runs on the default model it also carries.
   const unsupportedChatGpt = carriesChatGpt && !features.includes("model.chatgpt");
+  if(unsupportedChatGpt&&invocation.kind==="task"&&invocation.payload.modelPolicy!==undefined)throw agentXError("RUNTIME_UNAVAILABLE","The worker cannot execute this governed personal model. Update the worker and retry.");
   if (unsupportedChatGpt) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.chatgpt_omitted", reason, operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
