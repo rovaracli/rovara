@@ -27,6 +27,8 @@ import {
   bundleDeployerFunctionName,
   bundleDeployerRoleName,
   bundleTrustParameter,
+  editionRecordParameter,
+  synthSettingsParameter,
   deployLockParameter,
   deployProgressParameter,
   operatorAccessStateParameter,
@@ -246,7 +248,7 @@ export class OperatorAccess extends Construct {
     const deployerPolicy: Statement[] = [
       { Sid: "ReadApprovals", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion"], Resource: [approvedObjects, approvalObjects] },
       { Sid: "WriteVerifiedCopies", Effect: "Allow", Action: ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion"], Resource: deployingObjects },
-      { Sid: "ReadInstallRecords", Effect: "Allow", Action: ["ssm:GetParameter"], Resource: [`${prefix}settings`, `${prefix}bundle`, bundleTrustParameter(env), deployProgressParameter(env), operatorAccessStateParameter(env), deployLockParameter(env)].map(parameterArn) },
+      { Sid: "ReadInstallRecords", Effect: "Allow", Action: ["ssm:GetParameter"], Resource: [`${prefix}settings`, `${prefix}bundle`, bundleTrustParameter(env), deployProgressParameter(env), operatorAccessStateParameter(env), deployLockParameter(env), synthSettingsParameter(env), editionRecordParameter(env)].map(parameterArn) },
       { Sid: "TellTheCustomer", Effect: "Allow", Action: ["sns:Publish"], Resource: this.alertTopic.topicArn },
       { Sid: "OneRunAtATime", Effect: "Allow", Action: ["ssm:PutParameter", "ssm:DeleteParameter"], Resource: parameterArn(deployLockParameter(env)) },
       { Sid: "WriteUpgradeRecords", Effect: "Allow", Action: ["ssm:PutParameter"], Resource: [`${prefix}settings`, installedBundleParameter(env), `${prefix}restore-points/*`, deployProgressParameter(env)].map(parameterArn) },

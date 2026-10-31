@@ -1,7 +1,7 @@
 // Test support for the customer-owned bundle deployer: an in-memory bucket with object versions and delete markers, parameter store and CloudFormation.
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { BundleManifestSchema, approvedFileKey, bundleApprovalKey, bundleTrustParameter, environmentStackName, operatorAccessStateParameter, sha256OfBytes, type ApprovalRecord } from "@agentx/contracts";
+import { BUNDLE_PUBLIC_DEPLOYED_KINDS, BundleManifestSchema, approvedFileKey, bundleApprovalKey, bundleTrustParameter, environmentStackName, operatorAccessStateParameter, sha256OfBytes, type ApprovalRecord } from "@agentx/contracts";
 import { runDeployer, type DeployerPorts, type StackState } from "../../packages/broker/src/bundle-deployer/deploy.js";
 import type { BuiltBundle } from "./bundle-fixture.js";
 
@@ -91,7 +91,7 @@ export class World {
   /** What the customer's administrator does: place the files (not the images) and write the approval record last. */
   async approve(bundle: BuiltBundle, options: { parameters?: ApprovalRecord["parameters"]; rollback?: boolean; version?: string } = {}): Promise<{ record: ApprovalRecord }> {
     const manifest = BundleManifestSchema.parse(JSON.parse(await readFile(join(bundle.dir, "bundle.json"), "utf8")));
-    const names = ["bundle.json", "bundle.sig.json", ...manifest.files.filter((entry) => entry.kind !== "image" && entry.kind !== "notes").map((entry) => entry.file)];
+    const names = ["bundle.json", "bundle.sig.json", ...manifest.files.filter((entry) => BUNDLE_PUBLIC_DEPLOYED_KINDS.includes(entry.kind)).map((entry) => entry.file)];
     const files: ApprovalRecord["files"] = [];
     for (const file of names) {
       const body = await readFile(join(bundle.dir, file));

@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { ReleaseManifestSchema, STACK_PARTS } from "@agentx/contracts";
 import { LITELLM_SOURCE_IMAGE } from "../../infra/lib/bundle-images.js";
 import { buildBundle, type BundleSigner, type ImageExporter } from "../../scripts/release/bundle.js";
+import { writeFakeKit, type FakeKitOptions } from "./synth-kit-fixture.js";
 
 const sha = (data: Buffer | string): string => createHash("sha256").update(data).digest("hex");
 
@@ -66,13 +67,15 @@ export async function writeRelease(dir: string, version = "1.4.0", templates: Pa
 }
 
 export interface BuiltBundle { root: string; dir: string; bundleSha256: string; key: TestKey; cleanup(): Promise<void> }
-export async function builtBundle(options: { version?: string; key?: TestKey; templates?: Partial<Record<string, object>> } = {}): Promise<BuiltBundle> {
+export async function builtBundle(options: { version?: string; key?: TestKey; templates?: Partial<Record<string, object>>; kit?: FakeKitOptions } = {}): Promise<BuiltBundle> {
   const root = await mkdtemp(join(tmpdir(), "bundle-test-"));
   const release = join(root, "release");
   await mkdir(release);
   await writeRelease(release, options.version, options.templates);
   const key = options.key ?? newTestKey();
   const dir = join(root, "bundle");
-  const { bundleSha256 } = await buildBundle({ releaseDir: release, out: dir, images: IMAGES, exportImage: fakeExporter, signer: key.signer, notes: "Notes.\n" });
+  const kitDir = join(root, "kit");
+  if (options.kit !== undefined) await writeFakeKit(kitDir, options.kit);
+  const { bundleSha256 } = await buildBundle({ releaseDir: release, out: dir, images: IMAGES, exportImage: fakeExporter, signer: key.signer, notes: "Notes.\n", ...(options.kit === undefined ? {} : { synthKitDir: kitDir }) });
   return { root, dir, bundleSha256, key, cleanup: () => rm(root, { recursive: true, force: true }) };
 }

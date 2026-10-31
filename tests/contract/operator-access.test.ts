@@ -325,6 +325,16 @@ describe("the Rovara operator role", () => {
       expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/agentx/ent/settings"))).toBe(false);
     });
 
+    it("reads the install's recorded build settings and edition (to check an approval built for it) and can write neither; the operator reads neither (N3b)", () => {
+      for (const name of ["synth-settings", "edition"]) {
+        expect(allowed(deployer, "ssm:GetParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(true);
+        expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
+        expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
+        expect(allowed(statementsFor(template, "enabled"), "ssm:GetParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
+        expect(allowed(statementsFor(template, "enabled"), "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
+      }
+    });
+
     it("is one function with a fixed name, a 15 minute limit and only the install's five settings (environment, bucket, deploy role, alert topic, S3 suffix); no caller input reaches its environment", () => {
       const [, fn] = resources(template, "AWS::Lambda::Function").find(([, f]) => f.Properties.FunctionName === FUNCTION_NAME)!;
       expect(fn.Properties.Timeout).toBe(900);

@@ -8,6 +8,17 @@
 //
 // All outcomes are values, never thrown text: the only strings returned are fixed reasons and part names.
 import {
+  BUNDLE_PUBLIC_DEPLOYED_KINDS,
+  BUILT_MANIFEST_FILE,
+  BuiltManifestSchema,
+  SynthSettingsSchema,
+  accessTemplatesAgree,
+  canonicalJson,
+  editionRecordParameter,
+  redactedSynthSettings,
+  synthKitSha256,
+  synthSettingsParameter,
+  synthSettingsSha256,
   BUNDLE_MANIFEST_FILE,
   BUNDLE_SIGNATURE_FILE,
   ApprovalRecordSchema,
@@ -243,19 +254,12 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
   } catch {
     return refused("the manifest is not valid");
   }
-  // The files that are deployed must be exactly the signed ones (images and notes stay out of the bucket).
-  const needed = manifest.files.filter((entry) => entry.kind !== "image" && entry.kind !== "notes");
-  const neededNames = new Set(needed.map((entry) => entry.file));
-  for (const entry of needed) {
-    const body = bytesByFile.get(entry.file);
-    if (body === undefined || body.length !== entry.bytes || sha256OfBytes(body) !== entry.sha256) return refused("a deployed file is not the file the signed manifest lists");
-  }
-  for (const file of bytesByFile.keys()) {
-    if (file !== BUNDLE_MANIFEST_FILE && file !== BUNDLE_SIGNATURE_FILE && !neededNames.has(file)) return refused("the approval pins a file the signed manifest does not list");
-  }
+  const signedRelease = manifest.files.find((entry) => entry.file === "release.json");
+  const releaseBytes = bytesByFile.get("release.json");
+  if (signedRelease === undefined || releaseBytes === undefined || releaseBytes.length !== signedRelease.bytes || sha256OfBytes(releaseBytes) !== signedRelease.sha256) return refused("release.json is not the file the signed manifest lists");
   let release;
   try {
-    release = ReleaseManifestSchema.parse(JSON.parse((bytesByFile.get("release.json") as Buffer).toString("utf8")));
+    release = ReleaseManifestSchema.parse(JSON.parse(releaseBytes.toString("utf8")));
   } catch {
     return refused("release.json is not valid");
   }
@@ -274,20 +278,104 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
   if (direction === undefined) return refused("the installed version is not a release version");
   if (direction > 0 && !approval.rollback) return refused("this bundle is older than the installed release and no rollback was approved");
 
+  // The edition of the install decides which kind of approval may deploy to it: an Enterprise install takes only a build made at its own approval (below), and an install
+  // that is not Enterprise never takes one. An edition record that cannot be read is a refusal, never "not Enterprise".
+  let edition: string | undefined;
+  try {
+    edition = await ports.ssm.get(editionRecordParameter(env));
+  } catch {
+    return refused("the install's edition record could not be read");
+  }
+  if (edition !== undefined && edition !== "enterprise" && edition !== "public") return refused("the install's edition record is not readable");
+
+  // What is deployed, whichever kind of approval it is: the version, the access stack, each stack's template, each package's bytes and where its parameters go.
+  interface PlanPackage { file: string; assetId: string; parts: readonly string[]; bucketParameter: string; keyParameter: string; hashParameter: string }
+  let accessTemplate: string | undefined;
+  let templateFor: (part: DeployerPart) => string | undefined;
+  let packages: PlanPackage[];
   const parts: DeployerPart[] = DEPLOYER_PARTS.filter((part) => part !== "identity" || settings.identity.mode !== "oidc");
-  const templateFor = (part: DeployerPart | "access"): string | undefined => {
-    const entry = release.templates.find((candidate) => candidate.region === region && candidate.part === part);
-    const body = entry === undefined ? undefined : bytesByFile.get(entry.file);
-    return body === undefined ? undefined : renderTemplate(body.toString("utf8"), env);
-  };
+  let accessRefusal: string;
+
+  if (approval.build === undefined) {
+    // The bundle's own (Public) templates.
+    if (edition === "enterprise") return refused("an Enterprise install takes only a bundle built at its own approval (agentx bundle approve); this approval holds the bundle's prebuilt templates");
+    // The files that are deployed must be exactly the signed ones (images, notes and the synthesis kit stay out of the bucket).
+    const needed = manifest.files.filter((entry) => BUNDLE_PUBLIC_DEPLOYED_KINDS.includes(entry.kind));
+    const neededNames = new Set(needed.map((entry) => entry.file));
+    for (const entry of needed) {
+      const body = bytesByFile.get(entry.file);
+      if (body === undefined || body.length !== entry.bytes || sha256OfBytes(body) !== entry.sha256) return refused("a deployed file is not the file the signed manifest lists");
+    }
+    for (const file of bytesByFile.keys()) {
+      if (file !== BUNDLE_MANIFEST_FILE && file !== BUNDLE_SIGNATURE_FILE && !neededNames.has(file)) return refused("the approval pins a file the signed manifest does not list");
+    }
+    const publicTemplate = (part: DeployerPart | "access"): string | undefined => {
+      const entry = release.templates.find((candidate) => candidate.region === region && candidate.part === part);
+      const body = entry === undefined ? undefined : bytesByFile.get(entry.file);
+      return body === undefined ? undefined : renderTemplate(body.toString("utf8"), env);
+    };
+    accessTemplate = publicTemplate("access");
+    templateFor = publicTemplate;
+    packages = [];
+    for (const pkg of release.packages) packages.push(pkg);
+    accessRefusal = "the bundle's access stack is not the deployed one (an Enterprise install's access stack is not in a Public bundle); only your administrators deploy the access stack";
+  } else {
+    // A build made at approval. Nothing here is built: the bytes the approval pinned are checked against the signed kit, the recorded settings and the build's own manifest.
+    if (edition !== "enterprise") return refused("a build made at approval is for an Enterprise install, and this install is not recorded as one");
+    const build = approval.build;
+    const builtManifestBytes = bytesByFile.get(BUILT_MANIFEST_FILE);
+    if (builtManifestBytes === undefined) return refused("the approval does not include the build's manifest");
+    if (sha256OfBytes(builtManifestBytes) !== build.resultSha256) return refused("the build's manifest is not the result the approval pinned");
+    let built;
+    try {
+      built = BuiltManifestSchema.parse(JSON.parse(builtManifestBytes.toString("utf8")));
+    } catch {
+      return refused("the build's manifest is not valid");
+    }
+    // The settings the build used are the install's recorded settings now. An administrator who changed them since invalidates the approval.
+    let recorded;
+    try {
+      recorded = SynthSettingsSchema.parse(JSON.parse((await ports.ssm.get(synthSettingsParameter(env))) ?? ""));
+    } catch {
+      return refused("the install's recorded build settings are not readable");
+    }
+    if (recorded.env !== env || recorded.region !== region || recorded.identityMode !== settings.identity.mode) return refused("the recorded build settings are not this install's");
+    const settingsHash = synthSettingsSha256(recorded);
+    if (settingsHash !== build.settingsSha256 || settingsHash !== built.settingsSha256) return refused("this approval was built from settings other than the ones now recorded for the install; approve the bundle again");
+    if (canonicalJson(redactedSynthSettings(recorded)) !== canonicalJson(build.settings)) return refused("the settings shown in the approval are not the recorded ones");
+    // The build is of this bundle, of this signed kit, for this install.
+    const kitHash = synthKitSha256(manifest.files);
+    if (kitHash !== build.kitSha256 || kitHash !== built.kitSha256) return refused("the build was made by a kit other than the signed bundle's");
+    if (built.bundleId !== bundleId || built.version !== manifest.version || built.gitCommit !== manifest.gitCommit || built.env !== env || built.region !== region) return refused("the build is not of this bundle for this install");
+    // The files pinned are exactly the signed lineage and the build's own files, each equal to what the build's manifest says.
+    const builtEntries = [...built.templates, ...built.packages];
+    const expectedFiles = new Set([BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, "release.json", BUILT_MANIFEST_FILE, ...builtEntries.map((entry) => entry.file)]);
+    for (const file of bytesByFile.keys()) if (!expectedFiles.has(file)) return refused("the approval pins a file the build does not list");
+    for (const entry of builtEntries) {
+      const body = bytesByFile.get(entry.file);
+      if (body === undefined || body.length !== entry.bytes || sha256OfBytes(body) !== entry.sha256) return refused("a built file is not the file the build's manifest lists");
+    }
+    const wanted = new Set<string>(["access", ...parts]);
+    const have = new Set<string>(built.templates.map((entry) => entry.part));
+    if (wanted.size !== have.size || [...wanted].some((part) => !have.has(part))) return refused("the build does not hold exactly this install's stacks");
+    const builtTemplate = (part: DeployerPart | "access"): string | undefined => {
+      const entry = built.templates.find((candidate) => candidate.part === part);
+      return entry === undefined ? undefined : bytesByFile.get(entry.file)?.toString("utf8");
+    };
+    accessTemplate = builtTemplate("access");
+    templateFor = builtTemplate;
+    packages = built.packages.map((pkg) => ({ file: pkg.file, assetId: pkg.assetId, parts: pkg.parts, bucketParameter: pkg.bucketParameter, keyParameter: pkg.keyParameter, hashParameter: pkg.hashParameter }));
+    accessRefusal = "the build's access stack is not the deployed one; only your administrators deploy the access stack";
+  }
+
   // The access stack holds the operator role and the deployer; this path never deploys it.
-  const accessTemplate = templateFor("access");
   const deployedAccess = await ports.cfn.getTemplate(environmentStackName(env, "access"));
   if (accessTemplate === undefined || deployedAccess === undefined) return refused("the access stack could not be compared");
   try {
-    if (JSON.stringify(canonical(JSON.parse(accessTemplate))) !== JSON.stringify(canonical(JSON.parse(deployedAccess)))) {
-      return refused("the bundle's access stack is not the deployed one (an Enterprise install's access stack is not in a Public bundle); only your administrators deploy the access stack");
-    }
+    const same = approval.build === undefined
+      ? JSON.stringify(canonical(JSON.parse(accessTemplate))) === JSON.stringify(canonical(JSON.parse(deployedAccess)))
+      : accessTemplatesAgree(accessTemplate, deployedAccess);
+    if (!same) return refused(accessRefusal);
   } catch {
     return refused("the access stack could not be compared");
   }
@@ -349,7 +437,7 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
     }
     const declared = template.Parameters ?? {};
     const values = new Map<string, string>();
-    for (const pkg of release.packages) {
+    for (const pkg of packages) {
       if (!pkg.parts.includes(part)) continue;
       // Lambda reads the CURRENT object at a key, so the verified bytes are copied to a key only this function may write, and that key is what the stack gets.
       const bytes = bytesByFile.get(pkg.file);

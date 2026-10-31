@@ -322,7 +322,7 @@ describe("rovara upgrade --bundle", () => {
     nothingTouched(h);
   });
 
-  it("refuses to combine --bundle with another release source, and refuses a cdk environment", async () => {
+  it("refuses to combine --bundle with another release source", async () => {
     const bundle = await build();
     for (const extra of [{ releaseDir: "/x" }, { to: "1.4.0" }, { source: "/x" }, { exportDir: "/x" }]) {
       const h = await harness(bundle);
@@ -331,11 +331,68 @@ describe("rovara upgrade --bundle", () => {
     }
     const h = await harness(bundle);
     await expect(runUpgrade({ env: "staging", yes: true, allowReplace: [], approvedBundleSha256: "a".repeat(64) }, h.deps)).rejects.toThrow(/applies to --bundle only/);
-    const cdk = await harness(bundle);
-    await writeEnvironmentSettings(cdk.store, { ...INSTALLED, engine: "cdk" });
-    await expect(runUpgrade(options(bundle), cdk.deps)).rejects.toThrow(/prebuilt templates, which the templates engine deploys/);
-    expect(cdk.events).toEqual([]);
-    expect(cdk.store.values.has(installedBundleParameter("staging"))).toBe(false);
+  });
+
+  // N3b: a cdk-engine (Enterprise) install takes a bundle through the same approve-then-deploy path as everything else; nothing of the bundle's prebuilt templates is deployed.
+  describe("on a cdk-engine install (built at approval)", () => {
+    const cdkHarness = async (bundle: BuiltBundle, outcome: { status: string; done: string[] } | Error = { status: "done", done: ["foundation", "runtime"] }) => {
+      const h = await harness(bundle);
+      await writeEnvironmentSettings(h.store, { ...INSTALLED, engine: "cdk" });
+      h.store.calls.length = 0;
+      const calls: Array<{ bundleId: string; yes: boolean; engine: string }> = [];
+      h.deps.approveAndDeploy = async ({ bundle: verified, settings, yes }) => {
+        calls.push({ bundleId: verified.bundleId, yes, engine: settings.engine });
+        if (outcome instanceof Error) throw outcome;
+        return outcome;
+      };
+      return { ...h, calls };
+    };
+
+    it("builds, approves and starts the customer's deployer for exactly this bundle, deploys nothing itself, then runs doctor", async () => {
+      const bundle = await build();
+      const h = await cdkHarness(bundle);
+      const result = await runUpgrade(options(bundle), h.deps);
+      expect(h.calls).toEqual([{ bundleId: bundle.bundleSha256, yes: true, engine: "cdk" }]);
+      expect(result).toMatchObject({ env: "staging", from: "1.2.3", to: "1.4.0", parts: ["foundation", "runtime"], doctor: { failed: 0 } });
+      // The engine, the prebuilt templates and the restore point of the local path are untouched: the deployer owns them.
+      expect(h.events).toEqual([]);
+      expect(h.deployer.requests).toEqual([]);
+      expect(h.touched).not.toContain("prepare");
+      expect(h.store.values.has(installedBundleParameter("staging"))).toBe(false);
+      expect([...h.store.values.keys()].some((name) => name.includes("restore-points"))).toBe(false);
+    });
+
+    it("needs no --source, and refuses what could change what is built: --no-reserved-concurrency", async () => {
+      const bundle = await build();
+      const h = await cdkHarness(bundle);
+      await expect(runUpgrade(options(bundle, { reservedConcurrency: false }), h.deps)).rejects.toThrow(/recorded for it/);
+      expect(h.calls).toEqual([]);
+    });
+
+    it("refuses when this agentx cannot build at approval, when the deployer did not finish, and a downgrade; and the Rovara operator still cannot run it", async () => {
+      const bundle = await build();
+      const none = await cdkHarness(bundle);
+      delete none.deps.approveAndDeploy;
+      await expect(runUpgrade(options(bundle), none.deps)).rejects.toThrow(/cannot build an install's templates at approval/);
+      const unfinished = await cdkHarness(bundle, { status: "in-progress", done: ["foundation"] });
+      await expect(runUpgrade(options(bundle), unfinished.deps)).rejects.toThrow(/did not finish \(in-progress\).*foundation.*the approval stands/);
+      const old = await build({ version: "1.0.0" });
+      const downgrade = await cdkHarness(old);
+      await expect(runUpgrade(options(old), downgrade.deps)).rejects.toThrow(/older than 1\.2\.3/);
+      expect(downgrade.calls).toEqual([]);
+      const operator = await cdkHarness(bundle);
+      operator.deps.identity = { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/agentx-staging-rovara-operator/ana" }) };
+      await expect(runUpgrade(options(bundle), operator.deps)).rejects.toThrow(/Rovara operator role starts approved deployments/);
+      expect(operator.calls).toEqual([]);
+    });
+
+    it("needs --yes without a terminal, before anything is built", async () => {
+      const bundle = await build();
+      const h = await cdkHarness(bundle);
+      h.deps.isInteractive = () => false;
+      await expect(runUpgrade(options(bundle, { yes: false }), h.deps)).rejects.toThrow(/needs --yes/);
+      expect(h.calls).toEqual([]);
+    });
   });
 
   it("refuses a bundle older than the installed release, after verifying it, and records no restore point", async () => {

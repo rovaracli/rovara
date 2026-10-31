@@ -15,6 +15,7 @@ import {
   BundleImageName,
   BundleManifestSchema,
   BundleSignatureSchema,
+  SynthKitManifestSchema,
   ImageDigest,
   ReleaseManifestSchema,
   parseBundlePublicKey,
@@ -50,6 +51,11 @@ export interface BuildBundleInput {
   images: readonly BundleImageInput[];
   exportImage: ImageExporter;
   signer: BundleSigner;
+  /**
+   * The release's own pinned CDK app (task N3b): a directory with kit.json and the module it names, copied into the bundle under synth-kit/ and listed, hashed and signed with everything
+   * else. An Enterprise install's templates are built from it at approval. Without it the bundle can be approved by a Public install only.
+   */
+  synthKitDir?: string;
   /** Release notes written into the bundle as notes/RELEASE-NOTES.md and hashed with everything else. */
   notes?: string;
 }
@@ -85,6 +91,26 @@ async function copyReleaseFile(releaseDir: string, out: string, file: string, ex
   const measured = await sha256OfFile(target);
   if (measured.sha256 !== expectedSha256) throw new Error(`release file ${file} does not match release.json; rebuild the release before bundling it`);
   return measured;
+}
+
+/** The kit's files, relative and "/"-separated: regular files only (a link is refused), kit.json present and valid, the entry it names present. */
+async function listKitFiles(root: string): Promise<string[]> {
+  const found: string[] = [];
+  const walk = async (relative: string, depth: number): Promise<void> => {
+    if (depth > 6) throw new Error("the synthesis kit nests deeper than allowed");
+    for (const entry of await readdir(join(root, relative))) {
+      const path = relative === "" ? entry : `${relative}/${entry}`;
+      const info = await lstat(join(root, path));
+      if (info.isDirectory()) await walk(path, depth + 1);
+      else if (info.isFile()) found.push(path);
+      else throw new Error(`the synthesis kit holds a link or a special file (${path})`);
+    }
+  };
+  await walk("", 0);
+  if (!found.includes("kit.json")) throw new Error("the synthesis kit has no kit.json");
+  const kit = SynthKitManifestSchema.parse(JSON.parse(await readFile(join(root, "kit.json"), "utf8")));
+  if (!found.includes(kit.entry.replace(/^synth-kit\//, ""))) throw new Error("the synthesis kit's entry is not in the kit");
+  return found.sort();
 }
 
 /** Builds the bundle; on any failure the output directory it claimed is removed, so a half-written bundle is never left to be mistaken for one. */
@@ -137,6 +163,15 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
   for (const entry of release.templates) files.push({ file: entry.file, kind: "template", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
   for (const entry of release.packages) files.push({ file: entry.file, kind: "package", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
   for (const entry of release.legalDocuments ?? []) files.push({ file: entry.file, kind: "legal", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
+
+  if (input.synthKitDir !== undefined) {
+    for (const file of await listKitFiles(resolve(input.synthKitDir))) {
+      const target = join(out, "synth-kit", ...file.split("/"));
+      await mkdir(dirname(target), { recursive: true });
+      await copyFile(join(resolve(input.synthKitDir), ...file.split("/")), target);
+      files.push({ file: `synth-kit/${file}`, kind: "synth-kit", ...(await sha256OfFile(target)) });
+    }
+  }
 
   if (input.notes !== undefined) {
     await mkdir(join(out, "notes"), { recursive: true });
