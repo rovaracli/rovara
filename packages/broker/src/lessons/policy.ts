@@ -30,7 +30,7 @@ export type ApprovalPolicy = z.infer<typeof ApprovalPolicySchema>;
  * THE switch for the pilot: how a tier-0 lesson (a cited, rendered, corroborated fact) goes live. "auto": by itself, audited (owner decision Q2). "one": only after one
  * person approves it, on every path (ingest, rollback, resume). A project or company can set `tier0Approval` in its learning settings; this is the default when it does not.
  */
-export type Tier0Approval = "auto" | "one";
+export type Tier0Approval = "auto" | "one" | "two";
 export const TIER0_APPROVAL_DEFAULT: Tier0Approval = "one";
 export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = { tier0: TIER0_APPROVAL_DEFAULT, tier1: "one" };
 /** What the project runs with when nothing is set (Q2). A company lock or a project setting may choose another mode. */
@@ -89,12 +89,31 @@ function stricterApproval(project: ApprovalPolicy, floor: ApprovalPolicy, hasFlo
   const requiredGroup = floor.requiredGroup ?? project.requiredGroup;
   return { tier0, tier1, ...(requiredGroup === undefined ? {} : { requiredGroup }) };
 }
+/**
+ * THE gate on automatic go-live (review item 6, tidy round 2). While it says no (the default, and the state for the whole pilot) a tier-0 "auto" is never honoured, whatever wrote it
+ * (an old row, a hand edit, a bug, a future reader): `resolveLearning`, which every consumer of the settings goes through, reads it as "one". The broker sets the gate once at start-up
+ * (`setAutoApplyGate`) with the same function it gives `Tier0Deps.autoApplyEnabled`; it is asked at every resolve, so turning it off takes effect at once.
+ */
+let autoApplyGate: () => boolean = () => false;
+export function setAutoApplyGate(gate: () => boolean): void { autoApplyGate = gate; }
+const clampAuto = <T extends string | undefined>(level: T): T | "one" => (level === "auto" ? "one" : level);
+/** The settings with every tier-0 "auto" read as "one". Pure. */
+export function clampAutoApply(settings: LearningSettings): LearningSettings {
+  return {
+    ...settings,
+    ...(settings.tier0Approval === undefined ? {} : { tier0Approval: clampAuto(settings.tier0Approval) }),
+    ...(settings.approval === undefined ? {} : { approval: { ...settings.approval, ...(settings.approval.tier0 === undefined ? {} : { tier0: clampAuto(settings.approval.tier0) }) } }),
+    ...(settings.companyApproval === undefined ? {} : { companyApproval: { ...settings.companyApproval, ...(settings.companyApproval.tier0 === undefined ? {} : { tier0: clampAuto(settings.companyApproval.tier0) }) } }),
+  };
+}
+
 /** Reads the settings and fails closed: a reader that throws, or settings that do not parse, give mode Off. */
 export async function resolveLearning(reader: LearningSettingsReader, workspaceId: string, project: string): Promise<ResolvedLearning> {
   const off: ResolvedLearning = { mode: "Off", approval: DEFAULT_APPROVAL_POLICY, requiredGroups: [], expiryDays: undefined };
   let settings: LearningSettings;
   // No settings row is the default (an undefined result), not a failure; a reader that throws fails closed.
   try { settings = (await reader.read(workspaceId, project)) ?? {}; } catch { return off; }
+  if (!autoApplyGate()) settings = clampAutoApply(settings);
   const own = LearningModeSchema.safeParse(settings.mode ?? DEFAULT_LEARNING_MODE);
   const lock = settings.companyLock === undefined ? undefined : LearningModeSchema.safeParse(settings.companyLock);
   if (!own.success || (lock !== undefined && !lock.success)) return off;

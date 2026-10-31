@@ -27,6 +27,7 @@ import {
 import type { z } from "zod";
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { aiToolTurn, developerTaskIdentity, partyOfTask, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { announceTaskSendBack } from "./learning-events.js";
 import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, isConditional, workflowDispatchItem, type WorkflowDispatchRecord } from "../broker-shared.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import { operationKey } from "../cancellation.js";
@@ -380,9 +381,12 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   const problems = sendBackProblemsPromptSection(sendBackProblems(workflow, E2E_OWNER_SENTENCES.groupSentence), promptTagId(task, request.requestId));
   const prompt = (notes: string) => `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}\n\nOwner note (the owner's own instructions for this step): ${request.instructions}${ownerConstraintsSection(workflow, plan)}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}${notes}`;
   const next: WorkflowSnapshot = { ...returned, revision: returned.revision + 1, state: "RUNNING", updatedAt: receivedAt };
-  return queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next,
+  const queued = await queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next,
     request: request.instructions, response: workflowDependencies === undefined ? "AgentX sent the change back to coding" : "AgentX restarted the approved ordered work plan",
     ...(restartApprovedGraph === undefined ? {} : { workflowDependencies: restartApprovedGraph }) });
+  // Learning (WA-2): the send-back has been accepted; tell the record WHO sent it back (a listener exists only where learning is wired; it never fails the send-back).
+  await announceTaskSendBack({ task, callerDeveloperId: caller.developerId, requestId: request.requestId, instructions: request.instructions, earlierSendBacks: workflow.decisions.filter((decision) => decision.source === "SEND_BACK").length, at: receivedAt });
+  return queued;
 }
 
 /**

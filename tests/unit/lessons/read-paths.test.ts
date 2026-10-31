@@ -30,6 +30,7 @@ const INTERNAL_RECORD_FILES: Record<string, string> = {
   "team-record/scope-work.ts": "rewrites audiences and hides rows", "team-record/purge.ts": "deletes rows and facts", "team-record/ingest.ts": "writes rows",
   "team-record/archiver.ts": "copies rows to the lake (no viewer)", "team-record/stats-templates.ts": "aggregate statistics over project-wide rows", "team-record/item-head.ts": "ordering of versions",
   "team-record/transient-distiller.ts": "distils; writes facts", "team-record/distill.ts": "distils; writes facts",
+  "lessons/task-outcome-rows.ts": "the reflector's facts about a finished task (who sent it back, who reverted it); returns ids and counts to the pipeline, nothing to a viewer",
 };
 const RECORD_READS = new Set(["queryRecordEvents", "queryRecordFacts", "getRecordEvent", "getRecordFact", "byScope", "scopePage", "bySource", "byActor", "byActorSource"]);
 

@@ -11,14 +11,14 @@ export async function gatherMaterial(facts: CodeFacts, lesson: Lesson): Promise<
       if (citation.kind !== "code") continue;
       // Only a citation whose anchor was checked valid supplies identifiers.
       if (lesson.citationChecks?.some((c) => c.index === index && c.result === "valid") !== true) continue;
-      const found = await facts.identifiers({ workspaceId: lesson.workspaceId, repo: citation.repo, commit: citation.commit, path: citation.path, startLine: citation.startLine, endLine: citation.endLine });
+      const found = await facts.identifiers({ workspaceId: lesson.workspaceId, project: lesson.project, repo: citation.repo, commit: citation.commit, path: citation.path, startLine: citation.startLine, endLine: citation.endLine });
       for (const id of found ?? []) identifiers.add(id);
     }
     const commit = lesson.citations.find((c) => c.kind === "code")?.commit;
     const repo = lesson.citations.find((c) => c.kind === "code")?.repo;
     const paths = new Set<string>();
     if (commit !== undefined && repo !== undefined) {
-      for (const path of pathsToVerify(lesson)) if ((await facts.pathExists({ workspaceId: lesson.workspaceId, repo, commit, path })) === true) paths.add(path);
+      for (const path of pathsToVerify(lesson)) if ((await facts.pathExists({ workspaceId: lesson.workspaceId, project: lesson.project, repo, commit, path })) === true) paths.add(path);
     }
     const known = new Set(await facts.repositories(lesson.workspaceId, lesson.project));
     const repos = new Set((lesson.scope.repos ?? []).filter((r) => known.has(r)));

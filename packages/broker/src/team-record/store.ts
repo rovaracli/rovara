@@ -422,6 +422,32 @@ export async function pendingHidesOf(table: TeamRecordTable, orgId: OrgId): Prom
 export const ERASED_DEVELOPER_ID = "0".repeat(64);
 
 /** A source setting without the erased developer: `addedBy` and the approver of a less-safe change become the stand-in. True when something changed. */
+/**
+ * The learning lane's tier-0 setting rows (`LESSONSET#SETTINGS`, `LESSONSET#COMPANY` and the `LESSONSET#TIER0CHG#` proposals of one partition) name the people who wrote or proposed them
+ * (`updatedBy`, `proposedBy`). On a person's erasure those become the stand-in id; the values themselves stay. Returns how many rows changed.
+ */
+export async function scrubTier0Developer(table: TeamRecordTable, orgId: OrgId, project: string | undefined, developerId: string): Promise<number> {
+  // Each kind of row by its own key or prefix, read to the end: the project's set snapshots sort ahead of the proposals and can be any number.
+  const settings = await Promise.all(["LESSONSET#SETTINGS", "LESSONSET#COMPANY"].map(async (sk) => (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(orgId, project), sk }, ConsistentRead: true })) as { Item?: Item }).Item));
+  const proposals = await queryPrefix(table, orgId, project, "LESSONSET#TIER0CHG#", 100_000);
+  if (proposals.truncated) throw new Error("more tier-0 proposals than one erase pass reads");
+  let changed = 0;
+  for (const item of [...settings, ...proposals.items]) {
+    if (item === undefined || typeof item.sk !== "string") continue;
+    for (const field of ["updatedBy", "proposedBy"] as const) {
+      if (typeof item[field] !== "string" || item[field].trim().toLowerCase() !== developerId.trim().toLowerCase()) continue;
+      const aliases = new Aliases();
+      await table.documentClient.send(new UpdateCommand({
+        TableName: table.tableName, Key: { pk: teamRecordPk(orgId, project), sk: item.sk },
+        UpdateExpression: `SET ${aliases.name(field)} = ${aliases.value(ERASED_DEVELOPER_ID)}`, ConditionExpression: `attribute_exists(${aliases.name("pk")})`,
+        ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values,
+      }));
+      changed += 1;
+    }
+  }
+  return changed;
+}
+
 export async function scrubConfigDeveloper(table: TeamRecordTable, config: SourceConfig, developerId: string): Promise<boolean> {
   const addedBy = config.addedBy === developerId;
   const approved = config.approval?.by === developerId;
