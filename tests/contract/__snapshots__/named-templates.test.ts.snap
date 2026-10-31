@@ -6899,7 +6899,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Pattern": "{"dynamodb":{"NewImage":{"entityType":{"S":["ADMIN_CHANGE"]}}}}",
             },
             {
-              "Pattern": "{"dynamodb":{"NewImage":{"entityType":{"S":["WORKFLOW_ACTION_REFUSAL","TASK_COMMENT_NUDGE","TASK_PEOPLE_NOTIFICATION","AGENT_REPORT_POST"]}}}}",
+              "Pattern": "{"dynamodb":{"NewImage":{"entityType":{"S":["WORKFLOW_ACTION_REFUSAL","TASK_COMMENT_NUDGE","TASK_PEOPLE_NOTIFICATION","AGENT_REPORT_POST","SPEC_STATE"]}}}}",
             },
           ],
         },
