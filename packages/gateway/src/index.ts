@@ -20,3 +20,5 @@ export * from "./util.js";
 export * from "./mcp-runner/bundle.js";
 export * from "./mcp-runner/lockfile-policy.js";
 export * from "./mcp-runner/tar.js";
+export * from "./mcp-runner/npm-tarball.js";
+export * from "./mcp-runner/bin.js";
