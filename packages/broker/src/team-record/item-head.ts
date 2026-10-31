@@ -49,6 +49,10 @@ export type AdvanceOutcome =
 /**
  * Whether a version is newer than the head: a later version time, or (equal times) a greater version string. The tie-break is by the version itself, never by arrival,
  * so a redelivery of the lower one is stale in every order and the same version wins everywhere.
+ *
+ * NOTE: at an equal time the version strings compare AS TEXT, so "v9" beats "v10". That is deterministic and safe (no wipe, no resurrection), but the text order, not the real
+ * order, decides between two versions that share a time. A tap whose versions are not text-ordered (a counter without padding) must send `versionAt` with the time of each
+ * version; Slack does, GitHub and the ticket webhooks use `action:timestamp`.
  */
 export const isNewer = (input: { versionAt: string; version: string }, head: { versionAt: string; version: string }): boolean =>
   input.versionAt > head.versionAt || (input.versionAt === head.versionAt && input.version > head.version);

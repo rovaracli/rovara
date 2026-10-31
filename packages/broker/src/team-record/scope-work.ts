@@ -14,7 +14,7 @@ import {
   type OrgId,
 } from "@agentx/contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
-import { bySource, byScope, putScopeWork, tombstoneItem, type ScopeWork } from "./store.js";
+import { bySource, byScope, putScopeWork, scopePage, tombstoneItem, type ScopeCursor, type ScopeWork } from "./store.js";
 import { clearSupersedes } from "./item-head.js";
 import type { TeamRecordTable, TombstoneCause } from "./types.js";
 
@@ -41,6 +41,8 @@ export interface WorkResult {
   /** Rows (and facts) changed by this call. */
   changed: number;
   complete: boolean;
+  /** A place that was walked only in part: where to resume (the hiding of an already hidden row is not repeated). */
+  cursor?: ScopeCursor;
 }
 
 /** The project of a record partition key: `WS#<org>#P#<project>`; the project-less partition has none. */
@@ -60,7 +62,7 @@ function clock(dependencies: WorkDependencies): { now: () => number; at: () => s
  * Hides the rows of source items (by `sourceIds`) or of a whole scope at once, and the facts distilled from them. Hidden means `tombstone` set and the text removed;
  * the delete worker then removes the rows, vectors, lake rows and facts. A source item's marker stops a late retry of its create from bringing it back.
  */
-export async function tombstoneRows(dependencies: WorkDependencies, orgId: OrgId, request: { system: string; scope?: string; sourceIds?: readonly string[]; cause: TombstoneCause }, budget: WorkBudget = DEFAULT_WORK_BUDGET): Promise<WorkResult> {
+export async function tombstoneRows(dependencies: WorkDependencies, orgId: OrgId, request: { system: string; scope?: string; sourceIds?: readonly string[]; cause: TombstoneCause }, budget: WorkBudget = DEFAULT_WORK_BUDGET, resume?: ScopeCursor): Promise<WorkResult> {
   const { at, deadline, now } = clock(dependencies);
   const expired = deadline(budget);
   const when = at();
@@ -100,12 +102,15 @@ export async function tombstoneRows(dependencies: WorkDependencies, orgId: OrgId
   }
   if ((request.sourceIds?.length ?? 0) > SOURCE_IDS_MAX) complete = false;
 
+  let cursor: ScopeCursor | undefined = resume;
   if (request.scope !== undefined && !expired()) {
-    const found = await byScope(dependencies.table, orgId, request.scope, budget.maxItems);
-    await hideItems(found.items);
-    if (found.truncated) complete = false;
+    // The place and every place under it, a budget's worth at a time. The cursor says where to go on, so a busy place is walked to its end over several runs.
+    const page = await scopePage(dependencies.table, orgId, request.scope, budget.maxItems, { ...(resume === undefined ? {} : { cursor: resume }) });
+    await hideItems(page.items);
+    cursor = page.cursor;
+    if (page.cursor !== undefined) complete = false;
   } else if (request.scope !== undefined) complete = false;
-  return { changed, complete };
+  return { changed, complete, ...(complete || cursor === undefined ? {} : { cursor }) };
 }
 
 /** Whether a source item was deleted at its source recently (the create of a late retry is refused). */

@@ -7,7 +7,7 @@ import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
 import { DEFAULT_WORK_BUDGET, changeScopePrincipals, queueScopeWork, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
 import { closeScope, getItemHead } from "./item-head.js";
-import { childScopes, getSourceConfigByScope, putScopeWork } from "./store.js";
+import { childScopes, getSourceConfigByScope, putScopeWork, type PlaceCursor } from "./store.js";
 import type { IngestOutcome, RecordDraft, TombstoneCause } from "./types.js";
 
 export interface RecordSink {
@@ -17,7 +17,9 @@ export interface RecordSink {
   replaceScopeAudience(input: { workspaceId: string; scope: string; audience: Audience; at: string }): Promise<void>;
 }
 
-const CHILD_SCOPES_MAX = 2_000;
+/** Places listed per page, and how many pages the first call reads before it leaves the rest to the delete worker. */
+const CHILD_PAGE = 500;
+const CHILD_PAGES_IN_SINK = 4;
 
 export interface SinkOptions {
   budget?: WorkBudget;
@@ -35,15 +37,10 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 
     async tombstone(input) {
       const orgId = orgOf(input.workspaceId);
-      // The lake first: a deleted place is queued for the lake before any hot row is touched, so a crash cannot lose it.
-      if (input.scope !== undefined) {
-        // A place above others covers them: the lake rows carry the CHILD place's hash, so every child with rows or a source row gets its own target, too.
-        const below = await childScopes(deps.table, orgId, input.scope, CHILD_SCOPES_MAX);
-        if (below.truncated) throw new Error("too many places under that place to list at once");
-        await lake.enqueue(orgId, [input.scope, ...below.scopes.slice(0, CHILD_SCOPES_MAX)].map((place) => ({ kind: "scope" as const, hash: recordScopeHash(place) })));
-      }
       // A deleted or excluded place stays closed (and so does every place under it): a late message or a backfill is refused. Written first, so a crash cannot reopen it.
       if (input.scope !== undefined && (input.cause === "source_deleted" || input.cause === "excluded")) await closeScope(deps.table, orgId, input.scope, input.cause, new Date((deps.now ?? Date.now)()).toISOString());
+      // The lake first: the place is queued for the lake before any hot row is touched, so a crash cannot lose it.
+      if (input.scope !== undefined) await lake.enqueue(orgId, [{ kind: "scope", hash: recordScopeHash(input.scope) }]);
       // Chunks of at most 500 source items, each named in the queue BEFORE it is hidden: reads hide what a queue item names, so a crash or a spent budget in the
       // middle of the hide never leaves an item visible.
       const chunks: Array<readonly string[] | undefined> = input.sourceIds === undefined ? [undefined] : Array.from({ length: Math.max(1, Math.ceil(input.sourceIds.length / 500)) }, (_, i) => input.sourceIds!.slice(i * 500, (i + 1) * 500));
@@ -53,10 +50,24 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
         const queued = await queueScopeWork(work, orgId, {
           type: "tombstone", system: input.system, ...(scope === undefined ? {} : { scope }), ...(chunk === undefined ? {} : { sourceIds: [...chunk] }), cause: input.cause, hidePending: true,
         });
+        // The queue item above already hides the place and everything under it from every read. The places below get their own lake targets, a few pages here (the rest are
+        // queued by the delete worker from the cursor kept on the item): a place with thousands of places under it never makes the delete fail.
+        let childCursor: PlaceCursor | undefined;
+        if (scope !== undefined) {
+          let pages = 0;
+          do {
+            const page = await childScopes(deps.table, orgId, scope, { limit: CHILD_PAGE, ...(childCursor === undefined ? {} : { cursor: childCursor }) });
+            if (page.scopes.length > 0) await lake.enqueue(orgId, page.scopes.map((place) => ({ kind: "scope" as const, hash: recordScopeHash(place) })));
+            childCursor = page.cursor;
+            pages += 1;
+          } while (childCursor !== undefined && pages < CHILD_PAGES_IN_SINK);
+        }
         const result = await tombstoneRows(work, orgId, { system: input.system, ...(scope === undefined ? {} : { scope }), ...(chunk === undefined ? {} : { sourceIds: chunk }), cause: input.cause }, budget);
         hidden += result.changed;
-        if (result.complete) await putScopeWork(deps.table, orgId, { ...queued, hidePending: false, hidden: result.changed });
-        else await putScopeWork(deps.table, orgId, { ...queued, hidden: result.changed });
+        await putScopeWork(deps.table, orgId, {
+          ...queued, hidden: result.changed, hidePending: !result.complete, hideDone: result.complete,
+          ...(result.cursor === undefined ? {} : { hideCursor: result.cursor }), ...(childCursor === undefined ? {} : { childCursor }),
+        });
       }
       const result = { changed: hidden };
       return { hidden: result.changed };

@@ -10,6 +10,7 @@ import type { TransientDistillerPort } from "./sources/ports.js";
 import { distillBundle, type DistillDeps, type DistillItem } from "./distill.js";
 import { admitTransient, type IngestDependencies } from "./ingest.js";
 import { splitQuotedSpans } from "./quotes.js";
+import { hasQuotedOrForwarded } from "./quoted.js";
 import { trustRank } from "./taint.js";
 import type { TrustClass } from "./shared-types.js";
 import { supersedeItem } from "./scope-work.js";
@@ -42,7 +43,10 @@ export function createTransientDistiller(deps: TransientDistillerDependencies): 
       // "Fwd:" on a later line, "forwarded from" mid-line). When it is lower than every span, it is the ceiling for all of them, so what the core calls someone else's words
       // never reaches the model as the member's own. A message the splitter already split (a quote, an attachment) keeps its own words, as they are separate spans.
       const lowestSpan = found.reduce<TrustClass>((lowest, span) => (trustRank(span.trust) < trustRank(lowest) ? span.trust : lowest), item.baseTrust);
-      const spans = trustRank(item.trust) < trustRank(lowestSpan) ? found.map((span) => ({ ...span, trust: item.trust })) : found;
+      // Per span, the lower of the two readings: a span the core calls a quote or a forward (its detectors are broader than the splitter's: a "Fwd:" on a later line, "forwarded
+      // from" mid-line) is capped at the row's trust even when the splitter already found another quoted span in the same message.
+      const allBelow = trustRank(item.trust) < trustRank(lowestSpan);
+      const spans = found.map((span) => (trustRank(span.trust) > trustRank(item.trust) && (allBelow || hasQuotedOrForwarded(span.text)) ? { ...span, trust: item.trust } : span));
       const distillItem: DistillItem = { id: itemId, trust: item.baseTrust, audience: item.audience, links: item.links, spans };
       const outcome = await distillBundle(deps.distill, { workspaceId: item.orgId, ...(item.project === undefined ? {} : { project: item.project }), retention: "B", items: [distillItem] });
       if (outcome.facts.length === 0) return { accepted: outcome.failed === undefined || outcome.failed === "no_input" };

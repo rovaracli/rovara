@@ -5,7 +5,7 @@
 // The vector bucket and the lake are the storage lane's constructs (`team-record-storage.ts`); the stack that wires them also instantiates this one.
 import { RemovalPolicy, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { INDEX_EXPIRY_ATTRIBUTE, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5 } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI3_ATTRIBUTES, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5 } from "@agentx/contracts";
 
 const TABLE_NAME = /^[A-Za-z0-9_.-]{3,255}$/;
 
@@ -42,7 +42,10 @@ export class TeamRecordTable extends Construct {
     // GSI3: by place. The sort value is the place itself, so one query finds a place and every place under it.
     this.table.addGlobalSecondaryIndex({
       indexName: TEAM_RECORD_GSI3.index, partitionKey: { name: TEAM_RECORD_GSI3.partition, type: dynamodb.AttributeType.STRING },
-      sortKey: { name: TEAM_RECORD_GSI3.sort, type: dynamodb.AttributeType.STRING }, projectionType: dynamodb.ProjectionType.ALL,
+      sortKey: { name: TEAM_RECORD_GSI3.sort, type: dynamodb.AttributeType.STRING },
+      // Final shape, settled before the first deploy (an index's key schema and projection cannot be changed in place): the place scan reads no item text. These are the attributes
+      // the tombstone fan-out and the audience changes use (entity type, tombstone, id, source reference, audience, fact id, link time, place, source system, project).
+      projectionType: dynamodb.ProjectionType.INCLUDE, nonKeyAttributes: [...TEAM_RECORD_GSI3_ATTRIBUTES],
     });
     plain(TEAM_RECORD_GSI4);
     // Sparse: only rows that still hold raw text with an expiry; sorted by that expiry, so the text-expiry job reads exactly the due rows.

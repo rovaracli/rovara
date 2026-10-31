@@ -890,6 +890,11 @@ export function recordTextDueIndexValue(orgId: OrgId): string {
 export const TEAM_RECORD_GSI4 = { index: "gsi4", partition: "gsi4pk" } as const;
 /** GSI3 finds rows by their scope (a Slack channel, a repository): a deleted channel, a membership change, a channel that turned private. */
 export const TEAM_RECORD_GSI3 = { index: "gsi3", partition: "gsi3pk", sort: "gsi3sk" } as const;
+/**
+ * What GSI3 projects besides its keys (the table's own keys `pk` and `sk` come with it). The place scan is used by the tombstone fan-out and the audience changes only, so it
+ * carries what they read and never an item's text. Search does not use this index. A new use of `byScope` that reads another attribute must add it here BEFORE the first deploy.
+ */
+export const TEAM_RECORD_GSI3_ATTRIBUTES = ["entityType", "tombstone", "id", "sourceRef", "audience", "factId", "createdAt", "scope", "system", "project"] as const;
 
 const TEAM_RECORD_COUNTER_WIDTH = 12;
 const teamRecordCounter = (value: number, what: string): string => {
@@ -1003,6 +1008,13 @@ export function scopeRoot(scope: string): string {
 export function recordScopeIndexValue(orgId: OrgId, scope: string): string {
   if (scope.length === 0) throw new Error("a scope can't be empty");
   return `WS#${OrgIdSchema.parse(orgId)}#SCOPE#${createHash("sha256").update(scopeRoot(scope)).digest("hex")}`;
+}
+/**
+ * The GSI3 partition value of the PLACE rows (the source rows) under one top place. Finding the places below a place reads only these, so it is bounded by the number of
+ * places and never by the number of stored items.
+ */
+export function recordPlaceIndexValue(orgId: OrgId, scope: string): string {
+  return `${recordScopeIndexValue(orgId, scope)}#PLACES`;
 }
 /** The GSI2 partition value of every row a person's actions made (person erase). */
 export function recordActorIndexValue(orgId: OrgId, developerId: string): string {

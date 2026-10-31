@@ -3,13 +3,13 @@
 // on them, and (4) removes the queue item. Work on a scope that has not finished hiding stays queued with `hidePending`, which keeps the scope hidden from everyone.
 // Principal and audience changes that ran out of budget are finished here too. Every run is bounded (requests, items, milliseconds). A request older than an hour is a
 // backlog: the summary says so and the log line is the alarm; hidden rows stay hidden meanwhile.
-import { recordDeleteQueueKey, teamRecordSourceHash, type OrgId } from "@agentx/contracts";
+import { recordDeleteQueueKey, recordScopeHash, teamRecordSourceHash, type OrgId } from "@agentx/contracts";
 import { auditRecordTombstoned, type RecordAuditSink } from "./audit.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { emptyPurge, purgeItems, type PurgeDependencies, type PurgeResult } from "./purge.js";
 import { changeScopePrincipals, replaceScopeAudience, tombstoneRows, type WorkBudget } from "./scope-work.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { bySource, byScope, deleteItem, listScopeWork, putScopeWork, type ScopeWork } from "./store.js";
+import { bySource, byScope, childScopes, deleteItem, listScopeWork, putScopeWork, type PlaceCursor, type ScopeWork } from "./store.js";
 import type { Item } from "../agents/table-writes.js";
 
 /** A request older than this many seconds is a backlog (design: hot rows are deleted within 1 hour). */
@@ -57,7 +57,7 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
   const summary: DeleteRunSummary = { ...emptyPurge(), requests: 0, finished: 0, stillHidden: 0, backlog: false, oldestAgeSeconds: 0 };
   const work = await listScopeWork(deps.table, orgId, budget.maxRequests);
   const work0 = { table: deps.table, now };
-  for (const entry of work) {
+  for (let entry of work) {
     summary.oldestAgeSeconds = Math.max(summary.oldestAgeSeconds, Math.max(0, Math.floor(now() / 1000) - entry.queuedAtSeconds));
     if (now() - started >= budget.maxMs) break;
     summary.requests += 1;
@@ -92,12 +92,29 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
       continue;
     }
 
-    // A tombstone request: finish hiding, then delete.
-    const hidden = await tombstoneRows(work0, orgId, { system: entry.system, ...(entry.scope === undefined ? {} : { scope: entry.scope }), ...(entry.sourceIds === undefined ? {} : { sourceIds: entry.sourceIds }), cause: entry.cause ?? "source_deleted" }, remaining);
-    if (!hidden.complete) {
-      if (!entry.hidePending) await putScopeWork(deps.table, orgId, { ...entry, hidePending: true });
-      summary.stillHidden += 1;
-      continue;
+    // A tombstone request: finish hiding (a busy place is walked from its cursor, never from the start), queue the lake targets of the places below it, then delete.
+    if (entry.hideDone !== true) {
+      const hidden = await tombstoneRows(work0, orgId, { system: entry.system, ...(entry.scope === undefined ? {} : { scope: entry.scope }), ...(entry.sourceIds === undefined ? {} : { sourceIds: entry.sourceIds }), cause: entry.cause ?? "source_deleted" }, remaining, entry.hideCursor);
+      if (!hidden.complete) {
+        await putScopeWork(deps.table, orgId, { ...entry, hidePending: true, ...(hidden.cursor === undefined ? {} : { hideCursor: hidden.cursor }) });
+        summary.stillHidden += 1;
+        continue;
+      }
+      const { hideCursor: _done, ...rest } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+      entry = { ...rest, hideDone: true };
+      await putScopeWork(deps.table, orgId, entry);
+    }
+    if (entry.scope !== undefined && entry.childCursor !== undefined) {
+      let cursor: PlaceCursor | undefined = entry.childCursor;
+      while (cursor !== undefined && now() - started < budget.maxMs) {
+        const page = await childScopes(deps.table, orgId, entry.scope, { limit: 500, cursor });
+        if (page.scopes.length > 0) await (deps.lakeQueue ?? tableLakeDeleteQueue(deps.table, deps.now)).enqueue(orgId, page.scopes.map((place) => ({ kind: "scope" as const, hash: recordScopeHash(place) })));
+        cursor = page.cursor;
+      }
+      const { childCursor: _gone, ...rest } = entry; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+      entry = cursor === undefined ? rest : { ...entry, childCursor: cursor };
+      await putScopeWork(deps.table, orgId, entry);
+      if (cursor !== undefined) { summary.stillHidden += 1; continue; }
     }
     // Source ids that never had a row in the hot table may still have lake rows: their hashes are queued first, before any hot row goes.
     if (entry.sourceIds !== undefined) await queueNamedSources(deps, orgId, entry);

@@ -23,6 +23,7 @@ import {
   recordDerivationKey,
   recordEventKey,
   recordFactKey,
+  recordPlaceIndexValue,
   recordScopeIndexValue,
   recordSourceConfigIndexValue,
   recordSourceIndexValue,
@@ -114,12 +115,12 @@ export interface PageBudget {
   maxItems: number;
 }
 
-async function queryAll(table: TeamRecordTable, input: Record<string, unknown>, maxItems: number): Promise<{ items: Item[]; truncated: boolean }> {
+async function queryAll(table: TeamRecordTable, input: Record<string, unknown>, maxItems: number, from?: Record<string, unknown>): Promise<{ items: Item[]; truncated: boolean; lastKey?: Record<string, unknown> }> {
   const items: Item[] = [];
-  let startKey: Record<string, unknown> | undefined;
+  let startKey: Record<string, unknown> | undefined = from;
   for (;;) {
     const remaining = maxItems - items.length;
-    if (remaining <= 0) return { items, truncated: true };
+    if (remaining <= 0) return { items, truncated: true, ...(startKey === undefined ? {} : { lastKey: startKey }) };
     const response = await table.documentClient.send(new QueryCommand({ TableName: table.tableName, ...input, Limit: Math.min(remaining, 500), ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }) })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
     items.push(...(response.Items ?? []));
     startKey = response.LastEvaluatedKey;
@@ -149,30 +150,57 @@ export async function queryIndex(table: TeamRecordTable, index: typeof TEAM_RECO
 export const bySource = (table: TeamRecordTable, orgId: OrgId, system: string, sourceId: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI1, recordSourceIndexValue(orgId, system, sourceId), maxItems);
 export const byActor = (table: TeamRecordTable, orgId: OrgId, developerId: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI2, recordActorIndexValue(orgId, developerId), maxItems);
 export const byActorSource = (table: TeamRecordTable, orgId: OrgId, system: string, actorSourceId: string, maxItems: number) => queryIndex(table, TEAM_RECORD_GSI4, recordActorSourceIndexValue(orgId, system, actorSourceId), maxItems);
+/** Where a paged read of a place stopped: which range it was in (the place itself, then the places below it) and the index's own key. */
+export interface ScopeCursor { phase: "own" | "below"; key?: Record<string, unknown> }
+
 /**
- * Every item of a place and, unless `exact`, of every place under it (`slack:T1` -> `slack:T1/C9`): rows, derivation links and source rows. The sort value is the place itself,
- * so a sibling that only starts the same (`slack:T1/C90` for `slack:T1/C9`) is never matched.
+ * One page-run over a place and, unless `exact`, every place under it (`slack:T1` -> `slack:T1/C9`): rows and derivation links. Reads up to `maxItems` and, if there is more,
+ * returns a cursor to resume from, so a busy place is walked over several calls and never given up on. The sort value is the place itself, so a sibling that only starts the
+ * same (`slack:T1/C90` for `slack:T1/C9`) is never matched.
  */
-export async function byScope(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number, options: { exact?: boolean } = {}): Promise<{ items: Item[]; truncated: boolean }> {
+export async function scopePage(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number, options: { exact?: boolean; cursor?: ScopeCursor } = {}): Promise<{ items: Item[]; cursor?: ScopeCursor }> {
   const value = recordScopeIndexValue(orgId, scope);
-  const range = (low: string, high: string) => queryAll(table, {
-    IndexName: TEAM_RECORD_GSI3.index, KeyConditionExpression: `${TEAM_RECORD_GSI3.partition} = :v AND ${TEAM_RECORD_GSI3.sort} BETWEEN :low AND :high`, ExpressionAttributeValues: { ":v": value, ":low": low, ":high": high },
-  }, maxItems);
-  const own = await range(scope, scope);
-  if (options.exact === true) return own;
-  const below = await range(`${scope}/`, `${scope}/\uffff`);
-  return { items: [...own.items, ...below.items], truncated: own.truncated || below.truncated };
+  const items: Item[] = [];
+  let phase: ScopeCursor["phase"] = options.cursor?.phase ?? "own";
+  let key = options.cursor?.key;
+  for (;;) {
+    const remaining = maxItems - items.length;
+    if (remaining <= 0) return { items, cursor: { phase, ...(key === undefined ? {} : { key }) } };
+    const found = phase === "own"
+      ? await queryAll(table, { IndexName: TEAM_RECORD_GSI3.index, KeyConditionExpression: `${TEAM_RECORD_GSI3.partition} = :v AND ${TEAM_RECORD_GSI3.sort} BETWEEN :low AND :high`, ExpressionAttributeValues: { ":v": value, ":low": scope, ":high": scope } }, remaining, key)
+      : await queryAll(table, { IndexName: TEAM_RECORD_GSI3.index, KeyConditionExpression: `${TEAM_RECORD_GSI3.partition} = :v AND begins_with(${TEAM_RECORD_GSI3.sort}, :prefix)`, ExpressionAttributeValues: { ":v": value, ":prefix": `${scope}/` } }, remaining, key);
+    items.push(...found.items);
+    if (found.truncated) return { items, cursor: { phase, ...(found.lastKey === undefined ? {} : { key: found.lastKey }) } };
+    if (phase === "own" && options.exact !== true) { phase = "below"; key = undefined; continue; }
+    return { items };
+  }
 }
 
-/** The distinct places under a place (not itself), from the rows, links and source rows stored there. Bounded. */
-export async function childScopes(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number): Promise<{ scopes: string[]; truncated: boolean }> {
-  const found = await byScope(table, orgId, scope, maxItems);
+/** A place's items, up to `maxItems`; `truncated` says there is more (use `scopePage` to walk all of it). */
+export async function byScope(table: TeamRecordTable, orgId: OrgId, scope: string, maxItems: number, options: { exact?: boolean } = {}): Promise<{ items: Item[]; truncated: boolean }> {
+  const page = await scopePage(table, orgId, scope, maxItems, options);
+  return { items: page.items, truncated: page.cursor !== undefined };
+}
+
+/** Where a paged read of the places under a place stopped. */
+export type PlaceCursor = Record<string, unknown>;
+
+/**
+ * The places below a place (not itself), from the SOURCE rows only: every stored row's place has one (a row without a source row is refused), so this reads one small row per
+ * place and never an item row, and is bounded by the number of places. It returns up to `limit` places and a cursor when there are more: the caller keeps the cursor and
+ * continues, it never gives up.
+ */
+export async function childScopes(table: TeamRecordTable, orgId: OrgId, scope: string, options: { limit: number; cursor?: PlaceCursor }): Promise<{ scopes: string[]; cursor?: PlaceCursor }> {
+  const value = recordPlaceIndexValue(orgId, scope);
+  const found = await queryAll(table, {
+    IndexName: TEAM_RECORD_GSI3.index, KeyConditionExpression: `${TEAM_RECORD_GSI3.partition} = :v AND begins_with(${TEAM_RECORD_GSI3.sort}, :prefix)`, ExpressionAttributeValues: { ":v": value, ":prefix": `${scope}/` },
+  }, options.limit, options.cursor);
   const scopes = new Set<string>();
   for (const item of found.items) {
     const place = item[TEAM_RECORD_GSI3.sort];
-    if (typeof place === "string" && place !== scope) scopes.add(place);
+    if (typeof place === "string") scopes.add(place);
   }
-  return { scopes: [...scopes], truncated: found.truncated };
+  return { scopes: [...scopes], ...(found.truncated && found.lastKey !== undefined ? { cursor: found.lastKey } : {}) };
 }
 
 /** Every item of one sort-key kind in one project partition (`FACT#`, `SOURCE#`, `LESSON#`...). Bounded. */
@@ -302,8 +330,8 @@ export async function putSourceConfig(table: TeamRecordTable, config: SourceConf
       entityType: "TEAM_RECORD_SOURCE",
       ...parsed.data,
       [TEAM_RECORD_GSI1.partition]: recordSourceConfigIndexValue(parsed.data.workspaceId, parsed.data.source, parsed.data.scope),
-      // The place is indexed too, so a tombstone of a place above it finds the places that have a source row even when nothing is stored under them yet.
-      [TEAM_RECORD_GSI3.partition]: recordScopeIndexValue(parsed.data.workspaceId, parsed.data.scope),
+      // The place is indexed under its own partition value (the sparse "places" list), so a tombstone of a place above it finds every place with a source row, even one with nothing stored yet, without reading any item row.
+      [TEAM_RECORD_GSI3.partition]: recordPlaceIndexValue(parsed.data.workspaceId, parsed.data.scope),
       [TEAM_RECORD_GSI3.sort]: parsed.data.scope,
     }),
   }));
@@ -326,6 +354,11 @@ export interface ScopeWork {
   sourceIds?: string[];
   /** `replaced`: the rows of the versions a newer version replaced (hidden already); the worker removes them, their vectors and the notes made from them. */
   rowKeys?: Array<{ pk: string; sk: string }>;
+  /** A tombstone of a place walks it page by page: where the hiding stopped, and whether it finished (a finished hide is not repeated on every run). */
+  hideCursor?: ScopeCursor;
+  hideDone?: boolean;
+  /** The lake targets of the places below the place are queued page by page: where that stopped (absent: all queued). */
+  childCursor?: PlaceCursor;
   cause?: "source_deleted" | "person_erased" | "project_archived" | "excluded";
   add?: string[];
   remove?: string[];

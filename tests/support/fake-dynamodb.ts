@@ -320,6 +320,8 @@ export class FakeDynamoDb {
   private indexAttributes(input: Record<string, unknown>): string[] {
     const names = (input.ExpressionAttributeNames ?? {}) as Names;
     const name = (token: string) => (token.startsWith("#") ? names[token]! : token);
+    const begins = INDEX_BEGINS.exec(String(input.KeyConditionExpression));
+    if (begins) return [name(begins[1]!), name(begins[3]!)];
     const ranged = INDEX_RANGE.exec(String(input.KeyConditionExpression));
     if (ranged) return [name(ranged[1]!), name(ranged[3]!)];
     const indexed = INDEX_EQUALS.exec(String(input.KeyConditionExpression));
@@ -336,6 +338,19 @@ export class FakeDynamoDb {
       // An index with a sort key range, as the turn and workspace reads send it (spec 025 phase 25d), and the webhook
       // recovery sweep's due rows: `<attribute> = :v AND <sort> (>=|>|<=|<) :a` or `<attribute> = :v AND <sort> BETWEEN :a AND :b`.
       const name = (token: string) => (token.startsWith("#") ? names[token]! : token);
+      const begins = INDEX_BEGINS.exec(String(input.KeyConditionExpression));
+      if (begins) {
+        const [partition, sort] = [name(begins[1]!), name(begins[3]!)];
+        const prefix = values[begins[4]!] as string;
+        const found = this.find((item) => item[partition] === values[begins[2]!] && typeof item[sort] === "string" && item[sort].startsWith(prefix))
+          .sort((left, right) => compareTuples(indexOrder(left, sort), indexOrder(right, sort)));
+        if (input.ScanIndexForward === false) found.reverse();
+        const start = input.ExclusiveStartKey as Record<string, unknown> | undefined;
+        const after = start === undefined
+          ? found
+          : found.filter((item) => compareTuples(indexOrder(item, sort), indexOrder(start, sort)) * (input.ScanIndexForward === false ? -1 : 1) > 0);
+        return after.map((item) => this.readClone(item));
+      }
       const ranged = INDEX_RANGE.exec(String(input.KeyConditionExpression));
       if (ranged) {
         const [partition, sort] = [name(ranged[1]!), name(ranged[3]!)];
@@ -474,6 +489,8 @@ export class FakeDynamoDb {
 }
 
 const INDEX_EQUALS = /^(#?[A-Za-z0-9_]+) = (:[A-Za-z0-9_]+)$/;
+/** `<attribute> = :v AND begins_with(<sort>, :prefix)`: an index whose sort key starts with a prefix (the Team record's places below a place). */
+const INDEX_BEGINS = /^(#?[A-Za-z0-9_]+) = (:[A-Za-z0-9_]+) AND begins_with\((#?[A-Za-z0-9_]+), (:[A-Za-z0-9_]+)\)$/;
 const INDEX_RANGE = /^(#?[A-Za-z0-9_]+) = (:[A-Za-z0-9_]+) AND (#?[A-Za-z0-9_]+) (>=|<=|>|<|BETWEEN) (:[A-Za-z0-9_]+)(?: AND (:[A-Za-z0-9_]+))?$/;
 
 /** An index item's position: its sort value, then its table keys. */
