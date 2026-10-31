@@ -92,6 +92,13 @@ describe("the whole path, through the settings reader", () => {
 });
 
 describe("erasing", () => {
+  it("a project with more than 1000 set snapshots still gets its proposals' proposer replaced (the snapshots sort ahead of the proposals)", async () => {
+    const { w, store } = setup();
+    await store.create({ id: "c1", scope: project(), from: "two", to: "one", proposedBy: "dev-ann", at: 1, expiresAt: 100, state: "pending" });
+    for (let version = 1; version <= 1_200; version += 1) w.db.set({ pk: `WS#${ORG_A}#P#web`, sk: `LESSONSET#SNAP#${String(version).padStart(12, "0")}`, entityType: "LESSON_SNAPSHOT", setVersion: version, at: version, members: [] });
+    await erasePerson(deleteDeps(w).deps, ORG_A, { developerId: "dev-ann" }, "e9");
+    expect(await store.get(project(), "c1")).toMatchObject({ proposedBy: "0".repeat(64) });
+  });
   it("erasing a person replaces them on the settings and proposal rows (project and company) with the stand-in id, and keeps everyone else", async () => {
     const { w, store } = setup();
     await store.write(project(), "two", { by: "dev-ann", at: 1 }, "one");

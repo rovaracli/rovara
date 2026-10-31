@@ -427,10 +427,13 @@ export const ERASED_DEVELOPER_ID = "0".repeat(64);
  * (`updatedBy`, `proposedBy`). On a person's erasure those become the stand-in id; the values themselves stay. Returns how many rows changed.
  */
 export async function scrubTier0Developer(table: TeamRecordTable, orgId: OrgId, project: string | undefined, developerId: string): Promise<number> {
-  const found = await queryPrefix(table, orgId, project, "LESSONSET#", 1_000);
+  // Each kind of row by its own key or prefix, read to the end: the project's set snapshots sort ahead of the proposals and can be any number.
+  const settings = await Promise.all(["LESSONSET#SETTINGS", "LESSONSET#COMPANY"].map(async (sk) => (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(orgId, project), sk }, ConsistentRead: true })) as { Item?: Item }).Item));
+  const proposals = await queryPrefix(table, orgId, project, "LESSONSET#TIER0CHG#", 100_000);
+  if (proposals.truncated) throw new Error("more tier-0 proposals than one erase pass reads");
   let changed = 0;
-  for (const item of found.items) {
-    if (typeof item.sk !== "string" || !(item.sk === "LESSONSET#SETTINGS" || item.sk === "LESSONSET#COMPANY" || item.sk.startsWith("LESSONSET#TIER0CHG#"))) continue;
+  for (const item of [...settings, ...proposals.items]) {
+    if (item === undefined || typeof item.sk !== "string") continue;
     for (const field of ["updatedBy", "proposedBy"] as const) {
       if (typeof item[field] !== "string" || item[field].trim().toLowerCase() !== developerId.trim().toLowerCase()) continue;
       const aliases = new Aliases();
