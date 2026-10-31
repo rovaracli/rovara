@@ -42,6 +42,8 @@ const HttpsRepositoryUrl = z.string().max(2_048).superRefine((value, context) =>
   try { url = new URL(value); } catch { context.addIssue({ code: "custom", message: "url must be an https URL" }); return; }
   if (url.protocol !== "https:") context.addIssue({ code: "custom", message: "url must use https" });
   if (url.username !== "" || url.password !== "") context.addIssue({ code: "custom", message: "url must not carry a user or password" });
+  // A query or a fragment is where a token goes ("?access_token="): a repository address has neither, and it is stored and shown.
+  if (url.search !== "" || url.hash !== "") context.addIssue({ code: "custom", message: "url must not carry a query or a fragment" });
 });
 
 export const SetupRepositoryValueSchema = z.object({ name: AgentXNameSchema, url: HttpsRepositoryUrl, defaultBranch: GitBranchNameSchema.optional() }).strict();

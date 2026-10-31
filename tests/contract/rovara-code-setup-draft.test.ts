@@ -902,6 +902,22 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
     expect(t.approvals().map((card) => card.subject.itemKind).sort()).toEqual(["devcontainer", "repository"]);
   });
 
+  it("says on the card whether re-reading the place the item came from found the quoted text", async () => {
+    const t = await setup();
+    await t.drafted({
+      ...NODE_ANSWER,
+      repositories: [{ name: "lib", url: "https://github.com/acme/lib", from: [cite("README.md", 3, "see https://github.com/acme/lib")] }],
+    });
+    const repo = itemId(await t.proposal(), "repository");
+    await t.apply([{ id: repo }]);
+    // The README has no such text: the card says it was not found.
+    expect((t.approvals()[0] as unknown as { changes: string[] }).changes.join(" ")).toContain("did NOT find the quoted text");
+    const ok = await setup({ files: { ...FILES, "README.md": "# Web\n\nsee https://github.com/acme/lib\n" } });
+    await ok.drafted({ ...NODE_ANSWER, repositories: [{ name: "lib", url: "https://github.com/acme/lib", from: [cite("README.md", 3, "see https://github.com/acme/lib")] }] });
+    await ok.apply([{ id: repo }]);
+    expect((ok.approvals()[0] as unknown as { changes: string[] }).changes.join(" ")).toContain("the quoted text is there");
+  });
+
   it("changes nothing until the card is approved by someone who decided it, then adds the repository as the maintainer who applies it", async () => {
     const t = await setup();
     await t.drafted();
@@ -1081,6 +1097,9 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
     const asked = await t.apply([{ id: "devcontainer" }]);
     expect(outcomeOf(asked, "devcontainer")?.outcome).toBe("approval_needed");
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK" && item.purpose !== "setup_draft")).toEqual([]);
+    // The card names the file's size and digest, so an administrator knows which file is being approved.
+    const devCard = t.approvals().find((card) => card.subject.itemKind === "devcontainer") as unknown as { changes: string[] };
+    expect(devCard.changes.join(" ")).toMatch(/The file is \d+ bytes \(sha256 [0-9a-f]{16}\.\.\.\)/u);
     t.approve(outcomeOf(asked, "devcontainer")!.approval!.approvalId);
     const done = await t.apply([{ id: "devcontainer" }]);
     expect(done.status, JSON.stringify(done.body)).toBe(200);

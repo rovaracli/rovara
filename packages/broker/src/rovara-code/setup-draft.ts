@@ -93,6 +93,9 @@ export const SETUP_APPLY_WORDS = {
   waiting: "This needs an administrator's approval. Open the card to decide it.",
   unknownItem: "This proposal has no such item. Ask Rovara to draft the setup again.",
   failed: "Rovara couldn't apply this item.",
+  checked: "Rovara read the place it came from again, and the quoted text is there.",
+  notFound: "Rovara read the place it came from again and did NOT find the quoted text there.",
+  notChecked: "Rovara could not check where it came from.",
   consentUsed: SETUP_CONSENT_USED,
   tooManyCards: "This item has had several approval cards already. Ask Rovara to draft the setup again.",
   websiteProposal: "Websites are widened only through a website change proposal. Carry these to the website access page.",
@@ -427,6 +430,7 @@ async function liveCardOf(
 /** The card an item needs, as its asker sees it: the existing one if it is still open or approved, else a new one (a declined, expired or used card is asked again as a new card). */
 async function askCard(
   deps: SetupDraftDependencies, approvals: ApprovalDependencies, caller: DeveloperCaller, project: string, taskId: string, item: SetupItem,
+  verdictOf: () => Promise<SetupVerification>,
 ): Promise<{ approvalId: string; confirmUrl: string; state: "pending" | "approved"; approvedBy?: string }> {
   const kind = item.kind;
   const applier = getSetupItemApplier(kind);
@@ -437,7 +441,10 @@ async function askCard(
     return { approvalId: existing.approvalId, confirmUrl: link, state: existing.state, ...(existing.state === "approved" && existing.approvedBy !== undefined ? { approvedBy: existing.approvedBy } : {}) };
   }
   if (attempt >= SETUP_CARD_ATTEMPTS_MAX) throw agentXError("CONFIG_INVALID", SETUP_APPLY_WORDS.tooManyCards);
-  const words = [...applier.cardWords(item), citationWords(item), `Approving this lets a maintainer of ${project} apply it from the setup page once. Nothing changes until they do.`];
+  // What re-reading the citation found is on the card, so the administrator can see whether the place it came from holds up.
+  const verdict = await verdictOf();
+  const verdictWords = verdict === "verified" ? SETUP_APPLY_WORDS.checked : verdict === "unverified" ? SETUP_APPLY_WORDS.notFound : SETUP_APPLY_WORDS.notChecked;
+  const words = [...applier.cardWords(item), citationWords(item), verdictWords, `Approving this lets a maintainer of ${project} apply it from the setup page once. Nothing changes until they do.`];
   const record = await createPendingChange(approvals, {
     orgId: caller.orgId, requestId: cardRequestIdOf(taskId, item, attempt), requestedBy: caller.developerId,
     subject: { kind: "setup_item", project, draftTaskId: taskId, itemId: item.id, itemKind: kind, digest: itemDigest(item) },
@@ -480,8 +487,10 @@ export function registerBuiltinSetupAppliers(): void {
   });
   registerSetupItemApplier("devcontainer", {
     cardWords: (item) => {
-      const container = item.proposed.value as { repository: string; configPath: string };
-      return [`Open a pull request that adds a dev container file to ${container.repository} at ${container.configPath}.`];
+      const container = item.proposed.value as { repository: string; configPath: string; proposedContent?: string };
+      // The file is written by a model from untrusted text; the administrator sees which file exactly (its size and digest) and reads it on the setup page.
+      const file = container.proposedContent === undefined ? [] : [`The file is ${String(Buffer.byteLength(container.proposedContent, "utf8"))} bytes (sha256 ${createHash("sha256").update(container.proposedContent).digest("hex").slice(0, 16)}...). Read it on the setup page before approving.`];
+      return [`Open a pull request that adds a dev container file to ${container.repository} at ${container.configPath}.`, ...file];
     },
     apply: async (context) => {
       const text = devcontainerRequestText(context.proposal);
@@ -646,13 +655,18 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   let setupCheck: SetupApplyResponse["setupCheck"] = "not_needed";
   let setupCheckMessage: string | undefined;
   let appliedRevision: number | undefined;
+  // The settings revision as OUR saves leave it, taken from what each save answers, never read again from the table: a teammate's save in between must not become the revision
+  // this proposal follows (it would then look as if the proposal still applied to settings it never saw).
+  let revisionNow = body.expectedRevision;
+  const savedAt = (saved: { project: AppProjectDetail }) => { if (typeof saved.project.latestRevision === "number") revisionNow = saved.project.latestRevision; };
   if (settingItems.length > 0) {
     try {
       const saved = await deps.updateSettings(caller, name, { requestId: body.requestId, expectedRevision: body.expectedRevision, ...settings }, { origin: "agent" });
       project = saved.project;
       warnings.push(...saved.warnings);
       for (const item of settingItems) result(item, "applied");
-      appliedRevision = (await deps.latest(caller.orgId, name))?.revision;
+      savedAt(saved);
+      appliedRevision = revisionNow;
       try {
         await deps.startSetupCheck(caller, name, derivedRequestId(body.requestId, "setup-check"));
         setupCheck = "started";
@@ -677,7 +691,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
     if (currently?.state === "same") { result(item, "already_set", { message: SETUP_APPLY_WORDS.alreadySet }); continue; }
     const approvals = deps.approvals!;
     try {
-      const card = await askCard(deps, approvals, caller, name, pointer.taskId, item);
+      const card = await askCard(deps, approvals, caller, name, pointer.taskId, item, async () => (await verificationOf(deps, caller, latest.definition, pointer, proposal))[item.id] ?? "unchecked");
       if (card.state === "pending") { result(item, "approval_needed", { message: SETUP_APPLY_WORDS.waiting, approval: { approvalId: card.approvalId, confirmUrl: card.confirmUrl } }); continue; }
       const applier = getSetupItemApplier(item.kind)!;
       const applyRequestId = derivedRequestId(body.requestId, `apply:${item.id}`);
@@ -690,11 +704,10 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
       }
       let applied: Awaited<ReturnType<SetupItemApplier["apply"]>>;
       try {
-        const revision = (await deps.latest(caller.orgId, name))?.revision ?? body.expectedRevision;
         applied = await applier.apply({
-          project: name, taskId: pointer.taskId, item, proposal, approvedBy: card.approvedBy ?? "", requestId: applyRequestId, revision,
+          project: name, taskId: pointer.taskId, item, proposal, approvedBy: card.approvedBy ?? "", requestId: applyRequestId, revision: revisionNow,
           host: {
-            updateSettings: (settings) => deps.updateSettings(caller, name, settings, { origin: "agent" }),
+            updateSettings: async (settings) => { const saved = await deps.updateSettings(caller, name, settings, { origin: "agent" }); savedAt(saved); return saved; },
             startPullRequest: (request) => deps.startPullRequest(caller, { requestId: request.requestId, project: name, text: request.text }),
             claimPullRequest: (requestId) => claimPullRequest(deps, caller.orgId, name, pointer.taskId, requestId),
             releasePullRequestClaim: (requestId) => releasePullRequestClaim(deps, caller.orgId, name, pointer.taskId, requestId),
@@ -705,7 +718,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
         throw error;
       }
       warnings.push(...applied.warnings);
-      appliedRevision = (await deps.latest(caller.orgId, name))?.revision ?? appliedRevision;
+      appliedRevision = revisionNow;
       result(item, "applied", { message: SETUP_APPLY_WORDS.appliedAfterApproval, ...(applied.pullRequest === undefined ? {} : { pullRequest: applied.pullRequest }) });
     } catch (error) {
       if (isManagedByFile(error)) { result(item, "managed_by_file", { message: SETUP_ITEM_WORDS.managedByFile }); continue; }

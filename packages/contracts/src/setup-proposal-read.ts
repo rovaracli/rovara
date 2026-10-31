@@ -305,8 +305,10 @@ export function sanitizeSetupProposal(raw: unknown, context: SetupProposalContex
     } else {
       const exists = devEntry["exists"] === true;
       const proposed = typeof devEntry["proposedContent"] === "string" ? redactText(devEntry["proposedContent"]).replace(/\r\n?/gu, "\n") : undefined;
-      const usable = !exists && proposed !== undefined && proposed.trim() !== "" && utf8Bytes(proposed) <= SETUP_DEVCONTAINER_MAX_BYTES && !/[\p{Cc}\p{Cf}]/u.test(proposed.replace(/[\n\t]/gu, ""));
-      if (!exists && proposed !== undefined && !usable) notes.push("A proposed dev container file was left out: it is empty, too long or has control characters.");
+      const usable = !exists && proposed !== undefined && proposed.trim() !== "" && utf8Bytes(proposed) <= SETUP_DEVCONTAINER_MAX_BYTES && !/[\p{Cc}\p{Cf}]/u.test(proposed.replace(/[\n\t]/gu, ""))
+        // The file is put inside a fenced block in the request to a coding agent: it must be a JSON object and must not hold a fence that would close the block.
+        && proposed.trimStart().startsWith("{") && !proposed.includes("```");
+      if (!exists && proposed !== undefined && !usable) notes.push("A proposed dev container file was left out: it is empty, too long, not a JSON object, or has control characters or a code fence in it.");
       const from = reader.citations(devEntry["from"], "devcontainer");
       if (from.length === 0) {
         notes.push("A dev container was left out because it names no place it came from.");

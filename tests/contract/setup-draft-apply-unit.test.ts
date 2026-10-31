@@ -28,7 +28,7 @@ if (!read.ok) throw new Error("fixture");
 const proposal: SetupProposal = read.proposal;
 
 /** A tiny table: a get returns what was put; a transaction's puts and an update are kept. */
-function stubDeps(overrides: Partial<SetupDraftDependencies> = {}): { deps: SetupDraftDependencies; puts: Array<Record<string, unknown>>; updateSettings: ReturnType<typeof vi.fn>; startSetupCheck: ReturnType<typeof vi.fn> } {
+function stubDeps(overrides: Partial<SetupDraftDependencies> = {}): { deps: SetupDraftDependencies; puts: Array<Record<string, unknown>>; pointerUpdates: Array<Record<string, unknown>>; updateSettings: ReturnType<typeof vi.fn>; startSetupCheck: ReturnType<typeof vi.fn> } {
   const updateSettings = vi.fn(async () => ({ project: {} as AppProjectDetail, warnings: [] as string[] }));
   const startSetupCheck = vi.fn(async () => undefined);
   const taskId = randomUUID();
@@ -37,10 +37,14 @@ function stubDeps(overrides: Partial<SetupDraftDependencies> = {}): { deps: Setu
   items.set(key(setupDraftKey(TEST_ORG, "web")), { ...setupDraftKey(TEST_ORG, "web"), entityType: "SETUP_DRAFT", orgId: TEST_ORG, project: "web", taskId, requestId: randomUUID(), requestedBy: caller.developerId, basedOnRevision: 1, startedAt: new Date().toISOString() });
   items.set(key({ pk: `DEVTASK#${taskId}`, sk: "META" }), { pk: `DEVTASK#${taskId}`, sk: "META", orgId: TEST_ORG, purpose: "setup_draft", taskId, workspaceId: randomUUID(), setupDraftResult: { status: "ready", proposal } });
   const puts: Array<Record<string, unknown>> = [];
+  const pointerUpdates: Array<Record<string, unknown>> = [];
   const documentClient = {
     send: vi.fn(async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
       if (command.constructor.name === "GetCommand") return { Item: items.get(key(command.input["Key"] as { pk: string; sk: string })) };
-      if (command.constructor.name === "TransactWriteCommand") for (const entry of command.input["TransactItems"] as Array<{ Put?: { Item: Record<string, unknown> } }>) if (entry.Put) puts.push(entry.Put.Item);
+      if (command.constructor.name === "TransactWriteCommand") for (const entry of command.input["TransactItems"] as Array<{ Put?: { Item: Record<string, unknown> }; Update?: { ExpressionAttributeValues: Record<string, unknown> } }>) {
+        if (entry.Put) puts.push(entry.Put.Item);
+        if (entry.Update) pointerUpdates.push(entry.Update.ExpressionAttributeValues);
+      }
       return {};
     }),
   };
@@ -54,7 +58,7 @@ function stubDeps(overrides: Partial<SetupDraftDependencies> = {}): { deps: Setu
     readProject: async () => ({ name: "web" }) as unknown as AppProjectDetail,
     ...overrides,
   };
-  return { deps, puts, updateSettings, startSetupCheck };
+  return { deps, puts, pointerUpdates, updateSettings, startSetupCheck };
 }
 const body = (items: Array<{ id: string; useSuggestion?: boolean }>) => ({ requestId: randomUUID(), expectedRevision: 1, items });
 const outcomes = (reply: { body: unknown }) => (reply.body as { results: Array<{ id: string; outcome: string; message?: string }> }).results;
@@ -81,6 +85,18 @@ describe("applying a proposal against stub dependencies", () => {
     await applySetupDraft(deps, caller, "web", body([{ id: "setup-web" }]));
     expect(updateSettings).toHaveBeenCalledTimes(1);
     expect((updateSettings.mock.calls[0] as unknown[])[3]).toEqual({ origin: "agent" });
+  });
+
+  it("records the revision its own save made as the one the proposal follows, not whatever the table holds afterwards (a teammate's save in between)", async () => {
+    let afterwards = false;
+    const { deps, pointerUpdates } = stubDeps({
+      updateSettings: vi.fn(async () => { afterwards = true; return { project: { latestRevision: 2 } as unknown as AppProjectDetail, warnings: [] }; }),
+      latest: async () => ({ revision: afterwards ? 3 : 1, allowedDomains: [], definition }),
+    });
+    const reply = await applySetupDraft(deps, caller, "web", body([{ id: "setup-web" }]));
+    expect(reply.statusCode).toBe(200);
+    expect(pointerUpdates).toHaveLength(1);
+    expect(pointerUpdates[0]).toMatchObject({ ":revision": 2 });
   });
 
   it("does not hide any other refusal of the settings save: it is the person's answer", async () => {
