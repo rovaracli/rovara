@@ -2720,9 +2720,9 @@ it("funding review: unrelated task-row updates do not invalidate an own-source m
   return send(command);
  };
  const reply = await f.modelAccess();expect(raced).toBe(true);expect(reply.status, JSON.stringify(reply.body)).toBe(200);
- const native = f.t.db.transactions().flat().find(item => item.Update?.Key?.pk === taskKey(f.taskId).pk && JSON.stringify(item).includes("cutoverSource"));
- expect(Object.values(native?.Update?.ExpressionAttributeNames ?? {})).not.toContain("title");
- expect(Object.values(native?.Update?.ExpressionAttributeNames ?? {})).not.toContain("updatedAt");
+ const native = f.t.db.transactions().flat().map(item => item.Update as { Key?: { pk?: string }; ExpressionAttributeNames?: Record<string, string> } | undefined).find(update => update?.Key?.pk === taskKey(f.taskId).pk && JSON.stringify(update).includes("cutoverSource"));
+ expect(Object.values(native?.ExpressionAttributeNames ?? {})).not.toContain("title");
+ expect(Object.values(native?.ExpressionAttributeNames ?? {})).not.toContain("updatedAt");
 });
 it("funding review: source proof read failure is an admission refusal without workspace effects", async () => {
  const f = await ownSourceFundingFixture(), send = f.t.db.send.bind(f.t.db);
@@ -2736,4 +2736,10 @@ it("funding review: refusal records the injected clock and known source evidence
  await f.modelAccess();
  const event = f.t.db.transactions().map(items => transactionAuditEvent(items, "spending.stop_refused")).find(event => event !== undefined);
  expect(event).toMatchObject({ occurredAt: new Date(f.fundingNow).toISOString(), facts: { sourceId: f.sourceId, sourceKind: "tested_bedrock_role", sourcesRevision: 1 } });
+});
+
+it("funding review: an exempt task pauses at its customer agent max per run of five dollars", async () => {
+ const f = await ownSourceOperation();f.t.db.set({ ...f.t.meta(f.taskId), budgetUsd: 10, maxPerRunUsd: 5 });f.t.access.keySpend.mockResolvedValue(5);
+ const reply = await f.modelAccess();expect(reply.body.error).toMatchObject({ code: "BUDGET_EXCEEDED" });
+ expect(f.t.access.mintKey).not.toHaveBeenCalled();expect(f.t.meta(f.taskId)).toMatchObject({ budgetPause: { scope: { kind: "max_per_run", taskId: f.taskId } } });
 });
