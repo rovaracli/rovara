@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId, type WorkspaceInstance } from "@agentx/contracts";
 import { CatalogCache } from "@agentx/gateway";
+import type { HookRecord } from "@agentx/contracts";
+import { jiraProvider } from "../../packages/broker/src/triggers/providers/jira.js";
 import { callConnector, discoverConnector, type ScopeDiscovery } from "../../packages/broker/src/aws/connector-routes.js";
 import type { ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { ingestIntake, type IntakeCandidate, type IntakePorts } from "../../packages/broker/src/intake/engine.js";
@@ -345,3 +347,35 @@ describe("the guard fails closed (review round 1)", () => {
     await expect(recordOwnWriteOfCall({ orgId: ORG, connectorType: "jira", tool: "getJiraIssue", args: { issueIdOrKey: "PAY-12" } })).resolves.toBeUndefined();
   });
 });
+
+describe("the real webhook path (fix round 2)", () => {
+  const HOOK = { source: "jira", project: PROJECT, hookId: `hk_${"1".repeat(26)}`, orgId: ORG, tenant: { siteHost: "acme.atlassian.net", projectKey: "PAY" } } as unknown as HookRecord;
+  const body = {
+    timestamp: T0 + 1_000, webhookEvent: "jira:issue_updated", user: { accountId: "acct-member", accountType: "atlassian" },
+    issue: { id: "10042", key: "PAY-12", self: "https://acme.atlassian.net/rest/api/2/issue/10042", fields: { summary: "Refunds fail", project: { key: "PAY" }, issuetype: { name: "Bug" }, labels: ["rovara"] } },
+    changelog: { id: "10124", items: [{ field: "labels", fromString: "", toString: "rovara" }] },
+  };
+
+  it("Rovara labels by numeric id 10042, the webhook names the issue PAY-12: the event is skipped as caused_by_rovara", async () => {
+    const w = world();
+    const result = jiraProvider.normalize(body, {}, HOOK);
+    if (!("events" in result)) throw new Error(JSON.stringify(result));
+    const candidate = intakeCandidateOf(ORG, result.events[0]!);
+    expect(candidate).toMatchObject({ externalRef: { id: "PAY-12" }, alternateIds: ["10042"], act: { kind: "label", value: "rovara" } });
+    await recordWith(w, { orgId: ORG, connectorType: "jira", tool: "editJiraIssue", args: { issueIdOrKey: "10042", fields: { labels: ["rovara"] } } });
+    expect(await ingestIntake(w.ports, candidate!)).toEqual({ outcome: "skipped", reason: "caused_by_rovara" });
+    expect(w.started).toEqual([]);
+  });
+
+  it("the same webhook with no note of Rovara's starts the work for the member", async () => {
+    const w = world();
+    const result = jiraProvider.normalize(body, {}, HOOK);
+    if (!("events" in result)) throw new Error(JSON.stringify(result));
+    expect((await ingestIntake(w.ports, intakeCandidateOf(ORG, result.events[0]!)!)).outcome).toBe("started");
+  });
+});
+
+async function recordWith(w: ReturnType<typeof world>, call: Parameters<typeof recordOwnWriteOfCall>[0]): Promise<void> {
+  registerOwnWriteRecorder((orgId, note) => noteOwnWrite(w.ports.table, orgId, note));
+  await recordOwnWriteOfCall(call);
+}
