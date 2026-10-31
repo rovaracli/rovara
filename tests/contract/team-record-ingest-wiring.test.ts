@@ -1,9 +1,10 @@
 // The three small hunks that offer verified deliveries to the Team record taps (R5 GitHub, R6 Slack, R7 hooks). Each tap is optional and
 // can never change how the delivery is answered.
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { GithubWebhookRefusal, handleGithubWebhook } from "../../packages/broker/src/aws/github-webhooks.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { GithubWebhookRefusal, RECORD_TAP_BUDGET_MS as GITHUB_BUDGET, handleGithubWebhook } from "../../packages/broker/src/aws/github-webhooks.js";
 import { createSlackIngressHandler, RECORD_TAP_BUDGET_MS } from "../../packages/broker/src/aws/slack-ingress.js";
+import { HOOK_RECORD_TAP_BUDGET_MS } from "../../packages/broker/src/triggers/ingress.js";
 import { createHookRecordTap } from "../../packages/broker/src/team-record/sources/ticket-webhooks.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { LINEAR_TENANT, setupHookWorld } from "../support/hook-fixtures.js";
@@ -11,6 +12,8 @@ import { TEST_ORG } from "../support/orgs.js";
 
 const GH_SECRET = "whsec-record";
 const ghSign = (raw: string) => `sha256=${createHmac("sha256", GH_SECRET).update(raw).digest("hex")}`;
+
+afterEach(() => { vi.useRealTimers(); });
 
 describe("GitHub webhook: record tap", () => {
   const deliver = (eventName: string, payload: object, recordTap?: Parameters<typeof handleGithubWebhook>[0]["recordTap"]) => {
@@ -44,6 +47,23 @@ describe("GitHub webhook: record tap", () => {
   });
 });
 
+describe("GitHub webhook: record tap budget", () => {
+  it("a tap that never answers holds the delivery for the budget at most, then the delivery goes on as before", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const raw = JSON.stringify({ ref: "refs/heads/main" });
+    let settled = false;
+    const outcome = handleGithubWebhook({
+      documentClient: new FakeDynamoDb(), tableName: "T", rawBody: raw, secret: GH_SECRET, now: () => "2026-10-30T10:00:00.000Z",
+      headers: { "x-hub-signature-256": ghSign(raw), "x-github-delivery": "6a0b3c52-0000-4000-8000-000000000001", "x-github-event": "push" },
+      authorizeRepository: async () => false, process: async () => undefined, recordTap: () => new Promise(() => undefined),
+    }).then(() => "answered", () => "refused").finally(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(GITHUB_BUDGET - 100);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(await outcome).toBe("refused");
+  });
+});
+
 describe("Slack ingress: record tap", () => {
   const signingSecret = "8f742231b10e8888abcd99yyyzzz85a5";
   const nowSeconds = 1_758_657_600;
@@ -74,6 +94,25 @@ describe("Slack ingress: record tap", () => {
     expect(seen).toEqual([plain]);
     expect(withTap).toEqual(without);
     expect(withTap.statusCode).toBe(200);
+  });
+
+  it("runs alongside the mention path, never before it: a tap that waits for the mention path to start still finishes inside its budget", async () => {
+    let mentionPathStarted!: () => void;
+    const started = new Promise<void>((resolve) => { mentionPathStarted = resolve; });
+    const logs: string[] = [];
+    const handle = createSlackIngressHandler({
+      secrets: async () => ({ signingSecret, botToken: "xoxb-test" }),
+      // The mention path reaches resolveOrg only after the tap was started; a tap that was awaited first could never see it.
+      resolveOrg: async () => { mentionPathStarted(); return TEST_ORG; },
+      getBinding: async () => undefined, claimEvent: async () => true, releaseEvent: async () => undefined, changePending: async () => 1, enqueue: async () => undefined, postMessage: async () => undefined,
+      now: () => nowSeconds * 1000, log: (event) => logs.push(event),
+      recordTap: async () => { await started; },
+    });
+    const body = JSON.stringify({ type: "event_callback", team_id: "T0TEAM00001", event_id: "Ev9", event: { type: "app_mention", channel: "C0123456789", user: "U0ALICE0001", text: "<@U0BOT000001> hi", ts: "1758657600.000200" } });
+    const signature = `v0=${createHmac("sha256", signingSecret).update(`v0:${String(nowSeconds)}:${body}`).digest("hex")}`;
+    const response = await handle({ body, headers: { "x-slack-request-timestamp": String(nowSeconds), "x-slack-signature": signature }, isBase64Encoded: false });
+    expect(response.statusCode).toBe(200);
+    expect(logs).not.toContain("record.tap_slow");
   });
 
   it("is not offered a request with a bad signature or a url verification", async () => {
@@ -110,6 +149,17 @@ describe("hook ingress: record tap", () => {
     const wrong = await world.receive(world.delivery(hook, body({ organizationId: "other", teamId: "x" })));
     expect(wrong.status).toBe(403);
     expect(seen).toHaveLength(1);
+  });
+
+  it("a tap that never answers holds the answer for the budget at most, and the dispatch still happens", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const world = setupHookWorld();
+    world.deps.recordTap = () => new Promise(() => undefined);
+    const hook = await world.hook({ source: "linear" });
+    const answered = world.receive(world.delivery(hook, body(LINEAR_TENANT)));
+    await vi.advanceTimersByTimeAsync(HOOK_RECORD_TAP_BUDGET_MS + 100);
+    expect((await answered).status).toBe(202);
+    expect(world.dispatched).toHaveLength(1);
   });
 
   it("a failing tap leaves the answer and the dispatch as they were", async () => {

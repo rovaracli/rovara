@@ -9,3 +9,4 @@ export * from "./tickets.js";
 export * from "./ticket-webhooks.js";
 export * from "./mcp-poller.js";
 export * from "./existence-sweep.js";
+export * from "./queue.js";

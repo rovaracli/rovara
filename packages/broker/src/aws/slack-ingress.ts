@@ -154,8 +154,8 @@ export interface SlackIngressDependencies {
   log?: SlackIngressLog;
   /**
    * Team record (R6): offered every signed event callback before it is read as a mention, so channel messages, edits, deletions and membership changes
-   * can reach the record (`createSlackRecordTap`). It decides for itself what to keep, never throws a Slack retry, and is cut off after
-   * `RECORD_TAP_BUDGET_MS` so Slack's three-second acknowledgement is never at risk. Absent: nothing is offered, as before.
+   * can reach the record (`createSlackRecordTap`). It decides for itself what to keep, never throws a Slack retry, runs in parallel with the mention path and is cut off
+   * after `RECORD_TAP_BUDGET_MS`, so Slack's three-second acknowledgement is never at risk. Absent: nothing is offered, as before.
    */
   recordTap?: (payload: unknown) => Promise<unknown>;
   /**
@@ -266,7 +266,9 @@ export async function recordThreadNoteThroughBroker(
 export function createSlackIngressHandler(dependencies: SlackIngressDependencies) {
   const now = dependencies.now ?? Date.now;
   const log: SlackIngressLog = dependencies.log ?? (() => undefined);
-  return async (event: HttpApiV2Event): Promise<HttpResponse> => {
+  // The Team record tap (R6) runs alongside the mention path, never before it: its own budget runs in parallel with the work below, and the answer waits for it
+  // only if it is still running when that work is done (so the Lambda is not frozen mid-write). A normal tap only queues, and takes a few milliseconds.
+  const handleEvent = async (event: HttpApiV2Event, recording: { done?: Promise<void> }): Promise<HttpResponse> => {
     const rawBody = event.body === undefined
       ? ""
       : event.isBase64Encoded ? Buffer.from(event.body, "base64").toString("utf8") : event.body;
@@ -288,7 +290,7 @@ export function createSlackIngressHandler(dependencies: SlackIngressDependencies
       return respond(200, { challenge: typeof payload.challenge === "string" ? payload.challenge : "" });
     }
     if (payload.type !== "event_callback") return ignore(log, "not_event_callback");
-    if (dependencies.recordTap !== undefined) await offerToRecord(dependencies.recordTap, payload, log);
+    if (dependencies.recordTap !== undefined) recording.done = offerToRecord(dependencies.recordTap, payload, log);
 
     const mention = parseMention(payload);
     if ("reason" in mention) return ignore(log, mention.reason);
@@ -505,6 +507,14 @@ export function createSlackIngressHandler(dependencies: SlackIngressDependencies
       return respond(200, { ok: true });
     }
     return queueRequest(dependencies, log, mention, chatText, countedWindowStart, now, false);
+  };
+  return async (event: HttpApiV2Event): Promise<HttpResponse> => {
+    const recording: { done?: Promise<void> } = {};
+    try {
+      return await handleEvent(event, recording);
+    } finally {
+      await recording.done;
+    }
   };
 }
 
@@ -828,7 +838,7 @@ async function ephemeral(dependencies: SlackIngressDependencies, log: SlackIngre
 const THREAD_REPLY_SUBTYPES: ReadonlySet<string> = new Set(["thread_broadcast", "file_share"]);
 
 /** Time the Team record tap may take before the ingress goes on without it. */
-export const RECORD_TAP_BUDGET_MS = 1_500;
+export const RECORD_TAP_BUDGET_MS = 500;
 
 async function offerToRecord(tap: (payload: unknown) => Promise<unknown>, payload: Record<string, unknown>, log: SlackIngressLog): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;

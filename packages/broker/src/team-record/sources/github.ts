@@ -24,7 +24,11 @@ const personOf = (person: z.infer<typeof Person>): CodeHostPerson => ({
 });
 
 export interface GithubRecordTapDependencies extends Omit<CodeHostTapDependencies, "diffs"> {
-  /** The workspace and project an installation's repository belongs to (the Rovara project's repository registry). Absent answer: the delivery is not recorded. */
+  /**
+   * The workspace and project an installation's repository belongs to (the Rovara project's repository registry). It MUST check that the repository is one
+   * the installation holds and a project registered, never trusting the body's names: a delivery for any other repository must answer `undefined`, and then
+   * nothing is recorded.
+   */
   resolveRepo(input: { installationId: number; repositoryId: number; fullName: string }): Promise<{ workspaceId: string; project?: string } | undefined>;
   /** Reads a compare with the installation's token (github-app.ts `trackingJson`). Without it, human edits are not read. */
   getJson?: GithubGetJson;
@@ -141,7 +145,7 @@ export function githubEventsOf(eventName: string, action: string | undefined, pa
 const Compare = z.object({
   status: z.enum(["identical", "ahead", "behind", "diverged"]),
   total_commits: z.number().int().nonnegative().optional(),
-  commits: z.array(z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/), author: Person.nullish() }).passthrough()).max(300).default([]),
+  commits: z.array(z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/), author: Person.nullish(), commit: z.object({ verification: z.object({ verified: z.boolean().optional() }).passthrough().nullish() }).passthrough().optional() }).passthrough()).max(300).default([]),
   files: z.array(z.object({ filename: z.string().max(1000), additions: z.number().int().nonnegative().default(0), deletions: z.number().int().nonnegative().default(0), patch: z.string().max(200_000).optional() }).passthrough()).max(300).default([]),
 }).passthrough();
 
@@ -157,7 +161,7 @@ export function createGithubDiffReader(getJson: GithubGetJson): CodeHostDiffRead
       if (!parsed.success) return undefined;
       const diff: CodeHostDiff = {
         status: parsed.data.status,
-        commits: parsed.data.commits.map((commit) => ({ sha: commit.sha, ...(commit.author ? { author: personOf(commit.author) } : {}) })),
+        commits: parsed.data.commits.map((commit) => ({ sha: commit.sha, verified: commit.commit?.verification?.verified === true, ...(commit.author ? { author: personOf(commit.author) } : {}) })),
         files: parsed.data.files.map((file) => ({ path: file.filename, additions: file.additions, deletions: file.deletions, ...(file.patch === undefined ? {} : { patch: file.patch }) })),
         truncated: parsed.data.files.length >= 300 || (parsed.data.total_commits ?? 0) > parsed.data.commits.length,
       };

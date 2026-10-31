@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCodeHostTap, humanEditFile, revertedCommits, revertedPullRequests, type CodeHostDiff, type CodeHostEvent, type CodeHostRepo, type HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
+import { createCodeHostTap, humanEditFile, revertedCommits, runHumanEdit, revertedPullRequests, type CodeHostDiff, type CodeHostEvent, type CodeHostRepo, type HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
 import { createGithubDiffReader, createGithubRecordTap, githubEventsOf } from "../../packages/broker/src/team-record/sources/github.js";
 import { createRovaraEmitter, type RovaraEventBase } from "../../packages/broker/src/team-record/sources/rovara.js";
 import { repoScope } from "../../packages/broker/src/team-record/sources/codehost.js";
@@ -101,15 +101,29 @@ describe("code-host tap: what is recorded", () => {
     expect((await tap.handle(pr({ version: "closed:2", action: "closed" }))).failed).toBe(1);
   });
 
-  it("tombstones a deleted comment and a deleted or transferred repository, even with the row disabled", async () => {
+  it("honours a deleted comment and a deleted or transferred repository whatever the row, the mode or the config read says", async () => {
     const { w, tap } = setup();
-    await tap.handle({ type: "comment", repo: repo(), prNumber: 5, id: "41", url: "https://github.com/acme/shop/pull/5#c41", action: "deleted", surface: "review_comment", author: alice, at: AT, version: "deleted:1" });
+    const deletedComment: CodeHostEvent = { type: "comment", repo: repo(), prNumber: 5, id: "41", url: "https://github.com/acme/shop/pull/5#c41", action: "deleted", surface: "review_comment", author: alice, at: AT, version: "deleted:1" };
+    // The row is disabled, the mode is off and the config read fails, all at once: the delete still goes through.
+    w.config.set("github", repoScope(repo()), { enabled: false });
+    w.mode.on = false;
+    w.config.throws = true;
+    await tap.handle(deletedComment);
     await tap.handle({ type: "repository", repo: repo(), action: "deleted", at: AT });
+    await tap.handle({ type: "repository", repo: repo(), action: "transferred", at: AT });
     expect(w.sink.tombstones).toMatchObject([
       { system: "github", sourceIds: ["acme/shop#pr5:review_comment41"], cause: "source_deleted" },
       { system: "github", scope: "github:repo/77", cause: "source_deleted" },
+      { system: "github", scope: "github:repo/77", cause: "source_deleted" },
     ]);
     expect(w.sink.puts).toEqual([]);
+  });
+
+  it("a failing tombstone is counted, never thrown", async () => {
+    const { w, tap } = setup();
+    w.sink.tombstone = async () => { throw new Error("table unavailable"); };
+    const result = await tap.handle({ type: "repository", repo: repo(), action: "deleted", at: AT });
+    expect(result.failed).toBe(1);
   });
 });
 
@@ -145,6 +159,29 @@ describe("reverts of Rovara pull requests", () => {
     expect(w.sink.kinds().filter((kind) => kind === "github.revert")).toEqual(["github.revert"]);
   });
 
+  it("ignores a merged revert PR whose base is not the default branch", async () => {
+    const { w, tap } = setup();
+    w.prs.list.push(rovaraPr);
+    await tap.handle(pr({ number: 9, title: 'Revert "Fix cart total"', body: "Reverts acme/shop#5", action: "closed", merged: true, baseRef: "release/1", mergeCommitSha: sha(41), version: "closed:9" }));
+    expect(w.sink.kinds().filter((kind) => kind === "github.revert")).toEqual([]);
+  });
+
+  it("re-scores a reverted task once, however many deliveries tell of it, and retries after a failure", async () => {
+    const claimed = new Set<string>();
+    const claims = { claim: async (key: string) => (claimed.has(key) ? false : (claimed.add(key), true)), release: async (key: string) => { claimed.delete(key); } };
+    const marks: unknown[] = [];
+    let failing = true;
+    const { w, tap } = setup({ claims, trackRecord: { markNotHeld: async (input) => { if (failing) throw new Error("down"); marks.push(input); } } });
+    w.prs.list.push(rovaraPr);
+    const push = (version: number): CodeHostEvent => ({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, commits: [{ sha: sha(40 + version), message: `This reverts commit ${sha(30)}.` }] });
+    await tap.handle(push(0));
+    expect(marks).toEqual([]);
+    failing = false;
+    await tap.handle(push(0));
+    await tap.handle(push(1));
+    expect(marks).toHaveLength(1);
+  });
+
   it("ignores a revert commit pushed to another branch, or one whose target is not a Rovara merge commit", async () => {
     const { w, tap } = setup();
     w.prs.list.push(rovaraPr);
@@ -178,14 +215,14 @@ describe("human edits to Rovara pull requests (read live, never stored)", () => 
 
   it("hands a bounded, redacted diff to the extractor and stores NOTHING of it", async () => {
     const { w, tap, handed, compares } = fixture({
-      status: "ahead", truncated: false, commits: [{ sha: sha(22), author: alice }],
+      status: "ahead", truncated: false, commits: [{ sha: sha(22), author: alice, verified: true }],
       files: [{ path: "src/cart.ts", additions: 250, deletions: 1, patch: patchOf(250, true) }],
     });
     await tap.handle(merged());
     expect(compares).toEqual([{ repo: repo(), base: sha(20), head: sha(21) }]);
     expect(handed).toHaveLength(1);
     const input = handed[0]!;
-    expect(input).toMatchObject({ workspaceId: WS, project: "shop", taskId: "task-1", repo: "acme/shop", trust: "member", approximate: false, link: "https://github.com/acme/shop/pull/5" });
+    expect(input).toMatchObject({ workspaceId: WS, project: "shop", taskId: "task-1", repo: "acme/shop", trust: "member", link: "https://github.com/acme/shop/pull/5" });
     const file = input.files[0]!;
     expect(file.symbols).toEqual(["function total()"]);
     // 200 changed lines at most, hunk headers kept, context dropped, credentials redacted.
@@ -202,7 +239,7 @@ describe("human edits to Rovara pull requests (read live, never stored)", () => 
   it("hands nothing on when any human commit is an outsider's, a bot's, or has no linked author", async () => {
     for (const authors of [[alice, mallory], [alice, { id: "5", login: "x[bot]", isBot: true }], [alice, undefined]]) {
       const { tap, handed, logs } = fixture({
-        status: "ahead", truncated: false, commits: authors.map((author, index) => ({ sha: sha(50 + index), ...(author === undefined ? {} : { author }) })),
+        status: "ahead", truncated: false, commits: authors.map((author, index) => ({ sha: sha(50 + index), verified: true, ...(author === undefined ? {} : { author }) })),
         files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }],
       });
       await tap.handle(merged());
@@ -215,21 +252,81 @@ describe("human edits to Rovara pull requests (read live, never stored)", () => 
     const same = fixture({ status: "identical", truncated: false, commits: [], files: [] });
     await same.tap.handle(merged(sha(20)));
     expect(same.compares).toEqual([]);
-    const other = fixture({ status: "ahead", truncated: false, commits: [{ sha: sha(22), author: alice }], files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] });
+    const other = fixture({ status: "ahead", truncated: false, commits: [{ sha: sha(22), author: alice, verified: true }], files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] });
     await other.tap.handle(pr({ number: 77, action: "closed", merged: true, headSha: sha(21), version: "closed:77" }));
     expect(other.compares).toEqual([]);
-    const notMerged = fixture({ status: "ahead", truncated: false, commits: [{ sha: sha(22), author: alice }], files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] });
+    const notMerged = fixture({ status: "ahead", truncated: false, commits: [{ sha: sha(22), author: alice, verified: true }], files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] });
     await notMerged.tap.handle(pr({ action: "closed", merged: false, headSha: sha(21), version: "closed:6" }));
     expect(notMerged.compares).toEqual([]);
   });
 
-  it("marks a diff approximate after a force push, and survives a host that gives no compare", async () => {
-    const diverged = fixture({ status: "diverged", truncated: false, commits: [{ sha: sha(22), author: alice }], files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] });
-    await diverged.tap.handle(merged());
-    expect(diverged.handed[0]!.approximate).toBe(true);
+  it("drops a diverged or behind compare (a force push or rebase mixes in other people's commits), and one that was cut short", async () => {
+    for (const status of ["diverged", "behind"] as const) {
+      const f = fixture({ status, truncated: false, commits: [{ sha: sha(22), author: alice, verified: true }], files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] });
+      await f.tap.handle(merged());
+      expect(f.handed).toEqual([]);
+      expect(f.logs).toContain("human_edit.skipped");
+    }
+    // A cut-short compare has commits nobody checked: they are as good as outsiders', so nothing is handed on.
+    const truncated = fixture({ status: "ahead", truncated: true, commits: [{ sha: sha(22), author: alice, verified: true }], files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] });
+    await truncated.tap.handle(merged());
+    expect(truncated.handed).toEqual([]);
     const none = fixture(undefined);
     await none.tap.handle(merged());
     expect(none.handed).toEqual([]);
+  });
+
+  it("requires every human commit to be signature-verified: an author name or email on a commit proves nothing", async () => {
+    const spoofed = fixture({ status: "ahead", truncated: false, commits: [{ sha: sha(22), author: alice, verified: false }], files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] });
+    await spoofed.tap.handle(merged());
+    expect(spoofed.handed).toEqual([]);
+    const mixed = fixture({ status: "ahead", truncated: false, commits: [{ sha: sha(22), author: alice, verified: true }, { sha: sha(23), author: alice, verified: false }], files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] });
+    await mixed.tap.handle(merged());
+    expect(mixed.handed).toEqual([]);
+  });
+
+  it("hands a task's edit on once however often the merge is delivered, and gives the claim back when the extractor fails", async () => {
+    const claimed = new Set<string>();
+    const claims = { claim: async (key: string) => (claimed.has(key) ? false : (claimed.add(key), true)), release: async (key: string) => { claimed.delete(key); } };
+    let failing = true;
+    const handed: HumanEditInput[] = [];
+    const { w, tap } = setup({
+      claims,
+      diffs: { compare: async () => ({ status: "ahead", truncated: false, commits: [{ sha: sha(22), author: alice, verified: true }], files: [{ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] }) },
+      extractor: { extract: async (input) => { if (failing) throw new Error("model down"); handed.push(input); return { candidates: 1 }; } },
+    });
+    w.prs.list.push(rovaraPr);
+    await tap.handle(merged());
+    expect(handed).toEqual([]);
+    failing = false;
+    await tap.handle(merged());
+    await tap.handle(merged());
+    await tap.handle(merged());
+    expect(handed).toHaveLength(1);
+  });
+
+  it("queues the read when a job queue is given, so the compare and the extractor never run inside the webhook's answer", async () => {
+    const jobs: unknown[] = [];
+    const compares: unknown[] = [];
+    const { w, tap } = setup({
+      humanEditJobs: { enqueue: async (job) => { jobs.push(job); } },
+      diffs: { compare: async (input) => { compares.push(input); return undefined; } },
+      extractor: { extract: async () => ({ candidates: 0 }) },
+    });
+    w.prs.list.push(rovaraPr);
+    await tap.handle(merged());
+    expect(compares).toEqual([]);
+    expect(jobs).toEqual([{ repo: repo(), project: "shop", taskId: "task-1", pullRequest: { number: 5, url: rovaraPr.url }, candidateHeadSha: sha(20), headSha: sha(21) }]);
+  });
+
+  it("a queued read re-checks the source row before it reads anything", async () => {
+    const compares: unknown[] = [];
+    const { w } = setup();
+    w.mode.on = false;
+    const outcome = await runHumanEdit({ actors: w.actors, mode: w.mode, config: w.config, diffs: { compare: async (input) => { compares.push(input); return undefined; } }, extractor: { extract: async () => ({ candidates: 0 }) } },
+      { repo: repo(), project: "shop", taskId: "task-1", pullRequest: { number: 5, url: rovaraPr.url }, candidateHeadSha: sha(20), headSha: sha(21) });
+    expect(outcome).toBe("skipped");
+    expect(compares).toEqual([]);
   });
 
   it("reads a patch as hunk headers and changed lines only", () => {
@@ -277,12 +374,16 @@ describe("GitHub adapter", () => {
 
   it("reads a compare and refuses anything but a clean answer", async () => {
     const calls: string[] = [];
-    const body = { status: "ahead", total_commits: 1, commits: [{ sha: sha(22), author: { id: 1001, login: "alice", type: "User" } }, { sha: sha(23), author: null }], files: [{ filename: "a.ts", additions: 2, deletions: 1, patch: "@@ -1 +1 @@\n+x" }] };
+    const body = { status: "ahead", total_commits: 1, commits: [{ sha: sha(22), author: { id: 1001, login: "alice", type: "User" }, commit: { verification: { verified: true } } }, { sha: sha(23), author: null, commit: { verification: { verified: false } } }], files: [{ filename: "a.ts", additions: 2, deletions: 1, patch: "@@ -1 +1 @@\n+x" }] };
     const reader = createGithubDiffReader(async (path) => { calls.push(path); return { status: 200, body }; });
     const diff = await reader.compare({ repo: repo(), base: sha(20), head: sha(21) });
     expect(calls).toEqual([`/repos/acme/shop/compare/${sha(20)}...${sha(21)}?per_page=100`]);
     expect(diff).toMatchObject({ status: "ahead", truncated: false, commits: [{ author: { id: "1001" } }, { sha: sha(23) }], files: [{ path: "a.ts" }] });
+    expect(diff!.commits.map((commit) => commit.verified)).toEqual([true, false]);
     expect(diff!.commits[1]!.author).toBeUndefined();
+    // More commits than were returned: the compare is cut short, and says so.
+    const cut = await createGithubDiffReader(async () => ({ status: 200, body: { ...body, total_commits: 400 } })).compare({ repo: repo(), base: sha(20), head: sha(21) });
+    expect(cut!.truncated).toBe(true);
     expect(await reader.compare({ repo: repo(), base: "main", head: sha(21) })).toBeUndefined();
     expect(await reader.compare({ repo: repo({ fullName: "../../etc" }), base: sha(20), head: sha(21) })).toBeUndefined();
     expect(calls).toHaveLength(1);

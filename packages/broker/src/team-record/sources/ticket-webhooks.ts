@@ -29,7 +29,9 @@ function linearItems(body: unknown, tenant: { organizationId: string; teamId: st
   const parsed = LinearEnvelope.safeParse(body);
   if (!parsed.success || parsed.data.organizationId.toLowerCase() !== tenant.organizationId.toLowerCase()) return { ignored: "tenant" };
   const { type, action, data } = parsed.data;
-  const bodyTeam = str(data.teamId, 100) ?? str((data.team as { id?: unknown } | undefined)?.id, 100);
+  const issueOf = (data.issue ?? {}) as { teamId?: unknown; team?: { id?: unknown } };
+  const bodyTeam = str(data.teamId, 100) ?? str((data.team as { id?: unknown } | undefined)?.id, 100) ?? str(issueOf.teamId, 100) ?? str(issueOf.team?.id, 100);
+  // The hook is for one team. A body that names another team is not ours; a body that names none proves nothing about its team.
   if (bodyTeam !== undefined && bodyTeam.toLowerCase() !== tenant.teamId.toLowerCase()) return { ignored: "tenant" };
   const id = str(data.id, 100);
   if (id === undefined) return { ignored: "unreadable" };
@@ -40,13 +42,18 @@ function linearItems(body: unknown, tenant: { organizationId: string; teamId: st
     const key = `issue:${id}`;
     if (action === "remove") return { changes: [], removed: [key], system: "linear" };
     if (action !== "create" && action !== "update") return { ignored: "action" };
+    // An issue must prove its team: an org-wide hook also carries other teams' issues, private teams included.
+    if (bodyTeam === undefined) return { ignored: "tenant_unproven" };
+    const creator = str(data.creatorId, 200) ?? str((data.creator as { id?: unknown } | undefined)?.id, 200);
+    const actorId = str(parsed.data.actor?.id, 200);
     const state = str((data.state as { name?: unknown } | undefined)?.name, 100);
     const labels = Array.isArray(data.labels) ? data.labels.flatMap((label: unknown) => str((label as { name?: unknown } | null)?.name, 100) ?? []) : [];
     return { system: "linear", removed: [], changes: [{
       source: "linear", system: "linear", id: key, kind: action === "create" ? "ticket.created" : "ticket.updated", scope,
       title: str(data.title, 500) ?? str(data.identifier, 100) ?? id, ...(str(data.description, 70_000) === undefined ? {} : { body: str(data.description, 70_000)! }),
       ...(state === undefined ? {} : { state }), labels, ...(str(data.url ?? parsed.data.url) === undefined ? {} : { url: str(data.url ?? parsed.data.url)! }),
-      ...(str(parsed.data.actor?.id, 200) === undefined ? {} : { authorId: str(parsed.data.actor?.id, 200)! }), occurredAt: at, version: `${action}:${at}`, acl,
+      ...(creator === undefined ? {} : { authorId: creator }), ...(actorId === undefined ? {} : { updaterId: actorId }), nativeId: id, ...(action === "update" ? { edit: true } : {}),
+      occurredAt: at, version: `${action}:${at}`, acl,
     }] };
   }
   if (type === "Comment") {
@@ -54,11 +61,15 @@ function linearItems(body: unknown, tenant: { organizationId: string; teamId: st
     if (action === "remove") return { changes: [], removed: [key], system: "linear" };
     if (action !== "create" && action !== "update") return { ignored: "action" };
     const issueId = str(data.issueId, 100) ?? str((data.issue as { id?: unknown } | undefined)?.id, 100);
-    const commentAuthor = str(data.userId, 200) ?? str(parsed.data.actor?.id, 200);
+    // The comment's author is `userId`; whoever edited it is the webhook's actor.
+    const commentAuthor = str(data.userId, 200);
+    const commentUpdater = str(parsed.data.actor?.id, 200);
     return { system: "linear", removed: [], changes: [{
       source: "linear", system: "linear", id: key, kind: "ticket.comment", scope, ...(issueId === undefined ? {} : { parentId: `issue:${issueId}` }),
       ...(str(data.body, 70_000) === undefined ? {} : { body: str(data.body, 70_000)! }), ...(str(data.url ?? parsed.data.url) === undefined ? {} : { url: str(data.url ?? parsed.data.url)! }),
-      ...(commentAuthor === undefined ? {} : { authorId: commentAuthor }), occurredAt: at, version: `${action}:${at}`, acl,
+      ...(commentAuthor === undefined ? {} : { authorId: commentAuthor }), ...(commentUpdater === undefined ? {} : { updaterId: commentUpdater }), nativeId: id, ...(action === "update" ? { edit: true } : {}),
+      // A comment that names no team is recorded only when its ticket is already recorded under this team.
+      ...(bodyTeam === undefined ? { needsParentProof: true } : {}), occurredAt: at, version: `${action}:${at}`, acl,
     }] };
   }
   return { ignored: "type" };
@@ -89,7 +100,8 @@ function jiraItems(body: unknown, tenant: { siteHost: string; projectKey?: strin
   if (self === undefined || !onSite(self, tenant.siteHost)) return { ignored: "tenant" };
   const fields = (issue?.fields ?? {}) as Record<string, unknown>;
   const projectKey = str((fields.project as { key?: unknown } | undefined)?.key, 100);
-  if (tenant.projectKey !== undefined && issue !== undefined && projectKey !== tenant.projectKey) return { ignored: "tenant" };
+  // A hook scoped to one project believes only a body that names that project: a comment event without its issue proves nothing.
+  if (tenant.projectKey !== undefined && projectKey !== tenant.projectKey) return { ignored: "tenant" };
   const scopeKey = tenant.projectKey ?? projectKey;
   const scope = scopeKey === undefined ? `jira:site/${tenant.siteHost}` : `jira:project/${scopeKey}`;
   const system = `jira:${tenant.siteHost}`;
@@ -98,7 +110,11 @@ function jiraItems(body: unknown, tenant: { siteHost: string; projectKey?: strin
   const issueId = idText(issue?.id);
   const key = str(issue?.key, 100);
   const browse = key !== undefined && /^[A-Z][A-Z0-9_]{0,49}-[1-9][0-9]{0,9}$/.test(key) ? `https://${tenant.siteHost}/browse/${key}` : undefined;
-  const author = str(parsed.data.user?.accountId, 200);
+  const triggeredBy = str(parsed.data.user?.accountId, 200);
+  const creatorOf = (fields.creator ?? fields.reporter) as { accountId?: unknown } | null | undefined;
+  const creator = str(creatorOf?.accountId, 200) ?? str((fields.reporter as { accountId?: unknown } | null | undefined)?.accountId, 200);
+  // Jira issue security levels: a restricted issue is never given the project-wide audience. An issue whose fields are missing cannot be known to be open.
+  const restricted = (fields.security !== undefined && fields.security !== null) || issue?.fields === undefined;
   if (webhookEvent === "jira:issue_deleted") return issueId === undefined ? { ignored: "unreadable" } : { changes: [], removed: [`issue:${issueId}`], system };
   if (webhookEvent === "jira:issue_created" || webhookEvent === "jira:issue_updated") {
     if (issueId === undefined) return { ignored: "unreadable" };
@@ -108,19 +124,21 @@ function jiraItems(body: unknown, tenant: { siteHost: string; projectKey?: strin
       source: "jira", system, id: `issue:${issueId}`, kind: webhookEvent === "jira:issue_created" ? "ticket.created" : "ticket.updated", scope,
       title: str(fields.summary, 500) ?? key ?? issueId, ...(description === undefined ? {} : { body: description }), ...(state === undefined ? {} : { state }),
       labels: Array.isArray(fields.labels) ? fields.labels.flatMap((label: unknown) => str(label, 100) ?? []) : [], ...(browse === undefined ? {} : { url: browse }),
-      ...(author === undefined ? {} : { authorId: author }), occurredAt: at, version: `${webhookEvent}:${at}`, acl,
+      ...(creator === undefined ? {} : { authorId: creator }), ...(triggeredBy === undefined ? {} : { updaterId: triggeredBy }), nativeId: issueId, ...(webhookEvent === "jira:issue_updated" ? { edit: true } : {}),
+      ...(restricted ? { restricted: true } : {}), occurredAt: at, version: `${webhookEvent}:${at}`, acl,
     }] };
   }
   if (webhookEvent === "comment_created" || webhookEvent === "comment_updated" || webhookEvent === "comment_deleted") {
     const commentId = idText(comment?.id);
     if (commentId === undefined) return { ignored: "unreadable" };
     if (webhookEvent === "comment_deleted") return { changes: [], removed: [`comment:${commentId}`], system };
-    const commentAuthor = str((comment?.author as { accountId?: unknown } | undefined)?.accountId, 200) ?? author;
+    const commentAuthor = str((comment?.author as { accountId?: unknown } | undefined)?.accountId, 200);
+    const commentUpdater = str((comment?.updateAuthor as { accountId?: unknown } | undefined)?.accountId, 200) ?? triggeredBy;
     const commentBody = adfText(comment?.body);
     return { system, removed: [], changes: [{
       source: "jira", system, id: `comment:${commentId}`, kind: "ticket.comment", scope, ...(issueId === undefined ? {} : { parentId: `issue:${issueId}` }),
-      ...(commentBody === undefined ? {} : { body: commentBody }), ...(browse === undefined ? {} : { url: browse }), ...(commentAuthor === undefined ? {} : { authorId: commentAuthor }),
-      occurredAt: at, version: `${webhookEvent}:${at}`, acl,
+      ...(commentBody === undefined ? {} : { body: commentBody }), ...(browse === undefined ? {} : { url: browse }), ...(commentAuthor === undefined ? {} : { authorId: commentAuthor }), ...(commentUpdater === undefined ? {} : { updaterId: commentUpdater }), nativeId: commentId,
+      ...(webhookEvent === "comment_updated" ? { edit: true } : {}), ...(restricted ? { restricted: true } : {}), occurredAt: at, version: `${webhookEvent}:${at}`, acl,
     }] };
   }
   return { ignored: "event" };

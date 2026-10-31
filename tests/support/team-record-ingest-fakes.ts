@@ -19,6 +19,11 @@ export class FakeSink implements RecordSinkPort {
     const key = idempotencyKey(draft);
     if (this.keys.has(key)) return { status: "duplicate" as const };
     this.keys.add(key);
+    // The sink contract (ports.ts): a new version replaces the earlier versions' text, so words a person edited away are not kept.
+    for (let i = this.puts.length - 1; i >= 0; i -= 1) {
+      const old = this.puts[i]!;
+      if (old.source === draft.source && old.sourceRef.system === draft.sourceRef.system && old.sourceRef.id === draft.sourceRef.id) this.puts.splice(i, 1);
+    }
     this.puts.push(draft);
     return { status: "stored" as const };
   }

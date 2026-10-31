@@ -6,7 +6,7 @@
 // learning extractor, and dropped. Only the lesson the extractor makes, and a link to the pull request, are ever kept (by the learning lane).
 import { cleanText, gate, isExcluded, linksOf, scalars, withRetention, MAX_DRAFTS_PER_DELIVERY, type GateDependencies } from "./common.js";
 import type {
-  ActorResolverPort, Audience, RecordDraft, RecordSinkPort, RovaraPullRequest, RovaraPullRequestIndexPort,
+  ActorResolverPort, Audience, OnceClaimPort, RecordDraft, RecordSinkPort, RovaraPullRequest, RovaraPullRequestIndexPort,
   SourceSystem, TapLog, TrackRecordPort,
 } from "./ports.js";
 
@@ -41,9 +41,10 @@ export type CodeHostEvent =
 
 /** The compare of two commits, read live from the host. */
 export interface CodeHostDiff {
-  /** `ahead`: base is an ancestor of head. Anything else is not a clean human delta. */
+  /** `ahead`: base is an ancestor of head. Anything else is not a clean human delta and is dropped. */
   status: "identical" | "ahead" | "diverged" | "behind";
-  commits: ReadonlyArray<{ sha: string; author?: CodeHostPerson }>;
+  /** `verified`: the host verified the commit's signature (GitHub signs web-UI commits itself). An author's name or email on a commit proves nothing. */
+  commits: ReadonlyArray<{ sha: string; author?: CodeHostPerson; verified: boolean }>;
   files: ReadonlyArray<{ path: string; additions: number; deletions: number; patch?: string }>;
   truncated: boolean;
 }
@@ -70,8 +71,6 @@ export interface HumanEditInput {
   /** Every human author was a company member with a live project role (otherwise nothing is handed on). */
   trust: "member";
   authorCount: number;
-  /** True when the host could not give a clean delta (a force push or a rebase happened): the diff may include changes that were not the human's. */
-  approximate: boolean;
   files: HumanEditFile[];
   /** The only thing of this input that may be kept. */
   link: string;
@@ -82,6 +81,16 @@ export interface HumanEditExtractorPort {
   extract(input: HumanEditInput): Promise<{ candidates: number }>;
 }
 
+/** What reading a human edit needs, small enough to be a queue message: the compare is made later, off the webhook's answer. */
+export interface HumanEditJob {
+  repo: CodeHostRepo;
+  project: string;
+  taskId: string;
+  pullRequest: { number: number; url: string };
+  candidateHeadSha: string;
+  headSha: string;
+}
+
 export interface CodeHostTapDependencies extends GateDependencies {
   sink: RecordSinkPort;
   actors: ActorResolverPort;
@@ -89,6 +98,10 @@ export interface CodeHostTapDependencies extends GateDependencies {
   trackRecord?: TrackRecordPort;
   diffs?: CodeHostDiffReader;
   extractor?: HumanEditExtractorPort;
+  /** Makes "once" true across redeliveries: the human-edit hand-off and the revert re-score each run once per task. Absent: no dedupe (tests only). */
+  claims?: OnceClaimPort;
+  /** Where a human-edit read is queued so the compare and the extractor never run inside the webhook's answer. Absent: it runs inline. */
+  humanEditJobs?: { enqueue(job: HumanEditJob): Promise<void> };
   log?: TapLog;
 }
 
@@ -125,17 +138,21 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
 
   async function handle(event: CodeHostEvent): Promise<TapResult> {
     const result: TapResult = { written: 0, duplicates: 0, refused: 0, failed: 0 };
+    // A delete at the source is always honoured, before any mode or source-row check: what was recorded must go whatever the settings say now.
+    if (event.type === "repository" || (event.type === "comment" && event.action === "deleted")) {
+      try {
+        await deps.sink.tombstone(event.type === "repository"
+          ? { workspaceId: event.repo.workspaceId, system: event.repo.host, scope: repoScope(event.repo), cause: "source_deleted" }
+          : { workspaceId: event.repo.workspaceId, system: event.repo.host, sourceIds: [commentId(event)], cause: "source_deleted" });
+      } catch {
+        result.failed += 1;
+        log("record.tombstone_failed", { host: event.repo.host });
+      }
+      return result;
+    }
     const config = await gate(deps, { workspaceId: event.repo.workspaceId, ...(event.repo.project === undefined ? {} : { project: event.repo.project }), source: sourceOf(event.repo), scope: repoScope(event.repo) });
     if (config === undefined) return result;
     try {
-      if (event.type === "repository") {
-        await deps.sink.tombstone({ workspaceId: event.repo.workspaceId, system: event.repo.host, scope: repoScope(event.repo), cause: "source_deleted" });
-        return result;
-      }
-      if (event.type === "comment" && event.action === "deleted") {
-        await deps.sink.tombstone({ workspaceId: event.repo.workspaceId, system: event.repo.host, sourceIds: [commentId(event)], cause: "source_deleted" });
-        return result;
-      }
       const drafts: RecordDraft[] = [];
       const project = event.repo.project ?? config.project;
       const base = { workspaceId: event.repo.workspaceId, ...(project === undefined ? {} : { project }), repo: event.repo.fullName, source: sourceOf(event.repo), links: [] as string[] };
@@ -210,7 +227,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
   async function write(draft: RecordDraft, result: TapResult): Promise<void> {
     try {
       const outcome = await deps.sink.put(withRetention(draft, draft.retention));
-      if (outcome.status === "stored") result.written += 1;
+      if (outcome.status === "stored" || outcome.status === "queued") result.written += 1;
       else if (outcome.status === "duplicate") result.duplicates += 1;
       else result.refused += 1;
     } catch {
@@ -231,7 +248,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
           if (target !== undefined) targets.push({ target, via: commit.sha, at: event.at });
         }
       }
-    } else if (event.type === "pr" && event.action === "closed" && event.merged && /^revert\s+["“']/i.test(event.title.trim())) {
+    } else if (event.type === "pr" && event.action === "closed" && event.merged && repo.defaultBranch !== undefined && event.baseRef === repo.defaultBranch && /^revert\s+["“']/i.test(event.title.trim())) {
       for (const number of revertedPullRequests(event.body ?? "", repo.fullName)) {
         const target = await deps.rovaraPrs.byNumber({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, number });
         if (target !== undefined) targets.push({ target, via: event.mergeCommitSha ?? prId(repo, event.number), at: event.at });
@@ -260,20 +277,25 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
         structured: scalars({ taskId: target.taskId, outcome: "reverted", revertedBy: via }),
       }, result);
       if (deps.trackRecord !== undefined) {
-        try {
-          await deps.trackRecord.markNotHeld({ workspaceId: repo.workspaceId, project: target.project, taskId: target.taskId, reason: "reverted", revertRef: via });
-        } catch {
-          result.failed += 1;
-          log("record.track_record_rescore_failed", { host: repo.host });
+        // Once per task, however many deliveries tell of the revert; a failure gives the claim back so the next delivery retries.
+        const key = `revert#${target.taskId}`;
+        const claimed = deps.claims === undefined || await deps.claims.claim(key);
+        if (claimed) {
+          try {
+            await deps.trackRecord.markNotHeld({ workspaceId: repo.workspaceId, project: target.project, taskId: target.taskId, reason: "reverted", revertRef: via });
+          } catch {
+            result.failed += 1;
+            log("record.track_record_rescore_failed", { host: repo.host });
+            await deps.claims?.release(key).catch(() => undefined);
+          }
         }
       }
     }
   }
 
   /**
-   * At merge of a Rovara pull request: reads, live from the host, what people changed after Rovara's last push, and hands it to the extractor.
-   * Nothing is written to the record. Skipped, with a fixed reason in the log, when there is nothing to read, a reader is missing, or any of the
-   * human commits is not a member's (outsiders' text is never used for learning).
+   * At merge of a Rovara pull request: finds whether anything was pushed after Rovara's last push and, if so, queues (or runs) the live read. Nothing is
+   * written to the record, and the compare and the extractor never run inside the webhook's answer when a job queue is given.
    */
   async function humanEdit(event: Extract<CodeHostEvent, { type: "pr" }>): Promise<void> {
     if (deps.diffs === undefined || deps.extractor === undefined) return;
@@ -281,30 +303,62 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
     if (rovara === undefined || !SHA.test(rovara.candidateHeadSha) || !SHA.test(event.headSha)) return;
     // Nothing was pushed after Rovara's last push: no human edit, and no call to the host.
     if (rovara.candidateHeadSha === event.headSha) return;
-    const diff = await deps.diffs.compare({ repo: event.repo, base: rovara.candidateHeadSha, head: event.headSha });
-    if (diff === undefined || diff.status === "identical" || diff.files.length === 0) return;
-    const authors = new Map<string, CodeHostPerson | undefined>();
-    for (const commit of diff.commits) authors.set(commit.author?.id ?? commit.sha, commit.author);
-    let allMembers = authors.size > 0;
-    for (const person of authors.values()) {
-      if (person === undefined || person.isBot) { allMembers = false; break; }
-      const who = await deps.actors.resolve({ workspaceId: event.repo.workspaceId, project: rovara.project, system: event.repo.host, sourceId: person.id });
-      if (who.trust !== "member") { allMembers = false; break; }
-    }
-    if (!allMembers) {
-      log("human_edit.skipped", { reason: "author_not_member" });
-      return;
-    }
-    const files = diff.files.slice(0, HUMAN_EDIT_MAX_FILES).map(humanEditFile);
-    const outcome = await deps.extractor.extract({
-      workspaceId: event.repo.workspaceId, project: rovara.project, repo: event.repo.fullName, taskId: rovara.taskId,
-      pullRequest: { number: event.number, url: rovara.url }, trust: "member", authorCount: authors.size,
-      approximate: diff.status !== "ahead" || diff.truncated, files, link: rovara.url,
-    });
-    log("human_edit.handed_on", { files: files.length, candidates: outcome.candidates, approximate: diff.status !== "ahead" || diff.truncated });
+    const job: HumanEditJob = { repo: event.repo, project: rovara.project, taskId: rovara.taskId, pullRequest: { number: event.number, url: rovara.url }, candidateHeadSha: rovara.candidateHeadSha, headSha: event.headSha };
+    if (deps.humanEditJobs !== undefined) await deps.humanEditJobs.enqueue(job);
+    else await runHumanEdit(deps, job);
   }
 
   return { handle };
+}
+
+/**
+ * Reads, live from the host, what people changed after Rovara's last push and hands it to the extractor, once per task and head. Hands nothing on unless
+ * the whole picture is checked: the compare is a clean "ahead" and not cut short, and every human commit is signature-verified and by a linked company
+ * member (a commit's author name or email proves nothing: anyone with push access can set it). Never writes to the record.
+ */
+export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" | "diffs" | "extractor" | "claims" | "mode" | "config" | "log">, job: HumanEditJob): Promise<"handed_on" | "skipped"> {
+  const log: TapLog = deps.log ?? (() => undefined);
+  if (deps.diffs === undefined || deps.extractor === undefined) return "skipped";
+  const config = await gate(deps, { workspaceId: job.repo.workspaceId, project: job.project, source: sourceOf(job.repo), scope: repoScope(job.repo) });
+  if (config === undefined) return "skipped";
+  const diff = await deps.diffs.compare({ repo: job.repo, base: job.candidateHeadSha, head: job.headSha });
+  if (diff === undefined || diff.status === "identical" || diff.files.length === 0) return "skipped";
+  if (diff.status !== "ahead" || diff.truncated) {
+    // A force push or a rebase mixes in Rovara's own code and other people's commits; a cut-short compare has authors nobody checked.
+    log("human_edit.skipped", { reason: diff.truncated ? "compare_truncated" : "not_a_clean_delta" });
+    return "skipped";
+  }
+  const authors = new Map<string, CodeHostPerson>();
+  for (const commit of diff.commits) {
+    if (!commit.verified || commit.author === undefined || commit.author.isBot) {
+      log("human_edit.skipped", { reason: "commit_not_verified_member" });
+      return "skipped";
+    }
+    authors.set(commit.author.id, commit.author);
+  }
+  if (authors.size === 0) return "skipped";
+  for (const person of authors.values()) {
+    const who = await deps.actors.resolve({ workspaceId: job.repo.workspaceId, project: job.project, system: job.repo.host, sourceId: person.id });
+    if (who.trust !== "member") {
+      log("human_edit.skipped", { reason: "author_not_member" });
+      return "skipped";
+    }
+  }
+  const key = `human_edit#${job.taskId}#${job.headSha}`;
+  if (deps.claims !== undefined && !await deps.claims.claim(key)) return "skipped";
+  try {
+    const outcome = await deps.extractor.extract({
+      workspaceId: job.repo.workspaceId, project: job.project, repo: job.repo.fullName, taskId: job.taskId, pullRequest: job.pullRequest,
+      trust: "member", authorCount: authors.size, files: diff.files.slice(0, HUMAN_EDIT_MAX_FILES).map(humanEditFile), link: job.pullRequest.url,
+    });
+    log("human_edit.handed_on", { files: Math.min(diff.files.length, HUMAN_EDIT_MAX_FILES), candidates: outcome.candidates });
+    return "handed_on";
+  } catch {
+    // The claim is given back so a redelivery or a queue retry can try again.
+    await deps.claims?.release(key).catch(() => undefined);
+    log("human_edit.extractor_failed", {});
+    return "skipped";
+  }
 }
 
 function commentId(event: Extract<CodeHostEvent, { type: "comment" }>): string {

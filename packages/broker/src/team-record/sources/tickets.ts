@@ -1,7 +1,7 @@
 // R7: the one place a tracker item (a Linear or Jira webhook, a backfill page, an MCP poller result) becomes a record draft. Everything
 // ticket-shaped goes through `createTicketRecorder`, so audience, trust and retention are decided once.
 import { cleanText, gate, isExcluded, linksOf, scalars, withRetention, type GateDependencies } from "./common.js";
-import { MAINTAINERS_GROUP, type ActorResolverPort, type Audience, type RecordDraft, type RecordSinkPort, type SourceConfig, type SourceSystem, type TapLog } from "./ports.js";
+import { lowestTrust, MAINTAINERS_GROUP, type ActorResolverPort, type Audience, type RecordDraft, type RecordSinkPort, type SourceConfig, type SourceSystem, type TapLog } from "./ports.js";
 
 export interface TicketAcl {
   principals?: readonly string[];
@@ -29,16 +29,36 @@ export interface TicketItem {
   state?: string;
   labels?: readonly string[];
   url?: string;
+  /**
+   * Who WROTE the text (a ticket's creator or reporter, a comment's author), never whoever last touched it. Trust follows this person: an outsider's ticket
+   * does not become a member's because a member changed its status. Absent: the author is unknown, which is an outsider.
+   */
   authorId?: string;
+  /** Who made this change (the webhook's actor, the "last modified by"). Kept as data; it can only lower the row's trust, never raise it. */
+  updaterId?: string;
+  /** The source's own id, to ask the source again (existence sweep). Absent: `id`. */
+  nativeId?: string;
+  /** The item is an edit of one already recorded (an update, not a first sight). */
+  edit?: boolean;
+  /** The source marks the item as restricted inside its team or project (a Jira issue security level): maintainers only, whatever the admin widened. */
+  restricted?: boolean;
+  /** The body could not prove which team or project the item belongs to (a Linear comment names only its issue): it is recorded only if its parent is already recorded under this scope. */
+  needsParentProof?: boolean;
   occurredAt: string;
   /** What changed it: the update time, or the action plus the time. Makes the write idempotent per version. */
   version: string;
   acl?: TicketAcl;
 }
 
+/** Whether an item (a ticket) is already recorded under a scope: how a comment that names only its ticket proves which team it belongs to. */
+export interface ParentLookupPort {
+  isRecorded(input: { workspaceId: string; system: string; id: string; scope: string }): Promise<boolean>;
+}
+
 export interface TicketRecorderDependencies extends GateDependencies {
   sink: RecordSinkPort;
   actors: ActorResolverPort;
+  parents?: ParentLookupPort;
   log?: TapLog;
 }
 
@@ -48,12 +68,22 @@ export interface TicketContext {
 }
 
 export interface TicketRecorder {
-  record(context: TicketContext, item: TicketItem, preloaded?: SourceConfig): Promise<"stored" | "duplicate" | "skipped" | "refused" | "failed">;
+  record(context: TicketContext, item: TicketItem, preloaded?: SourceConfig): Promise<"stored" | "duplicate" | "queued" | "skipped" | "refused" | "failed">;
   /** A delete at the source. Honoured whatever the mode or the source row says now. */
   remove(context: TicketContext, input: { source: TicketItem["source"]; system: string; ids: readonly string[] }): Promise<void>;
 }
 
-export function ticketAudience(item: Pick<TicketItem, "source" | "scope">, acl: TicketAcl | undefined, config: SourceConfig, at: string): Audience {
+export function ticketAudience(item: Pick<TicketItem, "source" | "scope"> & { restricted?: boolean }, acl: TicketAcl | undefined, config: SourceConfig, at: string): Audience {
+  // A restricted item (a Jira security level) is never widened by the admin's "visible to all project members".
+  if (item.restricted === true) {
+    const own = acl?.strict === true ? acl : undefined;
+    const principals = (own?.principals ?? []).slice(0, 500);
+    const groups = (own?.groups ?? []).slice(0, 100);
+    if (principals.length > 0 || groups.length > 0) {
+      return { kind: "restricted", acl: { source: item.source, scope: item.scope, ...(principals.length === 0 ? {} : { principals }), ...(groups.length === 0 ? {} : { groups }), capturedAt: at, liveCheck: "none" } };
+    }
+    return { kind: "restricted", acl: { source: item.source, scope: item.scope, groups: [MAINTAINERS_GROUP], capturedAt: at, liveCheck: "none" } };
+  }
   if (acl !== undefined && (acl.strict || config.audienceDefault !== "project")) {
     const principals = (acl.principals ?? []).slice(0, 500);
     const groups = (acl.groups ?? []).slice(0, 100);
@@ -75,17 +105,24 @@ export function createTicketRecorder(deps: TicketRecorderDependencies): TicketRe
         if (config === undefined) return "skipped";
         if (isExcluded(config, item.authorId, ...(item.labels ?? []))) return "skipped";
         const project = context.project ?? config.project;
-        // An author the source names but the company has not linked is an outsider; no author at all is too.
-        const who = item.authorId === undefined
-          ? { trust: "outsider" as const }
-          : await deps.actors.resolve({ workspaceId: context.workspaceId, project, system: item.system, sourceId: item.authorId });
+        if (item.needsParentProof === true) {
+          const proven = item.parentId !== undefined && deps.parents !== undefined
+            && await deps.parents.isRecorded({ workspaceId: context.workspaceId, system: item.system, id: item.parentId, scope: item.scope }).catch(() => false);
+          if (!proven) return "skipped";
+        }
+        // Trust follows the person who wrote the text. An author the source names but the company has not linked is an outsider; so is no author at all.
+        // Whoever made this change can only lower it: an outsider who edits a member's ticket makes that version an outsider's.
+        const resolve = (sourceId: string) => deps.actors.resolve({ workspaceId: context.workspaceId, project, system: item.system, sourceId });
+        const who = item.authorId === undefined ? { trust: "outsider" as const } : await resolve(item.authorId);
+        const updater = item.updaterId === undefined || item.updaterId === item.authorId ? undefined : await resolve(item.updaterId);
+        const trust = lowestTrust(who.trust, ...(updater === undefined ? [] : [updater.trust]));
         const text = cleanText([item.title, item.body].filter((part): part is string => typeof part === "string" && part !== "").join("\n\n"));
         const draft: RecordDraft = {
           workspaceId: context.workspaceId, ...(project === undefined ? {} : { project }), source: item.source, kind: item.kind, occurredAt: item.occurredAt,
-          sourceRef: { system: item.system, id: item.id, ...(linksOf(item.url)[0] === undefined ? {} : { url: linksOf(item.url)[0]! }), ...(item.parentId === undefined ? {} : { parentId: item.parentId }), version: item.version },
+          sourceRef: { system: item.system, id: item.id, nativeId: item.nativeId ?? item.id, ...(linksOf(item.url)[0] === undefined ? {} : { url: linksOf(item.url)[0]! }), ...(item.parentId === undefined ? {} : { parentId: item.parentId }), version: item.version },
           ...(item.authorId === undefined ? {} : { actor: { sourceId: item.authorId, ...(who.developerId === undefined ? {} : { developerId: who.developerId }), trust: who.trust } }),
-          trust: who.trust, audience: ticketAudience(item, item.acl, config, item.occurredAt), ...(text === undefined ? {} : { text }),
-          structured: scalars({ state: item.state, labels: item.labels?.slice(0, 20).join(","), }), links: linksOf(item.url), retention: config.retention,
+          trust, audience: ticketAudience(item, item.acl, config, item.occurredAt), ...(text === undefined ? {} : { text }),
+          structured: scalars({ state: item.state, labels: item.labels?.slice(0, 20).join(","), updatedBy: item.updaterId, restricted: item.restricted }), links: linksOf(item.url), retention: config.retention,
         };
         const outcome = await deps.sink.put(withRetention(draft, config.retention));
         return outcome.status;

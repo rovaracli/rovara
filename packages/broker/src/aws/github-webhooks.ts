@@ -1037,6 +1037,19 @@ async function handleInstallationEvent(
   return { status: "ACCEPTED", deliveryId };
 }
 
+/** Longest the Team record tap may hold a delivery's answer (GitHub gives up on a webhook after ten seconds and does not retry by itself). */
+export const RECORD_TAP_BUDGET_MS = 3_000;
+
+/** Waits for `work` at most `ms`, and never throws: a slow or failing tap changes nothing about the delivery. */
+async function withinBudget(work: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([work.catch(() => undefined), new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** Shared endpoint path: verify, durably reserve, claim, process, then record the outcome. */
 export async function handleGithubWebhook(input: {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -1088,7 +1101,7 @@ export async function handleGithubWebhook(input: {
       ...(triggerEvents === undefined && input.recordTap === undefined ? {} : {
         onVerified: async ({ eventName, deliveryId, payload }) => {
           verifiedDelivery = deliveryId;
-          if (input.recordTap !== undefined) await input.recordTap({ eventName, deliveryId, payload }).catch(() => undefined);
+          if (input.recordTap !== undefined) await withinBudget(input.recordTap({ eventName, deliveryId, payload }), RECORD_TAP_BUDGET_MS);
           if (triggerEvents === undefined || eventName === undefined || !GITHUB_TRIGGER_EVENT_NAMES.has(eventName)) return;
           const installation = z.object({ installation: z.object({ id: z.number().int().positive() }).passthrough() }).passthrough().safeParse(payload);
           if (installation.success) triggered = await triggerEvents({ eventName, payload, installationId: installation.data.installation.id });

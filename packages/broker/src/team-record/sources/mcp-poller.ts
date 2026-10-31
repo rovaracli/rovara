@@ -31,7 +31,8 @@ export interface McpPollAdapter {
   /** `undefined`: the answer could not be read. */
   parseList(result: PollToolResult): { items: TicketItem[]; nextCursor?: string } | undefined;
   existsArgs(id: string): Record<string, unknown>;
-  classifyExists(result: PollToolResult): "exists" | "missing" | "unknown";
+  /** `forbidden`: the server refused the credential or the item (401, 403, "no permission"). It is never "missing": many servers also hide what a credential may not see. */
+  classifyExists(result: PollToolResult): "exists" | "missing" | "forbidden" | "unknown";
 }
 
 export interface McpPollSource {
@@ -46,11 +47,15 @@ export interface McpPollSource {
   readOnlyTools: readonly string[];
   listTool: string;
   existsTool?: string;
+  /** The record kinds the exists tool can fetch (default: tickets, not comments). */
+  existsKinds?: readonly string[];
   adapterId: string;
 }
 
 export interface PollState {
-  cursor?: string;
+  /** The poll's and the backfill's own cursors: one never resumes under the other's `since`. */
+  pollCursor?: string;
+  backfillCursor?: string;
   /** The newest `occurredAt` seen when a run reached the end of the list; the next run lists from there. */
   watermark?: string;
   failures: number;
@@ -149,11 +154,13 @@ export async function runMcpPoll(deps: McpPollerDependencies, source: McpPollSou
     const check = checkReadOnlyTool(source, connection, source.listTool);
     if (!check.ok) return await fail(check.reason);
     const floor = new Date(now() - BACKFILL_MAX_DAYS * 86_400_000).toISOString();
-    let cursor = state.cursor;
+    const startIso = new Date(started).toISOString();
+    let cursor = mode === "backfill" ? state.backfillCursor : state.pollCursor;
     let newest = state.watermark;
     let backfilled = state.backfilled;
     let pages = 0;
-    const since = mode === "backfill" ? floor : (state.watermark ?? floor);
+    // A poll with no watermark starts at "now": history is the backfill's job (bounded to 180 days and 5,000 items), never a poll's.
+    const since = mode === "backfill" ? floor : (state.watermark ?? startIso);
     for (;;) {
       const remaining = Math.min(budget.itemsPerRun - fetched, mode === "backfill" ? BACKFILL_MAX_ITEMS - backfilled : budget.itemsPerRun);
       if (remaining <= 0 || pages >= budget.pagesPerRun || now() - started > budget.millisPerRun) break;
@@ -169,16 +176,17 @@ export async function runMcpPoll(deps: McpPollerDependencies, source: McpPollSou
         if (item.occurredAt < floor) continue;
         if (newest === undefined || item.occurredAt > newest) newest = item.occurredAt;
         const outcome = await deps.recorder.record({ workspaceId: source.workspaceId, ...(source.project === undefined ? {} : { project: source.project }) }, item, config);
-        if (outcome === "stored") recorded += 1;
+        if (outcome === "stored" || outcome === "queued") recorded += 1;
       }
       cursor = page.nextCursor;
       if (cursor === undefined) { done = true; break; }
     }
     const next: PollState = { ...state, failures: 0, health: "ok", backfilled, backfillDone: mode === "backfill" ? (done || backfilled >= BACKFILL_MAX_ITEMS) : state.backfillDone };
     delete next.lastError;
-    if (cursor === undefined) delete next.cursor; else next.cursor = cursor;
-    // The list was read to its end: the next poll starts from the newest change seen.
-    if (done && newest !== undefined) next.watermark = newest;
+    const cursorKey = mode === "backfill" ? "backfillCursor" : "pollCursor";
+    if (cursor === undefined) delete next[cursorKey]; else next[cursorKey] = cursor;
+    // The list was read to its end: the next poll starts from the newest change seen (or from this run's start when nothing was seen).
+    if (done && mode === "poll") next.watermark = newest ?? startIso;
     state = next;
     await deps.state.save(source.workspaceId, source.serverId, source.scope, state);
     return { status: "ok", fetched, recorded, done };
@@ -201,7 +209,10 @@ export interface JsonListMapping {
   bodyField?: string;
   stateField?: string;
   urlField?: string;
+  /** The field naming who WROTE the text (creator, reporter, comment author). Trust follows this person; never map "last modified by" here, or an outsider's text is credited to whoever edited it. */
   authorField?: string;
+  /** The field naming who last changed the item. Kept as data and can only lower the row's trust. */
+  updaterField?: string;
   /** Item field holding the last-change time (ISO text or epoch). Required: an item without one is dropped. */
   updatedField: string;
   parentField?: string;
@@ -212,13 +223,15 @@ export interface JsonListMapping {
   cursorPath?: string;
   /** Names of the list tool's arguments. Absent: the argument is not sent. */
   args: { cursor?: string; since?: string; limit?: string; extra?: Record<string, unknown> };
-  exists: { tool: "same"; idArg: string; notFoundPattern?: string };
+  /** `notFoundText`: lower-case phrases that mean the item is really gone. Plain text, matched as substrings (no patterns). */
+  exists: { tool: "same"; idArg: string; notFoundText?: string[] };
   source: TicketItem["source"];
   system: string;
   scope: string;
 }
 
-const DEFAULT_NOT_FOUND = "not.?found|does not exist|no such|404";
+const DEFAULT_NOT_FOUND = ["not found", "not_found", "notfound", "does not exist", "no such", "404"];
+const FORBIDDEN_TEXT = ["forbidden", "permission", "unauthorized", "unauthorised", "access denied", "not authorized", "not authorised", "401", "403", "insufficient"];
 const pathOf = (value: unknown, path: string): unknown => (path === "" ? value : path.split(".").reduce<unknown>((current, key) => (current !== null && typeof current === "object" ? (current as Record<string, unknown>)[key] : undefined), value));
 
 function answerJson(result: PollToolResult): unknown {
@@ -267,11 +280,12 @@ export function createJsonListAdapter(mapping: JsonListMapping): McpPollAdapter 
         const state = field(mapping.stateField);
         const url = field(mapping.urlField);
         const author = field(mapping.authorField);
+        const updater = field(mapping.updaterField);
         const parent = field(mapping.parentField);
         items.push({
           source: mapping.source, system: mapping.system, id, kind: mapping.kind, scope: mapping.scope, occurredAt: updated, version: `u:${updated}`,
           ...(title === undefined ? {} : { title: title.slice(0, 500) }), ...(body === undefined ? {} : { body: body.slice(0, 70_000) }), ...(state === undefined ? {} : { state: state.slice(0, 100) }),
-          ...(url === undefined ? {} : { url }), ...(author === undefined ? {} : { authorId: author.slice(0, 200) }), ...(parent === undefined ? {} : { parentId: parent.slice(0, 200) }),
+          ...(url === undefined ? {} : { url }), ...(author === undefined ? {} : { authorId: author.slice(0, 200) }), ...(updater === undefined ? {} : { updaterId: updater.slice(0, 200) }), nativeId: id, ...(mapping.kind === "ticket.updated" ? { edit: true } : {}), ...(parent === undefined ? {} : { parentId: parent.slice(0, 200) }),
           ...(principals.length > 0 || groups.length > 0 ? { acl: { principals, groups, strict: true } } : {}),
         });
       }
@@ -281,10 +295,11 @@ export function createJsonListAdapter(mapping: JsonListMapping): McpPollAdapter 
     existsArgs: (id) => ({ ...(mapping.args.extra ?? {}), [mapping.exists.idArg]: id }),
     classifyExists(result) {
       if (result.isError !== true) return answerJson(result) === undefined && (result.content ?? []).length === 0 ? "unknown" : "exists";
-      const message = (result.content ?? []).map((block) => block.text ?? "").join(" ").slice(0, 2000);
-      // An admin-written pattern is bounded in length (and the message above in size) so it cannot be made to run for long.
-      const pattern = mapping.exists.notFoundPattern !== undefined && mapping.exists.notFoundPattern.length <= 200 ? mapping.exists.notFoundPattern : DEFAULT_NOT_FOUND;
-      return new RegExp(pattern, "i").test(message) ? "missing" : "unknown";
+      const message = (result.content ?? []).map((block) => block.text ?? "").join(" ").slice(0, 2000).toLowerCase();
+      // A refusal is checked first: "403 not found for this user" is the server hiding the item, not the item being gone.
+      if (FORBIDDEN_TEXT.some((phrase) => message.includes(phrase))) return "forbidden";
+      const phrases = (mapping.exists.notFoundText ?? DEFAULT_NOT_FOUND).slice(0, 20).map((phrase) => phrase.toLowerCase());
+      return phrases.some((phrase) => phrase !== "" && message.includes(phrase)) ? "missing" : "unknown";
     },
   };
 }

@@ -53,7 +53,7 @@ export function createRovaraEmitter(deps: RovaraEmitterDependencies): RovaraEmit
 
   async function emit(base: RovaraEventBase, kind: RecordKind, parts: {
     id: string; version: string; trust: TrustClass; text?: string; structured: Record<string, string | number | boolean | undefined>; actor?: RecordDraft["actor"];
-  }): Promise<"stored" | "duplicate" | "refused" | "skipped" | "failed"> {
+  }): Promise<"stored" | "duplicate" | "queued" | "refused" | "skipped" | "failed"> {
     try {
       const config = await gate(deps, { workspaceId: base.workspaceId, project: base.project, source: "rovara", scope: rovaraScope(base.project) });
       if (config === undefined) return "skipped";
@@ -107,8 +107,9 @@ export function createRovaraEmitter(deps: RovaraEmitterDependencies): RovaraEmit
       const outcome = await emit(input, "rovara.task", {
         id: `task:${input.taskId}`, version: "terminal", trust: "rovara", structured: { outcome: input.outcome, rounds: input.rounds, sendBacks: input.sendBacks },
       });
-      // A refused or failed write, a missing source row or Mode Off all mean no reflection. A duplicate means the first call already told it.
-      if (outcome !== "stored" || deps.reflector === undefined) return;
+      // A refused or failed write, a missing source row or Mode Off all mean no reflection. A duplicate means the first call already told it. A queued write
+      // is accepted: the reflector reads the record later and must tolerate a row that is a moment behind.
+      if ((outcome !== "stored" && outcome !== "queued") || deps.reflector === undefined) return;
       try {
         await deps.reflector.taskEnded({ workspaceId: input.workspaceId, project: input.project, taskId: input.taskId, outcome: input.outcome });
       } catch {
