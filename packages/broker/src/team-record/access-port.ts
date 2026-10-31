@@ -38,11 +38,11 @@ export function createAccessCheckPort(table: TeamRecordTable, options: { log?: (
       const reader = createAccessReader(table, orgId);
       const who = viewer === undefined ? undefined : viewerOfLists(viewer);
       const units = places.map((place) => {
-        // A lesson learned before items had their own units names the PLACE of a tracker (`jira:project/KEY`), which has no record of its own now. It is not loaded for nobody:
-        // it is limited to the people its frozen snapshot allows (the caller applies that), and the access check does not require a record for that place. Logged each time.
+        // A lesson recorded against the PLACE of a tracker (`jira:project/KEY`, from before items had units of their own) has no record to check, so it is denied: limiting it to its
+        // frozen snapshot would let a person who lost the issue keep reading it. Logged, so the owner can see what a deny removed.
         const legacy = place.restrictedScopes.filter(isLegacyPlaceScope);
-        if (legacy.length > 0) options.log?.("learning.legacy_place_scoped_lesson", { places: legacy.length });
-        return { all: [...new Set([...place.restrictedScopes, ...place.scopes].flatMap((scope) => scopeAndAncestors(scope)))], own: place.restrictedScopes.filter((scope) => !isLegacyPlaceScope(scope)), capturedAt: place.capturedAt };
+        if (legacy.length > 0) options.log?.("learning.place_scoped_tracker_lesson_denied", { places: legacy.length });
+        return { all: [...new Set([...place.restrictedScopes, ...place.scopes].flatMap((scope) => scopeAndAncestors(scope)))], own: place.restrictedScopes, capturedAt: place.capturedAt };
       });
       await reader.load(units.flatMap((unit) => unit.all), who);
       return units.map((unit) => {

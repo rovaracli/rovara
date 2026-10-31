@@ -418,6 +418,27 @@ export async function pendingHidesOf(table: TeamRecordTable, orgId: OrgId): Prom
 }
 
 /** Removes source ids from a source row's exclusion list (a person who was erased: their id is personal data too). Returns whether the row changed. */
+/** What replaces an erased developer id in a source setting (`addedBy`, `approval.by`): a developer id is 64 hex characters, so the stand-in is 64 zeros. */
+export const ERASED_DEVELOPER_ID = "0".repeat(64);
+
+/** A source setting without the erased developer: `addedBy` and the approver of a less-safe change become the stand-in. True when something changed. */
+export async function scrubConfigDeveloper(table: TeamRecordTable, config: SourceConfig, developerId: string): Promise<boolean> {
+  const addedBy = config.addedBy === developerId;
+  const approved = config.approval?.by === developerId;
+  if (!addedBy && !approved) return false;
+  const aliases = new Aliases();
+  const sets = [...(addedBy ? [`${aliases.name("addedBy")} = ${aliases.value(ERASED_DEVELOPER_ID)}`] : []), ...(approved ? [`${aliases.name("approval")}.${aliases.name("by")} = ${aliases.value(ERASED_DEVELOPER_ID)}`] : [])];
+  await table.documentClient.send(new UpdateCommand({
+    TableName: table.tableName,
+    Key: recordSourceKey(config.workspaceId, config.project, config.source, config.scope),
+    UpdateExpression: `SET ${sets.join(", ")}`,
+    ConditionExpression: `attribute_exists(${aliases.name("pk")})`,
+    ExpressionAttributeNames: aliases.names,
+    ExpressionAttributeValues: aliases.values,
+  }));
+  return true;
+}
+
 export async function removeFromExclude(table: TeamRecordTable, config: SourceConfig, sourceIds: ReadonlySet<string>): Promise<boolean> {
   if (!config.exclude.some((id) => sourceIds.has(id))) return false;
   const aliases = new Aliases();

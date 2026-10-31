@@ -48,6 +48,8 @@ export interface AccessHeader {
   snapshotTs?: string;
   /** A hash of the list and groups the snapshot last wrote, so an unchanged snapshot costs no write. */
   snapshotHash?: string;
+  /** A hash of a list that was NOT applied (the unit is fed by events) but whose people were indexed, so an erase finds this place for each of them. */
+  indexedHash?: string;
 }
 
 export const sourceOfScope = (scope: string): string => scope.split(":", 1)[0] ?? scope;
@@ -73,6 +75,7 @@ function parseHeader(item: Item | undefined): AccessHeader | undefined {
     scope: item.scope, source: item.source, mode: item.mode, groups: Array.isArray(item.groups) ? item.groups.filter((group): group is string => typeof group === "string") : [],
     liveCheck: item.liveCheck === "on_read" ? "on_read" : "none", modeTs: item.modeTs, seeded: item.seeded, fed: item.fed === "snapshot" ? "snapshot" : "events",
     ...(typeof item.snapshotTs === "string" ? { snapshotTs: item.snapshotTs } : {}), ...(typeof item.snapshotHash === "string" ? { snapshotHash: item.snapshotHash } : {}),
+    ...(typeof item.indexedHash === "string" ? { indexedHash: item.indexedHash } : {}),
   };
 }
 
@@ -264,7 +267,18 @@ export async function observeRowAccess(table: TeamRecordTable, orgId: OrgId, acl
   const hash = listHash(principals, groups, "restricted");
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const header = await getHeader(table, orgId, acl.scope);
-    if (header !== undefined && header.seeded && (header.fed !== "snapshot" || (header.snapshotTs !== undefined && header.snapshotTs >= iso) || header.snapshotHash === hash)) return;
+    if (header !== undefined && header.seeded && (header.fed !== "snapshot" || (header.snapshotTs !== undefined && header.snapshotTs >= iso) || header.snapshotHash === hash)) {
+      // The snapshot is not applied (events feed this unit, or it is not newer), but the people it names are INDEXED once per distinct list: an erase finds this place for each of
+      // them even if their join event was lost. The index grants nothing; only an entry does.
+      if (header.snapshotHash !== hash && header.indexedHash !== hash && principals.length > 0) {
+        const erasedIds = await erasedAccessIds(table, orgId, principals);
+        const named = principals.filter((id) => !erasedIds.has(id));
+        await inChunks(named, WRITE_PARALLEL, async (id) => { await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...recordAccessPersonKey(orgId, id, acl.scope), entityType: "TEAM_RECORD_ACCESS_INDEX" } })); });
+        const aliases = new Aliases();
+        await table.documentClient.send(new UpdateCommand({ TableName: table.tableName, Key: recordAccessKey(orgId, acl.scope), UpdateExpression: `SET ${aliases.name("indexedHash")} = ${aliases.value(hash)}`, ConditionExpression: `attribute_exists(${aliases.name("pk")})`, ExpressionAttributeNames: aliases.names, ExpressionAttributeValues: aliases.values })).catch((error: unknown) => { if (!conditional(error)) throw error; });
+      }
+      return;
+    }
     const erased = await erasedAccessIds(table, orgId, principals);
     const listed = principals.filter((id) => !erased.has(id));
     await inChunks(listed, WRITE_PARALLEL, async (id) => { await putEntry(table, orgId, acl.scope, id, snapshotValue(iso, false)); });

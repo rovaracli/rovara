@@ -36,6 +36,8 @@ export interface PurgeDependencies {
   vectors?: RecordVectorPort | undefined;
   lakeQueue?: LakeDeleteQueue | undefined;
   lessons?: LessonDeletionPort | undefined;
+  /** The org's project names, for an erase that must cover every project's lessons. Without it (and without `projects` on the person) the lessons step is not done. */
+  projects?: { projects(orgId: OrgId): Promise<string[]> } | undefined;
   redistil?: RedistilPort | undefined;
   /** The learning lane's lesson vectors, for a whole-project erase. */
   lessonVectors?: { removeAll(orgId: OrgId, project: string, lessonIds: readonly string[]): Promise<void> } | undefined;
@@ -134,7 +136,7 @@ async function planFact(deps: PurgeDependencies, orgId: OrgId, link: Item): Prom
  * Deletes the given items (record rows and derivation links, as an index query returns them) and everything derived from them. Each row is hidden already by its
  * tombstone; this removes it for good. Returns what it removed and how many items it had to leave (blocked).
  */
-export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: readonly Item[]): Promise<PurgeResult> {
+export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: readonly Item[], options: { lessonsSettled?: boolean } = {}): Promise<PurgeResult> {
   const result = emptyPurge();
   const rows = items.filter((item) => item.entityType === "TEAM_RECORD_EVENT" && typeof item.id === "string" && typeof item.pk === "string" && typeof item.sk === "string");
   const links = items.filter((item) => item.entityType === "TEAM_RECORD_DERIVATION" && typeof item.pk === "string" && typeof item.sk === "string");
@@ -165,7 +167,8 @@ export async function purgeItems(deps: PurgeDependencies, orgId: OrgId, items: r
   for (const row of rows) addPlanned(projectOfPk(row.pk as string), row.id as string);
   for (const fact of plans.values()) addPlanned(fact.project, fact.factId);
   const anything = [...planned.values()].some((ids) => ids.size > 0);
-  if (anything) {
+  // A person erase has already settled the lessons (hard-deleted or scrubbed them by person), so the source-delete rule must not run again over the same rows.
+  if (anything && options.lessonsSettled !== true) {
     try {
       if (deps.lessons === undefined) throw new Error("no lessons port");
       for (const [project, ids] of planned) {

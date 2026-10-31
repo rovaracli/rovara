@@ -74,7 +74,7 @@ describe("C-2 person erase reaches facts through the links, with no row left", (
     await addFact(w, FACT_A, [{ system: "T1", sourceId: "T1/C9/1.1", scope: "slack:T1/C9", actor: { sourceId: "U7" } }]);
     d.lessons.list.push(lesson("les_f", [FACT_A]));
     await erasePerson(d.deps, ORG_A, { identities: [{ system: "T1", sourceId: "U7" }] }, "e-2");
-    expect(d.lessons.withdrawn).toEqual(["les_f"]);
+    expect(d.lessons.erased.flatMap((entry) => entry.purged)).toEqual(["les_f"]);
   });
   it("a re-distilled fact keeps the actors and places of the sources that are left", async () => {
     const w = world();

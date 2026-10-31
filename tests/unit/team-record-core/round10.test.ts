@@ -74,7 +74,8 @@ describe("R9-2 erasure never short-circuits", () => {
     const d = deleteDeps(w);
     let updates = 0;
     w.db.injectFault({ command: "UpdateCommand", match: () => { updates += 1; return updates === 10; }, error: { name: "InternalServerError" } });
-    await expect(erasePerson(d.deps, ORG_A, { identities: [{ system: "slack:T1", sourceId: ID }] }, "e3")).rejects.toThrow();
+    const first = await erasePerson(d.deps, ORG_A, { identities: [{ system: "slack:T1", sourceId: ID }] }, "e3");
+    expect(first).toMatchObject({ complete: false, steps: { access: false, lessons: true } }); // the failed step is recorded, the others still ran
     expect((await applyMemberEvents(w.table, ORG_A, { scope: "slack:T1/C1", add: [ID], at: T3 })).applied.add).toEqual([]); // the marker is in
     const done = await erasePerson(d.deps, ORG_A, { identities: [{ system: "slack:T1", sourceId: ID }] }, "e3");
     expect(done.complete).toBe(true);

@@ -43,7 +43,7 @@ describe("erase a person", () => {
     expect(idsOf(w)).toEqual(["c-3"]);
     expect(rows(w, "TEAM_RECORD_FACT")).toHaveLength(0);
     expect(w.vectorDeletes.flat()).toEqual(expect.arrayContaining([`event:${ids["c-1"]!}`, `event:${ids["c-2"]!}`]));
-    expect(d.lessons.withdrawn).toEqual(["les_a"]);
+    expect(d.lessons.erased.flatMap((entry) => entry.purged)).toEqual(["les_a"]);
     expect(d.lake.enqueued).toEqual(expect.arrayContaining([{ kind: "actor", developerId: "dev-1" }]));
     expect(d.lake.rowsAtEnqueue[0]).toBe(3);
     const [event] = d.audit.filter((entry) => entry.action === "record.erased");

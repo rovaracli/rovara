@@ -11,8 +11,9 @@ import { addPurge, emptyPurge, purgeItems, type PurgeDependencies, type PurgeRes
 import { markAccessErased, placeOfUnit, removePersonFromUnit, unitsOfPerson } from "./access.js";
 import { identitySystem, markPersonErased } from "./erased.js";
 import { changeScopePrincipals } from "./scope-work.js";
+import { REQUIRED_ERASE_STEPS, type EraseStep } from "./person-fields.js";
 import type { ScopeCursor } from "./store.js";
-import { bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
+import { scrubConfigDeveloper, bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
 
 export interface EraseBudget {
   /** The most items one call reads and removes. */
@@ -27,7 +28,7 @@ export interface EraseResult extends PurgeResult {
   other: number;
   complete: boolean;
   /** For a person: whether each independent step finished (row snapshots, access records, lessons). A step that did not finish is resumed by the next run. */
-  steps?: { principals: boolean; access: boolean; lessons: boolean };
+  steps?: Record<EraseStep, boolean>;
 }
 
 const finish = async (deps: PurgeDependencies, orgId: OrgId, cause: "person_erased" | "project_archived" | "org_closed", occurrence: string, result: EraseResult): Promise<void> => {
@@ -85,31 +86,87 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   for (const item of allLinks) {
     if (typeof item.pk === "string" && typeof item.sk === "string") await tombstoneItem(deps.table, { pk: item.pk, sk: item.sk }, { at, cause: "person_erased" });
   }
-  // Their ids leave EVERYTHING, each step run on its own and recorded: one that cannot finish this run never stops the others, and the next run resumes it. The erased markers
-  // were written first, so no event, snapshot or join can put an id back while this runs.
+  // Their ids leave EVERYTHING the registry (`PERSON_FIELDS`) names: one handler per step, each run on its own and recorded. One that cannot finish this run never stops the
+  // others, and the next run resumes it. The erased markers were written first, so no event, snapshot or join can put an id back while this runs.
   const ids = identities.map((identity) => identity.sourceId);
-  const steps = { principals: true, access: true, lessons: true };
-  if (ids.length > 0) {
-    // (1) Row snapshots: every place the person is in (the unit index names them all, including places they never posted in), the places of their own rows, and `who.scopes`.
-    const explicit = [...new Set([...(who.scopes ?? []), ...rows.flatMap((row) => (typeof row.scope === "string" ? [row.scope] : [])), ...allLinks.flatMap((link) => (typeof link.scope === "string" ? [link.scope] : []))])].sort();
-    steps.principals = await scrubExplicitPlaces(deps, orgId, explicit, ids, occurrence, at, budget);
-    // (2) The access records: for each unit the person is in, scrub the place's rows, then delete the person's entry and index item. An entry is deleted only after its place
-    // is clean, so a run that stops early leaves the index to name the rest; `access` is false until none is left.
-    steps.access = await scrubAccessUnits(deps, orgId, ids, at, budget);
-    for (const project of who.projects ?? []) {
-      for (const config of await listSourceConfigs(deps.table, orgId, project)) await removeFromExclude(deps.table, config, new Set(ids));
+  const context: EraseContext = { deps, orgId, who, ids, identities, rows, links: allLinks, at, occurrence, budget, queue, lessonsPurged: 0 };
+  const done: Record<EraseStep, boolean> = { lake: true, principals: true, access: true, config: true, lessons: true, rows: true };
+  for (const step of REQUIRED_ERASE_STEPS) {
+    try {
+      if (step === "rows") continue; // last: the rows go only after the lessons that rest on them are settled
+      done[step] = await STEP_HANDLERS[step](context);
+    } catch {
+      deps.log?.("record.erase_step_failed", { step });
+      done[step] = false;
+      if (step === "lessons") context.lessonsFailed = true;
     }
-    // (3) Lessons: the ids leave the audience snapshots of every version, in every project the person touched.
-    const projects = [...new Set([...(who.projects ?? []), ...rows.flatMap((row) => (typeof row.project === "string" ? [row.project] : []))])];
-    if (deps.lessons === undefined) steps.lessons = projects.length === 0;
-    else for (const project of projects) { try { await deps.lessons.scrubAudienceIds(orgId, project, ids); } catch { steps.lessons = false; } }
   }
-  const scrubbed = steps.principals && steps.access && steps.lessons;
-  const purged = await purgeItems(deps, orgId, [...rows, ...allLinks]);
-  const result: EraseResult = { ...purged, other: 0, complete: !found.truncated && purged.blocked === 0 && scrubbed, ...(ids.length === 0 ? {} : { steps }) };
+  // The rows and facts go once the lessons that rest on them are settled (a lesson step that failed leaves them hidden, so the next run still knows their ids).
+  const purged: PurgeResult = context.lessonsFailed !== true ? await purgeItems(deps, orgId, [...rows, ...allLinks], { lessonsSettled: true }) : { ...emptyPurge(), blocked: rows.length };
+  purged.lessonsWithdrawn += context.lessonsPurged;
+  done.rows = !found.truncated && purged.blocked === 0;
+  const result: EraseResult = { ...purged, other: 0, complete: Object.values(done).every(Boolean), steps: done };
   await finish(deps, orgId, "person_erased", occurrence, result);
   return result;
 }
+
+/** What a step needs. */
+interface EraseContext {
+  deps: PurgeDependencies; orgId: OrgId; who: ErasedPerson; ids: readonly string[]; identities: ReadonlyArray<{ system: string; sourceId: string }>;
+  rows: readonly Item[]; links: readonly Item[]; at: string; occurrence: string; budget: EraseBudget; queue: ReturnType<typeof tableLakeDeleteQueue>;
+  lessonsFailed?: boolean;
+  lessonsPurged: number;
+}
+
+const developerOf = (context: EraseContext): string => context.who.developerId ?? `source:${context.identities[0]?.system ?? "x"}:${context.identities[0]?.sourceId ?? "x"}`;
+
+/** One handler per step of the registry. `rows` is run by `erasePerson` itself, last. */
+const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) => Promise<boolean>> = {
+  // The lake forgets the person's rows by actor (the lake holds no principal list and no actor field in structured_json: see `lakeAcl` and `withoutActorFields`).
+  async lake(context) {
+    await context.queue.enqueue(context.orgId, [
+      ...(context.who.developerId === undefined ? [] : [{ kind: "actor" as const, developerId: context.who.developerId }]),
+      ...context.identities.map((identity) => ({ kind: "actor_source" as const, hash: recordActorSourceHash(identity.system, identity.sourceId) })),
+    ]);
+    return true;
+  },
+  // Row snapshots: the places of the person's own rows, `who.scopes`, and every unit header of the org that names them (below, with the access step).
+  async principals(context) {
+    const explicit = [...new Set([...(context.who.scopes ?? []), ...context.rows.flatMap((row) => (typeof row.scope === "string" ? [row.scope] : [])), ...context.links.flatMap((link) => (typeof link.scope === "string" ? [link.scope] : []))])].sort();
+    if (context.ids.length === 0) return true;
+    return scrubExplicitPlaces(context.deps, context.orgId, explicit, context.ids, context.occurrence, context.at, context.budget);
+  },
+  // Access records: for each unit the person is indexed in (an entry, or a row snapshot that named them), clean the place, then delete the entry and the index item.
+  async access(context) {
+    if (context.ids.length === 0) return true;
+    return scrubAccessUnits(context.deps, context.orgId, context.ids, context.at, context.budget);
+  },
+  async config(context) {
+    for (const project of context.who.projects ?? []) {
+      for (const config of await listSourceConfigs(context.deps.table, context.orgId, project)) {
+        await removeFromExclude(context.deps.table, config, new Set(context.ids));
+        if (context.who.developerId !== undefined) await scrubConfigDeveloper(context.deps.table, config, context.who.developerId);
+      }
+    }
+    return true;
+  },
+  // Lessons: those that rest on the person are HARD-deleted whatever their code citations say, the person is scrubbed from the rest (authorship, approvals), and the id leaves every
+  // audience snapshot. It covers every project of the org: the ones passed, the ones the project list names, and those of the person's rows; with none of the first two it is not done.
+  async lessons(context) {
+    const { deps, orgId } = context;
+    const listed = (await deps.projects?.projects(orgId)) ?? undefined;
+    const known = context.who.projects !== undefined || listed !== undefined;
+    const projects = [...new Set([...(context.who.projects ?? []), ...(listed ?? []), ...context.rows.flatMap((row) => (typeof row.project === "string" ? [row.project] : []))])];
+    if (deps.lessons === undefined) return projects.length === 0 && known;
+    // the ids of what is being deleted: the person's rows and the facts derived from them (a lesson resting only on these came from them)
+    const rowIds = new Set([...context.rows.flatMap((row) => (typeof row.id === "string" ? [row.id] : [])), ...context.links.flatMap((link) => (typeof link.factId === "string" ? [link.factId] : []))]);
+    for (const project of projects) {
+      context.lessonsPurged += (await deps.lessons.erasePerson(orgId, project, { developerId: developerOf(context) }, rowIds)).purged.length;
+      if (context.ids.length > 0) await deps.lessons.scrubAudienceIds(orgId, project, context.ids);
+    }
+    return known;
+  },
+};
 
 const ERASE_PROGRESS_PREFIX = "ERASEPROG#";
 
@@ -275,3 +332,6 @@ export async function eraseWorkspace(deps: PurgeDependencies, orgId: OrgId, proj
   await finish(deps, orgId, "org_closed", occurrence, result);
   return result;
 }
+
+/** The steps this module runs (the registry guard test checks that every step the registry names has a handler). */
+export const ERASE_HANDLED_STEPS: readonly EraseStep[] = [...(Object.keys(STEP_HANDLERS) as EraseStep[]), "rows"];

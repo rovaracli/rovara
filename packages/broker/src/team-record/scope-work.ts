@@ -202,7 +202,8 @@ export async function changeScopePrincipals(dependencies: WorkDependencies, orgI
   const add = input.add ?? [];
   const remove = new Set(input.remove ?? []);
   const mutate = (current: Audience): Audience | undefined => {
-    if (current.kind !== "restricted" || current.acl.scope !== input.scope) return undefined;
+    // The place's own rows, and the rows of the item units under it (a tracker issue keeps its list in a unit `<place>/item:<hash>`): both belong to this place.
+    if (current.kind !== "restricted" || !(current.acl.scope === input.scope || current.acl.scope.startsWith(`${input.scope}/item:`))) return undefined;
     const before = principalsOf(current);
     // A row captured after this change keeps what it was granted (a replay of an older change adds nobody), but a person who left is taken out of it either way: the
     // access record decides who may read, and this rewrite only keeps the pre-filter in line.

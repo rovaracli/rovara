@@ -14,7 +14,7 @@ function setup(judge = new Judge(), s = settings()) {
   const audit = new Audit();
   const alerts = new Alerts();
   const clock = new Clock();
-  const deps: CounterDeps = { store, judge, settings: s, audit, alerts, now: clock.now };
+  const deps: CounterDeps = { access: allowAllAccess, store, judge, settings: s, audit, alerts, now: clock.now };
   return { deps, store, audit, alerts, clock, judge };
 }
 const manifest = (taskId: string, ids: string[], over: Partial<LoadManifest> = {}): LoadManifest => ({
@@ -148,13 +148,13 @@ describe("Helpful and Wrong here buttons", () => {
     await seed(store, lessonRecord());
     await store.putManifest(manifest("task-1", ["les_aaaa1111"]));
     const base = { ...KEY, taskId: "task-1", lessonId: "les_aaaa1111" };
-    expect(await recordFeedback(deps, { ...base, userId: "ann", kind: "helpful" })).toEqual({ ok: true });
-    expect(await recordFeedback(deps, { ...base, userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "repeat" });
-    expect(await recordFeedback(deps, { ...base, userId: "bob", kind: "helpful" })).toEqual({ ok: true });
-    expect(await recordFeedback(deps, { ...base, taskId: "task-2", userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "not_loaded" });
-    expect(await recordFeedback(deps, { ...base, lessonId: "les_zzzz0000", userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "not_loaded" });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, userId: "ann", kind: "helpful" })).toEqual({ ok: true });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "repeat" });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, userId: "bob", kind: "helpful" })).toEqual({ ok: true });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, taskId: "task-2", userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "not_loaded" });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, lessonId: "les_zzzz0000", userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "not_loaded" });
     expect((await counters(store)).helpful).toBe(2);
-    expect(await recordFeedback(deps, { ...base, userId: "ann", kind: "wrong_here" })).toEqual({ ok: true });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, userId: "ann", kind: "wrong_here" })).toEqual({ ok: true });
     const lesson = (await store.get(KEY, "les_aaaa1111"))!;
     expect(lesson.counters.harmful).toBe(1);
     expect(lesson.retireProposedAt).toBeDefined();

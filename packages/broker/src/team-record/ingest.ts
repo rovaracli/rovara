@@ -19,6 +19,7 @@ import {
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { Aliases } from "../agents/table-writes.js";
 import { createHash } from "node:crypto";
+import { withoutActorFields } from "./person-fields.js";
 import { observeOpenRow, observeRowAccess, unitHasList } from "./access.js";
 import { captureIsOn, type LearningModeReader } from "./mode.js";
 import { exceedsRetention, retentionPlan, retentionRefusal } from "./retention.js";
@@ -229,7 +230,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
       // The trust of the author's OWN words: every reason the row was lowered except the quote terms (those are applied span by span, where the splitter finds the quote). The tap's
       // piece trusts and the item's history lower the own words too.
       const baseTrust = minTrust(draft.trust, ...(draft.actor === undefined ? [] : [draft.actor.trust]), ...(draft.pieceTrusts ?? []), ...(head === undefined ? [] : [head.lowestTrust]), ...(draft.actor === undefined && draft.source !== "rovara" ? ["system" as const] : []));
-      return { admitted: true, item: { orgId, project, scope: transientScope, trust, baseTrust, text: clean, audience: draft.audience, links: draft.links.filter(validLink).slice(0, LINKS_MAX), occurredAt, ...(owedRows === undefined ? {} : { supersedes: { rows: owedRows.flatMap((row) => (row === undefined ? [] : [row])), version: draft.sourceRef.version } }) } };
+      return { admitted: true, item: { orgId, project, scope: transientScope, trust, baseTrust, text: clean, audience: await accessUnitAudience(deps, orgId, draft), links: draft.links.filter(validLink).slice(0, LINKS_MAX), occurredAt, ...(owedRows === undefined ? {} : { supersedes: { rows: owedRows.flatMap((row) => (row === undefined ? [] : [row])), version: draft.sourceRef.version } }) } };
     }
     return refused("retention_not_stored");
   }
@@ -238,7 +239,8 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   const text = plan.keepText && trust !== "rovara" ? cleanRecordText(keptText, { keepCode: draft.kind === "rovara.human_edit" }) : undefined;
   const embed = plan.embed && text !== undefined;
   // Slack words that reached a Rovara row in Public keep no free text anywhere in the row, structured fields included.
-  const structured = cleanStructured(draft.structured, trust, deps.edition === "public" && draft.origin === "slack");
+  // No actor id rides in a structured field (`ACTOR_STRUCTURED_FIELDS`): a row is found for an erase by its actor only.
+  const structured = withoutActorFields(cleanStructured(draft.structured, trust, deps.edition === "public" && draft.origin === "slack"));
   // Every row carries the place it came from. Rovara's own rows without one belong to the project's own place.
   const eventScope = scope ?? (draft.source === "rovara" && project !== undefined ? `rovara:project/${project}` : undefined);
   if (eventScope === undefined) return refused("no_scope");

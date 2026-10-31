@@ -2,6 +2,7 @@
 // those records can put them in the lake. Nothing in the storage lane decides WHEN they are written: the writers are named in report.md.
 import type { LakeClient } from "./lake.js";
 import { buildInsertIfAbsent, scopeHash, timestampText, type LakeValue } from "./lake-sql.js";
+import { lakeAcl } from "./person-fields.js";
 import type { RecordFactLike } from "./shared-types.js";
 
 export interface OutcomeLike {
@@ -51,7 +52,7 @@ export function toLakeFactRow(fact: RecordFactLike, scope?: string): Record<stri
     trust: fact.trust,
     audience_kind: fact.audience.kind,
     audience_scope: fact.audience.kind === "restricted" ? fact.audience.acl.scope : null,
-    acl_json: fact.audience.kind === "restricted" ? JSON.stringify(fact.audience.acl) : null,
+    acl_json: fact.audience.kind === "restricted" ? JSON.stringify(lakeAcl(fact.audience.acl)) : null,
     valid_until: fact.validUntil ?? null,
     scope_hash: scope === undefined ? null : scopeHash(scope),
   };

@@ -303,11 +303,11 @@ describe("N5-5 / N5-6: erasure is a fence", () => {
 
   it("N5-6: the feedback once-key does not carry the user id", async () => {
     const store = new InMemoryLessonStore();
-    const deps: CounterDeps = { store, judge: { rate: async () => "unrelated" }, settings: settings(), audit: new Audit(), now: new Clock().now };
+    const deps: CounterDeps = { access: allowAllAccess, store, judge: { rate: async () => "unrelated" }, settings: settings(), audit: new Audit(), now: new Clock().now };
     await seed(store, lessonRecord({ id: "les_fb000001" }));
     await store.putManifest({ taskId: "task9", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, bytes: 1, lessons: [{ id: "les_fb000001", version: 1, score: 1, why: "scope", citation: "valid" }] });
-    expect(await recordFeedback(deps, { ...KEY, taskId: "task9", lessonId: "les_fb000001", userId: "mallory", kind: "helpful" })).toEqual({ ok: true });
-    expect(await recordFeedback(deps, { ...KEY, taskId: "task9", lessonId: "les_fb000001", userId: "mallory", kind: "helpful" })).toEqual({ ok: false, code: "repeat" });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...KEY, taskId: "task9", lessonId: "les_fb000001", userId: "mallory", kind: "helpful" })).toEqual({ ok: true });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...KEY, taskId: "task9", lessonId: "les_fb000001", userId: "mallory", kind: "helpful" })).toEqual({ ok: false, code: "repeat" });
     expect(store.onceNames(KEY).filter((n) => n.startsWith("feedback:")).join(" ")).not.toContain("mallory");
   });
 });

@@ -2,6 +2,7 @@
 // its lessons.
 import { describe, expect, it } from "vitest";
 import { approveLesson, listQueued, listWaiting, rejectLesson, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
+import { recordFeedback } from "../../../packages/broker/src/lessons/counters.js";
 import { loadLessonsForStage, type LoadDeps } from "../../../packages/broker/src/lessons/load.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
@@ -108,8 +109,8 @@ describe("R9-3 the learning lane's erase strips an erased id from every version'
   });
 });
 
-describe("old place-scoped tracker lessons are limited to their frozen snapshot, never loaded for nobody silently", () => {
-  it("a Jira lesson recorded against the place is loaded for a person its snapshot allows, and logged", async () => {
+describe("place-scoped tracker lessons are denied (F6), with a log line, never limited to a frozen list", () => {
+  it("a Jira lesson recorded against the place is read by nobody, not even a person its snapshot names", async () => {
     const { w, store } = await setup();
     const lines: string[] = [];
     const access = createAccessCheckPort(w.table, { log: (event) => { lines.push(event); } });
@@ -121,8 +122,25 @@ describe("old place-scoped tracker lessons are limited to their frozen snapshot,
     await seed(store, { ...base, id: "les_jira0001", type: "convention", tier: 1, provenance: { ...base.provenance, audience: legacy } } as never);
     await vectors.upsert(WS, PROJECT, "les_jira0001", await embedder.embed("x"), { status: "active" });
     const request = (principals: string[]) => ({ workspaceId: WS, project: PROJECT, taskId: "t1", stage: "IMPLEMENT" as const, round: 1, intent: "Retry failed HTTP calls", repos: ["api"], files: ["src/retry/client.ts"], languages: [], taskAudience: { kind: "private" as const, identity: { principals, groups: [] } } });
-    expect(((await loadLessonsForStage(deps, request(["J-member"]))).context?.lessons ?? []).map((l) => l.id)).toContain("les_jira0001");
+    expect(((await loadLessonsForStage(deps, request(["J-member"]))).context?.lessons ?? []).map((l) => l.id)).not.toContain("les_jira0001");
     expect(((await loadLessonsForStage(deps, request(["J-stranger"]))).context?.lessons ?? []).map((l) => l.id)).not.toContain("les_jira0001");
-    expect(lines).toContain("learning.legacy_place_scoped_lesson");
+    expect(lines).toContain("learning.place_scoped_tracker_lesson_denied");
+  });
+});
+
+describe("F9 Helpful and Wrong here go through the access check", () => {
+  it("a person removed from the channel cannot mark its lesson, so their marks never count towards an auto-retire", async () => {
+    const { w, store, access } = await setup();
+    await seed(store, { ...lessonRecord({ workspaceId: WS }), id: "les_fb000001", status: "active", type: "convention", tier: 1, provenance: { ...lessonRecord().provenance, audience: slackAcl(["U-member", "U-other"]), sourceScopes: [SC] } } as never);
+    await store.putManifest({ taskId: "t1", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_fb000001", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 100 });
+    const deps = { access, store, judge: { rate: async () => "unrelated" as never }, settings: settings(), audit: new Audit(), now: new Clock().now };
+    const input = (userId: string, kind: "helpful" | "wrong_here", principals: string[]) => ({ ...KEY, taskId: "t1", lessonId: "les_fb000001", userId, kind, viewer: { principals, groups: [] } });
+    expect(await recordFeedback(deps, input("ann", "helpful", ["U-member"]))).toEqual({ ok: true });
+    await applyMemberEvents(w.table, ORG_A, { scope: SC, remove: ["U-member"], at: T2 });
+    expect(await recordFeedback(deps, input("bob", "wrong_here", ["U-member"]))).toEqual({ ok: false, code: "not_permitted" });
+    expect(await recordFeedback(deps, input("carl", "wrong_here", ["U-member"]))).toEqual({ ok: false, code: "not_permitted" });
+    expect((await store.get(KEY, "les_fb000001"))!.status).toBe("active");
+    expect((await store.get(KEY, "les_fb000001"))!.counters.harmful).toBe(0);
+    expect(await recordFeedback(deps, input("dana", "helpful", ["U-other"]))).toEqual({ ok: true }); // a member still can
   });
 });

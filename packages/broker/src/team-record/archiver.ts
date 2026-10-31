@@ -12,6 +12,7 @@ import type { RecordEventLike } from "./shared-types.js";
 import { assertSafeId } from "./shared-types.js";
 import type { VectorIndex } from "./vectors.js";
 import type { TeamRecordEdition } from "./edition.js";
+import { lakeAcl, withoutActorFields } from "./person-fields.js";
 
 export const HOT_DAYS = 90;
 const DAY_MS = 86_400_000;
@@ -91,9 +92,9 @@ export function toLakeEventRow(event: RecordEventLike, archivedAt: string, editi
     trust: event.trust,
     audience_kind: event.audience.kind,
     audience_scope: event.audience.kind === "restricted" ? event.audience.acl.scope : null,
-    acl_json: event.audience.kind === "restricted" ? JSON.stringify(event.audience.acl) : null,
+    acl_json: event.audience.kind === "restricted" ? JSON.stringify(lakeAcl(event.audience.acl)) : null,
     text: textAllowed ? (event.text ?? null) : null,
-    structured_json: event.structured === undefined ? null : JSON.stringify(event.structured),
+    structured_json: withoutActorFields(event.structured) === undefined ? null : JSON.stringify(withoutActorFields(event.structured)),
     links_json: JSON.stringify(event.links),
     retention: event.retention,
     archived_at: archivedAt,

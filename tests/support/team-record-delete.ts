@@ -17,6 +17,14 @@ export class FakeLessons implements LessonDeletionPort {
   async affected(_org: string, _project: string, deleted: ReadonlySet<string>) {
     return this.list.filter((lesson) => !this.withdrawn.includes(lesson.id) && (lesson.provenance.sourceEvents.some((id) => deleted.has(id)) || lesson.citations.some((c) => c.kind === "record" && deleted.has(c.eventId))));
   }
+  readonly erased: Array<{ project: string; developerId: string; purged: string[] }> = [];
+  /** The learning lane's person erase, as the record core sees it: a lesson resting only on the deleted rows is hard-deleted (code citations or not), one that names some of them is scrubbed. */
+  async erasePerson(_org: string, project: string, erased: { developerId: string }, deleted: ReadonlySet<string>) {
+    const purged = this.list.filter((lesson) => lesson.provenance.sourceEvents.length > 0 && lesson.provenance.sourceEvents.every((id) => deleted.has(id))).map((lesson) => lesson.id);
+    for (const id of purged) this.list.splice(this.list.findIndex((lesson) => lesson.id === id), 1);
+    this.erased.push({ project, developerId: erased.developerId, purged });
+    return { purged, scrubbed: [] as string[] };
+  }
   readonly audienceScrubs: Array<{ project: string; ids: readonly string[] }> = [];
   async scrubAudienceIds(_org: string, project: string, ids: readonly string[]) { this.audienceScrubs.push({ project, ids }); }
   async withdraw(_org: string, _project: string, id: string) { this.withdrawn.push(id); }
@@ -46,7 +54,7 @@ export function deleteDeps(w: World, extra: Partial<PurgeDependencies> = {}): De
   const lessons = new FakeLessons();
   const audit: AuditEventInput[] = [];
   const logs: string[] = [];
-  const deps: PurgeDependencies = { table: w.table, vectors: w.vectors, lakeQueue: lake, lessons, audit: async (event) => { audit.push(event); }, now: () => w.clock.ms, log: (event) => { logs.push(event); }, ...extra };
+  const deps: PurgeDependencies = { table: w.table, vectors: w.vectors, lakeQueue: lake, lessons, projects: { projects: async () => ["web"] }, audit: async (event) => { audit.push(event); }, now: () => w.clock.ms, log: (event) => { logs.push(event); }, ...extra };
   return { deps, lessons, audit, lake, logs };
 }
 

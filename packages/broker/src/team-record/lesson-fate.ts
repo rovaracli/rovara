@@ -41,6 +41,11 @@ export interface LessonDeletionPort {
   withdraw(orgId: string, project: string, lessonId: string, cause: string): Promise<void>;
   /** Removes the deleted ids from the lesson's sources and record citations (a new version). */
   forgetSources(orgId: string, project: string, lessonId: string, deleted: ReadonlySet<string>): Promise<void>;
+  /**
+   * The whole erasure of one person in one project (owner decision 2026-10-31): lessons that rest on them or on `deleted` row ids are HARD-deleted whatever their code citations say,
+   * and the person is scrubbed from the rest (authorship, approvals).
+   */
+  erasePerson(orgId: string, project: string, erased: { developerId: string }, deleted: ReadonlySet<string>): Promise<{ purged: string[]; scrubbed: string[] }>;
   /** Removes the source ids of an erased person from the audience snapshots (`provenance.audience.acl.principals`) of every version of every lesson of the project. */
   scrubAudienceIds(orgId: string, project: string, ids: readonly string[]): Promise<void>;
 }
@@ -51,4 +56,5 @@ export const NO_LESSONS: LessonDeletionPort = {
   async withdraw() { /* nothing to withdraw */ },
   async forgetSources() { /* nothing to forget */ },
   async scrubAudienceIds() { /* no lessons */ },
+  async erasePerson() { return { purged: [], scrubbed: [] }; },
 };

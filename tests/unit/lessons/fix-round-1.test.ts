@@ -325,7 +325,7 @@ describe("I6: only lessons the worker actually loaded get counters", () => {
   function setup() {
     const store = new InMemoryLessonStore();
     const clock = new Clock();
-    const deps: CounterDeps = { store, judge: new Judge("unrelated"), settings: settings(), audit: new Audit(), alerts: new Alerts(), now: clock.now };
+    const deps: CounterDeps = { access: allowAllAccess, store, judge: new Judge("unrelated"), settings: settings(), audit: new Audit(), alerts: new Alerts(), now: clock.now };
     return { store, clock, deps };
   }
 
@@ -337,7 +337,7 @@ describe("I6: only lessons the worker actually loaded get counters", () => {
     expect(result.queuedHelpful).toEqual([]);
     clock.advance(15 * 86_400_000);
     expect(await settleHelpful(deps, KEY)).toBe(0);
-    expect(await recordFeedback(deps, { ...KEY, taskId: "task-1", lessonId: "les_aaaa1111", userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "not_loaded" });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...KEY, taskId: "task-1", lessonId: "les_aaaa1111", userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "not_loaded" });
     const lesson = (await store.get(KEY, "les_aaaa1111"))!;
     expect(lesson.counters).toMatchObject({ helpful: 0, harmful: 0 });
   });
@@ -348,7 +348,7 @@ describe("I6: only lessons the worker actually loaded get counters", () => {
     await store.putManifest(manifest("unchecked"));
     await applyLoadReport(deps, { ...KEY, taskId: "task-1", stage: "IMPLEMENT", round: 1, report: { v: 1, stage: "IMPLEMENT", lessons: [{ id: "les_aaaa1111", version: 1, citation: "valid" }] } });
     expect((await store.get(KEY, "les_aaaa1111"))!.counters.loaded).toBe(1);
-    expect(await recordFeedback(deps, { ...KEY, taskId: "task-1", lessonId: "les_aaaa1111", userId: "ann", kind: "helpful" })).toEqual({ ok: true });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...KEY, taskId: "task-1", lessonId: "les_aaaa1111", userId: "ann", kind: "helpful" })).toEqual({ ok: true });
   });
 
   it("a stale-dropped lesson is not counted as loaded either", async () => {
@@ -412,8 +412,8 @@ describe("P9: tenancy across the whole lane", () => {
     expect(await approveLesson(s.deps, { ...B, lessonId: "les_pend0001", approverId: "ann" })).toEqual({ ok: false, code: "not_found" });
     expect(await rejectLesson(s.deps, { ...B, lessonId: "les_pend0001", approverId: "ann", reason: "x" })).toEqual({ ok: false, code: "not_found" });
     expect(await promoteToRule({ ...s.deps, publisher: new Publisher() }, { ...B, lessonId: "les_live0001", approverId: "ann" })).toEqual({ ok: false, code: "not_found" });
-    const counters: CounterDeps = { store: s.store, judge: new Judge("caused"), settings: settings(), audit: new Audit(), now: s.clock.now };
-    expect(await recordFeedback(counters, { ...B, taskId: "task-1", lessonId: "les_live0001", userId: "ann", kind: "wrong_here" })).toEqual({ ok: false, code: "not_loaded" });
+    const counters: CounterDeps = { access: allowAllAccess, store: s.store, judge: new Judge("caused"), settings: settings(), audit: new Audit(), now: s.clock.now };
+    expect(await recordFeedback(counters, { viewer: { principals: [], groups: [] }, ...B, taskId: "task-1", lessonId: "les_live0001", userId: "ann", kind: "wrong_here" })).toEqual({ ok: false, code: "not_loaded" });
     expect(await recordTaskOutcome(counters, { ...B, taskId: "task-1", outcome: "merged", sendBacks: 0, corrections: [] })).toEqual({ harmful: [], queuedHelpful: [] });
     expect((await s.store.get(KEY, "les_live0001"))!.counters.harmful).toBe(0);
     expect(await listWaiting(s.store, B, inACL, allowAllAccess)).toEqual([]);
