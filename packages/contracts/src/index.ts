@@ -204,5 +204,6 @@ export * from "./app-project-slack.js";
 
 export * from "./app-service-status.js";
 export * from "./decision-cards.js";
+export * from "./decision-card-tabs.js";
 export * from "./test-environment.js";
 export * from "./service-mocks.js";
