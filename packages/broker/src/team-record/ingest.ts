@@ -28,7 +28,7 @@ import { removePrincipalsFromRow, supersedeItem, wasDeletedAtSource } from "./sc
 import { advanceItemHead, getItemHead, isScopeClosed, versionTimeOf } from "./item-head.js";
 import { hasQuotedOrForwarded } from "./quoted.js";
 import { isErasedActor } from "./erased.js";
-import { deterministicEventId, getSourceConfigByScope, putRecordEvent } from "./store.js";
+import { deleteItem, deterministicEventId, getSourceConfigByScope, putRecordEvent, tombstoneItem } from "./store.js";
 import { cleanRecordText } from "./text.js";
 import type { Edition, IngestOutcome, RecordDraft, RecordEmbedder, RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
 
@@ -298,7 +298,14 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   // written before this read (seen here, and the id is taken out of the stored row), or after it, and then the row and the access index it was written with already existed when the
   // erase ran (both are written before the row), so the erase finds the place. A stored row is checked against the list it was built from; a redelivery that finds the row already
   // there is checked against the draft's own list, so a repair that failed once is made on the retry.
-  await removeErasedFromStoredRow(deps, orgId, recordEventKey(orgId, project, occurredAt, id), result === "stored" ? principalsOf(event.audience) : principalsOf(draft.audience));
+  // The ACTOR is checked again too: the check at the top of this function can be stale by the time the row lands (even past the erase's delayed second pass), and a row of an erased
+  // actor must not wait for any pass to be found. It is hidden and removed here, and the draft is refused.
+  const key = recordEventKey(orgId, project, occurredAt, id);
+  if (draft.actor !== undefined && await isErasedActor(deps.table, orgId, draft.sourceRef.system, draft.actor)) {
+    await dropRowOfErasedActor(deps, key, id);
+    return refused("actor_erased");
+  }
+  await removeErasedFromStoredRow(deps, orgId, key, result === "stored" ? principalsOf(event.audience) : principalsOf(draft.audience));
   const owed = moved.status === "advanced" ? (moved.previous === undefined || result === "duplicate" ? undefined : [moved.previous.row, moved.previous.supersedes?.row]) : moved.owed === undefined ? undefined : [moved.owed.row];
   if (owed !== undefined) {
     await supersedeItem({ table: deps.table, now }, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, rows: owed.flatMap((row) => (row === undefined || row.sk === recordEventKey(orgId, project, occurredAt, id).sk ? [] : [row])) });
@@ -319,7 +326,21 @@ async function removeErasedFromStoredRow(deps: IngestDependencies, orgId: OrgId,
   if (principals.length === 0) return;
   const erased = await erasedAccessIds(deps.table, orgId, principals);
   if (erased.size === 0) return;
-  if (!(await removePrincipalsFromRow(deps.table, key, erased))) throw agentXError("RUNTIME_UNAVAILABLE", "A row that names an erased person could not be cleaned right now.");
+  const cleaned = await removePrincipalsFromRow(deps.table, key, erased).catch(() => false);
+  if (cleaned) return;
+  // Fail closed: a row that could not be cleaned is hidden (and its text dropped) BEFORE the failure is reported, so a caller that swallows the error never keeps a dirty row readable.
+  await tombstoneItem(deps.table, key, { at: new Date((deps.now ?? Date.now)()).toISOString(), cause: "person_erased" }).catch(() => false);
+  throw agentXError("RUNTIME_UNAVAILABLE", "A row that names an erased person could not be cleaned right now.");
+}
+
+/** Hides, then removes, a row whose actor was erased while it was being written. Its vector (a redelivery after the embed) goes first; a vector that cannot be deleted keeps the hidden row and fails the put. */
+async function dropRowOfErasedActor(deps: IngestDependencies, key: { pk: string; sk: string }, id: string): Promise<void> {
+  await tombstoneItem(deps.table, key, { at: new Date((deps.now ?? Date.now)()).toISOString(), cause: "person_erased" });
+  if (deps.vectors !== undefined) {
+    const deleted = await deps.vectors.delete([eventVectorKey(id)]).catch(() => undefined);
+    if (deleted === undefined || deleted.failed.length > 0) throw agentXError("RUNTIME_UNAVAILABLE", "The vector of an erased person's row could not be deleted right now.");
+  }
+  await deleteItem(deps.table, key);
 }
 
 export function eventVectorKey(eventId: string): string {

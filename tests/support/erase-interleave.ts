@@ -21,6 +21,10 @@ export interface Interleave {
   retryOnThrow?: boolean;
   /** Runs the delete worker too (a queued replay), after the operation and before the second pass. */
   worker?: boolean;
+  /** The erase's delayed second pass has ALREADY run when the operation carries on (a stalled write landing after the pass). */
+  passTwoInside?: boolean;
+  /** Skip the second pass at the end: whatever the operation did must be clean without it. */
+  noPassTwo?: boolean;
 }
 
 export async function runWithEraseAfter(spec: Interleave, at: number): Promise<{ calls: number; w: World; d: DeleteWorld; erased: boolean }> {
@@ -39,6 +43,7 @@ export async function runWithEraseAfter(spec: Interleave, at: number): Promise<{
       try {
         expect((await erasePerson(d.deps, ORG_A, { identities: [{ system: "slack:T1", sourceId: spec.person }], projects: ["web"] }, `race-${at}`)).complete).toBe(true);
         erased = true;
+        if (spec.passTwoInside === true) { w.clock.ms += ERASE_SWEEP_DELAY_MS + 1; await runDeleteWorker(d.deps, ORG_A); }
       } finally { injecting = false; }
     }
     return result;
@@ -49,7 +54,7 @@ export async function runWithEraseAfter(spec: Interleave, at: number): Promise<{
   if (spec.worker === true) await runDeleteWorker(d.deps, ORG_A);
   // Only the erase's own second pass is left to run; nothing else is allowed to repair a store the operation left dirty.
   w.clock.ms += ERASE_SWEEP_DELAY_MS + 1;
-  if (at > 0) await runDeleteWorker(d.deps, ORG_A);
+  if (at > 0 && spec.noPassTwo !== true) await runDeleteWorker(d.deps, ORG_A);
   return { calls, w, d, erased };
 }
 
@@ -61,7 +66,9 @@ export async function dirtyInterleavings(spec: Interleave): Promise<{ calls: num
   for (let at = 1; at <= clean.calls; at += 1) {
     const run = await runWithEraseAfter(spec, at);
     expect(run.erased).toBe(true);
-    if (JSON.stringify(run.w.db.find(() => true)).includes(spec.person)) dirty.push(at);
+    // (the schedule of the erase's own second pass names the person by design until that pass has run)
+    const stored = run.w.db.find((item) => !String(item.sk).startsWith("ERASESWEEP#"));
+    if (JSON.stringify(stored).includes(spec.person)) dirty.push(at);
   }
   return { calls: clean.calls, dirty };
 }

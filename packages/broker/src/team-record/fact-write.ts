@@ -6,7 +6,7 @@ import { recordFactKey, type OrgId, type RecordFact } from "@agentx/contracts";
 import { agentXError } from "@agentx/contracts";
 import { erasedAccessIds, withoutErasedPrincipals } from "./access.js";
 import { removePrincipalsFromRow } from "./scope-work.js";
-import { putRecordFact } from "./store.js";
+import { putRecordFact, tombstoneItem } from "./store.js";
 import type { TeamRecordTable } from "./types.js";
 
 export async function putFactClean(table: TeamRecordTable, orgId: OrgId, fact: RecordFact, scopes?: readonly string[]): Promise<RecordFact> {
@@ -16,6 +16,11 @@ export async function putFactClean(table: TeamRecordTable, orgId: OrgId, fact: R
   if (written.length === 0) return clean;
   const erased = await erasedAccessIds(table, orgId, written);
   if (erased.size === 0) return clean;
-  if (!(await removePrincipalsFromRow(table, recordFactKey(orgId, fact.project, fact.id), erased))) throw agentXError("RUNTIME_UNAVAILABLE", "A note that names an erased person could not be cleaned right now.");
+  const key = recordFactKey(orgId, fact.project, fact.id);
+  if (!(await removePrincipalsFromRow(table, key, erased).catch(() => false))) {
+    // Fail closed: hidden before the failure is reported.
+    await tombstoneItem(table, key, { at: new Date().toISOString(), cause: "person_erased" }).catch(() => false);
+    throw agentXError("RUNTIME_UNAVAILABLE", "A note that names an erased person could not be cleaned right now.");
+  }
   return { ...clean, audience: await withoutErasedPrincipals(table, orgId, clean.audience) };
 }
