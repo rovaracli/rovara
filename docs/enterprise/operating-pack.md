@@ -6,10 +6,10 @@ How to read it: "Today" means true now. "Proposed" means designed and not built.
 
 ## 1. Where it runs, and who does what
 
-- **Place.** One company per install, in your AWS account and region, deployed from a signed release bundle by `rovara init` and `deploy` with the `enterprise` profile. Rovara Cloud is not involved: the install is its own centre, and it sends nothing to Rovara by default. Today the profile exists as infrastructure code and tests; it has not yet run in a customer-shaped account (the install proof does that).
+- **Place.** One company per install, in your AWS account and region, deployed from a signed release bundle (proposed; not built) by `rovara init` and `deploy` with the `enterprise` profile. Rovara Cloud is not involved: the install is its own centre, and it is designed to send nothing to Rovara by default. Today the profile exists as infrastructure code and tests; it has not yet run in a customer-shaped account (the install proof does that). Two things stand between today and "nothing leaves": the broker's own functions do not yet run inside your VPC, and there is no private path from workers to the control plane (security pack, section 2).
 - **Your code and data.** Code sits in encrypted workspace volumes in your account, under your KMS keys. Models run on your Bedrock through a private endpoint. People sign in with your identity provider.
 - **Managed-VPC agreement.** Rovara operates the install: we run upgrades, watch its health and apply software fixes. You own the account, the network, the identity provider, the keys and the backups. The split is in section 11 of the security pack.
-- **Operator access.** We use one standing operator role in your account that you approve, can suspend at any moment, and can audit. It cannot read your content. The proposal is in appendix A of the security pack, and it is not built yet (proposed: task N6, rescoped from break-glass only). **Owner to decide:** the final shape after your security team reviews it.
+- **Operator access.** We use one standing operator role in your account that you approve, can suspend at any moment, and can audit. It can start a deployment only of a signed bundle whose hash you approved, through a deploy role that you own; it is denied IAM changes, shell access to workers and reads of your stores; each session names the person using it. The proposal, and what it does not promise, is in appendix A of the security pack. It is not built yet (proposed: task N6, rescoped from break-glass only). **Owner to decide:** the final shape after your security team reviews it.
 - **What we do not promise.** No claim of certification. No claim of isolation beyond what the security pack lists. Two sandbox gaps are open (agent shells reaching host listeners, and dev-container projects running with fewer restrictions); an install does not hold real code until the first is closed.
 
 ## 2. Backup and restore
@@ -57,7 +57,7 @@ Today: no support contact, response times, on-call rota or status page exist for
 
 ## 5. Upgrades and rollback
 
-- **Who does it.** Rovara runs upgrades, in your agreed change window, through the operator role. Proposed. Today an upgrade is `rovara upgrade` run by whoever holds the install; the signed-bundle path (`--bundle`) is not built (tasks N2, N3).
+- **Who does it.** Rovara runs upgrades, in your agreed change window, by starting the deployment of a bundle you approved; your deploy role does the changes. Proposed. Today an upgrade is `rovara upgrade` run by whoever holds the install; the signed-bundle path (`--bundle`) is not built (tasks N2, N3).
 - **Before each upgrade** you receive the release notes and the bundle's manifest hash, and you approve it. Proposed.
 - **What the upgrade does.** Verifies the signature and every hash, runs pre-checks (doctor, schema compatibility), takes a restore point (a point-in-time timestamp plus the previous bundle id), then deploys in the existing fixed order. A changed byte is refused before anything changes. Proposed. The tool already refuses to install an older release, because newer data may not be readable by older software. A running workspace keeps its old software until it next starts.
 - **Air-gapped installs** import the bundle through your own S3. Proposed.

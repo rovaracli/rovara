@@ -17,7 +17,7 @@ Enterprise: Reached only when an admin connects that system (or registers a GitH
 - Trackers and work-management connectors (Linear, Jira, Asana).
   `*.atlassian.net`, `api.linear.app`, `app.asana.com`, `linear.app`, `mcp.asana.com`, `mcp.atlassian.com`, `mcp.linear.app`
 - Observability and operations connectors (read-only): Sentry, Datadog (regional hosts), Grafana, PagerDuty, Vercel.
-  `ap1.datadoghq.com`, `ap2.datadoghq.com`, `api.eu.pagerduty.com`, `api.pagerduty.com`, `api.vercel.com`, `datadoghq.com`, `ddog-gov.com`, `sentry.io`, `uk1.datadoghq.com`, `us2.ddog-gov.com`, `us3.datadoghq.com`, `us5.datadoghq.com`, `vercel.com`
+  `ap1.datadoghq.com`, `ap2.datadoghq.com`, `api.eu.pagerduty.com`, `api.pagerduty.com`, `api.vercel.com`, `datadoghq.com`, `datadoghq.eu`, `ddog-gov.com`, `sentry.io`, `uk1.datadoghq.com`, `us2.ddog-gov.com`, `us3.datadoghq.com`, `us5.datadoghq.com`, `vercel.com`
 
 ## Model providers
 
@@ -47,7 +47,9 @@ Enterprise: Names that appear in IAM trust and resource policies. Nothing connec
 Enterprise: Reached in the customer's own account. An Enterprise install reaches AWS APIs through VPC interface endpoints (infra/lib/vpc-endpoints.ts); a connector that calls an AWS API not in that list needs its endpoint added.
 
 - Wildcard for AWS API hosts in the default allow-list; the CloudWatch connector's host; the domain-suffix checks in the CLI.
-  `*.amazonaws.com`, `amazonaws.com`, `monitoring.amazonaws.com`
+  `*.amazonaws.com`, `amazonaws.com`, `amazonaws.com.cn`, `monitoring.amazonaws.com`
+- The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list. (only in `infra/lib/vpc-endpoints.ts`)
+  `sts.amazonaws.com`
 
 ## Audit anchor timestamp authorities
 
