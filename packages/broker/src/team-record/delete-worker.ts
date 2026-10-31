@@ -3,7 +3,7 @@
 // on them, and (4) removes the queue item. Work on a scope that has not finished hiding stays queued with `hidePending`, which keeps the scope hidden from everyone.
 // Principal and audience changes that ran out of budget are finished here too. Every run is bounded (requests, items, milliseconds). A request older than an hour is a
 // backlog: the summary says so and the log line is the alarm; hidden rows stay hidden meanwhile.
-import { recordDeleteQueueKey, recordScopeHash, teamRecordSourceHash, type OrgId } from "@agentx/contracts";
+import { recordAccessKey, recordDeleteQueueKey, recordScopeHash, teamRecordSourceHash, type OrgId } from "@agentx/contracts";
 import { auditRecordTombstoned, type RecordAuditSink } from "./audit.js";
 import { closeScope } from "./item-head.js";
 import { tableLakeDeleteQueue } from "./lake-queue.js";
@@ -152,6 +152,8 @@ export async function runDeleteWorker(deps: DeleteWorkerDependencies, orgId: Org
     summary.lessonsWithdrawn += purged.lessonsWithdrawn; summary.lessonsKept += purged.lessonsKept; summary.blocked += purged.blocked;
     if (purged.blocked === 0 && !found.truncated) {
       await deps.audit?.(auditRecordTombstoned({ orgId, requestId: entry.requestId, at: new Date(now()).toISOString(), scopeOrSource: entry.scope ?? entry.system, cause: entry.cause ?? "source_deleted", count: purged.rows + purged.facts })).catch(() => undefined);
+      // The deleted place keeps no member list (the place stays closed, so nothing reads it again).
+      if (entry.scope !== undefined && (entry.cause === "source_deleted" || entry.cause === "excluded")) await deleteItem(deps.table, recordAccessKey(orgId, entry.scope));
       await deleteItem(deps.table, key);
       summary.finished += 1;
     } else {

@@ -2,6 +2,7 @@
 // lane imports another's files). `put` is the pipeline in ingest.ts. `tombstone` hides at once, then leaves a queue item the delete worker finishes (D1).
 // `changePrincipals` and `replaceScopeAudience` keep a private scope's permission snapshot current. A workspace id that is not an org id is refused.
 import { OrgIdSchema, recordDeleteQueueKey, recordScopeHash, type OrgId, type RecordSystem, type Audience } from "@agentx/contracts";
+import { applyAudienceEvent, applyMemberEvents } from "./access.js";
 import { tableLakeDeleteQueue, type LakeDeleteQueue } from "./lake-queue.js";
 import { ingestRecord, type IngestDependencies } from "./ingest.js";
 import { captureIsOn } from "./mode.js";
@@ -78,6 +79,8 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 
     async changePrincipals(input) {
       const orgId = orgOf(input.workspaceId);
+      // The access record FIRST: one conditional write per person, with the event's own time. From this write on, reads give a removed person nothing, whatever the rows say.
+      await applyMemberEvents(deps.table, orgId, { scope: input.scope, ...(input.add === undefined ? {} : { add: input.add }), ...(input.remove === undefined ? {} : { remove: input.remove }), at: input.at });
       const item = { type: "principals" as const, system: "scope", scope: input.scope, ...(input.add === undefined ? {} : { add: [...input.add] }), ...(input.remove === undefined ? {} : { remove: [...input.remove] }), changeAt: input.at, hidePending: true };
       // An older change to this place is still waiting (it crashed or ran out of time): this one waits behind it, and the worker replays them oldest first. Never inline over it.
       const behind = await olderChange(deps.table, orgId, input.scope);
@@ -91,6 +94,7 @@ export function createRecordSink(deps: IngestDependencies, options: SinkOptions 
 
     async replaceScopeAudience(input) {
       const orgId = orgOf(input.workspaceId);
+      await applyAudienceEvent(deps.table, orgId, { scope: input.scope, audience: input.audience, at: input.at }); // the access record first (see changePrincipals)
       const item = { type: "audience" as const, system: "scope", scope: input.scope, audience: input.audience, changeAt: input.at, hidePending: true };
       const behind = await olderChange(deps.table, orgId, input.scope);
       if (behind.waiting) { await queueScopeWork(work, orgId, item, behind.latestAt); return; }

@@ -747,14 +747,14 @@ class Parser {
       this.expect(",");
       const type = this.operand(item ?? {});
       this.expect(")");
-      return dynamoType(item?.[path]) === type;
+      return dynamoType(item?.[path] ?? (/[.[]/u.test(path) ? this.pathValue(item, path) : undefined)) === type;
     }
     if (token === "attribute_not_exists" || token === "attribute_exists") {
       this.next();
       this.expect("(");
       const path = this.path();
       this.expect(")");
-      const exists = item?.[path] !== undefined;
+      const exists = (item?.[path] ?? (/[.[]/u.test(path) ? this.pathValue(item, path) : undefined)) !== undefined;
       return token === "attribute_exists" ? exists : !exists;
     }
     if (token === "begins_with") {
@@ -832,7 +832,14 @@ function applyUpdate(item: Item, expression: string, names: Names, values: Value
       const path = parser.path();
       if (keyword === "SET") {
         parser.expect("=");
-        item[path] = parser.valueExpression(item);
+        const value = parser.valueExpression(item);
+        // A path into a map (`members.U1`): the value goes inside the map, as DynamoDB does (the parent must exist, or the update fails).
+        const dot = path.indexOf(".");
+        if (dot > 0 && !path.includes("[") && item[path] === undefined) {
+          const parent = item[path.slice(0, dot)];
+          if (!plainMap(parent)) throw Object.assign(new Error("The document path provided in the update expression is invalid for update"), { name: "ValidationException", $metadata: {} });
+          (parent)[path.slice(dot + 1)] = value;
+        } else item[path] = value;
       } else if (keyword === "ADD") {
         const value = parser.operand(item);
         const current = item[path];

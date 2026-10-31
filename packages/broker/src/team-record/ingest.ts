@@ -17,6 +17,7 @@ import {
 } from "@agentx/contracts";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { Aliases } from "../agents/table-writes.js";
+import { observeRowAccess } from "./access.js";
 import { captureIsOn, type LearningModeReader } from "./mode.js";
 import { exceedsRetention, retentionPlan, retentionRefusal } from "./retention.js";
 import { supersedeItem, wasDeletedAtSource } from "./scope-work.js";
@@ -255,6 +256,9 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   // 5. An item deleted at its source stays deleted, and so does a place that was deleted or excluded: a late retry or a backfill is refused.
   if (await wasDeletedAtSource(deps.table, orgId, draft.sourceRef.system, draft.sourceRef.id)) return refused("deleted_at_source");
   if (await isScopeClosed(deps.table, orgId, eventScope)) return refused("scope_closed");
+  // The place's access record exists before the first restricted row is readable (reads drop a restricted row whose place has none). A newer snapshot replaces the list only
+  // while no member or audience event has reached the record.
+  if (event.audience.kind === "restricted") await observeRowAccess(deps.table, orgId, event.audience.acl);
 
   // 6. Versions are ordered by the source's own time. A version older than the one stored changes nothing (it only lowers the item's remembered trust).
   const versionAt = versionTimeOf(draft);

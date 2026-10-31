@@ -4,6 +4,7 @@
 // query filter upstream is only a coarse cut.
 import { MAINTAINERS_GROUP, type AclSnapshot, type Audience, type RecordTombstone } from "@agentx/contracts";
 import { scopeAndAncestors, teamRecordSourceHash } from "@agentx/contracts";
+import { accessScopesOf, aclOfAccess, type AccessReader } from "./access.js";
 import type { LiveAclCheck, PendingHides, ReadAudience, RecordCaller } from "./types.js";
 
 /** How long a live re-check answer is reused, per caller and scope (design 4.4.2). */
@@ -81,12 +82,40 @@ export interface FilterDependencies {
   now?: () => number;
   /** What queued work (a delete, a permission change) has not finished: those places and source items read as hidden from everyone. */
   pending?: PendingHides;
+  /**
+   * The access records of the places (one per place, loaded in batches for one request). Every hit is checked against the record of its own place and of the places above it:
+   * the row's own snapshot is a pre-filter, never the final word. A restricted row whose place has no readable record is dropped, and so is any row whose record cannot be read.
+   */
+  access?: AccessReader;
 }
 
 export interface FilterResult<T> {
   visible: T[];
   /** Rows the caller may not see. Tombstoned rows are not counted: they no longer exist for anyone. */
   withheld: number;
+}
+
+/**
+ * The read-time check against the access records (design: one record per place). The place of the row and every place above it must allow the caller: a record that says
+ * restricted needs the caller among its members or groups; one that cannot be read denies; a missing record denies a restricted row (its own place always has one) and is
+ * skipped for the places above it. A shared task (no person) never reads a place a record restricts.
+ */
+export function accessAllows(audience: ReadAudience, row: Visible, access: AccessReader | undefined): boolean {
+  if (access === undefined) return true;
+  const { all, own } = accessScopesOf(row);
+  for (const scope of all) {
+    const lookup = access.get(scope);
+    if (lookup === "unreadable") return false;
+    if (lookup === "absent") {
+      if (scope === own) return false;
+      continue;
+    }
+    if (lookup.mode !== "restricted") continue;
+    if (audience.kind !== "caller") return false;
+    if (audience.caller.projectRole === undefined) return false;
+    if (!satisfiesAcl(audience.caller, aclOfAccess(lookup))) return false;
+  }
+  return true;
 }
 
 /** Whether queued, unfinished work hides the row: its place, one of its places, its source item, or a source item its fact was distilled from. */
@@ -111,13 +140,14 @@ export function hiddenByPending(row: Visible, pending: PendingHides | undefined)
  */
 export async function filterVisible<T extends Visible>(rows: readonly T[], audience: ReadAudience, dependencies: FilterDependencies = {}): Promise<FilterResult<T>> {
   const now = dependencies.now ?? Date.now;
+  await dependencies.access?.load(rows.filter((row) => row.tombstone === undefined).flatMap((row) => accessScopesOf(row).all));
   const visible: T[] = [];
   let withheld = 0;
   const checked = new Map<string, boolean>();
   for (const row of rows) {
     if (row.tombstone !== undefined) continue;
     if (hiddenByPending(row, dependencies.pending)) continue;
-    if (!visibleWithoutLiveCheck(audience, row)) {
+    if (!visibleWithoutLiveCheck(audience, row) || !accessAllows(audience, row, dependencies.access)) {
       withheld += 1;
       continue;
     }

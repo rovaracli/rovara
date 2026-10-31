@@ -1,3 +1,4 @@
+import { observeRowAccess } from "../../../packages/broker/src/team-record/access.js";
 import { describe, expect, it } from "vitest";
 import { putRecordFact } from "../../../packages/broker/src/team-record/store.js";
 import { dynamoRateLimiter, pastWork, recordFacts, recordSearch, recordStats, type RecordQueryDependencies, type RecordVectorSearchPort, type PastWorkTask } from "../../../packages/broker/src/team-record/query.js";
@@ -177,6 +178,7 @@ describe("hourly limit", () => {
 
 describe("recordFacts", () => {
   async function facts(w: World) {
+    await observeRowAccess(w.table, ORG_A, { source: "slack", scope: "slack:T1/C1", principals: ["U1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" });
     const base = { workspaceId: ORG_A, project: "web", kind: "decision" as const, links: [], derivedFrom: ["x"], trust: "member" as const, createdAt: "2026-10-30T10:00:00.000Z" };
     await putRecordFact(w.table, { ...base, id: FACT, text: "We use withRetry.", audience: PROJECT_AUDIENCE });
     await putRecordFact(w.table, { ...base, id: "5b8e9f4c-2b1a-4c1e-9a53-3f2d3d1a0003", text: "Private channel decision.", createdAt: "2026-10-30T11:00:00.000Z", kind: "note", audience: { kind: "restricted", acl: { source: "slack", scope: "slack:T1/C1", principals: ["U1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } } });
@@ -212,6 +214,7 @@ describe("pastWork (the Plan 9 contract)", () => {
   it("shared returns only tasks every member can view; private returns what the asker can view; both cap the plan summary", async () => {
     const w = world();
     await outcomes(w);
+    await observeRowAccess(w.table, ORG_A, privateAudience.acl);
     const list = [task("t1", PROJECT_AUDIENCE), task("t2", privateAudience)];
     const d = deps(w, { tasks: tasks(list), lessonsOfTask: async (_o, _p, id) => (id === "t1" ? [{ title: "Use withRetry", audience: PROJECT_AUDIENCE }] : []) });
     const sharedResult = await pastWork(d, person(), "shared", "web", { query: "billing" });

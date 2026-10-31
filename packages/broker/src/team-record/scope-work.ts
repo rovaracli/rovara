@@ -129,6 +129,15 @@ function capturedAfter(audience: Audience, at: string): boolean {
   return Number.isFinite(captured) && Number.isFinite(limit) && captured > limit;
 }
 
+/** Whether `next` lets in someone `current` does not (a principal, a group, or everyone). */
+function widens(current: Audience, next: Audience): boolean {
+  if (current.kind !== "restricted") return false;
+  if (next.kind !== "restricted") return true;
+  const known = new Set(current.acl.principals ?? []);
+  const groups = new Set(current.acl.groups ?? []);
+  return (next.acl.principals ?? []).some((id) => !known.has(id)) || (next.acl.groups ?? []).some((group) => !groups.has(group));
+}
+
 const principalsOf = (audience: Audience): string[] => (audience.kind === "restricted" ? [...(audience.acl.principals ?? [])] : []);
 
 /** Rewrites one item's `audience`, only if it still holds the value read (a concurrent change makes it read again, up to three times). */
@@ -194,9 +203,11 @@ export async function changeScopePrincipals(dependencies: WorkDependencies, orgI
   const remove = new Set(input.remove ?? []);
   const mutate = (current: Audience): Audience | undefined => {
     if (current.kind !== "restricted" || current.acl.scope !== input.scope) return undefined;
-    if (capturedAfter(current, input.at)) return undefined; // a newer change already wrote this row: a replay of an older one must not undo it
     const before = principalsOf(current);
-    const after = [...new Set([...before, ...add])].filter((id) => !remove.has(id)).slice(0, ACL_PRINCIPALS_MAX);
+    // A row captured after this change keeps what it was granted (a replay of an older change adds nobody), but a person who left is taken out of it either way: the
+    // access record decides who may read, and this rewrite only keeps the pre-filter in line.
+    const grants = capturedAfter(current, input.at) ? [] : add;
+    const after = [...new Set([...before, ...grants])].filter((id) => !remove.has(id)).slice(0, ACL_PRINCIPALS_MAX);
     if (after.length === before.length && after.every((id, index) => id === before[index])) return undefined;
     return { kind: "restricted", acl: { ...current.acl, principals: after, capturedAt: input.at } };
   };
@@ -220,7 +231,8 @@ export async function changeScopePrincipals(dependencies: WorkDependencies, orgI
 export async function replaceScopeAudience(dependencies: WorkDependencies, orgId: OrgId, input: { scope: string; audience: Audience; at: string }, budget: WorkBudget = DEFAULT_WORK_BUDGET, resume?: ScopeCursor): Promise<WorkResult> {
   const next = AudienceSchema.parse(input.audience);
   const sameScope = (current: Audience): boolean => current.kind === "restricted" && current.acl.scope === input.scope;
-  const stale = (current: Audience): boolean => capturedAfter(current, input.at);
+  // A row captured after the event is rewritten only when that takes access away (a replay of an older, wider list must not grant again).
+  const stale = (current: Audience): boolean => capturedAfter(current, input.at) && widens(current, next);
   return eachInScope(dependencies, orgId, input.scope, budget, async (item, key) => {
     if (item.entityType === "TEAM_RECORD_EVENT") {
       const audience = AudienceSchema.safeParse(item.audience);

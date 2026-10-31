@@ -952,6 +952,13 @@ export function recordItemHeadKey(orgId: OrgId, system: string, sourceId: string
 export function recordScopeMarkerKey(orgId: OrgId, scope: string): OrgKey {
   return { pk: teamRecordPk(orgId), sk: `SCOPEDEL#${createHash("sha256").update(scope).digest("hex")}` };
 }
+/**
+ * The ONE access record of a place (a channel, a repository): who may read what was recorded there, kept apart from the rows. Reads check it for every hit, so a row whose
+ * own snapshot is stale (a list captured before someone left) never grants more than this record does. Keyed by the place's hash (in the workspace partition).
+ */
+export function recordAccessKey(orgId: OrgId, scope: string): OrgKey {
+  return { pk: teamRecordPk(orgId), sk: `ACCESS#${createHash("sha256").update(scope).digest("hex")}` };
+}
 /** The places a scope sits under, itself first: `slack:T1/C9` -> `slack:T1/C9`, `slack:T1`. */
 export function scopeAndAncestors(scope: string): string[] {
   const out = [scope];

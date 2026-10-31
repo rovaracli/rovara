@@ -1,4 +1,5 @@
 // Fix round 1 (Opus review of lr-record): one or more tests per finding, each failing without its fix.
+import { observeRowAccess } from "../../../packages/broker/src/team-record/access.js";
 import { describe, expect, it } from "vitest";
 import { recordDeleteQueueKey, recordScopeHash, teamRecordSourceHash, workspaceVectorBucketKey, erasedPersonKey, recordActorSourceHash, learningModeLockKey, teamRecordPk, type Audience } from "@agentx/contracts";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
@@ -211,6 +212,7 @@ describe("I-6 hidden results are a flag, not a count", () => {
 describe("I-7 past_work lesson titles follow the lesson's audience", () => {
   it("a restricted lesson title is not shown to a shared task or a non-member of its place", async () => {
     const w = world();
+    await observeRowAccess(w.table, ORG_A, { source: "slack", scope: "slack:T1/C1", principals: ["U1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" });
     const task: PastWorkTask = { taskId: "t1", title: "T", status: "merged", pullRequests: [], planSummary: "p", audience: PROJECT, trust: "member" };
     const lessons = async (): Promise<Array<{ title: string; audience: Audience }>> => [{ title: "Public lesson", audience: PROJECT }, { title: "Layoff lesson", audience: { kind: "restricted", acl: { source: "slack", scope: "slack:T1/C1", principals: ["U1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } } }];
     const d = deps(w, { tasks: { async search() { return [task]; } }, lessonsOfTask: lessons });
@@ -389,6 +391,7 @@ describe("Fix round 2 (recheck)", () => {
   });
   it("M-d: one malformed lesson audience drops that entry, not the call", async () => {
     const w = world();
+    await observeRowAccess(w.table, ORG_A, { source: "slack", scope: "slack:T1/C1", principals: ["U1"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" });
     const task: PastWorkTask = { taskId: "t1", title: "T", status: "merged", pullRequests: [], planSummary: "p", audience: PROJECT, trust: "member" };
     const lessons = async () => [{ title: "Good", audience: PROJECT }, { title: "Bad", audience: { kind: "restricted" } as never }];
     const result = await pastWork(deps(w, { tasks: { async search() { return [task]; } }, lessonsOfTask: lessons }), person(), "private", "web", { query: "x" });

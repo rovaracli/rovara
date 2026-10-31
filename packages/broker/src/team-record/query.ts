@@ -34,6 +34,7 @@ import {
   type TrustClass,
 } from "@agentx/contracts";
 import { Aliases, errorName } from "../agents/table-writes.js";
+import { createAccessReader } from "./access.js";
 import { filterVisible, type FilterDependencies, type FilterResult, type LiveCheckCache } from "./acl.js";
 import { parseEventVectorRef } from "./ingest.js";
 import type { LearningModeReader } from "./mode.js";
@@ -123,7 +124,7 @@ async function filterDependencies(deps: RecordQueryDependencies, orgId: OrgId): 
   // Work that has not finished hides its places and source items from everyone. If the queue cannot be read in full, nothing is shown (no guessing).
   const pending = await pendingHidesOf(deps.table, orgId).catch(() => undefined);
   if (pending === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "The team record can't be read right now.");
-  return { ...(deps.liveCheck === undefined ? {} : { liveCheck: deps.liveCheck }), ...(deps.liveCache === undefined ? {} : { cache: deps.liveCache }), ...(deps.now === undefined ? {} : { now: deps.now }), pending };
+  return { access: createAccessReader(deps.table, orgId), ...(deps.liveCheck === undefined ? {} : { liveCheck: deps.liveCheck }), ...(deps.liveCache === undefined ? {} : { cache: deps.liveCache }), ...(deps.now === undefined ? {} : { now: deps.now }), pending };
 }
 
 const KIND_TITLES: Record<string, string> = {

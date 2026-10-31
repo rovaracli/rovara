@@ -1,4 +1,5 @@
 // Helpers for the delete and erase tests (lane "record", task D1): a fake lessons port, a recording lake queue and a seeded workspace.
+import { observeRowAccess } from "../../packages/broker/src/team-record/access.js";
 import { recordFactKey, type AuditEventInput, type RecordFact } from "@agentx/contracts";
 import { tableLakeDeleteQueue, type LakeDeleteQueue, type LakeDeleteTarget } from "../../packages/broker/src/team-record/lake-queue.js";
 import type { LessonDeletionPort, LessonForDeletion } from "../../packages/broker/src/team-record/lesson-fate.js";
@@ -59,6 +60,8 @@ export async function seedComments(w: World, scope = GITHUB_SCOPE) {
 }
 
 export async function addFact(w: World, id: string, sources: Array<{ system: string; sourceId: string; scope?: string }>, extra: Partial<RecordFact> = {}) {
+  // A fact of a restricted place reads only if the place has its access record (the rows it was distilled from would have made it).
+  if (extra.audience?.kind === "restricted") await observeRowAccess(w.table, ORG_A, extra.audience.acl);
   await putRecordFact(w.table, { id, workspaceId: ORG_A, project: "web", kind: "decision", text: `Fact ${id.slice(-2)} summary.`, links: [], derivedFrom: sources.map((s) => `${s.system}:${s.sourceId}`), trust: "member", audience: { kind: "project" }, createdAt: "2026-10-30T11:00:00.000Z", ...extra });
   await putDerivationLinks(w.table, { orgId: ORG_A, project: "web", factId: id, sources, at: "2026-10-30T11:00:00.000Z" });
 }

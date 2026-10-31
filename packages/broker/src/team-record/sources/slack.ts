@@ -193,7 +193,8 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     deps.directory.invalidate?.(teamId, channelId);
     const info = await deps.directory.channelInfo(teamId, channelId).catch(() => undefined);
     const scope = slackScope(teamId, channelId);
-    const at = new Date().toISOString();
+    // Slack's own time for the event (the member events use it too), so the order of changes is Slack's against Slack's, never the broker clock against Slack's.
+    const at = isoOfSlackTs(event.event_ts) ?? new Date().toISOString();
     if (info?.extShared === true) {
       await deps.sink.tombstone({ workspaceId: bound.workspaceId, system: teamId, scope, cause: "excluded" });
       return { outcome: "scope_removed" };
