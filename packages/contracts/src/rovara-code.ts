@@ -4,6 +4,7 @@
 import { z } from "zod";
 import { OrgIdSchema, SessionBindingSchema, SessionIdSchema } from "./browser-ids.js";
 import { forwardReader } from "./forward-reader.js";
+import { EVIDENCE_NOT_TESTED_KINDS, ProofDetailSchema } from "./evidence.js";
 import { ModelIdentifierSchema } from "./models.js";
 import { redactText } from "./redaction.js";
 
@@ -565,10 +566,10 @@ export const ProofTableViewSchema = z
     rows: z.array(z.object({
       claimId: z.string().min(1).max(64),
       requirement: z.string().max(300),
-      evidence: z.array(z.object({ kind: z.enum(["check", "scenario"]), label: z.string().max(120), state: z.enum(["proven", "passed", "failed", "not_checked"]) }).strict()).max(100),
+      evidence: z.array(z.object({ kind: z.enum(["check", "scenario"]), label: z.string().max(120), state: z.enum(["proven", "passed", "failed", "not_checked"]), /** Fixed words only (proof and evidence design, 3.2). */ detail: ProofDetailSchema.optional() }).strict()).max(100),
       result: z.enum(PROOF_RESULT_VALUES),
     }).strict()).min(1).max(50),
-    notTested: z.array(z.object({ kind: z.enum(["claim", "scenario", "check"]), id: z.string().min(1).max(64), text: z.string().max(300), reason: z.string().min(1).max(100) }).strict()).max(200),
+    notTested: z.array(z.object({ kind: z.enum(EVIDENCE_NOT_TESTED_KINDS), id: z.string().min(1).max(64), text: z.string().max(300), reason: z.string().min(1).max(100) }).strict()).max(200),
     testProofLines: z.array(z.string().max(600)).max(4),
   })
   .strict();

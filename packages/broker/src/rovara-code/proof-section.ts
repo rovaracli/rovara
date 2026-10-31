@@ -3,7 +3,8 @@
 //
 // The shrink order, level by level (`proofSection(...)(level)`): 0 full evidence; 1 fewer and shorter evidence entries; 2 evidence as counts; 3 the same, and the proven and passed rows folded into one
 // count line; 4 shorter requirement text and bullets without text. A failed row, a partly tested row and a not-tested item are listed at every level: they are what a reader must not miss.
-import { workflowCheckResultBroken, workflowSelectedChecks, type PlanDocument, type TestProof, type WorkflowSnapshot } from "@agentx/contracts";
+import { TestProofSchema, workflowCheckResultBroken, workflowSelectedChecks, type PlanDocument, type TestProof, type WorkflowSnapshot } from "@agentx/contracts";
+import { evidenceLines, type ProofEvidenceContext } from "./evidence-lines.js";
 import { buildProofTable, type ProofCheckResult, type ProofEvidence, type ProofResult, type ProofRow, type ProofScenarioRow } from "./proof-table.js";
 
 /** What the Proof section needs beyond the workflow; absent, or without a plan with claims, the section is left out. */
@@ -14,6 +15,8 @@ export interface ProofContext {
   scenarioRows?: readonly ProofScenarioRow[] | undefined;
   /** The test proof read for this code; the table ignores it unless it is bound to the workflow's candidate digest. */
   testProof?: TestProof | undefined;
+  /** Proof and evidence P8: the evidence pack for this code and how much of it the pull request shows (see evidence-lines.ts). Used only when the pack is bound to the workflow's candidate digest. */
+  evidence?: ProofEvidenceContext | undefined;
   /** The description already had a Proof section but the inputs above could not be read in time (see proof-keep.ts): the section shows `PROOF_STALE_LINE` instead of the old table. Used instead of `plan`. */
   stale?: boolean | undefined;
 }
@@ -70,6 +73,15 @@ function evidenceCell(row: ProofRow, level: number): string {
   return [...(checks > 0 ? [plural(checks, "check")] : []), ...(scenarios > 0 ? [plural(scenarios, "scenario")] : [])].join(", ");
 }
 
+/** The names of the tests the broker's own TestProof, bound to this code's digest, says fail on the original code (per-test verdicts only); undefined when there is no such proof or it has no per-test verdicts. */
+function provenTestNames(testProof: unknown, candidateDigest: string | undefined): ReadonlySet<string> | undefined {
+  if (candidateDigest === undefined || testProof === undefined) return undefined;
+  const parsed = TestProofSchema.safeParse(testProof);
+  if (!parsed.success || parsed.data.candidateDigest !== candidateDigest) return undefined;
+  const items = parsed.data.items.filter((item) => item.granularity === "test" && item.test !== undefined);
+  return items.length === 0 ? undefined : new Set(items.filter((item) => item.verdict === "proves_change").map((item) => item.test!));
+}
+
 /**
  * The section's builder, or undefined when there is no approved plan with claims (the section is then left out and the description is exactly as it was). The table is computed once; call the
  * returned function with a shrink level (0..PROOF_LEVEL_LAST) for the lines at that level, without the blank line that separates the section from Tests.
@@ -92,8 +104,11 @@ export function proofSection(workflow: WorkflowSnapshot, proof: ProofContext | u
       const proven = folded.filter((row) => row.result === "proven").length;
       lines.push("", `${plural(folded.length, "more requirement")} proven or passed${proven > 0 ? ` (${proven} also fail${proven === 1 ? "s" : ""} on the original code)` : ""}; their rows are left out to keep this description short.`);
     }
-    if (table.notTested.length > 0) {
-      lines.push("", "What wasn't tested:", ...table.notTested.map((item) => {
+    // Proof and evidence P8: counts per kind and coverage (levels 0 and 1 only), then Environment, what was not run and the link, then the mocked and not-selected items under "What wasn't tested".
+    const evidence = evidenceLines(proof?.evidence, workflow.candidate?.digest, level, { proven: provenTestNames(proof?.testProof, workflow.candidate?.digest), alreadyListed: new Set(table.notTested.map((item) => `${item.kind}:${item.id}`)) });
+    if (evidence.lines.length > 0) lines.push("", ...evidence.lines.map((line) => `- ${line}`));
+    if (table.notTested.length > 0 || evidence.notTested.length > 0) {
+      lines.push("", "What wasn't tested:", ...evidence.notTested, ...table.notTested.map((item) => {
         // Level 4 names the item by its ID only; the others by its words, cut.
         const noun = item.kind === "claim" ? "Requirement" : item.kind === "scenario" ? "Scenario" : "Check";
         const name = level >= 4 ? item.id : item.kind === "claim" ? `${item.id}: ${cut(item.text, level >= 2 ? 80 : 120)}` : cut(item.text, 80);

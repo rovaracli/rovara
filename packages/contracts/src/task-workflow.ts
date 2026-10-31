@@ -7,6 +7,7 @@ import { ProjectCommandSchema } from "./project.js";
 import { E2E_PROJECT_CHECK_ID, E2EWorkflowProgressSchema } from "./e2e.js";
 import { WorkflowDependencyApprovalSchema, WorkItemProgressV1Schema } from "./workflow-dependencies.js";
 import { NO_CODE_CHANGED_REASON, NoChangeFindingsSchema } from "./no-change-findings.js";
+import { CheckKindSchema } from "./evidence.js";
 
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -601,6 +602,8 @@ export const WorkflowCheckSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
   label: z.string().trim().min(1).max(80),
   command: ProjectCommandSchema,
+  /** What the check is for; the setup agent proposes it and a maintainer confirms it. Absent reads as `other`. */
+  kind: CheckKindSchema.optional(),
 }).strict().refine((check) => check.id !== E2E_PROJECT_CHECK_ID, "project-e2e is reserved for trusted E2E aggregation");
 
 export type WorkflowCheck = z.infer<typeof WorkflowCheckSchema>;

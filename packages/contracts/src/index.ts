@@ -177,6 +177,9 @@ export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-age
 export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy, TaskStopProjectReadSchema, type TaskStopProjectRead } from "./task-stop-project.js";
 export * from "./test-proof.js";
 
+// Proof and evidence (W4/W5): the evidence pack, decision cards, the test environment and service mocks.
+export * from "./evidence.js";
+
 // Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
 export * from "./org-slack-workspace-evidence.js";
 
@@ -199,3 +202,6 @@ export * from "./stage-model-publish-refusal.js";
 export * from "./app-project-slack.js";
 
 export * from "./app-service-status.js";
+export * from "./decision-cards.js";
+export * from "./test-environment.js";
+export * from "./service-mocks.js";

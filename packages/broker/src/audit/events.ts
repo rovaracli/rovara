@@ -535,6 +535,16 @@ export function auditCompanyChangeAppliedToProject(input: AuditBuilderBase & { p
   return build("company.change_applied_to_project", input, { kind: "project", name: input.projectName }, { changeRevision: input.changeRevision, settingCount: input.settingCount });
 }
 
+/** `occurrence`: the request id of the approved change. `tier` is `sandbox`, `preview` or `shared`; `lessSafeCount` is the number of less-safe fields the change turned on (`testEnvLessSafeChanges`). */
+export function auditProjectTestEnvChanged(input: AuditBuilderBase & { projectName: string; revision: number; tier: "sandbox" | "preview" | "shared"; lessSafeCount: number }): AuditEventInput {
+  return build("project.test_env_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, tier: input.tier, lessSafeCount: input.lessSafeCount });
+}
+
+/** `occurrence`: the request id of the download. One event per download; the artifact is named by its fixed kind and retention class, never by a name or a path. */
+export function auditEvidenceDownloaded(input: AuditBuilderBase & { taskId: string; artifactKind: string; retentionClass: string }): AuditEventInput {
+  return build("evidence.downloaded", input, { kind: "task", id: input.taskId }, { artifactKind: input.artifactKind, retentionClass: input.retentionClass });
+}
+
 // G3 registrations/builders only. Writers must pair each event with the actual state change atomically.
 export function auditModelFallbackUsed(input:AuditBuilderBase&{projectName:string;stage:StageId;used:ModelIdentifier;wanted?:ModelIdentifier;reasonCode:ModelFallback["reasonCode"];companyRevision:number}):AuditEventInput {
  const digest=(model:ModelIdentifier)=>createHash("sha256").update(JSON.stringify([model.provider,model.modelId])).digest("hex");

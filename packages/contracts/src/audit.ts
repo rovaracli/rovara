@@ -191,6 +191,9 @@ export const AUDIT_ACTIONS = [
   "process.rolled_back",
   "playbook.default_process_changed",
   "company.change_applied_to_project",
+  // Proof and evidence (W4/W5): the approved test environment changed; a task reader downloaded a stored evidence artifact.
+  "project.test_env_changed",
+  "evidence.downloaded",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -332,6 +335,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "process.rolled_back": ["fromVersion", "toVersion", "safety"],
   "playbook.default_process_changed": ["revision", "processKind"],
   "company.change_applied_to_project": ["changeRevision", "settingCount"],
+  // `tier` is `sandbox`, `preview` or `shared`; `lessSafeCount` is how many less-safe fields the change turned on. `artifactKind` and `retentionClass` are the fixed words of the evidence contract.
+  "project.test_env_changed": ["revision", "tier", "lessSafeCount"],
+  "evidence.downloaded": ["artifactKind", "retentionClass"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */
