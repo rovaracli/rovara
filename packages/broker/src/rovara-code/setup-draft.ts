@@ -496,12 +496,15 @@ export function registerBuiltinSetupAppliers(): void {
       const text = devcontainerRequestText(context.proposal);
       if (text === undefined) throw agentXError("CONFIG_INVALID", "The draft has no dev container to add with a pull request.");
       // One pull request per draft: claimed (by this request id) before it is started, so a second ask, or a race, starts none.
-      await context.host.claimPullRequest(context.requestId);
+      // The pull request's request id comes from the APPROVAL, not from this press: if the start failed after the task began (a timeout, a lost reply), the consent is given back and
+      // the next press arrives with a new request id, but it asks the code-intent start for the same one, which answers the task already started instead of opening a second.
+      const pullRequestId = derivedRequestId(context.approvalId, "pull-request");
+      await context.host.claimPullRequest(pullRequestId);
       try {
-        return { warnings: [], pullRequest: await context.host.startPullRequest({ requestId: context.requestId, text }) };
+        return { warnings: [], pullRequest: await context.host.startPullRequest({ requestId: pullRequestId, text }) };
       } catch (error) {
         // Given back, so the person can ask again.
-        await context.host.releasePullRequestClaim(context.requestId);
+        await context.host.releasePullRequestClaim(pullRequestId);
         throw error;
       }
     },
@@ -705,7 +708,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
       let applied: Awaited<ReturnType<SetupItemApplier["apply"]>>;
       try {
         applied = await applier.apply({
-          project: name, taskId: pointer.taskId, item, proposal, approvedBy: card.approvedBy ?? "", requestId: applyRequestId, revision: revisionNow,
+          project: name, taskId: pointer.taskId, item, proposal, approvedBy: card.approvedBy ?? "", approvalId: card.approvalId, requestId: applyRequestId, revision: revisionNow,
           host: {
             updateSettings: async (settings) => { const saved = await deps.updateSettings(caller, name, settings, { origin: "agent" }); savedAt(saved); return saved; },
             startPullRequest: (request) => deps.startPullRequest(caller, { requestId: request.requestId, project: name, text: request.text }),

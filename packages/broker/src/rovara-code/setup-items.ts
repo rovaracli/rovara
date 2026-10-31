@@ -118,6 +118,8 @@ export interface SetupItemApplyContext {
   proposal: SetupProposal;
   /** The person who approved the card. */
   approvedBy: string;
+  /** The approval being used. An applier whose effect cannot be undone derives its own request ids from this, never from `requestId`, so a retry under the same approval cannot do it twice. */
+  approvalId: string;
   /** The request id this application is made under: the same every time the same request is repeated. */
   requestId: string;
   /** The project's settings revision now. */
@@ -136,7 +138,10 @@ export interface SetupItemApplyContext {
 export interface SetupItemApplier {
   /** The words on the approval card: what approving it lets a maintainer do. */
   cardWords(item: SetupItem): string[];
-  /** Applies the item after its card was approved, as the maintainer applying it; throws an `AgentXError` in fixed words when it cannot. Returns the warnings to show, and the pull request it opened, if any. */
+  /**
+   * Applies the item after its card was approved, as the maintainer applying it. The consent is given back when this throws, so a later press runs it again under the SAME
+   * approval: an applier must be atomic or idempotent per `approvalId` (derive the request ids of what it starts from it), or must not throw after its effect.
+   * Throws an `AgentXError` in fixed words when it cannot. Returns the warnings to show, and the pull request it opened, if any. */
   apply(context: SetupItemApplyContext): Promise<{ warnings: string[]; pullRequest?: { taskId: string; sessionId?: string; sessionUrl?: string } }>;
 }
 
