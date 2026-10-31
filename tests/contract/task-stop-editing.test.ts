@@ -120,7 +120,7 @@ it("monthly writes fence a proposal inserted after their read", async () => {
  expect(f.db.get(key)?.monthlyBudgetUsd).toBe(50);expect(f.db.get(key)?.pendingTaskStopChange).toEqual({ unexpected: "concurrent proposal" });
 });
 it("self approval with the displayed original digest remains forbidden", async () => {
- const f = fixture(), p = await proposal(f);expect((await f.call("POST", `${base}/decisions`, p.body, a)).status).not.toBe(200);
+ const f = fixture(), p = await proposal(f);expect(await f.call("POST", `${base}/decisions`, p.body, a)).toMatchObject({ status: 403, body: { code: "FORBIDDEN" } });
  expect(f.db.get(f.key)?.revision).toBe(1);
 });
 it("every Spending mutation requires audit and commits neither policy nor pending without it", async () => {
@@ -159,4 +159,17 @@ it("a monthly write cannot erase a concurrent task-stop upgrade seed", async () 
 it("a monthly write preserves the original project seed review provenance", async () => {
  const f = fixture(), key = projectAiKey(orgId, "web"), seedProvenance = { source: "upgrade", occurrence: "original-upgrade", reviewRequired: true, seededAt: "2026-10-30T23:00:00.000Z" };f.db.set({ ...f.db.get(key)!, seedProvenance });
  await writeProjectAi({ ...f.deps, projectAiSignInTableName: "signin" }, orgId, "web", { projectPays: false, monthlyBudgetUsd: 51 }, a, { actor: { developerId: a, role: "owner" }, expectedRevision: 1 });expect(f.db.get(key)?.seedProvenance).toEqual(seedProvenance);
+});
+
+it("a pending loosening and intervening monthly edit cannot block an immediate tightening", async () => {
+ const f = fixture(), pending = await proposal(f, true);
+ await writeProjectAi({ ...f.deps, projectAiSignInTableName: "signin" }, orgId, "web", { projectPays: false, monthlyBudgetUsd: 51 }, a, { actor: { developerId: a, role: "owner" }, expectedRevision: 1 });
+ const view = await f.call("GET", `${pending.path}/editing`);
+ const result = await f.call("PUT", pending.path, { requestId: randomUUID(), expectedRevision: view.body.revision, expectedPolicyDigest: view.body.sourceDigest, policy: { kind: "limited", stopMicrousd: 1 } });
+ expect(result.status).toBe(200);expect(result.body.state).toBe("applied");expect(f.db.get(projectAiKey(orgId, "web"))?.pendingTaskStopChange).toBeUndefined();
+ expect(f.db.get(projectAiKey(orgId, "web"))?.lastTaskStopChange).toMatchObject({ proposalId: pending.body.proposalId, state: "expired", reason: "tightening_applied" });
+});
+it("Spending can repair missing settings for a real registered project without bypassing review", async () => {
+ const f = fixture(), key = projectAiKey(orgId, "web");f.db.delete(key);
+ const view = await f.call("GET", `${base}/projects/web/editing`);expect(view.status).toBe(200);expect(view.body.policy).toEqual({ kind: "inherit" });
 });

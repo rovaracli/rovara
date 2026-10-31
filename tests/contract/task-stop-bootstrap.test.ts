@@ -1,3 +1,4 @@
+import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
 import { orgMetaKey, orgSettingsKey, agentGuardrailsKey, agentKey, orgScoped, builtinSettingsKey, ROVARA_CODE_AGENT_ID, BUILTIN_AGENT_IDS, projectAiKey, orgProjectCatalogKey, DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
@@ -456,3 +457,25 @@ it("a repaired built-in inventory replay preserves earlier committed metadata", 
   expect(await taskStopBootstrap.upgradeTaskStopBuiltinInventoryPage(deps, input)).toMatchObject({ examined: 6, updated: 5, preserved: 1, complete: true });
   expect(f.db.get(key.pk, key.sk)).toEqual(first);
 });
+
+it("real custom-agent creation writes an explicit spending revision and inheritance kind", async () => {
+ const f = fixture(), agents = new AgentStore({ documentClient: f.db, tableName: "state", now: () => now });
+ const agent = await agents.create({ orgId, name: "Real new agent", owner: { kind: "member", developerId: who }, createdBy: who });
+ expect(f.db.get(agentKey(orgId, agent.agentId, "META"))).toMatchObject({ revision: 1, stopKind: "inherit" });
+});
+it("a real legacy custom agent without fixture revisions can be upgraded", async () => {
+ const f = fixture();await f.store.ensureOrg(orgId, "Company");const agents = new AgentStore({ documentClient: f.db, tableName: "state", now: () => now });
+ const agent = await agents.create({ orgId, name: "Actual legacy agent", owner: { kind: "member", developerId: who }, createdBy: who }), key = agentKey(orgId, agent.agentId, "META"), legacy = { ...f.db.get(key)! };
+ delete legacy.revision;delete legacy.stopKind;f.db.set(legacy);
+ await taskStopBootstrap.upgradeTaskStopInheritance({ documentClient: f.db, tableName: "state", now: () => now }, { orgId, kind: "agent", agentId: agent.agentId });
+ expect(f.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit", name: agent.name });
+});
+it("company upgrade accepts every cent ceiling through 100 USD exactly", async () => {
+ for (let cents = 1; cents <= 10000; cents += 1) {
+  const f = fixture();f.db.set({ ...orgMetaKey(orgId), orgId, entityType: "ORG" });
+  f.db.set({ ...agentGuardrailsKey(orgId), entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: cents / 100 } });
+  await taskStopBootstrap.bootstrapTaskStopPolicy({ documentClient: f.db, tableName: "state", now: () => now }, orgId);
+  const events = f.db.find(row => row.entityType === "AUDIT_PENDING");
+  expect(events.some(row => (row.event as { facts?: { ceilingMicrousd?: number } } | undefined)?.facts?.ceilingMicrousd === cents * 10000), `cent=${cents}`).toBe(true);
+ }
+}, 60000);
