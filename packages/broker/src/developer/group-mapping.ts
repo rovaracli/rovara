@@ -9,9 +9,9 @@
 //  - The mapped role replaces the person's role at every sign-in, so leaving a group takes the access away.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  agentXError, featureEnabled, requireFeature, GROUP_CLAIM_MAX_GROUPS, GROUP_MAPPING_MESSAGES, GROUP_NAME_MAX_CHARS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE,
+  agentXError, featureEnabled, requireFeature, BREAK_GLASS_FRESH_AUTH_SECONDS, BREAK_GLASS_SESSION_MAX_SECONDS, BROKEN_MAPPING_REFUSALS, BreakGlassOwnersSchema, GROUP_CLAIM_MAX_GROUPS, GROUP_MAPPING_MESSAGES, GROUP_NAME_MAX_CHARS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE,
   PROJECT_ROLE_PRECEDENCE, groupMappingKey,
-  type EditionPolicy, type GroupMappingConfig, type GroupMappingEvaluation, type GroupMappingRefusal, type MappedAccess, type OrgId, type OrgRole, type SignInDecision,
+  type BreakGlassOwner, type EditionPolicy, type GroupMappingConfig, type GroupMappingEvaluation, type GroupMappingRefusal, type MappedAccess, type OrgId, type OrgRole, type SignInDecision,
 } from "@agentx/contracts";
 
 /**
@@ -66,14 +66,37 @@ export function evaluateGroupMapping(input: { policy: EditionPolicy; config: unk
 }
 
 /**
- * What a sign-in comes to. An existing owner is let in as owner whatever the mapping says (break-glass); everyone else needs the mapping to grant a role.
- * `currentRole` is the person's role in the org now, when they have one.
+ * What a sign-in comes to. Everyone, owners included, goes through the mapping: a person who matches no mapped group is refused even if they are an owner,
+ * because that is how a company takes access away (it removes the person from the group; their account at the provider stays active).
+ *
+ * The one exception is a BROKEN mapping (not configured, unreadable, or the provider stopped sending the claim), so that a mistake cannot lock every owner out.
+ * It applies only to an owner who is on the explicit `breakGlass` list (at most two people, each may expire), and it is never silent: the decision carries the
+ * `sso.break_glass_used` audit event and the alert the route must raise, a one-hour session, and a sign-in no older than five minutes.
+ * The edition is checked first, so Public refuses everyone.
  */
-export function decideSignIn(input: { policy: EditionPolicy; config: unknown; claims: Readonly<Record<string, unknown>>; currentRole: OrgRole | undefined }): SignInDecision {
-  if (input.currentRole === "owner") return { allow: true, orgRole: "owner", source: "owner", projectRoles: [], matchedRuleIds: [] };
+export function decideSignIn(input: {
+  policy: EditionPolicy; config: unknown; claims: Readonly<Record<string, unknown>>; currentRole: OrgRole | undefined;
+  personId: string; breakGlass: readonly BreakGlassOwner[]; now: number;
+}): SignInDecision {
+  const refuse = (reason: GroupMappingRefusal): SignInDecision => ({ allow: false, reason, message: GROUP_MAPPING_MESSAGES[reason] });
+  if (!featureEnabled(input.policy, "sso")) return refuse("edition_off");
   const evaluation = evaluateGroupMapping(input);
-  if (!evaluation.ok) return { allow: false, reason: evaluation.reason, message: GROUP_MAPPING_MESSAGES[evaluation.reason] };
-  return { allow: true, orgRole: evaluation.access.orgRole, source: "mapping", projectRoles: evaluation.access.projectRoles, matchedRuleIds: evaluation.access.matchedRuleIds };
+  if (evaluation.ok) {
+    // A mapping never changes an owner's role; it only decides whether they may come in.
+    return {
+      allow: true, orgRole: input.currentRole === "owner" ? "owner" : evaluation.access.orgRole, source: "mapping", projectRoles: evaluation.access.projectRoles,
+      matchedRuleIds: evaluation.access.matchedRuleIds, sessionMaxSeconds: input.policy.sessionMaxSeconds,
+    };
+  }
+  const broken = (BROKEN_MAPPING_REFUSALS as readonly string[]).includes(evaluation.reason);
+  const listed = BreakGlassOwnersSchema.safeParse(input.breakGlass);
+  if (broken && input.currentRole === "owner" && listed.success && listed.data.some((entry) => entry.personId === input.personId && (entry.expiresAt === undefined || entry.expiresAt > input.now))) {
+    return {
+      allow: true, orgRole: "owner", source: "break-glass", projectRoles: [], matchedRuleIds: [], auditEvent: "sso.break_glass_used", alert: true,
+      sessionMaxSeconds: Math.min(BREAK_GLASS_SESSION_MAX_SECONDS, input.policy.sessionMaxSeconds ?? BREAK_GLASS_SESSION_MAX_SECONDS), freshAuthWithinSeconds: BREAK_GLASS_FRESH_AUTH_SECONDS,
+    };
+  }
+  return refuse(evaluation.reason);
 }
 
 // ---- the store
@@ -99,7 +122,10 @@ export function dynamoGroupMappingStore(input: { documentClient: DocumentClient;
       if (result.Item === undefined) return undefined;
       const { pk: _pk, sk: _sk, ...rest } = result.Item;
       void _pk; void _sk;
-      return GroupMappingConfigSchema.parse(rest);
+      const parsed = GroupMappingConfigSchema.safeParse(rest);
+      // A fixed sentence: the parser's paths and messages never reach a response.
+      if (!parsed.success) throw agentXError("CONFIG_INVALID", GROUP_MAPPING_MESSAGES.config_invalid);
+      return parsed.data;
     },
     async put(orgId, config, expectedVersion) {
       requireFeature(policy, "sso");
@@ -119,6 +145,19 @@ export function dynamoGroupMappingStore(input: { documentClient: DocumentClient;
       return next;
     },
   };
+}
+
+/**
+ * The mapping as the sign-in reads it: the saved mapping, undefined when there is none, and a value that never parses when the saved one cannot be read, so the
+ * evaluator answers `config_invalid` (a broken mapping, which only break-glass owners may sign in through) and never throws into the route.
+ */
+export async function readMappingForSignIn(store: GroupMappingStore, orgId: OrgId): Promise<GroupMappingConfig | undefined | { unreadable: true }> {
+  try {
+    return await store.get(orgId);
+  } catch (error) {
+    if ((error as { code?: string }).code === "CONFIG_INVALID") return { unreadable: true };
+    throw error;
+  }
 }
 
 export type { GroupMappingRefusal };

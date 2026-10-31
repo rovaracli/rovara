@@ -38,7 +38,12 @@ export type GitHubCodeHostProvider = Pick<GitHubAppCredentialProvider,
 export interface GitHubCodeHostOptions {
   /** The credential reference the provider was configured with; a repository registered under another one is refused by the provider. */
   credentialRef: string;
+  /** The clock, in milliseconds. Default `Date.now`. */
+  now?: () => number;
 }
+
+/** GitHub's installation tokens last an hour; the adapter states the expiry a little short of that, so a credential is never used on its last minutes. */
+export const GITHUB_CREDENTIAL_LIFETIME_MS = 55 * 60_000;
 
 function checkedScope(scope: HostScope): HostScope {
   const parsed = HostScopeSchema.safeParse(scope);
@@ -73,7 +78,7 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       if (credential.username === undefined || credential.password === undefined || credential.username === "" || credential.password === "") {
         throw agentXError("CONFIG_INVALID", "the repository does not use the configured GitHub App");
       }
-      return { kind: "basic", username: credential.username, password: credential.password };
+      return { kind: "basic", username: credential.username, password: credential.password, expiresAt: new Date((options.now ?? Date.now)() + GITHUB_CREDENTIAL_LIFETIME_MS).toISOString() };
     },
 
     async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, fileOptions?: { untilLine?: number; timeoutMs?: number }): Promise<string | undefined> {

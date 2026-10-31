@@ -46,24 +46,47 @@ export function actingIdentityModeAllowed(capabilities: ActingIdentityCapabiliti
   return capabilities.delegation ? { ok: true, mode: "on-behalf-of" } : { ok: false, reason: "plugin_has_no_delegation" };
 }
 
-/** What a delegated credential was granted for: one task's writes at one plug-in, until `expiresAt` (epoch milliseconds). */
+/** What a delegated credential may be used for. Only one task's writes: never an approval, a merge, or anything else. */
+export const DELEGATED_PURPOSES = ["task-write"] as const;
+export const DelegatedPurposeSchema = z.enum(DELEGATED_PURPOSES);
+export type DelegatedPurpose = z.infer<typeof DelegatedPurposeSchema>;
+
+/** A delegated grant lives at most this long, however long the host would honour it. */
+export const DELEGATED_GRANT_MAX_LIFETIME_MS = 60 * 60 * 1_000;
+
+/**
+ * What a delegated credential was granted for: one task's writes at one plug-in, by one person, from `issuedAt` until `expiresAt` (epoch milliseconds). The
+ * lifetime is capped, and a grant that outlives the host's own credential (`hostExpiresAt`) does not parse.
+ */
 export const DelegatedGrantSchema = z.object({
   plugin: PluginKindSchema,
   taskId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+  /** The Rovara person who granted it. */
+  grantedBy: z.string().regex(/^[a-f0-9]{64}$/),
+  purpose: DelegatedPurposeSchema,
+  issuedAt: z.number().int().positive(),
   expiresAt: z.number().int().positive(),
-}).strict();
+  /** When the host's own delegated credential stops working. */
+  hostExpiresAt: z.number().int().positive(),
+}).strict().superRefine((grant, ctx) => {
+  if (grant.expiresAt <= grant.issuedAt) ctx.addIssue({ code: "custom", message: "a grant expires after it is issued", path: ["expiresAt"] });
+  if (grant.expiresAt - grant.issuedAt > DELEGATED_GRANT_MAX_LIFETIME_MS) ctx.addIssue({ code: "custom", message: "a grant lives at most an hour", path: ["expiresAt"] });
+  if (grant.expiresAt > grant.hostExpiresAt) ctx.addIssue({ code: "custom", message: "a grant does not outlive the host's credential", path: ["expiresAt"] });
+});
 export type DelegatedGrant = z.infer<typeof DelegatedGrantSchema>;
 
-export type DelegatedRefusal = "expired" | "other_task" | "other_plugin" | "not_a_task_write";
+export type DelegatedRefusal = "expired" | "other_task" | "other_plugin" | "not_a_task_write" | "not_granted_by_a_task_person";
 
 /**
- * Whether a delegated credential may be used for this call. It serves only the writes of the task it was granted for, at the plug-in it was granted for,
- * before it expires. An approval, a merge or any other purpose is refused, so is a task the person did not start or approve (a different task id).
+ * Whether a delegated credential may be used for this call. It serves only the writes of the task it was granted for, at the plug-in it was granted for, before it
+ * expires, and only when the person who granted it is the one who started the task or the one who approved its plan: so it never serves a task the person did
+ * not start or approve, whoever minted the grant. An approval, a merge or any other purpose is refused.
  */
-export function delegatedUseAllowed(grant: DelegatedGrant, use: { plugin: string; taskId: string; purpose: string; now: number }): { ok: true } | { ok: false; reason: DelegatedRefusal } {
-  if (use.purpose !== "task-write") return { ok: false, reason: "not_a_task_write" };
+export function delegatedUseAllowed(grant: DelegatedGrant, use: { plugin: string; taskId: string; purpose: string; now: number; requestedBy: string; approvedBy?: string }): { ok: true } | { ok: false; reason: DelegatedRefusal } {
+  if (!DelegatedPurposeSchema.safeParse(use.purpose).success || use.purpose !== grant.purpose) return { ok: false, reason: "not_a_task_write" };
   if (use.plugin !== grant.plugin) return { ok: false, reason: "other_plugin" };
   if (use.taskId !== grant.taskId) return { ok: false, reason: "other_task" };
-  if (!Number.isFinite(use.now) || use.now >= grant.expiresAt) return { ok: false, reason: "expired" };
+  if (grant.grantedBy !== use.requestedBy && grant.grantedBy !== use.approvedBy) return { ok: false, reason: "not_granted_by_a_task_person" };
+  if (!Number.isFinite(use.now) || use.now >= grant.expiresAt || use.now >= grant.hostExpiresAt) return { ok: false, reason: "expired" };
   return { ok: true };
 }

@@ -16,6 +16,7 @@ export const newModel = () => new FakeHostModel({ url: REPO_URL, id: "4242", ful
 export function codeHostWorldFor(host: FakeCodeHost): CodeHostWorld {
   return {
     host, model: host.model, repository: { url: REPO_URL }, unregistered: { url: OTHER_URL }, scope: SCOPE,
+    now: () => Date.parse(host.model.now()),
     branch: (n) => `rovara/feature-${String(n)}`,
     signedDelivery: (event) => fakeSignedDelivery(event.kind === "change_request.opened"
       ? { delivery: "d-1", event: "cr.opened", cr: event.id }

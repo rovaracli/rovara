@@ -85,7 +85,7 @@ export class FakeCodeHost implements CodeHost {
     this.checkScope(scope);
     this.registered(repository);
     // Fixed, obviously fake, and different for the two kinds of access so a test can tell them apart.
-    return ({ kind: "token", username: "x-access-token", token: `fake-${access}-token-not-a-real-secret` });
+    return ({ kind: "token", username: "x-access-token", token: `fake-${access}-token-not-a-real-secret`, expiresAt: new Date(Date.parse(this.model.now()) + 50 * 60_000).toISOString() });
   }
 
   async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { untilLine?: number }): Promise<string | undefined> {

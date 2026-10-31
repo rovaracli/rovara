@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ENTERPRISE_SESSION_MAX_SECONDS, assertEditionUnchanged, editionAtSynth,
   EDITION_FEATURES, EDITION_FEATURE_TABLE, EDITION_MISSING_MESSAGE, EDITION_UNKNOWN_MESSAGE, ENTERPRISE_ONLY_MESSAGE, InstallInfoSchema, NOT_AVAILABLE_YET_MESSAGE,
   NOT_IN_THIS_EDITION_MESSAGE, editionPolicy, featureEnabled, installInfo, requireFeature, resolveEdition, type EditionFeature,
 } from "../../packages/contracts/src/edition.js";
@@ -28,6 +29,7 @@ const EXPECTED: Record<EditionFeature, { enterprise: boolean; public: boolean }>
   trialAndBilling: { enterprise: false, public: true },
   updateCheck: { enterprise: true, public: false },
   telemetry: { enterprise: false, public: false },
+  publicSignInMethods: { enterprise: false, public: true },
   aiNavigationUncharged: { enterprise: true, public: false },
 };
 
@@ -153,5 +155,36 @@ describe("install info", () => {
   it("rejects an answer with an unknown edition or an extra field", () => {
     expect(InstallInfoSchema.safeParse({ edition: "cloud", features: {} }).success).toBe(false);
     expect(InstallInfoSchema.safeParse({ edition: "public", features: {}, extra: 1 }).success).toBe(false);
+  });
+});
+
+describe("the session cap", () => {
+  it("is 8 hours in Enterprise, so a group removal takes effect within it, and none on Public", () => {
+    expect(editionPolicy("enterprise").sessionMaxSeconds).toBe(ENTERPRISE_SESSION_MAX_SECONDS);
+    expect(ENTERPRISE_SESSION_MAX_SECONDS).toBe(28_800);
+    expect(editionPolicy("public").sessionMaxSeconds).toBeUndefined();
+  });
+  it("turns the hosted sign-in methods off in Enterprise (E3 gates the routes by this row)", () => {
+    expect(featureEnabled(editionPolicy("enterprise"), "publicSignInMethods")).toBe(false);
+    expect(featureEnabled(editionPolicy("public"), "publicSignInMethods")).toBe(true);
+  });
+});
+
+describe("the edition at synth", () => {
+  it("derives once: the hosted cloud is Public and everything else is Enterprise", () => {
+    expect(editionAtSynth({ explicit: undefined, cloud: true })).toBe("public");
+    expect(editionAtSynth({ explicit: undefined, cloud: false })).toBe("enterprise");
+    expect(editionAtSynth({ explicit: "enterprise", cloud: false })).toBe("enterprise");
+    expect(editionAtSynth({ explicit: "public", cloud: true })).toBe("public");
+  });
+  it("refuses Enterprise with the hosted cloud, and Public without it", () => {
+    expect(thrown(() => editionAtSynth({ explicit: "enterprise", cloud: true }))?.code).toBe("CONFIG_INVALID");
+    expect(thrown(() => editionAtSynth({ explicit: "public", cloud: false }))?.code).toBe("CONFIG_INVALID");
+  });
+  it("refuses a redeploy that changes the recorded edition", () => {
+    assertEditionUnchanged(undefined, "enterprise");
+    assertEditionUnchanged("enterprise", "enterprise");
+    expect(thrown(() => assertEditionUnchanged("enterprise", "public"))?.code).toBe("CONFIG_INVALID");
+    expect(thrown(() => assertEditionUnchanged("public", "enterprise"))?.message).toContain("cannot change");
   });
 });

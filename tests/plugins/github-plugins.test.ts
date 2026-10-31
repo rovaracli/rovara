@@ -13,6 +13,7 @@ import { codeHostChecks, type CodeHostWorld } from "./code-host.contract.js";
 import { runContract } from "./contract-kit.js";
 import { GITHUB_ORG_SCOPE, GITHUB_OTHER_URL, GITHUB_REPO_URL, GitHubFixtureApi, providerOver } from "./github-fixture-api.js";
 
+const GITHUB_NOW = Date.parse("2026-10-30T10:00:00.000Z");
 const WORKING_BRANCH = (n: number) => `agentx/00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 function githubModel(): FakeHostModel {
@@ -22,8 +23,8 @@ function githubModel(): FakeHostModel {
 function githubCodeHostWorld(): CodeHostWorld & { api: GitHubFixtureApi } {
   const model = githubModel();
   const api = new GitHubFixtureApi(model);
-  const host = githubCodeHost(providerOver(api), { credentialRef: "github" });
-  return { host, model, api, repository: { url: GITHUB_REPO_URL }, unregistered: { url: GITHUB_OTHER_URL }, scope: GITHUB_ORG_SCOPE, branch: WORKING_BRANCH };
+  const host = githubCodeHost(providerOver(api), { credentialRef: "github", now: () => GITHUB_NOW });
+  return { host, model, api, repository: { url: GITHUB_REPO_URL }, unregistered: { url: GITHUB_OTHER_URL }, scope: GITHUB_ORG_SCOPE, now: () => GITHUB_NOW, branch: WORKING_BRANCH };
 }
 
 function githubActionsWorld(): CheckRunnerWorld {

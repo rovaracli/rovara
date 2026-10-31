@@ -7,6 +7,7 @@ import {
   type ChangeRequestRef, type CodeHost, type HostScope, type RawDelivery, type RepositoryRef,
 } from "../../packages/contracts/src/index.js";
 import type { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
+import { workerGitCredentialUsable } from "../../packages/contracts/src/index.js";
 import { rejection, SHA40, type ContractCheck } from "./contract-kit.js";
 
 export interface CodeHostWorld {
@@ -17,6 +18,8 @@ export interface CodeHostWorld {
   /** A repository nobody registered. */
   readonly unregistered: RepositoryRef;
   readonly scope: HostScope;
+  /** The adapter's clock, in milliseconds. */
+  readonly now: () => number;
   /**
    * A branch name the adapter can read the head of. `branchHead` reads Rovara's own working branches, and the GitHub adapter only accepts the names Rovara
    * gives them, so the world says what a working branch is called (the fake accepts any name). `branch(1)`, `branch(2)` ... are distinct.
@@ -73,10 +76,12 @@ export const codeHostChecks: readonly ContractCheck<CodeHostWorld>[] = [
   },
   {
     name: "hands out a short-lived git credential of an advertised kind for clone and push",
-    async run({ host, repository, scope }) {
+    async run({ host, repository, scope, now }) {
       for (const access of ["clone", "push"] as const) {
         const credential = GitCredentialSchema.parse(await host.issueGitCredential(repository, access, scope));
         expect(host.capabilities.credentialKinds).toContain(credential.kind);
+        // Always with an expiry, no more than an hour out, and fit to hand to a worker.
+        expect(workerGitCredentialUsable(credential, { now: now(), actingAs: "service" })).toMatchObject({ ok: true });
       }
     },
   },

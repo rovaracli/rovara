@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { dynamoGroupMappingStore, decideSignIn, evaluateGroupMapping, groupsOfClaim } from "../../packages/broker/src/developer/group-mapping.js";
-import { editionPolicy } from "../../packages/contracts/src/edition.js";
+import { dynamoGroupMappingStore, decideSignIn, evaluateGroupMapping, groupsOfClaim, readMappingForSignIn } from "../../packages/broker/src/developer/group-mapping.js";
+import { ENTERPRISE_SESSION_MAX_SECONDS, editionPolicy } from "../../packages/contracts/src/edition.js";
 import {
-  GROUP_CLAIM_MAX_GROUPS, GROUP_MAPPING_MESSAGES, GROUP_MAPPING_REFUSALS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE, MappableOrgRoleSchema, groupMappingKey,
+  BREAK_GLASS_FRESH_AUTH_SECONDS, BREAK_GLASS_SESSION_MAX_SECONDS, GROUP_CLAIM_MAX_GROUPS, GROUP_CLAIM_NAMES, GROUP_MAPPING_MESSAGES, GROUP_MAPPING_REFUSALS, GroupMappingConfigSchema, MAPPED_ORG_ROLE_PRECEDENCE, MappableOrgRoleSchema, groupMappingKey,
   type GroupMappingConfig,
 } from "../../packages/contracts/src/sso.js";
 import { OrgRoleSchema } from "../../packages/contracts/src/org.js";
@@ -108,33 +108,85 @@ describe("group mapping evaluation", () => {
 
   it("gives a fixed sentence for every refusal, and none echoes what the sign-in said", () => {
     for (const reason of GROUP_MAPPING_REFUSALS) expect(GROUP_MAPPING_MESSAGES[reason]).toMatch(/^[A-Z][^<>{}]*\.$/);
-    const decision = decideSignIn({ policy: enterprise, config: config(), claims: { groups: ["<script>evil</script>"] }, currentRole: undefined });
+    const decision = decideSignIn({ ...base, claims: { groups: ["<script>evil</script>"] }, currentRole: undefined });
     expect(decision).toMatchObject({ allow: false, reason: "no_group", message: GROUP_MAPPING_MESSAGES.no_group });
     expect(JSON.stringify(decision)).not.toContain("evil");
   });
 });
 
+const OWNER_A = "c".repeat(64);
+const OWNER_B = "d".repeat(64);
+const NOW = 1_000_000;
+const base = { policy: enterprise, config: config(), claims: { groups: ["rovara-admins"] } as Record<string, unknown>, currentRole: "member" as const, personId: PERSON, breakGlass: [{ personId: OWNER_A }], now: NOW };
+
 describe("what a sign-in comes to", () => {
-  it("lets a mapped person in with the mapped role", () => {
-    expect(decideSignIn({ policy: enterprise, config: config(), claims: { groups: ["rovara-admins"] }, currentRole: "member" })).toMatchObject({ allow: true, orgRole: "admin", source: "mapping" });
+  it("lets a mapped person in with the mapped role, for at most the Enterprise session length", () => {
+    expect(decideSignIn(base)).toMatchObject({ allow: true, orgRole: "admin", source: "mapping", sessionMaxSeconds: ENTERPRISE_SESSION_MAX_SECONDS });
+    expect(ENTERPRISE_SESSION_MAX_SECONDS).toBe(8 * 60 * 60);
   });
 
   it("takes access away when the person has left the mapped group, even if they were an admin", () => {
-    expect(decideSignIn({ policy: enterprise, config: config(), claims: { groups: ["marketing"] }, currentRole: "admin" })).toMatchObject({ allow: false, reason: "no_group" });
+    expect(decideSignIn({ ...base, claims: { groups: ["marketing"] }, currentRole: "admin" })).toMatchObject({ allow: false, reason: "no_group" });
   });
 
-  it("lets an existing owner in as owner when the mapping is broken, missing or has no match (break-glass), and never changes that role", () => {
-    for (const cfg of [undefined, { claim: "groups" }, config()]) {
-      for (const claims of [{}, { groups: ["marketing"] }, { groups: ["rovara-admins"] }]) {
-        expect(decideSignIn({ policy: enterprise, config: cfg, claims, currentRole: "owner" })).toMatchObject({ allow: true, orgRole: "owner", source: "owner" });
-      }
+  it("refuses an owner who matches no mapped group while the mapping is fine: that is deprovisioning, not a broken mapping", () => {
+    for (const personId of [OWNER_A, PERSON]) {
+      expect(decideSignIn({ ...base, personId, currentRole: "owner", claims: { groups: ["marketing"] } })).toMatchObject({ allow: false, reason: "no_group" });
+    }
+  });
+
+  it("lets an owner who does match in, and keeps them an owner whatever role the mapping gives", () => {
+    expect(decideSignIn({ ...base, currentRole: "owner", claims: { groups: ["engineering"] } })).toMatchObject({ allow: true, orgRole: "owner", source: "mapping" });
+  });
+
+  it("lets a NAMED owner in through a broken mapping, as break-glass: audited, alerted, one hour, fresh sign-in", () => {
+    for (const config of [undefined, { claim: "groups" }, "nonsense"]) {
+      const decision = decideSignIn({ ...base, config, personId: OWNER_A, currentRole: "owner" });
+      expect(decision).toEqual({
+        allow: true, orgRole: "owner", source: "break-glass", projectRoles: [], matchedRuleIds: [], auditEvent: "sso.break_glass_used", alert: true,
+        sessionMaxSeconds: BREAK_GLASS_SESSION_MAX_SECONDS, freshAuthWithinSeconds: BREAK_GLASS_FRESH_AUTH_SECONDS,
+      });
+    }
+    // The provider stopped sending the claim: also a broken mapping.
+    expect(decideSignIn({ ...base, claims: {}, personId: OWNER_A, currentRole: "owner" })).toMatchObject({ source: "break-glass" });
+    expect(BREAK_GLASS_SESSION_MAX_SECONDS).toBe(3_600);
+    expect(BREAK_GLASS_FRESH_AUTH_SECONDS).toBe(300);
+  });
+
+  it("refuses an owner who is not named, a named person who is not an owner, and an expired entry, when the mapping is broken", () => {
+    expect(decideSignIn({ ...base, config: undefined, personId: OWNER_B, currentRole: "owner" })).toMatchObject({ allow: false, reason: "not_configured" });
+    expect(decideSignIn({ ...base, config: undefined, personId: OWNER_A, currentRole: "admin" })).toMatchObject({ allow: false });
+    expect(decideSignIn({ ...base, config: undefined, personId: OWNER_A, currentRole: "owner", breakGlass: [{ personId: OWNER_A, expiresAt: NOW }] })).toMatchObject({ allow: false });
+    expect(decideSignIn({ ...base, config: undefined, personId: OWNER_A, currentRole: "owner", breakGlass: [{ personId: OWNER_A, expiresAt: NOW + 1 }] })).toMatchObject({ source: "break-glass" });
+  });
+
+  it("refuses a break-glass list of more than two, or one that does not parse", () => {
+    const three = [OWNER_A, OWNER_B, PERSON].map((personId) => ({ personId }));
+    expect(decideSignIn({ ...base, config: undefined, personId: OWNER_A, currentRole: "owner", breakGlass: three })).toMatchObject({ allow: false });
+    expect(decideSignIn({ ...base, config: undefined, personId: OWNER_A, currentRole: "owner", breakGlass: [{ personId: "short" }] })).toMatchObject({ allow: false });
+  });
+
+  it("refuses everyone on the Public edition first, owners and named owners included", () => {
+    for (const personId of [OWNER_A, PERSON]) {
+      expect(decideSignIn({ ...base, policy: publicPolicy, personId, currentRole: "owner", config: undefined })).toMatchObject({ allow: false, reason: "edition_off" });
+      expect(decideSignIn({ ...base, policy: publicPolicy, personId, currentRole: "owner" })).toMatchObject({ allow: false, reason: "edition_off" });
     }
   });
 
   it("does not let a mapping make an owner of someone who is not one", () => {
-    const decision = decideSignIn({ policy: enterprise, config: config(), claims: { groups: ["rovara-admins", "engineering"] }, currentRole: "member" });
+    const decision = decideSignIn({ ...base, claims: { groups: ["rovara-admins", "engineering"] } });
     expect(decision).toMatchObject({ allow: true });
     expect((decision as { orgRole: string }).orgRole).not.toBe("owner");
+  });
+});
+
+describe("the group claim", () => {
+  it("is one that carries groups, never a profile field a person can edit", () => {
+    for (const claim of GROUP_CLAIM_NAMES) expect(GroupMappingConfigSchema.safeParse(config({ claim })).success, claim).toBe(true);
+    expect(GroupMappingConfigSchema.safeParse(config({ claim: "https://login.example.com/groups" })).success).toBe(true);
+    for (const claim of ["email", "name", "preferred_username", "sub", "nickname", "given_name", "https://login.example.com/email", "http://x.example.com/groups", "groupsx"]) {
+      expect(GroupMappingConfigSchema.safeParse(config({ claim })).success, claim).toBe(false);
+    }
   });
 });
 
@@ -179,13 +231,17 @@ describe("the mapping store", () => {
     await expect(store.put(ORG, body(), 0)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("throws on a stored record that does not parse, so the sign-in is refused and not followed", async () => {
+  it("throws a fixed CONFIG_INVALID on a stored record that does not parse, with none of the parser's words, and the sign-in reads it as a broken mapping", async () => {
     const { store, db } = setup();
     await store.put(ORG, body(), 0);
     const key = groupMappingKey(ORG);
     const item = db.get(key) as unknown as { rules: Array<{ orgRole: string }> };
     item.rules[0]!.orgRole = "owner";
-    await expect(store.get(ORG)).rejects.toBeDefined();
+    const error = await store.get(ORG).catch((caught: unknown) => caught as { code: string; message: string });
+    expect(error).toMatchObject({ code: "CONFIG_INVALID" });
+    expect((error as { message: string }).message).toBe(`CONFIG_INVALID: ${GROUP_MAPPING_MESSAGES.config_invalid}`);
+    const read = await readMappingForSignIn(store, ORG);
+    expect(evaluateGroupMapping({ policy: enterprise, config: read, claims: { groups: ["rovara-admins"] } })).toEqual({ ok: false, reason: "config_invalid" });
   });
 
   it("keeps each org's mapping apart", async () => {

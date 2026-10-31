@@ -51,6 +51,11 @@ export const EDITION_FEATURES = [
   "updateCheck",
   /** Opt-in operational telemetry. Not built; after the pilot, if ever. */
   "telemetry",
+  /**
+   * The sign-in methods of the hosted product (email code, Google, GitHub, Slack, Cognito). Off in Enterprise: a company signs in through its own provider, so a
+   * person removed from the provider's groups cannot get back in through another linked method (task E3 gates the routes by this row).
+   */
+  "publicSignInMethods",
   /** AI navigation in browser tests without being charged to spend first (the customer's account pays). */
   "aiNavigationUncharged",
 ] as const;
@@ -75,6 +80,7 @@ export const EDITION_FEATURE_TABLE: Readonly<Record<EditionFeature, { readonly e
   trialAndBilling: { enterprise: false, public: true },
   updateCheck: { enterprise: true, public: false },
   telemetry: { enterprise: false, public: false },
+  publicSignInMethods: { enterprise: false, public: true },
   aiNavigationUncharged: { enterprise: true, public: false },
 };
 
@@ -90,6 +96,11 @@ export interface EditionPolicy {
   readonly edition: Edition;
   /** Public: many companies in one deployment. Enterprise: one company per install. */
   readonly multiTenant: boolean;
+  /**
+   * The longest a sign-in session may last, in seconds, so that taking a person out of an identity provider group takes effect within this time. Enterprise:
+   * 8 hours. Absent on Public, which keeps its own session lifetime.
+   */
+  readonly sessionMaxSeconds: number | undefined;
   readonly features: Readonly<Record<EditionFeature, boolean>>;
   readonly defaults: {
     /** Per source, what an admin starts from. */
@@ -101,6 +112,9 @@ export interface EditionPolicy {
 
 const featuresOf = (edition: Edition): Readonly<Record<EditionFeature, boolean>> =>
   Object.freeze(Object.fromEntries(EDITION_FEATURES.map((feature) => [feature, EDITION_FEATURE_TABLE[feature][edition]])) as Record<EditionFeature, boolean>);
+
+/** An Enterprise session lasts at most this long: a group removal at the identity provider takes effect within 8 hours at the latest. */
+export const ENTERPRISE_SESSION_MAX_SECONDS = 8 * 60 * 60;
 
 /** Freezes a policy all the way down, so no caller can turn a feature on. */
 function frozen(policy: EditionPolicy): EditionPolicy {
@@ -114,6 +128,7 @@ const POLICIES: Readonly<Record<Edition, EditionPolicy>> = {
   enterprise: frozen({
     edition: "enterprise",
     multiTenant: false,
+    sessionMaxSeconds: ENTERPRISE_SESSION_MAX_SECONDS,
     features: featuresOf("enterprise"),
     defaults: {
       teamRecordRetention: { slack: "C", github: "C", tickets: "C", rovara: "C" },
@@ -123,6 +138,7 @@ const POLICIES: Readonly<Record<Edition, EditionPolicy>> = {
   public: frozen({
     edition: "public",
     multiTenant: true,
+    sessionMaxSeconds: undefined,
     features: featuresOf("public"),
     defaults: {
       teamRecordRetention: { slack: "B", github: "D", tickets: "D", rovara: "D" },
@@ -183,4 +199,24 @@ export type InstallInfo = z.infer<typeof InstallInfoSchema>;
 
 export function installInfo(policy: EditionPolicy): InstallInfo {
   return { edition: policy.edition, features: { ...policy.features } };
+}
+
+/**
+ * The edition of an install, decided ONCE at synth time from the `rovaraEdition` context and the `agentxCloud` context. Never at run time: a process that
+ * lacks the `cloud` dependency must not guess (guessing Enterprise inside Public turns on custom model endpoints and company sign-in; guessing Public inside an
+ * Enterprise install turns on staff routes). Every function and task then carries the result as `ROVARA_EDITION`.
+ *  - an explicit `enterprise` together with the hosted cloud, or an explicit `public` without it, is refused;
+ *  - unset: the hosted cloud is `public`, everything else is `enterprise` (so existing private installs keep working).
+ */
+export function editionAtSynth(input: { explicit: Edition | undefined; cloud: boolean }): Edition {
+  if (input.explicit === "enterprise" && input.cloud) throw agentXError("CONFIG_INVALID", "The Enterprise edition cannot be combined with the hosted cloud (agentxCloud).");
+  if (input.explicit === "public" && !input.cloud) throw agentXError("CONFIG_INVALID", "The Public edition is the hosted cloud: set agentxCloud, or choose the Enterprise edition.");
+  return input.explicit ?? (input.cloud ? "public" : "enterprise");
+}
+
+/** An install's edition is set once. A redeploy that asks for another edition than the recorded one is refused. */
+export function assertEditionUnchanged(recorded: Edition | undefined, requested: Edition): void {
+  if (recorded !== undefined && recorded !== requested) {
+    throw agentXError("CONFIG_INVALID", `This install was deployed as ${recorded}. The edition cannot change on a redeploy; build a new install instead.`);
+  }
 }

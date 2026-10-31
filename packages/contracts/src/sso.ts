@@ -26,6 +26,26 @@ export const GROUP_MAPPING_MAX_RULES = 200;
 export const GROUP_CLAIM_MAX_GROUPS = 500;
 export const GROUP_NAME_MAX_CHARS = 256;
 
+/** The claims that carry group membership, as the common identity providers name them. */
+export const GROUP_CLAIM_NAMES = ["groups", "roles", "memberOf", "member_of", "cognito:groups", "custom:groups", "entitlements"] as const;
+/** A namespaced claim such as `https://example.com/groups` (how some providers name a custom claim). */
+const NAMESPACED_GROUP_CLAIM = /^https:\/\/[A-Za-z0-9._~:/-]{1,200}\/(?:groups|roles)$/;
+export const GroupClaimNameSchema = z.string().refine((value) => (GROUP_CLAIM_NAMES as readonly string[]).includes(value) || NAMESPACED_GROUP_CLAIM.test(value), "a claim that carries groups");
+
+/**
+ * The people who may sign in as owner when the mapping itself is broken (not configured, unreadable, or the provider stops sending the claim), so that a broken
+ * mapping cannot lock every owner out. At most two. An entry may expire; the admin renews it. A broken mapping is the only case it applies to.
+ */
+export const BREAK_GLASS_OWNERS_MAX = 2;
+export const BreakGlassOwnerSchema = z.object({ personId: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.number().int().positive().optional() }).strict();
+export const BreakGlassOwnersSchema = z.array(BreakGlassOwnerSchema).max(BREAK_GLASS_OWNERS_MAX);
+export type BreakGlassOwner = z.infer<typeof BreakGlassOwnerSchema>;
+/** A break-glass session is short and needs a recent authentication at the provider. */
+export const BREAK_GLASS_SESSION_MAX_SECONDS = 60 * 60;
+export const BREAK_GLASS_FRESH_AUTH_SECONDS = 5 * 60;
+/** The refusals a broken mapping gives, which are the only ones break-glass may answer. */
+export const BROKEN_MAPPING_REFUSALS = ["not_configured", "config_invalid", "claim_missing", "claim_invalid"] as const;
+
 export const GroupMappingRuleSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/),
   /** The group exactly as the identity provider names it. Compared exactly and case-sensitively. */
@@ -36,8 +56,8 @@ export const GroupMappingRuleSchema = z.object({
 export type GroupMappingRule = z.infer<typeof GroupMappingRuleSchema>;
 
 export const GroupMappingConfigSchema = z.object({
-  /** The claim (or attribute) that carries the person's groups. */
-  claim: z.string().regex(/^[A-Za-z0-9_:./-]{1,100}$/),
+  /** The claim (or attribute) that carries the person's groups. Only a claim that is a group list: never one a person can edit about themselves (email, name). */
+  claim: GroupClaimNameSchema,
   rules: z.array(GroupMappingRuleSchema).min(1).max(GROUP_MAPPING_MAX_RULES),
   /** Starts at 1; a save names the version it read (compare and set), so two admins cannot overwrite each other. */
   version: z.number().int().min(1),
@@ -84,5 +104,14 @@ export interface MappedAccess {
 export type GroupMappingEvaluation = { ok: true; access: MappedAccess } | { ok: false; reason: GroupMappingRefusal };
 
 export type SignInDecision =
-  | { allow: true; orgRole: OrgRole; source: "owner" | "mapping"; projectRoles: MappedAccess["projectRoles"]; matchedRuleIds: string[] }
+  | {
+    allow: true; orgRole: OrgRole; source: "mapping"; projectRoles: MappedAccess["projectRoles"]; matchedRuleIds: string[];
+    /** The session ends by then: the edition's cap, so a group removal takes effect within it. */
+    sessionMaxSeconds: number | undefined;
+  }
+  | {
+    allow: true; orgRole: "owner"; source: "break-glass"; projectRoles: []; matchedRuleIds: [];
+    /** The route must write an `sso.break_glass_used` audit event, alert, and require a sign-in no older than `freshAuthWithinSeconds`. */
+    auditEvent: "sso.break_glass_used"; alert: true; sessionMaxSeconds: number; freshAuthWithinSeconds: number;
+  }
   | { allow: false; reason: GroupMappingRefusal; message: string };

@@ -19,7 +19,7 @@ export const NEUTRAL_STATUSES = ["open", "in_progress", "in_review", "done", "ca
 export const NeutralStatusSchema = z.enum(NEUTRAL_STATUSES);
 export type NeutralStatus = z.infer<typeof NeutralStatusSchema>;
 
-/** An item (a ticket, a SIM issue, a Taskei task) as its tracker names it. */
+/** An item (a ticket, an issue or a task in the customer's tracker) as its tracker names it. */
 export const TrackerItemRefSchema = z.object({ tracker: PluginKindSchema, id: ExternalIdSchema, url: HttpsUrlOrEmptySchema.optional() }).strict();
 export type TrackerItemRef = z.infer<typeof TrackerItemRefSchema>;
 

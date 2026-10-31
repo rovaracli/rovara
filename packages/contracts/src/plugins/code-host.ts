@@ -45,17 +45,43 @@ export type HostPermission = z.infer<typeof HostPermissionSchema>;
 export const HostStandingSchema = z.object({ permission: HostPermissionSchema, accountType: z.string().min(1).max(40).optional() }).strict();
 export type HostStanding = z.infer<typeof HostStandingSchema>;
 
+/** The git credential helpers a worker may be told to use, by name. Never a command: git runs a helper that starts with `!` through a shell. */
+export const GIT_CREDENTIAL_HELPERS = ["aws-codecommit"] as const;
+export const GitCredentialHelperSchema = z.enum(GIT_CREDENTIAL_HELPERS);
+
+/** A credential handed to a worker lives at most this long (GitHub's installation tokens last an hour). */
+export const GIT_CREDENTIAL_MAX_LIFETIME_MS = 60 * 60 * 1_000;
+
+const ExpiresAt = z.string().min(1).max(64).refine((value) => Number.isFinite(Date.parse(value)), "an ISO time");
+
 /**
- * What the worker clones and pushes with. Short-lived, minted per operation. The secret never enters a model's context or a log; this schema is only for
- * the broker-to-worker exchange (`/repository-credentials`). `expiresAt` is when the host stops accepting it, when the host says.
+ * What the worker clones and pushes with: minted per operation and always with an expiry. The secret never enters a model's context or a log; this schema is only
+ * for the broker-to-worker exchange (`/repository-credentials`). `expiresAt` is required on every kind (when the host stops accepting it, or when Rovara will
+ * stop using it), and `workerGitCredentialUsable` holds it to one hour. An ssh key is for a service identity only, and a helper is a name from a fixed list.
  */
 export const GitCredentialSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("token"), username: z.string().min(1).max(200).optional(), token: z.string().min(1).max(4_096), expiresAt: ISO_TIME.optional() }).strict(),
-  z.object({ kind: z.literal("basic"), username: z.string().min(1).max(200), password: z.string().min(1).max(4_096), expiresAt: ISO_TIME.optional() }).strict(),
-  z.object({ kind: z.literal("ssh-key"), privateKey: z.string().min(1).max(16_384), expiresAt: ISO_TIME.optional() }).strict(),
-  z.object({ kind: z.literal("helper"), helper: z.string().min(1).max(1_024), expiresAt: ISO_TIME.optional() }).strict(),
+  z.object({ kind: z.literal("token"), username: z.string().min(1).max(200).optional(), token: z.string().min(1).max(4_096), expiresAt: ExpiresAt }).strict(),
+  z.object({ kind: z.literal("basic"), username: z.string().min(1).max(200), password: z.string().min(1).max(4_096), expiresAt: ExpiresAt }).strict(),
+  z.object({ kind: z.literal("ssh-key"), privateKey: z.string().min(1).max(16_384), expiresAt: ExpiresAt }).strict(),
+  z.object({ kind: z.literal("helper"), helper: GitCredentialHelperSchema, expiresAt: ExpiresAt }).strict(),
 ]);
 export type GitCredential = z.infer<typeof GitCredentialSchema>;
+
+export type GitCredentialRefusal = "invalid" | "expired" | "too_long_lived" | "ssh_key_needs_service_identity";
+
+/**
+ * Whether a credential may go to a worker now. It must parse, must not be expired, must not outlive an hour from `now`, and an ssh key goes only when the host acts
+ * as a service identity (a delegated, per-person credential is never a long-lived key).
+ */
+export function workerGitCredentialUsable(credential: unknown, context: { now: number; actingAs: "service" | "on-behalf-of" }): { ok: true; credential: GitCredential } | { ok: false; reason: GitCredentialRefusal } {
+  const parsed = GitCredentialSchema.safeParse(credential);
+  if (!parsed.success) return { ok: false, reason: "invalid" };
+  const expires = Date.parse(parsed.data.expiresAt);
+  if (!(expires > context.now)) return { ok: false, reason: "expired" };
+  if (expires - context.now > GIT_CREDENTIAL_MAX_LIFETIME_MS) return { ok: false, reason: "too_long_lived" };
+  if (parsed.data.kind === "ssh-key" && context.actingAs !== "service") return { ok: false, reason: "ssh_key_needs_service_identity" };
+  return { ok: true, credential: parsed.data };
+}
 export type GitAccess = "clone" | "push";
 
 export const ChangeRequestStateSchema = z.enum(["open", "closed", "merged"]);
