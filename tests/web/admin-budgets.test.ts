@@ -31,3 +31,21 @@ it("never reuses an unscoped foreign cache and binds the query to org person and
 for(const role of ["member","maintainer","future-role"])it(`never requests monthly budgets for initial ${role} access`,async()=>{const f=mount({role});try{await screen.findByRole("heading",{name:"Administration unavailable"});expect(f.request.mock.calls.some(([r])=>r.path.includes("budget"))).toBe(false);expect(screen.queryByRole("table")).toBeNull();}finally{f.close();}});
 
 it("does not repeat an unsuccessful initial budget read when only identity rechecks; Refresh remains deliberate",async()=>{const fail={status:503,body:{error:{code:"RUNTIME_UNAVAILABLE"}}},f=mount({respond:async()=>fail});try{await screen.findByRole("alert");const reads=()=>f.request.mock.calls.filter(([r])=>r.path.endsWith("/budget-settings")).length;expect(reads()).toBe(1);let resolve!:(r:ApiResponse)=>void;const pending=new Promise<ApiResponse>(done=>{resolve=done;});f.request.mockImplementation(r=>r.path.endsWith("/me")?pending:Promise.resolve(fail));let checking!:Promise<void>;await act(async()=>{checking=f.query.invalidateQueries({queryKey:["admin","identity"]});});await screen.findByText("Checking company access...");await act(async()=>{resolve({status:200,body:f.me});await checking;});await waitFor(()=>expect(screen.getByRole("button",{name:"Refresh budgets"}).getAttribute("aria-disabled")).toBe("false"));expect(reads()).toBe(1);fireEvent.click(screen.getByRole("button",{name:"Refresh budgets"}));await waitFor(()=>expect(reads()).toBe(2));}finally{f.close();}});
+
+it("edits an exact company task stop with original revision and keeps monthly settings separate", async () => {
+ const context = { orgId, scopeKind: "company", revision: 3, sourceDigest: "c".repeat(64), policy: { kind: "limited", stopMicrousd: 2000000 } };
+ const f = mount({ respond: async r => r.path.includes("task-stop-policy") ? { status: 200, body: r.method === "GET" ? context : { requestId: (r.body as { requestId: string }).requestId, state: "applied", revision: 4 } } : { status: 200, body: settings } });
+ try {
+  await screen.findByRole("table", { name: "Monthly base budgets" });
+  fireEvent.click(screen.getByRole("button", { name: "Load company task stop" }));
+  await screen.findByLabelText("Task stop amount (USD)");
+  fireEvent.change(screen.getByLabelText("Task stop amount (USD)"), { target: { value: "1.234567" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review task stop change" }));
+  await screen.findByText(/New task stop: \$1.234567/);
+  fireEvent.click(screen.getByRole("button", { name: "Apply tightening" }));
+  await screen.findByText(/Task stop change applied/);
+  const writes = f.request.mock.calls.map(([r]) => r).filter(r => r.method === "PUT");expect(writes).toHaveLength(1);
+  expect(writes[0]?.body).toMatchObject({ expectedRevision: 3, expectedPolicyDigest: context.sourceDigest, policy: { kind: "limited", stopMicrousd: 1234567 } });
+  expect(screen.getByText("$500.00")).toBeTruthy();
+ } finally { f.close(); }
+});
