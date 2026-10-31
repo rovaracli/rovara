@@ -58,10 +58,15 @@ export function githubRepositoryOver(github: Github, url: string): ConsumerRepos
   };
 }
 
+/** The router that serves the consumers: the registry's, or (a harness with no registry) a GitHub-only one over `githubPullRequests`. */
+export function consumerCodeHostRouter(dependencies: Pick<AwsBrokerDependencies, "codeHost" | "githubPullRequests">): CodeHostRouter {
+  return dependencies.codeHost ?? fallbackOf(dependencies.githubPullRequests).router;
+}
+
 /** The repository of a task's project with the code host its record names, for the consumers; the project is read once for the address and the host. */
 export function consumerRepositoryResolver(dependencies: AwsBrokerDependencies): RepositoryResolver {
   const fallback = dependencies.codeHost === undefined ? fallbackOf(dependencies.githubPullRequests) : undefined;
-  const router: CodeHostRouter = dependencies.codeHost ?? fallback!.router;
+  const router: CodeHostRouter = consumerCodeHostRouter(dependencies);
   return async (projectName: string, revision: number, repositoryId: string, orgId: OrgId): Promise<ConsumerRepository | undefined> => {
     const project = await requireProject(dependencies, orgId ?? installOrgId(dependencies), projectName, revision);
     const definition = project.definition.repositories.find((repository) => repository.name === repositoryId);
@@ -73,7 +78,6 @@ export function consumerRepositoryResolver(dependencies: AwsBrokerDependencies):
       : fallback !== undefined ? fallback.runner
       : dependencies.checkRunner === undefined ? undefined : dependencies.checkRunner(runnerKind, { allowedRepositories: [definition.url] });
     const github = dependencies.githubPullRequests;
-    if (fallback !== undefined) return githubRepositoryOver(github, definition.url);
     return {
       url: definition.url, codeHost, checkRunner: runner,
       ...(codeHost.kind === GITHUB_HOST_KIND && github.isTeamMember !== undefined

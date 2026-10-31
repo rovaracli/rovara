@@ -32,11 +32,11 @@ const citing = (...paths: string[]) => planDocument({
   decisions: [],
 });
 
-async function plannedTask(harness: Harness, paths = ["repo/demo/src/charge.ts"]) {
+async function plannedTask(harness: Harness, paths = ["repo/demo/src/charge.ts"], prepared: unknown = PREPARED) {
   const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Retry failed payments", client: "test-client", workflow: true, workflowPath: "QUICK" });
   const taskId = String((started.body.task as { taskId: string }).taskId);
   const workspaceId = String(taskRecord(harness, taskId).workspaceId);
-  await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
+  await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", prepared);
   const active = operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN" && item.status === "ACCEPTED")!;
   await harness.artifact(workspaceId, String(active.id), "plan.md", planAnswer(citing(...paths)));
   await harness.finish(workspaceId, String(active.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
@@ -362,6 +362,61 @@ describe("the code host of each cited repository is the one its record names (P5
     expect(github).not.toHaveBeenCalled();
     expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ status: "unavailable" })]);
     expect(rows(harness)).toEqual([]);
+  });
+});
+
+describe("a project with repositories on two hosts: each cited place goes through the host of ITS repository's record", () => {
+  const GITHUB_DEMO = "https://github.com/example/demo.git";
+  const OTHER = "https://git.example.test/acme/web";
+  /** The project gets a second repository (`web`) that names a host this install has not registered. Call before the plan is stored. */
+  function addUnregisteredRepository(harness: Harness): void {
+    const key = projectRevisionKey(TEST_ORG, "payments", 1);
+    const revision = harness.db.get(key.pk, key.sk) as { definition: { repositories: Array<Record<string, unknown>> } };
+    harness.db.set({ ...revision, definition: { ...revision.definition, repositories: [...revision.definition.repositories, { name: "web", url: OTHER, path: "repo/web", defaultBranch: "main", credentialRef: "x", host: { kind: "gitfarm" } }] } });
+  }
+  const BASES = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }, { repositoryId: "web", baseCommitSha: "f".repeat(40) }] } };
+  const PATHS = ["repo/demo/src/charge.ts", "repo/web/src/page.ts"];
+
+  it("the job reads the GitHub repository's place through GitHub and leaves the other host's place unavailable, GitHub never asked for its address", async () => {
+    const harness = await jobBroker();
+    addUnregisteredRepository(harness);
+    const { taskId, artifact } = await plannedTask(harness, PATHS, BASES);
+    const reads: string[] = [];
+    const getFile: GetFile = async (url) => { reads.push(url); return FILE; };
+    expect(await runPlanEvidenceJob(jobDeps(harness, getFile), { taskId, artifactId: artifact.id })).toBe("attached");
+    expect(reads).toEqual([GITHUB_DEMO]);
+    expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([
+      expect.objectContaining({ claimId: "1", status: "ok", lines: ["two", "three"] }),
+      expect.objectContaining({ claimId: "2", status: "unavailable" }),
+    ]);
+    expect(rows(harness)).toEqual([]);
+  });
+
+  it("the inline read (no PlanEvidence function) does the same: GitHub is asked for the GitHub repository only, the other record's host is refused", async () => {
+    const reads: string[] = [];
+    const getFileAtCommit = vi.fn(async (url: string) => { reads.push(url); return FILE; });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: { getFileAtCommit } } });
+    addUnregisteredRepository(harness);
+    const { taskId, artifact } = await plannedTask(harness, PATHS, BASES);
+    expect(reads).toEqual([GITHUB_DEMO]);
+    expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([
+      expect.objectContaining({ claimId: "1", status: "ok", lines: ["two", "three"] }),
+      expect.objectContaining({ claimId: "2", status: "unavailable" }),
+    ]);
+  });
+
+  it("the inline read goes to a registered non-GitHub host for its own repository, and never to GitHub for it", async () => {
+    const model = new FakeHostModel({ url: OTHER, id: "9", fullName: "acme/web" });
+    const base = model.commit("main", { "src/page.ts": FILE });
+    const getFileAtCommit = vi.fn(async () => { throw new Error("GitHub must not be asked"); });
+    const registry = createPluginRegistry({ codeHosts: [githubCodeHost({ getFileAtCommit } as never, { credentialRef: "github-app" }), new FakeCodeHost(model)], checkRunners: [], policy: editionPolicy("enterprise") });
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: { getFileAtCommit }, codeHost: registry.codeHost } });
+    const key = projectRevisionKey(TEST_ORG, "payments", 1);
+    const revision = harness.db.get(key.pk, key.sk) as { definition: { repositories: Array<Record<string, unknown>> } };
+    harness.db.set({ ...revision, definition: { ...revision.definition, repositories: [{ ...revision.definition.repositories[0], name: "web", url: OTHER, path: "repo/web", host: { kind: "fake" } }] } });
+    const { taskId, artifact } = await plannedTask(harness, ["repo/web/src/page.ts"], { result: { preparedBase: [{ repositoryId: "web", baseCommitSha: base }] } });
+    expect(getFileAtCommit).not.toHaveBeenCalled();
+    expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ claimId: "1", status: "ok", commit: base, lines: ["two", "three"] })]);
   });
 });
 
