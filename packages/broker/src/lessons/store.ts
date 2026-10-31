@@ -5,9 +5,8 @@
 //   - every lesson version is kept, and every set version records which lesson versions it held, so a rollback restores a past set;
 //   - counters and expiry bookkeeping change in place (`mutate`) without a new version.
 // Every key carries the workspace and the project, so one workspace's call can never read or change another's lessons.
-import { CHANGE_APPROVAL_TTL_DAYS } from "@agentx/contracts";
-import { scrubLesson, stripAudienceIds } from "./scrub.js";
-import { LessonSchema, normId, normSource, peopleOf, recordIdsOf, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
+import { applyWriteFence, planRollback, withUsageOf, type FenceView } from "./store-rules.js";
+import { LessonSchema, normId, normSource, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
 import type { LessonStage } from "@agentx/contracts";
 
 export interface ScopeKey { workspaceId: string; project: string }
@@ -94,10 +93,6 @@ export interface LessonStore {
 }
 
 const DAY = 86_400_000;
-/** Statuses a write may carry under the fence: each one takes the lesson out of use (never into it). */
-const NARROWING_STATUSES: ReadonlySet<Lesson["status"]> = new Set(["retired", "rejected", "withdrawn", "expired", "stale"]);
-/** Bookkeeping about use: carried from the head into every new version, so a commit never rewinds a counter. */
-const USAGE_FIELDS = ["counters", "staleAt", "lastValidatedAt", "lastHelpfulAt"] as const;
 const scopeId = (k: ScopeKey): string => `${k.workspaceId}\u0001${k.project}`;
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -120,6 +115,10 @@ export class InMemoryLessonStore implements LessonStore {
       this.state.set(id, value);
     }
     return value;
+  }
+
+  private fenceView(s: ProjectState): FenceView {
+    return { personErased: (p) => s.erased.has(normId(p)), idDeleted: (id) => s.deletedIds.has(id), sourceErased: (id) => s.erasedSources.has(id) };
   }
 
   async get(key: ScopeKey, id: string): Promise<Lesson | undefined> {
@@ -149,22 +148,17 @@ export class InMemoryLessonStore implements LessonStore {
     const s = this.of(key);
     if (s.sets.at(-1)!.setVersion !== expectedSetVersion) return { ok: false, reason: "conflict" };
     const staged: Lesson[] = [];
+    const fence = this.fenceView(s);
     for (const raw of writes) {
-      let lesson = LessonSchema.parse(raw);
-      if (lesson.workspaceId !== key.workspaceId || lesson.project !== key.project) throw new Error("lesson is outside the scope it is written to");
-      // An erased person's source ids never ride in a lesson's audience snapshot, whatever the writer read earlier: they are taken out (the lesson itself stays).
-      if (s.erasedSources.size > 0) lesson = stripAudienceIds(lesson, s.erasedSources);
-      const existing = s.versions.get(lesson.id)?.at(-1);
-      if (lesson.version !== (existing?.version ?? 0) + 1) return { ok: false, reason: "conflict" };
-      if (staged.some((x) => x.id === lesson.id)) throw new Error("one commit writes a lesson once");
+      const parsed = LessonSchema.parse(raw);
+      if (parsed.workspaceId !== key.workspaceId || parsed.project !== key.project) throw new Error("lesson is outside the scope it is written to");
+      const existing = s.versions.get(parsed.id)?.at(-1);
+      if (parsed.version !== (existing?.version ?? 0) + 1) return { ok: false, reason: "conflict" };
+      if (staged.some((x) => x.id === parsed.id)) throw new Error("one commit writes a lesson once");
       // The fence: nothing that names an erased person or a deleted record may be written back, whatever the writer read earlier.
-      if (s.gone.get(lesson.id) === "purged") return { ok: false, reason: "erased" };
-      if (peopleOf(lesson).some((p) => s.erased.has(normId(p))) || recordIdsOf(lesson).some((id) => s.deletedIds.has(id))) {
-        // A write that only NARROWS (retire, reject, withdraw: the kill switches; expire and stale: a lesson leaving use) is never refused; what it carries from a stale read is
-        // scrubbed against the fence. So `sweepExpired` and the staleness check still reach a lesson that names an erased person.
-        if (!NARROWING_STATUSES.has(lesson.status)) return { ok: false, reason: "erased" };
-        lesson = LessonSchema.parse(scrubLesson(lesson, s.deletedIds, s.erased));
-      }
+      if (s.gone.get(parsed.id) === "purged") return { ok: false, reason: "erased" };
+      const lesson = applyWriteFence(parsed, fence);
+      if (lesson === "erased") return { ok: false, reason: "erased" };
       staged.push(lesson);
     }
     const members = new Map(s.members);
@@ -174,10 +168,7 @@ export class InMemoryLessonStore implements LessonStore {
       const versions = s.versions.get(lesson.id) ?? [];
       versions.push(clone(lesson));
       s.versions.set(lesson.id, versions);
-      const previous = s.heads.get(lesson.id);
-      const head = clone(lesson);
-      if (previous !== undefined) for (const field of USAGE_FIELDS) (head as Record<string, unknown>)[field] = clone((previous as Record<string, unknown>)[field]);
-      s.heads.set(lesson.id, head);
+      s.heads.set(lesson.id, withUsageOf(lesson, s.heads.get(lesson.id)));
       members.set(lesson.id, lesson.version);
     }
     s.members = members;
@@ -191,45 +182,14 @@ export class InMemoryLessonStore implements LessonStore {
     if (s.sets.at(-1)!.setVersion !== expectedSetVersion) return { ok: false, reason: "conflict" };
     const target = s.sets.find((x) => x.setVersion === targetSetVersion);
     if (target === undefined || targetSetVersion >= expectedSetVersion) return { ok: false, reason: "conflict" };
-    const members = new Map<string, number>();
-    const restoredIds: string[] = [];
-    for (const m of target.members) {
-      // A withdrawn lesson stays withdrawn and a purged one stays gone, whatever the earlier set held.
-      const fate = s.gone.get(m.id);
-      if (fate === "purged") continue;
-      if (fate === "withdrawn") { const head = s.heads.get(m.id); if (head !== undefined) members.set(m.id, head.version); continue; }
-      // A lesson a person retired (or that was rejected) is not brought back by a rollback.
-      const head = s.heads.get(m.id);
-      if (head !== undefined && (head.status === "retired" || head.status === "rejected")) { members.set(m.id, head.version); continue; }
-      const content = s.versions.get(m.id)?.find((v) => v.version === m.version);
-      if (content === undefined) return { ok: false, reason: "conflict" };
-      // The fence applies to a rollback too: content that names an erased person or a deleted row is never brought back, and a lesson with a deletion still open is
-      // left alone until its intent finishes.
-      const openIntent = [...s.intents.values()].some((i) => !i.finished && i.lessonId === m.id);
-      if (head !== undefined && (openIntent || peopleOf(content).some((p) => s.erased.has(normId(p))) || recordIdsOf(content).some((id) => s.deletedIds.has(id)))) { members.set(m.id, head.version); continue; }
-      const current = s.heads.get(m.id);
-      const restored = s.erasedSources.size > 0 ? stripAudienceIds(clone(content), s.erasedSources) : clone(content);
-      // Counters and expiry are bookkeeping about use, not content: a rollback does not rewind them.
-      if (current !== undefined) for (const field of [...USAGE_FIELDS, "expiresAt"]) (restored as Record<string, unknown>)[field] = clone((current as Record<string, unknown>)[field]);
-      // A rollback never restores approval. Automatic approval is dropped and the lesson comes back needing a person; without a person's approval it is pending, so it
-      // is not loaded until the normal tier check and approval have run again.
-      // A tier can only rise: the restored tier is the higher of the old version's and the head's, with the reasons of both, and a contradiction stays flagged.
-      if (current !== undefined) {
-        restored.tier = Math.max(restored.tier, current.tier) as Lesson["tier"];
-        restored.tierReasons = [...new Set([...restored.tierReasons, ...current.tierReasons])].slice(0, 12);
-        if (current.contradictsWith !== undefined) restored.contradictsWith = current.contradictsWith;
-        // Approval given for a lower tier does not carry to a higher one.
-        if (restored.tier > content.tier) restored.approvals = [];
-      }
-      restored.approvals = restored.approvals.filter((a) => a.mode !== "auto");
-      restored.reviewRequired = true;
-      // It always comes back pending. A person\'s earlier approval is kept as a record, but it counts only after it is re-checked against who may approve NOW and the
-      // current policy (rollbackLessonSet does that); until then nothing is live.
-      if (restored.status === "active" || restored.status === "stale") { restored.status = "pending"; restored.pendingExpiresAt = at + CHANGE_APPROVAL_TTL_DAYS * DAY; }
-      s.heads.set(m.id, restored);
-      members.set(m.id, m.version);
-      restoredIds.push(m.id);
-    }
+    const plan = planRollback(target.members, {
+      gone: (id) => s.gone.get(id), head: (id) => s.heads.get(id), content: (id, version) => s.versions.get(id)?.find((v) => v.version === version),
+      openIntent: (id) => [...s.intents.values()].some((i) => !i.finished && i.lessonId === id), fence: this.fenceView(s),
+    }, at);
+    if (!plan.ok) return { ok: false, reason: "conflict" };
+    for (const [id, restored] of plan.restoredHeads) s.heads.set(id, restored);
+    const members = plan.members;
+    const restoredIds = plan.restored;
     s.members = members;
     const setVersion = expectedSetVersion + 1;
     s.sets.push({ setVersion, at, members: [...members.entries()].map(([id, version]) => ({ id, version })).sort((a, b) => a.id.localeCompare(b.id)) });
