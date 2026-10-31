@@ -189,6 +189,16 @@ export const SpecDraftSchema = z.object({
 });
 export type SpecDraft = z.infer<typeof SpecDraftSchema>;
 
+/** What a SPEC_WRITE run is told besides its prompt: the format it writes for, and the approved plan's digest it must echo in its draft. */
+export const SpecWriteBindingSchema = z.object({
+  format: z.string().regex(/^[a-z][a-z0-9_]{0,31}$/u),
+  kind: z.enum(SPEC_KINDS),
+  planDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+  /** A folder of the meta repo (relative, safe) whose sub-folder names the run reports back, so `{n}` can take the next free number. Absent: none is reported. */
+  foldersIn: folderPath.optional(),
+}).strict();
+export type SpecWriteBinding = z.infer<typeof SpecWriteBindingSchema>;
+
 export const SpecFileSchema = z.object({
   /** Relative to the repository root. */
   path: folderPath,
@@ -265,3 +275,102 @@ export const SpecReviewResultSchema = z.object({
   truncated: z.boolean().default(false),
 }).strict();
 export type SpecReviewResult = z.infer<typeof SpecReviewResultSchema>;
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The SPEC_WRITE run's answer.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** The label of the fenced block the spec write answers in. */
+export const SPEC_WRITE_INFO_STRING = "rovara-spec";
+/** The most bytes of an answer that is read. */
+export const SPEC_WRITE_ANSWER_MAX_BYTES = 192 * 1024;
+
+/** The JSON in the LAST block fenced with the spec label of a model's final message; undefined when there is none, it is not JSON or it is too large. Text outside the block is chat. */
+export function specWriteAnswerOf(text: string): unknown {
+  const pattern = new RegExp(String.raw`(?:^|\n)\x60\x60\x60${SPEC_WRITE_INFO_STRING}[ \t]*\n([\s\S]*?)\n\x60\x60\x60(?=\n|$)`, "gu");
+  let last: string | undefined;
+  for (const match of text.matchAll(pattern)) last = match[1];
+  if (last === undefined || new TextEncoder().encode(last).byteLength > SPEC_WRITE_ANSWER_MAX_BYTES) return undefined;
+  try { return JSON.parse(last) as unknown; } catch { return undefined; }
+}
+
+export type SpecDraftRead = { ok: true; draft: SpecDraft } | { ok: false; errors: string[] };
+
+/**
+ * A model's answer read as a draft for one binding. The digest is the binding's, never the model's; the kind must be the binding's; and the answer must fit `SpecDraftSchema`. The problems named are the
+ * reader's own words (paths and fixed phrases), never the model's text.
+ */
+export function readSpecDraft(answer: unknown, binding: SpecWriteBinding): SpecDraftRead {
+  if (typeof answer !== "object" || answer === null || Array.isArray(answer)) return { ok: false, errors: [`there is no ${SPEC_WRITE_INFO_STRING} block with a JSON object in it`] };
+  const record = answer as Record<string, unknown>;
+  if (record["kind"] !== binding.kind) return { ok: false, errors: [`kind must be "${binding.kind}"`] };
+  const parsed = SpecDraftSchema.safeParse({ ...record, version: 1, planDigest: binding.planDigest });
+  if (parsed.success) return { ok: true, draft: parsed.data };
+  return { ok: false, errors: parsed.error.issues.slice(0, 6).map((issue) => `${issue.path.map(String).join(".") || "(answer)"}: ${issue.message}`.slice(0, 160)) };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// D3: the requirements a review is given, and how its answer is read.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** What a review operation is given about the spec: the requirements as the spec shows them at the recorded commit. The text is the team's (and its editors'), so the review treats it as data. */
+export const SpecReviewInputSchema = z.object({
+  specPath: folderPath,
+  specCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u),
+  requirements: z.array(SpecRequirementRefSchema.extend({ kind: z.literal("requirement") })).min(1).max(SPEC_REVIEW_REQUIREMENTS_MAX),
+  /** The spec had more requirements than the walk takes. */
+  truncated: z.boolean().default(false),
+}).strict().superRefine((input, context) => {
+  const seen = new Set<string>();
+  for (const [index, requirement] of input.requirements.entries()) {
+    if (seen.has(requirement.id)) context.addIssue({ code: "custom", path: ["requirements", index, "id"], message: "requirement labels must be unique" });
+    seen.add(requirement.id);
+  }
+});
+export type SpecReviewInput = z.infer<typeof SpecReviewInputSchema>;
+
+const VerdictAnswerSchema = z.object({
+  id: z.string(),
+  verdict: z.enum(SPEC_VERDICTS),
+  reason: z.string(),
+  evidence: z.array(z.string()).max(12).optional(),
+}).strict();
+
+/**
+ * A review's answer about a spec, read against the requirements it was given. Fail closed: only labels that were asked about count (a made-up label is dropped); a label answered twice keeps its first answer;
+ * `met` needs a stated reason AND at least one piece of evidence (diff lines or a test), or it stands as unanswered; every label not answered counts as not met. The result is bounded by the input.
+ */
+export function readSpecVerdicts(answer: unknown, input: SpecReviewInput): SpecReviewResult {
+  const asked = new Map(input.requirements.map((requirement) => [requirement.id, requirement]));
+  const rows = typeof answer === "object" && answer !== null && Array.isArray((answer as { specVerdicts?: unknown }).specVerdicts) ? (answer as { specVerdicts: unknown[] }).specVerdicts : [];
+  const verdicts = new Map<string, SpecRequirementVerdict>();
+  for (const row of rows.slice(0, input.requirements.length * 2)) {
+    const parsed = VerdictAnswerSchema.safeParse(row);
+    if (!parsed.success || !asked.has(parsed.data.id) || verdicts.has(parsed.data.id)) continue;
+    const reason = specLine(parsed.data.reason, 300);
+    const evidence = (parsed.data.evidence ?? []).map((entry) => specLine(entry, 200)).filter((entry) => entry !== "").slice(0, 6);
+    if (reason === "" || (parsed.data.verdict === "met" && evidence.length === 0)) continue;
+    verdicts.set(parsed.data.id, { id: parsed.data.id, verdict: parsed.data.verdict, reason, evidence });
+  }
+  return {
+    specPath: input.specPath, specCommit: input.specCommit,
+    verdicts: input.requirements.flatMap((requirement) => { const verdict = verdicts.get(requirement.id); return verdict === undefined ? [] : [verdict]; }),
+    unanswered: input.requirements.map((requirement) => requirement.id).filter((id) => !verdicts.has(id)),
+    truncated: input.truncated,
+  };
+}
+
+/** The review findings a spec walk adds: one for each requirement not met and each left unanswered (which counts as not met). Fixed words around a one-line cleaned reason. */
+export function specReviewFindings(result: SpecReviewResult): Array<{ text: string; origin: "INTRODUCED"; severity: "MEDIUM" }> {
+  const notMet = result.verdicts.filter((verdict) => verdict.verdict === "not_met").map((verdict) => ({ text: `Spec ${verdict.id} is not met: ${verdict.reason}`.slice(0, 600), origin: "INTRODUCED" as const, severity: "MEDIUM" as const }));
+  const unanswered = result.unanswered.map((id) => ({ text: `Spec ${id} could not be checked, so it counts as not met.`, origin: "INTRODUCED" as const, severity: "MEDIUM" as const }));
+  return [...notMet, ...unanswered];
+}
+
+/** The rows W4's requirement-to-evidence table reads: one for each requirement the review walked, keyed by the spec path and the label as the spec shows it. */
+export function specRequirementRows(result: SpecReviewResult): Array<{ specPath: string; specCommit: string; id: string; verdict: SpecVerdict | "unanswered"; reason: string; evidence: string[] }> {
+  return [
+    ...result.verdicts.map((verdict) => ({ specPath: result.specPath, specCommit: result.specCommit, id: verdict.id, verdict: verdict.verdict, reason: verdict.reason, evidence: verdict.evidence })),
+    ...result.unanswered.map((id) => ({ specPath: result.specPath, specCommit: result.specCommit, id, verdict: "unanswered" as const, reason: "", evidence: [] as string[] })),
+  ];
+}

@@ -484,14 +484,17 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
 async function startAcceptedStep(deps: DeveloperTaskRouteDependencies, taskId: string, ready: WorkflowSnapshot, kind: WorkflowDispatchRecord["kind"]): Promise<void> {
   const candidateDigest = ready.candidate?.digest;
   try {
+    let outcome: string | undefined;
     if (kind === "IMPLEMENT") await startTaskWorkflowImplementationFromSystem(deps, taskId, { workflowRevision: ready.revision });
     else if (kind === "CRITIQUE") await startTaskWorkflowPlanCritiqueFromSystem(deps, taskId, { workflowRevision: ready.revision });
     else if (candidateDigest === undefined) return;
-    else if (kind === "REVIEW") await startTaskWorkflowReviewFromSystem(deps, taskId, { workflowRevision: ready.revision, candidateDigest });
+    else if (kind === "REVIEW") outcome = await startTaskWorkflowReviewFromSystem(deps, taskId, { workflowRevision: ready.revision, candidateDigest });
     else {
-      await startTaskWorkflowPublicationFromSystem(deps, taskId, { workflowRevision: ready.revision, candidateDigest },
+      outcome = await startTaskWorkflowPublicationFromSystem(deps, taskId, { workflowRevision: ready.revision, candidateDigest },
         { ...(deps.issuer === undefined ? {} : { taskPageUrl: taskPageUrl(deps.issuer, taskId) }) });
     }
+    // Meta repo lane D: a step held for the task's spec keeps its row; the spec's end (or the sweep) starts it.
+    if (outcome === "WAITING") return;
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: WORKFLOW_DISPATCH_PK, sk: `${taskId}#${ready.revision}` } }));
   } catch (error) {
     log(deps, { event: kind === "PUBLISH" || kind === "UPDATE" ? "developer.task_publication_start_deferred" : "developer.task_step_start_deferred", taskId, error: error instanceof Error ? error.name : "unknown",

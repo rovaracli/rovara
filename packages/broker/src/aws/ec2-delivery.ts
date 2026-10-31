@@ -327,6 +327,8 @@ async function forWorkerFeatures(
   const carriesPublicationMode = invocation.kind === "publish" && invocation.payload.publicationMode !== undefined;
   const carriesPublicationContextDigest = invocation.kind === "publish" && invocation.payload.publicationContextDigest !== undefined;
   const carriesPublishBase = invocation.kind === "publish" && invocation.payload.workflowBaseCommit !== undefined;
+  // Meta repo lane D: the spec write mode and the spec publication's files.
+  const carriesSpec = (invocation.kind === "task" && (invocation.payload.workflowMode === "SPEC_WRITE" || invocation.payload.specWrite !== undefined || invocation.payload.workflowReviewSpec !== undefined)) || (invocation.kind === "publish" && invocation.payload.specFiles !== undefined);
   const carriesPullRequestUpdate = invocation.kind === "maintain" && invocation.payload.workflowCandidateTreeSha !== undefined;
   // Plan 6 Task 17: a merge of the base branch, and a fix pushed as a merge commit. An older worker would merge whatever the base is by now, or push a commit with one parent.
   const carriesBranchSync = invocation.kind === "maintain" && (invocation.payload.workflowSync !== undefined || invocation.payload.workflowMergeBase !== undefined);
@@ -343,7 +345,7 @@ async function forWorkerFeatures(
   const carriesMeta = invocation.kind === "prepare" && invocation.payload.meta !== undefined;
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy && !carriesSpec) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -370,6 +372,16 @@ async function forWorkerFeatures(
   }
   // Rovara drafts a project's setup (Task 10): an older worker would fail the mode at its own parse, so the mode is never sent to it.
   if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_DRAFT" && !features.includes("task.setupDraft")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.
+  if (invocation.kind === "task" && (invocation.payload.workflowMode === "SPEC_WRITE" || invocation.payload.specWrite !== undefined) && !features.includes("task.specWrite.v1")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  if (invocation.kind === "task" && invocation.payload.workflowReviewSpec !== undefined && !features.includes("task.workflowReviewSpec.v1")) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  if (invocation.kind === "publish" && invocation.payload.specFiles !== undefined && !features.includes("publish.specFiles.v1")) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (carriesFeedbackReview && !features.includes("task.workflowFeedbackReview")) {

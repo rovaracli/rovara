@@ -324,6 +324,8 @@ export function issueRepositoryGrant(
   operationId: string,
   access: "clone" | "push" = "clone",
   repositoryName?: string,
+  /** Meta repo lane D: a spec publication may push to the project's meta repository, and only to the one named. */
+  pushToMeta = false,
 ): string {
   return dependencies.repositoryGrants.issue({
     ownerKey,
@@ -332,7 +334,7 @@ export function issueRepositoryGrant(
     operationId,
     // Meta repo lane A: a task never writes to the project's meta repository from a builder session, so no push grant names a meta repository that is not also code
     // (a clone grant does: the worker brings it in read-only).
-    repositories: (access === "push" ? codeRepositoriesOf(project.definition) : project.definition.repositories)
+    repositories: (access === "push" && !(pushToMeta && repositoryName !== undefined) ? codeRepositoriesOf(project.definition) : project.definition.repositories)
       .filter((repository) => repositoryName === undefined || repository.name === repositoryName)
       .map((repository) => ({
       credentialRef: repository.credentialRef,

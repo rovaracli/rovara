@@ -119,6 +119,8 @@ export interface DeveloperRouteDependencies {
   workflowE2EPublicationChecks?: DeveloperTaskRouteDependencies["workflowE2EPublicationChecks"];
   sessionDiffFiles?: NonNullable<SessionRouteDependencies["diff"]>["files"] | undefined;
   currentPullRequestHead?: DeveloperTaskRouteDependencies["currentPullRequestHead"];
+  readMetaFile?: DeveloperTaskRouteDependencies["readMetaFile"];
+  readSpecPullRequest?: DeveloperTaskRouteDependencies["readSpecPullRequest"];
   currentBaseCommit?: DeveloperTaskRouteDependencies["currentBaseCommit"];
   taskAutonomyNow?: DeveloperTaskRouteDependencies["taskAutonomyNow"];
   workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];

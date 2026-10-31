@@ -192,10 +192,25 @@ describe("planning what a config file changes", () => {
   });
 
   it("lists the sections it carries but does not apply, and refuses a project with no meta repository", () => {
-    const plan = planMetaConfigChange({ config: yaml("version: 1\nchecks:\n  - {name: Lint, repo: api, command: npm run lint}\nsources:\n  - {connection: wiki}\nspecTarget: {where: meta_repo}\n"), definition: stored(separate()) });
-    expect(plan.deferred).toEqual(["checks", "specTarget", "sources"].sort((a, b) => ["checks", "knowledge", "specTarget", "sources", "intake"].indexOf(a) - ["checks", "knowledge", "specTarget", "sources", "intake"].indexOf(b)));
+    const plan = planMetaConfigChange({ config: yaml("version: 1\nchecks:\n  - {name: Lint, repo: api, command: npm run lint}\nsources:\n  - {connection: wiki}\n"), definition: stored(separate()) });
+    expect(plan.deferred).toEqual(["checks", "sources"]);
     expect(plan.items).toEqual([]);
     expect(planMetaConfigChange({ config: yaml("version: 1\n"), definition: stored(definition([repo("api")])) }).problems).toEqual([{ path: "(project)", message: "this project has no meta repository" }]);
+  });
+
+  it("plans the spec target the file names (K1 lane D), as lines the maintainer reads, and nothing when the project already has it", () => {
+    const config = yaml("version: 1\nspecTarget: {format: speckit, when: always}\n");
+    const plan = planMetaConfigChange({ config, definition: stored(separate()) });
+    expect(plan.deferred).toEqual([]);
+    expect(plan.items).toEqual([{ id: "specTarget", field: "specTarget", kind: "set_spec_target", before: [], after: ['where: "meta_repo"', 'format: "speckit"', 'when: "always"', 'linkStyle: "together"'] }]);
+    const have = stored(separate({ specTarget: { where: "meta_repo", format: "speckit", when: "always", linkStyle: "together" } }));
+    expect(planMetaConfigChange({ config, definition: have }).items).toEqual([]);
+  });
+
+  it("refuses a spec target with an unsafe folder, an unknown key, or a template folder for a format that reads none", () => {
+    for (const target of ["{pathTemplate: ../../etc}", "{pathTemplate: .git/hooks}", "{surprise: 1}", "{format: kiro, templatePath: tpl}", "{format: team_template}"]) {
+      expect(parseMetaConfigFile(".rovara/project.yaml", `version: 1\nspecTarget: ${target}\n`).ok, target).toBe(false);
+    }
   });
 
   it("knows a GitHub repository by its owner and name only", () => {
@@ -413,6 +428,26 @@ describe("a push to the meta repo's default branch", () => {
     expect(next.origins).toBeUndefined();
     const plain = world();
     await expect(push(plain, COMMIT_A, undefined)).resolves.toBe("no_change");
+  });
+});
+
+describe("applying a spec target (K1 lane D)", () => {
+  const SPEC_YAML = "version: 1\nspecTarget: {format: kiro, where: meta_repo, when: features, linkStyle: spec_first}\n";
+  it("applies the file's spec target as a new revision marked as the file's, and the stored target reads as the file wrote it", async () => {
+    const w = world();
+    await push(w, COMMIT_A, SPEC_YAML);
+    const result = await apply(w, COMMIT_A);
+    expect(result).toMatchObject({ applied: ["specTarget"], notApplied: [], revision: 2 });
+    expect(latestDefinition(w, 2)).toMatchObject({ specTarget: { where: "meta_repo", format: "kiro", when: "features", linkStyle: "spec_first" }, origins: { specTarget: "file" } });
+  });
+  it("never replaces a spec target a person set, unless the person names the field", async () => {
+    const w = world(separate({ specTarget: { where: "meta_repo", format: "rovara", when: "always", linkStyle: "together" } }));
+    await push(w, COMMIT_A, SPEC_YAML);
+    const first = await apply(w, COMMIT_A);
+    expect(first).toMatchObject({ applied: [], notApplied: [{ id: "specTarget", reason: "person_value" }] });
+    const second = await apply(w, COMMIT_A, { useFile: ["specTarget"] });
+    expect(second.applied).toEqual(["specTarget"]);
+    expect(latestDefinition(w, 2)).toMatchObject({ specTarget: { format: "kiro", linkStyle: "spec_first" } });
   });
 });
 

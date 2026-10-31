@@ -37,6 +37,8 @@ import { FIRST_TASK_QUEUE_FAILED, QueuingConflict, TASK_POINTER_KINDS, cancelled
 import { deleteWorkspaceCompute } from "./thread-workspaces.js";
 import { settleBaselineRound, settleGroundingRound, settleReplayRound } from "./workflow-e2e-verification.js";
 import { attachInlineEvidence, completedWorkflowItems, startPlanEvidenceJobs, type InlineEvidence } from "./workflow-items.js";
+import { specReviewRecordItems } from "../../spec/review-record.js";
+import { dynamoSpecStore } from "../../spec/store.js";
 
 /**
  * Whether a failed check's command could not run, so the code is not what failed: the shell could not find it or run it
@@ -188,7 +190,7 @@ async function cancelledWorkflowStepItems(
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
   // A cancelled setup draft ends as cancelled, in the cancel's own transaction (it has no workflow step to block).
   if (task?.purpose === "setup_draft") return completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
-  if (task === undefined || target.workflowMode === "SETUP_DRAFT" || !stopBlocksWorkflowStep(task, target)) return [];
+  if (task === undefined || target.workflowMode === "SETUP_DRAFT" || target.workflowMode === "SPEC_WRITE" || !stopBlocksWorkflowStep(task, target)) return [];
   const items = await completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
   // Only the one conditional update of the step the target ran, exactly, and the AUTOFIX row that rides with a block of VERIFY or REVIEW when automatic fixing is on (DISPATCHEXHAUST: refusing
   // it left the stopped step RUNNING); anything else is left to the owner's Retry.
@@ -399,11 +401,13 @@ export async function recordTerminalResult(
         : await cancelledGraphWorkflowItems(dependencies, pointer, graphCancellation.target, now);
       // An agent-step run goes on from this result (or ends because of it): the engine's dispatch row is due in this same transaction (Plan 3, Task 22).
       const agentRun = pointer === undefined ? [] : await agentRunWakeItems(dependencies.documentClient, dependencies.tableName, operation, pointer.taskId, now);
+      // Meta repo lane D (D3): a code review's walk of the spec is recorded with the review's result (the requirement rows W4 reads).
+      const specReview = pointer === undefined || operation.workflowMode !== "REVIEW" ? [] : await specReviewRecordItems({ tableName: dependencies.tableName, store: dynamoSpecStore(dependencies), now: () => now }, pointer.taskId, operation, { status: terminalStatus, result });
       const cancelledStep = !cancelStepAllowed || graphCancelBoundTarget !== undefined || e2eCancelBoundTarget !== undefined ? []
         : await cancelledWorkflowStepItems(dependencies, pointer, cancelTargetOperation, now);
       cancelStepAttached = cancelledStep.length > 0;
       recordedStatus = await sendTerminalResult(dependencies, workspace, operation, pointer, terminalStatus, now,
-        [...transactItems, ...completed, ...workflow, ...cancelledGraph, ...cancelledE2E, ...cancelledStep, ...agentRun], workspaceUpdate, send, startRefusal);
+        [...transactItems, ...completed, ...workflow, ...cancelledGraph, ...cancelledE2E, ...cancelledStep, ...agentRun, ...specReview], workspaceUpdate, send, startRefusal);
       evidenceJobs = [...workflow, ...cancelledGraph, ...cancelledE2E].flatMap((item) => {
         const row = item.Put?.Item as Partial<PlanEvidenceJob> | undefined;
         return row?.pk === PLAN_EVIDENCE_PK && row.taskId !== undefined && row.artifactId !== undefined ? [planEvidenceEvent(row.taskId, row.artifactId)] : [];

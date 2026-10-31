@@ -40,4 +40,8 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.liveSteer.v1",
   // Meta repo lane A3: the prepare invocation's `meta` request (the project's meta repository, read-only and sparse; meta-checkout.ts).
   "prepare.metaRepo",
+  // Meta repo lane D: the spec write run (spec-write.ts) and the spec publication (spec-publish.ts).
+  "task.specWrite.v1",
+  "publish.specFiles.v1",
+  "task.workflowReviewSpec.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

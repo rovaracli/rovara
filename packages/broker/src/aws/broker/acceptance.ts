@@ -4,6 +4,8 @@ import { joinTaskModelFallback } from "../../model-selection/fallback-record.js"
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { type AgentXError, blockWorkflow, OperationRequestSchema, PullRequestRequestSchema, PullRequestLifecycleRequestSchema, PullRequestLifecycleResultSchema, agentXError, type Operation, type OperationRequester, type OperationStatus, type ProjectCommand, type WorkflowFeedbackApprovalBinding, type WorkflowFixPayload, type WorkflowDependencyInvocation, type WorkflowReviewBase, type WorkflowReviewChecks, type WorkflowReviewPlan, type WorkflowReviewFeedback, type WorkflowReviewNote, type PullRequestLifecycleResult, type WorkerInvocation, type WorkspaceInstance, type E2EWorkflowAdmissionRef, workerProjectDefinition, workflowPublicationContext, workflowPublicationContextDigest, codeRepositoriesOf } from "@agentx/contracts";
+import type { SpecReviewInput, SpecWriteBinding } from "@agentx/contracts";
+import { specPublishProject, specTargetRepository, type SpecPublicationOption } from "../../spec/publish-request.js";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { assertNoUntrustedRoutingFields } from "../../authorization.js";
@@ -32,7 +34,7 @@ export async function acceptTask(
   workspaceId: string,
   value: unknown,
   extra: ExtraItems = () => [],
-  options: { sharedTask?: boolean; planRevision?: true; operationId?: string; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW"; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput; firstEvent?: string } = {},
+  options: { sharedTask?: boolean; planRevision?: true; operationId?: string; workflowMode?: "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SPEC_WRITE"; specWrite?: SpecWriteBinding; workflowReviewSpec?: SpecReviewInput; workflowPhase?: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN"; readiness?: ProjectCommand[]; workflowFeedbackReview?: { taskId: string; workflowRevision: number; candidateDigest: string }; workflowFeedbackApproval?: WorkflowFeedbackApprovalBinding; workflowE2EAdmission?: E2EWorkflowAdmissionRef; workflowE2EBaselineSource?: true; workflowDependencies?: WorkflowDependencyInvocation; workflowBase?: WorkflowReviewBase; workflowReviewChecks?: WorkflowReviewChecks; workflowReviewPlan?: WorkflowReviewPlan; workflowReviewFeedback?: WorkflowReviewFeedback; workflowReviewNote?: WorkflowReviewNote; programStepId?: string; workflowReviewers?: ReadonlyArray<"CRITIC" | "SECURITY">; workflowReviewRisk?: true; workflowFix?: WorkflowFixPayload; retiredClaimIds?: readonly string[]; agentRun?: AgentRunStepInput; firstEvent?: string } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   assertNoUntrustedRoutingFields(value);
   const request = OperationRequestSchema.parse(value);
@@ -44,6 +46,8 @@ export async function acceptTask(
     ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
     ...(options.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
     ...(options.workflowFix === undefined ? {} : { workflowFix: options.workflowFix }),
+    ...(options.specWrite === undefined ? {} : { specWrite: options.specWrite }),
+    ...(options.workflowReviewSpec === undefined ? {} : { workflowReviewSpec: options.workflowReviewSpec }),
     ...(options.workflowDependencies === undefined ? {} : { workflowDependencies: options.workflowDependencies }),
     ...(options.workflowE2EAdmission === undefined ? {} : { workflowE2EAdmission: options.workflowE2EAdmission }) });
   const idempotencyKey = {
@@ -100,6 +104,8 @@ export async function acceptTask(
     ...(options.workflowReviewers === undefined ? {} : { workflowReviewers: options.workflowReviewers }),
     ...(options.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
     ...(options.workflowFix === undefined ? {} : { workflowFix: options.workflowFix }),
+    ...(options.specWrite === undefined ? {} : { specWrite: options.specWrite }),
+    ...(options.workflowReviewSpec === undefined ? {} : { workflowReviewSpec: options.workflowReviewSpec }),
     ...(options.retiredClaimIds === undefined ? {} : { retiredClaimIds: options.retiredClaimIds }),
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
     ...(options.agentRun === undefined ? {} : { agentRun: options.agentRun }),
@@ -187,7 +193,7 @@ export async function acceptPullRequest(
   workspaceId: string,
   value: unknown,
   extra: ExtraItems = () => [],
-  options: { workflowCandidate?: { repositoryId: string; treeSha: string; commitSha?: string; candidateDigest: string; baseCommitSha?: string; publicationMode: "COMMITTED_HEAD" | "CHECKED_TREE"; admittedPinnedRevision: number; admittedLatestRevision: number; admittedMaterialDigest: string; admittedWorkflowRevision: number; admittedPlanArtifact: { id: string; type: string; version: number; objectKey: string; sha256: string; format: "markdown" | "structured" }; admittedOwnerApproval: { requestId: string; workflowRevision: number; actorId: string; actorRole: "TASK_OWNER" | "PROJECT_ADMIN"; artifactDigest: string; workBreakdownDigest: string | null; at: string }; admittedWorkflowAuthorityDigest: string } } = {},
+  options: { spec?: SpecPublicationOption; workflowCandidate?: { repositoryId: string; treeSha: string; commitSha?: string; candidateDigest: string; baseCommitSha?: string; publicationMode: "COMMITTED_HEAD" | "CHECKED_TREE"; admittedPinnedRevision: number; admittedLatestRevision: number; admittedMaterialDigest: string; admittedWorkflowRevision: number; admittedPlanArtifact: { id: string; type: string; version: number; objectKey: string; sha256: string; format: "markdown" | "structured" }; admittedOwnerApproval: { requestId: string; workflowRevision: number; actorId: string; actorRole: "TASK_OWNER" | "PROJECT_ADMIN"; artifactDigest: string; workBreakdownDigest: string | null; at: string }; admittedWorkflowAuthorityDigest: string } } = {},
 ): Promise<{ operation: Operation; duplicate: boolean }> {
   const request = PullRequestRequestSchema.parse(value);
   // Ruling R60: before any access check, so a removed creator's task says why instead of "project not found".
@@ -208,8 +214,10 @@ export async function acceptPullRequest(
     || !/^[a-f0-9]{64}$/.test(candidate.admittedWorkflowAuthorityDigest))) {
     throw agentXError("CONFIG_INVALID", "workflow publication does not match its checked candidate");
   }
+  const spec = options.spec;
   const requestHash = hashJson({
     repository: request.repository,
+    ...(spec === undefined ? {} : { specBaseCommit: spec.baseCommit, specFiles: spec.files }),
     title: request.title,
     ...(request.body === undefined ? {} : { body: request.body }),
     ...(request.draft === undefined ? {} : { draft: request.draft }),
@@ -232,7 +240,7 @@ export async function acceptPullRequest(
   }
   // Ruling A: a gated developer task's workspace publishes only through its own checked-tree publication, never a
   // pull request anyone asks for (the owner, a shared thread's teammate, anyone).
-  if (candidate === undefined && await gatedTaskWorkspace(dependencies, workspaceId)) {
+  if (candidate === undefined && spec === undefined && await gatedTaskWorkspace(dependencies, workspaceId)) {
     throw agentXError("CONFIG_INVALID", GATED_TASK_PULL_REQUEST_REFUSAL);
   }
   if (!['READY', 'STOPPED'].includes(workspace.status) || workspace.activeOperationId) {
@@ -242,10 +250,12 @@ export async function acceptPullRequest(
     );
   }
   const { project, settingsRevision } = await publicationProject(dependencies, workspace);
-  const repository = codeRepositoriesOf(project.definition).find((candidate) => candidate.name === request.repository);
+  // Meta repo lane D: a spec publication goes to the project's meta repository (and only that), as a pull request people review; a code publication is to a code repository.
+  if (spec !== undefined && (candidate !== undefined || !/^[a-f0-9]{40}$/u.test(spec.baseCommit) || spec.files.length === 0)) throw agentXError("CONFIG_INVALID", "the spec publication is not valid");
+  const repository = spec === undefined ? codeRepositoriesOf(project.definition).find((candidate) => candidate.name === request.repository) : specTargetRepository(project.definition, request.repository);
   if (!repository) throw agentXError("CONFIG_INVALID", "repository is not registered for this project");
   const body = await attributedBody(dependencies, identity, request.body);
-  const draft = candidate === undefined ? request.draft : true;
+  const draft = spec !== undefined ? false : candidate === undefined ? request.draft : true;
 
   const now = new Date().toISOString();
   const operationId = randomUUID();
@@ -279,6 +289,7 @@ export async function acceptPullRequest(
       admittedWorkflowRevision: candidate.admittedWorkflowRevision, admittedPlanArtifact: candidate.admittedPlanArtifact, admittedOwnerApproval: candidate.admittedOwnerApproval,
       admittedWorkflowAuthorityDigest: candidate.admittedWorkflowAuthorityDigest }),
     ...(candidate?.baseCommitSha === undefined ? {} : { expectedBaseCommit: candidate.baseCommitSha }),
+    ...(spec === undefined ? {} : { spec: true as const, expectedBaseCommit: spec.baseCommit }),
   };
   const invocation: WorkerInvocation = {
     protocolVersion: 1,
@@ -290,7 +301,7 @@ export async function acceptPullRequest(
     callbackCapability: issueCapability(dependencies, workspaceId, operationId, fence, { pullRequest: true }),
     payload: {
       mode: "create",
-      project: workerProjectDefinition(project.definition),
+      project: spec === undefined ? workerProjectDefinition(project.definition) : specPublishProject(project.definition),
       repository: repository.name,
       title: request.title,
       ...(body === undefined ? {} : { body }),
@@ -303,10 +314,13 @@ export async function acceptPullRequest(
         operationId,
         "push",
         repository.name,
+        spec !== undefined,
       ),
       // Spec 051 P-2: a failing check opens a draft (reconcilePullRequest) rather than refusing the publication.
       // Without readiness there is no check to report, and the worker need not be asked whether it can.
-      ...(project.definition.readiness.length === 0 ? {} : { reportChecks: true as const }),
+      ...(project.definition.readiness.length === 0 || spec !== undefined ? {} : { reportChecks: true as const }),
+      // Meta repo lane D: the spec's files and the commit they are added to; a worker without "publish.specFiles.v1" is refused the publication at delivery, never sent it without them.
+      ...(spec === undefined ? {} : { specFiles: [...spec.files], specBaseCommit: spec.baseCommit }),
       // The tree the checks and reviews passed on: the worker publishes exactly it, or refuses before pushing.
       ...(candidate === undefined ? {} : { candidateTreeSha: candidate.treeSha }),
       ...(candidate === undefined ? {} : { candidateCommitSha: candidate.commitSha }),

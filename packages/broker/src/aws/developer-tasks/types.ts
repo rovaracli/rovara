@@ -12,6 +12,7 @@ import type {
 import type { BoundChannel } from "../../developer/share.js";
 import type { ModelAccess } from "../../model-proxy/access.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
+import type { SpecPullRequestFacts } from "../../spec/refresh.js";
 import type { DeveloperTaskActions, TransactItems } from "../developer-task-actions.js";
 import type { TaskPersonCheck } from "../../developer/task-people.js";
 import type { SlackRequestQueue } from "../../developer/page-comments.js";
@@ -72,6 +73,13 @@ export interface DeveloperTaskRouteDependencies {
   workflowE2EPresentation?(input: { task: DeveloperTaskRecord; operations: readonly unknown[]; actor: "owner" | "viewer" }): Promise<DeveloperTaskView["e2ePresentation"] | undefined>;
   /** Atomic conditions for current managed-E2E authority, attached to publication admission. */
   workflowE2EPublicationChecks?(input: { task: DeveloperTaskRecord; operations: readonly unknown[] }): Promise<TransactItems | undefined>;
+  /**
+   * Meta repo lane D (D3): one file of the project's meta repository at a commit, through the project's own connection (the spec's files at the commit recorded when the spec was published). Undefined
+   * when the file cannot be read. Without it a task whose spec is published cannot start its review: it waits (the sweep, which has it, starts it).
+   */
+  readMetaFile?(task: DeveloperTaskRecord, repositoryUrl: string, path: string, commit: string, maxBytes: number): Promise<string | undefined>;
+  /** Meta repo lane D (D4): GitHub's view of a task's spec pull request now (its head, state and reviews). Undefined when GitHub cannot say. Absent: the spec pull request is not looked at from here. */
+  readSpecPullRequest?(task: DeveloperTaskRecord, repositoryUrl: string, number: number): Promise<SpecPullRequestFacts | undefined>;
   /** The head GitHub shows for one of the task's pull requests now (Plan 6 Task 15: checked before a fix's coding run is paid for). Throws when GitHub cannot say. */
   currentPullRequestHead?(task: DeveloperTaskRecord, pullRequest: { repositoryId: string; number: number }): Promise<string>;
   /** The commit the base branch of one of the task's pull requests is at now (Plan 6 Task 17: the commit Rovara merges into the branch). Throws when GitHub cannot say. */

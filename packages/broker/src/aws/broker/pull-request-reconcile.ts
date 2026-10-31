@@ -308,6 +308,19 @@ export async function reconcilePullRequest(
       throw agentXError("CALLBACK_FORBIDDEN", "the pushed commit is not the checked code");
     }
   }
+  // Meta repo lane D: a spec pull request is opened only for the commit the worker pushed to the branch, whose one parent is the meta commit the broker pinned for the task. GitHub says what the branch
+  // holds; the worker's word is not enough.
+  const specPublication = expected.spec === true;
+  if (specPublication) {
+    if (github.getBranchHead === undefined || github.getCommitParents === undefined || expected.expectedBaseCommit === undefined) {
+      throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the pushed spec");
+    }
+    const head = await github.getBranchHead(expected.repositoryUrl, expected.headBranch, scope);
+    const parents = await github.getCommitParents(expected.repositoryUrl, input.commit, scope);
+    if (head !== input.commit || parents.length !== 1 || parents[0] !== expected.expectedBaseCommit) {
+      throw agentXError("CALLBACK_FORBIDDEN", "the pushed commit is not the spec commit");
+    }
+  }
   const publishChecks = publicationChecks(input.checks);
   await assertCodeBuildGatesPassed(dependencies, operation, input.commit);
   // A revert undoes a merged pull request, so the workspace's own task work is not what it publishes.
@@ -315,10 +328,11 @@ export async function reconcilePullRequest(
   // agent's own tests under it; a check that fails as the pull request opens (one added to the project since) is still
   // reported.
   const reviewOnly = expected.expectedTreeSha !== undefined && await reviewOnlyWorkflowPublication(dependencies, operation);
-  const latestChecks = expected.mode === "revert" || reviewOnly ? undefined : await latestWorkspaceChecks(dependencies, operation.workspaceId);
-  const standingFailures = expected.mode === "revert" || reviewOnly ? [] : await workspaceStandingFailures(dependencies, operation.workspaceId);
+  const latestChecks = expected.mode === "revert" || reviewOnly || specPublication ? undefined : await latestWorkspaceChecks(dependencies, operation.workspaceId);
+  const standingFailures = expected.mode === "revert" || reviewOnly || specPublication ? [] : await workspaceStandingFailures(dependencies, operation.workspaceId);
   const failingPublishChecks = publishChecks?.filter((check) => check.after === "failed" || check.after === "timed_out") ?? [];
-  const checked = reviewOnly
+  // A spec pull request carries no checks section: it is a document, and the code workspace's checks are not about it.
+  const checked = specPublication ? { body: expected.body, draft: false as boolean | undefined } : reviewOnly
     ? failingPublishChecks.length === 0 ? { body: expected.body, draft: expected.draft } : checkedPullRequest(expected.body, expected.draft, failingPublishChecks, undefined)
     : checkedPullRequest(expected.body, expected.draft, publishChecks, latestChecks, standingFailures);
   const body = checked.body;

@@ -1,8 +1,9 @@
 import { readFile, realpath } from "node:fs/promises";
 import { restoreFixStart } from "./fix-start.js";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SetupDraft, type SpecDraft, type SpecReviewResult, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupDraftAnswer, setupDraftInstructions, setupDraftRetryPrompt } from "./setup-draft.js";
+import { listSpecFolders, readSpecWriteAnswer, specWriteInstructions, specWriteRetryPrompt } from "./spec-write.js";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { publishWorkspaceDiff, recorderFingerprint, workspaceFingerprint, type ArtifactSink } from "./artifacts.js";
 import { WorkspaceConversationStore, type ConversationRecord } from "./conversations.js";
@@ -80,9 +81,15 @@ export interface TaskInvocationResult {
   reopened: boolean;
   /** Spec 051 FR-007: AgentX's check of the agent's work, with outputs cut to fit (compactCheckReport). */
   checks?: CheckReport;
-  workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND" | "SETUP_DRAFT";
+  workflowMode?: "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "UNDERSTAND" | "SETUP_DRAFT" | "SPEC_WRITE";
   /** Rovara Code Task 10: the draft a setup-draft run read, already bounded and redacted (the broker reads it again). */
   setupDraft?: SetupDraft;
+  /** Meta repo lane D: the spec draft a spec-write run read, bounded and cleaned (the broker reads it again). */
+  specDraft?: SpecDraft;
+  /** Meta repo lane D: what the spec write read of the meta repository besides the plan: the folder names for `{n}`. Names only, never text. */
+  specContext?: { folders: string[] };
+  /** Meta repo lane D (D3): the code review's walk of the spec's requirements (the broker reads it again). */
+  specReview?: SpecReviewResult;
   /** Worker-reported Git object identities; the broker recomputes and stores the canonical digest. */
   workflowCandidateRepositories?: Array<{ repositoryId: string; commitSha: string; treeSha: string }>;
   /** Fixed worker export, uploaded on its separate capability before the model-visible terminal result. */
@@ -598,10 +605,13 @@ async function runTask(
   // The plan check (Rovara Code version 2) is a read-only model run like planning: no checks of the code, the planning deadline and stall limit, and a planning session's read-only tools.
   const critiquing = invocation.payload.workflowMode === "PLAN_CRITIQUE";
   const settingUpDraft = invocation.payload.workflowMode === "SETUP_DRAFT";
+  // Meta repo lane D: writing the spec is a planning session too (read-only tools, one deadline); its prompt holds the approved plan as data.
+  const specBinding = invocation.payload.workflowMode === "SPEC_WRITE" ? invocation.payload.specWrite : undefined;
+  const writingSpec = specBinding !== undefined;
   // A setup draft is a planning session too: read, grep, find and ls only, one deadline, a no-activity limit.
-  const planning = invocation.payload.workflowMode === "PLAN" || critiquing || settingUpDraft;
+  const planning = invocation.payload.workflowMode === "PLAN" || critiquing || settingUpDraft || writingSpec;
   const payloadMode = invocation.payload.workflowMode;
-  const piMode: PiWorkflowMode = payloadMode === "PLAN_CRITIQUE" || payloadMode === "SETUP_DRAFT" ? "PLAN" : payloadMode ?? "IMPLEMENT";
+  const piMode: PiWorkflowMode = payloadMode === "PLAN_CRITIQUE" || payloadMode === "SETUP_DRAFT" || payloadMode === "SPEC_WRITE" ? "PLAN" : payloadMode ?? "IMPLEMENT";
   // Understand reads the project and the request with read-only tools and answers with one `rovara-intent` block; it has its own clock (UNDERSTAND_TIMEOUT_MINUTES).
   const understanding = invocation.payload.workflowMode === "UNDERSTAND";
   const planCritique = payloadMode === "PLAN_CRITIQUE";
@@ -1164,7 +1174,7 @@ async function runTask(
         }
       };
       if (workflowDependencies === undefined) {
-        await promptAndSettle(settingUpDraft ? `${invocation.payload.prompt}\n\n${setupDraftInstructions(manifest.repositories)}` : invocation.payload.prompt);
+        await promptAndSettle(settingUpDraft ? `${invocation.payload.prompt}\n\n${setupDraftInstructions(manifest.repositories)}` : specBinding !== undefined ? `${invocation.payload.prompt}\n\n${specWriteInstructions(specBinding)}` : invocation.payload.prompt);
       } else {
         const graph = workflowDependencies.graph;
         findings.setOrder(taskGraphOrder(graph));
@@ -1262,6 +1272,19 @@ async function runTask(
         outcome = "SUCCEEDED";
         await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SETUP_DRAFT" });
         taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SETUP_DRAFT", setupDraft: read.draft };
+      } else if (specBinding !== undefined) {
+        let read = readSpecWriteAnswer(finalText ?? "", specBinding);
+        // An answer that can't be read gets one more try in the same session, with what is wrong with it; whichever comes last is what is reported.
+        if (!read.ok) {
+          await emit("progress", { message: "The spec could not be read; the agent is asked to answer again." });
+          await promptAndSettle(specWriteRetryPrompt(read.errors));
+          read = readSpecWriteAnswer(finalText ?? "", specBinding);
+        }
+        monitor.stop();
+        if (!read.ok) throw agentXError("OPERATION_INTERRUPTED", "the spec write run produced no readable spec");
+        outcome = "SUCCEEDED";
+        await emit("result", { status: "SUCCEEDED", conversationId, workflowMode: "SPEC_WRITE" });
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "SPEC_WRITE", specDraft: read.draft, specContext: { folders: await listSpecFolders({ rootPath: canonicalRoot, metaPath: manifest.meta?.path, foldersIn: specBinding.foldersIn }) } };
       } else if (planning) {
         let plan = finalText?.trim();
         // Spec 061: when the broker asked for a structured plan, an answer AgentX cannot read, or that is too long, gets
@@ -1365,6 +1388,7 @@ async function runTask(
       } else if (reviewing) {
         const repositories = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep);
         const beforeReview = createCandidateManifest(await readCandidateRepositories(repositories));
+        let specReviewResult: SpecReviewResult | undefined;
         let reports = await runWorkflowReviews({
           operationId: invocation.operationId,
           rootPath: canonicalRoot,
@@ -1374,6 +1398,7 @@ async function runTask(
           ruleFileBaseCommits: invocation.payload.workflowBase ?? [],
           ...(invocation.payload.workflowReviewChecks === undefined ? {} : { reviewChecks: invocation.payload.workflowReviewChecks }),
           ...(invocation.payload.workflowReviewPlan === undefined ? {} : { reviewPlan: invocation.payload.workflowReviewPlan }),
+          ...(invocation.payload.workflowReviewSpec === undefined ? {} : { reviewSpec: invocation.payload.workflowReviewSpec, onSpecReview: (result: SpecReviewResult) => { specReviewResult = result; } }),
           ...(invocation.payload.workflowReviewFeedback === undefined ? {} : { reviewFeedback: invocation.payload.workflowReviewFeedback }),
           ...(invocation.payload.workflowReviewNote === undefined ? {} : { reviewNote: invocation.payload.workflowReviewNote }),
           ...(invocation.payload.workflowReviewers === undefined ? {} : { reviewers: invocation.payload.workflowReviewers }),
@@ -1407,7 +1432,7 @@ async function runTask(
           workflowCandidateRepositories: beforeReview.repositories,
           workflowReviews: reports,
         });
-        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "REVIEW", workflowCandidateRepositories: beforeReview.repositories, workflowReviews: reports };
+        taskResult = { conversationId, reopened: registered !== undefined, workflowMode: "REVIEW", workflowCandidateRepositories: beforeReview.repositories, workflowReviews: reports, ...(specReviewResult === undefined ? {} : { specReview: specReviewResult }) };
       } else {
       diffAttempted = true;
       const { changed: dirty } = await publishWorkspaceDiff(dependencies.rootPath, dependencies.artifactSink);

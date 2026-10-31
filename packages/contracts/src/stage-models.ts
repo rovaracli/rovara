@@ -92,6 +92,7 @@ export const ModelSelectionPolicyPendingReaderSchema = forwardReader(ModelSelect
 export const STAGE_OPERATION_MAPPING = {
  UNDERSTAND:{stages:["understand"],stepKind:"plan"},
  SETUP_DRAFT:{stages:["plan"],stepKind:"plan"},
+ SPEC_WRITE:{stages:["plan"],stepKind:"plan"},
  PLAN:{stages:["plan"],stepKind:"plan"},
  PLAN_CRITIQUE:{stages:["plan_check"],stepKind:"plan_critic"},
  IMPLEMENT:{stages:["build"],stepKind:"build"},

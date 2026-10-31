@@ -170,19 +170,21 @@ async function resumeAccessPausedWorkflowDispatch(
     }
   }
   const expected = { workflowRevision: audit.workflowRevision, candidateDigest: audit.candidateDigest };
+  let outcome: string | undefined;
   if (audit.kind === "REVIEW") {
-    await startTaskWorkflowReviewFromSystem(deps, access.task.taskId, expected, caller);
+    outcome = await startTaskWorkflowReviewFromSystem(deps, access.task.taskId, expected, caller);
   } else if (audit.kind === "UNDERSTAND") {
     await startTaskWorkflowUnderstandFromSystem(deps, access.task.taskId, { workflowRevision: expected.workflowRevision }, caller);
   } else if (audit.kind === "PLAN") {
     await startTaskWorkflowPlanFromSystem(deps, access.task.taskId, { workflowRevision: expected.workflowRevision }, caller);
   } else {
-    await startTaskWorkflowPublicationFromSystem(deps, access.task.taskId, expected, {
+    outcome = await startTaskWorkflowPublicationFromSystem(deps, access.task.taskId, expected, {
       ownerRetry: true, ownerAccess: access, ownerActor: caller,
       ...(deps.issuer === undefined ? {} : { taskPageUrl: taskPageUrl(deps.issuer, access.task.taskId) }),
     });
   }
-  try {
+  // Meta repo lane D: a step held for the task's spec keeps its row.
+  if (outcome !== "WAITING") try {
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName,
       Key: { pk: WORKFLOW_DISPATCH_PK, sk: `${access.task.taskId}#${audit.workflowRevision}` },
       ConditionExpression: "workflowRevision = :revision AND #kind = :kind AND candidateDigest = :candidate",
