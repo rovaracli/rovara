@@ -1126,6 +1126,28 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: a risky item gets its 
     expect(t.db.find((item) => item.entityType === "DEVELOPER_TASK")).toHaveLength(tasks);
   });
 
+  it("opens no second pull request when a press is repeated under one approval after its reply was lost: the pull request's request id comes from the approval, not from the press (MB-7, through the route)", async () => {
+    const t = await setup();
+    await t.drafted();
+    const asked = await t.apply([{ id: "devcontainer" }]);
+    const approvalId = outcomeOf(asked, "devcontainer")!.approval!.approvalId;
+    t.approve(approvalId);
+    const first = await t.apply([{ id: "devcontainer" }]);
+    expect(outcomeOf(first, "devcontainer")?.outcome, JSON.stringify(first.body)).toBe("applied");
+    const taskId = (outcomeOf(first, "devcontainer") as unknown as { pullRequest: { taskId: string } }).pullRequest.taskId;
+    const tasks = () => t.db.find((item) => item.entityType === "DEVELOPER_TASK" && item.purpose !== "setup_draft").length;
+    expect(tasks()).toBe(1);
+    // The start worked but its reply was lost, so the consent was given back and the claim released: undo what the route recorded of that press (the used mark and the claim)...
+    t.db.delete(setupDraftKey(TEST_ORG, NAME).pk, `USED#${approvalId}`);
+    const { pullRequestClaim: _claim, ...pointer } = t.pointer()! as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- dropped on purpose
+    t.db.set({ ...setupDraftKey(TEST_ORG, NAME), ...pointer });
+    // ...and the person presses again, with a new request id of the press (the route makes a new one for every press).
+    const again = await t.apply([{ id: "devcontainer" }]);
+    expect(outcomeOf(again, "devcontainer")?.outcome, JSON.stringify(again.body)).toBe("applied");
+    expect((outcomeOf(again, "devcontainer") as unknown as { pullRequest: { taskId: string } }).pullRequest.taskId).toBe(taskId);
+    expect(tasks()).toBe(1);
+  });
+
   it("gives the claim back when the pull request could not start, so it can be asked for again", async () => {
     const t = await setup({ memberLimit: 1 });
     await t.drafted();

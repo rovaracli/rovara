@@ -7,7 +7,7 @@ import { ManagedByFileError } from "../../packages/broker/src/org/project-settin
 import { applySetupDraft, type SetupDraftDependencies } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { changeTitleOf } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
-import { SETUP_ITEM_WORDS, getSetupItemApplier, type SetupItemApplyContext } from "../../packages/broker/src/rovara-code/setup-items.js";
+import { SETUP_ITEM_WORDS, getSetupItemApplier } from "../../packages/broker/src/rovara-code/setup-items.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -128,35 +128,7 @@ describe("the dev container pull request under one approval", () => {
   }, { basedOnRevision: 1, repositories: [{ name: "web" }] });
   if (!withContainer.ok) throw new Error("fixture");
 
-  it("asks for the same pull request request id on every press under one approval, so a retry after a start that failed once the task had begun opens no second pull request", async () => {
-    const applier = getSetupItemApplier("devcontainer")!;
-    const item = itemsOf(withContainer.proposal).find((entry) => entry.kind === "devcontainer")!;
-    // A start that is idempotent per request id, as the code-intent start is: the first attempt begins the task and then fails; a repeat of that id answers the task begun.
-    const tasks = new Map<string, string>();
-    let failNext = true;
-    const claims: string[] = [];
-    let claimed: string | undefined;
-    const contextFor = (press: string): SetupItemApplyContext => ({
-      project: "web", taskId: "t", item, proposal: withContainer.proposal, approvedBy: "admin", approvalId: "apr_card_1", requestId: `press-${press}`, revision: 1,
-      host: {
-        updateSettings: async () => ({ warnings: [] }),
-        startPullRequest: async ({ requestId }) => {
-          const existing = tasks.get(requestId);
-          const taskId = existing ?? randomUUID();
-          tasks.set(requestId, taskId);
-          if (existing === undefined && failNext) { failNext = false; throw agentXError("RUNTIME_UNAVAILABLE", "the reply was lost"); }
-          return { taskId };
-        },
-        claimPullRequest: async (requestId) => { claims.push(requestId); if (claimed !== undefined && claimed !== requestId) throw agentXError("WORKSPACE_BUSY", "once"); claimed = requestId; },
-        releasePullRequestClaim: async (requestId) => { if (claimed === requestId) claimed = undefined; },
-      },
-    });
-    await expect(applier.apply(contextFor("one"))).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
-    const second = await applier.apply(contextFor("two"));
-    expect(second.pullRequest?.taskId).toBe([...tasks.values()][0]);
-    expect(tasks.size).toBe(1);
-    expect(new Set(claims).size).toBe(1);
-  });
+  // The "same request id on every press, so a retry after a lost reply opens no second pull request" case runs through the real route: rovara-code-setup-draft.test.ts (MB-7).
 
   it("derives different pull request ids for different approvals", async () => {
     const applier = getSetupItemApplier("devcontainer")!;

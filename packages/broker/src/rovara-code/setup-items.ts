@@ -43,14 +43,24 @@ export function githubFullNameOf(url: string): string | undefined {
   }
 }
 
-/** The project setting an item sets, by the name settings origins use; undefined for an item that is not a setting. */
+/**
+ * The project setting an item sets, by the name settings origins use; undefined for an item that is not a setting (a secret, and a test environment hint, which is kept with the
+ * test environment and not in the project's settings). Every origin field has exactly one kind, so a lane that adds an applier gets its setting's origin read like the built-in ones.
+ */
 export function settingFieldOf(item: Pick<SetupItem, "kind">): ProjectOriginField | undefined {
   switch (item.kind) {
+    case "repository": return "repositories";
     case "setup": return "setup";
     case "tests": return "readiness";
     case "devcontainer": return "devcontainer";
-    case "repository": return "repositories";
-    default: return undefined;
+    case "allowed_domain": return "network";
+    case "check": return "checks";
+    case "knowledge": return "knowledge";
+    case "spec_target": return "specTarget";
+    case "source": return "sources";
+    case "intake": return "intake";
+    case "test_environment": return undefined;
+    case "secret": return undefined;
   }
 }
 
