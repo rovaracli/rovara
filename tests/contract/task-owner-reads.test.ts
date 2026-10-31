@@ -61,7 +61,7 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks.ts", "answerIntentFromReply", "caller-actor", "taskOwnerKey()"],
   ["rovara-code/questions.ts", "answerIntentOnSession", "caller-actor", "taskOwnerKey()"],
   // the test proof is read from the task's own object prefix (`private/<ownerKey>/<workspace>/<operation>/`): the task's principal, never changes
-  ["developer/test-proof-lines.ts", "loadTestProofLines", "principal", ".ownerKey"],
+  ["developer/test-proof-lines.ts", "newestBoundProof", "principal", ".ownerKey"],
   ["rovara-code/test-proof-reader.ts", "loadTestProof", "principal", ".ownerKey"],
   // Plan 6 Task 13: the object prefix of the task's own diff artifact (`ownArtifactKey`): the task's principal, never changes
   ["aws/developer-tasks.ts", "candidateChangedFiles", "principal", ".ownerKey"],
@@ -84,7 +84,7 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "commentAnswerSection", "principal", ".ownerKey"],
   ["aws/developer-tasks.ts", "finishTaskClose>closing", "index", ".developerId"],
-  ["aws/developer-tasks.ts", "releaseFinishedTask>rest", "index", ".developerId"],
+  ["aws/developer-tasks.ts", "releaseFinishedTaskNow>rest", "index", ".developerId"],
   ["aws/developer-tasks.ts", "shareItems", "index", ".developerId"],
   ["aws/developer-tasks.ts", "shareIdempotencyKey", "principal", ".ownerKey"],
   ["developer/page-comments.ts", "loadDocumentVersion", "principal", ".ownerKey"],

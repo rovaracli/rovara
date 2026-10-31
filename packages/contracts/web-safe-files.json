@@ -28,6 +28,7 @@
   "packages/contracts/src/forward-reader.ts",
   "packages/contracts/src/git-branch.ts",
   "packages/contracts/src/home.ts",
+  "packages/contracts/src/how-we-work-track-record.ts",
   "packages/contracts/src/how-we-work.ts",
   "packages/contracts/src/invite-creation.ts",
   "packages/contracts/src/models.ts",

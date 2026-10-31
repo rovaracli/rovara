@@ -1280,7 +1280,7 @@ describe("the broker's wiring", () => {
 
     const sweep = await h.handler({ source: "agentx.spend-settlement" });
     logs.mockRestore();
-    expect(JSON.parse(sweep.body)).toMatchObject({ jobs: [{ name: "drain-member-merges", ok: true, result: { processed: 1, rejected: 0, failed: 0, complete: true } }, { name: "expire-approvals", ok: true }, { name: "escalate-owner-requests", ok: true }] });
+    expect(JSON.parse(sweep.body)).toMatchObject({ jobs: [{ name: "drain-member-merges", ok: true, result: { processed: 1, rejected: 0, failed: 0, complete: true } }, { name: "expire-approvals", ok: true }, { name: "escalate-owner-requests", ok: true }, { name: "resume-learning-walks", ok: true }] });
     expect((await h.store.get(TEST_ORG, agent.agentId))!.owner).toEqual({ kind: "member", developerId: OMAR.developerId });
     expect(h.markers()).toEqual([]);
   });
@@ -1307,7 +1307,7 @@ describe("the broker's wiring", () => {
     const sweep = await h.handler({ source: "agentx.spend-settlement" });
 
     expect(sweep.statusCode).toBe(200);
-    expect(JSON.parse(sweep.body)).toMatchObject({ jobs: [{ name: "drain-member-merges", ok: true, result: { processed: 1, rejected: 0, failed: 0 } }, { name: "expire-approvals", ok: true }, { name: "escalate-owner-requests", ok: true }] });
+    expect(JSON.parse(sweep.body)).toMatchObject({ jobs: [{ name: "drain-member-merges", ok: true, result: { processed: 1, rejected: 0, failed: 0 } }, { name: "expire-approvals", ok: true }, { name: "escalate-owner-requests", ok: true }, { name: "resume-learning-walks", ok: true }] });
     expect((await h.store.get(TEST_ORG, owned.agentId))!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
     expect((await h.store.get(TEST_ORG, agent.agentId))!.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
     expect(h.markers()).toEqual([]);
