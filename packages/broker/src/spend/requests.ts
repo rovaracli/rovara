@@ -465,17 +465,33 @@ async function starterOf(deps: SpendRequestDependencies, request: SpendRequestRe
  * I-3, M-11) the same as a max per run: its asker, or the starter of the task whose pause asked, cannot use singleton-owner status to decide a stop loosening.
  * A chain step's raise past its run's limit is never the payer's to decide; and a chain's owner who starts the run is no exception (Plan 4 Task 5, review M-5).
  */
-/** Stop loosening cannot acquire authority from an unversioned singleton admin list.
- * Existing payer consent is retained only within a known captured stop; legacy
- * ordinary-member payer rules do not grant an owner/admin self-raise exception. */
+/** Enrollment OFF retains the pre-M47 decider rules. Once enrolled, every
+ * role's payer consent is limited by the final calculated stop; singleton admin
+ * status cannot authorize a stop-loosening exception. */
 async function stopRaiseNeedsDifferentPerson(deps: SpendRequestDependencies, request: SpendRequestRecord, person: string, amountUsd: number): Promise<boolean> {
  if (request.kind !== "run_limit" && request.kind !== "max_per_run" && request.kind !== "planning") return false;
+ const policy = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgSettingsKey(request.orgId, "TASK_STOP_POLICY"), ConsistentRead: true })) as { Item?: { enrollment?: { version?: unknown; state?: unknown } } };
+ if (policy.Item === undefined || (policy.Item.enrollment?.version === 1 && ["disabled", "ready"].includes(String(policy.Item.enrollment.state)))) return false;
  if (request.kind === "max_per_run") return true;
- const role = await orgRoleOf(deps, request.orgId, person);
- if (role !== "owner" && role !== "admin") return false;
  const task = await readTask(deps, request.orgId, request.taskId);
- if (task?.spendingStop !== undefined) {
-  try { const stop = checkedTaskStopSnapshot(task.spendingStop), proposed = usdToWholeMicrodollars(newLimitFor(request, amountUsd));return proposed === undefined || proposed > stop.effectiveStopMicrousd; }
+ if (task !== undefined) {
+  try {
+   const role = await orgRoleOf(deps, request.orgId, person);
+   if (role === undefined) return true;
+   // Eligibility preview only: the decision transaction separately rechecks
+   // native work authority and all numeric sources before granting anything.
+   const captured = task.spendingStop === undefined ? await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, purpose: "approval_terms", requireScopeAccess: async () => {} }, {
+    orgId: request.orgId, developerId: person, role, project: task.project, agentId: task.agent?.agentId ?? ROVARA_CODE_AGENT_ID,
+    pathLimitMicrousd: taskRunLimitMicrousd(task) ?? null,
+   }) : undefined;
+   if (captured?.kind === "disabled") return false;
+   const stop = task.spendingStop === undefined ? captured?.kind === "captured" ? captured : undefined : checkedTaskStopSnapshot(task.spendingStop);
+   if (stop === undefined) return true;
+   const proposed = usdToWholeMicrodollars(newLimitFor(request, amountUsd));
+   if (proposed === undefined) return true;
+   const final = approveCapturedTaskStop(stop, proposed, "run_limit", "approval_allowance");
+   return proposed > final.effectiveStopMicrousd;
+  }
   catch { return true; }
  }
  return true;
@@ -2352,7 +2368,7 @@ export async function withdrawTaskSpendRequests(deps: SpendRequestDependencies, 
   const at = iso(deps.now());
   const events = [AuditEventInputSchema.parse(auditSpendRequestExpired({ orgId: record.orgId, actor: auditActorOf("system"), occurredAt: at, occurrence: record.spendRequestId, ...facts(record) }))];
   return {
-    items: [...endItems(deps, record, { status: "EXPIRED", expiredAt: at, endedBecause: "continued" }), ...events.flatMap((event) => auditPending(deps, event))],
+    items: [...endItems(deps, record, { status: "EXPIRED", expiredAt: at, endedBecause: "continued" }), ...events.map(event => ({ Put: { TableName: deps.tableName, Item: auditPendingItem(event, deps.now()), ConditionExpression: "attribute_not_exists(pk)" } }))],
     flush: () => flushAuditEvents(deps, events),
   };
 }

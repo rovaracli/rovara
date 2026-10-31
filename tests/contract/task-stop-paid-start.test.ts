@@ -160,7 +160,7 @@ it("a real project payer change after capture still refuses atomically", async (
 async function customStart() {
   const f = await fixture(); f.t.grantRole(MAYA, "maintainer");
   const agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const request = { ...f.request, agent: { agentId } };
   return { ...f, agentId, key, startCustom: () => f.t.dev(MAYA, "POST", "/v1/dev/tasks", request) };
 }
@@ -228,7 +228,7 @@ async function otherProjectAgent() {
   f.t.db.set({ ...orgProjectCatalogKey(TEST_ORG, project), entityType: "PROJECT_CATALOG", orgId: TEST_ORG, name: project, latestRevision: 1 });
   f.t.db.set({ ...grant, entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: project, grantId: randomUUID(), role: "developer", projectRole: "maintainer" });
   const agentId = await f.t.agentOf(CODING, { owner: { kind: "project", project }, accountable: ADA }), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   return { ...f, grant, agentId, key, startOther: () => f.t.dev(MAYA, "POST", "/v1/dev/tasks", { ...f.request, agent: { agentId } }) };
 }
 it("a legitimate agent owned by another project can start with live use authority", async () => {
@@ -274,7 +274,7 @@ for (const loss of ["share_removed", "shared_project_viewer"] as const) it(`paid
 
 async function draftStart() {
   const f = await fixture(), agentId = await f.t.agentOf(CODING, { publish: false }), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   f.t.db.delete(projectAgentKey(TEST_ORG, "payments", agentId)); // a draft test run is legitimately off-roster
   return { ...f, agentId, key, startDraft: () => f.t.api(MAYA, "POST", `/v1/app/agents/${agentId}/runs`, { project: "payments", input: { text: "Test the draft" }, version: "draft" }) };
 }
@@ -449,9 +449,11 @@ for (const enrolled of [false, true]) it(`initial human run preserves a legacy s
 });
 
 async function pausedTestTransition(spentUsd?: number, history = false, initialMax?: number) {
-  const f = await fixture(), agentId = await f.t.agentOf(TRIAGE, { publish: false }), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, ...(initialMax === undefined ? { stopKind: "inherit" } : { stopKind: "limited", maxPerRunUsd: initialMax }) });
-  if (initialMax !== undefined) f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+  const f = await fixture(), agentId = await f.t.agentOf(TRIAGE, { publish: false });
+  if (initialMax !== undefined) {
+   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
+   expect((await f.t.setBudget(MAYA, agentId, { maxPerRunUsd: initialMax })).status).toBe(200);
+  }
   if (history) for (let index = 0; index < 5; index += 1) f.t.db.set({ ...runCostKey(TEST_ORG, "payments", agentId, "AGENT", new Date(Date.now() - index * 1000).toISOString(), randomUUID()), entityType: "RUN_COST", costUsd: 7 });
   const task = await f.t.runOf(agentId, { version: "draft" });
   if (spentUsd !== undefined) {
@@ -1011,7 +1013,7 @@ for (const receiptState of ["valid", "missing", "corrupt", "changed_reference", 
 
 for (const recovery of ["valid", "spent_valid", "closing", "cap_source"] as const) it(`workflow planning approval repair retains its original stage and native ${recovery} guard`, async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
   const task = await f.t.runOf(agentId); expect(f.t.taskOps(task.workspaceId).at(-1)).toMatchObject({ workflowMode: "PLAN" });
@@ -1185,10 +1187,9 @@ it("a max-per-run ask retains distinct original/proposed run limit, per-run stop
   const f = await pausedTestTransition();
   f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
-  const agentKeyOf = agentKey(TEST_ORG, f.agentId, "META");
-  f.t.db.set({ ...f.t.db.get(agentKeyOf)!, revision: 2, stopKind: "limited", maxPerRunUsd: 4 });
+  expect((await f.t.setBudget(MAYA, f.agentId, { maxPerRunUsd: 4 })).status).toBe(200);
   expect((await f.transition()).status).toBe(200); expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 4 });
-  const inherited: Record<string, unknown> = { ...f.t.db.get(agentKeyOf)!, revision: 3, stopKind: "inherit" }; delete inherited.maxPerRunUsd; f.t.db.set(inherited);
+  expect((await f.t.setBudget(MAYA, f.agentId, { maxPerRunUsd: null })).status).toBe(200);
   await f.t.pauseAndEnd(f.task, { kind: "max_per_run", taskId: f.task.taskId });
   const request = f.t.requestOf(f.task.taskId, "max_per_run")[0]!; expect(request.newLimitUsd).toBe(9);
   expect(request.approvalTerms).toMatchObject({ operation: "max_per_run", askedFiguresMicrousd: { budget: 4_000_000, maxPerRun: 4_000_000, baseline: 0, amount: 5_000_000 },
@@ -1199,10 +1200,9 @@ it("a max-per-run approval above the existing run limit keeps its exact window w
   const f = await pausedTestTransition();
   f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
-  const agentKeyOf = agentKey(TEST_ORG, f.agentId, "META");
-  f.t.db.set({ ...f.t.db.get(agentKeyOf)!, revision: 2, stopKind: "limited", maxPerRunUsd: 4 });
+  expect((await f.t.setBudget(MAYA, f.agentId, { maxPerRunUsd: 4 })).status).toBe(200);
   expect((await f.transition()).status).toBe(200); expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 4 });
-  const inherited: Record<string, unknown> = { ...f.t.db.get(agentKeyOf)!, revision: 3, stopKind: "inherit" }; delete inherited.maxPerRunUsd; f.t.db.set(inherited);
+  expect((await f.t.setBudget(MAYA, f.agentId, { maxPerRunUsd: null })).status).toBe(200);
   await f.t.pauseAndEnd(f.task, { kind: "max_per_run", taskId: f.task.taskId });
 
   const request = f.t.requestOf(f.task.taskId, "max_per_run")[0]!, operations = f.t.taskOps(f.task.workspaceId).map(operation => operation.id);
@@ -1219,10 +1219,9 @@ it("an approved per-run raise within the original run limit commits its exact ca
   const f = await pausedTestTransition(undefined, true);
   f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
-  const agentKeyOf = agentKey(TEST_ORG, f.agentId, "META");
-  f.t.db.set({ ...f.t.db.get(agentKeyOf)!, revision: 2, stopKind: "limited", maxPerRunUsd: 4 });
+  expect((await f.t.setBudget(MAYA, f.agentId, { maxPerRunUsd: 4 })).status).toBe(200);
   expect((await f.transition()).status).toBe(200); expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 4 });
-  const inherited: Record<string, unknown> = { ...f.t.db.get(agentKeyOf)!, revision: 3, stopKind: "inherit" }; delete inherited.maxPerRunUsd; f.t.db.set(inherited);
+  expect((await f.t.setBudget(MAYA, f.agentId, { maxPerRunUsd: null })).status).toBe(200);
   await f.t.pauseAndEnd(f.task, { kind: "max_per_run", taskId: f.task.taskId });
 
   const request = f.t.requestOf(f.task.taskId, "max_per_run")[0]!;
@@ -1240,10 +1239,9 @@ it("a later run-limit approval retains the already approved task per-run stop", 
   const f = await pausedTestTransition(undefined, true);
   f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 3, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, revision: 2, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
-  const agentKeyOf = agentKey(TEST_ORG, f.agentId, "META");
-  f.t.db.set({ ...f.t.db.get(agentKeyOf)!, revision: 2, stopKind: "limited", maxPerRunUsd: 4 });
+  expect((await f.t.setBudget(MAYA, f.agentId, { maxPerRunUsd: 4 })).status).toBe(200);
   expect((await f.transition()).status).toBe(200); expect(f.t.meta(f.task.taskId)).toMatchObject({ budgetUsd: 4, maxPerRunUsd: 4 });
-  const inherited: Record<string, unknown> = { ...f.t.db.get(agentKeyOf)!, revision: 3, stopKind: "inherit" }; delete inherited.maxPerRunUsd; f.t.db.set(inherited);
+  expect((await f.t.setBudget(MAYA, f.agentId, { maxPerRunUsd: null })).status).toBe(200);
   await f.t.pauseAndEnd(f.task, { kind: "max_per_run", taskId: f.task.taskId });
 
   const request = f.t.requestOf(f.task.taskId, "max_per_run")[0]!;
@@ -1260,7 +1258,7 @@ it("a later run-limit approval retains the already approved task per-run stop", 
 
 async function hardRequestedTask() {
   const f = await fixture(), agentId = await f.t.agentOf(TRIAGE), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   f.t.db.set({ ...f.t.db.get(f.policy)!, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
   f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 20 } });
   const started = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId }, input: { text: "Look at the new ticket" }, origin: "app", runLimitUsd: 5,
@@ -1340,7 +1338,7 @@ it("a new payer window retains an existing task per-run stop when current agent 
 
 for (const corruption of ["valid", "cap", "baseline", "reference", "receipt"] as const) it(`model key issuance checks the immutable admitted window: ${corruption}`, async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!;
   const stored = f.t.meta(task.taskId), reference = stored.spendingAdmission as { requestId: string };
   if (corruption === "cap") f.t.db.set({ ...stored, budgetUsd: 100 });
@@ -1357,7 +1355,7 @@ for (const corruption of ["valid", "cap", "baseline", "reference", "receipt"] as
 
 it("model key record refuses a competing admitted cap write and returns no key", async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
   f.t.db.send = async command => {
     if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
@@ -1374,7 +1372,7 @@ it("model key record refuses a competing admitted cap write and returns no key",
 
 for (const change of ["terminal", "fence"] as const) it(`key recording refuses a competing operation ${change} write`, async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
   f.t.db.send = async command => {
     if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
@@ -1391,7 +1389,7 @@ for (const change of ["terminal", "fence"] as const) it(`key recording refuses a
 
 for (const change of ["closing", "member", "project"] as const) it(`key recording refuses competing live authority loss: ${change}`, async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
   f.t.db.send = async command => {
     if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
@@ -1410,7 +1408,7 @@ for (const change of ["closing", "member", "project"] as const) it(`key recordin
 
 for (const change of ["archive", "roster"] as const) it(`key recording refuses competing agent ${change} loss`, async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
   f.t.db.send = async command => {
     if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
@@ -1428,7 +1426,7 @@ for (const change of ["archive", "roster"] as const) it(`key recording refuses c
 
 it("initial and planned operations retain their admitted task window reference", async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), reference = f.t.meta(task.taskId).spendingAdmission;
   const operations = f.t.db.find(row => row.entityType === "OPERATION" && row.workspaceId === task.workspaceId);
   expect(operations.length).toBeGreaterThanOrEqual(2);
@@ -1436,7 +1434,7 @@ it("initial and planned operations retain their admitted task window reference",
 });
 it("removing both task admission fields cannot downgrade an admitted operation to legacy key minting", async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, changed = { ...f.t.meta(task.taskId) };
   delete changed.spendingStop; delete changed.spendingAdmission; f.t.db.set(changed);
   const before = f.t.access.mintedKeys().length;
@@ -1460,7 +1458,7 @@ it("a prior window callback cannot adopt a valid newly admitted Continue window"
 
 for (const loss of ["pointer", "task", "pointer_race"] as const) it(`an admitted operation refuses lost task binding: ${loss}`, async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
   if (loss === "pointer") f.t.db.delete(taskPointerKey(task.workspaceId));
   if (loss === "task") f.t.db.delete(taskKey(task.taskId));
@@ -1480,7 +1478,7 @@ for (const loss of ["pointer", "task", "pointer_race"] as const) it(`an admitted
 
 for (const change of ["operation_org", "operation_id", "task_workspace", "route_between_reads"] as const) it(`model keys refuse contradictory admitted scope identity: ${change}`, async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, opKey = operationKey(task.workspaceId, plan.id), stored = f.t.db.get(opKey)!;
   if (change === "operation_org") f.t.db.set({ ...stored, orgId: "org_00000000000000000000" });
   if (change === "operation_id") f.t.db.set({ ...stored, id: randomUUID() });
@@ -1499,7 +1497,7 @@ for (const change of ["operation_org", "operation_id", "task_workspace", "route_
 
 it("native key recording holds the actual currentOwner across a takeover race", async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db); let raced = false;
   f.t.db.send = async command => {
     if (!raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.ExpressionAttributeNames?.["#ids"] === "modelKeyIds")) {
@@ -1517,7 +1515,7 @@ it("native key recording holds the actual currentOwner across a takeover race", 
 
 for (const state of ["ownerless", "ownerless_race"] as const) it(`model keys retain canonical task-people work authority: ${state}`, async () => {
   const f = await fixture(), agentId = await f.t.agentOf(CODING), key = agentKey(TEST_ORG, agentId, "META");
-  f.t.db.set({ ...f.t.db.get(key)!, revision: 1, stopKind: "inherit" });
+  expect(f.t.db.get(key)).toMatchObject({ revision: 1, stopKind: "inherit" });
   const task = await f.t.runOf(agentId), plan = f.t.taskOps(task.workspaceId).at(-1)!, send = f.t.db.send.bind(f.t.db);
   const people = { pk: `DEVTASK#${task.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: true, people: [] };
   if (state === "ownerless") f.t.db.set(people);
@@ -2522,4 +2520,24 @@ it("concurrent drift in a refusal audit remains a task-stop refusal with no work
  };
  const reply = await f.start();expect(raced).toBe(true);expect(reply.body.error).toMatchObject({ code: "TASK_STOP_ZERO" });
  expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
+
+it("Continue withdrawal includes the mandatory expiry outbox without an optional audit sink", async () => {
+ const f = await fixture(), task = await f.t.plainTask();await f.t.pauseAndEnd(task);
+ const deps = f.t.deps();delete deps.audit;
+ const withdrawal = await spendRequests.withdrawTaskSpendRequests(deps, { orgId: TEST_ORG, taskId: task.taskId, budgetPause: { at: new Date().toISOString(), scope: { kind: "task", taskId: task.taskId } } });
+ expect(transactionAuditEvent(withdrawal.items, "spend_request.expired")).toBeDefined();
+});
+it("unpriced refusal uses the dependency clock and maps a lost native snapshot fence", async () => {
+ const { requirePricedTaskStopAdmission } = await import("../../packages/broker/src/org/task-stop-unpriced.js");
+ const f = await fixture(), clock = Date.parse("2026-10-31T07:00:00Z"), send = f.t.db.send.bind(f.t.db);let attemptedAt: string | undefined;
+ f.t.db.send = async command => {
+  if (command instanceof TransactWriteCommand) {
+   const event = transactionAuditEvent(command.input.TransactItems ?? [], "spending.stop_refused");
+   if (event !== undefined) {attemptedAt = event.occurredAt;f.t.db.set({ ...f.t.db.get(f.policy)!, revision: 2 });}
+  }
+  return send(command);
+ };
+ await expect(requirePricedTaskStopAdmission({ ...f.t.deps(), now: () => clock }, { orgId: TEST_ORG, actor: { kind: "member", id: MAYA.developerId }, workKind: "setup-check" })).rejects.toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
+ expect(attemptedAt).toBe(new Date(clock).toISOString());
 });

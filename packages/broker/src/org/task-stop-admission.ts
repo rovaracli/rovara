@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { auditPendingItem } from "../audit/outbox.js";
 import { nativeSnapshotConditions } from "./native-snapshot-conditions.js";
 import type { TransactItem } from "../agents/table-writes.js";
+import { failedIndexes } from "../agents/table-writes.js";
 // A captured numeric policy is not paid-work permission: callers still commit
 // live authority, lifecycle, monthly admission, audit and their idempotent work.
 import { createHash } from "node:crypto";
@@ -230,10 +231,14 @@ async function captureTaskStopSnapshot(deps: SnapshotDependencies, value: unknow
     const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", occurrence), orgId, action: "spending.stop_refused",
       actor: { kind: "member", id: developerId }, target: { kind: "project", name: project }, occurredAt: at,
       facts: { outcomeCode: error.code, workKind: evalScope ? "eval" : "task-window", admissionId: occurrence } });
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
+    try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [
       ...nativeSnapshotConditions(deps.tableName, keys, rows, []),
       { Put: { TableName: deps.tableName, Item: auditPendingItem(event, Date.parse(at)), ConditionExpression: "attribute_not_exists(pk)" } },
-    ] }));
+    ] })); } catch (auditError) {
+      // The refusal granted no work. A lost snapshot fence preserves that same
+      // refusal; infrastructure failures still fail closed without claiming audit.
+      if (!failedIndexes(auditError)?.size) throw auditError;
+    }
     throw error;
   }
 }

@@ -246,7 +246,7 @@ async function writePause(deps: BudgetDependencies, pause: MintOperationKeyInput
     if (task?.spendingStop !== undefined) {
       const snapshot = checkedTaskStopSnapshot(task.spendingStop);
       const agent = task.agent as { agentId?: unknown } | undefined;
-      if (snapshot.orgId !== task.orgId || snapshot.project !== task.project || snapshot.agentId !== agent?.agentId || usdToWholeMicrodollars(task.budgetUsd) !== snapshot.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The reached stop does not match its task.");
+      if (snapshot.orgId !== task.orgId || snapshot.project !== task.project || snapshot.agentId !== agent?.agentId || usdToWholeMicrodollars(task.budgetUsd) !== snapshot.effectiveStopMicrousd) throw agentXError("BUDGET_EXCEEDED", "The spending stop changed while this turn was being refused. Reload the task.");
       if (task.budgetPause !== undefined) return;
       const reference = task.spendingAdmission as { requestId?: unknown } | undefined;
       if (typeof reference?.requestId !== "string" || task.taskId !== pause.taskId) throw agentXError("TASK_STOP_CONFIG_INVALID", "The spending window is missing its admission.");
@@ -255,11 +255,17 @@ async function writePause(deps: BudgetDependencies, pause: MintOperationKeyInput
       const event = AuditEventInputSchema.parse(auditTaskStopDecision({ action: "spending.stop_reached", orgId: snapshot.orgId, actor: { kind: "system", id: "rovara" },
         taskId: pause.taskId, admissionId: reference.requestId, occurrence: auditOccurrence(pause.taskId, reference.requestId), occurredAt: at,
         effectiveStopMicrousd: snapshot.effectiveStopMicrousd, approvalCapMicrousd: snapshot.approvalCapMicrousd, policyDigest: snapshot.policyDigest }));
-      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: { ...guard,
+      try { await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: { ...guard,
         UpdateExpression: pause.operationId === undefined ? "SET #pause = :pause" : "SET #pause = :pause, budgetStopOf = :operation",
         ExpressionAttributeNames: { ...guard.ExpressionAttributeNames, "#pause": "budgetPause" },
         ExpressionAttributeValues: { ...guard.ExpressionAttributeValues, ":pause": { scope, at }, ...(pause.operationId === undefined ? {} : { ":operation": pause.operationId }) },
-      } }, { Put: { TableName: deps.tableName, Item: auditPendingItem(event, Date.parse(at)), ConditionExpression: "attribute_not_exists(pk)" } }] }));
+      } }, { Put: { TableName: deps.tableName, Item: auditPendingItem(event, Date.parse(at)), ConditionExpression: "attribute_not_exists(pk)" } }] })); }
+      catch (error) {
+        // A competing pause or task-window change cannot turn a refusal into a
+        // proxy failure. No key was minted; retain the caller's financial refusal.
+        if (failedIndexes(error)?.size) return;
+        throw error;
+      }
       return;
     }
   }

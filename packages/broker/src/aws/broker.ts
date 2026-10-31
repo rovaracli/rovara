@@ -3288,6 +3288,9 @@ export async function registerProjectFor(
   value: unknown,
   options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; extraItems?: Array<Record<string, unknown>>; expectedBaseRevision?: number; appliedDomainProposal?: AppliedDomainProposalProof; checked?: { preflight?: PreflightOutcome }; credentialsChecked?: readonly string[] },
 ): Promise<RegistrationResult> {
+  // Even the minimal registration needs its own action. Reject a provably
+  // oversized trusted extension before bootstrap or any other write.
+  if ((options.extraItems?.length ?? 0) >= 100) throw agentXError("CONFIG_INVALID", "This project change cannot fit one transaction.");
   const checked = options.checked;
   const orgId = actor.orgId;
   const { definition, runtimeBinding, wantsPreflight, setupApproval, takeover } = parseRegistrationInput(value);
