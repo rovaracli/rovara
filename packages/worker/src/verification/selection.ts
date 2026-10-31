@@ -137,12 +137,12 @@ export function selectTests(input: SelectionInput): SelectionResult {
   if (paths.some((path) => [...BUILTIN_FULL_SUITE_ON, ...config.fullSuiteOn].some((glob) => globMatches(path, glob)))) return fellBack(input, "full_suite_on_path");
 
   const inventory = new Set(input.inventory);
-  // A test FILE is one that defines tests of this check. Any other changed file, even under tests/ (a helper, a factory, a JSON fixture), can change what many tests do: it is a SOURCE, and a source the method
-  // does not know widens the selection to the full suite. A test-named file in a test directory that is not this check's (another check's tests, or one that collects nothing) has nothing here to run and is ignored.
+  // A test FILE is one that defines tests of this check. Every other changed file is a SOURCE, even when it looks test-related (a helper or factory under tests/, `test_helpers.py`, `*_test.json`, `*.spec.json`, a
+  // fixture, another check's tests, a deleted test file): it can change what many tests do, and pytest or jest never list a file that defines no test. A source the method does not know widens the selection to the
+  // full suite. The one exception is a test file renamed to a path that IS in the inventory: the same tests moved, and the old path has nothing left.
   const inventoryFiles = new Set(input.inventory.map(testFileOf));
-  const testDirs = ["test", "tests", "__tests__", "spec", "e2e"];
-  const looksLikeTest = (path: string): boolean => path.split("/").slice(0, -1).some((part) => testDirs.includes(part)) && /(?:^|\/)test_[^/]+\.py$|_test\.[^./]+$|\.(?:test|spec)\.[^./]+$|_spec\.[^./]+$/u.test(path);
-  const changedSources = paths.filter((path) => !inventoryFiles.has(path) && !looksLikeTest(path));
+  const movedAway = new Set(input.changes.filter((change) => change.status === "renamed" && change.oldPath !== undefined && inventoryFiles.has(change.path)).map((change) => change.oldPath as string));
+  const changedSources = paths.filter((path) => !inventoryFiles.has(path) && !movedAway.has(path));
   const selected = new Set<string>();
   let mapAgeHours: number | undefined;
 

@@ -186,6 +186,24 @@ describe("a fire", () => {
     h.clock.now = T0 + 21 * 3_600_000;
     expect((await handleNightlyFire(h.deps, h.fire(new Date(h.clock.now - 1_000).toISOString()))).outcome).toBe("started");
   });
+  it("the 20 hour gap holds across midnight: a run that finished at 22:40 UTC is not followed by one at 06:00 the next day, but is after the gap", async () => {
+    const h = await harness();
+    h.clock.now = Date.UTC(2026, 10, 5, 22, 0, 5);
+    const first = await handleNightlyFire(h.deps, h.fire(new Date(h.clock.now - 5_000).toISOString()));
+    if (first.outcome !== "started") throw new Error("not started");
+    const finished = Date.UTC(2026, 10, 5, 22, 40, 0);
+    const data = result(first.slotId, { startedAt: new Date(h.clock.now).toISOString(), finishedAt: new Date(finished).toISOString(), durationMs: finished - h.clock.now });
+    await recordNightlyResult(h.deps, h.store, { orgId: ORG, project: PROJECT, result: data.result, coverageMap: data.coverageMap });
+    h.heads.value = HEAD2;
+    // 06:00 on the next UTC day: a new day, a moved head, an idle project, but only 7 h 20 min since the last run finished.
+    h.clock.now = Date.UTC(2026, 10, 6, 6, 0, 5);
+    expect(await handleNightlyFire(h.deps, h.fire(new Date(h.clock.now - 5_000).toISOString()))).toEqual({ outcome: "skipped", reason: "ran_recently" });
+    expect(h.started).toHaveLength(1);
+    expect(h.admitted).toHaveLength(1);
+    // 20 h after it finished (18:40) the next night may run.
+    h.clock.now = Date.UTC(2026, 10, 6, 18, 41, 0);
+    expect((await handleNightlyFire(h.deps, h.fire(new Date(h.clock.now - 5_000).toISOString()))).outcome).toBe("started");
+  });
   it("the day's claim is made in the database, so two fires that raced past the other checks start one run", async () => {
     const h = await harness();
     h.db.set({ pk: `ORG#${ORG}#PROJECT#${PROJECT}`, sk: `TESTENV#NIGHTLY#DAY#${new Date(T0).toISOString().slice(0, 10)}`, slotId: "f".repeat(64) });

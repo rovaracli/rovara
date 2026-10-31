@@ -54,9 +54,17 @@ describe("test-support files and thin maps (review I9, M11)", () => {
   it("a changed test file that defines tests of this check is a test file: it adds its tests and is not an unknown source", () => {
     expect(selectTests(input({ changes: [{ path: "tests/test_m9.py", status: "modified" }] }))).toMatchObject({ mode: "selected", tests: ["tests/test_m9.py::test_a"] });
   });
-  it("a test-named file that is not this check's (another check's tests) or a deleted or renamed-away test is ignored, not a reason to run everything", () => {
-    expect(selectTests(input({ changes: [{ path: "src/match.py", status: "modified" }, { path: "tests/integration/test_other.py", status: "modified" }] })).mode).toBe("selected");
-    expect(selectTests(input({ changes: [{ path: "src/match.py", status: "modified" }, { path: "tests/test_gone.py", status: "deleted" }, { path: "tests/test_new_name.py", oldPath: "tests/test_old_name.py", status: "renamed" }] })).mode).toBe("selected");
+  it("a changed file that looks test-related but is not in the inventory widens to the full suite, never 'selected' with nothing (review R1)", () => {
+    for (const path of ["tests/support/test_helpers.py", "tests/utils/foo_test.py", "tests/data/cases_test.json", "tests/data/cases.test.json", "tests/data/cases.spec.json", "tests/integration/test_other.py", "tests/conftest_helpers.py", "spec/support/helper.rb", "tests/fixtures/users.yaml"]) {
+      expect(reason({ changes: [{ path, status: "modified" }] }), path).toBe("unknown_file");
+      expect(reason({ changes: [{ path: "src/match.py", status: "modified" }, { path, status: "added" }] }), path).toBe("unknown_file");
+    }
+  });
+  it("a test file renamed to a path in the inventory is the same tests moved: not a reason to run everything; a deleted file (a test or a helper) is, because nothing says which", () => {
+    expect(selectTests(input({ changes: [{ path: "src/match.py", status: "modified" }, { path: "tests/test_m9.py", oldPath: "tests/test_old_name.py", status: "renamed" }] })).mode).toBe("selected");
+    expect(reason({ changes: [{ path: "src/match.py", status: "modified" }, { path: "tests/test_gone.py", status: "deleted" }] })).toBe("unknown_file");
+    expect(reason({ changes: [{ path: "tests/support/test_helpers.py", status: "deleted" }] })).toBe("unknown_file");
+    expect(reason({ changes: [{ path: "tests/support/helpers2.py", oldPath: "tests/support/helpers.py", status: "renamed" }] })).toBe("unknown_file");
   });
   it("a source named like a test outside a test directory is still a source", () => {
     expect(reason({ changes: [{ path: "src/test_utils.py", status: "modified" }] })).toBe("unknown_file");
