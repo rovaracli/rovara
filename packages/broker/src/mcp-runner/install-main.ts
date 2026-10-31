@@ -21,7 +21,7 @@ import { request as httpsRequest } from "node:https";
 import { dirname, isAbsolute, join } from "node:path";
 import { McpStdioProposalSchema, type McpStdioProposal } from "@agentx/contracts";
 import {
-  BUNDLE_LIMITS, BundleError, INSTALL_STEPS_SENTENCE, LOCKFILE_LIMITS, runsAsRoot, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
+  BUNDLE_LIMITS, BundleError, INSTALL_STEPS_SENTENCE, LOCKFILE_LIMITS, runnerTokenWellFormed, runsAsRoot, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
   type LockfileRule, type LockfileVerdict,
 } from "@agentx/gateway";
 
@@ -182,8 +182,11 @@ async function readJson(path: string, maxBytes = 1_048_576): Promise<Record<stri
 
 const NPM_NAME = /^(?:@[a-z0-9][a-z0-9._-]{0,60}\/)?[a-z0-9][a-z0-9._-]{0,60}$/u;
 
-/** The lifecycle scripts that run when a package is installed (or prepared). Any one of them makes a package one Rovara refuses in this version. */
-const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall", "prepare"] as const;
+/**
+ * The lifecycle scripts that run when a registry package is installed. Any one of them makes a package one Rovara refuses in this version. `prepare` is not among them: npm
+ * never runs it for a package taken from the registry (it runs for git and directory sources, which are refused anyway), and every install here runs with scripts off.
+ */
+const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall"] as const;
 
 /** Whether a package's manifest, or a binding.gyp beside it, says it needs an install step or a native build. */
 export function needsInstallSteps(manifest: Record<string, unknown>, hasBindingGyp: boolean): boolean {
@@ -310,7 +313,9 @@ export async function runInstall(requested: unknown, options: InstallOptions): P
     for (const path of paths) {
       const folder = join(pkg, ...path.split("/"));
       const installedManifest = await readJson(join(folder, "package.json"));
-      if (installedManifest !== undefined && needsInstallSteps(installedManifest, await exists(join(folder, "binding.gyp")))) {
+      // A listed package whose package.json cannot be read (missing, too big, not JSON) cannot be shown to need no install step: the install is refused.
+      if (installedManifest === undefined) return failure("bad_package");
+      if (needsInstallSteps(installedManifest, await exists(join(folder, "binding.gyp")))) {
         const name = path.slice(path.lastIndexOf("node_modules/") + "node_modules/".length);
         const shown = NPM_NAME.test(name) ? name : undefined;
         return failure("install_scripts", { sentence: INSTALL_STEPS_SENTENCE(shown), ...(shown === undefined ? {} : { package: shown }) });
@@ -415,6 +420,8 @@ export async function main(dependencies: MainDependencies): Promise<number> {
   // The token is held here only; the environment npm gets is built from nothing (npmEnvironment), so it never reaches a child.
   delete dependencies.env.MCP_RUNNER_TOKEN;
   const emit = (value: Record<string, unknown>): void => write(`${RESULT_PREFIX}${JSON.stringify(value)}`);
+  // The token is checked before any work is done: it is 256 bits of URL-safe characters, as the other programs of a runner task require.
+  if (!runnerTokenWellFormed(token)) { emit({ ok: false, code: "invalid_request", sentence: INSTALL_FAILURES.invalid_request }); return 1; }
   let request: unknown;
   try { request = JSON.parse(env.MCP_INSTALL_REQUEST ?? ""); } catch { emit({ ok: false, code: "invalid_request", sentence: INSTALL_FAILURES.invalid_request }); return 1; }
   const registry = env.ROVARA_MCP_NPM_REGISTRY;

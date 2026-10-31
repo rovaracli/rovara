@@ -37,6 +37,32 @@ describe("StdioChildTransport", () => {
       process.off("uncaughtException", record);
     }
   });
+  it("adds one error listener to stdin when it starts and none per write", async () => {
+    const transport = make("process.stdin.resume(); setTimeout(() => {}, 3000);");
+    await transport.start();
+    const stdin = (transport as unknown as { child: { stdin: { listenerCount(event: string): number } } }).child.stdin;
+    const before = stdin.listenerCount("error");
+    await Promise.all(Array.from({ length: 40 }, () => transport.send({ ...message, params: { pad: "x".repeat(50_000) } })));
+    expect(stdin.listenerCount("error")).toBe(before);
+    expect(before).toBe(1);
+  });
+  it("reports an error on stdin that no write is waiting for through onerror, and does not crash", async () => {
+    const unhandled: unknown[] = [];
+    const record = (error: unknown): void => { unhandled.push(error); };
+    process.on("uncaughtException", record);
+    try {
+      const transport = make("require('fs').closeSync(0); setTimeout(() => {}, 3000);");
+      const errors: Error[] = [];
+      transport.onerror = (error) => errors.push(error);
+      await transport.start();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const stdin = (transport as unknown as { child: { stdin: { emit(event: string, error: Error): boolean } } }).child.stdin;
+      stdin.emit("error", new Error("EPIPE"));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(unhandled).toEqual([]);
+      expect(errors.map((error) => error.message)).toContain("EPIPE");
+    } finally { process.off("uncaughtException", record); }
+  });
   it("counts the program's stderr bytes and keeps none of it", async () => {
     const transport = make("process.stderr.write('e'.repeat(5000)); setTimeout(() => {}, 300);");
     await transport.start();

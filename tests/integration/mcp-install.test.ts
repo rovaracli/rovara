@@ -29,7 +29,11 @@ function packages(): FixturePackage[] {
     { name: NAME, version: "1.4.2", bin: { "sim-mcp": "bin/sim.js" }, dependencies: { "dep-a": "^1.0.0" }, files: { "bin/sim.js": { content: "#!/usr/bin/env node\nconsole.log('sim')\n", mode: 0o755 }, "lib/x.js": "module.exports = 1\n" }, devDependencies: { "dev-only": "1.0.0" } },
     { name: "dep-a", version: "1.0.0", dependencies: { "dep-b": "^1.0.0" }, files: { "index.js": "module.exports = 'a'\n" } },
     // packages that need install steps or a native build: the package itself, and a dependency (flagged by the registry, or not flagged)
-    ...(["preinstall", "install", "postinstall", "prepare"] as const).map((script): FixturePackage => ({ name: `root-${script}`, version: "1.0.0", bin: "i.js", files: { "i.js": "x" }, scripts: { [script]: touch } })),
+    ...(["preinstall", "install", "postinstall"] as const).map((script): FixturePackage => ({ name: `root-${script}`, version: "1.0.0", bin: "i.js", files: { "i.js": "x" }, scripts: { [script]: touch } })),
+    { name: "root-prepare", version: "1.0.0", bin: "i.js", files: { "i.js": "x" }, scripts: { prepare: touch } },
+    { name: "root-prepare-dep", version: "1.0.0", bin: "i.js", dependencies: { "prepare-dep": "^1.0.0" }, files: { "i.js": "x" } },
+    { name: "prepare-dep", version: "1.0.0", files: { "index.js": "x" }, scripts: { prepare: touch } },
+    { name: "prepare-git-dep", version: "1.0.0", bin: "i.js", dependencies: { thing: "git+https://github.com/acme/thing.git" }, files: { "i.js": "x" }, scripts: { prepare: touch } },
     { name: "root-gyp", version: "1.0.0", bin: "i.js", files: { "i.js": "x", "binding.gyp": "{}" } },
     { name: "root-gypfile", version: "1.0.0", bin: "i.js", files: { "i.js": "x" }, manifest: { gypfile: true } },
     { name: "root-flagged-dep", version: "1.0.0", bin: "i.js", dependencies: { "flagged-dep": "^1.0.0" }, files: { "i.js": "x" } },
@@ -147,8 +151,8 @@ describe("T3 install: a package and its dependencies", () => {
 
 describe("T3 install: packages that need install steps or a native build are refused, and nothing runs", () => {
   const sentence = INSTALL_FAILURES.install_scripts;
-  it("refuses the package itself when it has a preinstall, install, postinstall or prepare script, a binding.gyp or gypfile, before any lockfile or dependency", async () => {
-    for (const name of ["root-preinstall", "root-install", "root-postinstall", "root-prepare", "root-gyp", "root-gypfile"]) {
+  it("refuses the package itself when it has a preinstall, install or postinstall script, a binding.gyp or gypfile, before any lockfile or dependency", async () => {
+    for (const name of ["root-preinstall", "root-install", "root-postinstall", "root-gyp", "root-gypfile"]) {
       registry.requests.length = 0;
       const { result, dir } = await install(proposal(name));
       expect(failed(result), name).toMatchObject({ code: "install_scripts", package: name });
@@ -179,6 +183,30 @@ describe("T3 install: packages that need install steps or a native build are ref
       expect(failed(result), dep).toMatchObject(dep === "quiet-dep" ? { code: "install_scripts", package: dep } : { code: "lockfile_policy", rule: "install_scripts", package: dep });
     }
     expect(await exists(marker)).toBe(false);
+  });
+  it("allows `prepare` on registry packages (npm never runs it for a registry tarball, and this install runs with scripts off): the package itself, and a dependency", async () => {
+    for (const name of ["root-prepare", "root-prepare-dep"]) {
+      const { result } = await install(proposal(name));
+      expect(result.ok, name).toBe(true);
+    }
+    expect(await exists(marker)).toBe(false);
+  });
+  it("still refuses a `prepare` that comes with a non-registry source (git, file, URL), by the source rule", async () => {
+    expect(failed((await install(proposal("prepare-git-dep"))).result).code).toBe("git_dependency");
+  });
+  it("refuses the install when an installed package's package.json cannot be read (it cannot be shown to need no install step)", async () => {
+    const unreadable: Exec = async (input) => {
+      const output = await defaultExec(input);
+      if (input.args[1] === "ci") await writeFile(join(input.cwd, "node_modules", "dep-b", "package.json"), "{ not json");
+      return output;
+    };
+    expect(failed((await install(proposal(NAME, "1.4.2"), { exec: unreadable })).result).code).toBe("bad_package");
+    const missing: Exec = async (input) => {
+      const output = await defaultExec(input);
+      if (input.args[1] === "ci") await rm(join(input.cwd, "node_modules", "dep-b", "package.json"), { force: true });
+      return output;
+    };
+    expect(failed((await install(proposal(NAME, "1.4.2"), { exec: missing })).result).code).toBe("bad_package");
   });
   it("does not refuse a development dependency that has a prepare script (it is never installed)", async () => {
     expect((await install(proposal(NAME, "1.4.2"))).result.ok).toBe(true);
@@ -403,6 +431,14 @@ describe("T3 install: handing the bundle to the controller", () => {
     await expect(main({ env: env(), getuid: () => 0, write: (line) => lines.push(line) })).rejects.toThrow("must not run as root");
     await expect(main({ env: env(), getuid: () => 10_002, getgid: () => 0, write: (line) => lines.push(line) })).rejects.toThrow("must not run as root");
     expect(lines).toEqual([]);
+    expect(received).toBeUndefined();
+  });
+  it("refuses a token that is not 256-bit URL-safe, before any work is done", async () => {
+    for (const token of [undefined, "short", "t".repeat(42), `${"t".repeat(42)} `]) {
+      const lines: string[] = [];
+      expect(await main({ env: env({ MCP_RUNNER_TOKEN: token }), getuid: () => 10_002, write: (line) => lines.push(line) }), String(token)).toBe(1);
+      expect(lines[0]).toContain('"code":"invalid_request"');
+    }
     expect(received).toBeUndefined();
   });
   it("reads no token from, and passes none on in, its environment: the token is removed once read", async () => {

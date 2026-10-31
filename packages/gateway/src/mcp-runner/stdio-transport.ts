@@ -35,7 +35,8 @@ export class StdioChildTransport implements Transport {
       for (const key of Object.keys(this.spec.env)) delete this.spec.env[key];
       this.afterSpawn?.();
       child.on("error", (error) => { reject(error); this.onerror?.(error); });
-      // A program that stops reading leaves a write to fail (EPIPE). That is an error to report, not an unhandled one that would stop the bridge before it can say why.
+      // A program that stops reading leaves a write to fail (EPIPE). That is an error to report, not an unhandled one that would stop the bridge before it can say why. This is the
+      // only error listener on stdin: it is added once here and never per write.
       child.stdin?.on("error", (error) => { this.onerror?.(error); });
       child.on("spawn", () => resolve());
       child.on("close", () => { this.child = undefined; this.onclose?.(); });
@@ -52,10 +53,8 @@ export class StdioChildTransport implements Transport {
   async send(message: JSONRPCMessage): Promise<void> {
     const stdin = this.child?.stdin;
     if (stdin === null || stdin === undefined) throw new Error("not connected");
-    await new Promise<void>((resolve, reject) => {
-      const done = (error?: Error | null): void => { if (error) reject(error); else resolve(); };
-      if (stdin.write(serializeMessage(message), (error) => { if (error) done(error); })) resolve(); else { stdin.once("drain", () => resolve()); stdin.once("error", (error) => reject(error)); }
-    });
+    // The write's own callback says when it was flushed or failed, so a send adds no listener to the stream (the one error listener is added once, when the program starts).
+    await new Promise<void>((resolve, reject) => { stdin.write(serializeMessage(message), (error) => { if (error) reject(error); else resolve(); }); });
   }
 
   async close(): Promise<void> {
