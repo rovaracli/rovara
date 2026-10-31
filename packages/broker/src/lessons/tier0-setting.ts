@@ -2,10 +2,12 @@
 // floor, `companyApproval.tier0`). Owner decision 2026-10-31: tier-0 lessons need one person's OK for the pilot; automatic go-live comes back only after the "Before auto-apply is
 // turned on" list passes review.
 //
-//  - A STRICTER write (auto to one or two, one to two) applies at once, by an eligible maintainer or admin. So does a change that leaves a person in the loop (two to one).
-//  - A write that LOOSENS to "auto" never applies as a direct write. It opens a proposal; a DIFFERENT eligible maintainer or admin approves it. The proposer can never approve their own
+//  - A STRICTER (or equal) write (auto to one or two, one to two) applies at once, by an eligible maintainer or admin.
+//  - ANY loosening (two to one, one to auto, two to auto; at project level or as the company floor) never applies as a direct write (controller decision 2026-10-31, owner decision M8:
+//    projects loosen through their normal approval steps). It opens a proposal; a DIFFERENT eligible maintainer or admin approves it. The proposer can never approve their own
 //    change, and the sole-owner exception does not apply here (a team of one cannot loosen this on its own).
-//  - Nothing loosens to "auto" while automatic go-live is not enabled (`autoApplyEnabled`), whoever approves.
+//  - Nothing loosens TO "auto" while automatic go-live is not enabled (`autoApplyEnabled`), whoever approves.
+//  - Every write is conditional on the value it was made against: a stricter write made in between is never overwritten (the result is "stale").
 //  - A company floor can only be stricter: a project value below the floor is refused, at request and again at approval.
 //  - Fail closed: an unknown value, eligibility that is incomplete or cannot be read, a stale proposal (the value moved), an expired one, or an audit event that cannot be written stops
 //    the change. The audit event is written BEFORE a loosening is applied; a stricter write is never blocked by an audit outage (the kill-switch side).
@@ -30,7 +32,8 @@ export const TIER0_CHANGE_TTL_MS = 7 * 86_400_000;
 /** The stored value of one scope: the project's `tier0Approval`, or the company floor. Undefined when none was ever set. */
 export interface Tier0SettingsStore {
   read(scope: Tier0Scope): Promise<Tier0Level | undefined>;
-  write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }): Promise<void>;
+  /** Writes only if the stored value is still `from` (an absent value counts as the default). False: it moved, and nothing was written. */
+  write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level): Promise<boolean>;
 }
 export interface Tier0ChangeStore {
   /** False when the id is taken. */
@@ -87,14 +90,14 @@ export async function requestTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   const event = (action: "lesson.tier0_setting_changed" | "lesson.tier0_setting_proposed", extra: Record<string, string> = {}) => ({
     action, workspaceId: scope.workspaceId, project: projectOf(scope), actor: input.requestedBy, facts: { scope: scope.kind, from: current, to: value, ...extra },
   });
-  if (value !== "auto" || LEVEL[value] >= LEVEL[current]) {
-    // Stricter, equal, or a change that keeps a person in the loop: applied now. An audit outage never blocks the stricter side.
+  if (LEVEL[value] >= LEVEL[current]) {
+    // Stricter or equal: applied now, against the value it was read at. An audit outage never blocks the stricter side.
+    if (!(await deps.settings.write(scope, value, { by: input.requestedBy, at }, current))) return { ok: false, code: "stale" };
     await emitAudit(deps.audit, event("lesson.tier0_setting_changed", { mode: "direct" }));
-    await deps.settings.write(scope, value, { by: input.requestedBy, at });
     return { ok: true, status: "applied", value };
   }
-  // Loosening to "auto".
-  if (!deps.autoApplyEnabled()) return { ok: false, code: "auto_apply_not_enabled" };
+  // A loosening: a proposal. Going to "auto" also needs automatic go-live to be switched on at all.
+  if (value === "auto" && !deps.autoApplyEnabled()) return { ok: false, code: "auto_apply_not_enabled" };
   if ((await deps.changes.open(scope, at)) !== undefined) return { ok: false, code: "already_open" };
   const id = (deps.newId ?? (() => randomUUID()))();
   if (!(await requireAudit(deps.audit, event("lesson.tier0_setting_proposed", { changeId: id })))) return { ok: false, code: "audit_unavailable" };
@@ -128,8 +131,12 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   }))) return { ok: false, code: "audit_unavailable" };
   // One claim: of two approvers at once, only one moves the change out of pending.
   if (!(await deps.changes.transition(scope, change.id, "pending", "applied"))) return { ok: false, code: "not_pending" };
-  // A failed write throws: the change is marked applied but the stricter value stays in force (the safe side), and the proposer asks again.
-  await deps.settings.write(scope, change.to, { by: input.approverId, at });
+  // The write is conditional on the value the change was made against: a stricter write made since is never overwritten. A failed write throws (or is refused): the stricter value
+  // stays in force (the safe side), the change is closed, and the proposer asks again.
+  if (!(await deps.settings.write(scope, change.to, { by: input.approverId, at }, change.from))) {
+    await deps.changes.transition(scope, change.id, "applied", "cancelled").catch(() => false);
+    return { ok: false, code: "stale" };
+  }
   return { ok: true, value: change.to };
 }
 

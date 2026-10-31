@@ -7,7 +7,7 @@ import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/li
 import { LEARNING_MODE_DEFAULT, learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
 import { errorName, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
-import type { LearningSettings, LearningSettingsReader } from "./policy.js";
+import { TIER0_APPROVAL_DEFAULT, type LearningSettings, type LearningSettingsReader } from "./policy.js";
 import type { Tier0Change, Tier0ChangeStore, Tier0Level, Tier0Scope, Tier0SettingsStore } from "./tier0-setting.js";
 
 const pkOf = (scope: Tier0Scope): string => teamRecordPk(scope.workspaceId, scope.kind === "project" ? scope.project : undefined);
@@ -33,8 +33,19 @@ export class DynamoTier0Settings implements Tier0SettingsStore, Tier0ChangeStore
     return item.tier0;
   }
 
-  async write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }): Promise<void> {
-    await this.table.documentClient.send(new PutCommand({ TableName: this.table.tableName, Item: { ...settingKey(scope), entityType: "LESSON_SETTINGS", tier0: value, updatedBy: meta.by, updatedAt: meta.at } }));
+  async write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level): Promise<boolean> {
+    // Conditional on the value the caller read; an absent item is the default, so it matches only when `from` is the default.
+    const isDefault = from === (scope.kind === "project" ? TIER0_APPROVAL_DEFAULT : "auto");
+    try {
+      await this.table.documentClient.send(new PutCommand({
+        TableName: this.table.tableName, Item: { ...settingKey(scope), entityType: "LESSON_SETTINGS", tier0: value, updatedBy: meta.by, updatedAt: meta.at },
+        ConditionExpression: isDefault ? "attribute_not_exists(pk) OR #t = :from" : "#t = :from", ExpressionAttributeNames: { "#t": "tier0" }, ExpressionAttributeValues: { ":from": from },
+      }));
+      return true;
+    } catch (error) {
+      if (errorName(error) === "ConditionalCheckFailedException") return false;
+      throw error;
+    }
   }
 
   async create(change: Tier0Change): Promise<boolean> {

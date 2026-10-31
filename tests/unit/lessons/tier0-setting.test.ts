@@ -15,9 +15,15 @@ class Settings implements Tier0SettingsStore {
   writes: Array<{ scope: string; value: Tier0Level; by: string }> = [];
   failWrite = false;
   async read(scope: Tier0Scope): Promise<Tier0Level | undefined> { return this.values.get(scopeId(scope)); }
-  async write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }): Promise<void> {
+  /** Runs between a caller's read and its write: another writer got in. */
+  beforeWrite: (() => void) | undefined;
+  async write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level): Promise<boolean> {
     if (this.failWrite) throw new Error("down");
+    this.beforeWrite?.();
+    const current = this.values.get(scopeId(scope)) ?? (scope.kind === "project" ? "one" : "auto");
+    if (current !== from) return false;
     this.values.set(scopeId(scope), value); this.writes.push({ scope: scopeId(scope), value, by: meta.by });
+    return true;
   }
 }
 class Changes implements Tier0ChangeStore {
@@ -56,10 +62,31 @@ describe("stricter writes apply directly", () => {
     expect(await requestTier0Change(w.deps, { scope: COMPANY_SCOPE, value: "two", requestedBy: "owner" })).toEqual({ ok: true, status: "applied", value: "two" });
     expect(w.settings.values.get(scopeId(COMPANY_SCOPE))).toBe("two");
   });
-  it("two to one is still a person's approval, so it applies directly", async () => {
-    const w = world();
+  it("ANY loosening needs a second person, not only a move to auto: two to one opens a proposal and changes nothing", async () => {
+    const w = world({ autoEnabled: false });
     w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
-    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "ann" })).toMatchObject({ ok: true, status: "applied" });
+    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "ann" })).toEqual({ ok: true, status: "needs_approval", changeId: "chg-1" });
+    expect(w.settings.writes).toEqual([]);
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "ann" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: true, value: "one" });
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
+  });
+  it("the same at company level: a floor of two lowered to one needs a second admin; auto-apply being off does not stop a loosening that is not to auto", async () => {
+    const w = world({ autoEnabled: false });
+    w.settings.values.set(scopeId(COMPANY_SCOPE), "two");
+    expect(await requestTier0Change(w.deps, { scope: COMPANY_SCOPE, value: "one", requestedBy: "owner" })).toMatchObject({ status: "needs_approval" });
+    expect(w.settings.values.get(scopeId(COMPANY_SCOPE))).toBe("two");
+    expect(await approveTier0Change(w.deps, { scope: COMPANY_SCOPE, changeId: "chg-1", approverId: "ann" })).toEqual({ ok: true, value: "one" });
+  });
+  it("a write that loses to a stricter write made in between is stale and changes nothing (the write is conditional)", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    w.settings.beforeWrite = () => w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("two");
+    const direct = world();
+    direct.settings.beforeWrite = () => direct.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    expect(await requestTier0Change(direct.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "ann" })).toEqual({ ok: false, code: "stale" });
   });
   it("an unchanged value is a no-op that still needs an eligible person", async () => {
     const w = world();

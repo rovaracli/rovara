@@ -26,15 +26,25 @@ describe("the stored setting and its proposals", () => {
   it("round-trips per scope; another workspace or project sees nothing", async () => {
     const { store } = setup();
     expect(await store.read(project())).toBeUndefined();
-    await store.write(project(), "two", { by: "ann", at: 1 });
-    await store.write(company(), "one", { by: "owner", at: 1 });
+    await store.write(project(), "two", { by: "ann", at: 1 }, "one");
+    await store.write(company(), "one", { by: "owner", at: 1 }, "auto");
     expect([await store.read(project()), await store.read(company())]).toEqual(["two", "one"]);
     expect(await store.read(project(ORG_B))).toBeUndefined();
     expect(await store.read({ kind: "project", workspaceId: ORG_A, project: "api" })).toBeUndefined();
   });
+  it("a conditional write: absent means the default, a different current value is refused", async () => {
+    const { store } = setup();
+    expect(await store.write(project(), "two", { by: "ann", at: 1 }, "auto")).toBe(false);
+    expect(await store.write(project(), "two", { by: "ann", at: 1 }, "one")).toBe(true);
+    expect(await store.write(project(), "one", { by: "bob", at: 2 }, "one")).toBe(false);
+    expect(await store.read(project())).toBe("two");
+    expect(await store.write(company(), "one", { by: "owner", at: 1 }, "auto")).toBe(true);
+    expect(await store.write(company(), "auto", { by: "owner", at: 1 }, "two")).toBe(false);
+    expect(await store.write(project(), "one", { by: "bob", at: 3 }, "two")).toBe(true);
+  });
   it("a stored value that is not valid is an error, never the default", async () => {
     const { store, w } = setup();
-    await store.write(project(), "two", { by: "ann", at: 1 });
+    await store.write(project(), "two", { by: "ann", at: 1 }, "one");
     w.db.set({ ...w.db.find((i) => i.entityType === "LESSON_SETTINGS")[0]!, tier0: "loose" });
     await expect(store.read(project())).rejects.toThrow();
   });
@@ -84,8 +94,8 @@ describe("the whole path, through the settings reader", () => {
 describe("erasing", () => {
   it("the workspace erase wipes the company setting and the proposals", async () => {
     const { w, store } = setup();
-    await store.write(company(), "one", { by: "owner", at: 1 });
-    await store.write(project(), "two", { by: "ann", at: 1 });
+    await store.write(company(), "one", { by: "owner", at: 1 }, "auto");
+    await store.write(project(), "two", { by: "ann", at: 1 }, "one");
     await store.create({ id: "c1", scope: company(), from: "one", to: "auto", proposedBy: "ann", at: 1, expiresAt: 100, state: "pending" });
     const result = await eraseWorkspace(deleteDeps(w).deps, ORG_A, ["web"], "close-1");
     expect(result.complete).toBe(true);
