@@ -575,9 +575,9 @@ function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<Me
     feedbackRoundCheck: (task) => automaticFeedbackRoundIsSound(dependencies, task.taskId),
     ...(github.replyToReviewThread === undefined ? {} : { sendFeedbackReplies: (task: Parameters<typeof sendFeedbackReplies>[1], budget?: GithubMergeReadBudget) => sendFeedbackReplies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
-      github: { replyToReviewThread: (...args) => github.replyToReviewThread!.call(github, ...args) },
       scope: (orgId) => githubScope(dependencies, orgId),
-      repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+      // P5b: the reply goes through the port of the code host each repository's record names.
+      repository: consumerRepositoryResolver(dependencies),
       log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
     }, task, budget) }),
     scope: (orgId) => githubScope(dependencies, orgId),

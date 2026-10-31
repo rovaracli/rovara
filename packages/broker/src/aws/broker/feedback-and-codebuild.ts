@@ -23,6 +23,7 @@ import { readObjectText } from "./plan-answers.js";
 import { assertCodeBuildGatesPassed, describeFeedbackFixes } from "./pull-request-reconcile.js";
 import { requirePullRequest } from "./records.js";
 import { githubScope, githubScopeOfWorkspace, orgOfRecord, webhookRepositoryUrl } from "./scope-helpers.js";
+import { consumerRepositoryResolver } from "./consumer-hosts.js";
 
 export function projectSetupDomainRecord(item: Record<string, unknown> | undefined, key: { pk: string; sk: string }, entityType: string): Record<string, unknown> {
   if (!item) return {};
@@ -155,15 +156,12 @@ export async function companyAutonomyLimit(dependencies: AwsBrokerDependencies, 
 /** What the worker-start check reads, wired to the broker's live stores (Plan 6 Task 16). */
 function autonomyStillHoldsFor(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, binding: WorkflowFeedbackApprovalBinding): Promise<boolean> {
   const orgId = task.orgId;
-  const github = dependencies.githubPullRequests;
+  // P5b: each writer's standing is read through the port of the code host the repository's record names. A task with no org reads nothing, so the decision does not hold.
+  const repository = orgId === undefined ? undefined : consumerRepositoryResolver(dependencies);
   return autonomyStillHolds({
     autonomy: () => orgId === undefined ? Promise.resolve({ autonomy: "suggest" as const }) : taskAutonomyBinding(() => readTaskRecipe(dependencies, task.taskId, orgId), undefined, () => companyAutonomyLimit(dependencies, orgId)),
-    repositoryUrl: (repositoryId) => orgId === undefined ? Promise.resolve(undefined) : webhookRepositoryUrl(dependencies)(task.project, task.startingRevision, repositoryId, orgId),
-    standing: github.getRepositoryStanding !== undefined && orgId !== undefined
-      ? (url, login) => github.getRepositoryStanding!(url, login, githubScope(dependencies, orgId))
-      : github.getRepositoryPermission !== undefined && orgId !== undefined
-        ? async (url, login) => ({ permission: await github.getRepositoryPermission!(url, login, githubScope(dependencies, orgId)) })
-        : undefined,
+    repository: async (repositoryId) => orgId === undefined || repository === undefined ? undefined : repository(task.project, task.startingRevision, repositoryId, orgId),
+    scope: orgId === undefined ? { system: "private-install" } : githubScope(dependencies, orgId),
   }, task, binding);
 }
 

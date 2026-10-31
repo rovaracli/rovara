@@ -13,6 +13,9 @@ import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.
 import { PERMISSION_LOOKUPS_MAX, TrackingRequestCapError, trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { readCiEvidence, taskAutonomy, taskAutonomyBinding, uninstallCiFixDecider, installCiFixDecider } from "../../packages/broker/src/rovara-code/ci-fix.js";
 import { FEEDBACK_REPLY_ATTEMPTS_MAX, autoFixableRound, standingKey, autonomyStillHolds, feedbackApprovalMatchesDecision, feedbackReplyItems, installFeedbackDecider, sendFeedbackReplies, uninstallFeedbackDecider } from "../../packages/broker/src/rovara-code/feedback-autonomy.js";
+import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
+import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
+import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import type { GithubMergeReadBudget } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { FakeGithub, SESSION_ID, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
@@ -623,18 +626,19 @@ describe("sendFeedbackReplies", () => {
     const sent: Array<{ number: number; commentId: string; body: string }> = [];
     const calls: string[] = [];
     let attempts = 0;
+    // The reply goes through the GitHub CodeHost adapter over a GitHub-shaped provider, as the broker wires it.
+    const provider = { replyToReviewThread: async (_url: string, number: number, commentId: string, body: string) => {
+      attempts += 1;
+      calls.push(commentId);
+      const failure = options.fail?.(commentId, attempts);
+      if (failure !== undefined) throw failure;
+      sent.push({ number, commentId, body });
+      return "replied" as const;
+    } };
     const deps = {
       documentClient: db, tableName: "state", now: () => Date.parse(at),
-      github: { replyToReviewThread: async (_url: string, number: number, commentId: string, body: string) => {
-        attempts += 1;
-        calls.push(commentId);
-        const failure = options.fail?.(commentId, attempts);
-        if (failure !== undefined) throw failure;
-        sent.push({ number, commentId, body });
-        return "replied" as const;
-      } },
       scope: (orgId: string) => ({ orgId }) as never,
-      repositoryUrl: async () => "https://github.com/acme/payments",
+      repository: async () => ({ url: "https://github.com/acme/payments", codeHost: githubCodeHost(provider as never, { credentialRef: "github" }) }),
     };
     const [put] = feedbackReplyItems({ tableName: "state", orgId: TEST_ORG, workflow: decidedRound(), repositoryId: "payments", number: 7, head: SHA, now: at }) as Array<{ Put: { Item: Record<string, unknown> } }>;
     db.set(put!.Put.Item);
@@ -728,11 +732,16 @@ describe("what was stored before this change still reads and still works", () =>
 
 describe("what still has to hold when the worker starts", () => {
   const task = () => ({ workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "maya", threadId: "t1" }, { id: "review_comment:2", author: "omar", threadId: "t2" }, { id: "review_comment:3", author: "maya", threadId: "t3" }] }).workflow });
+  /** A code host that tells a person's standing by the GitHub adapter's words (account type), from what the test says of each person. */
+  const standingHost = (standing: (url: string, login: string) => Promise<{ permission: "admin" | "write" | "read" | "none"; userType?: string }>) => githubCodeHost(
+    { getRepositoryStanding: (url: string, login: string) => standing(url, login) } as never, { credentialRef: "github" },
+  );
   const holds = (overrides: Partial<Parameters<typeof autonomyStillHolds>[0]> = {}, people: Record<string, { permission: "admin" | "write" | "read" | "none"; userType?: string }> = { maya: { permission: "write" }, omar: { permission: "admin", userType: "User" } }) => {
     const asked: string[] = [];
     const deps = {
-      autonomy: async () => ({ autonomy: "prepare" as const }), repositoryUrl: async () => "https://github.com/acme/payments",
-      standing: async (_url: string, login: string) => { asked.push(login); const found = people[login]; if (found === undefined) throw new Error("GitHub is down"); return found; }, ...overrides,
+      autonomy: async () => ({ autonomy: "prepare" as const }), scope: { orgId: TEST_ORG } as never,
+      repository: async () => ({ url: "https://github.com/acme/payments", codeHost: standingHost(async (_url, login) => { asked.push(login); const found = people[login]; if (found === undefined) throw new Error("GitHub is down"); return found; }) }),
+      ...overrides,
     };
     return { deps, asked };
   };
@@ -748,7 +757,8 @@ describe("what still has to hold when the worker starts", () => {
 
   it("does not hold for a decision with no autonomy bound, or when nothing can be asked", async () => {
     expect(await autonomyStillHolds(holds().deps, task(), {})).toBe(false);
-    expect(await autonomyStillHolds(holds({ standing: undefined }).deps, task(), binding())).toBe(false);
+    // A task whose repository the project does not hold: nothing can be asked, so nothing holds.
+    expect(await autonomyStillHolds(holds({ repository: async () => undefined }).deps, task(), binding())).toBe(false);
   });
 
   it("does not hold when the frozen recipe is not the one the decision was bound to (either way round)", async () => {
@@ -765,7 +775,7 @@ describe("what still has to hold when the worker starts", () => {
     expect(await autonomyStillHolds(holds({}, { maya: { permission: "write" }, omar: { permission: "read" } }).deps, task(), binding())).toBe(false);
     expect(await autonomyStillHolds(holds({}, { maya: { permission: "write" }, omar: { permission: "write", userType: "Bot" } }).deps, task(), binding())).toBe(false);
     expect(await autonomyStillHolds(holds({}, { maya: { permission: "write" } }).deps, task(), binding())).toBe(false);
-    const gone = holds({ repositoryUrl: async () => undefined });
+    const gone = holds({ repository: async () => undefined });
     expect(await autonomyStillHolds(gone.deps, task(), binding())).toBe(false);
     expect(gone.asked).toEqual([]);
     const bot = { workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "renovate[bot]", threadId: "t1" }] }).workflow };
@@ -777,7 +787,10 @@ describe("what still has to hold when the worker starts", () => {
   it("asks about each writer on the repository of their own comment", async () => {
     const two = { workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "bob", threadId: "t1", repositoryId: "payments" }, { id: "review_comment:2", author: "bob", threadId: "t2", repositoryId: "web" }], findings: [{ id: "f1", commentIds: ["review_comment:1"] }, { id: "f2", commentIds: ["review_comment:2"] }] }).workflow };
     const seen: string[] = [];
-    const deps = { autonomy: live("prepare"), repositoryUrl: async (repositoryId: string) => `https://github.com/acme/${repositoryId}`, standing: async (url: string) => { seen.push(url); return { permission: url.endsWith("/web") ? "read" as const : "write" as const }; } };
+    const deps = {
+      autonomy: live("prepare"), scope: { orgId: TEST_ORG } as never,
+      repository: async (repositoryId: string) => ({ url: `https://github.com/acme/${repositoryId}`, codeHost: standingHost(async (url) => { seen.push(url); return { permission: url.endsWith("/web") ? "read" as const : "write" as const }; }) }),
+    };
     expect(await autonomyStillHolds(deps, two, binding())).toBe(false);
     expect(seen).toEqual(["https://github.com/acme/payments", "https://github.com/acme/web"]);
   });
@@ -836,5 +849,46 @@ describe("failing checks join a card only while it waits", () => {
     const waitingAgain = WorkflowSnapshotSchema.parse({ ...decided, stage: "WAIT_FOR_MERGE", state: "WAITING" });
     expect(waitingAgain.feedbackReview?.status).toBe("APPROVED");
     expect(() => recordWorkflowFeedbackCiFailures(waitingAgain, { checks: ["test"], now: at })).toThrow(WorkflowTransitionError);
+  });
+});
+
+describe("on the fake code host (P5b)", () => {
+  const URL = "https://github.com/acme/payments";
+  function fakeHost() {
+    const model = new FakeHostModel({ url: URL, id: "42", fullName: "acme/payments", webBase: "https://github.com" });
+    // Pull request 7 is the seventh change request of the repository.
+    for (let n = 1; n <= 7; n += 1) { model.commit(`agentx/b${String(n)}`, { [`f${String(n)}.ts`]: "x\n" }); model.reconcile({ sourceBranch: `agentx/b${String(n)}`, targetBranch: "main", title: `t${String(n)}` }); }
+    return { model, host: new FakeCodeHost(model), crId: "7" };
+  }
+
+  it("replies on each review thread through the host's port, once, with Rovara's fixed text", async () => {
+    const { model, host, crId } = fakeHost();
+    const first = model.addReviewComment(crId, "maya", "please rename", "src/a.ts", 1);
+    const second = model.addReviewComment(crId, "maya", "and this", "src/a.ts", 2);
+    const db = new FakeDynamoDb();
+    const [put] = feedbackReplyItems({ tableName: "state", orgId: TEST_ORG, workflow: decidedRound(), repositoryId: "payments", number: Number(crId), head: SHA, now: at }) as Array<{ Put: { Item: Record<string, unknown> } }>;
+    db.set({ ...put!.Put.Item, commentIds: [first.id, second.id] });
+    const deps = { documentClient: db, tableName: "state", now: () => Date.parse(at), scope: (orgId: string) => ({ orgId }) as never, repository: async () => ({ url: URL, codeHost: host }) };
+    const task = { taskId: TASK_ID, orgId: TEST_ORG, project: "payments", startingRevision: 1 };
+    expect(await sendFeedbackReplies(deps, task)).toBe(2);
+    const replies = model.getChangeRequest(crId).comments.filter((comment) => comment.author === "rovara-app[bot]");
+    expect(replies.map((comment) => comment.body)).toEqual(["Fixed in 0123456.", "Fixed in 0123456."]);
+    expect(new Set(replies.map((comment) => comment.threadId))).toEqual(new Set([first.threadId, second.threadId]));
+    expect(await sendFeedbackReplies(deps, task)).toBe(0);
+  });
+
+  it("holds only while every writer of the round is still a person who can write on the host (read live), and a bot account never counts", async () => {
+    const { model, host } = fakeHost();
+    model.setAccount("maya", "write");
+    model.setAccount("omar", "admin");
+    const repository = async () => ({ url: URL, codeHost: host });
+    const deps = { autonomy: async () => ({ autonomy: "prepare" as const }), repository, scope: { orgId: TEST_ORG } as never };
+    const round = { workflow: pendingCard({ comments: [{ id: "review_comment:1", author: "maya", threadId: "t1" }, { id: "review_comment:2", author: "omar", threadId: "t2" }] }).workflow };
+    const binding = { autonomy: { level: "prepare" } };
+    expect(await autonomyStillHolds(deps, round, binding)).toBe(true);
+    model.setAccount("omar", "read");
+    expect(await autonomyStillHolds(deps, round, binding)).toBe(false);
+    model.setAccount("omar", "admin", "Bot");
+    expect(await autonomyStillHolds(deps, round, binding)).toBe(false);
   });
 });

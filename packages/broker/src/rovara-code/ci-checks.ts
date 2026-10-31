@@ -4,7 +4,18 @@
 // repository. Anything that can't be read leaves the plan as it was.
 import { parse } from "yaml";
 import { WORKFLOW_PROPOSED_CHECKS_MAX, hasControlCharacter, proposedCheckProblem, type CiCheckInput } from "@agentx/contracts";
-import type { AgentRepositoryReader } from "../github-app.js";
+
+/**
+ * What the reading of a repository's CI definition needs of a host: the entries of a directory and a file's text, read-only, at one commit of the default branch. A host gives this view
+ * (GitHub's is the org's read-only reader); nothing here is GitHub's type. The CodeHost port carries file reads (`fileAtRevision`) but no directory listing, so a host without this view
+ * leaves a plan's checks as the planner proposed them.
+ */
+export interface CiDefinitionReader {
+  /** The entries of a directory (undefined when the path is not a directory). */
+  list(path: string): Promise<{ entries: ReadonlyArray<{ name: string; path: string; type: string }>; truncated: boolean } | undefined>;
+  /** A file's text when it is at most `maxBytes` (undefined when the path is not a file). */
+  read(path: string, maxBytes: number): Promise<({ tooLarge: true } | { tooLarge?: false; text: string }) | undefined>;
+}
 
 /** A check the CI requires: the command, the folder it runs in (inside the repository) and the workflow it comes from. */
 export interface CiCheck extends CiCheckInput { source: string }
@@ -148,7 +159,7 @@ export function ciChecksFromWorkflows(files: ReadonlyArray<{ path: string; text:
  * The CI checks of a repository, read through a read-only reader of its default branch: the `yml` and `yaml` files of `.github/workflows`. Empty (never an error) when there is no such folder, a file is
  * too large, or GitHub can't answer: a plan is not held up for a check it can't read.
  */
-export async function readCiChecks(reader: Pick<AgentRepositoryReader, "list" | "read">, repositoryPath: string): Promise<CiCheck[]> {
+export async function readCiChecks(reader: CiDefinitionReader, repositoryPath: string): Promise<CiCheck[]> {
   try {
     const listing = await reader.list(WORKFLOW_FOLDER);
     if (listing === undefined) return [];
