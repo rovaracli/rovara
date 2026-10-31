@@ -873,3 +873,16 @@ describe("the routes", () => {
     expect(isAgentSessionRoute("/v1/app/homes")).toBe(false);
   });
 });
+
+describe("Home retires the kinds decision cards carry (Decisions Q5)", () => {
+  it("drops its own cards of the retired kinds only when the wiring says decision cards are mounted, and keeps every other kind", async () => {
+    const w = world();
+    fakeSource("offer", () => [offer("x", 1)]);
+    fakeSource("plan", () => [{ cardId: "plan:ses_aaaaaaaaaaaaaaaaaaaa", kind: "plan", title: "A plan", reason: "Review it", at: iso(w.clock.now), buttons: [] }]);
+    expect(await w.ids(PRIYA)).toEqual(expect.arrayContaining(["offer:x", "plan:ses_aaaaaaaaaaaaaaaaaaaa"]));
+    const retired = (await w.home(PRIYA, ORG_A, { retiredHomeKinds: ["plan", "approval", "spend_request", "pull_request"] })).cards.map((card) => card.cardId);
+    expect(retired).toContain("offer:x");
+    expect(retired).not.toContain("plan:ses_aaaaaaaaaaaaaaaaaaaa");
+  });
+});
+
