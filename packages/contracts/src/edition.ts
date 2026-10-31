@@ -60,6 +60,11 @@ export const EDITION_FEATURES = [
   "publicSignInMethods",
   /** AI navigation in browser tests without being charged to spend first (the customer's account pays). */
   "aiNavigationUncharged",
+  /**
+   * MCP servers on the customer's own network (private HTTPS endpoints an admin approves in settings, and stdio servers run by the MCP host), for the project's
+   * context sources. Refused on Public: a customer-chosen private address there is a server-side request forgery risk.
+   */
+  "privateMcpServers",
 ] as const;
 export const EditionFeatureSchema = z.enum(EDITION_FEATURES);
 export type EditionFeature = z.infer<typeof EditionFeatureSchema>;
@@ -84,6 +89,7 @@ export const EDITION_FEATURE_TABLE: Readonly<Record<EditionFeature, { readonly e
   telemetry: { enterprise: false, public: false },
   publicSignInMethods: { enterprise: false, public: true },
   aiNavigationUncharged: { enterprise: true, public: false },
+  privateMcpServers: { enterprise: true, public: false },
 };
 
 /** Team record retention (Learning v2): A live only, B process then drop, C raw text about 30 days plus distilled knowledge, D full history. */

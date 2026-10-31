@@ -135,7 +135,7 @@ export async function replayCitation(deps: ReplayDependencies, input: { orgId: O
   const { source, tool: ticked } = resolved;
   let session;
   try {
-    session = await deps.servers.open(input.orgId, source.server, AbortSignal.timeout(deps.callTimeoutMs ?? 10_000));
+    session = await deps.servers.open(input.orgId, source.server, AbortSignal.timeout(deps.callTimeoutMs ?? 10_000), source.tools.map((tool) => tool.upstreamName));
     const discovered = session.tools.find((entry) => entry.name === ticked.upstreamName);
     if (discovered === undefined || toolSchemaHash(discovered) !== ticked.schemaHash) return { outcome: "unavailable" };
     if (annotationVerdict(discovered) === "unsafe" || ((annotationVerdict(discovered) === "unannotated" || nameSuggestsWrite(discovered.name)) && ticked.attestedReadOnly !== true)) return { outcome: "unavailable" };

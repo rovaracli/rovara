@@ -1,0 +1,51 @@
+// E6: the routes behind "MCP servers" in the org settings (owner or admin only, Enterprise only):
+//   GET    /v1/app/org/mcp-servers                    every server, with what it offers
+//   POST   /v1/app/org/mcp-servers                    add one: paste an address (or a stdio package); Rovara tests it and shows what it offers (nothing is allowed yet)
+//   POST   /v1/app/org/mcp-servers/{id}/approve       approve it, which adds it to the allow-list
+//   POST   /v1/app/org/mcp-servers/{id}/disable       take it out of the allow-list
+//   DELETE /v1/app/org/mcp-servers/{id}               remove a disabled or waiting entry
+import { z } from "zod";
+import { ConnectionIdSchema, agentXError } from "@agentx/contracts";
+import type { AgentCaller } from "../agents/access.js";
+import type { AdaptedHttpRequest } from "../aws/lambda.js";
+import { StatusReply } from "../aws/status-reply.js";
+import { approveMcpServer, disableMcpServer, listMcpServers, proposeMcpServer, removeMcpServer, type McpServerDependencies } from "./mcp-servers.js";
+
+export const MCP_SERVERS_PATH = /^\/v1\/app\/org\/mcp-servers(?:\/(mcp[a-z0-9]{6,24})(?:\/(approve|disable))?)?$/;
+
+const notThere = () => agentXError("NOT_FOUND", "route not found");
+
+const AddBodySchema = z.object({ label: z.string().max(200), transport: z.unknown(), authConnectionId: ConnectionIdSchema.optional() }).strict();
+
+function jsonBody(request: AdaptedHttpRequest): unknown {
+  if (request.body === undefined || request.body === "") return {};
+  try { return JSON.parse(request.body) as unknown; } catch { throw agentXError("CONFIG_INVALID", "the request body is not JSON"); }
+}
+
+export async function routeMcpServers(deps: McpServerDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+  const match = MCP_SERVERS_PATH.exec(url.pathname);
+  if (match === null) throw notThere();
+  const actor = { orgId: caller.orgId, developerId: caller.developerId, orgRole: caller.orgRole };
+  const [, serverId, action] = match;
+  if (serverId === undefined) {
+    if (request.method === "GET") return { servers: await listMcpServers(deps, actor) };
+    if (request.method !== "POST") throw notThere();
+    const parsed = AddBodySchema.safeParse(jsonBody(request));
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      // A field the caller made up is not repeated back: a body can carry a token by mistake.
+      throw agentXError("CONFIG_INVALID", `${issue === undefined || issue.path.length === 0 ? "body" : issue.path.join(".")}: ${issue?.code === "unrecognized_keys" ? "has a field this route does not take" : issue?.message ?? "is not valid"}`);
+    }
+    const entry = await proposeMcpServer(deps, actor, parsed.data);
+    return new StatusReply(202, { status: "NEEDS_APPROVAL", server: entry });
+  }
+  if (action === undefined) {
+    if (request.method !== "DELETE") throw notThere();
+    await removeMcpServer(deps, actor, serverId);
+    return { status: "REMOVED" };
+  }
+  if (request.method !== "POST") throw notThere();
+  if (action === "approve") return { server: await approveMcpServer(deps, actor, serverId) };
+  await disableMcpServer(deps, actor, serverId);
+  return { status: "DISABLED" };
+}

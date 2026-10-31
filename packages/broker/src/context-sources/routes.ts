@@ -40,8 +40,13 @@ export interface ContextServerSession {
 }
 
 export interface ContextServerPort {
-  /** Connects to the source's server (an org connection, or an approved registered server). It throws when the server cannot be reached. */
-  open(orgId: OrgId, server: ContextSourceServer, signal: AbortSignal): Promise<ContextServerSession>;
+  /**
+   * Connects to the source's server (an org connection, or an approved registered server). `tools` are the names the project ticked: the connection discovers those and
+   * no others. It throws when the server cannot be reached.
+   */
+  open(orgId: OrgId, server: ContextSourceServer, signal: AbortSignal, tools: readonly string[]): Promise<ContextServerSession>;
+  /** Every tool the server lists, for the settings page that shows what to tick. */
+  listAll?(orgId: OrgId, server: ContextSourceServer, signal: AbortSignal): Promise<DiscoveredTool[]>;
 }
 
 /** Where a result's text is kept for the task's lifetime so that people allowed to see it can (quotes.ts). */
@@ -123,7 +128,7 @@ export async function listContextTools(deps: ContextToolsDependencies, run: Cont
   const perSource = await Promise.all(sources.map(async (source) => {
     let session: ContextServerSession | undefined;
     try {
-      session = await deps.servers.open(run.orgId, source.server, withTimeout(deps.callTimeoutMs ?? LIST_TIMEOUT_MS));
+      session = await deps.servers.open(run.orgId, source.server, withTimeout(deps.callTimeoutMs ?? LIST_TIMEOUT_MS), source.tools.map((tool) => tool.upstreamName));
       const byName = new Map(session.tools.map((tool) => [tool.name, tool]));
       const presented: ContextToolPresentation[] = [];
       const disabled: ContextToolCatalog["disabled"] = [];
@@ -215,7 +220,7 @@ async function callOne(deps: ContextToolsDependencies, run: ContextToolsRun, sou
   let session: ContextServerSession | undefined;
   try {
     try {
-      session = await deps.servers.open(orgId, source.server, withTimeout(deps.callTimeoutMs ?? CONTEXT_CALL_TIMEOUT_MS));
+      session = await deps.servers.open(orgId, source.server, withTimeout(deps.callTimeoutMs ?? CONTEXT_CALL_TIMEOUT_MS), source.tools.map((tool) => tool.upstreamName));
     } catch {
       await deps.usage.recordFailure({ orgId, operationId, sourceId: source.sourceId });
       deps.log?.("context_source.unreachable", { sourceId: source.sourceId });
@@ -302,7 +307,7 @@ async function searchAll(deps: ContextToolsDependencies, run: ContextToolsRun, s
     let name: string | undefined;
     let session: ContextServerSession | undefined;
     try {
-      session = await deps.servers.open(run.orgId, source.server, withTimeout(deps.callTimeoutMs ?? CONTEXT_CALL_TIMEOUT_MS));
+      session = await deps.servers.open(run.orgId, source.server, withTimeout(deps.callTimeoutMs ?? CONTEXT_CALL_TIMEOUT_MS), source.tools.map((tool) => tool.upstreamName));
       const schema = session.tools.find((tool) => tool.name === search.upstreamName)?.inputSchema;
       name = schema === undefined ? undefined : searchArgumentName(schema);
     } catch { missing.push(source.label); continue; } finally { await session?.close().catch(() => undefined); }
