@@ -23,7 +23,7 @@ import { taskAccessFence } from "../../developer/task-people.js";
 import { cancelRunningTask, type TaskCancellation } from "./acceptance.js";
 import { swebenchDependencies } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
-import { agentRouteDependencies, developerTaskActions, requireRecordProject, slackCallerFor, slackTeamOrg } from "./dependency-wiring.js";
+import { agentRouteDependencies, developerTaskActions, requireRecordProject, requireSlackAllowedByEdition, slackCallerFor, slackTeamOrg } from "./dependency-wiring.js";
 import { dispatchWorkflowContinuation } from "./e2e-rounds.js";
 import { getMembership, requireWorkspace } from "./records.js";
 import { creatorCheckOf, githubScope, installOrgId, resolveSlackThreadKey } from "./scope-helpers.js";
@@ -802,7 +802,10 @@ export function isSlackStopTaskEvent(event: unknown): event is SlackStopTaskEven
 export async function stopSlackThreadTask(dependencies: AwsBrokerDependencies, event: SlackStopTaskEvent): Promise<TaskCancellation | { outcome: "NOT_OWNER" }> {
   const thread = SlackThreadSchema.parse(event.thread);
   const requester = SlackRequesterSchema.parse({ teamId: thread.teamId, userId: event.userId });
-  const binding = await getSlackBinding(dependencies, await slackTeamOrg(dependencies, thread.teamId), thread.teamId, thread.channelId);
+  const teamOrg = await slackTeamOrg(dependencies, thread.teamId);
+  // Enterprise foundations I-6: whoever stops a task through Slack must still be allowed by the company sign-in, in every branch below.
+  await requireSlackAllowedByEdition(dependencies, requester.userId, teamOrg);
+  const binding = await getSlackBinding(dependencies, teamOrg, thread.teamId, thread.channelId);
   if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
   // Spec 043 FR-005: a thread running a SWE-bench run stops the run.
   if (dependencies.swebench !== undefined) {

@@ -41,6 +41,7 @@ import {
 import type { Construct } from "constructs";
 import { E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
+import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
 import { RealtimeEvents } from "./realtime.js";
 import { TaskPersonProof } from "./task-person-proof.js";
@@ -240,6 +241,8 @@ export class ControlPlaneStack extends Stack {
     }
     state.grantReadWriteData(broker);
     artifacts.grantReadWrite(broker);
+    // Enterprise foundations I-2: the broker checks its edition stamp against the install's retained edition record before it serves.
+    if (naming.env !== undefined) grantEditionRecordRead(broker, naming.env);
     broker.addToRolePolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],
       resources: [githubAppPrivateKeySecretArn.valueAsString],

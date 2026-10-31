@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { environmentStackName, type ReleaseManifest } from "@agentx/contracts";
+import { adoptOrphanedEditionRecord, settleEditionRecord } from "../../packages/cli/src/deploy/edition.js";
 import { deployEnvironment, keptOperatorParameters, type DeployAnswers, type DeployEnvironmentInput } from "../../packages/cli/src/deploy/deploy-environment.js";
 import { CDK_CONSTRUCT_IDS, cdkAppArguments, cdkDeployer, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
 import { PROTECTED_PARTS, type DeployRequest, type StackDeployer, type StackOutputs } from "../../packages/cli/src/deploy/deployer.js";
@@ -285,6 +286,44 @@ describe("deploy environment", () => {
       },
       updatedAt: "2026-09-26T00:00:00.000Z",
     });
+  });
+
+  it("adopts a retained edition record just before the foundation deploys, and only then (fix round 2, N-1)", async () => {
+    const store = new MemoryParameterStore();
+    const secrets = memorySecrets();
+    const events: string[] = [];
+    const scripted = fakeDeployer(scriptedOutputs());
+    const deployer: StackDeployer = { outputs: (name) => scripted.deployer.outputs(name), async deploy(request) { events.push(`deploy ${request.part}`); return scripted.deployer.deploy(request); } };
+    await deployEnvironment({
+      mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer, store, secrets, holder: HOLDER,
+      adoptEditionRecord: async () => { events.push("adopt"); },
+    });
+    expect(events.filter((event) => event === "adopt")).toHaveLength(1);
+    expect(events.indexOf("adopt")).toBe(events.indexOf("deploy foundation") - 1);
+  });
+
+  it("puts the edition record back when the foundation deploy fails after the record was taken out of the way, and drops the backup when it completes (fix round 2)", async () => {
+    const editions = new MemoryParameterStore();
+    const record = "/agentx/staging/edition";
+    editions.values.set(record, "enterprise");
+    const adopt = () => adoptOrphanedEditionRecord({ store: editions, env: "staging", edition: "enterprise", foundationResources: async () => [] });
+    const settle = (completed: boolean) => settleEditionRecord({ store: editions, env: "staging", completed });
+    const base = fakeDeployer(scriptedOutputs());
+    const failing: StackDeployer = { outputs: (name) => base.deployer.outputs(name), async deploy(request) { if (request.part === "foundation") { expect(editions.values.has(record)).toBe(false); throw new Error("the foundation deploy failed"); } return base.deployer.deploy(request); } };
+    await expect(deployEnvironment({
+      mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: failing, store: new MemoryParameterStore(), secrets: memorySecrets(), holder: HOLDER,
+      adoptEditionRecord: adopt, settleEditionRecord: settle,
+    })).rejects.toThrow("the foundation deploy failed");
+    expect(editions.values.get(record)).toBe("enterprise");
+    expect(editions.values.get("/agentx/staging/edition-backup")).toBe("enterprise");
+
+    // A deploy that completes: the stack creates the record again, and the backup is removed.
+    const scripted = fakeDeployer(scriptedOutputs());
+    const creating: StackDeployer = { outputs: (name) => scripted.deployer.outputs(name), async deploy(request) { if (request.part === "foundation") editions.values.set(record, "enterprise"); return scripted.deployer.deploy(request); } };
+    editions.values.delete(record);
+    await deployEnvironment({ mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: creating, store: new MemoryParameterStore(), secrets: memorySecrets(), holder: HOLDER, adoptEditionRecord: adopt, settleEditionRecord: settle });
+    expect(editions.values.has("/agentx/staging/edition-backup")).toBe(false);
+    expect(editions.values.get(record)).toBe("enterprise");
   });
 
   it("upgrades in upgrade order and reads outputs of parts it does not deploy", async () => {

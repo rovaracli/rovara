@@ -3,7 +3,7 @@
 // written only by deployEnvironment once the Slack stack exists; these two let a stopped init
 // resume before that, from any machine with access to the account.
 import { z } from "zod";
-import { agentXError, AGENTX_NAME_PATTERN, BOOT_STAGE2_SHA256_PATTERN, EnvironmentNameSchema, environmentSettingsPrefix, ImageDigest } from "@agentx/contracts";
+import { agentXError, AGENTX_NAME_PATTERN, BOOT_STAGE2_SHA256_PATTERN, EditionSchema, EnvironmentNameSchema, environmentSettingsPrefix, ImageDigest } from "@agentx/contracts";
 import { AlertEmailSchema, ACCOUNT_PATTERN, AuditLockProfileSchema, BudgetAnswersSchema, CloudSignInAnswersSchema, GITHUB_LOGIN_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "../deploy/answer-schemas.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 
@@ -66,6 +66,8 @@ export const InitAnswersSchema = z.object({
   /** The hosted Rovara cloud (R45) and its sign-in settings (R46). */
   cloud: z.literal(true).optional(),
   cloudSignIn: CloudSignInAnswersSchema.optional(),
+  /** Enterprise foundations E2: the edition chosen at `rovara init --edition`; absent in answers saved before editions and for the prebuilt-templates engine. */
+  edition: EditionSchema.optional(),
   github: z.object({ account: z.string().regex(GITHUB_LOGIN_PATTERN), accountType: z.enum(["organization", "user"]), appName: z.string().min(1).max(34) }).strict(),
   slack: z.object({ appName: z.string().min(1).max(35), appPostedMessages: z.enum(["accept", "ignore"]) }).strict(),
   /** Spec 048 FR-020 and FR-055: your email from the settings, for the admin user and the default alert address. */

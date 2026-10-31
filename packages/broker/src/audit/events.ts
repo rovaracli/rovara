@@ -646,3 +646,37 @@ export function auditSlackChannelProposed(input: AuditBuilderBase & { projectNam
 export function auditSlackChannelDecision(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string; proposalId: string; state: "cancelled" | "rejected" }): AuditEventInput {
  return build(input.state === "cancelled" ? "slack_channel.cancelled" : "slack_channel.rejected", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.proposalId });
 }
+
+// Company sign-in (Enterprise foundations I1) ------------------------------------------------------------------------------
+
+/** The details every sign-in event carries: the rule ids the sign-in matched, so a reviewer can see which mapping rules let the person in. Rule ids are an admin's words: details, never facts. */
+const ruleDetails = (matchedRuleIds: readonly string[]): AuditDetailPart[] => (matchedRuleIds.length === 0 ? [] : [{ subject: "org", fields: { matchedRuleIds: matchedRuleIds.join(",").slice(0, 480) } }]);
+
+/** `occurrence`: `auditOccurrence(requestId, memberId)`, where the request id is the sign-in's auth request (one occurrence per sign-in). */
+export function auditSsoSignIn(input: AuditBuilderBase & { memberId: string; role: string; matchedRuleIds: readonly string[] }): AuditEventInput {
+  return build("sso.sign_in", { ...input, details: [...(input.details ?? []), ...ruleDetails(input.matchedRuleIds)] }, { kind: "member", id: input.memberId }, { source: "mapping", role: input.role, rules: input.matchedRuleIds.length });
+}
+
+/** `occurrence`: as `auditSsoSignIn`. `reason` is one of the fixed refusal words. */
+export function auditSsoSignInRefused(input: AuditBuilderBase & { memberId: string; reason: string }): AuditEventInput {
+  return build("sso.sign_in_refused", input, { kind: "member", id: input.memberId }, { refusal: input.reason });
+}
+
+/** `occurrence`: as `auditSsoSignIn`. */
+export function auditSsoBreakGlassUsed(input: AuditBuilderBase & { memberId: string; sessionSeconds: number }): AuditEventInput {
+  return build("sso.break_glass_used", input, { kind: "member", id: input.memberId }, { role: "owner", sessionSeconds: input.sessionSeconds });
+}
+
+/** `occurrence`: `auditOccurrence(String(toVersion))`: each saved version is one occurrence. `added` and `removed` are the rule ids the save changed (details). */
+export function auditSsoGroupMappingChanged(input: AuditBuilderBase & { fromVersion: number; toVersion: number; rules: number; added: readonly string[]; removed: readonly string[] }): AuditEventInput {
+  const fields: Record<string, string> = {};
+  if (input.added.length > 0) fields.added = input.added.join(",").slice(0, 480);
+  if (input.removed.length > 0) fields.removed = input.removed.join(",").slice(0, 480);
+  return build("sso.group_mapping_changed", { ...input, details: [...(input.details ?? []), ...(Object.keys(fields).length === 0 ? [] : [{ subject: "org", fields }])] },
+    { kind: "org", id: input.orgId }, { fromVersion: input.fromVersion, toVersion: input.toVersion, rules: input.rules });
+}
+
+/** `occurrence`: `auditOccurrence(String(toVersion))`. The owners' ids are in details. */
+export function auditSsoBreakGlassChanged(input: AuditBuilderBase & { toVersion: number; owners: number; ownerIds: readonly string[] }): AuditEventInput {
+  return build("sso.break_glass_changed", { ...input, details: [...(input.details ?? []), ...(input.ownerIds.length === 0 ? [] : [{ subject: "org", fields: { ownerIds: input.ownerIds.join(",").slice(0, 480) } }])] }, { kind: "org", id: input.orgId }, { owners: input.owners });
+}

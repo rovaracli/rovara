@@ -24,6 +24,8 @@ import { disconnectGithubInstallation, listGithubInstallations, listInstallation
 import { cancelInstallRequest, listInstallRequests } from "../../org/github-install-requests.js";
 import { sendGithubConnectedNotice, sendGithubRequestReminder } from "../../developer/identity-notice.js";
 import { unlockTrial } from "../../org/trial.js";
+import { requireSlackPersonAllowed } from "../../developer/slack-allowance.js";
+import { trialAvailable } from "../../org/trial-availability.js";
 import { rovaraCodeV2LiveFromEnvironment } from "../../rovara-code/v2-switch.js";
 import { requireOrgId, resolveSlackOrgForInstall } from "../../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../../org/store.js";
@@ -295,7 +297,8 @@ export function githubConnectionOf(dependencies: AwsBrokerDependencies): GithubC
       notifyGithubConnected: async (notice) => { await sendGithubConnectedNotice(dependencies.githubConnectedNotice!, notice); },
       remindGithubRequester: async (reminder) => { await sendGithubRequestReminder(dependencies.githubConnectedNotice!, reminder); },
     }),
-    unlockTrial: (input) => unlockTrial({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input),
+    // Enterprise foundations E3: no trial, and so no GitHub account claimed for one, where the edition has none.
+    unlockTrial: (input) => trialAvailable(dependencies.editionPolicy) ? unlockTrial({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input) : Promise.resolve(),
     ...(dependencies.githubFetch === undefined ? {} : { fetch: dependencies.githubFetch }),
   };
 }
@@ -405,7 +408,20 @@ export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId
   const teamOrg = await slackTeamOrg(dependencies, teamId);
   const orgId = requireOrgId(await orgResolverOf(dependencies)({ developerId }));
   if (orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+  await requireSlackAllowedByEdition(dependencies, userId, orgId);
   return slackWorkflowCaller(userId, orgId);
+}
+
+/**
+ * Enterprise foundations I-6: in an edition with company group sign-in a Slack user acts only while the person's company sign-in is allowed (see
+ * developer/slack-allowance.ts), so someone removed from the identity provider's groups is refused in Slack too. Other editions and installs with no edition are unchanged.
+ */
+export async function requireSlackAllowedByEdition(dependencies: AwsBrokerDependencies, userId: string, orgId: OrgId): Promise<void> {
+  if (dependencies.editionPolicy?.features.sso !== true) return;
+  await requireSlackPersonAllowed({
+    store: dependencies.sso?.slack, orgId, slackUserId: userId, nowMs: Date.now(),
+    isMember: async (developerId) => (await orgStoreOf(dependencies).orgForDeveloper(developerId))?.orgId === orgId,
+  });
 }
 
 /** requireLatestProject for a record (a workspace) that belongs to a project. */

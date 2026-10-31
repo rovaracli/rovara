@@ -1,5 +1,6 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { DEVELOPER_TOKEN_AUDIENCE, agentXError, type DeveloperSignInMethod, type OrgId, type OrgRole, OrgIdSchema, OrgRoleSchema } from "@agentx/contracts";
+import { methodAllowedByEdition, sessionWithinEditionCap } from "../../developer/edition-methods.js";
 import { safeDisplayName } from "../../developer/person-name.js";
 import { readChosenName } from "../../developer/chosen-name.js";
 import {
@@ -63,6 +64,11 @@ async function authenticateSession(deps: DeveloperRouteDependencies, token: { de
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   }
   if (session.amr !== token.amr) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
+  // The edition's rules hold for a session that already existed when the install became Enterprise: a method the edition does not offer (Slack, cloud, GitHub) is
+  // refused at every request, and no session outlasts the edition's cap.
+  if (!methodAllowedByEdition(deps.editionPolicy, session.amr) || !sessionWithinEditionCap(deps.editionPolicy, session.startedAt, deps.now())) {
+    throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
+  }
   // The broker may only read the sign-in table (R13), so it refuses; the token endpoint revokes the
   // session at its next refresh.
   if (startedBeforeMethodOn(session.startedAt, deps.developer.since?.[token.amr])) {

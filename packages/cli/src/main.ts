@@ -105,6 +105,8 @@ import { registerConfigCommands } from "./config/cli.js";
 import type { ConfigServices } from "./config/commands.js";
 import { registerDoctorCommand } from "./doctor/cli.js";
 import type { DoctorServices } from "./doctor/checks.js";
+import { registerSsoCommands } from "./sso/cli.js";
+import type { SsoBootstrapServices } from "./sso/bootstrap.js";
 import { addSignInOptions, definedEntries, registerSigninCommands, secretSource, signInFlags, type SignInCommandOptions } from "./signin/cli.js";
 import { registerDestroyCommand } from "./destroy/cli.js";
 import type { DestroyDependencies } from "./destroy/run.js";
@@ -171,6 +173,8 @@ export interface CliDependencies {
   deploy?: DeployCliDependencies;
   /** `agentx init` overrides, for tests: never touch AWS, GitHub or Slack. */
   init?: InitCliDependencies;
+  /** `rovara sso` overrides, for tests: never touch AWS. */
+  sso?: Partial<SsoBootstrapServices>;
   /** `agentx signin` overrides, for tests: never touch AWS, Slack or an identity provider. */
   signin?: Partial<SigninServices>;
   /** `agentx config` overrides, for tests: never touch AWS. */
@@ -1199,6 +1203,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(globals.json ? formatSuccess({ env: result.env, url: result.url, installationId: result.installationId, accountLogin: result.accountLogin, message: result.message }, true) : githubDisconnectText(result));
     });
 
+  registerSsoCommands(program, { ...(dependencies.sso === undefined ? {} : { overrides: dependencies.sso }), parameterStore, stdout: services.stdout, stderr: services.stderr });
   registerSigninCommands(program, {
     ...(dependencies.signin === undefined ? {} : { overrides: dependencies.signin }),
     parameterStore, fetch: services.fetchImplementation, stdout: services.stdout, stderr: services.stderr,
@@ -2370,6 +2375,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--alert-webhook-file <path>", "file holding a PagerDuty or Opsgenie integration address (kept secret)")
     .option("--alert-webhook-env <NAME>", "environment variable holding a PagerDuty or Opsgenie integration address (kept secret)")
     .option("--no-alerts", "send alerts nowhere for now")
+    .option("--edition <edition>", "the edition of this install: enterprise (an install in your own AWS account) or public (with --rovara-cloud); needs the cdk engine. A new install with the cdk engine must choose")
     .option("--rovara-cloud", "install the hosted Rovara cloud (self-serve sign-in, multi-tenant orgs); needs the cdk engine")
     .option("--google-client-id <id>", "with --rovara-cloud: the Google OAuth client id for sign-in (omit for email-code sign-in only)")
     .option("--google-client-secret-arn <arn>", "with --rovara-cloud: the Secrets Manager secret holding the Google client secret as {\"clientSecret\": ...}")
@@ -2690,7 +2696,7 @@ interface InitCommandOptions extends SignInCommandOptions {
   slackAppName?: string; slackAppPostedMessages?: "accept" | "ignore"; slackInstall?: "installed" | "approval";
   slackBotTokenFile?: string; slackBotTokenEnv?: string; slackSigningSecretFile?: string; slackSigningSecretEnv?: string;
   workerImage?: string; slackImage?: string; bootStage2Sha256?: string;
-  rovaraCloud?: boolean; googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
+  rovaraCloud?: boolean; edition?: string; googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
   githubSignInClientId?: string; githubSignInClientSecretArn?: string;
   /** --signin: which developer sign-in methods agentx init's developer-signin step enables. */
   signin?: "slack" | "oidc" | "both";
@@ -2743,7 +2749,7 @@ function initOptions(globals: GlobalOptions, options: InitCommandOptions, comman
     githubAccount: options.githubAccount, githubAccountType: options.githubAccountType, githubAppName: options.githubAppName,
     slackAppName: options.slackAppName, slackAppPostedMessages: options.slackAppPostedMessages,
     workerImage: options.workerImage, slackImage: options.slackImage, bootStage2Sha256: options.bootStage2Sha256,
-    rovaraCloud: options.rovaraCloud, googleClientId: options.googleClientId, googleClientSecretArn: options.googleClientSecretArn, cloudDomainPrefix: options.cloudDomainPrefix,
+    rovaraCloud: options.rovaraCloud, edition: options.edition, googleClientId: options.googleClientId, googleClientSecretArn: options.googleClientSecretArn, cloudDomainPrefix: options.cloudDomainPrefix,
     githubSignInClientId: options.githubSignInClientId, githubSignInClientSecretArn: options.githubSignInClientSecretArn,
   });
   const keySource = secretSource(options.githubPrivateKeyFile, options.githubPrivateKeyEnv);

@@ -6,7 +6,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { agentXError, environmentStackName } from "@agentx/contracts";
+import { agentXError, environmentStackName, type Edition } from "@agentx/contracts";
 import { CDK_CONSTRUCT_IDS, cdkAppArguments, type CommandRunner } from "./cdk-engine.js";
 import type { DeployPart } from "./parameters.js";
 
@@ -79,7 +79,7 @@ type StackEntry = { declared: ReadonlySet<string> } | { problem: string };
  * stack the deploy targets, is refused when it is asked for, so a part this run does not deploy
  * (identity with your own OIDC provider) never fails it.
  */
-export async function synthDeclaredParameters(input: { runner: CommandRunner; source: string; env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false }): Promise<(part: DeployPart) => ReadonlySet<string>> {
+export async function synthDeclaredParameters(input: { runner: CommandRunner; source: string; env: string; region: string; identityMode: "cognito" | "oidc"; cloud?: boolean; reservedConcurrency?: false; edition?: Edition; newInstall?: boolean }): Promise<(part: DeployPart) => ReadonlySet<string>> {
   const { source } = input;
   const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-synth-"));
   const entries = new Map<DeployPart, StackEntry>();

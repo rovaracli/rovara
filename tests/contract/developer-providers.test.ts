@@ -188,7 +188,7 @@ describe("company sign-in (FR-004)", () => {
 
   it("accepts a person in the required group, with their verified email", async () => {
     const { fake, provider } = oidc("groups", ["engineering"]);
-    expect(await signIn(provider, fake, "okta-1")).toEqual({ ok: true, identity: { method: "oidc", issuer: OIDC_ISSUER, subject: "okta-1", displayName: "Ravi", email: "ravi@example.com", emailVerified: true } });
+    expect(await signIn(provider, fake, "okta-1")).toEqual({ ok: true, identity: { method: "oidc", issuer: OIDC_ISSUER, subject: "okta-1", displayName: "Ravi", email: "ravi@example.com", emailVerified: true, claims: { groups: ["engineering", "staff"] } } });
   });
 
   it("refuses a person outside the required group and names the group (US4 scenario 3)", async () => {

@@ -59,6 +59,9 @@ export class GitHubFixtureApi {
     return this.model.branches.get(ref);
   }
 
+  /** The `expires_at` the next tokens carry: an hour from now by default, a given time, or none (null). */
+  tokenExpiry: string | null | undefined;
+
   readonly fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const method = init?.method ?? "GET";
@@ -76,7 +79,7 @@ export class GitHubFixtureApi {
     if (method === "POST" && path === `/app/installations/${INSTALLATION_ID}/access_tokens`) {
       const token = `ghs_fixture_${this.tokens.length + 1}`;
       this.tokens.push({ token, permissions: (body.permissions ?? {}) as Record<string, string>, ...(Array.isArray(body.repositories) ? { repositories: body.repositories as string[] } : {}) });
-      return json(201, { token, expires_at: "2026-10-30T12:00:00Z", permissions: body.permissions ?? {}, repository_selection: "selected" });
+      return json(201, { token, ...(this.tokenExpiry === null ? {} : { expires_at: this.tokenExpiry ?? new Date(Date.parse(this.model.now()) + 3_600_000).toISOString() }), permissions: body.permissions ?? {}, repository_selection: "selected" });
     }
     const token = authorization.slice("Bearer ".length);
     if (!this.tokens.some((entry) => entry.token === token)) return json(401, { message: "Bad credentials" });

@@ -6,7 +6,9 @@
   "exports": {
     ".": "./dist/index.js",
     "./e2e/discovery": "./dist/e2e/discovery.js",
-    "./e2e/execution-plan": "./dist/e2e/execution-plan.js"
+    "./e2e/execution-plan": "./dist/e2e/execution-plan.js",
+    "./developer/sso-bootstrap": "./dist/developer/sso-bootstrap.js",
+    "./audit/outbox": "./dist/audit/outbox.js"
   },
   "types": "./dist/index.d.ts",
   "dependencies": {

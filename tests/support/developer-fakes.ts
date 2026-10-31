@@ -4,7 +4,7 @@ import { createHash, generateKeyPairSync, sign as cryptoSign, type KeyObject } f
 import { AdminCreateUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { GetPublicKeyCommand, SignCommand } from "@aws-sdk/client-kms";
 import { SignJWT, UnsecuredJWT, createLocalJWKSet, type JWTHeaderParameters, type JWTVerifyGetKey } from "jose";
-import type { OrgId } from "@agentx/contracts";
+import type { EditionPolicy, OrgId } from "@agentx/contracts";
 import type { HttpApiV2Event } from "../../packages/broker/src/aws/lambda.js";
 import { githubSignInProvider, oidcSignInProvider, slackSignInProvider } from "../../packages/broker/src/developer/providers.js";
 import { DecideStore } from "../../packages/broker/src/developer/decide-session.js";
@@ -16,6 +16,8 @@ import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.
 import { duplicateMerger } from "../../packages/broker/src/org/merge-members.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { unlockTrial } from "../../packages/broker/src/org/trial.js";
+import { ssoStoresFor } from "../../packages/broker/src/developer/sso-sign-in.js";
+import type { AuditCapture } from "./audit-capture.js";
 import type { PublicSigningJwk, TokenSigner } from "../../packages/broker/src/developer/tokens.js";
 import { kmsTokenSigner } from "../../packages/broker/src/developer/tokens.js";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
@@ -410,6 +412,12 @@ export function identityHarness(options: {
   notice?: DeveloperIdentityDependencies["notice"];
   /** Plan 3, Task 21a-presence: the decide flow's dependencies (tickets, the approval kinds, Cognito's admin API). Absent: the decide routes do not exist. */
   decide?: { kinds?: DecideKinds; cognito?: ReturnType<typeof fakeCognito> };
+  /** Enterprise foundations E3: the edition's feature table. Absent: an install deployed before editions. */
+  editionPolicy?: EditionPolicy;
+  /** Enterprise foundations I1: the group mapping and the break-glass list, over the State table fake (built as the Lambda builds them, from the edition). */
+  sso?: boolean;
+  /** Enterprise foundations I1: the Audit Ledger's outbox, attached to the State table fake. */
+  audit?: AuditCapture;
 } = {}) {
   let clock = T0;
   const now = () => clock;
@@ -453,6 +461,9 @@ export function identityHarness(options: {
     orgs,
     ...(options.notice === undefined ? {} : { notice: options.notice }),
     ...(options.singleOrg === false ? {} : { singleOrgId: TEST_ORG }),
+    ...(options.editionPolicy === undefined ? {} : { editionPolicy: options.editionPolicy }),
+    ...(options.sso !== true ? {} : (() => { const sso = ssoStoresFor({ documentClient: state, tableName: "state", policy: options.editionPolicy }); return sso === undefined ? {} : { sso }; })()),
+    ...(options.audit === undefined ? {} : { audit: options.audit.audit }),
     ...(options.github === undefined ? {} : { onGithubSignIn: (input: { orgId: OrgId; githubUserId: string }) => unlockTrial({ documentClient: state, tableName: "state", now }, input) }),
     signer,
     providers,
@@ -465,6 +476,7 @@ export function identityHarness(options: {
   if (options.decide !== undefined) {
     deps.decide = { store: decideStore, kinds: options.decide.kinds ?? {}, cloudIssuer: OIDC_ISSUER, cognito: { client: cognito, userPoolId: "us-east-1_TESTPOOL" } };
   }
+  options.audit?.attach(state);
   const handler = createDeveloperIdentityHandler(deps);
   const http = async (event: HttpApiV2Event) => handler(event) as Promise<HttpResult>;
   return {

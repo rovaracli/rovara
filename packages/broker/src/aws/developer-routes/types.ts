@@ -1,4 +1,4 @@
-import type { CreateProjectFromMetaBody } from "@agentx/contracts";
+import type { CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
 import type { MetaProjectCreated } from "../../org/create-from-meta.js";
 import type { MetaConfigDependencies } from "../../meta-repo/config-import.js";
 import type { ServiceStatusDependencies } from "../../org/service-status.js";
@@ -54,6 +54,7 @@ import type { SessionRouteDependencies } from "../../agent-sessions/routes.js";
 import type { HandoffRuntime } from "../../agent-sessions/handoff.js";
 import type { SessionTakeOverDependencies } from "../../agent-sessions/take-over.js";
 import type { OrgConnectionStore } from "../../connections/store.js";
+import type { SsoStores } from "../../developer/sso-sign-in.js";
 
 /** How long the close spends asking running sessions to stop; the rest are stopped by the model-key mint and the dispatch guard. */
 export const CLOSE_STOP_BUDGET_MS = 8_000;
@@ -155,6 +156,10 @@ export interface DeveloperRouteDependencies {
   modelAccess?: ModelAccess;
   /** A cloud install (ruling R42): trial lock and machine-time allowance apply to its orgs. */
   cloud?: boolean;
+  /** Enterprise foundations I1: the group mapping and break-glass stores behind the company sign-in routes. Absent where the edition has no company sign-in. */
+  sso?: SsoStores;
+  /** Enterprise foundations E2: the edition's feature table. Absent on an install deployed before editions (no gates, today's behaviour). */
+  editionPolicy?: EditionPolicy;
   /**
    * Plan 2, Task 16: creates a project in the caller's org from a repository the org's GitHub connection reaches, through the broker's
    * registration, and grants the caller access; a replay of the same request answers the same project with `duplicate: true`. The route

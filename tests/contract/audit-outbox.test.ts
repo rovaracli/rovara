@@ -768,6 +768,12 @@ describe("I4: the builders", () => {
     ["auditProjectTestEnvChanged", (occurrence) => builders.auditProjectTestEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, tier: "preview", lessSafeCount: 1 })],
     // Proof and evidence P6: one event per evidence download, the artifact named by its fixed kind and retention class
     ["auditEvidenceDownloaded", (occurrence) => builders.auditEvidenceDownloaded({ ...base, occurrence, details, taskId: "tsk_1", artifactKind: "screenshot", retentionClass: "evidence-short" })],
+    // Company sign-in (Enterprise foundations I1): the rule ids a sign-in matched, and the owners on the emergency list, are details
+    ["auditSsoSignIn", (occurrence) => builders.auditSsoSignIn({ ...base, occurrence, details, memberId: "dev_1", role: "member", matchedRuleIds: ["users"] })],
+    ["auditSsoSignInRefused", (occurrence) => builders.auditSsoSignInRefused({ ...base, occurrence, details, memberId: "dev_1", reason: "no_group" })],
+    ["auditSsoBreakGlassUsed", (occurrence) => builders.auditSsoBreakGlassUsed({ ...base, occurrence, details, memberId: "dev_1", sessionSeconds: 3600 })],
+    ["auditSsoGroupMappingChanged", (occurrence) => builders.auditSsoGroupMappingChanged({ ...base, occurrence, details, fromVersion: 1, toVersion: 2, rules: 3, added: ["users"], removed: [] })],
+    ["auditSsoBreakGlassChanged", (occurrence) => builders.auditSsoBreakGlassChanged({ ...base, occurrence, details, toVersion: 1, owners: 1, ownerIds: ["a".repeat(64)] })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
