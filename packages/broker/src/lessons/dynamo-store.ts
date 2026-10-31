@@ -26,7 +26,7 @@
 //     the final transaction, which is the same size as any other rollback. A rewrite before the flip only makes a lesson pending, and a retry rewrites the same content.
 //   - Bounded: a set holds at most MAX_SET_MEMBERS lessons and a commit at most MAX_COMMIT_WRITES lessons; beyond that the call throws (fail closed), it never writes part of a commit.
 import { createHash, randomUUID } from "node:crypto";
-import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, agentXError, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, type OrgId } from "@agentx/contracts";
 import { NOT_EXISTS, errorName, failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
@@ -35,7 +35,9 @@ import { applyWriteFence, planRollback, withUsageOf, type FenceView } from "./st
 import { LessonSchema, normId, normSource, peopleOf, recordIdsOf, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
 
 export const MAX_SET_MEMBERS = 2_000;
-export const MAX_COMMIT_WRITES = 40;
+export const MAX_COMMIT_WRITES = 30;
+/** snapshots() reads only the newest this many (a rollback reads its target directly). */
+export const MAX_SNAPSHOTS_READ = 500;
 const MAX_QUERY_ITEMS = 20_000;
 const TX_LIMIT = 100;
 const RETRIES = 5;
@@ -173,16 +175,18 @@ export class DynamoLessonStore implements LessonStore {
   private headItem(key: ScopeKey, lesson: Lesson, latest: number, rev: number): Item { return { ...this.headKey(key, lesson.id), entityType: "LESSON", ...plain(lesson), latest, rev }; }
   private versionItem(key: ScopeKey, lesson: Lesson): Item { return { ...this.versionKey(key, lesson.id, lesson.version), entityType: "LESSON_VERSION", ...plain(lesson) }; }
 
-  private async readSet(key: ScopeKey): Promise<{ setVersion: number; members: Record<string, number> }> {
+  private async readSet(key: ScopeKey): Promise<{ setVersion: number; rev: number; members: Record<string, number> }> {
     const item = await this.getItem(this.setKey(key));
-    return item === undefined ? { setVersion: 0, members: {} } : { setVersion: Number(item.setVersion ?? 0), members: (item.members ?? {}) as Record<string, number> };
+    return item === undefined ? { setVersion: 0, rev: 0, members: {} } : { setVersion: Number(item.setVersion ?? 0), rev: Number(item.rev ?? 0), members: (item.members ?? {}) as Record<string, number> };
   }
-  private setItem(key: ScopeKey, setVersion: number, members: Record<string, number>, at: number): Item { return { ...this.setKey(key), entityType: "LESSON_SET", setVersion, members, updatedAt: at }; }
+  /** `rev` counts changes to the set that do not move its version (a purge takes a lesson out): a writer that read before one cannot write the set it read. */
+  private setItem(key: ScopeKey, setVersion: number, members: Record<string, number>, at: number, rev: number): Item { return { ...this.setKey(key), entityType: "LESSON_SET", setVersion, rev, members, updatedAt: at }; }
   private snapItem(key: ScopeKey, setVersion: number, members: Record<string, number>, at: number): Item {
     return { ...this.snapKey(key, setVersion), entityType: "LESSON_SNAPSHOT", setVersion, at, members: Object.entries(members).map(([id, version]) => ({ id, version })).sort((a, b) => a.id.localeCompare(b.id)) };
   }
-  private setCondition(expected: number): { expression: string; names?: Names; values?: Item } {
-    return expected === 0 ? { expression: "attribute_not_exists(pk)" } : { expression: "#sv = :sv", names: { "#sv": "setVersion" }, values: { ":sv": expected } };
+  private setCondition(expected: number, rev: number): { expression: string; names?: Names; values?: Item } {
+    // No set item yet is version 0, rev 0. Every set item this store writes carries its rev.
+    return expected === 0 && rev === 0 ? { expression: "attribute_not_exists(pk)" } : { expression: "#sv = :sv AND #r = :rv", names: { "#sv": "setVersion", "#r": "rev" }, values: { ":sv": expected, ":rv": rev } };
   }
   private headCondition(head: Head | undefined): { expression: string; names?: Names; values?: Item } {
     return head === undefined ? { expression: NOT_EXISTS } : { expression: "#l = :l AND #r = :r", names: { "#l": "latest", "#r": "rev" }, values: { ":l": head.latest, ":r": head.rev } };
@@ -190,6 +194,10 @@ export class DynamoLessonStore implements LessonStore {
   private fenceCheck(key: ScopeKey, version: number): TransactItem {
     const names = { "#v": "ver" };
     return { ConditionCheck: { TableName: this.table.tableName, Key: this.fenceVerKey(key), ...(version === 0 ? { ConditionExpression: NOT_EXISTS } : { ConditionExpression: "#v = :v", ExpressionAttributeNames: names, ExpressionAttributeValues: { ":v": version } }) } };
+  }
+  private goneAbsent(key: ScopeKey, id: string): TransactItem {
+    // A withdrawn lesson may still be written (narrowed); a purged one never.
+    return { ConditionCheck: { TableName: this.table.tableName, Key: this.sub(key, id, "GONE"), ConditionExpression: "attribute_not_exists(pk) OR #m <> :purged", ExpressionAttributeNames: { "#m": "mode" }, ExpressionAttributeValues: { ":purged": "purged" } } };
   }
   private async fenceVersion(key: ScopeKey): Promise<number> {
     const item = await this.getItem(this.fenceVerKey(key));
@@ -250,9 +258,13 @@ export class DynamoLessonStore implements LessonStore {
   }
 
   async snapshots(key: ScopeKey): Promise<SetSnapshot[]> {
-    const items = await this.queryPrefix(key, "LESSONSET#SNAP#");
-    const stored = items.sort((a, b) => String(a.sk).localeCompare(String(b.sk))).map((item) => ({ setVersion: Number(item.setVersion), at: Number(item.at), members: clone(item.members as SetSnapshot["members"]) }));
-    return [{ setVersion: 0, at: 0, members: [] }, ...stored];
+    // Only the newest MAX_SNAPSHOTS_READ, newest first from the table and returned oldest first. Version 0 (the empty set) is included only when nothing older was left out.
+    const response = await this.send<{ Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> }>(new QueryCommand({
+      TableName: this.table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, ScanIndexForward: false, Limit: MAX_SNAPSHOTS_READ,
+      ExpressionAttributeValues: { ":pk": this.pk(key), ":p": "LESSONSET#SNAP#" },
+    }));
+    const stored = (response.Items ?? []).reverse().map((item) => ({ setVersion: Number(item.setVersion), at: Number(item.at), members: clone(item.members as SetSnapshot["members"]) }));
+    return response.LastEvaluatedKey === undefined ? [{ setVersion: 0, at: 0, members: [] }, ...stored] : stored;
   }
 
   // ---- commit
@@ -266,6 +278,7 @@ export class DynamoLessonStore implements LessonStore {
       parsed.push(lesson);
     }
     for (let attempt = 0; attempt < RETRIES; attempt += 1) {
+      await this.heal(key);
       const set = await this.readSet(key);
       if (set.setVersion !== expectedSetVersion) return { ok: false, reason: "conflict" };
       const fenceVer = await this.fenceVersion(key);
@@ -284,8 +297,10 @@ export class DynamoLessonStore implements LessonStore {
       for (const { lesson } of staged) members[lesson.id] = lesson.version;
       if (Object.keys(members).length > MAX_SET_MEMBERS) throw unavailable("the lesson set is too large");
       const setVersion = expectedSetVersion + 1;
-      const items: TransactItem[] = [this.fenceCheck(key, fenceVer), this.put_(this.setItem(key, setVersion, members, at), this.setCondition(expectedSetVersion)), this.put_(this.snapItem(key, setVersion, members, at), { expression: NOT_EXISTS })];
+      const items: TransactItem[] = [this.fenceCheck(key, fenceVer), this.put_(this.setItem(key, setVersion, members, at, set.rev), this.setCondition(expectedSetVersion, set.rev)), this.put_(this.snapItem(key, setVersion, members, at), { expression: NOT_EXISTS })];
       for (const { lesson, previous } of staged) {
+        // A purge writes the lesson's GONE mark before it removes anything: a commit that read before it cannot write a version or a head after it.
+        items.push(this.goneAbsent(key, lesson.id));
         items.push(this.put_(this.versionItem(key, lesson), { expression: NOT_EXISTS }));
         items.push(this.put_(this.headItem(key, withUsageOf(lesson, previous?.lesson), lesson.version, (previous?.rev ?? 0) + 1), this.headCondition(previous)));
       }
@@ -299,6 +314,8 @@ export class DynamoLessonStore implements LessonStore {
   // ---- rollback
   async rollback(key: ScopeKey, targetSetVersion: number, expectedSetVersion: number, at: number): Promise<CommitResult> {
     for (let attempt = 0; attempt < RETRIES; attempt += 1) {
+      // A staged rollback that never finished is put back before anything else is decided.
+      await this.heal(key);
       const set = await this.readSet(key);
       if (set.setVersion !== expectedSetVersion || targetSetVersion >= expectedSetVersion || targetSetVersion < 0) return { ok: false, reason: "conflict" };
       let target: ReadonlyArray<{ id: string; version: number }> = [];
@@ -330,19 +347,75 @@ export class DynamoLessonStore implements LessonStore {
         const current = heads.get(id);
         return this.put_(this.headItem(key, restored, current?.latest ?? restored.version, (current?.rev ?? 0) + 1), this.headCondition(current));
       });
-      // The heads that do not fit the final transaction go first, each in a transaction that carries the fence check. A rewrite before the set flips only makes a lesson pending.
-      const finalHeads = headWrites.slice(-(TX_LIMIT - 3));
+      // The heads that do not fit the final transaction go first, each in a transaction that carries the fence check and the check that the rollback's open intent is still open. A rewrite
+      // before the set flips only makes a lesson pending, and the intent says which lessons were rewritten: whoever finds it open and unfinished (the next commit, rollback or `heal`) puts
+      // them back, so the store never stays half rolled back.
+      const finalHeads = headWrites.slice(-(TX_LIMIT - 4));
       const early = headWrites.slice(0, headWrites.length - finalHeads.length);
+      const staged = early.length > 0;
+      const nonce = randomUUID();
+      if (staged) {
+        const earlyIds = [...plan.restoredHeads.keys()].slice(0, early.length);
+        const opened = await this.put({ ...this.intentRbKey(key), entityType: "LESSON_ROLLBACK_INTENT", nonce, state: "open", ids: earlyIds, at }, NOT_EXISTS);
+        if (!opened) continue;
+      }
       let cancelled = false;
-      for (const group of chunks(early, TX_LIMIT - 1)) {
-        if ((await this.transact([this.fenceCheck(key, fenceVer), ...group])) !== "ok") { cancelled = true; break; }
+      for (const group of chunks(early, TX_LIMIT - 2)) {
+        if ((await this.transact([this.fenceCheck(key, fenceVer), this.rbIntentOpen(key, nonce), ...group])) !== "ok") { cancelled = true; break; }
       }
       if (cancelled) continue;
-      const final: TransactItem[] = [this.fenceCheck(key, fenceVer), this.put_(this.setItem(key, setVersion, members, at), this.setCondition(expectedSetVersion)), this.put_(this.snapItem(key, setVersion, members, at), { expression: NOT_EXISTS }), ...finalHeads];
+      const final: TransactItem[] = [
+        this.fenceCheck(key, fenceVer), this.put_(this.setItem(key, setVersion, members, at, set.rev), this.setCondition(expectedSetVersion, set.rev)), this.put_(this.snapItem(key, setVersion, members, at), { expression: NOT_EXISTS }),
+        ...(staged ? [{ Delete: { TableName: this.table.tableName, Key: this.intentRbKey(key), ConditionExpression: "#n = :n AND #s = :open", ExpressionAttributeNames: { "#n": "nonce", "#s": "state" }, ExpressionAttributeValues: { ":n": nonce, ":open": "open" } } } as TransactItem] : []),
+        ...finalHeads,
+      ];
       if ((await this.transact(final)) === "ok") return { ok: true, setVersion, restored: plan.restored };
-      if ((await this.readSet(key)).setVersion !== expectedSetVersion) return { ok: false, reason: "conflict" };
+      if ((await this.readSet(key)).setVersion !== expectedSetVersion) { await this.heal(key); return { ok: false, reason: "conflict" }; }
     }
+    await this.heal(key);
     return { ok: false, reason: "conflict" };
+  }
+
+  private intentRbKey(key: ScopeKey) { return this.k(key, "LESSONSET#RBINTENT"); }
+  private rbIntentOpen(key: ScopeKey, nonce: string): TransactItem {
+    return { ConditionCheck: { TableName: this.table.tableName, Key: this.intentRbKey(key), ConditionExpression: "#n = :n AND #s = :open", ExpressionAttributeNames: { "#n": "nonce", "#s": "state" }, ExpressionAttributeValues: { ":n": nonce, ":open": "open" } } };
+  }
+
+  /**
+   * Finishes what an unfinished staged rollback left: the lessons it had rewritten (the intent names them) go back to the version the current set holds for them, with the usage
+   * bookkeeping they have now. The intent is first marked "healing" (so a rollback still running can no longer pass its checks), then the lessons are put back (each repeatable),
+   * then the intent is deleted. A crash in between is finished by the next call. Called at the start of every commit and rollback; safe to call at any time.
+   */
+  async heal(key: ScopeKey): Promise<void> {
+    const intent = await this.getItem(this.intentRbKey(key));
+    if (intent === undefined) return;
+    if (intent.state === "open") {
+      try {
+        await this.send(new UpdateCommand({
+          TableName: this.table.tableName, Key: this.intentRbKey(key), UpdateExpression: "SET #s = :healing", ConditionExpression: "#n = :n AND #s = :open",
+          ExpressionAttributeNames: { "#s": "state", "#n": "nonce" }, ExpressionAttributeValues: { ":healing": "healing", ":open": "open", ":n": intent.nonce },
+        }));
+      } catch (error) {
+        if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+        // Finished or claimed by someone else meanwhile: look again.
+        return this.heal(key);
+      }
+    }
+    for (const id of (intent.ids ?? []) as string[]) {
+      for (let attempt = 0; attempt < RETRIES; attempt += 1) {
+        const set = await this.readSet(key);
+        const wanted = set.members[id];
+        const head = this.headOf(await this.getItem(this.headKey(key, id)));
+        // Out of the set, or already as the set has it: nothing to put back.
+        if (wanted === undefined || head === undefined || head.lesson.version === wanted) break;
+        const content = this.versionOf(await this.getItem(this.versionKey(key, id, wanted)));
+        if (content === undefined) break;
+        const restored: Lesson = { ...withUsageOf(content, head.lesson), expiresAt: head.lesson.expiresAt };
+        if (head.lesson.retireProposedAt === undefined) delete restored.retireProposedAt; else restored.retireProposedAt = head.lesson.retireProposedAt;
+        if (await this.putHeadIf(key, LessonSchema.parse(restored), head)) break;
+      }
+    }
+    await this.del(this.intentRbKey(key));
   }
 
   // ---- in-place changes
@@ -394,13 +467,15 @@ export class DynamoLessonStore implements LessonStore {
   async purge(key: ScopeKey, id: string): Promise<void> {
     // The mark first: from here a rollback skips the lesson and a commit refuses it, whatever happens next. Every step after it can be repeated.
     await this.markGone(key, id, "purged");
+    // The set loses it and its rev moves, whether or not it was in the set: a writer that read the set before this cannot write the set it read (its condition is on the rev).
     for (let attempt = 0; ; attempt += 1) {
       if (attempt >= RETRIES) throw unavailable("the lesson set changed too often to purge from");
       const set = await this.readSet(key);
-      if (set.members[id] === undefined) break;
+      // No set item yet: nothing to take it out of.
+      if (set.setVersion === 0 && set.rev === 0 && (await this.getItem(this.setKey(key))) === undefined) break;
       const { [id]: _removed, ...members } = set.members;
       void _removed;
-      const outcome = await this.transact([this.put_({ ...this.setItem(key, set.setVersion, members, Number(this.now())) }, this.setCondition(set.setVersion))]);
+      const outcome = await this.transact([this.put_(this.setItem(key, set.setVersion, members, Number(this.now()), set.rev + 1), this.setCondition(set.setVersion, set.rev))]);
       if (outcome === "ok") break;
     }
     // Manifests that name the lesson lose the entry.

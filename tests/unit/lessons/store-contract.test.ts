@@ -23,6 +23,13 @@ const manifest = (taskId: string, ids: string[], over: Partial<LoadManifest> = {
 });
 const commit = async (store: LessonStore, ...lessons: Lesson[]) => store.commit(KEY, await store.setVersion(KEY), lessons, 10);
 
+/** Commits in groups the store accepts (at most 30 lessons a commit); returns how many commits it took. */
+async function commitAll(store: LessonStore, lessons: Lesson[]): Promise<number> {
+  let commits = 0;
+  for (let i = 0; i < lessons.length; i += 30) { await commit(store, ...lessons.slice(i, i + 30)); commits += 1; }
+  return commits;
+}
+
 const factories: Array<[string, () => { store: LessonStore; db?: FakeDynamoDb }]> = [
   ["in-memory", () => ({ store: new InMemoryLessonStore() })],
   ["dynamodb", () => { const db = new FakeDynamoDb(); return { store: new DynamoLessonStore({ documentClient: db, tableName: "TeamRecord" }), db }; }],
@@ -256,14 +263,11 @@ describe("the DynamoDB lesson store only", () => {
   it("a rollback that restores more heads than one transaction holds still lands, every restored lesson pending", async () => {
     const { store, db } = dynamo();
     const ids = Array.from({ length: 130 }, (_, i) => `les_big${String(i).padStart(5, "0")}`);
-    for (const group of [ids.slice(0, 40), ids.slice(40, 80), ids.slice(80, 120), ids.slice(120)]) await commit(store, ...group.map((id) => mk(id)));
-    await commit(store, ...ids.slice(0, 40).map((id) => ({ ...mk(id, { title: "Later" }), version: 2 })));
-    await commit(store, ...ids.slice(40, 80).map((id) => ({ ...mk(id, { title: "Later" }), version: 2 })));
-    await commit(store, ...ids.slice(80, 120).map((id) => ({ ...mk(id, { title: "Later" }), version: 2 })));
-    await commit(store, ...ids.slice(120).map((id) => ({ ...mk(id, { title: "Later" }), version: 2 })));
+    const first = await commitAll(store, ids.map((id) => mk(id)));
+    const second = await commitAll(store, ids.map((id) => ({ ...mk(id, { title: "Later" }), version: 2 })));
     const before = db.transactionLog.length;
-    const result = await store.rollback(KEY, 4, 8, 99);
-    expect(result).toMatchObject({ ok: true, setVersion: 9 });
+    const result = await store.rollback(KEY, first, first + second, 99);
+    expect(result).toMatchObject({ ok: true, setVersion: first + second + 1 });
     expect((result as { restored: string[] }).restored).toHaveLength(130);
     expect(db.transactionLog.length - before).toBeGreaterThan(1);
     const list = await store.list(KEY);
@@ -277,6 +281,133 @@ describe("the DynamoDB lesson store only", () => {
     await expect(commit(store, ...Array.from({ length: MAX_COMMIT_WRITES + 1 }, (_, i) => mk(`les_many${String(i).padStart(4, "0")}`)))).rejects.toThrow();
     expect(await store.setVersion(KEY)).toBe(0);
   });
+
+  // ---- fix round 1, item 4: a purge that lands at ANY point of a commit leaves no orphan version and no purged id in the set
+  describe("a purge racing a commit", () => {
+    const scenario = async (writesPurged: boolean, purgeBeforeCall: number | undefined) => {
+      const db = new FakeDynamoDb();
+      let calls = 0;
+      let armed = purgeBeforeCall;
+      const plain = new DynamoLessonStore({ documentClient: db, tableName: "TeamRecord" });
+      const racing = new DynamoLessonStore({
+        documentClient: { send: async (command: unknown) => {
+          if (armed !== undefined && calls === armed) { armed = undefined; await plain.purge(KEY, "les_p0000001"); }
+          calls += 1;
+          return db.send(command as never);
+        } },
+        tableName: "TeamRecord",
+      });
+      await commit(plain, mk("les_p0000001"), mk("les_o0000001"));
+      calls = 0;
+      const next = writesPurged ? [{ ...mk("les_p0000001", { title: "Later" }), version: 2 }, { ...mk("les_o0000001", { title: "Later" }), version: 2 }] : [{ ...mk("les_o0000001", { title: "Later" }), version: 2 }];
+      const result = await racing.commit(KEY, 1, next, 20);
+      return { db, plain, result, calls };
+    };
+    for (const writesPurged of [true, false]) {
+      it(`${writesPurged ? "the commit writes the purged lesson" : "the commit writes another lesson from a read that still listed the purged one"}: every interleaving ends clean`, async () => {
+        const clean = await scenario(writesPurged, undefined);
+        expect(clean.result).toMatchObject({ ok: true });
+        for (let k = 0; k < clean.calls; k += 1) {
+          const run = await scenario(writesPurged, k);
+          const ids = (await run.plain.list(KEY)).map((l) => l.id);
+          expect(ids, `purge before call ${String(k)}`).not.toContain("les_p0000001");
+          expect(await run.plain.getHead(KEY, "les_p0000001"), `head, purge before call ${String(k)}`).toBeUndefined();
+          expect(run.db.find((item) => String(item.sk).startsWith("LESSON#les_p0000001#V#")), `orphan versions, purge before call ${String(k)}`).toEqual([]);
+          // The set item itself names no purged lesson (list() would hide a member whose head is gone, so look at the item).
+          expect(Object.keys((run.db.find((item) => item.sk === "LESSONSET")[0]?.members ?? {}) as Record<string, number>), `set members, purge before call ${String(k)}`).not.toContain("les_p0000001");
+          expect((await run.plain.setVersion(KEY)) >= 1).toBe(true);
+          expect(ids).toContain("les_o0000001");
+        }
+      });
+    }
+  });
+
+  it("a purge that stopped after its GONE mark still stops a commit that read before it", async () => {
+    const db = new FakeDynamoDb();
+    const plain = new DynamoLessonStore({ documentClient: db, tableName: "TeamRecord" });
+    let armed = true;
+    const racing = new DynamoLessonStore({ documentClient: { send: async (command: unknown) => {
+      if (armed && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") { armed = false; await plain.markGone(KEY, "les_p0000001", "purged"); }
+      return db.send(command as never);
+    } }, tableName: "TeamRecord" });
+    await commit(plain, mk("les_p0000001"));
+    expect(await racing.commit(KEY, 1, [{ ...mk("les_p0000001", { title: "Later" }), version: 2 }], 20)).toEqual({ ok: false, reason: "erased" });
+    expect(db.find((item) => String(item.sk).startsWith("LESSON#les_p0000001#V#"))).toHaveLength(1);
+  });
+
+  // ---- fix round 1, item 5: a staged rollback that does not finish heals
+  describe("a staged rollback that loses its final transaction", () => {
+    const BIG = Array.from({ length: 130 }, (_, i) => `les_big${String(i).padStart(5, "0")}`);
+    async function seeded(db: FakeDynamoDb) {
+      const store = new DynamoLessonStore({ documentClient: db, tableName: "TeamRecord" });
+      await commitAll(store, BIG.map((id) => mk(id)));
+      await commitAll(store, BIG.map((id) => ({ ...mk(id, { title: "Later" }), version: 2 })));
+      return store;
+    }
+    const isFinal = (command: unknown): boolean => (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand"
+      && JSON.stringify((command as { input: unknown }).input).includes("LESSONSET#SNAP#");
+
+    it("the set moved under it: the rollback is a conflict and the lessons it had rewritten are back as they were", async () => {
+      const db = new FakeDynamoDb();
+      const store = await seeded(db);
+      let lost = false;
+      const racing = new DynamoLessonStore({
+        documentClient: { send: async (command: unknown) => {
+          if (!lost && isFinal(command)) { lost = true; await commit(store, mk("les_other001")); }
+          return db.send(command as never);
+        } },
+        tableName: "TeamRecord",
+      });
+      expect(await racing.rollback(KEY, 5, 10, 30)).toEqual({ ok: false, reason: "conflict" });
+      expect(lost).toBe(true);
+      const list = await store.list(KEY);
+      expect(list.filter((l) => l.id.startsWith("les_big"))).toHaveLength(130);
+      expect(new Set(list.filter((l) => l.id.startsWith("les_big")).map((l) => l.status))).toEqual(new Set(["active"]));
+      expect(new Set(list.filter((l) => l.id.startsWith("les_big")).map((l) => l.title))).toEqual(new Set(["Later"]));
+      expect(db.find((item) => item.sk === "LESSONSET#RBINTENT")).toEqual([]);
+    });
+
+    it("the process dies before the final transaction: the next commit, rollback or heal finds the open intent and puts everything back", async () => {
+      for (const next of ["commit", "heal", "rollback"] as const) {
+        const db = new FakeDynamoDb();
+        const store = await seeded(db);
+        const dying = new DynamoLessonStore({
+          documentClient: { send: async (command: unknown) => { if (isFinal(command)) throw new Error("process died"); return db.send(command as never); } },
+          tableName: "TeamRecord",
+        });
+        await expect(dying.rollback(KEY, 5, 10, 30)).rejects.toThrow("process died");
+        expect((await store.list(KEY)).some((l) => l.status === "pending")).toBe(true);
+        if (next === "commit") expect(await commit(store, mk("les_other001"))).toMatchObject({ ok: true });
+        else if (next === "heal") await store.heal(KEY);
+        else expect(await store.rollback(KEY, 5, 10, 40)).toMatchObject({ ok: true });
+        if (next === "rollback") { expect((await store.list(KEY)).filter((l) => l.id.startsWith("les_big")).every((l) => l.status === "pending" && l.title !== "Later")).toBe(true); continue; }
+        const list = (await store.list(KEY)).filter((l) => l.id.startsWith("les_big"));
+        expect(list).toHaveLength(130);
+        expect(new Set(list.map((l) => l.status))).toEqual(new Set(["active"]));
+        expect(new Set(list.map((l) => l.title))).toEqual(new Set(["Later"]));
+        expect(db.find((item) => item.sk === "LESSONSET#RBINTENT")).toEqual([]);
+        expect(await store.listAllHeads(KEY)).toHaveLength(next === "commit" ? 131 : 130);
+      }
+    });
+
+    it("a rollback still lands when nothing goes wrong, and leaves no intent behind", async () => {
+      const db = new FakeDynamoDb();
+      const store = await seeded(db);
+      expect(await store.rollback(KEY, 5, 10, 30)).toMatchObject({ ok: true });
+      expect(db.find((item) => item.sk === "LESSONSET#RBINTENT")).toEqual([]);
+    });
+  });
+
+  // ---- fix round 1, item 7
+  it("snapshots() is bounded: it reads only the newest ones and never throws past 20,000", async () => {
+    const { store, db } = dynamo();
+    await commit(store, mk("les_a0000001"));
+    for (let version = 2; version <= 25_000; version += 1) db.set({ pk: store["pk"](KEY), sk: `LESSONSET#SNAP#${String(version).padStart(12, "0")}`, entityType: "LESSON_SNAPSHOT", setVersion: version, at: version, members: [] });
+    const snaps = await store.snapshots(KEY);
+    expect(snaps.length).toBeLessThanOrEqual(501);
+    expect(snaps.at(-1)?.setVersion).toBe(25_000);
+    expect(snaps.map((s) => s.setVersion)).toEqual([...snaps.map((s) => s.setVersion)].sort((a, b) => a - b));
+  }, 120_000);
 
   it("a counter changed while a writer decides is not overwritten, and a lost head race retries on fresh state", async () => {
     const db = new FakeDynamoDb();
