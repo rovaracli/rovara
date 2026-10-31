@@ -15,9 +15,9 @@ export function specLinkLine(link: SpecPullRequest, metaRepositoryUrl: string): 
   return `Spec: ${expected} @ ${link.commit}`;
 }
 
-/** The description with the spec line first. A body that already carries a spec line (a retry) is not given a second. */
+/** The description with the spec line first. A body whose FIRST line is already exactly this line (a retry) is not given a second; a line elsewhere that merely looks like one counts for nothing. */
 export function withSpecLink(body: string, line: string | undefined): string {
-  if (line === undefined || /^Spec: https:\/\/github\.com\//mu.test(body)) return body;
+  if (line === undefined || body.split("\n", 1)[0] === line) return body;
   return `${line}\n\n${body}`;
 }
 

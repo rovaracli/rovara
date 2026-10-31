@@ -470,7 +470,7 @@ export async function completedWorkflowItems(
   }
   if (task?.workflow === undefined) return [];
   // Meta repo lane D: a spec write's or a spec publication's end settles the task's spec state; neither is a step of the workflow, so nothing below applies to it.
-  if (isSpecOperation(operation)) return specOperationEndItems(specEndEnvironmentOf(dependencies, operation.workspaceId), task.taskId, operation, { status: terminalStatus, result });
+  if (isSpecOperation(operation)) return specOperationEndItems(specEndEnvironmentOf(dependencies), task.taskId, operation, { status: terminalStatus, result });
   if (operation.kind === "prepare") {
     // The commit preparation checked out is the task's base until a verified candidate pins it. It comes from the
     // prepare's own result, before the agent has run, never from a later candidate the agent's workspace reports.

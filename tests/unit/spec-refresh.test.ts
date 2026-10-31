@@ -8,7 +8,7 @@ import { handleSpecPullRequestEvent } from "../../packages/broker/src/aws/broker
 import { createSpecHooks, type SpecWorld } from "../../packages/broker/src/spec/hooks.js";
 import { refreshSpecState, specStateFromFacts, type SpecPullRequestFacts } from "../../packages/broker/src/spec/refresh.js";
 import { dynamoSpecStore } from "../../packages/broker/src/spec/store.js";
-import { newSpecState, publishSucceeded, specPullRequestKey, startPublishing, startWriting, writeSucceeded, type SpecState } from "../../packages/broker/src/spec/state.js";
+import { newSpecState, publishSucceeded, specPullRequestKey, startWriting, writeSucceeded, type SpecState } from "../../packages/broker/src/spec/state.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const TASK = randomUUID();
@@ -24,12 +24,10 @@ const target = (overrides: Partial<SpecTarget> = {}): SpecTarget => SpecTargetSc
 function published(overrides: Partial<SpecTarget> = {}): SpecState {
   let state = startWriting(newSpecState({ taskId: TASK, planDigest: PLAN, kind: "feature", target: target(overrides), knowledgeCommit: BASE, now: NOW }), randomUUID(), NOW)!;
   state = writeSucceeded(state, { operationId: state.writeOperationId!, title: "T", files: FILES, requirementCount: 1 }, NOW)!;
-  const operationId = randomUUID();
-  state = startPublishing(state, operationId, NOW)!;
-  return publishSucceeded(state, { operationId, pullRequest: { number: 12, url: `${META}/pull/12`, repositoryUrl: META, headBranch: `agentx/${randomUUID()}`, commit: HEAD } }, NOW)!;
+  return publishSucceeded(state, { pullRequest: { number: 12, url: `${META}/pull/12`, repositoryUrl: META, headBranch: `agentx/${randomUUID()}`, commit: HEAD } }, NOW)!;
 }
 const facts = (overrides: Partial<SpecPullRequestFacts> = {}): SpecPullRequestFacts => ({ state: "open", headSha: HEAD, reviews: [], ...overrides });
-const approval = (overrides: Record<string, unknown> = {}) => ({ state: "APPROVED", commitId: HEAD, login: "reviewer", ...overrides });
+const approval = (overrides: Record<string, unknown> = {}) => ({ state: "APPROVED", commitId: HEAD, login: "reviewer", userId: "u-reviewer", eligible: true, ...overrides });
 
 describe("what GitHub shows of the spec pull request", () => {
   it("changes nothing for the head Rovara pushed with no review", () => {
@@ -54,7 +52,7 @@ describe("what GitHub shows of the spec pull request", () => {
   it("does not take an approval of another commit, a review that asks for changes, a comment, an incomplete list, or any approval when the target does not wait", () => {
     const first = published({ linkStyle: "spec_first" });
     expect(specStateFromFacts(first, facts({ reviews: [approval({ commitId: EDIT })] }), NOW)).toBeUndefined();
-    expect(specStateFromFacts(first, facts({ reviews: [approval(), { state: "CHANGES_REQUESTED", commitId: HEAD, login: "other" }] }), NOW)).toBeUndefined();
+    expect(specStateFromFacts(first, facts({ reviews: [approval(), { state: "CHANGES_REQUESTED", commitId: HEAD, login: "other", userId: "u-other", eligible: true }] }), NOW)).toBeUndefined();
     expect(specStateFromFacts(first, facts({ reviews: [{ state: "COMMENTED", commitId: HEAD }, { state: "DISMISSED", commitId: HEAD }] }), NOW)).toBeUndefined();
     expect(specStateFromFacts(first, facts({ reviews: [approval()], reviewsIncomplete: true }), NOW)).toBeUndefined();
     expect(specStateFromFacts(published(), facts({ reviews: [approval()] }), NOW)).toBeUndefined();
@@ -114,7 +112,7 @@ describe("refreshing from GitHub", () => {
 
 describe("the gate looks at the spec pull request before it decides", () => {
   const world = (store: ReturnType<typeof memory>["store"], read: SpecWorld["readPullRequest"]): SpecWorld => ({
-    tableName: "t", now: () => NOW, store, log: () => undefined, startWrite: async () => "BUSY", startPublish: async () => "BUSY", ...(read === undefined ? {} : { readPullRequest: read }),
+    tableName: "t", now: () => NOW, store, log: () => undefined, startWrite: async () => "BUSY", publish: async () => ({ ok: false, transient: true }), ...(read === undefined ? {} : { readPullRequest: read }),
   });
   const task = { taskId: TASK, title: "T", knowledgeCommit: BASE };
   const input = { task, approvedPlanDigest: PLAN, planMarkdown: () => "plan", metaRepositoryUrl: META };
@@ -143,8 +141,9 @@ describe("a GitHub delivery about a pull request", () => {
     await dynamoSpecStore({ documentClient: db, tableName: "t" }).save(state, undefined);
     await db.send(new PutCommand({ TableName: "t", Item: { ...specPullRequestKey("acme/service-meta", 12), entityType: "SPEC_PULL_REQUEST", taskId: TASK } }));
     await db.send(new PutCommand({ TableName: "t", Item: { pk: `DEVTASK#${TASK}`, sk: "META", taskId: TASK, workspaceId, project: "demo", title: "T", workflow: undefined } }));
-    const getPullRequestStatus = vi.fn(async () => { if (status === "throws") throw new Error("502"); return { state: status!.state, headSha: status!.headSha, reviews: status!.reviews } as never; });
-    const dependencies = { documentClient: db, tableName: "t", githubPullRequests: { getPullRequestStatus } } as never;
+    const getPullRequestStatus = vi.fn(async () => { if (status === "throws") throw new Error("502"); return { state: status!.state, headSha: status!.headSha, reviews: status!.reviews.map((review) => ({ state: review.state, commitId: review.commitId, login: review.login ?? "reviewer", githubUserId: review.userId ?? "u1", userType: "User" })) } as never; });
+    const getRepositoryPermission = vi.fn(async () => "write" as const);
+    const dependencies = { documentClient: db, tableName: "t", githubPullRequests: { getPullRequestStatus, getRepositoryPermission } } as never;
     return { db, dependencies, getPullRequestStatus, store: dynamoSpecStore({ documentClient: db, tableName: "t" }) };
   }
   it("reads GitHub and records an approval of the spec pull request, for any pull request event", async () => {

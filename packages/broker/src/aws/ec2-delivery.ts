@@ -328,7 +328,7 @@ async function forWorkerFeatures(
   const carriesPublicationContextDigest = invocation.kind === "publish" && invocation.payload.publicationContextDigest !== undefined;
   const carriesPublishBase = invocation.kind === "publish" && invocation.payload.workflowBaseCommit !== undefined;
   // Meta repo lane D: the spec write mode and the spec publication's files.
-  const carriesSpec = (invocation.kind === "task" && (invocation.payload.workflowMode === "SPEC_WRITE" || invocation.payload.specWrite !== undefined || invocation.payload.workflowReviewSpec !== undefined)) || (invocation.kind === "publish" && invocation.payload.specFiles !== undefined);
+  const carriesSpec = (invocation.kind === "task" && (invocation.payload.workflowMode === "SPEC_WRITE" || invocation.payload.specWrite !== undefined || invocation.payload.workflowReviewSpec !== undefined));
   const carriesPullRequestUpdate = invocation.kind === "maintain" && invocation.payload.workflowCandidateTreeSha !== undefined;
   // Plan 6 Task 17: a merge of the base branch, and a fix pushed as a merge commit. An older worker would merge whatever the base is by now, or push a commit with one parent.
   const carriesBranchSync = invocation.kind === "maintain" && (invocation.payload.workflowSync !== undefined || invocation.payload.workflowMergeBase !== undefined);
@@ -381,9 +381,6 @@ async function forWorkerFeatures(
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (invocation.kind === "task" && invocation.payload.workflowReviewSpec !== undefined && !features.includes("task.workflowReviewSpec.v1")) {
-    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
-  }
-  if (invocation.kind === "publish" && invocation.payload.specFiles !== undefined && !features.includes("publish.specFiles.v1")) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   if (carriesFeedbackReview && !features.includes("task.workflowFeedbackReview")) {

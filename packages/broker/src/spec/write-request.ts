@@ -1,6 +1,5 @@
 // K1 lane D, D2: what the SPEC_WRITE run is given. The approved plan is the only source: it goes in as data, in a fenced block the model is told is not instructions, and the run has no tool that writes.
-import { agentXError, type SpecKind, type SpecTarget, type SpecWriteBinding } from "@agentx/contracts";
-import { specRendererFor } from "./index.js";
+import { agentXError, type SpecKind, type SpecWriteBinding } from "@agentx/contracts";
 
 export const SPEC_PLAN_MAX_CHARS = 48_000;
 const OPEN = "<<<APPROVED-PLAN";
@@ -14,7 +13,7 @@ function fenced(text: string): string {
 }
 
 /** The run's prompt and binding. Throws CONFIG_INVALID when the plan is too long for the prompt: a spec written from a cut plan would say less than the plan, so none is written. */
-export function buildSpecWriteRequest(input: { format: string; kind: SpecKind; planDigest: string; planMarkdown: string; taskTitle: string; target?: SpecTarget }): SpecWriteRequest {
+export function buildSpecWriteRequest(input: { format: string; kind: SpecKind; planDigest: string; planMarkdown: string; taskTitle: string}): SpecWriteRequest {
   if (input.planMarkdown.trim() === "") throw agentXError("CONFIG_INVALID", "there is no approved plan to write a spec from");
   if (input.planMarkdown.length > SPEC_PLAN_MAX_CHARS) throw agentXError("CONFIG_INVALID", "the approved plan is too long to write a spec from");
   const prompt = [
@@ -27,8 +26,5 @@ export function buildSpecWriteRequest(input: { format: string; kind: SpecKind; p
     fenced(input.planMarkdown.trim()),
     CLOSE,
   ].join("\n");
-  // The folder whose sub-folder names the run reads back, so `{n}` can take the next free number: the parent of the folder template, when it numbers its folders.
-  const template = input.target?.pathTemplate ?? specRendererFor(input.format)?.defaultPathTemplate;
-  const parent = template !== undefined && template.includes("{n}") ? template.replace(/\/+$/u, "").split("/").slice(0, -1).join("/") : "";
-  return { prompt, binding: { format: input.format, kind: input.kind, planDigest: input.planDigest, ...(parent === "" ? {} : { foldersIn: parent }) } };
+  return { prompt, binding: { format: input.format, kind: input.kind, planDigest: input.planDigest } };
 }

@@ -7,7 +7,7 @@ import { specIsDue } from "../../packages/broker/src/spec/due.js";
 import { specLinkLine, specPullRequestBody, withSpecLink } from "../../packages/broker/src/spec/link.js";
 import { buildSpecWriteRequest } from "../../packages/broker/src/spec/write-request.js";
 import {
-  SPEC_ATTEMPTS_MAX, approved, continueWithoutSpec, edited, keepEdited, newSpecState, publishSucceeded, replanEdited, retry, specGate, startPublishing, startWriting, stepFailed, writeSucceeded,
+  SPEC_ATTEMPTS_MAX, approved, continueWithoutSpec, edited, keepEdited, newSpecState, publishFailed, publishSucceeded, replanEdited, retry, specGate, specBranchName, startWriting, stepFailed, writeSucceeded,
   type SpecPullRequest, type SpecState,
 } from "../../packages/broker/src/spec/state.js";
 
@@ -24,9 +24,7 @@ const FILES: SpecFile[] = [{ path: ".kiro/specs/x/requirements.md", content: "- 
 function published(overrides: Partial<SpecTarget> = {}): SpecState {
   let state = startWriting(fresh(overrides), randomUUID(), NOW)!;
   state = writeSucceeded(state, { operationId: state.writeOperationId!, title: "T", files: FILES, requirementCount: 1 }, NOW)!;
-  const op = randomUUID();
-  state = startPublishing(state, op, NOW)!;
-  return publishSucceeded(state, { operationId: op, pullRequest: pr() }, NOW)!;
+  return publishSucceeded(state, { pullRequest: pr() }, NOW)!;
 }
 
 describe("whether a spec is due", () => {
@@ -45,13 +43,12 @@ describe("the gate on the code pull request", () => {
     expect(specGate(undefined)).toEqual({ action: "proceed" });
     expect(specGate(continueWithoutSpec(fresh(), "owner", NOW))).toEqual({ action: "proceed" });
   });
-  it("starts the write when due, the publish when written, and holds while either runs", () => {
+  it("starts the write when due, the publish when written, and holds while the write runs", () => {
     expect(specGate(fresh())).toEqual({ action: "start_write" });
     const writing = startWriting(fresh(), randomUUID(), NOW)!;
     expect(specGate(writing)).toMatchObject({ action: "hold", reason: "writing" });
     const written = writeSucceeded(writing, { operationId: writing.writeOperationId!, title: "T", files: FILES, requirementCount: 1 }, NOW)!;
     expect(specGate(written)).toEqual({ action: "start_publish" });
-    expect(specGate(startPublishing(written, randomUUID(), NOW))).toMatchObject({ action: "hold", reason: "publishing" });
   });
   it("HOLDS on a failure, naming the reason in fixed words, with retry and continue (retry only while attempts remain)", () => {
     const writing = startWriting(fresh(), randomUUID(), NOW)!;
@@ -99,7 +96,8 @@ describe("the gate on the code pull request", () => {
     expect(startWriting(writing, randomUUID(), NOW)).toBeUndefined();
     const done = writeSucceeded(writing, { operationId: writing.writeOperationId!, title: "T", files: FILES, requirementCount: 1 }, NOW)!;
     expect(writeSucceeded(done, { operationId: writing.writeOperationId!, title: "T", files: FILES, requirementCount: 1 }, NOW)).toBeUndefined();
-    expect(publishSucceeded(done, { operationId: randomUUID(), pullRequest: pr() }, NOW)).toBeUndefined();
+    expect(publishSucceeded(writing, { pullRequest: pr() }, NOW)).toBeUndefined();
+    expect(publishSucceeded(done, { pullRequest: pr() }, NOW)).toMatchObject({ status: "published" });
   });
   it("bounds writes and retries at three, publish retries included", () => {
     let state = fresh();
@@ -114,8 +112,7 @@ describe("the gate on the code pull request", () => {
     // A publish failure retries the publish with the files kept, and counts too.
     let written = startWriting(fresh(), randomUUID(), NOW)!;
     written = writeSucceeded(written, { operationId: written.writeOperationId!, title: "T", files: FILES, requirementCount: 1 }, NOW)!;
-    const publishing = startPublishing(written, randomUUID(), NOW)!;
-    const failed = stepFailed(publishing, { operationId: publishing.publishOperationId!, code: "publish_failed" }, NOW)!;
+    const failed = publishFailed(written, NOW)!;
     const again = retry(failed, NOW)!;
     expect(again.status).toBe("written");
     expect(again.files).toEqual(FILES);
@@ -182,15 +179,21 @@ function memoryWorld(options: { busy?: boolean } = {}) {
   const store: SpecStore = {
     load: async (taskId) => ({ state: rows.get(taskId), corrupt: false }),
     save: async (next, replaces) => { try { apply([specStateItem("t", next, replaces)]); return true; } catch { return false; } },
+    force: async (next) => { rows.set(next.taskId, next); },
   };
-  const started: Array<{ kind: "write" | "publish"; operationId: string; prompt?: string }> = [];
+  const published: Array<{ branch: string; files: number }> = [];
+  const outcome: { value: { ok: true; pullRequest: SpecPullRequest } | { ok: false; transient: boolean } } = { value: { ok: true, pullRequest: { number: 12, url: `${META}/pull/12`, repositoryUrl: META, headBranch: "agentx/placeholder", commit: "c".repeat(40) } } };
+  const started: Array<{ kind: "write"; operationId: string; prompt?: string }> = [];
   const logs: string[] = [];
   const world: SpecWorld = {
     tableName: "t", now: () => NOW, store, log: (event) => { logs.push(event); },
     startWrite: async ({ request, items }) => { if (options.busy === true) return "BUSY"; const operationId = randomUUID(); apply(items(operationId)); started.push({ kind: "write", operationId, prompt: request.prompt }); return "STARTED"; },
-    startPublish: async ({ items }) => { if (options.busy === true) return "BUSY"; const operationId = randomUUID(); apply(items(operationId)); started.push({ kind: "publish", operationId }); return "STARTED"; },
+    publish: async ({ state, branch }) => {
+      published.push({ branch, files: state.files?.length ?? 0 });
+      return outcome.value.ok ? { ok: true, pullRequest: { ...outcome.value.pullRequest, headBranch: branch } } : outcome.value;
+    },
   };
-  return { world, rows, started, logs };
+  return { world, rows, started, logs, published, outcome };
 }
 const task = (knowledgeCommit: string | null = BASE): SpecTaskRef => ({ taskId: TASK, title: "Reset password", knowledgeCommit: knowledgeCommit ?? undefined });
 const approval = (overrides: Record<string, unknown> = {}) => ({ task: task(), planDigest: PLAN, kind: "feature" as const, target: target(), ...overrides });
@@ -253,18 +256,34 @@ describe("the gate, with the effects", () => {
     expect(await hooks.gate(gateInput({ planMarkdown: () => "x".repeat(60_000) }))).toMatchObject({ proceed: false, hold: { reason: "failed" } });
     expect(long.rows.get(TASK)).toMatchObject({ status: "failed", failure: { code: "write_failed" } });
   });
-  it("starts the publish for written files, and proceeds with the verified link once published", async () => {
-    const { world, rows, started } = memoryWorld();
+  it("publishes written files itself on the attempt's own branch and proceeds with the verified link, in the same pass", async () => {
+    const { world, rows, published } = memoryWorld();
     const hooks = createSpecHooks(world);
     await hooks.onPlanApproved(approval());
     await hooks.gate(gateInput());
     const writing = rows.get(TASK)!;
     rows.set(TASK, writeSucceeded(writing, { operationId: writing.writeOperationId!, title: "T", files: FILES, requirementCount: 1 }, NOW)!);
+    const gate = await hooks.gate(gateInput());
+    expect(published).toEqual([{ branch: specBranchName(TASK, 1), files: 1 }]);
+    expect(gate).toEqual({ proceed: true, linkLine: `Spec: ${META}/pull/12 @ ${"c".repeat(40)}` });
+    expect(rows.get(TASK)).toMatchObject({ status: "published", specPullRequest: { number: 12 } });
+  });
+  it("fails the spec, held with Retry, when the publication is refused, and only waits when GitHub could not be asked", async () => {
+    const { world, rows, outcome } = memoryWorld();
+    const hooks = createSpecHooks(world);
+    const writing = startWriting(fresh(), randomUUID(), NOW)!;
+    rows.set(TASK, writeSucceeded(writing, { operationId: writing.writeOperationId!, title: "T", files: FILES, requirementCount: 1 }, NOW)!);
+    outcome.value = { ok: false, transient: true };
     expect(await hooks.gate(gateInput())).toMatchObject({ proceed: false, hold: { reason: "publishing" } });
-    expect(started.at(-1)!.kind).toBe("publish");
-    const publishing = rows.get(TASK)!;
-    rows.set(TASK, publishSucceeded(publishing, { operationId: publishing.publishOperationId!, pullRequest: pr() }, NOW)!);
-    expect(await hooks.gate(gateInput())).toEqual({ proceed: true, linkLine: `Spec: ${META}/pull/12 @ ${"c".repeat(40)}` });
+    expect(rows.get(TASK)!.status).toBe("written");
+    outcome.value = { ok: false, transient: false };
+    expect(await hooks.gate(gateInput())).toMatchObject({ proceed: false, hold: { reason: "failed", ownerActions: ["retry", "continue_without_spec"] } });
+    expect(rows.get(TASK)).toMatchObject({ status: "failed", failure: { code: "publish_failed" } });
+    const retried = await hooks.ownerChoice({ taskId: TASK, action: "retry", by: "owner" });
+    expect(retried).toMatchObject({ status: "written", attempt: 2 });
+    outcome.value = { ok: true, pullRequest: { number: 13, url: `${META}/pull/13`, repositoryUrl: META, headBranch: "x", commit: "c".repeat(40) } };
+    expect((await hooks.gate(gateInput()))).toMatchObject({ proceed: true });
+    expect(rows.get(TASK)!.specPullRequest!.headBranch).toBe(specBranchName(TASK, 2));
   });
   it("holds, rather than linking, when the recorded pull request is not in the project's meta repo", async () => {
     const { world, rows } = memoryWorld();
@@ -303,10 +322,10 @@ describe("the gate, with the effects", () => {
 const DRAFT = { version: 1, kind: "feature", title: "Reset password", summary: "s", planDigest: PLAN, requirements: [{ title: "r", criteria: [{ when: "a user asks", shall: "send a link" }] }], design: "d", tasks: [{ title: "t", covers: ["1.1"] }] };
 function endEnvironment(rows: Map<string, SpecState>, overrides: Partial<SpecEndEnvironment> = {}): SpecEndEnvironment {
   const { world } = memoryWorld();
-  const store: SpecStore = { load: async (id) => ({ state: rows.get(id), corrupt: false }), save: async (next) => { rows.set(next.taskId, next); return true; } };
+  const store: SpecStore = { load: async (id) => ({ state: rows.get(id), corrupt: false }), save: async (next) => { rows.set(next.taskId, next); return true; }, force: async (next) => { rows.set(next.taskId, next); } };
   return {
-    tableName: "t", store, now: () => NOW, approvedPlanDigest: async () => PLAN, taskKey: () => "task-1", template: async () => undefined,
-    pullRequestRecord: async () => undefined, republishItem: async () => ({ Put: { TableName: "t", Item: { pk: "republish", sk: "x" } } }), specPullRequestIndexItem: () => ({ Put: { TableName: "t", Item: { pk: "index", sk: "x" } } }),
+    tableName: "t", store, now: () => NOW, approvedPlanDigest: async () => PLAN, taskKey: () => "task-1", template: async () => undefined, forbiddenFolders: async () => [],
+    existingFolders: async () => [], republishItem: async () => ({ Put: { TableName: "t", Item: { pk: "republish", sk: "x" } } }),
     ...overrides, ...(world === undefined ? {} : {}),
   };
 }
@@ -324,10 +343,12 @@ describe("the end of a spec write", () => {
     expect(next.files![0]!.content).toContain("WHEN a user asks THE SYSTEM SHALL send a link");
     expect((items[1]!.Put!.Item as { pk: string }).pk).toBe("republish");
   });
-  it("numbers a Spec Kit folder from the folders the run reported, dropping names that are not plain folder names", async () => {
+  it("numbers a Spec Kit folder from the folders the broker lists at the meta commit", async () => {
     const state = startWriting(newSpecState({ taskId: TASK, planDigest: PLAN, kind: "feature", target: target({ format: "speckit" }), knowledgeCommit: BASE, now: NOW }), randomUUID(), NOW)!;
-    const items = await specOperationEndItems(endEnvironment(new Map([[TASK, state]])), TASK, { id: state.writeOperationId!, kind: "task", workflowMode: "SPEC_WRITE" }, { status: "SUCCEEDED", result: { specDraft: DRAFT, specContext: { folders: ["001-a", "007-b", "../008-evil", 9, "notes"] } } });
+    const listed: string[] = [];
+    const items = await specOperationEndItems(endEnvironment(new Map([[TASK, state]]), { existingFolders: async (_s, parent) => { listed.push(parent); return ["001-a", "007-b", "notes"]; } }), TASK, { id: state.writeOperationId!, kind: "task", workflowMode: "SPEC_WRITE" }, { status: "SUCCEEDED", result: { specDraft: DRAFT } });
     const next = items[0]!.Put!.Item as SpecState;
+    expect(listed).toEqual(["specs"]);
     expect(next.files![0]!.path).toBe("specs/008-reset-password/spec.md");
   });
   it("offers no retry for a failure a second try cannot mend", () => {
@@ -349,7 +370,7 @@ describe("the end of a spec write", () => {
       ["failed run", { status: "FAILED", result: undefined }, {}, writingState(), "write_failed"],
       ["unknown format", { status: "SUCCEEDED", result: { specDraft: DRAFT } }, {}, startWriting(newSpecState({ taskId: TASK, planDigest: PLAN, kind: "feature", target: target({ format: "nonesuch" }), knowledgeCommit: BASE, now: NOW }), randomUUID(), NOW)!, "unsupported"],
       ["no template", { status: "SUCCEEDED", result: { specDraft: DRAFT } }, {}, startWriting(newSpecState({ taskId: TASK, planDigest: PLAN, kind: "feature", target: target({ format: "team_template", templatePath: "tpl" }), knowledgeCommit: BASE, now: NOW }), randomUUID(), NOW)!, "template_missing"],
-      ["numbered folders unreported", { status: "SUCCEEDED", result: { specDraft: DRAFT } }, {}, startWriting(newSpecState({ taskId: TASK, planDigest: PLAN, kind: "feature", target: target({ format: "speckit" }), knowledgeCommit: BASE, now: NOW }), randomUUID(), NOW)!, "render_failed"],
+      ["numbered folders unlisted", { status: "SUCCEEDED", result: { specDraft: DRAFT } }, { existingFolders: async () => undefined }, startWriting(newSpecState({ taskId: TASK, planDigest: PLAN, kind: "feature", target: target({ format: "speckit" }), knowledgeCommit: BASE, now: NOW }), randomUUID(), NOW)!, "render_failed"],
     ];
     for (const [name, outcome, overrides, state, code] of cases) {
       const items = await specOperationEndItems(endEnvironment(new Map([[TASK, state]]), overrides), TASK, { id: state.writeOperationId!, kind: "task", workflowMode: "SPEC_WRITE" }, outcome);
@@ -365,34 +386,3 @@ describe("the end of a spec write", () => {
   });
 });
 
-describe("the end of a spec publication", () => {
-  const publishing = () => {
-    let state = writingState();
-    state = writeSucceeded(state, { operationId: state.writeOperationId!, title: "T", files: FILES, requirementCount: 1 }, NOW)!;
-    return startPublishing(state, randomUUID(), NOW)!;
-  };
-  const facts = (state: SpecState) => ({ id: state.publishOperationId!, kind: "publish", publication: { spec: true, repository: "service-meta", repositoryUrl: META, headBranch: "agentx/11111111-1111-1111-1111-111111111111" } });
-  const result = (state: SpecState, overrides: Record<string, unknown> = {}) => ({ repository: "service-meta", number: 12, url: `${META}/pull/12`, headBranch: "agentx/11111111-1111-1111-1111-111111111111", baseBranch: "main", commit: "c".repeat(40), checks: [], codeBuildChecks: [], reconciled: false, ...overrides, ...(state === undefined ? {} : {}) });
-  const record = (state: SpecState, overrides: Record<string, unknown> = {}) => async () => ({ url: `${META}/pull/12`, expectedHeadCommit: "c".repeat(40), createdByOperationId: state.publishOperationId!, ...overrides });
-
-  it("records the pull request the broker itself opened and verified, indexes it and queues the code publication again", async () => {
-    const state = publishing();
-    const items = await specOperationEndItems(endEnvironment(new Map([[TASK, state]]), { pullRequestRecord: record(state) }), TASK, facts(state), { status: "SUCCEEDED", result: result(state) });
-    expect(items).toHaveLength(3);
-    expect(items[0]!.Put!.Item).toMatchObject({ status: "published", specPullRequest: { number: 12, url: `${META}/pull/12`, commit: "c".repeat(40), repositoryUrl: META } });
-  });
-  it("fails the publish when the worker's report does not match the broker's record of the pull request", async () => {
-    const state = publishing();
-    const cases: Array<[string, Record<string, unknown>, Record<string, unknown> | undefined]> = [
-      ["another commit", result(state, { commit: "d".repeat(40) }), {}], ["another url", result(state, { url: `${META}/pull/99` }), {}],
-      ["another repository", result(state, { repository: "other" }), {}], ["another branch", result(state, { headBranch: "agentx/22222222-2222-2222-2222-222222222222" }), {}],
-      ["opened by another operation", result(state), { createdByOperationId: randomUUID() }], ["no record", result(state), undefined], ["not a result", { nonsense: true }, {}],
-    ];
-    for (const [name, reported, recorded] of cases) {
-      const env = endEnvironment(new Map([[TASK, state]]), { pullRequestRecord: recorded === undefined ? async () => undefined : record(state, recorded) });
-      const items = await specOperationEndItems(env, TASK, facts(state), { status: "SUCCEEDED", result: reported });
-      expect(items.map((item) => item.Put!.Item), name).toMatchObject([{ status: "failed", failure: { code: "publish_failed" } }]);
-    }
-    expect((await specOperationEndItems(endEnvironment(new Map([[TASK, state]])), TASK, facts(state), { status: "FAILED", result: undefined }))[0]!.Put!.Item).toMatchObject({ status: "failed" });
-  });
-});

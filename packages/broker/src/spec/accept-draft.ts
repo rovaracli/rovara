@@ -16,6 +16,7 @@ export interface AcceptSpecInput {
   /** Folder names in the spec folder's parent at `knowledgeCommit` (for `{n}`), and the team's template files (for `team_template`). */
   existingFolders: readonly string[];
   template?: readonly SpecFile[] | undefined;
+  forbiddenFolders?: readonly string[] | undefined;
 }
 
 export function acceptSpecWrite(input: AcceptSpecInput): AcceptedSpec {
@@ -30,7 +31,7 @@ export function acceptSpecWrite(input: AcceptSpecInput): AcceptedSpec {
   if (renderer === undefined) return { ok: false, code: "unsupported" };
   if (input.state.target.format === "team_template" && (input.template === undefined || input.template.length === 0)) return { ok: false, code: "template_missing" };
   try {
-    const rendered = renderer.render({ draft, target: input.state.target, taskKey: input.taskKey, ...(input.ticket === undefined ? {} : { ticket: input.ticket }), existingFolders: input.existingFolders, ...(input.template === undefined ? {} : { template: input.template }) });
+    const rendered = renderer.render({ draft, target: input.state.target, taskKey: input.taskKey, ...(input.ticket === undefined ? {} : { ticket: input.ticket }), existingFolders: input.existingFolders, forbiddenFolders: input.forbiddenFolders, ...(input.template === undefined ? {} : { template: input.template }) });
     const requirements = renderer.extractRequirements(rendered.files).filter((entry) => entry.kind === "requirement");
     // A spec with nothing to check is not a spec; one with more than a review walks is cut by the review, not here.
     if (requirements.length === 0 || rendered.files.some((file) => new TextEncoder().encode(file.content).byteLength > SPEC_FILE_MAX_BYTES)) return { ok: false, code: "render_failed" };

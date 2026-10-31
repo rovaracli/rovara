@@ -1,13 +1,17 @@
 // K1 lane D, D4: what people do to the spec pull request. Rovara opened it and never pushes to it again, so a head that is not the recorded one is a person's edit: the task owner is asked "The spec changed.
 // Re-plan or keep?" and the code pull requests wait for the answer. A review that approves the recorded head is the approval `spec_first` waits for. The facts come from GitHub (never from the event), so a
 // missed or repeated delivery changes nothing; the same refresh runs when a delivery arrives and whenever the held code pull request is looked at again.
-import { approved, edited, stepFailed, type SpecState } from "./state.js";
+import { SpecStateSchema, approved, edited, type SpecState } from "./state.js";
 import type { SpecStore } from "./hooks.js";
 
 export interface SpecPullRequestFacts {
   state: "open" | "closed" | "merged";
   headSha: string;
-  reviews: ReadonlyArray<{ state: string; commitId: string; login?: string }>;
+  /**
+   * The reviews, oldest first. `eligible` is the broker's answer, not GitHub's: the reviewer is a person (not a bot, not the app) with write or admin access to the meta repository. A review with no `eligible: true`
+   * is never an approval and never an objection.
+   */
+  reviews: ReadonlyArray<{ state: string; commitId: string; login?: string; userId?: string; eligible?: boolean }>;
   /** The list of reviews was cut: what is past it is not known, so no approval may be read from it. */
   reviewsIncomplete?: boolean | undefined;
 }
@@ -26,24 +30,37 @@ export function specStateFromFacts(state: SpecState, facts: SpecPullRequestFacts
     if (state.editPrompt?.headSha === facts.headSha) return undefined;
   }
   if (facts.state === "closed") {
-    const operationId = state.publishOperationId;
     // Closed without a merge: the spec is gone, and the owner chooses (retry writes it again; continuing goes on without).
-    return operationId === undefined ? undefined : failedAfterPublish(state, now);
+    return failedAfterPublish(state, now);
   }
   if (state.target.linkStyle !== "spec_first" || state.approvedAt !== undefined) return undefined;
-  if (facts.reviewsIncomplete === true) return undefined;
-  const atHead = facts.reviews.filter((review) => review.commitId === link.commit);
-  const approver = atHead.find((review) => review.state === "APPROVED");
-  const objection = atHead.some((review) => review.state === "CHANGES_REQUESTED");
+  if (facts.reviewsIncomplete === true && facts.state !== "merged") return undefined;
+  const approver = approvingReviewer(facts.reviews, link.commit);
   if (facts.state === "merged") return approved(state, { headSha: link.commit, by: approver?.login ?? "merged" }, now);
-  if (approver === undefined || objection) return undefined;
+  if (approver === undefined) return undefined;
   return approved(state, { headSha: link.commit, by: approver.login ?? "reviewer" }, now);
 }
 
+/**
+ * Who has approved the recorded head: the latest decisive review of each eligible reviewer (approved, changes requested or dismissed; a comment changes nothing) counts, so a reviewer who asked for changes
+ * and later approved is an approval and one who approved and later asked for changes is an objection. Only reviews of the head count. An approval needs no objection from another eligible reviewer.
+ */
+export function approvingReviewer(reviews: SpecPullRequestFacts["reviews"], head: string): { login?: string } | undefined {
+  const latest = new Map<string, (typeof reviews)[number]>();
+  for (const review of reviews) {
+    if (review.eligible !== true || review.commitId !== head) continue;
+    if (review.state !== "APPROVED" && review.state !== "CHANGES_REQUESTED" && review.state !== "DISMISSED") continue;
+    latest.set(review.userId ?? review.login ?? "?", review);
+  }
+  const decisive = [...latest.values()];
+  if (decisive.some((review) => review.state === "CHANGES_REQUESTED")) return undefined;
+  const approver = decisive.find((review) => review.state === "APPROVED");
+  return approver === undefined ? undefined : { ...(approver.login === undefined ? {} : { login: approver.login }) };
+}
+
 function failedAfterPublish(state: SpecState, now: string): SpecState | undefined {
-  // `stepFailed` knows only an operation that is running; a published spec that is closed is moved by hand to the same failed shape.
-  const failed = stepFailed({ ...state, status: "publishing" }, { operationId: state.publishOperationId!, code: "spec_closed" }, now);
-  return failed === undefined ? undefined : { ...failed, revision: state.revision + 1 };
+  // The spec pull request is gone without a merge: the spec fails (retry writes it again; continuing goes on without).
+  return SpecStateSchema.parse({ ...state, status: "failed", failure: { code: "spec_closed", at: now }, revision: state.revision + 1, updatedAt: now });
 }
 
 /** Reads GitHub's view of the spec pull request and stores the state it implies. `read` returns undefined when GitHub cannot say; then nothing changes. Returns the state to use now. */

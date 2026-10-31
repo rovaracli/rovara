@@ -34,16 +34,22 @@ export async function specReviewRecordItems(
 export async function specRequirementRowsOfTask(
   deps: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }, taskId: string,
 ): Promise<Array<ReturnType<typeof specRequirementRows>[number] & { operationId: string; recordedAt: string }>> {
-  const result = await deps.documentClient.send(new QueryCommand({
-    TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
-    ExpressionAttributeValues: { ":pk": `DEVTASK#${taskId}`, ":prefix": SPEC_REVIEW_SK_PREFIX }, Limit: 20,
-  })) as { Items?: unknown[] };
   const rows: Array<ReturnType<typeof specRequirementRows>[number] & { operationId: string; recordedAt: string }> = [];
-  for (const item of result.Items ?? []) {
-    const record = item as Partial<StoredSpecReview>;
-    const parsed = SpecReviewResultSchema.safeParse(record);
-    if (!parsed.success || typeof record.operationId !== "string" || typeof record.recordedAt !== "string") continue;
-    for (const row of specRequirementRows(parsed.data)) rows.push({ ...row, operationId: record.operationId, recordedAt: record.recordedAt });
+  // Every recorded walk, a page at a time, bounded at 20 pages.
+  let cursor: Record<string, unknown> | undefined;
+  for (let page = 0; page < 20; page += 1) {
+    const result = await deps.documentClient.send(new QueryCommand({
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: { ":pk": `DEVTASK#${taskId}`, ":prefix": SPEC_REVIEW_SK_PREFIX }, Limit: 20, ...(cursor === undefined ? {} : { ExclusiveStartKey: cursor }),
+    })) as { Items?: unknown[]; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of result.Items ?? []) {
+      const record = item as Partial<StoredSpecReview>;
+      const parsed = SpecReviewResultSchema.safeParse(record);
+      if (!parsed.success || typeof record.operationId !== "string" || typeof record.recordedAt !== "string") continue;
+      for (const row of specRequirementRows(parsed.data)) rows.push({ ...row, operationId: record.operationId, recordedAt: record.recordedAt });
+    }
+    cursor = result.LastEvaluatedKey;
+    if (cursor === undefined) break;
   }
   return rows.sort((left, right) => left.recordedAt.localeCompare(right.recordedAt));
 }

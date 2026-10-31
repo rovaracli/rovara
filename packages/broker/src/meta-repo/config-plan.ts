@@ -26,6 +26,7 @@ import {
   parseMetaProjectConfigJson,
   projectMetaShape,
   safePathPart,
+  specFolderProblem,
   settingOriginOf,
   type MetaConfigParse,
   type MetaConfigProblem,
@@ -234,6 +235,15 @@ export function planMetaConfigChange(input: { config: MetaProjectConfig; definit
     });
   }
 
+  // Meta repo lane D (I6): the file may not point the specs into the folders it names as its own rules, steering, skills, runbooks or key docs.
+  const template = config.specTarget?.pathTemplate;
+  if (template !== undefined) {
+    const segments = template.replace(/\/$/u, "").split("/");
+    const firstToken = segments.findIndex((segment) => /\{/u.test(segment));
+    const literal = (firstToken === -1 ? segments : segments.slice(0, firstToken)).join("/");
+    const own = [config.knowledge?.steering, config.knowledge?.skills, config.knowledge?.runbooks, config.knowledge?.keyDocs].flatMap((paths) => paths ?? []);
+    if (specFolderProblem(literal, own) !== undefined) problems.push({ path: "specTarget.pathTemplate", message: "points the specs into a rules, steering, skills, runbooks or key docs folder" });
+  }
   // Meta repo lane D: where the project's specs are written and in which format. Shown as JSON lines, one key each, so the maintainer sees what they apply.
   if (config.specTarget !== undefined && canonicalJson(definition.specTarget ?? null) !== canonicalJson(config.specTarget)) {
     const lines = (target: object | undefined) => target === undefined ? [] : Object.entries(target as Record<string, unknown>).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).slice(0, DISPLAY_LINES_MAX);

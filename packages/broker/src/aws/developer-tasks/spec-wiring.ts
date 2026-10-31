@@ -5,20 +5,18 @@
 // The pure parts (state, rendering, the link) are in ../../spec/; the effects here are the same ones the workflow already uses (a system-started run with its own conversation, the broker's publish).
 import { createHash } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { SPEC_REVIEW_REQUIREMENTS_MAX, SpecReviewInputSchema, agentXError, metaRepositoryOf, specStripHidden, workflowRequestId, type SpecFile, type SpecReviewInput, type WorkflowSnapshot } from "@agentx/contracts";
+import { SPEC_REVIEW_REQUIREMENTS_MAX, SpecReviewInputSchema, agentXError, metaRepositoryOf, specStripHidden, workflowRequestId, type SpecFile, type SpecKind, type SpecReviewInput, type WorkflowSnapshot } from "@agentx/contracts";
 import { developerTaskIdentity, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional, workflowDispatchItem } from "../broker-shared.js";
-import { createSpecHooks, type SpecTaskRef, type SpecWorld } from "../../spec/hooks.js";
+import { createSpecHooks, type PlanApproval, type SpecTaskRef, type SpecWorld } from "../../spec/hooks.js";
 import { approvedPlanDigestOf } from "../../spec/plan.js";
-import { specPullRequestBody } from "../../spec/link.js";
-import { specPullRequestTitle } from "../../spec/publish-request.js";
 import { specTargetOf } from "../../spec/due.js";
 import { specRendererFor } from "../../spec/index.js";
 import { dynamoSpecStore } from "../../spec/store.js";
 import type { SpecGate } from "../../spec/state.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
-import { get, iso, taskPageUrl } from "./common.js";
+import { get, iso, taskBaseOption } from "./common.js";
 import { accessFence, authorizeTaskAction, systemTaskAccess } from "./access.js";
 import { approvedCodingPlan } from "./workflow-inputs.js";
 
@@ -30,7 +28,12 @@ function specConversationId(taskId: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, metaName: string | undefined): SpecWorld {
+/** A bug and a feature are told apart by the words of the request (until a real classifier exists): a bug gets a bugfix spec (and only when the target says every task gets one). */
+export function specKindOf(task: Pick<DeveloperTaskRecord, "title" | "requestText">): SpecKind {
+  return /\b(?:bug|bugfix|defect|regression|hotfix|crash(?:es|ing)?|broken|fails?|failing)\b/iu.test(`${task.title} ${task.requestText ?? ""}`.slice(0, 2_000)) ? "bugfix" : "feature";
+}
+
+function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): SpecWorld {
   const store = dynamoSpecStore(deps);
   const log = (event: string, fields: Record<string, string | number | boolean>) => deps.log?.({ event, ...fields });
   return {
@@ -38,7 +41,16 @@ function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecor
     ...(deps.readSpecPullRequest === undefined ? {} : {
       readPullRequest: async (state) => state.specPullRequest === undefined ? undefined : deps.readSpecPullRequest!(task, state.specPullRequest.repositoryUrl, state.specPullRequest.number),
     }),
+    operationEnded: async (state) => {
+      if (state.writeOperationId === undefined) return false;
+      const operation = (await deps.actions.operations(task.workspaceId)).find((candidate) => candidate.id === state.writeOperationId);
+      return operation !== undefined && ["SUCCEEDED", "FAILED", "CANCELLED", "INTERRUPTED"].includes(operation.status);
+    },
     startWrite: async ({ request, attemptKey, items }) => {
+      // The spec writer reads rule files at the base commit the broker pinned for the task, as the reviewers do, never the working tree a build wrote; without a base it does not run.
+      const workflow = task.workflow;
+      const base = workflow === undefined ? {} : taskBaseOption(task, workflow);
+      if (base.workflowBase === undefined || base.workflowBase.length === 0) return "REFUSED";
       const workspace = await deps.actions.workspace(task.workspaceId);
       if (workspace.status === "CLOSED" || workspace.status === "PREPARATION_FAILED") return "BUSY";
       const access = await systemTaskAccess(deps, task);
@@ -52,28 +64,15 @@ function worldFor(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecor
         await deps.actions.acceptTask(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
           requestId: workflowRequestId("agentx-spec-write", task.taskId, Number(attemptKey)), conversationId, prompt: request.prompt,
         }, (operation) => [...items(operation.id), ...(access === undefined ? [] : [accessFence(deps, access)])],
-        { sharedTask: task.shared === true, workflowMode: "SPEC_WRITE", specWrite: request.binding });
+        { sharedTask: task.shared === true, workflowMode: "SPEC_WRITE", specWrite: request.binding, ...base });
       } catch (error) {
         if (error instanceof Error && "code" in error && (error as { code?: string }).code === "WORKSPACE_BUSY") return "BUSY";
         throw error;
       }
       return "STARTED";
     },
-    startPublish: async ({ state, attemptKey, items }) => {
-      if (metaName === undefined || state.files === undefined) return "BUSY";
-      const access = await systemTaskAccess(deps, task);
-      try {
-        await deps.actions.acceptPullRequest(developerTaskIdentity(task, deps.orgId), task.workspaceId, {
-          requestId: workflowRequestId("agentx-spec-publish", task.taskId, Number(attemptKey)), repository: metaName, title: specPullRequestTitle(task.title),
-          body: specPullRequestBody({ taskTitle: task.title, requirementCount: state.requirementCount ?? 0, ...(deps.issuer === undefined ? {} : { taskPageUrl: taskPageUrl(deps.issuer, task.taskId) }) }), draft: false,
-        }, (operation) => [...items(operation.id), ...(access === undefined ? [] : [accessFence(deps, access)])],
-        { spec: { files: state.files, baseCommit: state.knowledgeCommit } });
-      } catch (error) {
-        if (error instanceof Error && "code" in error && (error as { code?: string }).code === "WORKSPACE_BUSY") return "BUSY";
-        throw error;
-      }
-      return "STARTED";
-    },
+    // The broker makes the commit and opens the pull request itself; without the GitHub access (a path that has none) the step waits for one that does.
+    publish: async ({ state, branch }) => (deps.publishSpecFiles === undefined ? { ok: false, transient: true } : deps.publishSpecFiles(task, state, branch)),
   };
 }
 
@@ -82,17 +81,34 @@ async function pinnedDefinition(deps: DeveloperTaskRouteDependencies, task: Deve
   return (await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision))?.definition;
 }
 
-/** A person approved the coding plan. Records that a spec is due when the project's target says so. Never throws and never blocks the approval: a failure here is logged, and the code pull request's gate finds no state and goes on as before. */
+/**
+ * The spec obligation of a task, as the project's spec target and the approved plan say it: undefined when the project asks for no spec (or the plan is not approved); an error when it cannot be told. The
+ * approval records it, and the gates find it again when the record is missing, so a failed write at the approval never means a spec is skipped.
+ */
+async function deriveApproval(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord): Promise<PlanApproval | undefined> {
+  if (task.startingRevision === undefined) return undefined;
+  const definition = (await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision))?.definition;
+  if (definition === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the project revision could not be read");
+  const target = specTargetOf(definition);
+  if (target === undefined) return undefined;
+  const planDigest = approvedPlanDigestOf(task);
+  if (planDigest === undefined) return undefined;
+  return { task: refOf(task), planDigest, kind: specKindOf(task), target };
+}
+
+/** A person approved the coding plan. Records that a spec is due when the project's target says so. Never blocks the approval: a failure here is logged, and the gates find the obligation again from the project and the plan. */
 export async function specAfterPlanApproval(deps: DeveloperTaskRouteDependencies, taskId: string): Promise<void> {
   try {
     const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
-    const definition = task === undefined ? undefined : await pinnedDefinition(deps, task);
-    const target = definition === undefined ? undefined : specTargetOf(definition);
-    if (task === undefined || target === undefined) return;
-    const planDigest = approvedPlanDigestOf(task);
-    if (planDigest === undefined) return;
-    const metaName = definition === undefined ? undefined : metaRepositoryOf(definition)?.name;
-    await createSpecHooks(worldFor(deps, task, metaName)).onPlanApproved({ task: refOf(task), planDigest, kind: "feature", target });
+    if (task === undefined) return;
+    const approval = await deriveApproval(deps, task);
+    // No approval to record is also the answer for a plan that is no longer due a spec: an older plan's state is cleared.
+    if (approval === undefined) {
+      const planDigest = approvedPlanDigestOf(task);
+      if (planDigest !== undefined) await createSpecHooks(worldFor(deps, task)).onPlanApproved({ task: refOf(task), planDigest, kind: specKindOf(task), target: undefined });
+      return;
+    }
+    await createSpecHooks(worldFor(deps, task)).onPlanApproved(approval);
   } catch (error) {
     deps.log?.({ event: "spec.record_failed", taskId, error: error instanceof Error ? error.name : "unknown" });
   }
@@ -107,16 +123,17 @@ export type SpecPublicationGateResult = { proceed: true; linkLine?: string } | {
 export async function specPublicationGate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot): Promise<SpecPublicationGateResult> {
   try {
     const { state, corrupt } = await dynamoSpecStore(deps).load(task.taskId);
-    if (state === undefined && !corrupt) return { proceed: true };
     const definition = await pinnedDefinition(deps, task);
     const meta = definition === undefined ? undefined : metaRepositoryOf(definition);
     const plan = await approvedPlanForSpec(deps, workflow);
-    return await createSpecHooks(worldFor(deps, task, meta?.name)).gate({
-      task: refOf(task), approvedPlanDigest: plan?.sha256 ?? "", planMarkdown: () => plan?.text, metaRepositoryUrl: meta?.url,
+    // No record and no target in the project: the common case, nothing to do. (An error finding out is a hold in the gate, never a pass.)
+    if (state === undefined && !corrupt && definition !== undefined && specTargetOf(definition) === undefined) return { proceed: true };
+    return await createSpecHooks(worldFor(deps, task)).gate({
+      task: refOf(task), approvedPlanDigest: plan?.sha256 ?? "", planMarkdown: () => plan?.text, metaRepositoryUrl: meta?.url, derive: () => deriveApproval(deps, task),
     });
   } catch (error) {
     deps.log?.({ event: "spec.gate_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" });
-    return { proceed: false, hold: { action: "hold", reason: "failed", message: "The spec could not be checked just now.", ownerActions: ["continue_without_spec"] } };
+    return { proceed: false, hold: { action: "hold", reason: "failed", message: "The spec could not be checked just now.", ownerActions: ["retry", "continue_without_spec"] } };
   }
 }
 
@@ -149,15 +166,15 @@ export type SpecReviewGateResult = { proceed: true; input?: SpecReviewInput } | 
  * cannot be read is a hold; a review without its spec is never started by accident.
  */
 export async function specReviewGate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot): Promise<SpecReviewGateResult> {
-  const hold = (message: string): SpecReviewGateResult => ({ proceed: false, hold: { action: "hold", reason: "failed", message, ownerActions: ["continue_without_spec"] } });
+  const hold = (message: string): SpecReviewGateResult => ({ proceed: false, hold: { action: "hold", reason: "failed", message, ownerActions: ["retry", "continue_without_spec"] } });
   try {
     const { state, corrupt } = await dynamoSpecStore(deps).load(task.taskId);
-    if (state === undefined && !corrupt) return { proceed: true };
     const definition = await pinnedDefinition(deps, task);
     const meta = definition === undefined ? undefined : metaRepositoryOf(definition);
+    if (state === undefined && !corrupt && definition !== undefined && specTargetOf(definition) === undefined) return { proceed: true };
     const plan = await approvedPlanForSpec(deps, workflow);
-    const gate = await createSpecHooks(worldFor(deps, task, meta?.name)).gate({
-      task: refOf(task), approvedPlanDigest: plan?.sha256 ?? "", planMarkdown: () => plan?.text, metaRepositoryUrl: meta?.url, purpose: "review",
+    const gate = await createSpecHooks(worldFor(deps, task)).gate({
+      task: refOf(task), approvedPlanDigest: plan?.sha256 ?? "", planMarkdown: () => plan?.text, metaRepositoryUrl: meta?.url, purpose: "review", derive: () => deriveApproval(deps, task),
     });
     if (!gate.proceed) return gate;
     // Continued without the spec (or never due): nothing to walk.
@@ -201,8 +218,9 @@ async function queueRepublish(deps: DeveloperTaskRouteDependencies, task: Develo
 export async function specOwnerChoice(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, action: "retry" | "continue_without_spec" | "keep" | "replan"): Promise<{ status: string }> {
   const access = await authorizeTaskAction(deps, caller, taskId, "publish");
   const task = access.task;
-  const definition = await pinnedDefinition(deps, task);
-  const hooks = createSpecHooks(worldFor(deps, task, definition === undefined ? undefined : metaRepositoryOf(definition)?.name));
+  const hooks = createSpecHooks(worldFor(deps, task));
+  // "Retry" on a task with no record (the check itself failed) has nothing to change: it makes the waiting step due again, which looks again.
+  if (action === "retry" && (await dynamoSpecStore(deps).load(taskId)).state === undefined) { await queueRepublish(deps, task); return { status: "retrying" }; }
   const next = await hooks.ownerChoice({ taskId, action, by: caller.developerId });
   if (next === undefined) throw agentXError("IDEMPOTENCY_CONFLICT", "this choice is out of date; refresh the task and try again");
   await queueRepublish(deps, task);

@@ -394,6 +394,7 @@ export function developerTaskRouteDependencies(
     ...(deps.currentPullRequestHead === undefined ? {} : { currentPullRequestHead: deps.currentPullRequestHead }),
     ...(deps.readMetaFile === undefined ? {} : { readMetaFile: deps.readMetaFile }),
     ...(deps.readSpecPullRequest === undefined ? {} : { readSpecPullRequest: deps.readSpecPullRequest }),
+    ...(deps.publishSpecFiles === undefined ? {} : { publishSpecFiles: deps.publishSpecFiles }),
     ...(deps.currentBaseCommit === undefined ? {} : { currentBaseCommit: deps.currentBaseCommit }),
     ...(deps.taskAutonomyNow === undefined ? {} : { taskAutonomyNow: deps.taskAutonomyNow }),
     ...(deps.workflowE2EScenarioResults === undefined ? {} : { workflowE2EScenarioResults: deps.workflowE2EScenarioResults }),

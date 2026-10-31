@@ -207,6 +207,14 @@ describe("planning what a config file changes", () => {
     expect(planMetaConfigChange({ config, definition: have }).items).toEqual([]);
   });
 
+  it("refuses a spec folder inside a folder the same file names as its own rules, steering, skills, runbooks or key docs (I6)", () => {
+    const file = (template: string) => yaml(`version: 1\nknowledge: {steering: [design/rules], skills: [design/skills], runbooks: [ops/books], keyDocs: [docs/key]}\nspecTarget: {pathTemplate: "${template}"}\n`);
+    for (const template of ["design/rules/{slug}/", "design/skills/x/", "ops/books/{slug}/", "docs/key/{slug}/", "design/rules"]) {
+      expect(planMetaConfigChange({ config: file(template), definition: stored(separate()) }).problems.map((problem) => problem.path), template).toEqual(["specTarget.pathTemplate"]);
+    }
+    expect(planMetaConfigChange({ config: file("design/specs/{slug}/"), definition: stored(separate()) }).problems).toEqual([]);
+  });
+
   it("refuses a spec target with an unsafe folder, an unknown key, or a template folder for a format that reads none", () => {
     for (const target of ["{pathTemplate: ../../etc}", "{pathTemplate: .git/hooks}", "{surprise: 1}", "{format: kiro, templatePath: tpl}", "{format: team_template}"]) {
       expect(parseMetaConfigFile(".rovara/project.yaml", `version: 1\nspecTarget: ${target}\n`).ok, target).toBe(false);

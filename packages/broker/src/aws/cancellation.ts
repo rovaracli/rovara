@@ -101,8 +101,6 @@ export interface OperationRecord extends Operation {
   /** A planning run whose prompt asked the planner for the plan quality members (absent: it was not, or delivery dropped the guidance for an older worker). */
   planQualityAsked?: true;
   publication?: {
-    /** Meta repo lane D: this publication is a spec pull request in the meta repository (opened for people to review, never a draft, with no checks section). */
-    spec?: true;
     repository: string;
     repositoryUrl: string;
     headBranch: string;

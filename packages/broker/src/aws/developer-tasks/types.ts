@@ -13,6 +13,8 @@ import type { BoundChannel } from "../../developer/share.js";
 import type { ModelAccess } from "../../model-proxy/access.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import type { SpecPullRequestFacts } from "../../spec/refresh.js";
+import type { SpecPublishOutcome } from "../../spec/hooks.js";
+import type { SpecState } from "../../spec/state.js";
 import type { DeveloperTaskActions, TransactItems } from "../developer-task-actions.js";
 import type { TaskPersonCheck } from "../../developer/task-people.js";
 import type { SlackRequestQueue } from "../../developer/page-comments.js";
@@ -78,6 +80,8 @@ export interface DeveloperTaskRouteDependencies {
    * when the file cannot be read. Without it a task whose spec is published cannot start its review: it waits (the sweep, which has it, starts it).
    */
   readMetaFile?(task: DeveloperTaskRecord, repositoryUrl: string, path: string, commit: string, maxBytes: number): Promise<string | undefined>;
+  /** Meta repo lane D (C1 fix): publishes a task's spec files to its meta repository, the broker building the commit through GitHub with its own token. Absent: the spec waits for a path that has it. */
+  publishSpecFiles?(task: DeveloperTaskRecord, state: SpecState, branch: string): Promise<SpecPublishOutcome>;
   /** Meta repo lane D (D4): GitHub's view of a task's spec pull request now (its head, state and reviews). Undefined when GitHub cannot say. Absent: the spec pull request is not looked at from here. */
   readSpecPullRequest?(task: DeveloperTaskRecord, repositoryUrl: string, number: number): Promise<SpecPullRequestFacts | undefined>;
   /** The head GitHub shows for one of the task's pull requests now (Plan 6 Task 15: checked before a fix's coding run is paid for). Throws when GitHub cannot say. */

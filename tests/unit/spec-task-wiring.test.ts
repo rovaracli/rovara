@@ -11,7 +11,7 @@ import type { DeveloperTaskRouteDependencies } from "../../packages/broker/src/a
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { kiroRenderer } from "../../packages/broker/src/spec/index.js";
 import { dynamoSpecStore } from "../../packages/broker/src/spec/store.js";
-import { newSpecState, publishSucceeded, startPublishing, startWriting, writeSucceeded, type SpecState } from "../../packages/broker/src/spec/state.js";
+import { newSpecState, publishSucceeded, startWriting, writeSucceeded, type SpecState } from "../../packages/broker/src/spec/state.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const TASK = randomUUID();
@@ -41,7 +41,7 @@ function workflow(approved: "owner" | "agentx" | "none" = "owner"): WorkflowSnap
 async function setup(options: { specTarget?: SpecTarget | undefined; withMeta?: boolean; approved?: "owner" | "agentx" | "none"; knowledgeCommit?: string | undefined; readMetaFile?: DeveloperTaskRouteDependencies["readMetaFile"] } = {}) {
   const db = new FakeDynamoDb();
   const task = { pk: `DEVTASK#${TASK}`, sk: "META", taskId: TASK, workspaceId: WORKSPACE, project: "demo", title: "Reset password", startingRevision: 3, orgId: "org-1", conversationId: randomUUID(),
-    ...(options.knowledgeCommit === undefined && "knowledgeCommit" in options ? {} : { knowledgeCommit: options.knowledgeCommit ?? BASE }), workflow: workflow(options.approved) } as unknown as DeveloperTaskRecord;
+    ...(options.knowledgeCommit === undefined && "knowledgeCommit" in options ? {} : { knowledgeCommit: options.knowledgeCommit ?? BASE }), workflow: workflow(options.approved), preparedBase: [{ repositoryId: "web", baseCommitSha: "1".repeat(40) }] } as unknown as DeveloperTaskRecord;
   await db.send(new PutCommand({ TableName: "t", Item: task }));
   const logs: Array<Record<string, unknown>> = [];
   const startedWrites: unknown[] = [];
@@ -89,9 +89,7 @@ describe("a person approves the plan", () => {
 function publishedState(overrides: Partial<SpecTarget> = {}, files: SpecFile[] = kiroFiles()): SpecState {
   let state = startWriting(newSpecState({ taskId: TASK, planDigest: PLAN_DIGEST, kind: "feature", target: target(overrides), knowledgeCommit: BASE, now: NOW }), randomUUID(), NOW)!;
   state = writeSucceeded(state, { operationId: state.writeOperationId!, title: "Reset", files, requirementCount: 2 }, NOW)!;
-  const operationId = randomUUID();
-  state = startPublishing(state, operationId, NOW)!;
-  return publishSucceeded(state, { operationId, pullRequest: { number: 12, url: `${META}/pull/12`, repositoryUrl: META, headBranch: `agentx/${randomUUID()}`, commit: SPEC_COMMIT } }, NOW)!;
+  return publishSucceeded(state, { pullRequest: { number: 12, url: `${META}/pull/12`, repositoryUrl: META, headBranch: `agentx/${randomUUID()}`, commit: SPEC_COMMIT } }, NOW)!;
 }
 function kiroFiles(): SpecFile[] {
   const draft = { version: 1, kind: "feature", title: "Reset password", summary: "s", planDigest: PLAN_DIGEST, requirements: [{ title: "r", criteria: [{ when: "a user asks", shall: "send a link" }, { shall: "log no password" }] }], design: "", tasks: [] };
@@ -100,7 +98,7 @@ function kiroFiles(): SpecFile[] {
 
 describe("the code pull request", () => {
   it("goes on at once for a task with no spec", async () => {
-    const t = await setup();
+    const t = await setup({ specTarget: undefined });
     expect(await specPublicationGate(t.deps, t.task, t.task.workflow!)).toEqual({ proceed: true });
   });
   it("carries the link to a published spec, and waits for approval under spec_first", async () => {
@@ -133,7 +131,7 @@ describe("the code pull request", () => {
 describe("the code review", () => {
   const readsFrom = (files: SpecFile[], seen: string[] = []) => async (_task: DeveloperTaskRecord, _url: string, path: string, commit: string) => { seen.push(`${path}@${commit}`); return files.find((file) => file.path === path)?.content; };
   it("goes on at once, with no spec to walk, for a task with no spec", async () => {
-    const t = await setup();
+    const t = await setup({ specTarget: undefined });
     expect(await specReviewGate(t.deps, t.task, t.task.workflow!)).toEqual({ proceed: true });
   });
   it("is given the requirements read from the meta repo at the commit recorded when the spec was published", async () => {

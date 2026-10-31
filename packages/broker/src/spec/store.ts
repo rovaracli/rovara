@@ -11,6 +11,9 @@ export function dynamoSpecStore(dependencies: { documentClient: { send(command: 
       const parsed = SpecStateSchema.safeParse(result.Item);
       return parsed.success ? { state: parsed.data, corrupt: false } : { state: undefined, corrupt: true };
     },
+    force: async (next: SpecState) => {
+      await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: next }));
+    },
     save: async (next: SpecState, replaces) => {
       try {
         await dependencies.documentClient.send(new PutCommand({

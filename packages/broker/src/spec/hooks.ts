@@ -1,5 +1,5 @@
-// K1 lane D, D2: the broker's spec steps, with the effects they need (the store, starting a run, starting a publication) passed in. The wiring (developer-tasks/spec-wiring.ts) supplies the real ones;
-// the tests supply fakes. Every state change is conditional on the state's revision and goes with the run it starts in ONE transaction, so there is never a run without its state or a state without its run.
+// K1 lane D, D2: the broker's spec steps, with the effects they need (the store, starting a run, publishing) passed in. The wiring (developer-tasks/spec-wiring.ts) supplies the real ones; the tests supply
+// fakes. Every state change is conditional on the state's revision; the SPEC_WRITE run's start goes in ONE transaction with its state change, so there is never a run without its state or a state without its run.
 import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { agentXError, defaultSpecTarget, type SpecKind, type SpecTarget } from "@agentx/contracts";
 import { specIsDue } from "./due.js";
@@ -7,8 +7,8 @@ import { buildSpecWriteRequest, type SpecWriteRequest } from "./write-request.js
 import { specLinkLine } from "./link.js";
 import { refreshSpecState, type SpecPullRequestFacts } from "./refresh.js";
 import {
-  SPEC_STATE_SK, SpecStateSchema, continueWithoutSpec, keepEdited, newSpecState, replanEdited, retry, specGate, specGateForReview, specStateKey, startPublishing, startWriting,
-  type SpecGate, type SpecState,
+  SPEC_STATE_SK, SpecStateSchema, continueWithoutSpec, keepEdited, newSpecState, publishFailed, publishSucceeded, replanEdited, retry, specBranchName, specGate, specGateForReview, specStateKey, startWriting, stepFailed,
+  type SpecGate, type SpecPullRequest, type SpecState,
 } from "./state.js";
 
 export type TransactItem = NonNullable<TransactWriteCommandInput["TransactItems"]>[number];
@@ -28,6 +28,8 @@ export interface SpecStore {
   load(taskId: string): Promise<{ state: SpecState | undefined; corrupt: boolean }>;
   /** Writes `next` over the revision `replaces`; false when another writer moved it first. */
   save(next: SpecState, replaces: number | undefined): Promise<boolean>;
+  /** Writes `next` over whatever is there (a record this release cannot read): only the owner's "continue without spec" uses it. */
+  force(next: SpecState): Promise<void>;
 }
 
 export interface SpecTaskRef {
@@ -37,14 +39,21 @@ export interface SpecTaskRef {
   knowledgeCommit: string | undefined;
 }
 
+export type SpecPublishOutcome = { ok: true; pullRequest: SpecPullRequest } | { ok: false; transient: boolean };
+
 export interface SpecWorld {
   tableName: string;
   now(): string;
   store: SpecStore;
-  /** Starts the SPEC_WRITE run. `items(operationId)` are the items that must commit with it. "BUSY": the workspace is not free; nothing was written. */
-  startWrite(input: { task: SpecTaskRef; request: SpecWriteRequest; /** Distinct for each attempt (the state's revision), so a repeat of one request is one run and a retry is another. */ attemptKey: string; items: (operationId: string) => TransactItem[] }): Promise<"STARTED" | "BUSY">;
-  /** Starts the spec publication to the meta repo. */
-  startPublish(input: { task: SpecTaskRef; state: SpecState; attemptKey: string; items: (operationId: string) => TransactItem[] }): Promise<"STARTED" | "BUSY">;
+  /** Starts the SPEC_WRITE run. `items(operationId)` are the items that must commit with it. "BUSY": the workspace is not free (nothing was written). "REFUSED": it cannot be started for this task (no base commit). */
+  startWrite(input: { task: SpecTaskRef; request: SpecWriteRequest; /** Distinct for each attempt (the state's revision), so a repeat of one request is one run and a retry is another. */ attemptKey: string; items: (operationId: string) => TransactItem[] }): Promise<"STARTED" | "BUSY" | "REFUSED">;
+  /**
+   * Publishes the state's files to the meta repo on `branch`: the BROKER builds the commit (blobs, tree, commit, ref) through GitHub, opens the pull request, and checks that the commit adds exactly those
+   * files. `transient`: it could not be tried now (no GitHub access from here), so nothing is recorded and the step waits.
+   */
+  publish(input: { task: SpecTaskRef; state: SpecState; branch: string }): Promise<SpecPublishOutcome>;
+  /** Whether the state's SPEC_WRITE operation has ended (any way): a `writing` state whose run is over is stuck and is settled. Absent: not looked at. */
+  operationEnded?: (state: SpecState) => Promise<boolean>;
   /** GitHub's view of the spec pull request now (D4); undefined where GitHub cannot say. Absent: the spec pull request is not looked at. */
   readPullRequest?: (state: SpecState) => Promise<SpecPullRequestFacts | undefined>;
   log(event: string, fields: Record<string, string | number | boolean>): void;
@@ -60,60 +69,89 @@ export interface PlanApproval {
   target: SpecTarget | undefined;
 }
 
+type Hold = Extract<SpecGate, { action: "hold" }>;
+const hold = (reason: Hold["reason"], message: string, ownerActions: Hold["ownerActions"]): Hold => ({ action: "hold", reason, message, ownerActions });
+const unavailable = (): Hold => hold("failed", "The spec could not be checked just now.", ["retry", "continue_without_spec"]);
+
 export function createSpecHooks(world: SpecWorld) {
+  async function record(approval: PlanApproval): Promise<"recorded" | "not_due" | "exists"> {
+    const existing = await world.store.load(approval.task.taskId);
+    if (!specIsDue(approval.target, approval)) {
+      // A plan that is no longer due a spec leaves no obligation of an older plan behind: that state is stored as skipped, so nothing waits on it.
+      if (existing.state !== undefined && existing.state.planDigest !== approval.planDigest && existing.state.status !== "skipped") {
+        const skipped = SpecStateSchema.parse({ ...existing.state, planDigest: approval.planDigest, status: "skipped", revision: existing.state.revision + 1, updatedAt: world.now(), failure: undefined, editPrompt: undefined });
+        await world.store.save(skipped, existing.state.revision);
+      }
+      return "not_due";
+    }
+    const target = approval.target ?? defaultSpecTarget();
+    // A re-approval after a revise: the same plan keeps its state; a different plan starts a new obligation (the older state is replaced, at its revision).
+    if (existing.state !== undefined && existing.state.planDigest === approval.planDigest) return "exists";
+    const base = approval.task.knowledgeCommit;
+    const fresh = newSpecState({ taskId: approval.task.taskId, planDigest: approval.planDigest, kind: approval.kind, target, knowledgeCommit: base ?? "0".repeat(40), now: world.now() });
+    const unsupported = target.where !== "meta_repo" || base === undefined;
+    const state = SpecStateSchema.parse({
+      ...fresh, revision: (existing.state?.revision ?? 0) + 1,
+      ...(unsupported ? { status: "failed", failure: { code: "unsupported", at: world.now() } } : {}),
+    });
+    if (existing.corrupt) { await world.store.force(state); return "recorded"; }
+    const saved = await world.store.save(state, existing.state?.revision);
+    world.log("spec.obligation_recorded", { taskId: approval.task.taskId, recorded: saved });
+    return saved ? "recorded" : "exists";
+  }
+
   return {
     /**
      * The plan is approved by a person: when a spec is due, its obligation is recorded now, with the target as it is now. Nothing is run here. A task with no `knowledgeCommit` (no meta repo) and a target that
      * writes to the meta repo cannot be given a spec: the state is a failure the owner can continue past, never a silent skip.
      */
-    async onPlanApproved(approval: PlanApproval): Promise<"recorded" | "not_due" | "exists"> {
-      if (!specIsDue(approval.target, approval)) return "not_due";
-      const target = approval.target ?? defaultSpecTarget();
-      const existing = await world.store.load(approval.task.taskId);
-      // A re-approval after a revise: the same plan keeps its state; a different plan starts a new obligation (the older state is replaced, at its revision).
-      if (existing.state !== undefined && existing.state.planDigest === approval.planDigest) return "exists";
-      const base = approval.task.knowledgeCommit;
-      const fresh = newSpecState({ taskId: approval.task.taskId, planDigest: approval.planDigest, kind: approval.kind, target, knowledgeCommit: base ?? "0".repeat(40), now: world.now() });
-      const unsupported = target.where !== "meta_repo" || base === undefined;
-      const state = SpecStateSchema.parse({
-        ...fresh, revision: (existing.state?.revision ?? 0) + 1,
-        ...(unsupported ? { status: "failed", failure: { code: "unsupported", at: world.now() } } : {}),
-      });
-      const saved = await world.store.save(state, existing.state?.revision);
-      world.log("spec.obligation_recorded", { taskId: approval.task.taskId, recorded: saved });
-      return saved ? "recorded" : "exists";
-    },
+    onPlanApproved: record,
 
     /**
-     * What the code pull request does now. Starts the next step itself (write, then publish) and says "hold" while it runs; the step's end writes the state and queues the publication again. `planMarkdown` is read
-     * only when a write starts, from the plan whose digest the caller has already checked is the approved one.
+     * What the code pull request (or, for `purpose: "review"`, the code review) does now. Starts the next step itself (write, then publish) and says "hold" while it runs.
+     * - `derive` finds the obligation again when there is no state (a record that failed to be written at the approval): the spec is never skipped because a write failed; an error while looking is a hold.
+     * - A `writing` state whose run has ended (failed delivery, cancel, anything) is settled as failed, so a hold always has a way out.
+     * - `planMarkdown` is read only when a write starts, from the plan whose digest the caller has already checked is the approved one.
      */
-    async gate(input: { task: SpecTaskRef; approvedPlanDigest: string; planMarkdown: () => string | undefined; metaRepositoryUrl: string | undefined; /** "review": the code review needs the spec published but not approved. */ purpose?: "review" }): Promise<
-      { proceed: true; linkLine?: string } | { proceed: false; hold: Extract<SpecGate, { action: "hold" }> }> {
+    async gate(input: {
+      task: SpecTaskRef; approvedPlanDigest: string; planMarkdown: () => string | undefined; metaRepositoryUrl: string | undefined;
+      /** "review": the code review needs the spec published but not approved. */
+      purpose?: "review";
+      derive?: () => Promise<PlanApproval | undefined>;
+    }): Promise<{ proceed: true; linkLine?: string } | { proceed: false; hold: Hold }> {
+      const taskId = input.task.taskId;
       // What people did to the spec pull request since (an edit, an approval) is read from GitHub before the decision, so a missed delivery never leaves the code pull request waiting on something already done.
-      if (input.purpose !== "review" && world.readPullRequest !== undefined) await refreshSpecState({ store: world.store, now: () => world.now(), read: (state) => world.readPullRequest!(state) }, input.task.taskId).catch(() => undefined);
-      const { state, corrupt } = await world.store.load(input.task.taskId);
-      const decision = input.purpose === "review" ? specGateForReview(state, corrupt) : specGate(state, corrupt);
-      if (decision.action === "proceed") {
-        const line = decision.link === undefined || input.metaRepositoryUrl === undefined ? undefined : specLinkLine(decision.link, input.metaRepositoryUrl);
-        // A published spec whose link cannot be verified against the meta repo is not described: the pull request opens without a link rather than with one nobody checked... unless the target wants the spec first.
-        if (decision.link !== undefined && line === undefined) return { proceed: false, hold: { action: "hold", reason: "failed", message: "The spec pull request is not in the project's meta repository.", ownerActions: ["continue_without_spec"] } };
-        return { proceed: true, ...(line === undefined ? {} : { linkLine: line }) };
+      if (input.purpose !== "review" && world.readPullRequest !== undefined) await refreshSpecState({ store: world.store, now: () => world.now(), read: (state) => world.readPullRequest!(state) }, taskId).catch(() => undefined);
+      let { state, corrupt } = await world.store.load(taskId);
+      if (state === undefined && !corrupt && input.derive !== undefined) {
+        try {
+          const approval = await input.derive();
+          if (approval !== undefined) { await record(approval); ({ state, corrupt } = await world.store.load(taskId)); }
+        } catch (error) {
+          world.log("spec.derive_failed", { taskId, error: error instanceof Error ? error.name : "unknown" });
+          return { proceed: false, hold: unavailable() };
+        }
       }
+      const decide = (given: SpecState | undefined) => (input.purpose === "review" ? specGateForReview(given, corrupt) : specGate(given, corrupt));
+      let decision = decide(state);
+      // A write whose run is over, and that left no result behind, is settled.
+      if (state !== undefined && state.status === "writing" && world.operationEnded !== undefined && await world.operationEnded(state).catch(() => false)) {
+        const failed = stepFailed(state, { operationId: state.writeOperationId!, code: "write_failed" }, world.now());
+        if (failed !== undefined && await world.store.save(failed, state.revision)) { state = failed; decision = decide(state); }
+      }
+      if (decision.action === "proceed") return proceedWith(decision.link, input.metaRepositoryUrl);
       if (decision.action === "hold") return { proceed: false, hold: decision };
-      const current = state!;
+      let current = state!;
       if (decision.action === "start_write") {
-        if (current.planDigest !== input.approvedPlanDigest) return { proceed: false, hold: failHold("plan_changed") };
+        if (current.planDigest !== input.approvedPlanDigest) return { proceed: false, hold: hold("failed", "The approved plan changed since the spec was planned.", ["continue_without_spec"]) };
         const markdown = input.planMarkdown();
-        let request: SpecWriteRequest;
+        let request: SpecWriteRequest | undefined;
         try {
           if (markdown === undefined) throw agentXError("CONFIG_INVALID", "no plan");
-          request = buildSpecWriteRequest({ format: current.target.format, kind: current.kind, planDigest: current.planDigest, planMarkdown: markdown, taskTitle: input.task.title, target: current.target });
-        } catch {
-          await world.store.save(failedState(current, "write_failed", world.now()), current.revision);
-          return { proceed: false, hold: failHold("write_failed") };
-        }
-        await world.startWrite({
+          request = buildSpecWriteRequest({ format: current.target.format, kind: current.kind, planDigest: current.planDigest, planMarkdown: markdown, taskTitle: input.task.title });
+        } catch { request = undefined; }
+        if (request === undefined) return failWrite(current);
+        const started = await world.startWrite({
           task: input.task, request, attemptKey: String(current.revision),
           items: (operationId) => {
             const next = startWriting(current, operationId, world.now());
@@ -121,44 +159,56 @@ export function createSpecHooks(world: SpecWorld) {
             return [specStateItem(world.tableName, next, current.revision)];
           },
         }).catch((error: unknown) => {
-          world.log("spec.write_not_started", { taskId: input.task.taskId, error: error instanceof Error ? error.name : "unknown" });
+          world.log("spec.write_not_started", { taskId, error: error instanceof Error ? error.name : "unknown" });
           return "BUSY" as const;
         });
-        return { proceed: false, hold: { action: "hold", reason: "writing", message: "Rovara is writing the spec from the approved plan.", ownerActions: [] } };
+        if (started === "REFUSED") return failWrite(current);
+        return { proceed: false, hold: hold("writing", "Rovara is writing the spec from the approved plan.", []) };
       }
-      // start_publish
-      await world.startPublish({
-        task: input.task, state: current, attemptKey: String(current.revision),
-        items: (operationId) => {
-          const next = startPublishing(current, operationId, world.now());
-          if (next === undefined) throw agentXError("CONFIG_INVALID", "the spec has nothing to publish");
-          return [specStateItem(world.tableName, next, current.revision)];
-        },
-      }).catch((error: unknown) => {
-        world.log("spec.publish_not_started", { taskId: input.task.taskId, error: error instanceof Error ? error.name : "unknown" });
-        return "BUSY" as const;
-      });
-      return { proceed: false, hold: { action: "hold", reason: "publishing", message: "Rovara is opening the spec pull request.", ownerActions: [] } };
+      // start_publish: the broker builds and opens it now.
+      const outcome = await world.publish({ task: input.task, state: current, branch: specBranchName(taskId, current.attempt) }).catch((): SpecPublishOutcome => ({ ok: false, transient: false }));
+      if (!outcome.ok && outcome.transient) return { proceed: false, hold: hold("publishing", "Rovara is opening the spec pull request.", []) };
+      const next = outcome.ok ? publishSucceeded(current, { pullRequest: outcome.pullRequest }, world.now()) : publishFailed(current, world.now());
+      if (next === undefined || !(await world.store.save(next, current.revision))) return { proceed: false, hold: hold("publishing", "Rovara is opening the spec pull request.", []) };
+      current = next;
+      decision = decide(current);
+      if (decision.action === "proceed") return proceedWith(decision.link, input.metaRepositoryUrl);
+      return { proceed: false, hold: decision.action === "hold" ? decision : hold("publishing", "Rovara is opening the spec pull request.", []) };
     },
 
-    /** The task owner's choice on a held spec. Returns the new state, or undefined when the state was not where the choice expects (nothing changes). */
+    /**
+     * The task owner's choice on a held spec. Returns the new state, or undefined when the state was not where the choice expects (nothing changes). "Continue without spec" always works: on a record that cannot
+     * be read it replaces it, and with no record at all (the obligation could not be found) it writes one that says the owner went on without.
+     */
     async ownerChoice(input: { taskId: string; action: "retry" | "continue_without_spec" | "keep" | "replan"; by: string }): Promise<SpecState | undefined> {
-      const { state } = await world.store.load(input.taskId);
-      if (state === undefined) return undefined;
+      const { state, corrupt } = await world.store.load(input.taskId);
       const now = world.now();
+      if (input.action === "continue_without_spec" && (corrupt || state === undefined)) {
+        const base = SpecStateSchema.parse({ ...newSpecState({ taskId: input.taskId, planDigest: "0".repeat(64), kind: "feature", target: defaultSpecTarget(), knowledgeCommit: "0".repeat(40), now }), status: "skipped" });
+        const continued = continueWithoutSpec(base, input.by, now)!;
+        if (corrupt) await world.store.force(continued);
+        else if (!(await world.store.save(continued, undefined))) return undefined;
+        return continued;
+      }
+      if (state === undefined) return undefined;
       const next = input.action === "retry" ? retry(state, now) : input.action === "keep" ? keepEdited(state, input.by, now) : input.action === "replan" ? replanEdited(state, input.by, now) : continueWithoutSpec(state, input.by, now);
       if (next === undefined) return undefined;
       return (await world.store.save(next, state.revision)) ? next : undefined;
     },
   };
-}
 
-const failHold = (code: "plan_changed" | "write_failed"): Extract<SpecGate, { action: "hold" }> => ({
-  action: "hold", reason: "failed", message: code === "plan_changed" ? "The approved plan changed since the spec was planned." : "Spec pull request failed: Rovara could not write the spec from the approved plan.", ownerActions: ["continue_without_spec"],
-});
+  async function failWrite(current: SpecState): Promise<{ proceed: false; hold: Hold }> {
+    const failed = SpecStateSchema.parse({ ...current, status: "failed", failure: { code: "write_failed", at: world.now() }, revision: current.revision + 1, updatedAt: world.now() });
+    await world.store.save(failed, current.revision);
+    return { proceed: false, hold: hold("failed", "Spec pull request failed: Rovara could not write the spec from the approved plan.", current.attempt < 3 ? ["retry", "continue_without_spec"] : ["continue_without_spec"]) };
+  }
 
-function failedState(state: SpecState, code: "write_failed", now: string): SpecState {
-  return SpecStateSchema.parse({ ...state, status: "failed", failure: { code, at: now }, revision: state.revision + 1, updatedAt: now });
+  function proceedWith(link: SpecPullRequest | undefined, metaRepositoryUrl: string | undefined): { proceed: true; linkLine?: string } | { proceed: false; hold: Hold } {
+    const line = link === undefined || metaRepositoryUrl === undefined ? undefined : specLinkLine(link, metaRepositoryUrl);
+    // A published spec whose link cannot be verified against the meta repo is not described: the code pull request waits for the owner rather than opening with a link nobody checked.
+    if (link !== undefined && line === undefined) return { proceed: false, hold: hold("failed", "The spec pull request is not in the project's meta repository.", ["continue_without_spec"]) };
+    return { proceed: true, ...(line === undefined ? {} : { linkLine: line }) };
+  }
 }
 
 export { SPEC_STATE_SK, specStateKey };

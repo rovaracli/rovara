@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 export const SPEC_STATE_SK = "SPEC#STATE";
-export const SPEC_STATUSES = ["due", "writing", "written", "publishing", "published", "failed", "skipped"] as const;
+export const SPEC_STATUSES = ["due", "writing", "written", "published", "failed", "skipped"] as const;
 export type SpecStatus = (typeof SPEC_STATUSES)[number];
 
 /** Fixed reasons a spec stops. Never model text, never a git or GitHub message. */
@@ -53,7 +53,6 @@ export const SpecStateSchema = z.object({
   status: z.enum(SPEC_STATUSES),
   attempt: z.number().int().min(0).max(5),
   writeOperationId: z.string().uuid().optional(),
-  publishOperationId: z.string().uuid().optional(),
   title: z.string().max(200).optional(),
   /** The rendered files, kept between the write and the publish so a retry of the publish writes exactly them. */
   files: z.array(SpecFileSchema).max(12).optional(),
@@ -119,7 +118,6 @@ export function specGate(state: SpecState | undefined, corrupt = false): SpecGat
   if (state.status === "due") return { action: "start_write" };
   if (state.status === "written") return { action: "start_publish" };
   if (state.status === "writing") return { action: "hold", reason: "writing", message: "Rovara is writing the spec from the approved plan.", ownerActions: [] };
-  if (state.status === "publishing") return { action: "hold", reason: "publishing", message: "Rovara is opening the spec pull request.", ownerActions: [] };
   if (state.status === "failed") {
     const reason = state.failure === undefined ? "The spec could not be made." : SPEC_FAILURES[state.failure.code];
     return { action: "hold", reason: "failed", message: `Spec pull request failed: ${reason}`, ownerActions: state.attempt < SPEC_ATTEMPTS_MAX && (state.failure === undefined || RETRYABLE.has(state.failure.code)) ? ["retry", "continue_without_spec"] : ["continue_without_spec"] };
@@ -160,20 +158,27 @@ export function writeSucceeded(state: SpecState, input: { operationId: string; t
   return touch(state, now, { status: "written", title: input.title.slice(0, 200), files, filesDigest: filesDigestOf(files), requirementCount: input.requirementCount, failure: undefined });
 }
 
+/** A SPEC_WRITE run that ended without its result being applied (failed, cancelled, never delivered), or ended and left the state behind: the state fails, with the code the caller names. */
 export function stepFailed(state: SpecState, input: { operationId: string; code: SpecFailureCode }, now: string): SpecState | undefined {
-  const own = (state.status === "writing" && state.writeOperationId === input.operationId) || (state.status === "publishing" && state.publishOperationId === input.operationId);
-  if (!own) return undefined;
+  if (!(state.status === "writing" && state.writeOperationId === input.operationId)) return undefined;
   return touch(state, now, { status: "failed", failure: { code: input.code, at: now } });
 }
 
-export function startPublishing(state: SpecState, operationId: string, now: string): SpecState | undefined {
-  if (state.status !== "written" || state.files === undefined) return undefined;
-  return touch(state, now, { status: "publishing", publishOperationId: operationId });
+/** The spec pull request could not be made (the broker's own publication): the files are kept for a retry. */
+export function publishFailed(state: SpecState, now: string): SpecState | undefined {
+  if (state.status !== "written") return undefined;
+  return touch(state, now, { status: "failed", failure: { code: "publish_failed", at: now } });
 }
 
-export function publishSucceeded(state: SpecState, input: { operationId: string; pullRequest: SpecPullRequest }, now: string): SpecState | undefined {
-  if (state.status !== "publishing" || state.publishOperationId !== input.operationId) return undefined;
+export function publishSucceeded(state: SpecState, input: { pullRequest: SpecPullRequest }, now: string): SpecState | undefined {
+  if (state.status !== "written") return undefined;
   return touch(state, now, { status: "published", specPullRequest: input.pullRequest, failure: undefined });
+}
+
+/** The spec pull request's branch for this attempt: `agentx/<uuid>`, the same every time for the same task and attempt, so a publication that was cut short is found again and not repeated. */
+export function specBranchName(taskId: string, attempt: number): string {
+  const hex = createHash("sha256").update(`agentx-spec-branch:${taskId}:${String(attempt)}`).digest("hex");
+  return `agentx/${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
 /** The owner presses Retry after a failure: a failure in the publish retries the publish (the files are kept); any other starts the write again. Bounded by SPEC_ATTEMPTS_MAX. */

@@ -126,6 +126,7 @@ export interface DeveloperRouteDependencies {
   currentPullRequestHead?: DeveloperTaskRouteDependencies["currentPullRequestHead"];
   readMetaFile?: DeveloperTaskRouteDependencies["readMetaFile"];
   readSpecPullRequest?: DeveloperTaskRouteDependencies["readSpecPullRequest"];
+  publishSpecFiles?: DeveloperTaskRouteDependencies["publishSpecFiles"];
   currentBaseCommit?: DeveloperTaskRouteDependencies["currentBaseCommit"];
   taskAutonomyNow?: DeveloperTaskRouteDependencies["taskAutonomyNow"];
   workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];
