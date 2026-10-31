@@ -1,10 +1,16 @@
 // A tiny synthesis kit for tests: a real Node module, run by the real runner, that builds the same shape of output the release's kit does. Its templates depend on the
 // context it is given (so a different setting is a different hash) and on nothing else (so the same inputs are the same hash).
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { SynthKitManifestSchema } from "@agentx/contracts";
 
-export const FAKE_ASSET = "abcdef0123456789";
+/** The asset id and bytes of the one package the test release signs (tests/support/bundle-fixture.ts writes the same). */
+export const FAKE_ASSET = createHash("sha256").update("asset").digest("hex");
+export const FAKE_PACKAGE_BYTES = "zip-bytes";
+/** A second signed package, present only when the release is made with `extraPackage`. */
+export const SECOND_ASSET = createHash("sha256").update("second").digest("hex");
+export const SECOND_PACKAGE_BYTES = "second";
 export interface FakeKitOptions {
   /** Appended to the control-plane template, to build a kit that differs (e.g. a malicious one). */
   extraResource?: string;
@@ -38,6 +44,10 @@ export interface FakeKitOptions {
   printBytes?: number;
   /** Never finish. */
   hang?: boolean;
+  /** Write package bytes other than the signed release's for the same asset id. */
+  otherPackageBytes?: boolean;
+  /** Declare a package the signed release does not list. */
+  unsignedPackage?: boolean;
   nodeMajor?: number;
 }
 
@@ -86,9 +96,9 @@ for (const part of ["access", "foundation", "identity", "runtime", "control-plan
   ${options.badTemplate === undefined ? "" : `if (part === "control-plane") { writeFileSync(out + "/templates/" + part + ".template.json", ${options.badTemplate === "array" ? '"[]"' : '"{\\"Parameters\\":{}}"'}); continue; }`}
   writeFileSync(out + "/templates/" + part + ".template.json", JSON.stringify(${options.reverseKeys === true ? "reverse(template)" : "template"}));
 }
-writeFileSync(out + "/packages/" + asset + ".zip", Buffer.from("zip-for-" + env));
-${options.twoPackages === true ? 'writeFileSync(out + "/packages/zzzzzzzz01.zip", Buffer.from("second-for-" + env));' : ""}
-writeFileSync(out + "/kit-output.json", JSON.stringify({ schemaVersion: 1, packages: [${options.twoPackages === true ? '{ assetId: "zzzzzzzz01", parts: ["control-plane"], bucketParameter: "AssetParametersZS3Bucket", keyParameter: "AssetParametersZS3VersionKey", hashParameter: "AssetParametersZArtifactHash" }, ' : ""}{ assetId: asset, parts: ["control-plane"], bucketParameter: "AssetParameters" + asset + "S3Bucket", keyParameter: "AssetParameters" + asset + "S3VersionKey", hashParameter: "AssetParameters" + asset + "ArtifactHash" }] }));
+writeFileSync(out + "/packages/" + asset + ".zip", Buffer.from(${options.otherPackageBytes === true ? '"tampered-" + env' : JSON.stringify(FAKE_PACKAGE_BYTES)}));
+${options.twoPackages === true ? `writeFileSync(out + "/packages/${SECOND_ASSET}.zip", Buffer.from(${options.unsignedPackage === true ? '"unsigned"' : JSON.stringify(SECOND_PACKAGE_BYTES)}));` : ""}
+writeFileSync(out + "/kit-output.json", JSON.stringify({ schemaVersion: 1, packages: [${options.twoPackages === true ? `{ assetId: "${SECOND_ASSET}", parts: ["control-plane"], bucketParameter: "AssetParametersZS3Bucket", keyParameter: "AssetParametersZS3VersionKey", hashParameter: "AssetParametersZArtifactHash" }, ` : ""}{ assetId: asset, parts: ["control-plane"], bucketParameter: "AssetParameters" + asset + "S3Bucket", keyParameter: "AssetParameters" + asset + "S3VersionKey", hashParameter: "AssetParameters" + asset + "ArtifactHash" }] }));
 ${options.strayFile === undefined ? "" : `writeFileSync(out + "/" + ${JSON.stringify(options.strayFile)}, "x");`}
 `;
   await writeFile(join(dir, "synth.mjs"), source);

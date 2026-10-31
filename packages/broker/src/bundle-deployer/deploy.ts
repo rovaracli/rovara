@@ -360,6 +360,11 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
       const body = bytesByFile.get(entry.file);
       if (body === undefined || body.length !== entry.bytes || sha256OfBytes(body) !== entry.sha256) return refused("a built file is not the file the build's manifest lists");
     }
+    // Lambda code is the SIGNED release's, byte for byte: a built package must be the package the signed manifest lists for its asset id (review I3).
+    for (const pkg of built.packages) {
+      const signedPackage = manifest.files.find((entry) => entry.kind === "package" && entry.file === `packages/${pkg.assetId}.zip`);
+      if (signedPackage === undefined || signedPackage.sha256 !== pkg.sha256 || signedPackage.bytes !== pkg.bytes) return refused("a built package is not the signed release's package");
+    }
     const wanted = new Set<string>(["access", ...parts]);
     const have = new Set<string>(built.templates.map((entry) => entry.part));
     if (wanted.size !== have.size || [...wanted].some((part) => !have.has(part))) return refused("the build does not hold exactly this install's stacks");

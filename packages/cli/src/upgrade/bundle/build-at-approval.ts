@@ -43,6 +43,8 @@ export interface BuiltBundle {
   settingsSha256: string;
 }
 
+/** A name from a kit shown only if it looks like an id. */
+const shownId = (id: string): string => (/^[A-Za-z0-9]{1,128}$/.test(id) ? id : "?");
 const refuse = (message: string) => agentXError("CONFIG_INVALID", `the build was refused: ${message}; nothing was approved`);
 
 /** The text a template is stored as: parsed, keys sorted at every level, two-space indent, one trailing newline. Formatting the kit chose has no effect on the hash. */
@@ -158,7 +160,12 @@ async function collect(input: { bundle: VerifiedBundle; settings: SynthSettings;
   }
   const packages: BuiltManifest["packages"] = [];
   for (const pkg of [...output.packages].sort((a, b) => (a.assetId < b.assetId ? -1 : a.assetId > b.assetId ? 1 : 0))) {
-    const body = await regularFile(join(outDir, "packages", `${pkg.assetId}.zip`), MAX_PACKAGE_BYTES, `package ${pkg.assetId}`);
+    const body = await regularFile(join(outDir, "packages", `${pkg.assetId}.zip`), MAX_PACKAGE_BYTES, `package ${shownId(pkg.assetId)}`);
+    // Lambda code does not depend on the install's settings, so every package of the build is the SIGNED release's package for that asset id, byte for byte. The kit makes templates;
+    // it does not get to make code (review I3). A package the release does not list is refused: there is no exception.
+    const signedPackage = bundle.manifest.files.find((entry) => entry.kind === "package" && entry.file === `packages/${pkg.assetId}.zip`);
+    if (signedPackage === undefined) throw refuse(`package ${shownId(pkg.assetId)} is not one the signed release lists`);
+    if (signedPackage.sha256 !== sha256OfBytes(body) || signedPackage.bytes !== body.length) throw refuse(`package ${shownId(pkg.assetId)} is not the signed release's package`);
     for (const part of pkg.parts) {
       const declared = parsedTemplates.get(part)?.Parameters;
       // The package's code location must be parameters its stack declares: otherwise the deployer could not point the stack at the bytes it verified.

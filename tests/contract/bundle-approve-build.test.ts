@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ApprovalRecordSchema, BuiltManifestSchema, sha256OfBytes, synthContext, synthSettingsSha256 } from "@agentx/contracts";
 import { buildAtApproval } from "../../packages/cli/src/upgrade/bundle/build-at-approval.js";
 import { nodeSynthRunner, testRunner } from "../support/kit-runner.js";
+import { FAKE_ASSET, SECOND_ASSET } from "../support/synth-kit-fixture.js";
 import { readSynthSettings, recordSynthSettings } from "../../packages/cli/src/upgrade/bundle/synth-settings.js";
 import type { BuiltBundle } from "../support/bundle-fixture.js";
 import { EnterpriseWorld, INSTALL, SETTINGS_ENT } from "../support/enterprise-approval-world.js";
@@ -70,9 +71,9 @@ describe("building the install's templates at approval", () => {
   });
 
   it("does not let the formatting or the order a kit chose change the hash: keys sorted, packages ordered by id", async () => {
-    const plain = await buildWith(await EnterpriseWorld.create(made, { kit: { twoPackages: true } }));
-    const reversed = await buildWith(await EnterpriseWorld.create(made, { kit: { twoPackages: true, reverseKeys: true } }));
-    expect(plain.manifest.packages.map((p) => p.assetId)).toEqual(["abcdef0123456789", "zzzzzzzz01"]);
+    const plain = await buildWith(await EnterpriseWorld.create(made, { kit: { twoPackages: true }, extraPackage: true }));
+    const reversed = await buildWith(await EnterpriseWorld.create(made, { kit: { twoPackages: true, reverseKeys: true }, extraPackage: true }));
+    expect(plain.manifest.packages.map((p) => p.assetId)).toEqual([FAKE_ASSET, SECOND_ASSET].sort());
     // The two bundles differ in the kit (and so in its hash and the bundle id), but the templates and packages are the same bytes, in the same order.
     expect(reversed.manifest.templates).toEqual(plain.manifest.templates);
     expect(reversed.manifest.packages).toEqual(plain.manifest.packages);
@@ -121,6 +122,14 @@ describe("building the install's templates at approval", () => {
     // (The builder refuses to sign such a kit, and the build refuses one signed by anyone else: both read kit.json with the same strict schema.)
     await expect(EnterpriseWorld.create(made, { kit: { kitJsonExtra: { context: { rovaraEnterpriseEgressCidrs: "0.0.0.0/0" } } } })).rejects.toThrow(/unrecognized/i);
     await refused(buildWith(await EnterpriseWorld.create(made, { kit: { strayFile: "extra.txt" } })), /wrote a file the build does not use/);
+  });
+
+  it("builds only the signed release's own Lambda packages: other bytes for a signed asset id, and a package the release does not list, are refused (review I3)", async () => {
+    await refused(buildWith(await EnterpriseWorld.create(made, { kit: { otherPackageBytes: true } })), /not the signed release's package/);
+    await refused(buildWith(await EnterpriseWorld.create(made, { kit: { twoPackages: true, unsignedPackage: true } })), /signed release lists/);
+    // With the second package signed and the same bytes, the build goes through and names exactly the signed hashes.
+    const ok = await buildWith(await EnterpriseWorld.create(made, { kit: { twoPackages: true }, extraPackage: true }));
+    expect(ok.manifest.packages).toHaveLength(2);
   });
 
   it("refuses output that was built for no install, or that asks for code it does not hold, or names parameters its stack lacks", async () => {

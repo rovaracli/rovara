@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { editionBackupParameter, BuiltManifestSchema, accessTemplatesAgree, approvedFileKey, bundleApprovalKey, editionRecordParameter, sha256OfBytes, synthSettingsParameter, templateWithoutCodeLocations, type ApprovalRecord } from "@agentx/contracts";
 import type { BuiltBundle } from "../support/bundle-fixture.js";
+import { FAKE_ASSET } from "../support/synth-kit-fixture.js";
 import { EnterpriseWorld, SETTINGS_ENT } from "../support/enterprise-approval-world.js";
 
 const made: BuiltBundle[] = [];
@@ -58,7 +59,7 @@ describe("the deployer installs a build made at approval", () => {
   });
 
   it("refuses a built template whose stored bytes changed after the approval, a package that did, and the build's manifest that did", async () => {
-    for (const file of ["built/templates/control-plane.template.json", "built/packages/abcdef0123456789.zip", "built/manifest.json", "release.json"]) {
+    for (const file of ["built/templates/control-plane.template.json", `built/packages/${FAKE_ASSET}.zip`, "built/manifest.json", "release.json"]) {
       const { ew, record, id } = await approved();
       corrupt(ew, id, record, file, (text) => `${text}x`);
       expect(await ew.world.run({ bundleId: id }), file).toMatchObject({ status: "refused", reason: expect.stringMatching(/does not match the approval record/) });
@@ -143,6 +144,25 @@ describe("the deployer installs a build made at approval", () => {
     ({ ew, record, id } = await approved());
     writeRecord(ew, id, { ...record, files: record.files.filter((entry) => entry.file !== "built/manifest.json") });
     expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/does not include the build's manifest/) });
+    expect(changes(ew)).toEqual([]);
+  });
+
+  it("refuses a built package that is not the signed release's package, even when the approval and the build's manifest were rewritten to agree with it (review I3)", async () => {
+    let { ew, record, id } = await approved();
+    const file = `built/packages/${FAKE_ASSET}.zip`;
+    const other = Buffer.from("not the signed bytes");
+    const swapped = replace(ew, id, record, file, other);
+    writeRecord(ew, id, rewriteManifest(ew, id, swapped, (m) => { m.packages = (m.packages as Array<Record<string, unknown>>).map((p) => ({ ...p, sha256: sha256OfBytes(other), bytes: other.length })); }));
+    expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/not the signed release's package/) });
+    expect(changes(ew)).toEqual([]);
+    // A package under an asset id the release does not list is refused the same way, with every pin and hash otherwise consistent (the same bytes, under another id).
+    ({ ew, record, id } = await approved());
+    const bytes = bodyOf(ew, id, record, file);
+    const renamed = "built/packages/unlistedasset01.zip";
+    const versionId = ew.world.putObject(approvedFileKey(id, renamed), bytes);
+    const moved: ApprovalRecord = { ...record, files: [...record.files.filter((entry) => entry.file !== file), { file: renamed, versionId, sha256: sha256OfBytes(bytes), bytes: bytes.length }] };
+    writeRecord(ew, id, rewriteManifest(ew, id, moved, (m) => { m.packages = (m.packages as Array<Record<string, unknown>>).map((p) => ({ ...p, assetId: "unlistedasset01", file: renamed })); }));
+    expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/not the signed release's package/) });
     expect(changes(ew)).toEqual([]);
   });
 

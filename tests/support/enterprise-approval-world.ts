@@ -26,9 +26,9 @@ export class EnterpriseWorld {
   bundle!: BuiltBundle;
   constructor(readonly made: BuiltBundle[]) {}
 
-  static async create(made: BuiltBundle[], options: { kit?: FakeKitOptions | false; settings?: SynthSettings; edition?: string; version?: string } = {}): Promise<EnterpriseWorld> {
+  static async create(made: BuiltBundle[], options: { kit?: FakeKitOptions | false; settings?: SynthSettings; edition?: string; version?: string; extraPackage?: boolean } = {}): Promise<EnterpriseWorld> {
     const w = new EnterpriseWorld(made);
-    w.bundle = await builtBundle({ ...(options.kit === false ? {} : { kit: options.kit ?? {} }), ...(options.version === undefined ? {} : { version: options.version }) });
+    w.bundle = await builtBundle({ ...(options.kit === false ? {} : { kit: options.kit ?? {} }), ...(options.version === undefined ? {} : { version: options.version }), ...(options.extraPackage === true ? { extraPackage: true } : {}) });
     made.push(w.bundle);
     const settings = options.settings ?? SETTINGS_ENT();
     await w.setSettings(settings);

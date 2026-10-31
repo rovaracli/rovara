@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { ReleaseManifestSchema, STACK_PARTS } from "@agentx/contracts";
 import { LITELLM_SOURCE_IMAGE } from "../../infra/lib/bundle-images.js";
 import { buildBundle, type BundleSigner, type ImageExporter } from "../../scripts/release/bundle.js";
-import { writeFakeKit, type FakeKitOptions } from "./synth-kit-fixture.js";
+import { FAKE_ASSET, FAKE_PACKAGE_BYTES, SECOND_ASSET, SECOND_PACKAGE_BYTES, writeFakeKit, type FakeKitOptions } from "./synth-kit-fixture.js";
 
 const sha = (data: Buffer | string): string => createHash("sha256").update(data).digest("hex");
 
@@ -45,12 +45,13 @@ export const fakeExporter: ImageExporter = async (sourceRef, destFile) => {
 };
 
 /** A small, schema-valid release directory. */
-export async function writeRelease(dir: string, version = "1.4.0", templates: Partial<Record<string, object>> = {}): Promise<void> {
+export async function writeRelease(dir: string, version = "1.4.0", templates: Partial<Record<string, object>> = {}, extraPackage = false): Promise<void> {
   const templateText = (part: string): string => `${JSON.stringify(templates[part] ?? { Resources: {} })}\n`;
-  const pkg = Buffer.from("zip-bytes");
-  const assetId = sha("asset");
+  const pkg = Buffer.from(FAKE_PACKAGE_BYTES);
+  const assetId = FAKE_ASSET;
+  const second = Buffer.from(SECOND_PACKAGE_BYTES);
   const legal = "license text\n";
-  const files: Record<string, string | Buffer> = { [`packages/${assetId}.zip`]: pkg, "legal/LICENSE": legal };
+  const files: Record<string, string | Buffer> = { [`packages/${assetId}.zip`]: pkg, ...(extraPackage ? { [`packages/${SECOND_ASSET}.zip`]: second } : {}), "legal/LICENSE": legal };
   for (const part of STACK_PARTS) files[`templates/us-east-1/${part}.template.json`] = templateText(part);
   for (const [file, data] of Object.entries(files)) {
     await mkdir(dirname(join(dir, file)), { recursive: true });
@@ -59,7 +60,8 @@ export async function writeRelease(dir: string, version = "1.4.0", templates: Pa
   const manifest = ReleaseManifestSchema.parse({
     schemaVersion: 1, version, gitCommit: "b".repeat(40), environmentPlaceholder: "qqenv-placeholderqq",
     templates: STACK_PARTS.map((part) => ({ region: "us-east-1", part, file: `templates/us-east-1/${part}.template.json`, sha256: sha(templateText(part)) })),
-    packages: [{ assetId, file: `packages/${assetId}.zip`, sha256: sha(pkg), parts: ["control-plane"], bucketParameter: "B", keyParameter: "K", hashParameter: "H", keyParameterValue: `packages/||${assetId}.zip` }],
+    packages: [{ assetId, file: `packages/${assetId}.zip`, sha256: sha(pkg), parts: ["control-plane"], bucketParameter: "B", keyParameter: "K", hashParameter: "H", keyParameterValue: `packages/||${assetId}.zip` },
+      ...(extraPackage ? [{ assetId: SECOND_ASSET, file: `packages/${SECOND_ASSET}.zip`, sha256: sha(second), parts: ["control-plane" as const], bucketParameter: "B2", keyParameter: "K2", hashParameter: "H2", keyParameterValue: `packages/||${SECOND_ASSET}.zip` }] : [])],
     legalDocuments: [{ file: "legal/LICENSE", sha256: sha(legal) }],
     images: { worker: WORKER_REF, slack: SLACK_REF },
   });
@@ -67,11 +69,11 @@ export async function writeRelease(dir: string, version = "1.4.0", templates: Pa
 }
 
 export interface BuiltBundle { root: string; dir: string; bundleSha256: string; key: TestKey; cleanup(): Promise<void> }
-export async function builtBundle(options: { version?: string; key?: TestKey; templates?: Partial<Record<string, object>>; kit?: FakeKitOptions } = {}): Promise<BuiltBundle> {
+export async function builtBundle(options: { version?: string; key?: TestKey; templates?: Partial<Record<string, object>>; kit?: FakeKitOptions; extraPackage?: boolean } = {}): Promise<BuiltBundle> {
   const root = await mkdtemp(join(tmpdir(), "bundle-test-"));
   const release = join(root, "release");
   await mkdir(release);
-  await writeRelease(release, options.version, options.templates);
+  await writeRelease(release, options.version, options.templates, options.extraPackage === true);
   const key = options.key ?? newTestKey();
   const dir = join(root, "bundle");
   const kitDir = join(root, "kit");
