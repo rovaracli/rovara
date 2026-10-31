@@ -18,7 +18,7 @@ import {
   modelKeyKey, openSpendRequestsKey, orgMemberKey, orgRemovedKey, spendCounterKey, spendRequestKey, suggestedTopUpUsd,
 } from "@agentx/contracts";
 import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MAYA, OMAR } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, seedMembership } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { call } from "../support/slack-broker.js";
@@ -1419,4 +1419,14 @@ for (const drift of ["unchanged", "total_before", "policy_before", "counter_comm
   else await expect(decision).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
   expect(t.agentItem(first)).toEqual(before); expect(t.ownerTotal(ADA)).toBe(drift === "total_before" || drift === "counter_commit" ? 119 : 120);
   if (drift === "counter_commit") expect(raced).toBe(true);
+});
+
+for (const role of ["owner", "admin"] as const) for (const kind of ["run_limit", "max_per_run"] as const) it(`a sole ${role} cannot self-decide a stop-loosening ${kind} request`, async () => {
+ const t = await setup({ secondAdmin: false });seedMembership(t.db, ADA.developerId, { orgId: TEST_ORG, role });
+ const agentId = await t.agentOf(TRIAGE, { by: ADA, name: `Own stop ${role} ${kind}` });await t.setBudget(ADA, agentId, { maxPerRunUsd: 4 });
+ const run = kind === "run_limit" ? await t.plainTask(ADA) : await t.runOf(agentId, { who: ADA });
+ await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": kind === "run_limit" ? 4 : 25 });
+ await t.pauseAndEnd(run, kind === "max_per_run" ? { kind: "max_per_run", taskId: run.taskId } : undefined);
+ const request = t.requestOf(run.taskId, kind)[0]!;expect(request).toBeDefined();const before = t.meta(run.taskId);
+ expect(await refusal(decideSpendRequest(t.deps(), t.caller(ADA, role), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" }))).toMatchObject({ code: "FORBIDDEN" });expect(t.meta(run.taskId)).toEqual(before);expect(t.requestOf(run.taskId, kind)[0]?.status).toBe("PENDING");
 });

@@ -2426,3 +2426,11 @@ it("setup draft callback reuses its admitted window after company tightening", a
   expect(next[0]).toMatchObject({ spendingTaskId: task.taskId, spendingAdmission: task.spendingAdmission });
   expect(f.t.meta(String(task.taskId))).toMatchObject({ budgetUsd: 1.234567, spendingStop: task.spendingStop, spendingAdmission: task.spendingAdmission });
 });
+
+it("a real chain child never receives more than its step's explicit stop even with large chain room", async () => {
+ const f = await fixture(100_000_000);
+ f.t.db.set({ ...f.t.db.get(agentGuardrailsKey(TEST_ORG))!, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 100 } });
+ const key = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);f.t.db.set({ ...f.t.db.get(key)!, stopKind: "limited", maxPerRunUsd: 0.75 });
+ const child = await startAgentRun(f.t.starter(), { requestId: randomUUID(), orgId: TEST_ORG, project: "payments", agent: { agentId: ROVARA_CODE_AGENT_ID }, input: { text: "Bound this chain step" }, origin: "chain", owner: { developerId: MAYA.developerId }, startedBy: { developerId: MAYA.developerId }, payer: { kind: "member", developerId: MAYA.developerId }, chain: { chainRunId: randomUUID(), stepId: "bounded-step" }, runLimitUsd: 200 });
+ expect(child.task.budgetUsd).toBe(0.75);expect(child.task.budgetUsd).toBeLessThanOrEqual(0.75);
+});

@@ -1,3 +1,5 @@
+import { taskApprovalPolicyDigest } from "../../packages/broker/src/spend/task-approval-terms.js";
+import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
 import { expect, it } from "vitest";
 import { TransactGetCommand } from "@aws-sdk/lib-dynamodb";
 import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgSettingsKey, orgScoped, projectAiKey } from "@agentx/contracts";
@@ -166,4 +168,11 @@ for (const limited of [false, true]) it(`taskless eval capture uses explicit non
   expect(f.calls).toHaveLength(1);
   const command = f.calls[0] as TransactGetCommand;
   expect(command.input.TransactItems?.some(item => item.Get?.Key?.pk === agentKey(orgId, agentId, "META").pk)).toBe(false);
+});
+
+it("approval policy identity ignores unrelated monthly and agent metadata revisions", async () => {
+ const f = fixture(), snapshot = checkedTaskStopSnapshot(await f.capture());
+ const changed = { ...snapshot, sourceRevisions: { ...snapshot.sourceRevisions, project: snapshot.sourceRevisions.project + 1, agent: snapshot.sourceRevisions.agent + 1 } };
+ expect(taskApprovalPolicyDigest(changed)).toBe(taskApprovalPolicyDigest(snapshot));
+ expect(taskApprovalPolicyDigest({ ...changed, calculationInput: { ...changed.calculationInput, projectStop: { kind: "limited", stopMicrousd: 1 } } })).not.toBe(taskApprovalPolicyDigest(snapshot));
 });
