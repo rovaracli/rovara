@@ -656,3 +656,15 @@ for(const action of ["models","selection"] as const)it(`pseudonymizes the name-k
  const {target,...outside}=input;expect(JSON.stringify(outside)).not.toContain(projectName);await appendOne(h.deps,input);const record=recordsOf(h.db)[0]!;expect(record.target).toEqual({kind:"project",id:await h.keyring.pseudonym(ORG,"project",projectName)});expect(JSON.stringify(record)).not.toContain(projectName);expect(JSON.stringify(h.logs)).not.toContain(projectName);expect(target).toEqual({kind:"project",name:projectName});
  const sealed=item(h.db,`AUDIT#${ORG}`,seqKey(1))!.sealedDetails as Array<{subject:string;iv:string;ciphertext:string}>;expect((await h.keyring.openDetails(ORG,1,sealed))[0]).toMatchObject({subject:"org",fields:{targetName:projectName}});
 });
+
+it("pseudonymizes G3 fallback project names and makes their sealed names unreadable after org shred",async()=>{
+ const {auditModelFallbackUsed}=await import("../../packages/broker/src/audit/events.js");
+ const h=harness(),projectName="private-g3-project";
+ const input=auditModelFallbackUsed({orgId:ORG,actor:{kind:"member",id:"dev_1"},occurredAt:"2026-10-20T11:59:00.000Z",occurrence:"task-g3-build-1",projectName,stage:"build",used:{provider:"anthropic",modelId:"private-model"},reasonCode:"DEFAULT_MODEL_UNAVAILABLE",companyRevision:0});
+ await appendOne(h.deps,input);const record=recordsOf(h.db)[0]!;
+ expect(record.target).toEqual({kind:"project",id:await h.keyring.pseudonym(ORG,"project",projectName)});expect(JSON.stringify(record)).not.toContain(projectName);expect(JSON.stringify(record)).not.toContain("private-model");expect(JSON.stringify(h.logs)).not.toContain(projectName);
+ const sealed=item(h.db,`AUDIT#${ORG}`,seqKey(1))!.sealedDetails as Array<{subject:string;iv:string;ciphertext:string}>;
+ expect((await h.keyring.openDetails(ORG,1,sealed))[0]).toMatchObject({subject:"org",fields:{targetName:projectName}});
+ h.db.set({pk:`ORG#${ORG}`,sk:"SHREDDED",at:new Date(h.clock.now).toISOString()});
+ expect(await h.keyring.openDetails(ORG,1,sealed)).toEqual([{subject:"org",erased:true}]);expect(chainOk(h.db)).toEqual({ok:true});
+});

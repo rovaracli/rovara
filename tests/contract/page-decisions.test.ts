@@ -1,3 +1,5 @@
+import {capturingAuditDeps} from "../support/audit-capture.js";
+import {PLAN_APPROVAL_ITEM_ENVELOPE} from "../../packages/broker/src/model-selection/turn-admission.js";
 // A decision on a plan with the owner's answers and the comments they chose, through the one transition Slack and MCP use.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -43,8 +45,8 @@ function routeDeps(harness: Harness): DeveloperTaskRouteDependencies {
 }
 
 /** A Quick task whose structured coding plan (`plan`) waits for its owner, Maya. */
-async function waitingPlan(plan: PlanDocument = PLAN, options: { markdown?: string; slackThread?: { teamId: string; channelId: string; threadTs: string } } = {}) {
-  const harness = await createSingleAnswerPlanBroker();
+async function waitingPlan(plan: PlanDocument = PLAN, options: { audit?: ReturnType<typeof capturingAuditDeps>; markdown?: string; slackThread?: { teamId: string; channelId: string; threadTs: string } } = {}) {
+  const harness = await createSingleAnswerPlanBroker(options.audit===undefined?{}:{audit:options.audit});
   let taskId: string;
   if (options.slackThread === undefined) {
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Retry failed payments", client: "test-client", workflow: true, workflowPath: "QUICK" });
@@ -481,4 +483,20 @@ describe("page decisions", () => {
     expect(say(90)).toBe("Already approved by Priya at 10:00 UTC.");
     expect(refusalMessage({ workflow, ownerName: "Priya", artifactSha256: "b".repeat(64), now: at, labelOf })).toBe("This task changed. Refresh the page and try again.");
   });
+});
+
+it("C53 worst approval keeps 25 comments, 20 answers, authority and fallback audit atomic under 90",async()=>{
+ const plan={...PLAN,decisions:Array.from({length:20},(_,i)=>({...PLAN.decisions[0]!,id:`d${i+1}`}))};
+ const audit=capturingAuditDeps(),t=await waitingPlan(plan,{audit});audit.queueDown();
+ const ids=Array.from({length:25},()=>t.seed());
+ t.harness.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model:{provider:"openai",modelId:"gpt-6.1-sol"},fallbackModel:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-6"},thinkingLevel:null,locked:false}}});
+ const before=t.harness.db.transactions().length;
+ await t.page({requestId:randomUUID(),answers:plan.decisions.map(d=>({decisionId:d.id,optionId:d.recommended,opened:true})),includedCommentIds:ids},"Approve the complete bounded plan.");
+ const tx=t.harness.db.transactions().slice(before).find(rows=>rows.some(row=>(row.Put as {Item?:{modelTurnPin?:unknown}}|undefined)?.Item?.modelTurnPin!==undefined));
+ expect(tx).toBeDefined();expect(tx!.length).toBeLessThanOrEqual(PLAN_APPROVAL_ITEM_ENVELOPE);expect(PLAN_APPROVAL_ITEM_ENVELOPE).toBeLessThanOrEqual(90);
+ expect(tx!.filter(row=>String((row.Update as {Key?:{sk?:string}}|undefined)?.Key?.sk).startsWith("COMMENT#"))).toHaveLength(25);
+ const detail=tx!.find(row=>(row.Put as {Item?:{entityType?:string}}|undefined)?.Item?.entityType==="WORKFLOW_DECISION_DETAIL")!.Put as {Item:{answers:unknown[]}};expect(detail.Item.answers).toHaveLength(20);
+ expect(tx!.filter(row=>(row.Put as {Item?:{event?:{action?:string}}}|undefined)?.Item?.event?.action==="model.fallback_used")).toHaveLength(1);
+ expect(tx!.filter(row=>(row.Put as {Item?:{modelFallbacks?:unknown[]}}|undefined)?.Item?.modelFallbacks?.length===1)).toHaveLength(1);
+ expect(audit.recordedBy("model.fallback_used")).toHaveLength(1);expect(workflowOf(t.harness,t.taskId).stage).toBe("IMPLEMENT");
 });

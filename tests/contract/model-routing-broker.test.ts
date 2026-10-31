@@ -11,6 +11,7 @@ import { resolveTaskModel } from "../../packages/worker/src/task-model.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
+import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { seedMembership } from "../support/developer-task-broker.js";
@@ -41,6 +42,12 @@ async function seedSources(db: unknown, setup: { sources?: ModelSource[]; order:
     if (stored === undefined) throw new Error("test setup: an assistant model needs a record, so name a source or an order that changes the default");
     (db as Db).set({ ...stored, assistantModel: setup.assistantModel });
   }
+  // Stored credential presence is non-secret metadata; these fixtures never provision keys.
+  if ((setup.sources?.length ?? 0) > 0) {
+    const stored = (db as Db).get(modelSourcesKey(TEST_ORG));
+    if (stored === undefined) throw new Error("test setup: saved sources need their State record");
+    (db as Db).set({ ...stored, credentials: setup.sources!.filter(source => source.kind !== "bedrock").map(source => source.sourceId) });
+  }
   return store;
 }
 
@@ -53,15 +60,15 @@ const PROJECT_MODELS = {
 /** Maya's ChatGPT plan, as the install's connections report it, with the install-wide switch on. */
 const MAYA_PLAN = {
   settings: async () => ({ enabled: true, preferredModel: "gpt-5.4" }),
-  view: async (developerId: string) => (developerId === MAYA.developerId ? { connected: true, status: "connected", models: ["gpt-5.4"] } : { connected: false }),
+  view: async (developerId: string) => (developerId === MAYA.developerId ? { connected: true, status: "connected", connectedAt: "2026-10-01T00:00:00.000Z", models: ["gpt-5.4"] } : { connected: false }),
   accessToken: async () => ({ access: "token", expiresAt: Date.now() + 3_600_000, models: [] }),
   markStatus: async () => undefined,
   refreshModels: async () => undefined,
 };
 
 async function taskSetup(options: { agents?: boolean; models?: boolean; plan?: boolean } = {}) {
-  const access = fakeModelAccess();
-  const h = await createDeveloperTaskBroker({ register: options.models !== true, brokerExtra: { ...(options.agents === false ? {} : { agents: { modelSources: { launch: LAUNCH } } }), ...(options.plan === true ? { chatgpt: MAYA_PLAN } : {}), modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
+  const access = fakeModelAccess(), audit = capturingAuditDeps();
+  const h = await createDeveloperTaskBroker({ audit, register: options.models !== true, brokerExtra: { ...(options.agents === false ? {} : { agents: { modelSources: { launch: LAUNCH } } }), ...(options.plan === true ? { chatgpt: MAYA_PLAN } : {}), modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true } });
   if (options.models === true) await registerSlackProject(h.handler, { models: PROJECT_MODELS });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
   access.setOrgSpent(TEST_ORG, 0);
@@ -80,10 +87,12 @@ async function taskSetup(options: { agents?: boolean; models?: boolean; plan?: b
     const outbox = () => h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0];
     const operation = () => h.db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${operationId}`) as Record<string, unknown>;
     const ask = () => call(h.handler, { method: "GET", path: "/v1/internal/model-access", headers: { "x-agentx-callback-capability": capabilityOf(operationId) } });
-    return { taskId, workspaceId, prepareId, operationId, outbox, operation, ask, payload: () => (outbox()!.invocation as { payload: Record<string, unknown> }).payload };
+    const payload = () => (outbox()!.invocation as { payload: Record<string, unknown> }).payload;
+    const fallback = () => call(h.handler, { method: "POST", path: `/v1/internal/workspaces/${workspaceId}/operations/${operationId}/model-fallback`, headers: { "x-agentx-callback-capability": capabilityOf(operationId) }, body: { version: 1, binding: payload().modelPolicy, reason: "unavailable", failedModel: GPT } });
+    return { taskId, workspaceId, prepareId, operationId, outbox, operation, ask, payload, fallback };
   };
   const ledger: LedgerDependencies = { documentClient: h.db, tableName: "state", access, now: Date.now, cloud: true };
-  return { ...h, access, seed: (setup: Parameters<typeof seedSources>[1]) => seedSources(h.db, setup), start, running, ledger };
+  return { ...h, access, audit, seed: (setup: Parameters<typeof seedSources>[1]) => seedSources(h.db, setup), start, running, ledger };
 }
 
 describe("a task's operation is routed to the first source that serves its model", () => {
@@ -149,7 +158,7 @@ describe("a task's operation is routed to the first source that serves its model
     await t.finish(workspaceId, prepareId.activeOperationId, "SUCCEEDED", PREPARED);
     const prepare = t.db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${prepareId.activeOperationId}`) as { status: string; startRefused?: boolean; error?: string };
     expect(prepare).toMatchObject({ status: "FAILED", startRefused: true });
-    expect(prepare.error).toBe("Rovara Code's Build step uses amazon-bedrock/us.anthropic.claude-sonnet-4-6, which isn't allowed on payments. Ask the agent's owner to pick another model.");
+    expect(prepare.error).toBe("The task's pinned stage model is unavailable. Check How we work.");
     expect(t.access.mintKey).not.toHaveBeenCalled();
   });
 
@@ -175,14 +184,17 @@ describe("a task's operation is routed to the first source that serves its model
     expect(t.access.mintKey.mock.calls[0]![0].models).toEqual([alias]);
   });
 
-  it("does nothing on an install without agents set up: the key is minted unscoped, as it always was", async () => {
+  it("retains an unscoped key before agents are configured when no company model policy applies",async()=>{
+    const t=await taskSetup({agents:false});const r=await t.running();
+    expect((await r.ask()).status).toBe(200);expect(t.access.mintKey.mock.calls[0]![0]).not.toHaveProperty("models");
+  });
+  it("C53 refuses an unavailable governed default even before agents are configured", async () => {
     const t = await taskSetup({ agents: false });
     await t.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC] });
     const r = await t.running();
-    expect(r.payload()).not.toHaveProperty("modelRoute");
-    expect(r.operation()).not.toHaveProperty("modelRoute");
-    expect((await r.ask()).status).toBe(200);
-    expect(t.access.mintKey.mock.calls[0]![0]).not.toHaveProperty("models");
+    expect(t.db.find(item=>item.entityType==="OPERATION"&&item.workspaceId===r.workspaceId&&item.kind==="task")).toHaveLength(0);
+    expect(r.outbox()).toBeUndefined();
+    expect(t.access.mintKey).not.toHaveBeenCalled();
   });
 });
 
@@ -232,7 +244,7 @@ describe("the worker runs exactly the model its key allows", () => {
     await store.setOrder({ orgId: TEST_ORG, order: ["personal-chatgpt"], by: "dev-owner" });
     const r = await t.running();
     expect(r.operation().modelRoute).toBeNull();
-    expect(r.payload()).not.toHaveProperty("model");
+    expect(r.payload().model).toEqual(GPT);
   });
 });
 
@@ -243,34 +255,48 @@ describe("a task on the owner's ChatGPT plan follows the order too", () => {
     const store = new ModelSourceStore({ documentClient: t.db, tableName: "state", now: Date.now, chatgptSwitch: async () => true });
     for (const source of sources) await store.save({ orgId: TEST_ORG, source, mode: "create", by: "dev-owner" });
     await store.setOrder({ orgId: TEST_ORG, order, by: "dev-owner" });
+    if (sources.length > 0) t.db.set({ ...t.db.get(modelSourcesKey(TEST_ORG))!, credentials: sources.filter(source => source.kind !== "bedrock").map(source => source.sourceId) });
     return t;
   }
 
-  it("keeps the plan when it is first, and routes the backup the worker falls back to", async () => {
+  it("keeps the plan first and grants the Rovara backup key only after atomic fallback authorization", async () => {
     const t = await planned(["personal-chatgpt", "rovara"]);
     const r = await t.running();
     expect(r.payload().chatgpt).toEqual({ model: GPT });
-    expect(r.operation()).toMatchObject({ chatgptDeveloperId: MAYA.developerId, modelRoute: { sourceId: "rovara", alias: DEFAULT_ID } });
+    expect(r.operation()).toMatchObject({ chatgptDeveloperId: MAYA.developerId, modelRoute: null });
+    expect((await r.ask()).status).toBe(403);
+    expect(t.access.mintKey).not.toHaveBeenCalled();
+    expect((await r.fallback()).status).toBe(200);
+    expect(r.operation().modelRoute).toMatchObject({ sourceId: "rovara", alias: DEFAULT_ID });
+    expect(t.db.get(`DEVTASK#${r.taskId}`, "META")?.modelFallbacks).toHaveLength(1);
+    expect(t.audit.flushed().filter(event => event.action === "model.fallback_used")).toHaveLength(1);
     expect((await r.ask()).status).toBe(200);
     expect(t.access.mintKey.mock.calls[0]![0].models).toEqual([DEFAULT_ID]);
   });
 
-  it("sends a company source's route beside the plan, as the fallback the worker uses if the plan fails, and mints the key for it", async () => {
+  it("authorizes the company-source backup before minting its scoped alias key", async () => {
     const t = await planned(["personal-chatgpt", SRC_ANTHROPIC], [anthropic()]);
     const r = await t.running();
     const alias = sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET);
-    expect(r.payload()).toMatchObject({ chatgpt: { model: GPT }, model: { modelId: DEFAULT_ID }, modelRoute: { alias, api: "anthropic-messages", catalog: "claude-sonnet-4-6" } });
-    expect(r.operation()).toMatchObject({ chatgptDeveloperId: MAYA.developerId, modelRoute: { sourceId: SRC_ANTHROPIC, alias } });
+    expect(r.payload()).toMatchObject({ chatgpt: { model: GPT }, model: GPT });
+    expect(r.operation().modelRoute).toBeNull();
+    expect(t.access.mintKey).not.toHaveBeenCalled();
+    expect((await r.fallback()).status).toBe(200);
+    expect(r.operation()).toMatchObject({ modelRoute: { sourceId: SRC_ANTHROPIC, alias } });
+    expect(r.operation()).not.toHaveProperty("chatgptDeveloperId");
+    expect(t.db.get(`DEVTASK#${r.taskId}`, "META")?.modelFallbacks).toHaveLength(1);
+    expect(t.audit.flushed().filter(event => event.action === "model.fallback_used")).toHaveLength(1);
     expect((await r.ask()).status).toBe(200);
     expect(t.access.mintKey.mock.calls[0]![0]).toMatchObject({ models: [alias], tags: { source: SRC_ANTHROPIC } });
   });
 
-  it("leaves the plan when a company source that serves the plan's model comes before it", async () => {
+  it("uses the verified company source for the plan model when it precedes the personal plan", async () => {
     const t = await planned([SRC_OPENAI, "personal-chatgpt", "rovara"], [openai()]);
     const r = await t.running();
     expect(r.payload()).not.toHaveProperty("chatgpt");
     expect(r.operation().chatgptDeveloperId).toBeUndefined();
-    expect(r.operation().modelRoute).toMatchObject({ sourceId: "rovara" });
+    expect(r.payload().model).toEqual(GPT);
+    expect(r.operation().modelRoute).toMatchObject({ sourceId: SRC_OPENAI, alias: sourceAlias(TEST_ORG, SRC_OPENAI, GPT) });
   });
 
   it("keeps the plan with no company backup, and issues no company key for it", async () => {
@@ -513,4 +539,14 @@ describe("the models a recipe may name are the ones the org's sources serve", ()
     await withRovara.seed({ sources: [anthropic()], order: [SRC_ANTHROPIC, "rovara"] });
     expect((await publishWith(withRovara, opus)).status).toBe(200);
   });
+});
+
+for(const policy of ["none","source-order","lock"] as const)it(`keeps the personal-plan key policy frozen while source eligibility is live (${policy})`,async()=>{
+ const t=await taskSetup({agents:false,plan:true}),r=await t.running();
+ if(policy==="source-order")t.db.set({...modelSourcesKey(TEST_ORG),revision:1,sources:[],credentials:[],removing:[],order:["rovara"]});
+ if(policy==="lock")t.db.set({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY",entityType:"MODEL_SELECTION_POLICY",orgId:TEST_ORG,version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{build:{model:SONNET,thinkingLevel:null,locked:true}}});
+ const response=await r.ask();
+ if(policy==="none"){expect(response.status).toBe(200);expect(t.access.mintKey.mock.calls[0]![0]).not.toHaveProperty("models");}
+ else if(policy==="source-order"){expect(response).toMatchObject({status:409,body:{error:{code:"MODEL_NOT_VERIFIED",stage:"build",fixHref:"/app/admin/models/sources"}}});expect(t.access.mintKey).not.toHaveBeenCalled();}
+ else{expect(response.status).toBe(200);expect(r.payload().modelPolicy).toMatchObject({companyRevision:0});}
 });

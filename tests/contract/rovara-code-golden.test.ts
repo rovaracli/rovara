@@ -1,3 +1,6 @@
+import {developerIdForSlackUser} from "../../packages/broker/src/aws/admin-actions.js";
+import {TEST_ORG} from "../support/orgs.js";
+import {SLACK_TEAM,SLACK_CHANNEL} from "../support/slack-broker.js";
 // Task 1 of the agents plan: what an unchanged Rovara Code does, recorded before anything changes. Each scenario below
 // is recorded by tests/support/golden-recorder.ts and compared with its fixture in tests/fixtures/rovara-code-golden.
 // Fixtures are written only with UPDATE_GOLDEN=1, and SHA256SUMS (made with `shasum -a 256`) pins them: a later task never
@@ -9,7 +12,8 @@ import { basename, join } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe } from "../../packages/contracts/src/agent-templates.js";
 import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
-import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, expectGolden, recordGolden, updatingGolden, type GoldenScenario } from "../support/golden-recorder.js";
+import { STAGE_OPERATION_MAPPING, TaskModelPolicyBindingSchema } from "../../packages/contracts/src/index.js";
+import { GOLDEN_FIXTURE_DIRECTORY, GOLDEN_SCENARIOS, GOLDEN_THREAD_MODELS, expectGolden, recordGolden, updatingGolden, type GoldenScenario } from "../support/golden-recorder.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
 // Every id the broker and the worker make comes from randomUUID; the recorder seeds a sequence per scenario.
@@ -63,7 +67,8 @@ function runLimitChanges(scenario: GoldenScenario, record: unknown): Array<{ pat
   const limit = RUN_LIMITS[scenario];
   if (limit === undefined) return [];
   const mints = nodePaths(record, (node) => "purpose" in node && "refId" in node && "maxBudgetUsd" in node);
-  expect(mints, `${scenario} shows the keys it minted`).not.toHaveLength(0);
+  if (scenario === "checks") expect(mints, "model-free CHECKS never mints a key").toHaveLength(0);
+  else expect(mints, `${scenario} shows the keys it minted`).not.toHaveLength(0);
   const items = (record as { taskItems: Array<{ entityType?: string }> }).taskItems;
   const task = items.findIndex((item) => item.entityType === "DEVELOPER_TASK");
   expect(task, `${scenario} shows its task`).toBeGreaterThanOrEqual(0);
@@ -106,9 +111,56 @@ function capabilityChanges(scenario: GoldenScenario, record: unknown): Array<{ p
     const claims = claimsOfCapability(now);
     const wasClaims = claimsOfCapability(before);
     const grown = wasClaims.actions.flatMap((action) => (action === "candidate-export" ? [action, "candidate-build-source", "baseline-source"] : [action]));
-    expect({ ...claims, actions: claims.actions }, `${scenario} ${path}: only the two actions of the candidate export grew`).toEqual({ ...wasClaims, actions: grown });
+    const parentPath = path.slice(0, -".callbackCapability".length);
+    const parent = valueAt(record, parentPath) as { payload?: Record<string, unknown> };
+    const modelFree = parent.payload?.workflowMode === "CHECKS";
+    const actions = modelFree ? grown.filter(action => action !== "model-access") : grown;
+    const policy = parent.payload?.modelPolicy;
+    const expected = policy === undefined ? undefined : expectedModelPolicy(parent.payload!);
+    expect({ ...claims, actions: claims.actions }, `${scenario} ${path}: only candidate-source and bound C53 fallback grants grew`).toEqual({ ...wasClaims, actions: expected === undefined ? actions : actions.flatMap(action => action === "result" ? [action, "model-fallback"] : [action]), ...(expected === undefined ? {} : { modelPolicy: expected }) });
     return [{ path, expected: now, change: 6 as const }];
   });
+}
+
+/** C53 change 7: exact frozen policy/stage bindings, never a wildcard capability allowance. */
+function expectedModelPolicy(node: Record<string, unknown>) {
+  const mode = (node.workflowMode ?? "IMPLEMENT") as keyof typeof STAGE_OPERATION_MAPPING;
+  const stage = STAGE_OPERATION_MAPPING[mode]?.stages[0];
+  expect(stage, "only model-using governed modes carry a policy binding").toBeDefined();
+  const expected = { version: 1, stage, companyRevision: 0, recipeDigest: recipeDigest(builtinRecipe("rovara-code", builtinDefaultPin("rovara-code"))) };
+  expect(TaskModelPolicyBindingSchema.parse(node.modelPolicy)).toEqual(expected);
+  return expected;
+}
+function modelPolicyChanges(record: unknown): Array<{ path: string; expected: unknown; change: 7 }> {
+  const tasks = (record as { taskItems: Array<Record<string, unknown>> }).taskItems;
+  const taskId = tasks.find(item => item.sk === "META")?.taskId;
+  expect(taskId).toEqual(expect.any(String));
+  return [
+    ...nodePaths(record, node => "modelPolicy" in node).map(path => ({ path: `${path}.modelPolicy`, expected: expectedModelPolicy(valueAt(record, path) as Record<string, unknown>), change: 7 as const })),
+    ...nodePaths(record, node => "modelTaskId" in node).map(path => ({ path: `${path}.modelTaskId`, expected: taskId, change: 7 as const })),
+    ...nodePaths(record, node => node.entityType === "OPERATION" && "modelPolicy" in node).map(path => ({ path: `${path}.model`, expected: { provider: "amazon-bedrock", modelId: (valueAt(record, path) as Record<string, unknown>).workflowMode === "REVIEW" ? "us.anthropic.claude-fable-5-1" : ROVARA_DEFAULT }, change: 7 as const })),
+  ];
+}
+
+/** C53 policy/pin/model attribution; no-policy legacy key behavior remains compared unchanged. */
+function ordinaryStageChanges(scenario:GoldenScenario,record:unknown):Array<{path:string;expected:unknown;change:7}> {
+ const recipe=builtinRecipe("rovara-code",builtinDefaultPin("rovara-code")),digest=recipeDigest(recipe);
+ const thread=scenario==="slack-thread-operation"||scenario==="chatgpt-task",actor=thread?developerIdForSlackUser("U0123456789"):"d".repeat(64);
+ const model=scenario==="chatgpt-task"?{provider:"openai",modelId:"gpt-6.1-sol"}:{provider:"amazon-bedrock",modelId:scenario==="review"?"us.anthropic.claude-fable-5-1":ROVARA_DEFAULT};
+ const policyNodes=nodePaths(record,node=>"modelPolicy" in node);
+ if(scenario!=="checks"&&scenario!=="orchestrator-turn")expect(policyNodes.length,"each model-using scenario retains C53 governance").toBeGreaterThan(0);
+ const changes=policyNodes.flatMap(path=>{
+  const node=valueAt(record,path) as Record<string,unknown>;
+  const fields:Array<{path:string;expected:unknown;change:7}>=[{path:`${path}.modelPolicy`,expected:expectedModelPolicy(node),change:7 as const},{path:`${path}.model`,expected:model,change:7 as const}];
+  if(node.entityType==="OPERATION") {
+   const mode=typeof node.workflowMode==="string"?node.workflowMode:"IMPLEMENT";
+   fields.push({path:`${path}.modelTurnPin`,expected:{version:1,...(mode===undefined?{}:{workflowMode:mode}),actorDeveloperId:actor,payerDeveloperId:actor,agentId:"rovara-code",recipe,digest,...(thread?{slackUserId:"U0123456789",threadChannel:{teamId:SLACK_TEAM,channelId:SLACK_CHANNEL}}:{}),pin:{version:1,orgId:TEST_ORG,project:"payments",registeredAt:"2026-10-20T00:00:00.000Z",processAgentId:"rovara-code",recipeDigest:digest,policy:{version:1,revision:0,rankingVersion:"g3-v1",stepOverrides:{}},sourcesRevision:0,frozenInputs:{projectRevision:1,projectChoices:{},recipeDefaults:{},clearedFallbacks:[],...(thread?{projectModels:GOLDEN_THREAD_MODELS}:{})}}},change:7});
+   if(scenario!=="task-no-workflow-no-proxy"&&scenario!=="chatgpt-task")fields.push({path:`${path}.modelRoute`,expected:{sourceId:"rovara",alias:model.modelId,model},change:7});
+  }
+  return fields;
+ });
+ if(scenario==="chatgpt-task")for(const path of nodePaths(record,node=>node.entityType==="OPERATION"&&"modelPolicy" in node))changes.push({path:`${path}.modelRoute`,expected:null,change:7});
+ return changes;
 }
 
 /**
@@ -134,11 +186,27 @@ function planQualityChanges(scenario: GoldenScenario, record: unknown, skipCard:
   return [...asked, ...prompts, ...cards];
 }
 
+function modelFreeChecksChanges(scenario: GoldenScenario, record: unknown): Array<{ path: string; expected: unknown; change: 7 }> {
+  if (scenario !== "checks") return [];
+  return nodePaths(record, node => "mintKeyCalls" in node && "response" in node && "status" in node).flatMap(path => {
+    const access = valueAt(record, path) as { response: { requestId: string } };
+    expect(access.response.requestId).toMatch(/^[a-f0-9-]{36}$/u);
+    return [
+      { path: `${path}.status`, expected: 401, change: 7 as const },
+      { path: `${path}.response`, expected: { error: { code: "AUTH_REQUIRED", message: "invalid callback capability" }, requestId: access.response.requestId }, change: 7 as const },
+      { path: `${path}.mintKeyCalls`, expected: [], change: 7 as const },
+      { path: `${path}.calls.mintKey`, expected: [], change: 7 as const },
+      { path: `${path}.calls.keySpend`, expected: [], change: 7 as const },
+      { path: `${path}.calls.spend`, expected: [["org_5t5gp58cc1ibgg6e3aoj", "d".repeat(64)]], change: 7 as const },
+    ];
+  });
+}
+
 describe("Rovara Code before agents", () => {
   for (const scenario of GOLDEN_SCENARIOS) {
     it(`${scenario} matches its golden fixture, apart from change 1 and change 4`, async () => {
       const record = await recordGolden(scenario);
-      expectGolden(scenario, record, updatingGolden() ? [] : [...runLimitChanges(scenario, record), ...capabilityChanges(scenario, record), ...planQualityChanges(scenario, record, runLimitChanges(scenario, record).filter((change) => change.change === 4 && typeof change.expected === "string").map((change) => change.path))]);
+      expectGolden(scenario, record, updatingGolden() ? [] : [...ordinaryStageChanges(scenario,record), ...modelFreeChecksChanges(scenario, record), ...runLimitChanges(scenario, record), ...capabilityChanges(scenario, record), ...planQualityChanges(scenario, record, runLimitChanges(scenario, record).filter((change) => change.change === 4 && typeof change.expected === "string").map((change) => change.path))]);
     }, 120_000);
   }
 
@@ -230,7 +298,7 @@ function payloadModelPaths(record: unknown, path = ""): Array<{ path: string; va
 function taskPayloadCount(record: unknown): number {
   if (record === null || typeof record !== "object") return 0;
   const here = record as Record<string, unknown>;
-  const own = !Array.isArray(record) && "conversationStarted" in here && "prompt" in here ? 1 : 0;
+  const own = !Array.isArray(record) && "conversationStarted" in here && "prompt" in here && here.workflowMode !== "CHECKS" ? 1 : 0;
   return own + Object.values(here).reduce<number>((total, child) => total + taskPayloadCount(child), 0);
 }
 function operationRoutePaths(record: unknown, path = ""): Array<{ path: string; value: unknown }> {
@@ -274,9 +342,13 @@ describe("Rovara Code with agents switched on", () => {
       const sessionId = (kept[meta] as { sessionId?: string }).sessionId;
       expect(sessionId, `${scenario}'s task names its session`).toMatch(/^ses_[0-9a-z]{20}$/);
       const recorded = { ...record, taskItems: kept };
+      // The default reviewer must differ from the Sonnet builder; the existing owner capability order selects Fable.
+      const stageModel = scenario === "review" ? "us.anthropic.claude-fable-5-1" : ROVARA_DEFAULT;
       expectGolden(scenario, recorded, [
+        ...modelFreeChecksChanges(scenario, recorded),
         ...runLimitChanges(scenario, recorded),
         ...capabilityChanges(scenario, recorded),
+        ...modelPolicyChanges(recorded),
         ...planQualityChanges(scenario, recorded, runLimitChanges(scenario, recorded).filter((change) => change.change === 4 && typeof change.expected === "string").map((change) => change.path)),
         { path: `taskItems[${String(meta)}].sessionId`, expected: sessionId, change: 5 },
         { path: `taskItems[${String(meta)}].agent`, expected: { agentId: "rovara-code", name: "Rovara Code", version: latest.version, builtin: true, digest: recipeDigest(latest.recipe) }, change: 5 },
@@ -287,10 +359,10 @@ describe("Rovara Code with agents switched on", () => {
         ...tagged.map(({ path, value }) => ({ path, expected: value, change: 5 as const })),
         ...operationKeyPaths(record).map(({ path, value }) => ({ path, expected: value, change: 3 as const })),
         // Task 26, change 2: with the default order (Rovara only) a key may call Rovara's default model and nothing else, and it says so by value.
-        ...mintModelPaths(record).map(({ path }) => ({ path, expected: [ROVARA_DEFAULT], change: 2 as const })),
-        ...payloadModelPaths(record).map(({ path }) => ({ path, expected: { provider: "amazon-bedrock", modelId: ROVARA_DEFAULT }, change: 2 as const })),
+        ...mintModelPaths(record).map(({ path }) => ({ path, expected: [stageModel], change: 2 as const })),
+        ...payloadModelPaths(record).map(({ path }) => ({ path, expected: { provider: "amazon-bedrock", modelId: stageModel }, change: 2 as const })),
         // Change 5: the operation says where its model comes from. The invocation is unchanged: it carries no `modelRoute`.
-        ...operationRoutePaths(record).map(({ path }) => ({ path, expected: { sourceId: "rovara", alias: ROVARA_DEFAULT, model: { provider: "amazon-bedrock", modelId: ROVARA_DEFAULT } }, change: 5 as const })),
+        ...operationRoutePaths(record).map(({ path }) => ({ path, expected: { sourceId: "rovara", alias: stageModel, model: { provider: "amazon-bedrock", modelId: stageModel } }, change: 5 as const })),
       ]);
       for (const sent of [record.invocation, record.forWorker] as Array<{ payload?: Record<string, unknown> } | null>) expect(sent?.payload ?? {}).not.toHaveProperty("modelRoute");
     }, 120_000);

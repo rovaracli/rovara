@@ -261,3 +261,10 @@ it("B35 change-plan unbind is attributed to the admin change plan, not staff sup
  const plan = await planChange(deps, identity, { kind: "unbind_channel", channel: SLACK_CHANNEL });await plan.apply(identity);
  expect(audit.recordedBy("slack_channel.unbound")).toMatchObject([{ actor: { kind: "member", id: identity.ownerKey }, facts: { source: "admin_change_plan" } }]);
 });
+it("B35 company audit reader preserves change-plan attribution separately from staff support", async () => {
+ const audit = capturingAuditDeps(), { deps, identity } = await harness({ audit });const plan = await planChange(deps, identity, { kind: "unbind_channel", channel: SLACK_CHANNEL });await plan.apply(identity);
+ const { bench } = await import("../support/audit-routes-bench.js"), { appendEvent } = await import("../../packages/broker/src/audit/appender.js"), { routeAuditRequest } = await import("../../packages/broker/src/audit/routes.js");const ledger = bench();ledger.h.clock.now = Date.now();
+ for (const event of audit.recordedBy("slack_channel.unbound")) expect(await appendEvent(ledger.appender, event)).toMatchObject({ result: "appended" });
+ const read = (orgId: string) => routeAuditRequest(ledger.deps, { orgId, developerId: identity.ownerKey, orgRole: "admin" }, { method: "GET", body: {}, requestId: "health-audit-read" }, new URL("https://test.invalid/v1/app/org/audit/records"));
+ const own = await read(TEST_ORG);expect(own.status).toBe(200);expect((own.body as { records: Array<{ record: unknown }> }).records.map(row => row.record)).toMatchObject([{ action: "slack_channel.unbound", actor: { kind: "member", id: identity.ownerKey }, facts: { source: "admin_change_plan" } }]);expect((await read("org_bbbbbbbbbbbbbbbbbbbb")).body).toMatchObject({ records: [] });
+});

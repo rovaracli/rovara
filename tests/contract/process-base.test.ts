@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ROVARA_CODE_AGENT_ID, agentKey, agentVersionSk, agentXError, recipeDigest, type AgentId } from "../../packages/contracts/src/index.js";
-import { getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
+import { getApproval, getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";
@@ -152,8 +152,9 @@ describe("rolling a process layer back to a version that does not build on Rovar
     agent = (await w.store.get(ORG_A, id))!;
     const confirmed = await publishDraft(w.deps, callerOf(w, MAX), agent, { requestId: randomUUID(), expectedRevision: agent.draftRevision });
     if (!confirmed.applied) {
-      const digest = recipeDigest(await resolveRecipe(w.deps, ORG_A, id, "draft"));
-      await getApprovalSubjectHandler("agent_publish")!(w.deps, { orgId: ORG_A, approvalId: "apr_v2", decidedBy: OLA, subject: { kind: "agent_publish", agentId: id, draftRevision: agent.draftRevision, digest, expectedCurrentVersion: 1 } } as unknown as ApprovalRecord);
+      const pending = await getApproval(w.deps, ORG_A, w.approvalIdOf(confirmed.confirmUrl));
+      expect(pending).toBeDefined();
+      await getApprovalSubjectHandler("agent_publish")!(w.deps, { ...pending!, decidedBy: OLA });
     }
     return id;
   }
@@ -162,13 +163,17 @@ describe("rolling a process layer back to a version that does not build on Rovar
     const w = world();
     const other = await ordinaryAgent(w);
     const id = await twoVersions(w);
+    const pendingRollback = await rollbackAgent(w.deps, callerOf(w, MAX), (await w.store.get(ORG_A, id))!, { requestId: randomUUID(), version: 1 });
+    expect(pendingRollback.applied).toBe(false);
+    if (pendingRollback.applied) throw new Error("expected a rollback confirmation");
+    const approved = (await getApproval(w.deps, ORG_A, w.approvalIdOf(pendingRollback.confirmUrl)))!;
     storeBase(w, id, agentVersionSk(1), { agentId: other, version: 1 });
     const agent = (await w.store.get(ORG_A, id))!;
     expect(agent.currentVersion).toBe(2);
     expect(await failure(rollbackAgent(w.deps, callerOf(w, MAX), agent, { requestId: randomUUID(), version: 1 }))).toEqual(refused);
     expect(await failure(w.store.rollback({ orgId: ORG_A, agentId: id, version: 1, expectedCurrentVersion: 2, by: MAX }))).toEqual(refused);
     const digest = recipeDigest(await resolveRecipe(w.deps, ORG_A, id, 1));
-    const record = { orgId: ORG_A, approvalId: "apr_y", decidedBy: OLA, subject: { kind: "agent_rollback", agentId: id, version: 1, digest, expectedCurrentVersion: 2 } } as unknown as ApprovalRecord;
+    const record = { ...approved, decidedBy: OLA, subject: { ...approved.subject, digest } } as ApprovalRecord;
     expect(await failure(getApprovalSubjectHandler("agent_rollback")!(w.deps, record))).toEqual(refused);
     expect((await w.store.get(ORG_A, id))?.currentVersion).toBe(2);
   });

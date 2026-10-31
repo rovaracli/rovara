@@ -355,11 +355,16 @@ describe("routeStep: the operation's model, the plan and the install's geography
   it("keeps the ChatGPT plan only while it is the first source in the order that serves the plan's model", async () => {
     const t = install({ chatgpt: plan });
     await t.add(openai());
+    // Governed routing verifies the same stored-key presence as the C53 resolver.
+    const sourceKey=modelSourcesKey(TEST_ORG);t.db.set({...t.db.get(sourceKey)!,credentials:[SRC_OPENAI]});
     const withPlan = { plan: { developerId: "maya", model: GPT } };
     await t.order(["personal-chatgpt", SRC_OPENAI, "rovara"]);
     expect(await routeStep(t.deps, step(DEFAULT_MODEL, withPlan))).toMatchObject({ keepChatgpt: true, route: { sourceId: "rovara" } });
+    await expect(routeStep(t.deps,step(DEFAULT_MODEL,{...withPlan,expectedSourceId:"personal-chatgpt"}))).resolves.toMatchObject({keepChatgpt:true});
+    await expect(routeStep(t.deps,step(DEFAULT_MODEL,{...withPlan,expectedSourceId:"rovara"}))).rejects.toMatchObject({code:"MODEL_NOT_ALLOWED"});
     await t.order([SRC_OPENAI, "personal-chatgpt", "rovara"]);
     expect(await routeStep(t.deps, step(DEFAULT_MODEL, withPlan))).toMatchObject({ keepChatgpt: false, route: { sourceId: "rovara" } });
+    await expect(routeStep(t.deps,step(DEFAULT_MODEL,{...withPlan,expectedSourceId:"personal-chatgpt"}))).rejects.toMatchObject({code:"MODEL_NOT_ALLOWED"});
   });
 
   it("lets a plan's backup go unserved without refusing the task, and records that no company key may stand in", async () => {

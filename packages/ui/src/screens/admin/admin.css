@@ -16,7 +16,7 @@
 .rv-admin-role-review p{margin:0;overflow-wrap:anywhere}
 .rv-admin-role-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3)}
 
-.rv-admin-surface .rv-button[aria-disabled=true],.rv-admin-role-review .rv-button[aria-disabled=true]{opacity:.55;cursor:default}
+.rv-admin-surface .rv-button[aria-disabled=true],.rv-admin-role-review .rv-button[aria-disabled=true]{opacity:.55;cursor:not-allowed}
 
 /* Lane B: read-only inspection links meet touch target sizing. */
 .rv-admin-b1-link{display:inline-flex;align-items:center;min-height:44px;margin-right:var(--rv-space-4)}

@@ -33,7 +33,7 @@ describe("(a) a plan check or review loses its independence", () => {
   });
   it("flags it when the same model is reached by another route (canonical name)", () => {
     const current = flow({ build: { model: OPUS }, review: { model: SONNET } });
-    expect(reasons(current, flow({ build: { model: OPUS }, review: { model: BEDROCK_OPUS } }))).toHaveLength(1);
+    expect(reasons(current, flow({ build: { model: OPUS }, review: { model: BEDROCK_OPUS } }))).toEqual(['Makes the review step "Review" use the same model as the build step "Build"', 'Lets the step "Review" send data through a new model provider (amazon-bedrock)']);
   });
   it("flags a plan check that now uses the same model as Plan", () => {
     const current = flow({ plan: { model: OPUS }, critic: { model: SONNET } });

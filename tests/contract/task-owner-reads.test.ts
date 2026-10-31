@@ -24,6 +24,9 @@ import { describe, expect, it } from "vitest";
 import { guardedRoots, problemsOf, programOf, rowsOf, scanProgram, sourceFiles, type Hit, type Root, type Row } from "../support/task-owner-scan.js";
 
 const ROWS: readonly Row[] = [
+  ["model-selection/turn-authority.ts", "readTurnActorChecks", "authority", ".developerId"],
+  // C53: fallback authorization checks the effective owner's membership and fences the immutable creator identity; both run through effectiveTaskOwner/ownerFenceOf.
+  ["model-selection/authorize-fallback.ts", "prepareTaskModelAuthorization", "authority", ".developerId*2"],
   ["agents/write-gate.ts", "executeWrite", "principal", ".ownerKey*2"],
   // Plan 4: a cancel's idempotency key (read by a chain to find that its cancel of a step's task was taken, and built by the task cancel) is made from the task's principal (`ownerKey`) and its workspace; it never changes
   ["chains/runner.ts", "endedByOwnTimeoutCancel", "principal", ".ownerKey*2"],
@@ -119,6 +122,9 @@ const ROWS: readonly Row[] = [
   ["aws/broker.ts", "verifiedSharedStopBinding", "principal", ".developerId*3", ".ownerKey*4", "taskOwnerKey()"],
   ["aws/broker.ts", "sharedStopFences", "principal", ".developerId*2", ".ownerKey*2"],
   ["aws/broker.ts", "taskOperationParts", "money", ".developerId"],
+  // Immutable Slack creator/thread bindings remain the task principal; current turn authority uses effectiveTaskOwner.
+  ["aws/broker.ts", "taskOperationParts", "principal", ".developerId*5", ".provider", ".slackUserId*2"],
+  ["model-selection/turn-fallback.ts", "authorizeTurnModelFallback", "principal", ".developerId*3", ".slackUserId"],
   // C55: the pull request footer names the identity the workspace was prepared for (as it always did); when its display name is an email address, the GitHub login that same person linked stands in for it (a stored identity, read only to find that login)
   ["aws/broker.ts", "attributedBody", "history", ".developerId"],
   ["aws/broker.ts", "handleModelAccess>loadScope", "money", ".developerId"],

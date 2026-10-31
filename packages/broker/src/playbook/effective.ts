@@ -102,7 +102,6 @@ interface Inputs {
   codeSettings: CodeSettings;
 }
 
-const modelLabel = (model: { provider: string; modelId: string }): string => line(`${model.provider}/${model.modelId}`);
 const commandLabel = (command: { executable: string; args: string[] }): string => clip(fit(`${command.executable} ${command.args.join(" ")}`.trim()), 80);
 
 type StepSettings = { model?: { provider: string; modelId: string; thinkingLevel?: string } | null; thinkingLevel?: string | null; tools?: string[]; differentCompanyFrom?: string | null; instructions?: InstructionLayer[] };
@@ -116,8 +115,6 @@ function layerSource(recipe: ResolvedRecipe, layer: InstructionLayer): HowWeWork
 const layerRows = (recipe: ResolvedRecipe, layers: readonly InstructionLayer[]): Array<Marked<string>> =>
   layers.filter((layer) => layer.text.length > 0).slice(0, HOW_WE_WORK_LAYERS_MAX).map((layer) => mark(clip(redactText(layer.text), HOW_WE_WORK_INSTRUCTION_MAX), layerSource(recipe, layer)));
 
-/** The kinds that use the project's own model when the stage names none. The plan check chooses its own, and the check and pull request steps run no model. */
-const USES_PROJECT_MODEL = new Set<string>(["plan", "build", "review", "agent"]);
 /** The kinds whose tools are read-only by design, and the kinds that may not change the repository at all. */
 const READ_ONLY_KINDS = new Set<string>(["plan", "plan_critic", "review"]);
 const CANNOT_WRITE_KINDS = new Set<string>(["plan", "plan_critic", "review", "agent", "approval"]);
@@ -135,14 +132,10 @@ function stageOf(step: ResolvedStep, inputs: Inputs): HowWeWorkStage {
   };
 
   // Who
-  const named = settings.model ?? undefined;
-  const projectModels = definition?.models;
-  const projectDefault = named === undefined && USES_PROJECT_MODEL.has(step.kind) ? projectModels?.default : undefined;
-  const model = named !== undefined ? mark(modelLabel(named), origin("model")) : projectDefault !== undefined ? mark(modelLabel(projectDefault), "project") : mark<string | null>(null, "rovara");
-  const level = settings.thinkingLevel ?? named?.thinkingLevel ?? projectDefault?.thinkingLevel;
-  const thinking = settings.thinkingLevel != null ? mark<string | null>(settings.thinkingLevel, origin("thinkingLevel"))
-    : named?.thinkingLevel !== undefined ? mark<string | null>(named.thinkingLevel, origin("model"))
-      : level !== undefined ? mark<string | null>(level, "project") : mark<string | null>(null, "rovara");
+  // V3: no model is decided here. The stage models (what runs, why, and what can be chosen) come from the model resolver's own read (`GET /v1/app/projects/{p}/stage-models`); these two rows
+  // stay in the view's shape for older readers and always say "not decided here".
+  const model = mark<string | null>(null, "rovara");
+  const thinking = mark<string | null>(null, "rovara");
   const targets = crossCompanyTargets(recipe, step, guardrails);
   const requiredByCompany = guardrails.requireCrossCompanyReview && step.kind === "review" && recipe.steps.some((other) => other.kind === "build");
   const differentCompanyFrom = requiredByCompany ? mark(targets, "company", "company")

@@ -35,6 +35,8 @@ export const AgentXErrorCodeSchema = z.enum([
   "CONFIRMATION_DECLINED",
   "CONFIRMATION_EXPIRED",
   "CHANGE_STALE",
+  "POLICY_STALE",
+  "DRAFT_STALE",
   "ALREADY_IN_ORG",
   "INVITE_INVALID",
   // Lane A: fixed terminal outcomes for reviewed invite revocation.
@@ -57,6 +59,7 @@ export const AgentXErrorCodeSchema = z.enum([
   "AGENT_NOT_ON_PROJECT",
   "AGENT_TOOL_NOT_GRANTED",
   "MODEL_NOT_ALLOWED",
+  "WORKFLOW_MODE_UNMAPPED",
   "PROJECT_BUDGET_EXCEEDED",
   "AGENT_BUDGET_EXCEEDED",
   "AGENT_BUDGET_REQUIRED",

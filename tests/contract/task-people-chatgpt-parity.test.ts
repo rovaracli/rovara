@@ -26,7 +26,7 @@ describe("PEOPLE and ChatGPT task identity parity", () => {
     const coOwnerSlack = "U0PARITY02";
     const creator: Developer = { developerId: developerIdForSlackUser(creatorSlack), name: "Creator One", provider: "slack", sessionId: "s-parity-creator", slackUserId: creatorSlack };
     const coOwner: Developer = { developerId: developerIdForSlackUser(coOwnerSlack), name: "Owner Two", provider: "slack", sessionId: "s-parity-owner", slackUserId: coOwnerSlack };
-    const connected = (email: string, models: string[]): ChatGptConnectionView => ({ connected: true, status: "connected", email, models });
+    const connected = (email: string, models: string[]): ChatGptConnectionView => ({ connected: true, status: "connected", connectedAt:"2026-10-01T00:00:00.000Z", email, models });
     let connectionsActive = false;
     const views: Record<string, ChatGptConnectionView> = {
       [creator.developerId]: connected("creator@example.test", ["gpt-6.1-sol"]),
@@ -88,7 +88,7 @@ describe("PEOPLE and ChatGPT task identity parity", () => {
     const approved = await harness.dev(coOwner, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, {
       requestId: randomUUID(), expectedRevision: before.revision, decision: "APPROVE", reason: "Approved by the co-owner", artifactDigest: artifact.sha256,
     });
-    expect(approved.status).toBe(200);
+    expect(approved.status,JSON.stringify(approved.body)).toBe(200);
 
     const implementation = operations().filter((operation) => operation.workflowMode === "IMPLEMENT");
     expect(implementation).toHaveLength(1);
@@ -104,7 +104,7 @@ describe("PEOPLE and ChatGPT task identity parity", () => {
     expect(outbox.invocation.payload).toMatchObject({ chatgpt: { model: { provider: "openai", modelId: "gpt-6.1-sol" } } });
     expect(String(outbox.invocation.payload.prompt)).toContain(`Approved plan (sha256 ${artifact.sha256})`);
     expect(String(artifact.objectKey)).toContain(`/` + original.ownerKey + `/`);
-    expect(view.mock.calls).toEqual([[creator.developerId]]);
+    expect(view.mock.calls).toEqual([[creator.developerId],[creator.developerId],[creator.developerId]]);
     const acceptedTurn = harness.db.find((item) => item.origin === "ai_tool" && item.phase === "accepted" && item.operationId === operation.id).at(-1);
     expect(acceptedTurn?.developer).toMatchObject({ developerId: coOwner.developerId, slackUserId: coOwnerSlack });
 
@@ -118,7 +118,7 @@ describe("PEOPLE and ChatGPT task identity parity", () => {
     };
     const pausedWorkerFeatures = vi.fn(async () => {
       dispatchProof = false;
-      return ["task.workflowMode", "task.workflowBase", "model.chatgpt"];
+      return ["task.modelPolicy", "task.workflowMode", "task.workflowBase", "model.chatgpt"];
     });
     const pausedDelivery = createEc2Delivery({
       applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
@@ -133,7 +133,7 @@ describe("PEOPLE and ChatGPT task identity parity", () => {
     await expect(pausedDelivery(outbox, outbox.invocation)).resolves.toBe("WAITING_FOR_TASK_ACCESS");
     expect(harness.db.get(`OUTBOX#${outbox.id}`, "OUTBOX")).toMatchObject({ status: "WAITING_FOR_TASK_ACCESS", operationId: operation.id, invocation: acceptedInvocation });
     expect(operations().filter((item) => item.workflowMode === "IMPLEMENT")).toHaveLength(1);
-    expect(view).toHaveBeenCalledTimes(1);
+    expect(view).toHaveBeenCalledTimes(3);
     expect(accessToken).not.toHaveBeenCalled();
     expect(pausedWorkerFeatures).toHaveBeenCalledTimes(1);
     expect(sign).not.toHaveBeenCalled();
@@ -146,10 +146,10 @@ describe("PEOPLE and ChatGPT task identity parity", () => {
     expect(harness.db.get(`DEVTASK#${taskId}`, `TASK_ACCESS_RETRY#${retryRequestId}`)).toMatchObject({ actorId: taskOwnerKey(coOwner.developerId, taskId), operationId: operation.id });
     const resumed = harness.db.get(`OUTBOX#${outbox.id}`, "OUTBOX") as unknown as Ec2OutboxRecord;
     expect(resumed).toMatchObject({ status: "PENDING", operationId: operation.id, invocation: acceptedInvocation });
-    expect(view).toHaveBeenCalledTimes(1);
+    expect(view).toHaveBeenCalledTimes(3);
     expect(accessToken).not.toHaveBeenCalled();
 
-    const workerFeatures = vi.fn(async () => ["task.workflowMode", "task.workflowBase", "model.chatgpt"]);
+    const workerFeatures = vi.fn(async () => ["task.modelPolicy", "task.workflowMode", "task.workflowBase", "model.chatgpt"]);
     const delivered = createEc2Delivery({
       applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined,
       sessions: { ensureSession: async () => ({ ready: true, generation: 1, privateIp: "127.0.0.1" }) },
@@ -166,7 +166,7 @@ describe("PEOPLE and ChatGPT task identity parity", () => {
     expect(post).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(post.mock.calls[0]![1].body))).toEqual(acceptedInvocation);
     expect(operations().filter((item) => item.workflowMode === "IMPLEMENT")).toHaveLength(1);
-    expect(view).toHaveBeenCalledTimes(1);
+    expect(view).toHaveBeenCalledTimes(3);
     expect(accessToken).not.toHaveBeenCalled();
   });
 });

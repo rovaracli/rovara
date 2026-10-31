@@ -1,4 +1,5 @@
 import { test, expect } from "./support/csp.js";
+import { evidenceShot } from "./support/screenshot.js";
 test("a confirmation popup severs its app opener and no decision is posted", async ({ page, request, context, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "shell" } });await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
  await page.goto("/app");await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
@@ -10,3 +11,12 @@ test("a confirmation popup severs its app opener and no decision is posted", asy
  expect(requests.filter(value => value.method === "POST" && value.path.startsWith("/v1/app/approve/"))).toEqual([]);await confirmation.close();
 });
 declare global { interface Window { __confirmationPopup?: Window | null } }
+
+test("a refused model confirmation exposes a keyboard-accessible safe repair link",async({page})=>{
+ const {resultPage}=await import("../../packages/broker/src/developer/confirm-page.js");
+ const result=resultPage("Approved, but it did not go through","build: STAGE_LOCKED: Review How we work.","/app/admin/how-we-work");
+ await page.route("**/__c53-confirmation-result",route=>route.fulfill({status:result.statusCode,headers:result.headers,body:result.body}));
+ await page.goto("/__c53-confirmation-result");const link=page.getByRole("link",{name:"Review model settings"});await expect(link).toHaveAttribute("href","/app/admin/how-we-work");// WebKit tabs to links only with Option held, as in part-a-sweep.
+ await page.keyboard.press(page.context().browser()?.browserType().name()==="webkit"?"Alt+Tab":"Tab");await expect(link).toBeFocused();
+ await evidenceShot(page,{path:".test-build/web-e2e/c53-confirmation-repair.png",fullPage:true});
+});

@@ -331,13 +331,14 @@ async function forWorkerFeatures(
   const carriesProjectSetupSmoke = invocation.kind === "project-setup-smoke";
   const agentStep = invocation.kind === "task" ? invocation.payload.agentStep : undefined;
   const carriesAgentStep = agentStep !== undefined;
+  const carriesModelPolicy=invocation.kind==="task"&&invocation.payload.modelPolicy!==undefined;
   const carriesModelRoute = invocation.kind === "task" && invocation.payload.modelRoute !== undefined;
   // A preparation that checks a pull request's head out is the agent-step engine's: only a worker that runs agent steps does it.
   // Its read-only form (clone and checkout, nothing of the repository run) is the same: a worker that does not know the field would run the setup.
   const carriesCheckout = invocation.kind === "prepare" && (invocation.payload.checkout !== undefined || invocation.payload.readOnly === true);
   const carriesReviewers = invocation.kind === "task" && invocation.payload.workflowReviewers !== undefined;
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesFeedbackAutonomy && !carriesCheckout && !carriesModelPolicy) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -387,6 +388,7 @@ async function forWorkerFeatures(
   if (carriesCheckout && !features.includes(AGENT_RUN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
+  if(carriesModelPolicy&&!features.includes("task.modelPolicy"))throw agentXError("RUNTIME_UNAVAILABLE",AGENT_WORKER_OUTDATED);
   if (carriesModelRoute && !features.includes(MODEL_ROUTE_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
@@ -496,6 +498,7 @@ async function forWorkerFeatures(
   }
   // #341: an older worker cannot fetch a ChatGPT token, so its task runs on the default model it also carries.
   const unsupportedChatGpt = carriesChatGpt && !features.includes("model.chatgpt");
+  if(unsupportedChatGpt&&invocation.kind==="task"&&invocation.payload.modelPolicy!==undefined)throw agentXError("RUNTIME_UNAVAILABLE","The worker cannot execute this governed personal model. Update the worker and retry.");
   if (unsupportedChatGpt) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.chatgpt_omitted", reason, operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }

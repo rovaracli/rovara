@@ -1373,7 +1373,7 @@ describe("docker application host: the model channel", () => {
     expect(executorArgs.join(" ")).not.toMatch(/AWS_|AGENTX_|TOKEN|SECRET|bedrock|amazonaws/i);
     // Only the executor's arguments name the model; the app, seed, build, mock and keeper containers never do.
     for (const args of fake.calls.filter((call) => call[0] === "run" && !call[call.indexOf("--name") + 1]?.startsWith("rovara-executor-"))) {
-      expect(args.join(" "), args.join(" ")).not.toMatch(/model/i);
+      expect(args.join(" ").replace(`seccomp=${installedExecutorSeccompProfilePath()}`, "seccomp=<pinned-profile>"), args.join(" ")).not.toMatch(/model/i);
     }
     expect(fake.mountsFor("app").some((mount) => mount.includes("model"))).toBe(false);
   });
@@ -1571,7 +1571,8 @@ describe("docker application host: the model channel", () => {
     let planText = "";
     fake.onExecutor = (outDir) => { planText = readFileSync(join(s.runRoot, s.runId, "plan.json"), "utf8"); okOutput(s)(outDir); };
     await runWith(s);
-    expect(fake.argsFor("executor").join(" ")).not.toMatch(/model/i);
+    // The verified seccomp host path may include "models" in the checkout directory.
+    expect(fake.argsFor("executor").join(" ").replace(`seccomp=${installedExecutorSeccompProfilePath()}`, "seccomp=<pinned-profile>")).not.toMatch(/model/i);
     expect(fake.mountsFor("executor").some((mount) => mount.includes("model.sock"))).toBe(false);
     expect(E2EExecutorPlanSchema.parse(JSON.parse(planText)).modelChannel).toBeUndefined();
     expect(existsSync(join(s.runRoot, s.runId, "model"))).toBe(false);
@@ -1661,7 +1662,7 @@ describe("docker application host: an audit replay (Task 4.6b)", () => {
     const result = await runWith(s);
     expect(result.unavailableReason).toBeNull();
     expect(fake.mountsFor("executor").some((mount) => /model/i.test(mount))).toBe(false);
-    for (const args of fake.calls.filter((call) => call[0] === "run")) expect(args.join(" "), args.join(" ")).not.toMatch(/model/i);
+    for (const args of fake.calls.filter((call) => call[0] === "run")) expect(args.join(" ").replace(`seccomp=${installedExecutorSeccompProfilePath()}`, "seccomp=<pinned-profile>"), args.join(" ")).not.toMatch(/model/i);
     const plan = E2EExecutorPlanSchema.parse(JSON.parse(planText));
     expect(plan.modelChannel).toBeUndefined();
     expect(plan.replay?.traces).toEqual(fixture.plan.admission.replay!.traces);
