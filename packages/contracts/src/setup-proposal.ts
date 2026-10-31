@@ -207,6 +207,8 @@ export const SetupReviewEntrySchema = z.object({
   current: z.object({ state: z.enum(["empty", "same", "differs"]), yours: z.array(z.string().max(600)).max(64).optional() }).strict().optional(),
   /** Why the item cannot be applied from here (fixed words), when it cannot. */
   unavailable: z.string().max(200).optional(),
+  /** The asker's own approval card for this item, when one was made: `approved` means a maintainer may now apply the item. */
+  approval: z.object({ approvalId: z.string().min(1).max(200), state: z.enum(["pending", "approved", "declined", "expired"]) }).strict().optional(),
 }).strict();
 export type SetupReviewEntry = z.infer<typeof SetupReviewEntrySchema>;
 
@@ -241,6 +243,8 @@ export const SetupApplyResultItemSchema = z.object({
   approval: z.object({ approvalId: z.string().min(1).max(200), confirmUrl: z.string().max(2_048) }).strict().optional(),
   /** `website_proposal`: the domains to carry to the website proposal flow. */
   domains: z.array(z.string().max(253)).max(50).optional(),
+  /** `applied` for a dev container pull request: the task that opens it. */
+  pullRequest: z.object({ taskId: z.string().max(100), sessionId: z.string().max(100).optional(), sessionUrl: z.string().max(2_048).optional() }).strict().optional(),
 }).strict();
 export type SetupApplyResultItem = z.infer<typeof SetupApplyResultItemSchema>;
 

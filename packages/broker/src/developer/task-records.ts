@@ -35,6 +35,7 @@ import {
   type PauseScope,
   type RunCheckout,
   type SetupDraft,
+  type SetupProposal,
   type WorkflowSnapshot,
   type WorkflowReviewBase,
   type DeveloperSignInMethod,
@@ -203,7 +204,8 @@ export interface DeveloperTaskRecord {
    */
   purpose?: "setup_draft";
   /** Plan 6, Task 10: what a setup-draft task ended with, written in the same transaction as `agentRunEnd`: the sanitized draft, or a fixed sentence saying why there is none. */
-  setupDraftResult?: { status: "ready"; draft: SetupDraft } | { status: "failed"; failure: string };
+  /** The setup agent's result (meta repo lane B). `draft` is a version 1 draft stored by the earlier code: it reads as outdated and is never applied. */
+  setupDraftResult?: { status: "ready"; proposal: SetupProposal } | { status: "ready"; draft: SetupDraft } | { status: "failed"; failure: string };
   /**
    * Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit that follows (`estimateRun`), written when a plan reaches
    * review on an install with a model proxy. Approving the plan accepts `runLimitUsd` (`acceptRunLimit`); the plan-ready message and the task view show it.

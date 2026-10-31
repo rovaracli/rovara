@@ -156,7 +156,7 @@ describe("reading an answer as a proposal: provenance", () => {
       foundNotUsed: [{ kind: "hook", repo: "meta", path: ".kiro/hooks/a.kiro.hook" }],
       testEnvironment: [{ hint: "needs postgres 16", from: [file("web", "docker-compose.yml")] }],
     });
-    const second = read(first, { ...context, repositories: context.repositories.map(({ commit: _commit, ...rest }) => rest), metaRepo: context.metaRepo });
+    const second = read(first, { ...context, repositories: context.repositories.map(({ name, url }) => ({ name, url })), metaRepo: context.metaRepo });
     expect(withoutNotes(second)).toEqual(withoutNotes(first));
     expect(setupItemsOf(first).length).toBeGreaterThan(10);
   });
