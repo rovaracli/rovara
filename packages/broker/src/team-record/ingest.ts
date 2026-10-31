@@ -6,6 +6,7 @@
 // It stores no row for an outside source under retention A or B. It never logs text, a name or an error message.
 import {
   OrgIdSchema,
+  agentXError,
   aclUnitOfSource,
   RecordEventSchema,
   RecordProjectSchema,
@@ -20,10 +21,10 @@ import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { Aliases } from "../agents/table-writes.js";
 import { createHash } from "node:crypto";
 import { withoutActorFields } from "./person-fields.js";
-import { observeOpenRow, observeRowAccess, unitHasList, withoutErasedPrincipals } from "./access.js";
+import { erasedAccessIds, observeOpenRow, observeRowAccess, unitHasList, withoutErasedPrincipals } from "./access.js";
 import { captureIsOn, type LearningModeReader } from "./mode.js";
 import { exceedsRetention, retentionPlan, retentionRefusal } from "./retention.js";
-import { supersedeItem, wasDeletedAtSource } from "./scope-work.js";
+import { removePrincipalsFromRow, supersedeItem, wasDeletedAtSource } from "./scope-work.js";
 import { advanceItemHead, getItemHead, isScopeClosed, versionTimeOf } from "./item-head.js";
 import { hasQuotedOrForwarded } from "./quoted.js";
 import { isErasedActor } from "./erased.js";
@@ -292,6 +293,12 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   // 7. The idempotent write; then the older version it replaces (text, vector and notes) is hidden and queued for removal. If this version's row was already there
   // (a redelivery of a version that is now the head again), nothing is replaced: there is nothing newer to make way for.
   const result = await putRecordEvent(deps.table, event);
+  // 7a. The erase race (TR-E1): the markers were read BEFORE the row was written (twice: here and in the access record), and an erase can finish in between, so a row can be stored
+  // naming a person who is erased by now, with no index item for the erase's passes to find it by. The markers are read once more AFTER the write. Either the erase's marker was
+  // written before this read (seen here, and the id is taken out of the stored row), or after it, and then the row and the access index it was written with already existed when the
+  // erase ran (both are written before the row), so the erase finds the place. A stored row is checked against the list it was built from; a redelivery that finds the row already
+  // there is checked against the draft's own list, so a repair that failed once is made on the retry.
+  await removeErasedFromStoredRow(deps, orgId, recordEventKey(orgId, project, occurredAt, id), result === "stored" ? principalsOf(event.audience) : principalsOf(draft.audience));
   const owed = moved.status === "advanced" ? (moved.previous === undefined || result === "duplicate" ? undefined : [moved.previous.row, moved.previous.supersedes?.row]) : moved.owed === undefined ? undefined : [moved.owed.row];
   if (owed !== undefined) {
     await supersedeItem({ table: deps.table, now }, orgId, { system: draft.sourceRef.system, sourceId: draft.sourceRef.id, version: draft.sourceRef.version, rows: owed.flatMap((row) => (row === undefined || row.sk === recordEventKey(orgId, project, occurredAt, id).sk ? [] : [row])) });
@@ -303,6 +310,16 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
     await embedRow(deps, event, text, log);
   }
   return { status: "stored" };
+}
+
+const principalsOf = (audience: RecordDraft["audience"]): readonly string[] => (audience.kind === "restricted" ? audience.acl.principals ?? [] : []);
+
+/** Throws when the row still names an erased person afterwards, so the queue redelivers the draft (an unreadable marker throws too). */
+async function removeErasedFromStoredRow(deps: IngestDependencies, orgId: OrgId, key: { pk: string; sk: string }, principals: readonly string[]): Promise<void> {
+  if (principals.length === 0) return;
+  const erased = await erasedAccessIds(deps.table, orgId, principals);
+  if (erased.size === 0) return;
+  if (!(await removePrincipalsFromRow(deps.table, key, erased))) throw agentXError("RUNTIME_UNAVAILABLE", "A row that names an erased person could not be cleaned right now.");
 }
 
 export function eventVectorKey(eventId: string): string {

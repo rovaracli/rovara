@@ -168,6 +168,32 @@ async function rewriteAudience(table: TeamRecordTable, key: { pk: string; sk: st
   return false;
 }
 
+/**
+ * Takes the given ids out of ONE stored row's list (a late write that named a person who was erased while it was being written). Reads the row fresh, rewrites only the list,
+ * and reads it back: true when the row no longer names any of them (or no longer exists), false when it still does, so the caller can fail and let the queue redeliver.
+ */
+export async function removePrincipalsFromRow(table: TeamRecordTable, key: { pk: string; sk: string }, ids: ReadonlySet<string>): Promise<boolean> {
+  const named = async (): Promise<Audience | undefined | "gone"> => {
+    const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item };
+    if (response.Item === undefined) return "gone";
+    const audience = AudienceSchema.safeParse(response.Item.audience);
+    return audience.success ? audience.data : undefined;
+  };
+  const read = await named();
+  if (read === "gone") return true;
+  // A row whose audience cannot be read is not rewritten here; it cannot be trusted as clean either.
+  if (read === undefined) return false;
+  if (!principalsOf(read).some((id) => ids.has(id))) return true;
+  await rewriteAudience(table, key, read, (current) => {
+    if (current.kind !== "restricted") return undefined;
+    const before = principalsOf(current);
+    const after = before.filter((id) => !ids.has(id));
+    return after.length === before.length ? undefined : { kind: "restricted", acl: { ...current.acl, principals: after } };
+  });
+  const after = await named();
+  return after === "gone" || (after !== undefined && !principalsOf(after).some((id) => ids.has(id)));
+}
+
 async function eachInScope(dependencies: WorkDependencies, orgId: OrgId, scope: string, budget: WorkBudget, visit: (item: Item, key: { pk: string; sk: string }) => Promise<boolean>, resume?: ScopeCursor): Promise<WorkResult> {
   const expired = clock(dependencies).deadline(budget);
   // An audience or a member list belongs to ONE place: not the places under it. A place bigger than the budget is walked a page-run at a time from a cursor; the changes
