@@ -2,7 +2,7 @@ import { transactionAuditEvent } from "../support/transaction-audit.js";
 import * as spendRequests from "../../packages/broker/src/spend/requests.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";
+import { taskKey, taskPointerKey, taskRecipeKey } from "../../packages/broker/src/developer/task-records.js";
 import { operationKey } from "../../packages/broker/src/aws/cancellation.js";
 import { checkedTaskStopSnapshot } from "../../packages/broker/src/org/task-stop-window.js";
 import { spendRequestView, createSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
@@ -2540,4 +2540,60 @@ it("unpriced refusal uses the dependency clock and maps a lost native snapshot f
  };
  await expect(requirePricedTaskStopAdmission({ ...f.t.deps(), now: () => clock }, { orgId: TEST_ORG, actor: { kind: "member", id: MAYA.developerId }, workKind: "setup-check" })).rejects.toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
  expect(attemptedAt).toBe(new Date(clock).toISOString());
+});
+
+// Owner funding ruling C: prove the frozen source universe, without inventing
+// actual prior Plan/Build models for future checking stages. These exercise the
+// real broker/C53 evidence path; the exemption adapter remains under review.
+async function ownSourceFundingFixture(mixed = false) {
+ const f = await fixture(0, { agents: { modelSources: { launch: { kinds: ["bedrock"] } } } });
+ const { modelSourcesKey } = await import("@agentx/contracts");
+ const { bedrockClaudeModelIds } = await import("@agentx/model-runtime/catalog");
+ const sourceId = "src_abcdefghijklmnopqrst", sourceKey = modelSourcesKey(TEST_ORG);
+ f.t.db.set({ ...sourceKey, orgId: TEST_ORG, revision: 1,
+  sources: [{ sourceId, kind: "bedrock", label: "Company funding", roleArn: "arn:aws:iam::123456789012:role/test", region: "us-east-1", externalId: `rovara-${TEST_ORG}`, tested: true,
+   models: (mixed ? bedrockClaudeModelIds("us").slice(0, 1) : bedrockClaudeModelIds("us")).map(modelId => ({ catalog: { provider: "amazon-bedrock", modelId } })) }],
+  order: mixed ? [sourceId, "rovara"] : [sourceId], credentials: [], removing: [] });
+ return { ...f, sourceId, sourceKey };
+}
+it("funding C: every frozen stage excludes Rovara and commits durable own-source exemption evidence even at a zero stop", async () => {
+ const f = await ownSourceFundingFixture(), before = f.t.db.transactions().length;
+ const reply = await f.start();expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+ const taskId = (reply.body.task as { taskId: string }).taskId;
+ const committed = f.t.db.transactions().slice(before).find(items => items.some(item => (item.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "DEVELOPER_TASK"));
+ expect(committed).toBeDefined();
+ const audits = (committed ?? []).flatMap(item => { const event = (item.Put as { Item?: { event?: unknown } } | undefined)?.Item?.event;return event === undefined ? [] : [JSON.stringify(event)]; });
+ expect(audits.some(event => event.includes(f.sourceId) && event.includes("tested_bedrock_role") && event.includes("sourcesRevision"))).toBe(true);
+ const pinned = f.t.db.get(taskRecipeKey(taskId));
+ expect(pinned?.modelPolicyPin).toBeDefined();expect(JSON.stringify(pinned)).toContain("tested_bedrock_role");
+});
+it("funding C: a frozen stage universe permitting Rovara is not exempt from a zero stop", async () => {
+ const f = await ownSourceFundingFixture(true), reply = await f.start();
+ expect(reply.status).toBe(409);expect(reply.body.error).toMatchObject({ code: "TASK_STOP_ZERO" });
+ expect(f.t.db.find(row => row.entityType === "WORKSPACE")).toHaveLength(0);
+});
+it("funding C: a changed ChatGPT payer connection revision cannot inherit the admitted exemption before spending", async () => {
+ let connectedAt = "2026-10-31T07:00:00Z";
+ const f = await fixture(0, { extra: { chatgpt: { settings: async () => ({ enabled: true, preferredModel: "gpt-6.1-sol" }),
+  view: async () => ({ connected: true, status: "connected", connectedAt, models: ["gpt-6.1-sol"] }) } } });
+ const { modelSourcesKey } = await import("@agentx/contracts");
+ f.t.db.set({ ...modelSourcesKey(TEST_ORG), orgId: TEST_ORG, revision: 1, sources: [], order: ["personal-chatgpt"], credentials: [], removing: [] });
+ const started = await f.start();expect(started.status, JSON.stringify(started.body)).toBe(200);
+ const taskId = (started.body.task as { taskId: string }).taskId, task = f.t.meta(taskId), prepare = f.t.operations(String(task.workspaceId)).find(operation => operation.kind === "prepare")!;
+ await f.t.finish(String(task.workspaceId), prepare.id, "SUCCEEDED", PREPARED);
+ connectedAt = "2026-10-31T08:00:00Z";
+ const plan = f.t.taskOps(String(task.workspaceId)).at(-1)!;
+ const headers = { "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability };
+ const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers });
+ expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
+});
+it("funding C: a later actual Rovara route must re-admit or refuse before spending", async () => {
+ const f = await ownSourceFundingFixture(), started = await f.start();expect(started.status, JSON.stringify(started.body)).toBe(200);
+ const taskId = (started.body.task as { taskId: string }).taskId, task = f.t.meta(taskId), prepare = f.t.operations(String(task.workspaceId)).find(operation => operation.kind === "prepare")!;
+ await f.t.finish(String(task.workspaceId), prepare.id, "SUCCEEDED", PREPARED);
+ f.t.db.set({ ...f.t.db.get(f.sourceKey)!, revision: 2, order: ["rovara"] });
+ const plan = f.t.taskOps(String(task.workspaceId)).at(-1)!;
+ const headers = { "x-agentx-callback-capability": (f.t.outboxOf(plan.id)!.invocation as { callbackCapability: string }).callbackCapability };
+ const reply = await call(f.t.handler, { method: "GET", path: "/v1/internal/model-access", headers });
+ expect(reply.status).not.toBe(200);expect(f.t.access.mintKey).not.toHaveBeenCalled();
 });
