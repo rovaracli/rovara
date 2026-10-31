@@ -2,6 +2,9 @@
 // names, the tests the change added or changed, and the number of skips among the tests the change did not touch. AgentX never alters a customer's command (the same rule as TESTPROOF), so a check with no
 // report keeps one verdict and this module is never asked about it.
 //
+// Known limit (review M6): a `<testcase` inside another tag's attribute value, or an unclosed test case that swallows the next one, can merge or inflate counts; the broker's cross-check against its own check
+// outcome (evidence-pack.ts) is what catches a report that disagrees with the run.
+//
 // Fail closed and bounded:
 //   - the counts are those of the test cases actually read, never the file's own summary attributes (a header can say anything);
 //   - a file that is too large, empty, not a report, or holds no test case at all is `undefined` ("not measured"), never an all-passed report;
@@ -40,7 +43,7 @@ const DURATION_MAX_MS = 86_400_000;
 /** One plain line: control and format characters become spaces, runs of spaces collapse, secrets are redacted, and it is cut. Empty becomes "test". */
 export function plainName(text: string): string {
   const line = redactText(text.replace(/[\p{Cc}\p{Cf}]+/gu, " ")).replace(/\s+/gu, " ").trim();
-  return line === "" ? "test" : line.slice(0, NAME_MAX);
+  return line === "" ? "test" : Array.from(line).slice(0, NAME_MAX).join("");
 }
 
 function counted(format: ParsedTestReport["format"], tests: ReportedTest[]): ParsedTestReport {
@@ -101,6 +104,38 @@ function tagEnd(text: string, from: number): number {
   return -1;
 }
 
+/** A tag's attribute text longer than this makes the file unreadable: no real test case has attributes this long. */
+const ATTRIBUTE_TEXT_MAX = 16_384;
+const NAME_CHAR = /[\w:.-]/;
+const SPACE = /\s/;
+
+/** `name="value"` and `name='value'` pairs in one forward pass (no regular expression, no backtracking): each character is looked at once. A malformed pair is skipped, never retried. */
+function parseAttributes(text: string): Map<string, string> {
+  const attributes = new Map<string, string>();
+  let index = 0;
+  while (index < text.length) {
+    while (index < text.length && SPACE.test(text[index]!)) index += 1;
+    const nameStart = index;
+    while (index < text.length && NAME_CHAR.test(text[index]!)) index += 1;
+    if (index === nameStart) {
+      index += 1;
+      continue;
+    }
+    const name = text.slice(nameStart, index);
+    while (index < text.length && SPACE.test(text[index]!)) index += 1;
+    if (text[index] !== "=") continue;
+    index += 1;
+    while (index < text.length && SPACE.test(text[index]!)) index += 1;
+    const quote = text[index];
+    if (quote !== '"' && quote !== "'") continue;
+    const close = text.indexOf(quote, index + 1);
+    if (close === -1) break;
+    if (!attributes.has(name)) attributes.set(name, unescapeXml(text.slice(index + 1, close)));
+    index = close + 1;
+  }
+  return attributes;
+}
+
 /**
  * JUnit XML: `<testcase classname name file? time?>` with a `<failure>`, `<error>` or `<skipped>` child when it did not pass. Comments and CDATA are removed first. A case with both a failure and an
  * error is errored. Nested `<testsuites>` and `<testsuite>` are read through; their own count attributes are ignored. The scan is one forward pass (no backtracking), because the file is written by a
@@ -124,6 +159,7 @@ export function parseJunit(text: string): ParsedTestReport | undefined {
     if (end === -1) return undefined;
     const selfClosing = bare[end - 1] === "/";
     const attributeText = bare.slice(start + "<testcase".length, selfClosing ? end - 1 : end);
+    if (attributeText.length > ATTRIBUTE_TEXT_MAX) return undefined;
     let body = "";
     position = end + 1;
     if (!selfClosing) {
@@ -132,7 +168,7 @@ export function parseJunit(text: string): ParsedTestReport | undefined {
       body = bare.slice(position, close);
       position = close + 1;
     }
-    const attributes = new Map([...attributeText.matchAll(/([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map((attribute) => [attribute[1]!, unescapeXml(attribute[2] ?? attribute[3] ?? "")] as const));
+    const attributes = parseAttributes(attributeText);
     const status: ReportedTestStatus = /<error[\s/>]/.test(body) ? "errored" : /<failure[\s/>]/.test(body) ? "failed" : /<skipped[\s/>]/.test(body) ? "skipped" : "passed";
     const classname = attributes.get("classname");
     const file = attributes.get("file") ?? (classname === undefined || classname === "" ? undefined : /[/\\]/.test(classname) ? classname : classname.replaceAll(".", "/"));
@@ -149,8 +185,8 @@ interface JsonAssertion { fullName?: unknown; title?: unknown; status?: unknown;
 interface JsonSuite { name?: unknown; status?: unknown; message?: unknown; assertionResults?: unknown }
 
 /**
- * vitest `--reporter=json` and jest `--json`: `{ testResults: [{ name, status, message, assertionResults: [{ fullName, status, duration }] }] }`. `failed` is failed; `passed` is passed; every other status
- * (pending, todo, skipped, disabled) is skipped. A suite with no results and a failed status is one errored test named for the file.
+ * vitest `--reporter=json` and jest `--json`: `{ testResults: [{ name, status, message, assertionResults: [{ fullName, status, duration }] }] }`. `failed` is failed; `passed` is passed; `pending`, `todo`,
+ * `skipped` and `disabled` are skipped; any other status is errored. A suite that failed with no failing test of its own (no results, or a hook failure after passing tests) adds one errored test named for the file.
  */
 export function parseJsonReport(text: string): ParsedTestReport | undefined {
   let parsed: unknown;
@@ -162,21 +198,24 @@ export function parseJsonReport(text: string): ParsedTestReport | undefined {
   const suites = typeof parsed === "object" && parsed !== null ? (parsed as { testResults?: unknown }).testResults : undefined;
   if (!Array.isArray(suites)) return undefined;
   const tests: ReportedTest[] = [];
+  const SKIPPED_STATUSES = new Set(["pending", "todo", "skipped", "disabled"]);
   for (const suite of suites as JsonSuite[]) {
     if (typeof suite !== "object" || suite === null) continue;
     const file = typeof suite.name === "string" && suite.name !== "" ? suite.name : undefined;
     const results = Array.isArray(suite.assertionResults) ? (suite.assertionResults as JsonAssertion[]) : [];
-    if (results.length === 0 && suite.status === "failed") {
-      tests.push({ ...(file === undefined ? {} : { file }), name: plainName(file ?? "test suite"), status: "errored" });
-      continue;
-    }
-    for (const result of results) {
+    const objects = results.filter((result): result is JsonAssertion => typeof result === "object" && result !== null);
+    for (const result of objects) {
       if (tests.length >= TEST_REPORT_MAX_TESTS) return undefined;
-      if (typeof result !== "object" || result === null) continue;
-      const status: ReportedTestStatus = result.status === "passed" ? "passed" : result.status === "failed" ? "failed" : "skipped";
+      // Fail closed: only a status that means "did not run on purpose" is skipped; any other word (a new one, garbage) is an error, never a quiet skip.
+      const status: ReportedTestStatus = result.status === "passed" ? "passed" : result.status === "failed" ? "failed" : typeof result.status === "string" && SKIPPED_STATUSES.has(result.status) ? "skipped" : "errored";
       const name = typeof result.fullName === "string" ? result.fullName : typeof result.title === "string" ? result.title : "";
       const ms = duration(typeof result.duration === "number" ? result.duration : undefined, "ms");
       tests.push({ ...(file === undefined ? {} : { file }), name: plainName(name), status, ...(ms === undefined ? {} : { durationMs: ms }) });
+    }
+    // A suite that failed with no failing test of its own (it failed to load, or a hook such as afterAll failed) keeps its failure as one errored entry named for the file.
+    if (suite.status === "failed" && !objects.some((result) => result.status === "failed")) {
+      if (tests.length >= TEST_REPORT_MAX_TESTS) return undefined;
+      tests.push({ ...(file === undefined ? {} : { file }), name: plainName(file ?? "test suite"), status: "errored" });
     }
   }
   return tests.length === 0 ? undefined : counted("json", tests);

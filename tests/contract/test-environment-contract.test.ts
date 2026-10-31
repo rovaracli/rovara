@@ -165,6 +165,64 @@ describe("less-safe fields", () => {
   });
 });
 
+describe("targets that move, and the production deny list", () => {
+  const moved = { ...preprodService, preprod: { ...preprodService.preprod, endpointArn: "arn:aws:sagemaker:us-west-2:222233334444:endpoint/other-scorer" } };
+  const sharedBlock = (baseUrl: string) => ({ baseUrl, leaseScope: "env", dataNamespace: "task_prefix" });
+  it("counts pointing an already-on pre-prod service at another endpoint, URL or role as a less-safe change", () => {
+    expect(env.testEnvLessSafeChanges(body({ services: [preprodService] }), body({ services: [moved] }))).toEqual(["preprod_target_changed"]);
+    const otherRole = { ...preprodService, preprod: { ...preprodService.preprod, roleArn: "arn:aws:iam::222233334444:role/wider" } };
+    expect(env.testEnvLessSafeChanges(body({ services: [preprodService] }), body({ services: [otherRole] }))).toEqual(["preprod_target_changed"]);
+    const http = (url: string) => ({ name: "billing", kind: "http", match: { host: "billing.example.com" }, mode: "preprod", preprod: { url, region: "us-west-2" } });
+    expect(env.testEnvLessSafeChanges(body({ services: [http("https://a.beta.example.com")] }), body({ services: [http("https://b.beta.example.com")] }))).toEqual(["preprod_target_changed"]);
+  });
+  it("counts one more pre-prod service next to an old one, but not the same target again", () => {
+    const second = { ...preprodService, name: "second", match: { endpointName: "second" } };
+    expect(env.testEnvLessSafeChanges(body({ services: [preprodService] }), body({ services: [preprodService, second] }))).toEqual(["preprod_target_changed"]);
+    expect(env.testEnvLessSafeChanges(body({ services: [preprodService] }), body({ services: [preprodService], roundBudgetMin: 30 }))).toEqual([]);
+  });
+  it("counts a changed shared base URL, preview role and account target, and not an unchanged one", () => {
+    const sharedEnv = (url: string) => body({ tier: "shared", shared: sharedBlock(url) });
+    expect(env.testEnvLessSafeChanges(sharedEnv("https://beta.example.com"), sharedEnv("https://gamma.example.com"))).toEqual(["shared_target_changed"]);
+    expect(env.testEnvLessSafeChanges(sharedEnv("https://beta.example.com"), sharedEnv("https://beta.example.com"))).toEqual([]);
+    const previewEnv = (role: string) => body({ tier: "preview", preview: { ...previewBlock, deployRoleArn: role } });
+    expect(env.testEnvLessSafeChanges(previewEnv("arn:aws:iam::222233334444:role/a"), previewEnv("arn:aws:iam::222233334444:role/b"))).toEqual(["preview_target_changed"]);
+    const hook = (createUrl: string) => ({ profileId: "svc", provisioner: "http_hook", createUrl, deleteUrl: "https://t.example.com/delete", tokenSecretName: "TEST_TOKEN" });
+    expect(env.testEnvLessSafeChanges(body({ accounts: [hook("https://t.example.com/create")] }), body({ accounts: [hook("https://other.example.com/create")] }))).toEqual(["account_target_changed"]);
+    expect(env.testEnvLessSafeChanges(body({ accounts: [hook("https://t.example.com/create")] }), body({ accounts: [hook("https://t.example.com/create")] }))).toEqual([]);
+  });
+  it("counts removing anything from the production deny list, and not adding to it", () => {
+    const deny = (over: Record<string, unknown>) => body({ prodDeny: { accountIds: ["111122223333"], hosts: ["*.prod.example.com"], arnPrefixes: ["arn:aws:sagemaker:us-east-1:111122223333:"], ...over } });
+    expect(env.testEnvLessSafeChanges(deny({}), deny({ accountIds: [] }))).toEqual(["prod_deny_reduced"]);
+    expect(env.testEnvLessSafeChanges(deny({}), deny({ hosts: ["*.other.example.com"] }))).toEqual(["prod_deny_reduced"]);
+    expect(env.testEnvLessSafeChanges(deny({}), deny({ arnPrefixes: [] }))).toEqual(["prod_deny_reduced"]);
+    expect(env.testEnvLessSafeChanges(deny({}), deny({ accountIds: ["111122223333", "999900001111"] }))).toEqual([]);
+  });
+  it("refuses a body whose pre-prod, shared, preview or account target is on the deny list, by account, ARN prefix or host glob", () => {
+    const prodArn = "arn:aws:sagemaker:us-east-1:111122223333:endpoint/partner-scorer";
+    const inProd = (service: Record<string, unknown>) => parses(raw({ services: [{ ...preprodService, preprod: { ...preprodService.preprod, ...service } }] }));
+    expect(inProd({ endpointArn: prodArn })).toBe(false);
+    expect(inProd({ endpointArn: "arn:aws:sagemaker:eu-west-1:111122223333:endpoint/x" })).toBe(false);
+    expect(inProd({ roleArn: "arn:aws:iam::111122223333:role/x" })).toBe(false);
+    expect(inProd({ endpointArn: "arn:aws:sagemaker:us-west-2:222233334444:endpoint/ok" })).toBe(true);
+    const http = (url: string) => raw({ services: [{ name: "billing", kind: "http", match: { host: "billing.example.com" }, mode: "preprod", preprod: { url, region: "us-west-2" } }] });
+    expect(parses(http("https://billing.prod.example.com/api"))).toBe(false);
+    expect(parses(http("https://BILLING.PROD.EXAMPLE.COM/api"))).toBe(false);
+    expect(parses(http("https://billing.beta.example.com/api"))).toBe(true);
+    expect(parses(http("https://prodxexample.com/api"))).toBe(true);
+    expect(parses(raw({ tier: "shared", shared: sharedBlock("https://app.prod.example.com") }))).toBe(false);
+    expect(parses(raw({ tier: "preview", preview: { ...previewBlock, deployRoleArn: "arn:aws:iam::111122223333:role/deploy" } }))).toBe(false);
+    expect(parses(raw({ accounts: [{ profileId: "p", provisioner: "cognito_test_pool", userPoolId: "us-west-2_abc", region: "us-west-2", roleArn: "arn:aws:iam::111122223333:role/x" }] }))).toBe(false);
+    expect(parses(raw({ accounts: [{ profileId: "p", provisioner: "http_hook", createUrl: "https://x.prod.example.com/c", deleteUrl: "https://t.example.com/d", tokenSecretName: "T" }] }))).toBe(false);
+    expect(env.testEnvTouchesProd(body())).toBe(false);
+  });
+  it("needs a run-scoped account for video or traces in a shared environment", () => {
+    const sharedEnv = (accounts: unknown[]) => raw({ tier: "shared", shared: sharedBlock("https://beta.example.com"), accounts, capture: { screenshots: "all", video: true, traces: false } });
+    expect(parses(sharedEnv([]))).toBe(false);
+    expect(parses(sharedEnv([{ profileId: "buyer", provisioner: "seed_command", command: cmd("python", ["x.py"]) }]))).toBe(true);
+    expect(parses(raw({ accounts: [], capture: { screenshots: "all", video: true, traces: true } }))).toBe(true);
+  });
+});
+
 describe("approve_test_env card risk", () => {
   it("is medium for a plain sandbox and high for pre-prod, a shared env, tier 2, video or traces", () => {
     expect(env.testEnvApprovalRisk(body())).toBe("medium");
@@ -199,8 +257,17 @@ describe("Prove report", () => {
   it("is proved only when every step passed or was skipped and the report is for exactly this digest", () => {
     expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report()), sha("a"))).toBe(true);
     expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report()), sha("b"))).toBe(false);
-    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report({ steps: [step("setup"), step("mocks", "skipped")] })), sha("a"))).toBe(true);
+    expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report({ steps: [step("setup"), step("boot"), step("smoke"), step("mocks", "skipped")] })), sha("a"))).toBe(true);
     expect(env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report({ steps: [step("setup"), step("boot", "failed", { failure: "boot_failed" })] })), sha("a"))).toBe(false);
+  });
+  it("is not proved when everything was skipped, when neither the smoke check nor the full suite passed, or when a service never booted", () => {
+    const proved = (over: Record<string, unknown>) => env.testEnvIsProved(env.TestEnvProveReportSchema.parse(report(over)), sha("a"));
+    expect(proved({ steps: [step("setup", "skipped"), step("build", "skipped"), step("boot", "skipped"), step("smoke", "skipped"), step("full_suite", "skipped")] })).toBe(false);
+    expect(proved({ steps: [step("setup"), step("build"), step("boot")] })).toBe(false);
+    expect(proved({ steps: [step("setup"), step("boot", "skipped"), step("smoke")] })).toBe(false);
+    expect(proved({ steps: [step("setup"), step("smoke")], services: [] })).toBe(true);
+    expect(proved({ steps: [step("setup"), step("boot"), step("full_suite")] })).toBe(true);
+    expect(proved({ steps: [step("setup"), step("boot"), step("smoke", "skipped"), step("full_suite")] })).toBe(true);
   });
   it("never reads a missing or empty report as proved", () => {
     expect(env.testEnvIsProved(undefined, sha("a"))).toBe(false);
