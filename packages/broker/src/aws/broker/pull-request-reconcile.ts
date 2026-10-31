@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { CheckReportSchema, LatestChecksSchema, PULL_REQUEST_BODY_MAX_CHARS, checksMakeDraft, checksSection, type StandingFailure, canonicalJson, workflowIsReviewOnly, blockWorkflow, WorkItemProgressV1Schema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, type CheckEntry, type LatestChecks, agentXError, type WorkflowSnapshot, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_FEEDBACK_REVIEW_ANSWER_ARTIFACT, redactText, auditPullRequestId } from "@agentx/contracts";
+import { CheckReportSchema, LatestChecksSchema, PULL_REQUEST_BODY_MAX_CHARS, checksMakeDraft, checksSection, type StandingFailure, canonicalJson, workflowIsReviewOnly, blockWorkflow, WorkItemProgressV1Schema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, type CheckEntry, type LatestChecks, agentXError, type WorkflowSnapshot, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_FEEDBACK_REVIEW_ANSWER_ARTIFACT, redactText, auditPullRequestId, codeRepositoriesOf } from "@agentx/contracts";
 import { auditPending, auditTransact, tryAuditEvent } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPullRequestOpened } from "../../audit/events.js";
@@ -678,7 +678,7 @@ async function validateWorkflowProgressChunk(
       throw agentXError("CALLBACK_FORBIDDEN", "the approved work breakdown base tree cannot be confirmed");
     }
     const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
-    const repository = project.definition.repositories.find((entry) => entry.name === invocation.graph.items[0]?.repository);
+    const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === invocation.graph.items[0]?.repository);
     if (repository === undefined) throw agentXError("CALLBACK_FORBIDDEN", "the approved work breakdown repository is no longer registered");
     firstBaseTree = await dependencies.githubPullRequests.getCommitTree(repository.url, baseCommit, await githubScopeOf(dependencies, task));
   }

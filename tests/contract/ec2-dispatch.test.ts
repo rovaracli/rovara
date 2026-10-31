@@ -559,6 +559,30 @@ describe("ec2-ebs delivery", () => {
         expect(postedPayload(capable.post).workflowE2EAdmission).toEqual(ref);
       });
 
+      it("never sends a round whose capture policy uses a strip or API samples to a worker that does not list task.workflowE2ECaptureExtras.v1, and says why (proof and evidence I6)", async () => {
+        const record = checks(admission({ kind: "application", captureExtras: true }));
+        const older = delivery({ workerFeatures: async () => [...checksFeatures, "task.workflowE2EApplicationChecks"] });
+        const refusal = await older.deliver(record, record.invocation).then(() => undefined, (error: unknown) => error as { code?: string; message?: string });
+        expect(refusal?.code).toBe("RUNTIME_UNAVAILABLE");
+        expect(refusal?.message).toContain("screenshot strips or API samples");
+        expect(older.post).not.toHaveBeenCalled();
+      });
+
+      it("hands a round with capture extras, unchanged, to a worker that lists the feature, and a round without them to an older worker as before (I6)", async () => {
+        const ref = admission({ kind: "application", captureExtras: true });
+        const capable = delivery({ workerFeatures: async () => [...checksFeatures, "task.workflowE2EApplicationChecks", "task.workflowE2ECaptureExtras.v1"], workflowE2EAdmissionSchemaVersion: async () => "workflow-e2e-application-admission/v1" });
+        expect(await capable.deliver(checks(ref), checks(ref).invocation)).toBe("DELIVERED");
+        expect(postedPayload(capable.post).workflowE2EAdmission).toEqual(ref);
+        const plain = admission({ kind: "application" });
+        const older = delivery({ workerFeatures: async () => [...checksFeatures, "task.workflowE2EApplicationChecks"], workflowE2EAdmissionSchemaVersion: async () => "workflow-e2e-application-admission/v1" });
+        expect(await older.deliver(checks(plain), checks(plain).invocation)).toBe("DELIVERED");
+      });
+
+      it("fails closed for a round with capture extras when the worker cannot be asked which features it lists (I6)", async () => {
+        const record = checks(admission({ kind: "application", captureExtras: true }));
+        await expect(delivery().deliver(record, record.invocation)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+      });
+
       it("never sends a round with AI navigation steps to a worker that lists agent steps but not task.workflowE2EMidStepSync.v1 (MIDSTEPCOOKIE: a scan a step old), and says why", async () => {
         const ref = admission({ kind: "application", agentSteps: true });
         const record = checks(ref);
@@ -1171,6 +1195,21 @@ describe("ec2-ebs delivery", () => {
         const capable = delivery({ workerFeatures: async () => ["task.agentRun"] });
         await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
         expect(postedPayload(capable.post).readOnly).toBe(true);
+      });
+
+      it("refuses a preparation that brings the project's meta repo on a worker that lacks prepare.metaRepo, and sends it unchanged to one that has it (meta repo lane A)", async () => {
+        const meta = { repository: { name: "service-meta", url: "https://github.com/acme/service-meta.git", path: "repo/service-meta", defaultBranch: "main", credentialRef: "github-app" }, paths: [".kiro/steering"], commit: "a".repeat(40) };
+        const record = { ...taskRecord({}), invocation: { ...taskRecord({}).invocation, kind: "prepare", payload: { project: { name: "payments", revision: 1, repositories: [], setup: [], readiness: [], orchestratorInstructions: "x" }, repositoryGrant: "signed-grant", meta } } as unknown as WorkerInvocation };
+        for (const features of [undefined, [], ["task.agentRun", "task.agentStep"]]) {
+          const older = delivery(features === undefined ? {} : { workerFeatures: async () => features });
+          const refused = await older.deliver(record, record.invocation).then(() => undefined, (error: unknown) => error as { code?: string; message?: string });
+          expect(refused?.code).toBe("RUNTIME_UNAVAILABLE");
+          expect(refused?.message).toContain("This project's meta repo needs a newer worker");
+          expect(older.post).not.toHaveBeenCalled();
+        }
+        const capable = delivery({ workerFeatures: async () => ["prepare.metaRepo"] });
+        await expect(capable.deliver(record, record.invocation)).resolves.toBe("DELIVERED");
+        expect(postedPayload(capable.post).meta).toEqual(meta);
       });
 
       it("never drops a governed model policy binding for an older or unprobed worker",async()=>{

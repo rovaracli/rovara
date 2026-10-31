@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): builds the dependency objects handed to the agent, chain, admin, plan and developer-task routes.
 
+import { liveSteerFromEnvironment } from "../../agent-sessions/live-steer.js";
 import { readServiceStatusEvidence } from "../service-status-runtime.js";
 import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "../../org/project-working-branch-provider.js";
 import { createHmac, randomUUID } from "node:crypto";
@@ -208,6 +209,8 @@ export function agentRouteDependencies(dependencies: AwsBrokerDependencies, task
     ...(realtimeConfigFromEnvironment() === undefined ? {} : { realtimePublish: realtimeConfigFromEnvironment()! }),
     // Plan 4's move of a chain run's owner and payer to the person who took its session over.
     chainOwner: agents.sessions?.chainOwner ?? chainOwnerMoverFor(routeDependencies as ChainRouteDependencies),
+    // Live steer: a message to a running step also reaches its session (agent-sessions/live-steer.ts).
+    liveSteer: liveSteerFromEnvironment(dependencies.callbackSigningKey),
   };
   // Plan 6, Task 19: what pressing Merge and its confirmation need (GitHub's reads and the merge, the task and its repositories), on the same dependencies.
   const codeMerge = codeMergeHostOf(dependencies);

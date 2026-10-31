@@ -3,7 +3,17 @@ import { agentXError } from "@agentx/contracts";
 
 export interface AbortablePiSession {
   abort(): Promise<void>;
+  /**
+   * Live steer: queues a message for the step's running session(s) (pi delivers it after the current tool calls, before the next model call). Answers whether a session took it (false: none is
+   * streaming now). Absent for a step that takes none.
+   */
+  steer?(text: string): Promise<boolean>;
+  /** Whether a session of the step is streaming a prompt now: a message is given only then (an idle session would keep it for a later prompt, or lose it). Absent: never. */
+  streaming?(): boolean;
 }
+
+/** A person's live message the step's session took: its id and the authority it was given with (the step stops for re-approval only on the owner's). */
+export interface LiveSteerTaken { messageId: string; authority: "owner_instruction" | "information" }
 
 export class WorkerOperationCancelledError extends Error {
   constructor(readonly operationId: string) {
@@ -15,6 +25,7 @@ export class WorkerOperationCancelledError extends Error {
 interface ActiveOperation {
   session?: AbortablePiSession;
   processes: Set<ChildProcess>;
+  liveSteers: LiveSteerTaken[];
 }
 
 export class WorkerCancellationController {
@@ -26,6 +37,7 @@ export class WorkerCancellationController {
     const operation: ActiveOperation = {
       ...(session === undefined ? {} : { session }),
       processes: new Set(),
+      liveSteers: [],
     };
     this.active.set(operationId, operation);
     return () => this.active.delete(operationId);
@@ -74,6 +86,36 @@ export class WorkerCancellationController {
 
   isCancelled(operationId: string): boolean {
     return this.cancelled.has(operationId);
+  }
+
+  /** Whether the operation is registered with a session that takes messages and was not cancelled. */
+  canSteer(operationId: string): boolean {
+    return this.active.get(operationId)?.session?.steer !== undefined && !this.cancelled.has(operationId);
+  }
+
+  /** Whether a message can be given now: `canSteer`, and a session of the step is streaming a prompt (an idle session only keeps a message for a later prompt, or loses it). */
+  canSteerNow(operationId: string): boolean {
+    return this.canSteer(operationId) && this.active.get(operationId)?.session?.streaming?.() === true;
+  }
+
+  /**
+   * Gives a message to the streaming session(s) of a running operation. `not_running`: no such operation is registered, it takes no message, it was cancelled, or no session of it is
+   * streaming now. A rejection of pi's own is thrown (the caller turns it into a fixed outcome; the message is never put in it).
+   */
+  async steer(operationId: string, text: string): Promise<"steered" | "not_running"> {
+    const operation = this.active.get(operationId);
+    if (operation?.session?.steer === undefined || this.cancelled.has(operationId) || operation.session.streaming?.() !== true) return "not_running";
+    return (await operation.session.steer(text)) ? "steered" : "not_running";
+  }
+
+  /** Remembers a live message the operation's session took, for the step to read at its end (the owner's re-approval marker counts only after an owner's message). */
+  recordLiveSteer(operationId: string, taken: LiveSteerTaken): void {
+    this.active.get(operationId)?.liveSteers.push(taken);
+  }
+
+  /** The live messages the operation's session took so far, oldest first. */
+  liveSteers(operationId: string): readonly LiveSteerTaken[] {
+    return this.active.get(operationId)?.liveSteers ?? [];
   }
 }
 

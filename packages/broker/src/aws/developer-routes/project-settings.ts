@@ -1,6 +1,8 @@
 import { readAllowedDomainActorConditions } from "../../org/second-person-evidence.js";
 import { AgentXNameSchema, agentXError, type AppProjectDetail } from "@agentx/contracts";
 import { updateProjectSettings } from "../../org/project-settings.js";
+import { routeMetaConfig } from "../../meta-repo/config-import.js";
+import { StatusReply } from "../status-reply.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 import { PROJECT_NOT_FOUND_IN_APP } from "./common.js";
 import { latestProjectRecord, repositoryFullName, visibleProjectRoles } from "./project-list.js";
@@ -47,4 +49,25 @@ export async function putProjectSettings(deps: DeveloperRouteDependencies, calle
     effectiveRole: async (who, project) => (await visibleProjectRoles(deps, who, project)).get(project),
     readProject: (who, project) => getAppProject(deps, who, project),
   }, caller, name, body);
+}
+
+/**
+ * Meta repo lane A: `GET /v1/app/projects/{name}/meta-config` (what the file manages and the pending change), `POST .../apply`, `.../dismiss` and `.../check`
+ * (a maintainer asks Rovara to read the meta repo's head again). The project's role comes from the same place the settings route reads it.
+ */
+export async function projectMetaConfigRoute(deps: DeveloperRouteDependencies, caller: DeveloperCaller, rawName: string, action: string | undefined, method: string, body: unknown): Promise<StatusReply> {
+  const notFound = () => agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
+  let name: string;
+  try { name = decodeURIComponent(rawName); } catch { throw notFound(); }
+  if (!AgentXNameSchema.safeParse(name).success) throw notFound();
+  if (deps.metaConfig === undefined) throw agentXError("NOT_FOUND", "the meta repo is not set up in this deployment");
+  const answer = await routeMetaConfig({
+    documentClient: deps.documentClient,
+    tableName: deps.tableName,
+    now: deps.now,
+    cloud: deps.cloud === true,
+    effectiveRole: async (who, project) => (await visibleProjectRoles(deps, who, project)).get(project),
+    ...deps.metaConfig,
+  }, caller, name, { method, action, body });
+  return new StatusReply(answer.status, answer.body as object);
 }

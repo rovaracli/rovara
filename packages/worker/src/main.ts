@@ -23,6 +23,7 @@ import { createDefaultProjectSetupExecutor, createReadinessGatedProjectSetupRunt
 import { postProjectSetupTerminalResult } from "./project-setup-callback.js";
 import { postWorkerTerminalResult } from "./terminal-callback.js";
 import { executeWorkerCancelInvocation } from "./cancel-invocation.js";
+import { handleSteerInvocation } from "./steer-invocation.js";
 import { removeLeftoverMaskVolumes } from "./devcontainer.js";
 import { removeLeftoverTaskSandboxes, taskShellSelection } from "./task-sandbox.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
@@ -73,6 +74,7 @@ const state = createWorkerServerState(
     invocationFeatureDiagnostics: projectSetupRuntime.invocationFeatureDiagnostics,
     // Application CHECKS are listed on /ping only while this worker can run them, from the last background check (never a Docker call per ping).
     ...applicationChecks.executor,
+    steer: (invocation) => handleSteerInvocation(invocation, cancellationController, journal),
     async execute(invocation: WorkerInvocation): Promise<unknown> {
       if (invocation.kind === "project-setup-smoke") {
         return projectSetupRuntime.execute(invocation);
@@ -92,6 +94,8 @@ const state = createWorkerServerState(
           ...(invocation.payload.checkout === undefined ? {} : { checkout: invocation.payload.checkout }),
           // An agent-step run's preparation runs none of the repository's code (runs I-2).
           ...(invocation.payload.readOnly === true ? { readOnly: true } : {}),
+          // Meta repo lane A3: the project's meta repository, read-only and sparse.
+          ...(invocation.payload.meta === undefined ? {} : { meta: invocation.payload.meta }),
         });
         return {
           manifestPath: ".agentx/preparation-manifest.json",

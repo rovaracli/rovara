@@ -31,6 +31,8 @@ import { releaseOrgModelSources } from "../../model-sources/release.js";
 import { archiveOrgProjects } from "../../org/project-archive.js";
 import { DEFAULT_ROVARA_WEB_ORIGIN, inviteUrl } from "../../org/invite-url.js";
 import { parseCreateProjectBody } from "../../org/cloud-projects.js";
+import { createProjectFromMetaRoute } from "../../org/create-from-meta.js";
+import { isCreateFromMetaBody } from "@agentx/contracts";
 import { changeBudgets, ensureSynced, memberLimitOf, type BudgetDependencies, type OrgBudgetSettings } from "../../org/budget.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
@@ -55,6 +57,11 @@ import { sessionReadDependencies } from "./dependencies.js";
 export async function createProject(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<StatusReply> {
   if (deps.cloud !== true) throw agentXError("FORBIDDEN", "projects on this install are created by an administrator; ask an administrator to run agentx project add");
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can create a project; ask your organization's owner");
+  // Meta repo lane A: a body with a `metaRepository` starts a project from a meta repo.
+  if (isCreateFromMetaBody(body)) {
+    const made = await createProjectFromMetaRoute({ cloud: true, ...(deps.createFromMeta === undefined ? {} : { createFromMeta: deps.createFromMeta }) }, caller, body);
+    return new StatusReply(made.status, made.body);
+  }
   if (deps.createProject === undefined) throw agentXError("NOT_FOUND", "project creation is not set up in this deployment");
   const created = await deps.createProject(caller, parseCreateProjectBody(body));
   return new StatusReply(created.duplicate ? 200 : 201, created);

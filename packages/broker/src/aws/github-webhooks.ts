@@ -51,8 +51,8 @@ export const GITHUB_WEBHOOK_RECOVERY_INDEX = "github-webhook-recovery";
 const GITHUB_WEBHOOK_RECOVERY_PK = "GITHUB_WEBHOOK_RECOVERY";
 const MAX_WEBHOOK_ATTEMPTS = 8;
 
-/** The events (GitHub's `X-GitHub-Event` names) that can start a trigger, as well as being, for pull requests, feedback on a linked task. */
-export const GITHUB_TRIGGER_EVENT_NAMES: ReadonlySet<string> = new Set(["pull_request", "issues", "deployment_status", "workflow_run"]);
+/** The events (GitHub's `X-GitHub-Event` names) that can start a trigger, as well as being, for pull requests, feedback on a linked task. A `push` is not a trigger: it is a meta repo's config changing (meta-repo/config-import.ts). */
+export const GITHUB_TRIGGER_EVENT_NAMES: ReadonlySet<string> = new Set(["pull_request", "issues", "deployment_status", "workflow_run", "push"]);
 
 export const GITHUB_WEBHOOK_SIGNATURE_INVALID = "GitHub webhook signature is invalid";
 
@@ -1037,6 +1037,19 @@ async function handleInstallationEvent(
   return { status: "ACCEPTED", deliveryId };
 }
 
+/** Longest the Team record tap may hold a delivery's answer (GitHub gives up on a webhook after ten seconds and does not retry by itself). */
+export const RECORD_TAP_BUDGET_MS = 3_000;
+
+/** Waits for `work` at most `ms`, and never throws: a slow or failing tap changes nothing about the delivery. */
+async function withinBudget(work: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([work.catch(() => undefined), new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** Shared endpoint path: verify, durably reserve, claim, process, then record the outcome. */
 export async function handleGithubWebhook(input: {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -1055,6 +1068,11 @@ export async function handleGithubWebhook(input: {
    * those events are what they were (refused unless they are a linked pull request's feedback). Present, a signed event neither this nor the feedback path uses is answered `IGNORED`.
    */
   triggerEvents?: (input: { eventName: string; payload: unknown; installationId: number }) => Promise<{ events: number; duplicates: number }>;
+  /**
+   * Team record (R5): offered every verified delivery before it is looked at (`createGithubRecordTap`). It never throws and decides for itself what to keep;
+   * an event it does not use, or a repository no project has registered, is left alone. Absent: nothing is offered, as before.
+   */
+  recordTap?: (verified: { eventName: string | undefined; deliveryId: string; payload: unknown }) => Promise<unknown>;
   now(): string;
 }): Promise<{ status: "ACCEPTED" | "DUPLICATE" | "IN_PROGRESS" | "IGNORED"; deliveryId: string; lifecycle?: true; trigger?: true }> {
   if ((input.installationCreated !== undefined || input.installationLifecycle !== undefined)
@@ -1080,10 +1098,11 @@ export async function handleGithubWebhook(input: {
         ...delivery,
         now: input.now(),
       }),
-      ...(triggerEvents === undefined ? {} : {
+      ...(triggerEvents === undefined && input.recordTap === undefined ? {} : {
         onVerified: async ({ eventName, deliveryId, payload }) => {
           verifiedDelivery = deliveryId;
-          if (eventName === undefined || !GITHUB_TRIGGER_EVENT_NAMES.has(eventName)) return;
+          if (input.recordTap !== undefined) await withinBudget(input.recordTap({ eventName, deliveryId, payload }), RECORD_TAP_BUDGET_MS);
+          if (triggerEvents === undefined || eventName === undefined || !GITHUB_TRIGGER_EVENT_NAMES.has(eventName)) return;
           const installation = z.object({ installation: z.object({ id: z.number().int().positive() }).passthrough() }).passthrough().safeParse(payload);
           if (installation.success) triggered = await triggerEvents({ eventName, payload, installationId: installation.data.installation.id });
         },

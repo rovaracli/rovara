@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): Slack workflow, people and note events.
 
+import type { SlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, RUN_INPUT_TEXT_MAX_BYTES, sharedTaskKey, SLACK_THREAD_OWNER_ISSUER, SlackMessageTimestampSchema, SlackRequesterSchema, SlackThreadSchema, agentXError, slackThreadSubject, type SlackThread, type OrgId, WORKFLOW_RESOLVE_FINDINGS_MAX, type E2EApplicationPlanIntent } from "@agentx/contracts";
@@ -462,6 +463,14 @@ export async function slackTaskAccess(
 }
 
 /** Task 16: Send back to coding, through the same route an AI tool uses. */
+/** Live steer: the owner's Revise the plan, through the same route the task page uses. */
+export async function reviseSlackWorkflowPlan(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackWorkflowRevisePlanEvent) {
+  const { taskId, requestId, caller, developer } = await ownedSlackWorkflowTask(dependencies, event, "revise the plan");
+  const routeDeps = slackWorkflowRouteDependencies(dependencies, tasks, developer, caller);
+  const path = `/v1/dev/tasks/${taskId}/workflow/revise-plan`;
+  return routeDeveloperTaskRequest(routeDeps, caller, { method: "POST", path, headers: {}, requestId, body: JSON.stringify({ requestId, expectedRevision: event.expectedRevision }) }, new URL(path, "https://agentx.invalid"));
+}
+
 export async function sendSlackWorkflowBack(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackWorkflowSendBackEvent) {
   const { taskId, requestId, caller, developer } = await ownedSlackWorkflowTask(dependencies, event, "send this task back to coding");
   const routeDeps = slackWorkflowRouteDependencies(dependencies, tasks, developer, caller);

@@ -15,9 +15,11 @@ import {
   StoredProjectDefinitionSchema,
   agentXError,
   redactText,
+  type PrepareMeta,
   type ProjectCommand,
   type StoredProjectDefinition,
 } from "@agentx/contracts";
+import { materializeMetaKnowledge } from "./meta-checkout.js";
 import {
   createDevcontainerCli,
   devcontainerTarget,
@@ -64,6 +66,11 @@ export interface PreparationManifest {
     /** A pull request's head the workspace has checked out (detached, read-only) for an agent-step run that looks at it. */
     checkedOut?: { pullRequest: number; headSha: string };
   }>;
+  /**
+   * Meta repo lane A3: the project's meta repository, materialized read-only and sparse (meta-checkout.ts). `resolvedCommit` is the `knowledgeCommit` every stage reads.
+   * Absent from manifests written before it and for a project with no separate meta repository.
+   */
+  meta?: { name: string; path: string; defaultBranch: string; resolvedCommit: string; files: number; bytes: number; skipped: number; completedAt: string };
   completedSetupSteps: number[];
   /** The project's devcontainer (#121), recorded once it has started. */
   devcontainer?: {
@@ -136,6 +143,11 @@ export interface PrepareWorkspaceOptions {
    * The manifest is complete after the checkout, so a head that breaks the project's build can still be reviewed.
    */
   readOnly?: boolean;
+  /**
+   * Meta repo lane A3: the project's meta repository, which the project's own repositories no longer list. It is cloned like the others (same credential exchange and retries), then only
+   * the listed knowledge paths are materialized, read-only, at the default branch's head. The preparation fails if it cannot: a task never runs without the team's rules.
+   */
+  meta?: PrepareMeta;
   /** Tests only: where a pull request head is fetched from (the repository's own URL by default; a fixture is not an HTTPS URL a project may name). */
   pullRequestRemote?: (repository: StoredProjectDefinition["repositories"][number]) => string;
   /** Tests only: how the credentialed pull request fetch runs Git (the real Git by default). */
@@ -235,6 +247,11 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
     options.creationIdentity ?? "agentx-worker",
   );
 
+  // A finished workspace is reused as it is, so the meta repository it holds must be the one asked for now (a task never reads a commit the broker did not pin for it).
+  if (options.meta !== undefined && manifest.complete) {
+    if (manifest.meta === undefined) throw new Error("the workspace was prepared without the meta repository");
+    if (manifest.meta.resolvedCommit !== options.meta.commit) throw new Error("the workspace holds the meta repository at another commit than the one asked for");
+  }
   if (manifest.complete) {
     await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
     return manifest;
@@ -280,6 +297,14 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
         ...(checkedOut === undefined ? {} : { checkedOut }),
       });
       manifest = await writeManifest(canonicalRoot, withoutFailure(manifest));
+    }
+
+    // The broker names the commit (`meta.commit`); a workspace prepared earlier at another one is not reused, so a task never reads a commit the broker did not pin for it.
+    if (options.meta !== undefined && manifest.meta !== undefined && manifest.meta.resolvedCommit !== options.meta.commit) {
+      throw new Error("the workspace holds the meta repository at another commit than the one asked for");
+    }
+    if (options.meta !== undefined && manifest.meta === undefined) {
+      manifest = await writeManifest(canonicalRoot, withoutFailure({ ...manifest, meta: await prepareMetaRepository(canonicalRoot, options.meta, options, materializer, runtimeBackingPath) }));
     }
 
     if (readOnly) {
@@ -349,6 +374,42 @@ export async function prepareWorkspace(options: PrepareWorkspaceOptions): Promis
   } finally {
     await sandbox?.dispose();
   }
+}
+
+/**
+ * Meta repo lane A3: clones the meta repository (once; a resumed preparation finds it recorded) and materializes its knowledge paths. The repository entry is the request's, whose
+ * folder must not overlap another repository's or the reserved backing directory, as for any repository.
+ */
+async function prepareMetaRepository(
+  canonicalRoot: string,
+  meta: PrepareMeta,
+  options: PrepareWorkspaceOptions,
+  materializer: RepositoryMaterializer,
+  runtimeBackingPath: string | undefined,
+): Promise<NonNullable<PreparationManifest["meta"]>> {
+  const entry = meta.repository;
+  if (options.project.repositories.some((other) => other.name === entry.name || other.path === entry.path || other.path.startsWith(`${entry.path}/`) || entry.path.startsWith(`${other.path}/`))) {
+    throw new Error("the meta repository's name or folder is also another repository's");
+  }
+  const destination = containedPath(canonicalRoot, entry.path);
+  assertRepositoryPathDoesNotOverlapRuntimeBacking(destination, runtimeBackingPath);
+  const repository = { ...entry } as StoredProjectDefinition["repositories"][number];
+  const askCredential = async (): Promise<RepositoryCloneCredential> => await options.credentialProvider?.(repository) ?? {};
+  // A folder here is the leftover of an attempt that stopped before the manifest recorded it (the manifest is written after the files are in place): it is ours, contained in the
+  // workspace, and read-only knowledge only, so it is removed and cloned again rather than trusted.
+  if (await pathKind(destination) !== "missing") await rm(destination, { recursive: true, force: true });
+  await mkdir(resolve(destination, ".."), { recursive: true });
+  const session = credentialSession(options, repository, await askCredential(), askCredential);
+  await session.retrying(() => materializer(repository, destination, session.credential));
+  // The commit is the broker's. It must be in the clone and on the default branch (the head the broker read, or an ancestor of the head the clone sees), or nothing is read.
+  const head = await resolveDefaultBranch(destination, entry.defaultBranch);
+  const commit = meta.commit;
+  const present = await runIsolatedGit(destination, ["cat-file", "-e", `${commit}^{commit}`], { timeout: 30_000, maxBuffer: 4_096 }).then(() => true, () => false);
+  const onBranch = present && (commit === head || await runIsolatedGit(destination, ["merge-base", "--is-ancestor", commit, head], { timeout: 30_000, maxBuffer: 4_096 }).then(() => true, () => false));
+  if (!onBranch) throw new Error("the meta repository does not hold the commit asked for on its default branch");
+  const done = await materializeMetaKnowledge(destination, commit, meta);
+  await assertContainedSymlinks(canonicalRoot, canonicalRoot, options.trustedRuntimeBackingOwner);
+  return { name: entry.name, path: entry.path, defaultBranch: entry.defaultBranch, resolvedCommit: commit, files: done.files, bytes: done.bytes, skipped: done.skipped, completedAt: new Date().toISOString() };
 }
 
 /**
@@ -689,7 +750,9 @@ function withoutFailure(manifest: PreparationManifest): PreparationManifest {
  * The prepare result's record of where each repository was checked out, before any agent runs: the broker keeps it
  * as the task's base. Omitted unless every repository has a 40-hex commit.
  */
-export function preparedBaseResult(manifest: PreparationManifest): { preparedBase?: Array<{ repositoryId: string; baseCommitSha: string }> } {
-  if (manifest.repositories.length === 0 || !manifest.repositories.every((repository) => /^[a-f0-9]{40}$/.test(repository.resolvedCommit))) return {};
-  return { preparedBase: manifest.repositories.map((repository) => ({ repositoryId: repository.name, baseCommitSha: repository.resolvedCommit })) };
+export function preparedBaseResult(manifest: PreparationManifest): { preparedBase?: Array<{ repositoryId: string; baseCommitSha: string }>; knowledgeCommit?: string } {
+  // Meta repo lane A3: the meta repo's commit, reported beside the code bases (the broker keeps it as the task's `knowledgeCommit`).
+  const knowledge = manifest.meta !== undefined && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(manifest.meta.resolvedCommit) ? { knowledgeCommit: manifest.meta.resolvedCommit } : {};
+  if (manifest.repositories.length === 0 || !manifest.repositories.every((repository) => /^[a-f0-9]{40}$/.test(repository.resolvedCommit))) return knowledge;
+  return { preparedBase: manifest.repositories.map((repository) => ({ repositoryId: repository.name, baseCommitSha: repository.resolvedCommit })), ...knowledge };
 }

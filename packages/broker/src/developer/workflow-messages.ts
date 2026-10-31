@@ -3,7 +3,7 @@
 // value from a record, the model or a reviewer is redacted where it is free text, cut short and escaped here.
 import {
   WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  answeredMessage, formatMinutes, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isNoCodeChangedReason, isRunLimitBlockReason, workflowAnswer, NO_CODE_CHANGED_LEGACY_REASONS, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, type RunEstimate, type WorkflowSnapshot, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, feedbackDecidedByText,
+  answeredMessage, formatMinutes, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isNoCodeChangedReason, isRunLimitBlockReason, workflowAnswer, NO_CODE_CHANGED_LEGACY_REASONS, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, workflowReviseOffered, type RunEstimate, type WorkflowSnapshot, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, feedbackDecidedByText,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { critiqueLines } from "../rovara-code/critique-lines.js";
@@ -947,6 +947,9 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
       if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing) return fixChangedNothing(context, exits);
       // The run finished and no change was needed: what the agent found, then the choices (reply and Retry coding to ask for a change, or close). No tests were run and no pull request was opened, and nothing here says otherwise.
       if (isNoCodeChangedReason(workflow.blockReason)) return { text: noCodeChangedText(workflow.noChangeFindings, context.taskPageUrl), buttons: [exits.button("agentx_workflow_retry_implementation", "Retry coding"), exits.close] };
+      // Live steer: the owner's live message asked for a change outside the approved plan and the plan can take it in: Revise the plan plans again with that change and the owner approves the revised plan before coding continues.
+      if (workflowReviseOffered(workflow)) return { text: `Coding stopped before it finished. ${plainBlockReason(workflow.blockReason)}`,
+        buttons: [exits.button("agentx_workflow_revise_plan", "Revise the plan", { primary: true }), exits.button("agentx_workflow_retry_implementation", "Retry coding"), exits.close] };
       // CANCELDUP: a stop the owner asked for already reads "Coding was stopped before it finished. Choose Retry ..."; saying it twice is noise.
       return { text: stoppedByOwner(workflow.blockReason) ? plainBlockReason(workflow.blockReason)
       : `Coding stopped before it finished. ${plainBlockReason(workflow.blockReason)}`,

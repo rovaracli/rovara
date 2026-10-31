@@ -34,6 +34,7 @@ import type { AgentSkillFile } from "../agent-step.js";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { assertFileToolsContained, createWorkspacePiSession, type PiSessionAdapter, type PiSessionHandle, type WorkspaceModelConfiguration } from "../pi-session.js";
 import { withIsolatedGit } from "../isolated-git.js";
+import type { LoadedKnowledgeManifest } from "@agentx/contracts";
 import { isRuleFilesUnverified } from "../repository-context.js";
 import { isTestPath } from "./test-paths.js";
 
@@ -680,6 +681,8 @@ export async function runWorkflowReviews(input: {
   timeoutMs?: number;
   now?: () => string;
   onProgress?: (message: string) => void;
+  /** Called once per reviewer session with what it loaded and left out, as references only (K1 C5a). */
+  onLoadedKnowledge?: (manifest: LoadedKnowledgeManifest, role: "CRITIC" | "SECURITY") => void;
   onUsage?: (usage: { role: "CRITIC" | "SECURITY"; stats: ReturnType<PiSessionHandle["getSessionStats"]>; model: WorkspaceModelConfiguration; outcome: "SUCCEEDED" | "FAILED" }) => Promise<void>;
 }): Promise<Array<ReturnType<typeof WorkflowReviewReportSchema.parse>>> {
   assertFileToolsContained(input.fileTools === undefined ? {} : { fileTools: input.fileTools });
@@ -732,6 +735,7 @@ export async function runWorkflowReviews(input: {
         baseCommits: input.ruleFileBaseCommits,
         ...(input.sources === undefined ? {} : { contextTools: input.sources.tools, contextNote: input.sources.note }),
       }, input.piAdapter);
+      try { const loaded = session.loadedKnowledge?.(); if (loaded !== undefined) input.onLoadedKnowledge?.({ ...loaded, role }, role); } catch { /* a record that cannot be made is left out */ }
       const actualModel = session.getModel();
       provider = actualModel.provider;
       version = actualModel.modelId;

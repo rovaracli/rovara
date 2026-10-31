@@ -132,6 +132,7 @@ export const EVIDENCE_ACCOUNT_KINDS = ["run_scoped", "registered"] as const;
 export const EVIDENCE_SELECTION_METHODS = ["coverage_map", "import_graph", "declared", "full"] as const;
 /** Why a video or a trace is not on the page (fixed words, never an error text). */
 export const EVIDENCE_WITHHELD_REASONS = ["account_not_run_scoped", "tier_not_allowed", "data_not_synthetic", "company_setting_off", "revocation_not_confirmed", "size_over_cap", "upload_failed"] as const;
+export type EvidenceWithheldReason = (typeof EVIDENCE_WITHHELD_REASONS)[number];
 export const EVIDENCE_NOT_TESTED_KINDS = ["claim", "scenario", "check", "mocked_service", "not_selected", "environment"] as const;
 export const EVIDENCE_FINDING_SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
 export const EVIDENCE_TEST_STATUSES = ["passed", "failed", "skipped", "errored"] as const;
@@ -186,6 +187,9 @@ export const EvidenceEnvironmentSchema = z
             recordedAt: z.string().datetime().optional(),
             /** Requests a mock answered without a recording (`schema_synth`): counted, never hidden. */
             unrecordedAnswered: CountSchema.optional(),
+            /** New mock answers made in this task for cases the change introduced (owner decision Q9), and the digest the broker pinned them by: listed, never silent. */
+            newAnswers: CountSchema.optional(),
+            newAnswersDigest: Sha256Schema.optional(),
           })
           .strict(),
       )
@@ -276,7 +280,8 @@ export function evidencePackShape<A extends z.ZodType>(artifact: A) {
           strip: z.object({ before: z.array(artifact).max(EVIDENCE_STRIP_MAX), after: z.array(artifact).max(EVIDENCE_STRIP_MAX) }).strict(),
           video: artifact.optional(),
           trace: artifact.optional(),
-          consoleErrors: CountSchema,
+          /** Absent = NOT MEASURED. No console capture exists yet, so nothing writes this; a reader must never show an absent count as zero. */
+          consoleErrors: CountSchema.optional(),
           withheld: z.array(z.object({ artifact: z.enum(["video", "trace"]), reason: z.enum(EVIDENCE_WITHHELD_REASONS) }).strict()).max(2).optional(),
         })
         .strict(),
@@ -358,6 +363,11 @@ export type EvidenceRaw = z.infer<typeof EvidenceRawSchema>;
 /** True when the pack is for exactly this candidate. Any other digest means the pack is for other code, and it is ignored. */
 export function evidenceIsFor(pack: Pick<EvidencePack, "candidateDigest"> | undefined, candidateDigest: string): boolean {
   return pack !== undefined && pack.candidateDigest === candidateDigest;
+}
+
+/** What a page says for a scenario's console error count: the number when one was measured, "not measured" when none was (the count is absent, never zero by default). */
+export function consoleErrorsWords(count: number | undefined): string {
+  return count === undefined ? "not measured" : count === 1 ? "1 console error" : `${count} console errors`;
 }
 
 /** Every artifact link in a view, in a fixed order. */

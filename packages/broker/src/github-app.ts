@@ -1381,7 +1381,7 @@ export class GitHubAppCredentialProvider {
    * a file that ends sooner comes back whole. Throws when GitHub cannot answer or 20 MB arrive before the wanted line (or without one).
    * `timeoutMs` (default 8,000) is how long the request may take, for a caller that has more time to give.
    */
-  async getFileAtCommit(repositoryUrl: string, path: string, commitSha: string, scope: GitHubTokenScope, options?: { untilLine?: number; timeoutMs?: number }): Promise<string | undefined> {
+  async getFileAtCommit(repositoryUrl: string, path: string, commitSha: string, scope: GitHubTokenScope, options?: { untilLine?: number; timeoutMs?: number; maxBytes?: number }): Promise<string | undefined> {
     if (!/^[a-f0-9]{40}$/u.test(commitSha)) throw agentXError("CONFIG_INVALID", "commit identity is invalid");
     const segments = path.split("/");
     if (path.length === 0 || path.length > 512 || path.includes("\\") || segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
@@ -1401,9 +1401,13 @@ export class GitHubAppCredentialProvider {
     }
     // A directory answers with a JSON listing even for the raw media type; it is not a file, so it is not there.
     if (response.headers.get("content-type")?.toLowerCase().startsWith("application/json") === true) { await response.body?.cancel(); return undefined; }
-    const tooLarge = () => agentXError("RUNTIME_UNAVAILABLE", untilLine === undefined ? "file too large" : "file too large to read up to the cited line");
+    // A caller that gives its own `maxBytes` (a config file) gets a CONFIG_INVALID refusal, which it can record once, instead of a RUNTIME_UNAVAILABLE that would be retried for ever.
+    const cap = Math.min(options?.maxBytes ?? FILE_AT_COMMIT_MAX_BYTES, FILE_AT_COMMIT_MAX_BYTES);
+    const tooLarge = () => options?.maxBytes !== undefined
+      ? agentXError("CONFIG_INVALID", "file too large")
+      : agentXError("RUNTIME_UNAVAILABLE", untilLine === undefined ? "file too large" : "file too large to read up to the cited line");
     // Without a last line the whole file is wanted, so a declared size over the cap is refused before any byte is read.
-    if (untilLine === undefined && Number(response.headers.get("content-length")) > FILE_AT_COMMIT_MAX_BYTES) {
+    if (untilLine === undefined && Number(response.headers.get("content-length")) > cap) {
       await response.body?.cancel();
       throw tooLarge();
     }
@@ -1427,7 +1431,7 @@ export class GitHubAppCredentialProvider {
         }
       }
       total += value.byteLength;
-      if (total > FILE_AT_COMMIT_MAX_BYTES) {
+      if (total > cap) {
         await reader.cancel();
         throw tooLarge();
       }
@@ -1486,6 +1490,30 @@ export class GitHubAppCredentialProvider {
       { headers: githubHeaders(token), signal: AbortSignal.timeout(8_000), redirect: "error" },
     );
     if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub branch lookup failed with HTTP ${response.status}`);
+    const value = feedbackRecord(await response.json());
+    const target = feedbackRecord(value.object);
+    if (value.ref !== `refs/heads/${branch}` || target.type !== "commit" || typeof target.sha !== "string" || !/^[a-f0-9]{40}$/u.test(target.sha)) {
+      throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid branch reference");
+    }
+    return target.sha;
+  }
+
+  /**
+   * The commit a repository's branch points at now, for any ordinary branch name (a project's default branch), as GitHub says; throws when the branch does not exist.
+   * `getBranchHead` is for Rovara's own `agentx/*` branches only.
+   */
+  async getDefaultBranchHead(repositoryUrl: string, branch: string, scope: GitHubTokenScope): Promise<string> {
+    if (!GitBranchNameSchema.safeParse(branch).success) throw agentXError("CONFIG_INVALID", "branch name is invalid");
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.readTokenFor(repository, scope);
+    const response = await this.fetchImplementation(
+      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`,
+      { headers: githubHeaders(token), signal: AbortSignal.timeout(8_000), redirect: "error" },
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw agentXError("RUNTIME_UNAVAILABLE", `GitHub branch lookup failed with HTTP ${response.status}`);
+    }
     const value = feedbackRecord(await response.json());
     const target = feedbackRecord(value.object);
     if (value.ref !== `refs/heads/${branch}` || target.type !== "commit" || typeof target.sha !== "string" || !/^[a-f0-9]{40}$/u.test(target.sha)) {

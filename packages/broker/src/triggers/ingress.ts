@@ -163,6 +163,11 @@ export interface HookIngressDeps {
   /** Task 20's `dispatchTriggerEvent`, over the broker's dependencies. */
   dispatch(orgId: OrgId, event: TriggerEvent): Promise<unknown>;
   memory: HookIngressMemory;
+  /**
+   * Team record (R7): offered a verified delivery's body after the hook's own provider read it and did not refuse its tenant (`createHookRecordTap`). It decides for
+   * itself what to keep (a Linear or Jira change, comment or deletion that no trigger uses) and never throws. Absent: nothing is offered, as before.
+   */
+  recordTap?: (input: { orgId: OrgId; hook: HookRecord; body: unknown }) => Promise<unknown>;
   /** The AWS accounts an org connected (Task 25): a subscription is confirmed only for a hook whose account is one of them. Absent, none is confirmed. */
   awsAccounts?: ConnectedAwsAccounts;
   /** The fetch under SNS certificate requests and subscription confirmations; defaults to the vendor fetch that reaches public addresses only. */
@@ -499,6 +504,8 @@ async function receive(deps: HookIngressDeps, delivery: HookDelivery): Promise<H
     log("hook.normalize_failed", { hookId: hook.hookId, error: errorName(error) });
     return forbidden();
   }
+  // Team record (R7): after the tenant check, before events are dispatched; a tap that throws or is slow changes nothing about the answer.
+  if (deps.recordTap !== undefined && !("tenantMismatch" in normalized)) await offerToRecord(deps.recordTap, { orgId, hook, body }, () => log("hook.record_tap_failed", { hookId: hook.hookId }));
   return deliverEvents(deps, orgId, hook, normalized, now);
 }
 
@@ -547,6 +554,20 @@ async function deliverEvents(deps: HookIngressDeps, orgId: OrgId, hook: HookReco
   }
   if (fresh.length === 0 && duplicates > 0) return { status: 200, body: { delivery: "DUPLICATE" } };
   return { status: 202, body: { delivery: "ACCEPTED", events: fresh.length } };
+}
+
+/** Longest the Team record tap may hold a hook delivery's answer. */
+export const HOOK_RECORD_TAP_BUDGET_MS = 1_500;
+
+async function offerToRecord<T>(tap: (input: T) => Promise<unknown>, input: T, onFailure: () => void): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([tap(input), new Promise<void>((resolve) => { timer = setTimeout(() => { onFailure(); resolve(); }, HOOK_RECORD_TAP_BUDGET_MS); })]);
+  } catch {
+    onFailure();
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /** What a delivery to `/v1/hooks/{source}/{hookId}` is answered. A fault of ours answers 503 with nothing in it, so that the vendor tries again. */

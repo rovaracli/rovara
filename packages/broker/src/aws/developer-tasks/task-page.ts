@@ -25,6 +25,7 @@ import {
   WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX,
   WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
   workflowApplicationRetryOffered,
+  workflowReviseOffered,
   canonicalJson,
   type PlanClaim,
   type PlanDocument,
@@ -133,6 +134,16 @@ export function taskPageStage(
       return workflow.blockReason === WORKFLOW_BLOCK_REASONS.fixChangedNothing
       ? { status: "The approved fix didn't change any code", nextStep: workflowKeepPullRequestsOffered(workflow)
         ? `Retry coding, keep the pull request as it is, or close the task ${inSlack}.` : `Retry coding or close the task ${inSlack}.` }
+      : workflow.blockReason === WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise
+        // Live steer: the owner's live message asked for a change outside the approved plan and the plan can take it in: Revise the plan (here or in Slack), or retry the approved plan without it.
+        ? { status: "Coding stopped for a change outside the plan", nextStep: owner
+          ? `Press Revise the plan here (or in the task's Slack thread) to plan again with that change; you approve the revised plan before coding continues. Or retry coding to build the approved plan without it, or close the task ${inSlack}.`
+          : "The task owner decides: revise the plan with that change (the owner approves the revised plan before coding continues), retry coding to build the approved plan without it, or close the task." }
+      : workflow.blockReason === WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding
+        // Live steer: the owner's live message asked for a change outside the approved plan, and the plan cannot take it in (a custom sequence, an open pull request or a fix round). The ways on: retry the approved plan without it, or a new task that asks for it.
+        ? { status: "Coding stopped for a change outside the plan", nextStep: owner
+          ? `Retry coding to build the approved plan without that change, or close the task ${inSlack} and start a new task that asks for it.`
+          : "The task owner decides: retry coding to build the approved plan without that change, or close the task and start a new task that asks for it." }
       : isNoCodeChangedReason(workflow.blockReason)
         // No change was needed: what the agent found is on the page and in the thread; nothing was checked or opened as a pull request.
         ? { status: "No code changes were needed", nextStep: hasThread ? NO_CHANGE_CHOICES_PAGE : NO_CHANGE_CHOICES_NO_THREAD }
@@ -737,6 +748,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     ...(visibleWorkflowDependenciesProgress === undefined ? {} : { workflowDependenciesProgress: visibleWorkflowDependenciesProgress }),
     pullRequests: (workflow?.pullRequests ?? []).map((pullRequest) => ({ url: pullRequest.url, number: pullRequest.number, state: pullRequest.state })),
     ...(workflow !== undefined && task.closedAt === undefined && workflowApplicationRetryOffered(workflow) ? { applicationRetry: { canRetry: can(access.role, "retry") } } : {}),
+    ...(workflow !== undefined && task.closedAt === undefined && workflowReviseOffered(workflow) ? { reviseOffer: { canRevise: can(access.role, "retry") } } : {}),
     ...(autofixLines.length === 0 ? {} : { autofix: { lines: autofixLines } }),
     ...(noChangeView === undefined ? {} : { noChange: noChangeView }),
     history, access: pageAccess(access, await projectWorkAllowed(deps, task, caller)), ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,

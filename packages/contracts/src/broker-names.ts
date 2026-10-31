@@ -150,6 +150,8 @@ export const BROKER_SETTINGS = {
   // Mainline #408 kill switches (stack parameters PlanSelfCheckEnabled and AutofixEnabled, on by default): the broker reads them as PLAN_SELF_CHECK_ENABLED and AUTOFIX_ENABLED. Packed settings, not Lambda variables (ENV-ROOM).
   planSelfCheck: { code: "pc", variable: "PLAN_SELF_CHECK_ENABLED" },
   autofix: { code: "fx", variable: "AUTOFIX_ENABLED" },
+  // Live steer kill switch (stack parameter LiveSteerEnabled, "0" by default): the broker reads it as LIVE_STEER_ENABLED, and live steer is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
+  liveSteer: { code: "ls", variable: "LIVE_STEER_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

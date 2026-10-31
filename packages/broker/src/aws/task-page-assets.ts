@@ -244,6 +244,9 @@ export const TASK_PAGE_DECIDING_COPY = {
   retrying: "Retrying…",
   retried: "Retried. AgentX is checking the plan against the runtime again.",
   retryOwnerOnly: "Only the task owner can retry these checks.",
+  revising: "Revising the plan…",
+  revised: "Revised. AgentX is planning again with your change; the revised plan will wait here for your approval.",
+  reviseOwnerOnly: "Only the task owner can revise the plan.",
   sending: "Sending…",
   sent: "Sent. AgentX is on the next step.",
   changed: "This task changed. Refresh the page and try again.",
@@ -336,6 +339,7 @@ var commentSeq=Number(data.commentSeq)||0;
 var canComment=data.canComment===true,canDecide=data.canDecide===true,canSuggest=data.canSuggest===true,canAsk=data.canAsk===true&&data.askAvailable!==false;
 var canRead=data.canRead===undefined?true:data.canRead===true,canManagePeople=data.canManagePeople===true,canTakeOwnership=data.canTakeOwnership===true;
 var canRetry=data.canRetry===true;
+var canRevise=data.canRevise===true;
 var hasProjection=false,peopleRevision=null,accessGeneration=0;
 function validProjection(state){
   var keys=["canRead","canComment","canSuggest","canDecide","canAsk","canManagePeople","canTakeOwnership"];
@@ -389,6 +393,8 @@ function applyCurrentAccess(){
   var radios=document.querySelectorAll("input");
   var retryNode=document.getElementById("retry-application");
   if(retryNode&&!canRead){retryNode.disabled=true;retryNode.hidden=true;}
+  var reviseNode=document.getElementById("revise-plan-button");
+  if(reviseNode&&!canRead){reviseNode.disabled=true;reviseNode.hidden=true;}
   for(var i=0;i<controls.length;i++){
     var node=controls[i],nodeId=node.getAttribute("id")||"",nodeName=node.getAttribute("name")||"",allowed=node.classList&&node.classList.contains("suggest")?canSuggest:(nodeId.indexOf("decide-")===0||nodeName.indexOf("answer-")===0)?canDecide:canComment;
     node.disabled=!allowed;
@@ -440,6 +446,7 @@ function canPost(path,body){
   if(stopped||!canRead)return false;
   if(path==="decision")return canDecide;
   if(path==="retry")return canRetry;
+  if(path==="revise-plan")return canRevise;
   if(path==="suggestions")return canSuggest;
   if(path==="comments"||path.indexOf("comments/")===0)return canComment&&!(body&&body.ask===true&&!canAsk);
   if(path==="people/role")return canManagePeople;
@@ -463,7 +470,7 @@ function call(method,path,body,retried){
       if(method==="POST"&&answer.status===403&&answer.body.error==="request_refused"&&!retried){
         return readState().then(function(state){return state&&requestGeneration===accessGeneration&&canPost(path,body)?call(method,path,body,true):{status:403,body:{error:"request_refused"}};});
       }
-      if((peoplePath(path)||path==="retry")&&((answer.status===403&&answer.body.error!=="request_refused")||answer.status===404)&&!retried){
+      if((peoplePath(path)||path==="retry"||path==="revise-plan")&&((answer.status===403&&answer.body.error!=="request_refused")||answer.status===404)&&!retried){
         return readState().then(function(){return answer;});
       }
       if((answer.status===403&&answer.body.error!=="request_refused")||answer.status===404)stopAccess(false);
@@ -1243,6 +1250,29 @@ if(retryButton&&canRetry){
       if(answer.status===409)retryId=null;
       retryFail(said(answer));
     },function(){if(generation!==accessGeneration){retrying=false;return;}retryFail(COPY.unavailable);});
+  });
+}
+
+/* ---------- Revising the plan for a change the owner's live message asked for ---------- */
+var reviseButton=el("revise-plan-button"),reviseId=null,revising=false;
+function reviseFail(text){var node=el("revise-error");if(node){node.textContent=text;node.hidden=false;}var status=el("revise-status");if(status)status.textContent="";revising=false;if(reviseButton)reviseButton.disabled=false;}
+if(reviseButton&&canRevise){
+  reviseButton.hidden=false;
+  reviseButton.addEventListener("click",function(){
+    if(revising||stopped||!canRead)return;
+    /* The same press again keeps its ID, so the broker treats it as a replay. */
+    if(reviseId===null)reviseId=uuid();
+    revising=true;reviseButton.disabled=true;
+    var failure=el("revise-error");if(failure)failure.hidden=true;
+    var status=el("revise-status");if(status)status.textContent=COPY.revising;
+    var generation=accessGeneration;
+    call("POST","revise-plan",{requestId:reviseId,expectedRevision:revision}).then(function(answer){
+      if(answer.status===403&&answer.body.error!=="request_refused"){canRevise=false;reviseButton.hidden=true;reviseFail(COPY.reviseOwnerOnly);return;}
+      if(generation!==accessGeneration){revising=false;return;}
+      if(answer.status===200){if(status)status.textContent=COPY.revised;location.reload();return;}
+      if(answer.status===409)reviseId=null;
+      reviseFail(said(answer));
+    },function(){if(generation!==accessGeneration){revising=false;return;}reviseFail(COPY.unavailable);});
   });
 }
 

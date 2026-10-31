@@ -112,4 +112,9 @@ export * from "./app-service-status.js";
 // Proof and evidence (W4/W5): browser-safe schemas for the evidence view, decision cards and the test environment.
 export * from "./evidence.js";
 export * from "./decision-cards.js";
+export * from "./decision-card-tabs.js";
+export * from "./plan-one-screen.js";
 export * from "./test-environment.js";
+// K1 C5b: what the agent loaded (browser-safe readers).
+export * from "./knowledge-skills.js";
+export * from "./loaded-knowledge.js";

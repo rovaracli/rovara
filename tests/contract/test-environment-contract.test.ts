@@ -13,7 +13,7 @@ const raw = (overrides: Record<string, unknown> = {}) => ({
   ] }],
   roundBudgetMin: 30,
   selection: { method: "coverage_map", alwaysRun: ["lint"], fullSuiteOn: ["poetry.lock", "**/conftest.py", ".github/**"] },
-  nightly: { enabled: true, cronUtc: "0 6 * * *", branch: "main" },
+  nightly: { enabled: false, cronUtc: "0 6 * * *", branch: "main" },
   services: [{ name: "partner-scorer", kind: "sagemaker_runtime", match: { endpointName: "partner-scorer" }, mode: "mock", mock: { fixtureSetRef: sha("a"), schemaRef: sha("b"), unmatched: "fail" } }],
   data: { seeds: [{ command: cmd("python", ["seed.py"]) }], generator: "faker_seeded", seed: 42 },
   accounts: [{ profileId: "buyer", provisioner: "seed_command", command: cmd("python", ["make_user.py"]) }],
@@ -154,6 +154,17 @@ describe("less-safe fields", () => {
     expect(env.testEnvLessSafeChanges(body(), body({ tier: "shared", shared: { baseUrl: "https://beta.example.com", leaseScope: "env", dataNamespace: "task_prefix" } }))).toEqual(["shared"]);
     const synth = body().services[0]!;
     expect(env.testEnvLessSafeChanges(body(), body({ services: [{ ...synth, mock: { ...synth.mock, unmatched: "schema_synth" } }] }))).toEqual(["schema_synth"]);
+  });
+  it("counts the nightly run being turned on or run more often, and a raised preview cost, as changes (money)", () => {
+    const nightly = (over: Record<string, unknown>) => body({ nightly: { enabled: true, cronUtc: "0 6 * * *", branch: "main", ...over } });
+    expect(env.testEnvLessSafeChanges(undefined, nightly({}))).toEqual(["nightly_enabled"]);
+    expect(env.testEnvLessSafeChanges(body(), nightly({}))).toEqual(["nightly_enabled"]);
+    expect(env.testEnvLessSafeChanges(nightly({}), nightly({ cronUtc: "0 */4 * * *" }))).toEqual(["nightly_more_often"]);
+    expect(env.testEnvLessSafeChanges(nightly({ cronUtc: "0 */4 * * *" }), nightly({}))).toEqual([]);
+    expect(env.testEnvLessSafeChanges(nightly({}), body())).toEqual([]);
+    const preview = (over: Record<string, unknown>) => body({ tier: "preview", preview: { ...previewBlock, ...over } });
+    expect(env.testEnvLessSafeChanges(preview({}), preview({ costCapUsdPerDay: 500 }))).toEqual(["preview_cost_raised"]);
+    expect(env.testEnvLessSafeChanges(preview({ ttlHours: 6 }), preview({ ttlHours: 12 }))).toEqual(["preview_cost_raised"]);
   });
   it("counts a raised round budget as a change and a lowered one as none", () => {
     expect(env.testEnvLessSafeChanges(body(), body({ roundBudgetMin: 60 }))).toEqual(["round_budget_raised"]);

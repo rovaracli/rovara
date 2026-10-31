@@ -35,12 +35,21 @@ import { readSkillTool } from "./read-skill-tool.js";
 import { isEc2WorkerRuntime, localBashOperations } from "./task-sandbox.js";
 import {
   appendRepositoryContextFiles,
-  loadRepositoryContextFiles,
   ruleFileEditNote,
   readPreparedRepositories,
   workspaceRepositoriesNote,
   type RepositoryContextFile,
 } from "./repository-context.js";
+import { quotedContextText } from "./context-text.js";
+import type { LoadedKnowledgeManifest } from "@agentx/contracts";
+import { buildLoadedKnowledgeManifest } from "./knowledge/manifest.js";
+import { mergeSkills } from "./knowledge/skills.js";
+import { knowledgeExtension } from "./knowledge/extension.js";
+import { loadKnowledgeContext, type KnowledgeSessionInput } from "./knowledge/load.js";
+import { MidRunKnowledge } from "./knowledge/session.js";
+import { readKnowledgeTool } from "./read-knowledge-tool.js";
+import type { KnowledgeStage } from "./knowledge/model.js";
+import type { ResolvedKnowledge } from "./knowledge/resolve.js";
 import type { PiCacheRetention } from "./usage.js";
 import { stubPersistedContextResults } from "./context-sources/transcript.js";
 
@@ -60,12 +69,16 @@ export interface PiSessionHandle {
   prompt(text: string): Promise<void>;
   /** Queues a message the model reads before its next call, while a prompt runs. */
   steer?(text: string): Promise<void>;
+  /** Whether pi is streaming a prompt now. A message queued on an idle session is used only by the next prompt (or lost when the session ends), so live steer gives one only while this is true. */
+  isStreaming?(): boolean;
   abort(): Promise<void>;
   /** The model and the thinking level the session actually runs with, read back after creation. */
   getModel(): { provider: string; modelId: string; thinkingLevel?: PiThinkingLevel };
   /** Pi's own resolved level, even one outside AgentX's six (Pi's "max"); for artifacts only, never telemetry. */
   piThinkingLevel?(): string | undefined;
   getSessionStats(): SessionStats;
+  /** What this session loaded and left out so far, as references only (K1 C5a). Absent for sessions that load no knowledge. */
+  loadedKnowledge?(): LoadedKnowledgeManifest;
   subscribe(listener: (event: unknown) => void): () => void;
   dispose(): void;
 }
@@ -83,6 +96,8 @@ export interface PiSessionInput {
   contextFiles: RepositoryContextFile[];
   /** "base-commit": a reviewer's session, whose rule files are AgentX's own alone; Pi's discovery in the working tree is left out (A5). */
   contextFilesAt?: "working-tree" | "base-commit";
+  /** The session's live knowledge (K1 C3): offers `read_knowledge` and loads newly applicable rules mid-run. Absent for judging stages and agent steps. */
+  knowledgeSession?: MidRunKnowledge;
   /** Where the agent's shell runs instead of the worker: the project's devcontainer (#121). */
   bashOperations?: BashOperations;
   /** The repository's folder in the devcontainer, which the local file tools resolve to the host folder (#128). */
@@ -131,7 +146,7 @@ export interface AgentRunSession {
 }
 
 /** The names no worker tool of an agent step may take: Pi's own, the shell and `read_skill`. */
-const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "edit", "write", "read", "grep", "find", "ls", "read_skill"]);
+const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(["bash", "edit", "write", "read", "grep", "find", "ls", "read_skill", "read_knowledge"]);
 
 /**
  * Context sources are for the stages that read and judge, never for Build, where the shell is: untrusted live text must not reach the stage that can run
@@ -210,6 +225,13 @@ export async function createWorkspacePiSession(
      * has no rule file and a diagnostic; the preparation manifest's commit is never used, because the agent can write it.
      */
     baseCommits?: readonly { repositoryId: string; baseCommitSha?: string | undefined }[];
+    /**
+     * What the knowledge resolver (K1) needs beyond where to read: the stage, the files in play, `#name` rules asked for, and the team's own
+     * rules. Absent: the stage follows the workflow mode and no file is in play yet (only always-on rules and nested root rules load).
+     */
+    knowledge?: SessionKnowledgeOptions;
+    /** Called with what the resolver loaded and skipped, once per session; the worker reports it as the stage's "what the agent loaded" record. */
+    onKnowledgeLoaded?: (resolved: ResolvedKnowledge) => void;
   },
   adapter: PiSessionAdapter = defaultPiSessionAdapter,
 ): Promise<PiSessionHandle> {
@@ -227,9 +249,12 @@ export async function createWorkspacePiSession(
     mkdir(agentDirectory, { recursive: true, mode: 0o700 }),
   ]);
   // An agent step reads the repository as information: its context files (written by whoever can push) are not loaded.
-  const contextFiles = input.agentRun === undefined ? await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits) : [];
+  const knowledgeLoad = input.agentRun === undefined ? await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded }) : undefined;
+  const contextFiles = knowledgeLoad?.files ?? [];
+  const knowledgeSession = knowledgeLoad?.session;
   if (input.contextNote !== undefined && input.contextTools !== undefined && input.contextTools.length > 0) contextFiles.push({ path: "AGENTX-SOURCES.md", content: input.contextNote });
   const handle = await adapter.create({
+    ...(knowledgeSession === undefined ? {} : { knowledgeSession }),
     cwd: workingDirectory,
     sessionDirectory,
     agentDirectory,
@@ -245,11 +270,18 @@ export async function createWorkspacePiSession(
     ...(input.extensionFactories === undefined ? {} : { extensionFactories: input.extensionFactories }),
     ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
     ...(input.agentTools === undefined ? {} : { agentTools: input.agentTools }),
-    ...(input.skills === undefined ? {} : { skills: input.skills }),
+    ...(mergeSkills(input.skills, knowledgeLoad?.skills ?? []) === undefined ? {} : { skills: mergeSkills(input.skills, knowledgeLoad?.skills ?? [])! }),
     ...(input.agentRun === undefined ? {} : { agentRun: input.agentRun }),
     ...(input.contextTools === undefined ? {} : { contextTools: input.contextTools }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
+  return withLoadedKnowledge(handle, knowledgeLoad?.manifest);
+}
+
+/** The handle with its loaded-knowledge record attached (the adapter's own handle is not changed in place when it already reports one). */
+function withLoadedKnowledge(handle: PiSessionHandle, manifest: (() => LoadedKnowledgeManifest) | undefined): PiSessionHandle {
+  if (manifest === undefined || handle.loadedKnowledge !== undefined) return handle;
+  handle.loadedKnowledge = manifest;
   return handle;
 }
 
@@ -274,6 +306,8 @@ export async function openRegisteredWorkspacePiSession(
     /** As for `createWorkspacePiSession`. */
     contextFilesAt?: "working-tree" | "base-commit";
     baseCommits?: readonly { repositoryId: string; baseCommitSha?: string | undefined }[];
+    knowledge?: SessionKnowledgeOptions;
+    onKnowledgeLoaded?: (resolved: ResolvedKnowledge) => void;
   },
   adapter: PiSessionAdapter = defaultPiSessionAdapter,
 ): Promise<PiSessionHandle> {
@@ -290,9 +324,13 @@ export async function openRegisteredWorkspacePiSession(
   });
   assertContained(sessionDirectory, sessionFile);
   if (!adapter.open) throw new Error("pi session adapter does not support saved-session reopen");
-  const contextFiles = await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits);
+  // Whatever mode this session reopens in (Build included), a transcript that still holds a source's text from a stage that died before it could stub it is stubbed first: Build never reads untrusted source text.
+  await stubPersistedContextResults(sessionFile);
+  const knowledgeLoad = await loadWorkspaceContextFiles(rootPath, input.onDiagnostic, input.devcontainerPaths, input.contextFilesAt, input.baseCommits, { workflowMode: input.workflowMode, knowledge: input.knowledge, onLoaded: input.onKnowledgeLoaded });
+  const contextFiles = knowledgeLoad.files;
   if (input.contextNote !== undefined && input.contextTools !== undefined && input.contextTools.length > 0) contextFiles.push({ path: "AGENTX-SOURCES.md", content: input.contextNote });
   const handle = await adapter.open({
+    ...(knowledgeLoad.session === undefined ? {} : { knowledgeSession: knowledgeLoad.session }),
     cwd: rootPath,
     sessionDirectory,
     agentDirectory,
@@ -309,11 +347,11 @@ export async function openRegisteredWorkspacePiSession(
     ...(input.extensionFactories === undefined ? {} : { extensionFactories: input.extensionFactories }),
     ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
     ...(input.agentTools === undefined ? {} : { agentTools: input.agentTools }),
-    ...(input.skills === undefined ? {} : { skills: input.skills }),
+    ...(mergeSkills(input.skills, knowledgeLoad.skills) === undefined ? {} : { skills: mergeSkills(input.skills, knowledgeLoad.skills)! }),
     ...(input.contextTools === undefined ? {} : { contextTools: input.contextTools }),
   });
   assertContained(sessionDirectory, handle.sessionFile);
-  return handle;
+  return withLoadedKnowledge(handle, knowledgeLoad.manifest);
 }
 
 /** Resolves the session's model runtime; tests supply an offline one, the worker uses the default. */
@@ -447,7 +485,10 @@ async function createDefaultSession(
     const runTools = [...(input.agentRun?.tools ?? []), ...sourceTools];
     const clash = runTools.find((tool, index) => RESERVED_TOOL_NAMES.has(tool.name) || runTools.findIndex(({ name }) => name === tool.name) !== index);
     if (clash !== undefined) throw agentXError("CONFIG_INVALID", `an agent step cannot have two tools named ${clash.name}, or one named like a file tool, the shell or read_skill`);
-    const { resourceLoader, settingsManager } = await createWorkerResources({ ...input, loadedSkills: skills, ...(input.agentRun === undefined ? {} : { systemPrompt: input.agentRun.systemPrompt }) });
+    const knowledge = input.agentRun === undefined ? input.knowledgeSession : undefined;
+    const knowledgeTool = knowledge?.offersTool === true ? [readKnowledgeTool(knowledge)] : [];
+    const midRun = knowledge?.allowsMidRun === true ? [knowledgeExtension(knowledge, input.onDiagnostic)] : [];
+    const { resourceLoader, settingsManager } = await createWorkerResources({ ...input, extensionFactories: [...(input.extensionFactories ?? []), ...midRun], loadedSkills: skills, ...(input.agentRun === undefined ? {} : { systemPrompt: input.agentRun.systemPrompt }) });
     // An AgentX extension that failed to load would leave its work silently undone, so the session does not start.
     // It is a deterministic AgentX bug, so not RUNTIME_UNAVAILABLE, which the broker reads as "retry" (M-10).
     const loadErrors = resourceLoader.getExtensions().errors;
@@ -470,7 +511,7 @@ async function createDefaultSession(
       model,
       thinkingLevel: requestedLevel ?? (model.reasoning ? "medium" : "off"),
       // read_skill is the worker's own tool, never a file tool: it is there only when the operation has skills.
-      tools: [...stepTools.tools, ...(skillFiles.length === 0 ? [] : ["read_skill"]), ...runTools.map(({ name }) => name)],
+      tools: [...stepTools.tools, ...(skillFiles.length === 0 ? [] : ["read_skill"]), ...knowledgeTool.map(({ name }) => name), ...runTools.map(({ name }) => name)],
       // A custom tool with a built-in's name replaces it.
       customTools: [
         ...(stepTools.shell ? [agentShellTool(input.cwd, input.bashOperations)] : []),
@@ -480,6 +521,7 @@ async function createDefaultSession(
           : !capabilities.customFileTools || input.devcontainerPaths === undefined ? []
             : devcontainerFileTools(input.cwd, input.devcontainerPaths).filter((tool) => stepTools.tools.includes(tool.name))),
         ...(skillFiles.length === 0 ? [] : [readSkillTool(skillFiles)]),
+        ...knowledgeTool,
         ...runTools,
       ],
       resourceLoader,
@@ -521,6 +563,7 @@ async function createDefaultSession(
       },
       // Pi 0.99 returns a disposition ("handled" | "queued"); the adapter's contract stays Promise<void>.
       steer: async (text) => { await session.steer(text); },
+      isStreaming: () => session.isStreaming,
       abort: async () => session.abort(),
       // A routed session runs on rovara-route under the company's alias; it is reported as the catalog model the route names (Task 27).
       getModel: () => ({
@@ -716,6 +759,20 @@ export function devcontainerFileTools(cwd: string, paths: DevcontainerPaths): To
   }));
 }
 
+/** What a caller adds to a session's knowledge: the resolver's inputs other than where each repository is read from. */
+export type SessionKnowledgeOptions = Omit<KnowledgeSessionInput, "at" | "stage"> & {
+  /** The stage, when it is not the one the workflow mode implies (the plan check runs in PLAN mode). */
+  stage?: KnowledgeStage;
+};
+
+/** The stage a workflow mode loads knowledge for, when the caller names none: a base-commit PLAN session is the plan check. */
+export function knowledgeStageOf(mode: PiWorkflowMode | undefined, at: "working-tree" | "base-commit"): KnowledgeStage {
+  if (mode === "UNDERSTAND") return "understand";
+  if (mode === "REVIEW") return "review";
+  if (mode === "PLAN") return at === "base-commit" ? "plan_check" : "plan";
+  return "build";
+}
+
 /** Reloaded for every session, so an edited context file reaches the next task. */
 async function loadWorkspaceContextFiles(
   rootPath: string,
@@ -723,7 +780,8 @@ async function loadWorkspaceContextFiles(
   devcontainerPaths?: DevcontainerPaths,
   at: "working-tree" | "base-commit" = "working-tree",
   baseCommits: readonly { repositoryId: string; baseCommitSha?: string | undefined }[] = [],
-): Promise<RepositoryContextFile[]> {
+  knowledge: { workflowMode: PiWorkflowMode | undefined; knowledge: SessionKnowledgeOptions | undefined; onLoaded: ((resolved: ResolvedKnowledge) => void) | undefined } = { workflowMode: undefined, knowledge: undefined, onLoaded: undefined },
+): Promise<{ files: RepositoryContextFile[]; session: MidRunKnowledge | undefined; skills: AgentSkillFile[]; manifest: () => LoadedKnowledgeManifest }> {
   const prepared = await readPreparedRepositories(rootPath);
   const repositories = at === "base-commit"
     ? prepared.map((repository) => {
@@ -731,13 +789,43 @@ async function loadWorkspaceContextFiles(
         return baseCommit === undefined ? repository : { ...repository, baseCommit };
       })
     : prepared;
-  const { files, diagnostics, notices } = await loadRepositoryContextFiles(rootPath, repositories, { at });
+  const { stage: requestedStage, ...options } = knowledge.knowledge ?? {};
+  const stage = requestedStage ?? knowledgeStageOf(knowledge.workflowMode, at);
+  const canonicalRoot = await realpath(resolve(rootPath)).catch(() => resolve(rootPath));
+  const request: KnowledgeSessionInput = { ...options, at, stage };
+  const { files, diagnostics, notices, resolved, rendering, skills } = await loadKnowledgeContext(rootPath, repositories, request, canonicalRoot);
   for (const diagnostic of diagnostics) onDiagnostic?.(diagnostic);
+  const session = new MidRunKnowledge({
+    stage, initial: resolved, filesInPlay: options.filesInPlay ?? [], rendering, rootPath: canonicalRoot,
+    ...(options.budgets === undefined ? {} : { budgets: options.budgets }),
+    ...(onDiagnostic === undefined ? {} : { onDiagnostic }),
+    resolveAgain: async (filesInPlay) => (await loadKnowledgeContext(rootPath, repositories, { ...request, filesInPlay }, canonicalRoot)).resolved,
+  });
+  knowledge.onLoaded?.(resolved);
   // AgentX's note comes first and is present with or without the repositories' own files.
   const note = workspaceRepositoriesNote(repositories);
   const editNote = ruleFileEditNote(notices);
-  const loaded = [...(note === undefined ? [] : [note]), ...files, ...(editNote === undefined ? [] : [editNote])];
-  return devcontainerPaths === undefined ? loaded : [...loaded, devcontainerContextFile(devcontainerPaths)];
+  const catalog = session.offersTool ? [knowledgeCatalogFile(session.names(), resolved)] : [];
+  const loaded = [...(note === undefined ? [] : [note]), ...files, ...catalog, ...(editNote === undefined ? [] : [editNote])];
+  const manifest = (): LoadedKnowledgeManifest => buildLoadedKnowledgeManifest({
+    stage, resolved, records: session.allRecords(),
+    repositories: repositories.filter((repository) => repository.name !== options.meta?.name).map((repository) => ({ name: repository.name, ...(at === "base-commit" && repository.baseCommit !== undefined ? { commit: repository.baseCommit } : {}), readAt: at === "base-commit" ? "base" as const : "working" as const })),
+    ...(options.meta === undefined ? {} : { meta: { name: options.meta.name, knowledgeCommit: options.meta.knowledgeCommit } }),
+  });
+  return { files: devcontainerPaths === undefined ? loaded : [...loaded, devcontainerContextFile(devcontainerPaths)], session, skills, manifest };
+}
+
+/** The list of rules the model can load by name: AgentX's own note, with only names and descriptions (no rule text) until `read_knowledge` is called. */
+function knowledgeCatalogFile(names: readonly string[], resolved: ResolvedKnowledge): RepositoryContextFile {
+  const described = new Map(resolved.autoCatalog.map((entry) => [entry.name.toLowerCase(), entry.description] as const));
+  const lines = names.map((name) => {
+    const description = described.get(name);
+    return description === undefined || description === "" ? `- ${quotedContextText(name)}` : `- ${quotedContextText(name)}: ${quotedContextText(description.slice(0, 200))}`;
+  });
+  return {
+    path: "AgentX team rules",
+    content: ["AgentX team rules (written by AgentX, not by any repository). Call read_knowledge with a name to load one of these rules when it applies:", ...lines].join("\n"),
+  };
 }
 
 function assertContained(parent: string, child: string): void {

@@ -95,6 +95,7 @@ import { continueTask } from "./developer-tasks/continue.js";
 import { decideTaskWorkflow } from "./developer-tasks/decide.js";
 import { retryTaskWorkflow } from "./developer-tasks/workflow-retry.js";
 import { resolveTaskWorkflowFindings, retryTaskCanvasCloseout, sendTaskWorkflowBackToCoding } from "./developer-tasks/workflow-coding.js";
+import { reviseTaskWorkflowPlan } from "./developer-tasks/workflow-revise.js";
 import { startTaskWorkflowReview } from "./developer-tasks/workflow-review.js";
 import { keepTaskWorkflowPullRequests, retryTaskWorkflowPublication } from "./developer-tasks/publication.js";
 import { retryTaskWorkflowFeedbackReview } from "./developer-tasks/feedback-capture.js";
@@ -171,6 +172,7 @@ export {
   taskPageStage,
   taskPageStep,
 } from "./developer-tasks/task-page.js";
+export { reviseTaskWorkflowPlan } from "./developer-tasks/workflow-revise.js";
 export {
   type WorkflowPublicationAuthority,
   approvedPlanForPullRequest,
@@ -259,7 +261,7 @@ export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependen
     const requestId = safeDecode(proposalRoute[2]!);
     return { change: await getTaskPeopleProposal(deps, caller, taskId, requestId) };
   }
-  const route = /^\/v1\/dev\/tasks\/([^/]+)(?:\/(events|continue|cancel|close|pull-requests|share|people|people\/role|people\/take-ownership|workflow\/decision|workflow\/retry|workflow\/review|workflow\/publish-retry|workflow\/keep-pull-requests|workflow\/send-back|workflow\/review-findings|workflow\/feedback|workflow\/feedback-decision|workflow\/feedback-retry|canvas-closeout\/retry|plan))?$/.exec(url.pathname);
+  const route = /^\/v1\/dev\/tasks\/([^/]+)(?:\/(events|continue|cancel|close|pull-requests|share|people|people\/role|people\/take-ownership|workflow\/decision|workflow\/retry|workflow\/review|workflow\/publish-retry|workflow\/keep-pull-requests|workflow\/send-back|workflow\/revise-plan|workflow\/review-findings|workflow\/feedback|workflow\/feedback-decision|workflow\/feedback-retry|canvas-closeout\/retry|plan))?$/.exec(url.pathname);
   const taskId = route?.[1] === undefined ? undefined : safeDecode(route[1]);
   if (taskId !== undefined && request.method === "GET" && route?.[2] === undefined) return readTask(deps, caller, taskId, url);
   if (taskId !== undefined && request.method === "GET" && route?.[2] === "events") return taskEvents(deps, caller, taskId, url);
@@ -283,6 +285,7 @@ export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependen
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "workflow/publish-retry") return retryTaskWorkflowPublication(deps, caller, taskId, body(request));
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "workflow/keep-pull-requests") return keepTaskWorkflowPullRequests(deps, caller, taskId, body(request));
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "workflow/send-back") return sendTaskWorkflowBackToCoding(deps, caller, taskId, body(request));
+  if (taskId !== undefined && request.method === "POST" && route?.[2] === "workflow/revise-plan") return reviseTaskWorkflowPlan(deps, caller, taskId, body(request));
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "workflow/review-findings") return resolveTaskWorkflowFindings(deps, caller, taskId, body(request));
   if (taskId !== undefined && request.method === "GET" && route?.[2] === "workflow/feedback") return { review: await getWorkflowFeedbackReview(deps, caller, taskId) };
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "workflow/feedback-decision") return decideTaskWorkflowFeedback(deps, caller, taskId, body(request));

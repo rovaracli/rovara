@@ -39,7 +39,7 @@ function comment(n: number, extra: Partial<PageCommentView> = {}): PageCommentVi
   };
 }
 
-interface PageOptions { applicationRetry?: { canRetry: boolean }; version?: number; body?: PlanDocument; comments?: PageCommentView[]; access?: typeof owner | typeof commenter; waiting?: boolean; optionalChecks?: TaskDocumentView["optionalChecks"]; askAvailable?: boolean }
+interface PageOptions { applicationRetry?: { canRetry: boolean }; reviseOffer?: { canRevise: boolean }; version?: number; body?: PlanDocument; comments?: PageCommentView[]; access?: typeof owner | typeof commenter; waiting?: boolean; optionalChecks?: TaskDocumentView["optionalChecks"]; askAvailable?: boolean }
 async function pageHtml(options: PageOptions = {}): Promise<string> {
   const version = options.version ?? 2;
   const documents = [doc(1, plan(), false), ...(version > 2 ? [doc(2, plan(), false)] : []), doc(version, options.body ?? plan())];
@@ -52,6 +52,7 @@ async function pageHtml(options: PageOptions = {}): Promise<string> {
     optionalChecks: options.optionalChecks ?? [{ id: "lint", label: "Lint", selected: false }],
     ...(options.askAvailable === undefined ? {} : { askAvailable: options.askAvailable }),
     ...(options.applicationRetry === undefined ? {} : { applicationRetry: options.applicationRetry }),
+    ...(options.reviseOffer === undefined ? {} : { reviseOffer: options.reviseOffer }),
   };
   const web = createTaskWeb({ authenticateSession: async () => caller, getTaskDocumentView: async () => view });
   const answer = await web({ method: "GET", path: `/review/${taskId}/task`, headers: { cookie: SESSION }, requestId: "r" }, new URL(`https://agentx.example.test/review/${taskId}/task`));
@@ -133,6 +134,69 @@ const posts = (page: Page, path: string) => page.sent.filter((entry) => entry.me
 const commentBoxes = (page: Page) => page.byId("decide-comments-list").querySelectorAll("input[type=checkbox]");
 
 describe("the deciding and commenting script", () => {
+  // Live steer: Revise the plan for a coding step that stopped for the owner's live message (a change outside the approved plan).
+  describe("revising the plan for the owner's live change", () => {
+    const revisePage = async (canRevise = true) => (await pageHtml({ waiting: false, reviseOffer: { canRevise } }));
+    const answers = (status: number, body: unknown = {}) => (entry: Sent) => entry.url.endsWith("/api/revise-plan") ? { status, body } : { status: 200, body: {} };
+
+    it("shows the owner a Revise the plan button that says what it does, posts the page's revision and a fresh request ID, then reloads", async () => {
+      const html = await revisePage();
+      expect(html).toContain('id="revise-plan-button"');
+      expect(html).toContain("you approve the revised plan before coding continues");
+      const page = boot(html, { respond: answers(200, { revision: 9 }) });
+      expect(page.byId("revise-plan-button").hidden).toBe(false);
+      page.byId("revise-plan-button").click();
+      await page.settle();
+      expect(posts(page, "/api/revise-plan")).toHaveLength(1);
+      expect(posts(page, "/api/revise-plan")[0]!.body).toEqual({ requestId: expect.stringMatching(/^aaaaaaaa-aaaa-4aaa-8aaa-/) as unknown, expectedRevision: 7 });
+      expect(posts(page, "/api/revise-plan")[0]!.headers["x-agentx-csrf"]).toBeDefined();
+      expect(page.reloads).toHaveLength(1);
+      // It never sends the retry's request.
+      expect(posts(page, "/api/retry")).toEqual([]);
+    });
+
+    it("says why when refused, keeps the same request ID for the same press, and starts a fresh one after the task changed", async () => {
+      let status = 503;
+      const page = boot(await revisePage(), { respond: (entry) => answers(status, status === 409 ? { error: "changed", message: "This task changed. Refresh the page and try again." } : {})(entry) });
+      page.byId("revise-plan-button").click();
+      await page.settle();
+      expect(page.byId("revise-error").hidden).toBe(false);
+      expect(page.byId("revise-error").textContent).toBe("AgentX couldn't do that right now. Try again shortly.");
+      page.byId("revise-plan-button").click();
+      await page.settle();
+      const [first, second] = posts(page, "/api/revise-plan");
+      expect(second!.body.requestId).toBe(first!.body.requestId);
+      status = 409;
+      page.byId("revise-plan-button").click();
+      await page.settle();
+      status = 503;
+      page.byId("revise-plan-button").click();
+      await page.settle();
+      const all = posts(page, "/api/revise-plan");
+      expect(all[3]!.body.requestId).not.toBe(all[2]!.body.requestId);
+      expect(page.reloads).toEqual([]);
+    });
+
+    it("says only the owner can revise the plan when the broker answers 403, and offers no second press", async () => {
+      const page = boot(await revisePage(), { respond: answers(403, { error: "owners_only", message: "Only owners decide." }) });
+      page.byId("revise-plan-button").click();
+      await page.settle();
+      expect(page.byId("revise-error").textContent).toBe("Only the task owner can revise the plan.");
+      expect(page.byId("revise-plan-button").hidden).toBe(true);
+      page.byId("revise-plan-button").click();
+      await page.settle();
+      expect(posts(page, "/api/revise-plan")).toHaveLength(1);
+    });
+
+    it("gives a reader who is not the owner no button and no way to post, and shows nothing when coding did not stop for such a change", async () => {
+      const html = await revisePage(false);
+      expect(html).not.toContain('id="revise-plan-button"');
+      expect(html).toContain("Only the task owner can revise the plan.");
+      expect(boot(html).sent.filter((entry) => entry.method === "POST")).toEqual([]);
+      expect(await pageHtml({ waiting: false })).not.toContain('aria-label="Revise the plan"');
+    });
+  });
+
   describe("retrying a blocked browser and API round", () => {
     const blockedPage = async (canRetry = true) => (await pageHtml({ waiting: false, applicationRetry: { canRetry } }));
 
