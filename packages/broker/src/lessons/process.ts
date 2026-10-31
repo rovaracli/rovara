@@ -5,7 +5,7 @@ import { curateDraft, type CurateDeps, type CurateOutcome } from "./curate.js";
 import { pendingExpiry } from "./expiry.js";
 import { approversRequired, emitAudit, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { CitationVerifier } from "./ports.js";
-import { isHeldBySource, resumeSource } from "./sources.js";
+import { attributableSources, clearSourcePause, isHeldBySource } from "./sources.js";
 import { lessonValue } from "./value.js";
 import { isCorroborated } from "./value.js";
 import { isMeaningfulAnchor } from "@agentx/contracts";
@@ -85,12 +85,13 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
 
     const flags = await deps.store.flags(key);
     // A lesson from a source that spiked is collected but held: it is not queued for people or applied until a maintainer resumes the source.
-    const held = isHeldBySource(flags, [...verified.provenance.sources, ...verified.provenance.inputSources]);
+    const held = isHeldBySource(flags, attributableSources(verified.provenance));
     const earned = earnedAttention(verified, decision.tier) && (!held || current.status === "pending");
     // A higher tier than before means earlier approvals were for less risk: they no longer count.
     const approvals = decision.tier > current.tier ? [] : current.approvals;
     const next: Lesson = {
       ...verified, version, tier: decision.tier, tierReasons: decision.reasons.slice(0, 12), approvals, updatedAt: now,
+      ...(options.noAutoApply === true ? { reviewRequired: true } : {}),
       status: earned ? "pending" : "candidate", ...(earned ? { pendingExpiresAt: current.pendingExpiresAt ?? pendingExpiry(now) } : {}),
     };
     const result = await deps.store.commit(key, setVersion, [next], now);
@@ -99,7 +100,7 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
 
     // Auto-apply: tier 0, corroborated, not held, not a refinement of an existing lesson, and the policy and mode allow it.
     if (next.status === "pending" && next.tier === 0 && next.supersedes === undefined && isCorroborated(next.provenance) && !held
-      && options.noAutoApply !== true && approversRequired(0, resolved.approval) === 0 && modeAllows(resolved.mode, "auto_apply")) {
+      && options.noAutoApply !== true && next.reviewRequired !== true && approversRequired(0, resolved.approval) === 0 && modeAllows(resolved.mode, "auto_apply")) {
       try {
         const active = await activateLesson(deps, key, next, [{ approvalId: `auto-${lessonId}`, by: "system:auto", at: deps.now(), mode: "auto" }], resolved.expiryDays, "lesson.auto_applied");
         if (active !== undefined) return active;
@@ -131,9 +132,9 @@ export const RESUME_RESETTLE_LIMIT = 200;
  * earned attention goes to people as pending; it never goes live from here. Bounded at RESUME_RESETTLE_LIMIT lessons per call.
  */
 export async function resumeAndResettle(deps: ProcessDeps, key: ScopeKey, source: string, actor: string): Promise<{ resumed: boolean; settled: string[] }> {
-  if (!(await resumeSource(deps, deps.store, key, source, actor))) return { resumed: false, settled: [] };
+  if (!(await clearSourcePause(deps, deps.store, key, source, actor))) return { resumed: false, settled: [] };
   const held = (await deps.store.list(key, { statuses: ["candidate"] }))
-    .filter((l) => l.provenance.sources.includes(source) || l.provenance.inputSources.includes(source))
+    .filter((l) => attributableSources(l.provenance).includes(source))
     .sort((a, b) => lessonValue(b) - lessonValue(a) || a.id.localeCompare(b.id))
     .slice(0, RESUME_RESETTLE_LIMIT);
   const settled: string[] = [];

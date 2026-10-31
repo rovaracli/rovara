@@ -438,10 +438,10 @@ describe("owner decision 'Lesson limits': ranking by value", () => {
   it("harmful marks reduce value; corroboration needs a measured outcome or two tasks", () => {
     const l = rec("les_x0000001");
     expect(lessonValue({ ...l, counters: { loaded: 5, helpful: 0, harmful: 3, citationStale: 0 } })).toBeLessThan(lessonValue(l));
-    const one = { measured: false, supportTasks: ["t1"], sources: ["member:a"] };
+    const one = { measured: false, supportTasks: ["t1"], authors: ["a"] };
     expect(isCorroborated(one)).toBe(false);
-    expect(isCorroborated({ ...one, supportTasks: ["t1", "t1"], sources: ["member:a", "member:b"] })).toBe(false);
-    expect(isCorroborated({ ...one, supportTasks: ["t1", "t2"], sources: ["member:a", "member:b"] })).toBe(true);
+    expect(isCorroborated({ ...one, supportTasks: ["t1", "t1"], authors: ["a", "b"] })).toBe(false);
+    expect(isCorroborated({ ...one, supportTasks: ["t1", "t2"], authors: ["a", "b"] })).toBe(true);
     expect(isCorroborated({ ...one, measured: true })).toBe(true);
   });
 

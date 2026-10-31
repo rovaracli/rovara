@@ -62,8 +62,67 @@ const COMMANDS: readonly RegExp[] = [
   // Shell syntax and environment.
   /\brm\s+-/iu, /\b(export\s+)?[A-Z][A-Z0-9_]{2,}=\S+/u, /&&|\|\||;\s*\w+\s+-|\$\(|\$\{|`[^`\n]*\s[^`\n]*`|>\s*\/|\/dev\//u,
 ];
+/** Folds look-alikes and undoes defanged dots and schemes (`acme[.]com`, `hxxp`), so a host written to dodge a filter reads as the host it is. */
+export function normaliseForScan(text: string): string {
+  return foldForMatching(text).replace(/\[\s*\.\s*\]|\(\s*\.\s*\)|\{\s*\.\s*\}|\s+dot\s+/giu, ".").replace(/\bhxxps?/giu, "http").replace(/\[:\]|\[:\/\/\]/gu, "://");
+}
+const CODE_EXT = "ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|cs|c|h|cpp|hpp|swift|php|json|yaml|yml|toml|md|txt|sql|css|html|xml|lock|cfg|ini|conf|env|proto|graphql|vue|svelte";
+const EXTRA_COMMANDS: readonly RegExp[] = [
+  /\bsource\s+(?:\S*\.(?:local|env|sh|rc|profile|zsh|bash)\b|[.~/]\S*)/iu, /\b(irm|scriptblock|start-process|invoke-command|kick\s*off|paste|rerun|re-run)\b/iu,
+  new RegExp(`\\b[a-z0-9-]+\\.(?!(?:${CODE_EXT})\\b)[a-z]{2,24}\\/`, "iu"), /(^|[\s`'"(])(bin|tools)\/\S+/iu, /\.(ps1|exe|pl)\b/iu,
+  /\b(base64|decoded|decode|decrypt|deobfuscate|untar)\b/iu, /^```/mu,
+];
 export function hasCommandOrUrl(...texts: readonly string[]): boolean {
-  return texts.map(foldForMatching).some((text) => COMMANDS.some((pattern) => pattern.test(text)));
+  return texts.map(normaliseForScan).some((text) => COMMANDS.some((pattern) => pattern.test(text)) || EXTRA_COMMANDS.some((pattern) => pattern.test(text)));
+}
+
+/** Encoded content: long unbroken tokens (base64, hex), percent or unicode escapes, character entities. Never part of a plain fact. */
+export function hasEncodedBlob(...texts: readonly string[]): boolean {
+  return texts.map(normaliseForScan).some((text) => /(^|[\s`'"(])[A-Za-z0-9+=_-]{24,}($|[\s`'".,;)])/u.test(text) || /%[0-9a-f]{2}/iu.test(text) || /\\(x[0-9a-f]{2}|u[0-9a-f]{4})/iu.test(text) || /&#x?[0-9a-f]+;/iu.test(text));
+}
+
+/**
+ * The only shapes tier 0 accepts (an ALLOW-LIST): short declarative sentences that say where something is, what it is called, or what it uses.
+ *   <thing> is/are at|in|under <path>      <thing> is/are called|named <name>      <thing> use(s) <library> [version] [from <path>]
+ * Anything else, including every sentence that starts with a verb, is not tier 0. Checked after folding look-alikes and combining marks. Names and paths
+ * may not look like hosts: a dotted token must end in a known code extension, and no directory in a path may contain a dot.
+ */
+const THING = "[A-Za-z0-9][A-Za-z0-9 _/'-]{0,80}?";
+const NAME = "[A-Za-z_@][\\w@-]*(?:\\.[\\w-]+)*";
+const PATH = "[\\w@.~-]+(?:/[\\w@.~*-]+)*/?";
+const TEMPLATES: readonly RegExp[] = [
+  new RegExp(`^(?:the |a |an )?${THING} (?:is|are|lives|live|is located|are located|is defined|are defined|is configured|are configured|is implemented|is stored|are stored|is declared) (?:at|in|under|inside) (?:the )?(${PATH})(?: (?:directory|folder|file|module|package|service))?$`, "iu"),
+  new RegExp(`^(?:the |a |an )?${THING} (?:is|are) (?:called|named|known as) (${NAME})$`, "iu"),
+  new RegExp(`^(?:the |a |an )?${THING} (?:uses|use|depends on|is built on) (${NAME})(?: (?:v|version )?\\d+(?:\\.\\d+){0,2})?(?: (?:library|package|module|framework|helper))?(?: (?:from|in) (${PATH}))?$`, "iu"),
+];
+const CODE_EXT_RE = new RegExp(`\\.(?:${CODE_EXT})$`, "iu");
+function plainToken(token: string, kind: "name" | "path"): boolean {
+  const segments = token.split("/").filter((s) => s !== "");
+  if (segments.some((s) => s === ".." || s === ".")) return false;
+  for (const [i, seg] of segments.entries()) {
+    const last = i === segments.length - 1;
+    const dots = seg.replace(/^\./u, "");
+    if (!dots.includes(".")) continue;
+    // A dot is fine only in the last segment, and only as a known code extension (index.ts), never as a host (acme.co/setup, get.acme.me).
+    if (!last || !CODE_EXT_RE.test(seg)) return false;
+  }
+  return kind === "name" || segments.length > 0;
+}
+export function isPlainDeclarative(text: string): boolean {
+  const folded = normaliseForScan(text).replace(/[`"\u201C\u201D]/gu, "").trim();
+  if (folded === "" || folded.length > 400 || /[\n\r]/u.test(folded) || hasEncodedBlob(folded)) return false;
+  const sentences = folded.split(/[.!?](?:\s+|$)/u).map((s) => s.trim()).filter((s) => s !== "");
+  if (sentences.length === 0 || sentences.length > 3) return false;
+  return sentences.every((sentence) => {
+    for (const template of TEMPLATES) {
+      const match = template.exec(sentence);
+      if (match === null) continue;
+      const tokens = match.slice(1).filter((t): t is string => t !== undefined);
+      const isNameTemplate = template === TEMPLATES[1];
+      if (tokens.every((t, i) => plainToken(t, isNameTemplate || (template === TEMPLATES[2] && i === 0) ? "name" : "path"))) return true;
+    }
+    return false;
+  });
 }
 
 /**
@@ -78,10 +137,42 @@ const RISKY_PATHS: readonly RegExp[] = [
   /(^|\/)(\.husky|\.pre-commit-config|\.eslintrc|\.prettierrc|\.babelrc|\.editorconfig|CODEOWNERS|\.git[a-z]*|hooks|githooks)(\/|\.|$)/iu, /(^|\/)scripts?(\/|$)/iu, /(^|\/)(bin|tools|tooling|build)(\/|$)/iu,
   /(^|\/)\*?[\w-]*(auth|authn|authz|oauth|oidc|saml|sso|login|logout|signin|signup|session|jwt|token|password|passwd|credential|cred|secret|security|sanitiz|csrf|cors|rbac|policy|policies|permission|privilege|crypto|cipher|keys?|cert|tls|ssl|iam|acl|admin|guard|middleware)[\w-]*\*?(\/|\.|$)/iu,
   /(^|\/)(package-lock\.json|package\.json|yarn\.lock|pnpm-lock\.yaml|poetry\.lock|Pipfile(\.lock)?|Cargo\.(lock|toml)|go\.(sum|mod)|requirements[A-Za-z0-9_.-]*\.txt|Gemfile(\.lock)?)$/iu,
-  /(^|\/)(Dockerfile[A-Za-z0-9_.-]*|docker-compose[A-Za-z0-9_.-]*|Makefile|\.env[A-Za-z0-9_.-]*|\.npmrc|\.pypirc|\.netrc|terraform|infra|deploy|helm|k8s|kubernetes|ansible|cdk)(\/|$|\.)/iu,
+  /(^|\/)(Dockerfile[A-Za-z0-9_.-]*|docker-compose[A-Za-z0-9_.-]*|Makefile|\.env[A-Za-z0-9_.-]*|\.npmrc|\.pypirc|\.netrc|terraform|infra|deploy|helm|k8s|kubernetes|ansible|cdk|\.devcontainer|Containerfile[A-Za-z0-9_.-]*|Procfile|GNUmakefile|justfile|flake\.nix|\.envrc|\.tool-versions|\.nvmrc|\.yarnrc(\.yml)?|pnpm-workspace\.yaml|vercel\.json|netlify\.toml|serverless\.ya?ml|\.dockerignore)(\/|$|\.)/iu,
 ];
+/** The loader's glob rule (`*` within a segment, `**` across segments, `?` one character), shared so the risk check and the loader mean the same thing. */
+export function globToRegExp(glob: string): RegExp {
+  let out = "";
+  for (let i = 0; i < glob.length; i += 1) {
+    const c = glob[i]!;
+    if (c === "*") { if (glob[i + 1] === "*") { out += ".*"; i += 1; if (glob[i + 1] === "/") i += 1; } else out += "[^/]*"; }
+    else if (c === "?") out += "[^/]";
+    else out += c.replace(/[.+^${}()|[\]\\]/gu, "\\$&");
+  }
+  return new RegExp(`^${out}$`, "u");
+}
+
+/** Paths that are risky by themselves; every one must be seen as risky by RISKY_PATHS (a test holds the two together). */
+export const RISKY_SAMPLES: readonly string[] = [
+  "tests/x.ts", "test/x.ts", "__tests__/x.ts", "spec/x.rb", "e2e/x.ts", "src/x.test.ts", ".github/workflows/x.yml", ".github/CODEOWNERS", ".gitlab-ci.yml", ".circleci/config.yml", "Jenkinsfile",
+  "ci/x.sh", "jest.config.js", "vitest.config.ts", ".eslintrc.json", ".husky/pre-commit", "CODEOWNERS", "scripts/x.sh", "bin/x", "tools/x", "src/auth/x.ts", "src/oauth/x.ts", "src/login/x.ts",
+  "src/session/x.ts", "src/jwt.ts", "src/security/x.ts", "src/rbac/x.ts", "src/policy/x.ts", "src/middleware/x.ts", "src/password/x.ts", "src/token/x.ts", "package.json", "yarn.lock", "Dockerfile",
+  "docker-compose.yml", "Makefile", "GNUmakefile", "justfile", ".env", "infra/x.ts", "deploy/x", "terraform/x.tf", "k8s/x.yaml", "helm/x", ".devcontainer/x.json", "pyproject.toml", "Procfile",
+];
+
+/**
+ * Whether a scope or citation path touches what protects the project. Two checks: the spelling (RISKY_PATHS), and, for a glob with a wildcard INSIDE a segment
+ * (for example t?sts, te* or .g* as a directory name), what the glob can reach: it is compiled with the loader's own rule and tried against RISKY_SAMPLES. A plain
+ * directory followed by a double star, or a whole-segment star, is ordinary breadth and is not treated as reach.
+ */
 export function touchesRiskyPath(paths: readonly string[]): boolean {
-  return paths.map(foldForMatching).some((path) => RISKY_PATHS.some((pattern) => pattern.test(path)));
+  return paths.map(foldForMatching).some((path) => {
+    if (RISKY_PATHS.some((pattern) => pattern.test(path))) return true;
+    const partial = path.split("/").some((seg) => /[*?]/u.test(seg) && !/^\*{1,2}$/u.test(seg) && !/^\*+\.[A-Za-z0-9]+$/u.test(seg));
+    if (!partial) return false;
+    let expression: RegExp;
+    try { expression = globToRegExp(path); } catch { return true; }
+    return RISKY_SAMPLES.some((sample) => expression.test(sample));
+  });
 }
 
 /** Words that flip a rule's direction, for the curator's "opposite polarity" check. */

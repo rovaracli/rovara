@@ -1,7 +1,7 @@
 // Learning v2 L3a: risk tiers (design §4.5.3). Evaluated by code. The classifier flags (escalation words, the judge's escalate flag, reviewer stages)
 // can only raise a tier, never lower it. A lesson that asks for a capability change, or comes from an outsider or an ineligible task, is "never".
 import { isMeaningfulAnchor } from "@agentx/contracts";
-import { hasCommandOrUrl, hasEscalationWords, requestsCapabilityChange, touchesRiskyPath } from "./guards.js";
+import { hasCommandOrUrl, hasEncodedBlob, hasEscalationWords, isPlainDeclarative, requestsCapabilityChange, touchesRiskyPath } from "./guards.js";
 import { isRestricted, trustAtLeast, type Lesson, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type Tier } from "./types.js";
 
 export interface TierInput {
@@ -40,6 +40,7 @@ function classifyBase(input: TierInput, context: TierContext): TierDecision {
   if (input.type === "review_check") escalation.push("review_check");
   if (hasEscalationWords(input.title, input.description, input.body)) escalation.push("escalation_words");
   if (hasCommandOrUrl(input.title, input.description, input.body)) escalation.push("command_or_url");
+  if (hasEncodedBlob(input.title, input.description, input.body)) escalation.push("encoded_content");
   // The paths a lesson is scoped to or cites count as much as its words: a neutral sentence about tests/** or .github/** still touches what protects the project.
   if (touchesRiskyPath([...(input.scope.paths ?? []), ...input.citations.flatMap((c) => (c.kind === "code" ? [c.path] : []))])) escalation.push("risky_path");
   if (context.judgeEscalate === true) escalation.push("judge_escalate");
@@ -48,6 +49,8 @@ function classifyBase(input: TierInput, context: TierContext): TierDecision {
   // Tier 0: a cited, factual lesson from a trusted source, small in scope. Everything else needs one person.
   const why: string[] = [];
   if (input.type !== "fact") why.push("not_a_fact");
+  // An allow-list, not a deny-list: only a plain "<thing> is in <path> / is called <name> / uses <library>" statement can go live without a person.
+  if (!isPlainDeclarative(input.body)) why.push("not_plain_declarative");
   if (!validCodeCitations(input)) why.push("citations_not_verified");
   if (!trustAtLeast(input.provenance.minTrust, "rovara")) why.push("source_not_trusted");
   const repos = input.scope.repos ?? [];

@@ -28,12 +28,14 @@ const CONFUSABLES: Record<string, string> = {
   "\u04BB": "h", "\u0432": "b", "\u043A": "k", "\u043C": "m", "\u043D": "h", "\u0442": "t", "\u0433": "r",
   "\u0410": "A", "\u0412": "B", "\u0415": "E", "\u041A": "K", "\u041C": "M", "\u041D": "H", "\u041E": "O", "\u0420": "P", "\u0421": "C", "\u0422": "T", "\u0425": "X", "\u0406": "I", "\u0408": "J", "\u0405": "S",
   "\u03B1": "a", "\u03BF": "o", "\u03BD": "v", "\u03C1": "p", "\u03B9": "i", "\u03BA": "k", "\u03C4": "t", "\u03C5": "u", "\u03B5": "e", "\u03C7": "x", "\u0391": "A", "\u0392": "B", "\u0395": "E", "\u039F": "O", "\u03A1": "P", "\u03A4": "T",
+  "\u0585": "o", "\u057D": "u", "\u0578": "n", "\u0570": "h", "\u0581": "g", "\u0566": "q", "\u0561": "a", "\u0563": "q", "\u0573": "t",
   "\u0131": "i", "\u0269": "i", "\u0261": "g", "\u1D00": "a", "\u2113": "l",
 };
-/** Text folded for matching word lists: hidden characters out, NFKC, look-alikes to Latin. Never used for storage or display. */
+/** Text folded for matching word lists: hidden characters out, NFKC, combining marks out, look-alikes to Latin. Never used for storage or display. */
 export function foldForMatching(text: string): string {
   let out = "";
-  for (const ch of stripHiddenCharacters(text)) out += CONFUSABLES[ch] ?? ch;
+  // Decompose and drop combining marks (an accent over a letter must not hide a word), then map look-alikes.
+  for (const ch of stripHiddenCharacters(text).normalize("NFD").replace(/\p{M}/gu, "")) out += CONFUSABLES[ch] ?? ch;
   return out;
 }
 

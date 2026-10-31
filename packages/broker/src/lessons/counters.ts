@@ -6,7 +6,7 @@ import type { AlertSink, CorrectionJudge, CorrectionKind, LessonDeps } from "./p
 import { renewLesson } from "./expiry.js";
 import { retireLesson } from "./curate.js";
 import { nextVersion, type LessonStore, type LoadManifest, type ScopeKey } from "./store.js";
-import { cleanForLearning } from "./guards.js";
+import { cleanForLearning, globToRegExp } from "./guards.js";
 import type { Lesson } from "./types.js";
 import type { LoadReport } from "@agentx/contracts";
 
@@ -31,16 +31,6 @@ export interface TaskOutcome {
   evalRun?: boolean;
 }
 
-function globToRegExp(glob: string): RegExp {
-  let out = "";
-  for (let i = 0; i < glob.length; i += 1) {
-    const c = glob[i]!;
-    if (c === "*") { if (glob[i + 1] === "*") { out += ".*"; i += 1; if (glob[i + 1] === "/") i += 1; } else out += "[^/]*"; }
-    else if (c === "?") out += "[^/]";
-    else out += c.replace(/[.+^${}()|[\]\\]/gu, "\\$&");
-  }
-  return new RegExp(`^${out}$`, "u");
-}
 /** A correction is in a lesson's scope when the lesson has no path scope (a repository-wide lesson) or one of the correction's files matches. */
 const inScope = (lesson: Lesson, correction: TaskCorrection): boolean => {
   const paths = lesson.scope.paths ?? [];

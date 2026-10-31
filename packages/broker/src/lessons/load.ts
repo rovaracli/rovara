@@ -4,6 +4,7 @@
 import {
   LEARNED_CONTEXT_FEATURE, LEARNED_CONTEXT_MAX_BYTES, LEARNED_CONTEXT_MAX_LESSONS, cleanLessonText, type CodeCitation, type LearnedContext, type LearnedLesson, type LessonStage,
 } from "@agentx/contracts";
+import { globToRegExp } from "./guards.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
@@ -32,16 +33,6 @@ export interface LoadResult { context?: LearnedContext; manifest: LoadManifest; 
 
 export interface LoadDeps extends LessonDeps { store: LessonStore; embedder: Embedder; vectors: LessonVectors; settings: LearningSettingsReader }
 
-function globToRegExp(glob: string): RegExp {
-  let out = "";
-  for (let i = 0; i < glob.length; i += 1) {
-    const c = glob[i]!;
-    if (c === "*") { if (glob[i + 1] === "*") { out += ".*"; i += 1; if (glob[i + 1] === "/") i += 1; } else out += "[^/]*"; }
-    else if (c === "?") out += "[^/]";
-    else out += c.replace(/[.+^${}()|[\]\\]/gu, "\\$&");
-  }
-  return new RegExp(`^${out}$`, "u");
-}
 
 interface ScopeMatch { matches: boolean; byPath: boolean }
 export function scopeMatch(lesson: Lesson, request: Pick<LoadRequest, "repos" | "files" | "languages">): ScopeMatch {

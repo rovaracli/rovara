@@ -133,7 +133,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     const given = { approvalId: (deps.newId ?? randomUUID)(), by: input.approverId, at: now, mode };
     approvals = [...approvals, given];
     const complete = mode === "sole_owner_exception" || approvals.length >= Math.max(required, 1);
-    const inGroup = resolved.approval.requiredGroup === undefined || approvals.some((a) => (group.groups?.[resolved.approval.requiredGroup!] ?? []).includes(a.by));
+    const inGroup = resolved.requiredGroups.every((name) => approvals.some((a) => (group.groups?.[name] ?? []).includes(a.by)));
     // The approval is recorded before it takes effect; if the record cannot be written, nothing changes.
     if (!(await requireAudit(deps.audit, { action: "lesson.approved", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { tier, mode, count: approvals.length } }))) return { ok: false, code: "audit_unavailable" };
     if (mode === "sole_owner_exception" && !(await requireAudit(deps.audit, { action: "lesson.sole_owner_exception", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { tier } }))) return { ok: false, code: "audit_unavailable" };

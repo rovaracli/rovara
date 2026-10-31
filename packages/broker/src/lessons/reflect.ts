@@ -34,6 +34,8 @@ export interface ReflectDeps {
 }
 
 const MAX_OUTPUT_TOKENS = 1800;
+/** Kinds a person writes. Plans are agent text, and outcomes, CI output and loaded lessons are not people. */
+const PERSON_KINDS: ReadonlySet<string> = new Set(["send_back", "remembered", "human_edit", "close_reason", "review_finding", "intent"]);
 
 function parseJson(text: string): unknown {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
@@ -149,10 +151,14 @@ async function toDraft(
   const sourceOf = (s: MarkedSpan): string => s.sourceKey ?? (s.authorId === undefined ? `kind:${s.kind}` : `member:${s.authorId}`);
   const sources = [...new Set(evidence.map(sourceOf))].slice(0, 20);
   // Spike detection counts every source the model read, so flood text it chose not to cite is still seen.
-  const inputSources = [...new Set(everything.filter((s) => s.kind !== "loaded_lesson").map(sourceOf))].slice(0, 40);
+  const inputSources = [...new Set(everything.filter((s) => s.kind !== "loaded_lesson").map(sourceOf))].slice(0, 100);
+  // Independence is counted in people: the canonical member ids of spans a PERSON wrote. Agent text (plan), system text, outcomes and channel or bucket keys
+  // never make an author.
+  const authors = [...new Set(evidence.flatMap((s) => (s.trust === "member" && s.authorId !== undefined && PERSON_KINDS.has(s.kind) ? [s.authorId] : [])))];
+  const authorsOf = new Set(authors);
   // Measured outcomes come from structured facts in the input, never from which spans the model cited.
-  const measured = subject.outcome === "reverted" || everything.some((s) => (s.kind === "send_back" && s.trust === "member") || (s.kind === "ci_failure" && s.trust === "rovara"));
-  const authors = [...new Set(evidence.flatMap((s) => (s.trust === "member" && s.authorId !== undefined ? [s.authorId] : [])))];
+  // A send-back counts only when someone other than the lesson's own authors made it (a person cannot create a "measured outcome" by correcting their own task).
+  const measured = subject.outcome === "reverted" || everything.some((s) => (s.kind === "send_back" && s.trust === "member" && s.authorId !== undefined && !authorsOf.has(s.authorId)) || (s.kind === "ci_failure" && s.trust === "rovara"));
   return {
     type: candidate.type, title, description, body, scope: candidate.scope, stages: [...new Set(candidate.stages)], citations,
     provenance: {

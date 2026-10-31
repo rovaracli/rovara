@@ -67,7 +67,8 @@ export interface LearningSettings {
 }
 export interface LearningSettingsReader { read(workspaceId: string, project: string): Promise<LearningSettings> }
 
-export interface ResolvedLearning { mode: LearningMode; approval: ApprovalPolicy; expiryDays: number | undefined }
+/** `requiredGroups` holds every group that must be among the approvers: the company floor's and the project's own, both. */
+export interface ResolvedLearning { mode: LearningMode; approval: ApprovalPolicy; requiredGroups: string[]; expiryDays: number | undefined }
 const MODE_ORDER: readonly LearningMode[] = ["Off", "Collect", "Suggest", "On"];
 /** The more restrictive mode: Off is the strictest, On the loosest. */
 export const stricterMode = (a: LearningMode, b: LearningMode): LearningMode => (MODE_ORDER.indexOf(a) <= MODE_ORDER.indexOf(b) ? a : b);
@@ -82,7 +83,7 @@ function stricterApproval(project: ApprovalPolicy, floor: ApprovalPolicy, hasFlo
 }
 /** Reads the settings and fails closed: a reader that throws, or settings that do not parse, give mode Off. */
 export async function resolveLearning(reader: LearningSettingsReader, workspaceId: string, project: string): Promise<ResolvedLearning> {
-  const off: ResolvedLearning = { mode: "Off", approval: DEFAULT_APPROVAL_POLICY, expiryDays: undefined };
+  const off: ResolvedLearning = { mode: "Off", approval: DEFAULT_APPROVAL_POLICY, requiredGroups: [], expiryDays: undefined };
   let settings: LearningSettings;
   try { settings = await reader.read(workspaceId, project); } catch { return off; }
   const own = LearningModeSchema.safeParse(settings.mode ?? DEFAULT_LEARNING_MODE);
@@ -95,7 +96,7 @@ export async function resolveLearning(reader: LearningSettingsReader, workspaceI
   const approval = { success: true as const, data: stricterApproval(projectApproval.data, floor.data, settings.companyApproval !== undefined) };
   const days = settings.expiryDays;
   if (days !== undefined && (!Number.isInteger(days) || days < MIN_EXPIRY_DAYS || days > MAX_EXPIRY_DAYS)) return off;
-  return { mode: mode.data, approval: approval.data, expiryDays: days };
+  return { mode: mode.data, approval: approval.data, requiredGroups: [...new Set([floor.data.requiredGroup, projectApproval.data.requiredGroup].filter((g): g is string => g !== undefined))], expiryDays: days };
 }
 
 const SAFE_FACT = /^[A-Za-z0-9:_\-.#@/]{1,128}$/u;

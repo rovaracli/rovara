@@ -113,7 +113,7 @@ export const LessonProvenanceSchema = z.object({
   /** Where the evidence came from, for per-source spike detection: `member:<id>`, `slack:<channel>`, `ci`, or a span kind. */
   sources: z.array(z.string().max(120)).max(20),
   /** Every source present in the reflector's input (not only the cited ones), for spike detection and holds. Never used for corroboration. */
-  inputSources: z.array(z.string().max(120)).max(40),
+  inputSources: z.array(z.string().max(120)).max(100),
   /** Set by code, from structured facts of the task (a member send-back with its reason, a revert, a CI failure recorded by Rovara), never from what the model cited. */
   measured: z.boolean(),
   minTrust: TrustClassSchema, audience: AudienceSchema, reflectorRun: z.string().max(100), model: z.string().max(100),
@@ -144,6 +144,8 @@ export const LessonSchema = z.object({
   /** People who asked for this lesson to become a How we work rule; a tier-2 lesson needs two before it is published. */
   promotionApprovals: z.array(z.object({ by: z.string().max(100), at: z.number() }).strict()).max(5).optional(),
   promotedRuleId: z.string().max(100).optional(),
+  /** Set when a paused source was resumed: a person decides this lesson; it is never applied automatically, however it is merged later. */
+  reviewRequired: z.boolean().optional(),
   /** The lesson this one contradicts, when both go to a person on one card. */
   contradictsWith: z.string().max(64).optional(),
   /** Set when harmful marks call for a retire and a person has to decide (tier 1 and 2 lessons). */

@@ -6,7 +6,7 @@ import { oppositePolarity, requestsCapabilityChange } from "./guards.js";
 import { expiryWindowMs } from "./expiry.js";
 import { emitAudit } from "./policy.js";
 import type { AlertSink, Embedder, LearningSpend, LessonDeps, LessonVectors, PipelineModel } from "./ports.js";
-import { noteCandidateSources } from "./sources.js";
+import { attributableSources, noteCandidateSources } from "./sources.js";
 import type { LessonDraft } from "./reflect.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { LessonCitationSchema, LessonProvenanceSchema, LessonSchema, LessonScopeSchema, minTrust, narrowestAudience, trustAtLeast, type Lesson, type LessonCitation, type LessonScope } from "./types.js";
@@ -53,6 +53,11 @@ export function scopesOverlap(a: LessonScope, b: LessonScope): boolean {
 }
 
 const citationKey = (c: LessonCitation): string => (c.kind === "code" ? `code:${c.repo}:${c.path}:${c.anchor}` : c.kind === "pr" ? `pr:${c.url}` : c.kind === "record" ? `record:${c.eventId}` : `task:${c.taskId}`);
+/** A union that, when it must cut, keeps the paused sources first: a lesson cannot shed a hold by absorbing more sources than it has room for. */
+const unionPinned = (a: readonly string[], b: readonly string[], max: number, pinned: ReadonlySet<string>): string[] => {
+  const all = [...new Set([...a, ...b])];
+  return [...all.filter((x) => pinned.has(x)), ...all.filter((x) => !pinned.has(x))].slice(0, max);
+};
 const union = <T,>(a: readonly T[], b: readonly T[], max: number): T[] => [...new Set([...a, ...b])].slice(0, max);
 
 async function judge(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, other: Lesson): Promise<{ verdict: Verdict; escalate: boolean } | undefined> {
@@ -90,7 +95,7 @@ async function commitWith(deps: CurateDeps, key: ScopeKey, build: () => Promise<
 }
 
 /** Folds a draft into an existing lesson: citations, sources, authors and supporting tasks are unioned; trust and audience only ever narrow. */
-function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: number): Lesson {
+function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: number, paused: ReadonlySet<string>): Lesson {
   const citations = [...target.citations];
   const known = new Set(citations.map(citationKey));
   for (const c of draft.citations) if (!known.has(citationKey(c)) && citations.length < 6) citations.push(c);
@@ -102,7 +107,7 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
     provenance: {
       ...target.provenance,
       sourceEvents: union(target.provenance.sourceEvents, draft.provenance.sourceEvents, 50), sourceKinds: union(target.provenance.sourceKinds, draft.provenance.sourceKinds, 20),
-      authors: union(target.provenance.authors, draft.provenance.authors, 20), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: union(target.provenance.inputSources, draft.provenance.inputSources, 40), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
+      authors: union(target.provenance.authors, draft.provenance.authors, 20), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: unionPinned(target.provenance.inputSources, draft.provenance.inputSources, 100, paused), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
       memberSignal: target.provenance.memberSignal || draft.provenance.memberSignal,
       minTrust: minTrust([target.provenance.minTrust, draft.provenance.minTrust]), audience: narrowestAudience([target.provenance.audience, draft.provenance.audience]),
     },
@@ -125,7 +130,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   if (!z.array(LessonCitationSchema).max(6).safeParse(draft.citations).success || !LessonProvenanceSchema.safeParse(draft.provenance).success || !LessonScopeSchema.safeParse(draft.scope).success) return drop("invalid");
 
   // Every candidate is collected (no flat caps). It is counted against its sources; a spiking source is paused alone and its lessons are held, not dropped.
-  await noteCandidateSources(deps, deps.store, key, [...draft.provenance.sources, ...draft.provenance.inputSources], deps.alerts);
+  await noteCandidateSources(deps, deps.store, key, attributableSources(draft.provenance), deps.alerts);
 
   let vector: number[];
   try { vector = await deps.embedder.embed(lessonText(draft)); } catch { deps.metrics?.count("learning.embed_failed"); return drop("embed_failed"); }
@@ -156,7 +161,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
       const merged = await commitWith(deps, key, async () => {
         const fresh = await deps.store.get(key, other.id);
         if (fresh === undefined || !mergeAllowed(fresh, draft)) return undefined;
-        return [mergeInto(fresh, draft, nextVersion(fresh, await deps.store.versions(key, fresh.id)), deps.now())];
+        return [mergeInto(fresh, draft, nextVersion(fresh, await deps.store.versions(key, fresh.id)), deps.now(), new Set(Object.keys((await deps.store.flags(key)).pausedSources ?? {})))];
       });
       if (merged === undefined) return drop("conflict");
       await emitAudit(deps.audit, { action: "lesson.merged", workspaceId: key.workspaceId, project: key.project, lessonId: other.id, facts: { score: Math.round(score * 100) / 100 } });

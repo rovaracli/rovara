@@ -15,6 +15,7 @@ export interface EvidenceSpan {
   /** The Team record row or source ref this span came from; becomes a lesson's provenance. */
   eventId?: string;
   /** The member whose words or edit this is. */
+  /** The canonical developer id of the person (the identity-linked id across Slack, GitHub and tracker accounts, never an account or bot name). */
   authorId?: string;
   /** Where it came from, for per-source spike detection: `slack:<channel>`, `linear:<project>`, `ci`. Defaults to the author, then the span kind. */
   sourceKey?: string;
@@ -42,6 +43,8 @@ export type ReflectorInput =
   | { eligible: true; system: string; user: string; spans: Map<string, MarkedSpan>; removedOutsider: number; allowedTypes: readonly LessonType[] };
 
 export const MAX_SPAN_CHARS = 1500;
+/** At most this many spans reach the prompt, so the set of sources a lesson records is bounded and complete. */
+export const MAX_SPANS = 100;
 export const MAX_INPUT_CHARS = 20_000;
 /** Kinds whose text is a person's own words, so a quote inside them has another author. */
 const FREE_TEXT: ReadonlySet<SpanKind> = new Set(["intent", "plan", "send_back", "review_finding", "remembered", "close_reason", "fact"]);
@@ -88,7 +91,7 @@ export function buildReflectorInput(subject: ReflectSubject): ReflectorInput {
   let used = 0;
   for (const span of ordered) {
     const text = cleanForLearning(span.text, MAX_SPAN_CHARS);
-    if (text === "" || used + text.length > MAX_INPUT_CHARS) continue;
+    if (text === "" || used + text.length > MAX_INPUT_CHARS || spans.size >= MAX_SPANS) continue;
     const id = `S${spans.size + 1}`;
     spans.set(id, { id, kind: span.kind, trust: span.trust, ...(span.eventId === undefined ? {} : { eventId: span.eventId }), ...(span.authorId === undefined ? {} : { authorId: span.authorId }), ...(span.sourceKey === undefined ? {} : { sourceKey: span.sourceKey }), ...(span.audience === undefined ? {} : { audience: span.audience }) });
     blocks.push(`<<span id=${id} trust=${span.trust} kind=${span.kind}>>\n${text}\n<</span ${id}>>`);

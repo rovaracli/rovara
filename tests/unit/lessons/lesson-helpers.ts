@@ -100,7 +100,7 @@ export const codeCite = (over: Record<string, unknown> = {}) => ({ kind: "code" 
 
 export function draft(over: Partial<LessonDraft> = {}): LessonDraft {
   return {
-    type: "fact", title: "Retries use withRetry", description: "HTTP retries in api go through the shared helper", body: "Use withRetry from src/retry/index.ts for HTTP retries in the api service.",
+    type: "fact", title: "Retries use withRetry", description: "HTTP retries in api go through the shared helper", body: "HTTP retries in the api service use withRetry from src/retry/index.ts.",
     scope: { repos: ["api"], paths: ["src/**"] }, stages: ["UNDERSTAND", "PLAN", "IMPLEMENT"], citations: [codeCite()],
     provenance: { sourceEvents: ["ev-1"], sourceKinds: ["human_edit"], authors: ["ann"], supportTasks: ["task-1"], sources: ["member:ann"], inputSources: ["member:ann"], measured: false, minTrust: "member", audience: { kind: "project" }, reflectorRun: "run-1", model: "m", memberSignal: true },
     ...over,
@@ -117,7 +117,7 @@ export function subject(spans: EvidenceSpan[], over: Partial<ReflectSubject> = {
 export const memberSpan = (text: string, over: Partial<EvidenceSpan> = {}): EvidenceSpan => ({ kind: "human_edit", text, trust: "member", eventId: "ev-1", authorId: "ann", ...over });
 
 export const candidateJson = (over: Record<string, unknown> = {}) => ({
-  type: "convention", title: "Use withRetry", description: "Shared retry helper", body: "Use withRetry from src/retry/index.ts for HTTP retries in api.",
+  type: "convention", title: "Use withRetry", description: "Shared retry helper", body: "HTTP retries in api use withRetry from src/retry/index.ts.",
   scope: { repos: ["api"], paths: ["src/**"] }, stages: ["IMPLEMENT"], citations: [codeCite()], evidenceSpanIds: ["S1"], ...over,
 });
 export const reply = (...candidates: unknown[]): string => JSON.stringify({ candidates });

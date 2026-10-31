@@ -10,11 +10,12 @@ import type { Lesson } from "./types.js";
 export const hasMeasuredOutcome = (provenance: Pick<Lesson["provenance"], "measured">): boolean => provenance.measured;
 
 /**
- * Tier-0 auto-apply needs corroboration: a measured outcome behind it, or two independent sources: two tasks AND two distinct authors or sources (two tasks
- * started by one person are one source). A fact from a single source waits until something backs it up.
+ * Tier-0 auto-apply needs corroboration: a measured outcome behind it, or two independent PEOPLE: two tasks AND two distinct canonical member ids in
+ * `authors` (which holds only member-written evidence, never agent text, system text or channel/bucket keys). One person's two tasks, or one person posting
+ * in two channels, is one source. A fact from a single person waits until something backs it up.
  */
-export const isCorroborated = (provenance: Pick<Lesson["provenance"], "measured" | "supportTasks" | "sources">): boolean =>
-  provenance.measured || (new Set(provenance.supportTasks).size >= 2 && new Set(provenance.sources).size >= 2);
+export const isCorroborated = (provenance: Pick<Lesson["provenance"], "measured" | "supportTasks" | "authors">): boolean =>
+  provenance.measured || (new Set(provenance.supportTasks).size >= 2 && new Set(provenance.authors).size >= 2);
 
 const SEVERITY: Record<Lesson["type"], number> = { pitfall: 3, review_check: 3, fact: 2, convention: 2, procedure: 1, preference: 0 };
 

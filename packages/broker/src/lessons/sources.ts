@@ -7,7 +7,22 @@ import { SPIKE, emitAudit } from "./policy.js";
 import type { AlertSink, LessonDeps } from "./ports.js";
 import type { LessonStore, ProjectFlags, ScopeKey } from "./store.js";
 
-const mean = (values: readonly number[]): number => (values.length === 0 ? 0 : values.reduce((a, b) => a + b, 0) / values.length);
+/** The most a source's learned baseline may grow in one day. A steady source is followed; an exponential ramp outruns its baseline and is caught. */
+export const BASELINE_DAILY_GROWTH = 1.25;
+/**
+ * A source's normal daily count, learned from `history` (newest day first, today excluded). It starts at the oldest non-empty day and then follows the
+ * counts, rising by at most BASELINE_DAILY_GROWTH a day and falling halfway to a quieter day. It never goes below the floor.
+ */
+export function baselineOf(history: readonly number[]): number {
+  const oldestFirst = [...history].reverse();
+  const first = oldestFirst.find((n) => n > 0);
+  let baseline = Math.max(first ?? 0, SPIKE.baselineFloor);
+  for (const count of oldestFirst.slice(Math.max(0, oldestFirst.indexOf(first ?? -1)))) {
+    baseline = count >= baseline ? Math.min(count, baseline * BASELINE_DAILY_GROWTH) : (baseline + count) / 2;
+    baseline = Math.max(baseline, SPIKE.baselineFloor);
+  }
+  return baseline;
+}
 
 /** Counts one candidate against each of its sources, and pauses any source that spiked. Returns the sources paused by this call. */
 export async function noteCandidateSources(deps: LessonDeps, store: LessonStore, key: ScopeKey, sources: readonly string[], alerts?: AlertSink): Promise<string[]> {
@@ -18,7 +33,7 @@ export async function noteCandidateSources(deps: LessonDeps, store: LessonStore,
     await store.recordSourceEvent(key, { at: now, source });
     const days = await store.sourceDays(key, source, SPIKE.baselineDays + 1, now);
     const today = days[0] ?? 0;
-    const baseline = Math.max(mean(days.slice(1)), SPIKE.baselineFloor);
+    const baseline = baselineOf(days.slice(1));
     if (today < Math.max(SPIKE.multiple * baseline, SPIKE.minimum)) continue;
     const flags = await store.flags(key);
     if (flags.pausedSources?.[source] !== undefined) continue;
@@ -43,7 +58,7 @@ async function noteProjectVolume(deps: LessonDeps, store: LessonStore, key: Scop
   await store.recordSourceEvent(key, { at: now, source: PROJECT_VOLUME_KEY });
   const days = await store.sourceDays(key, PROJECT_VOLUME_KEY, SPIKE.baselineDays + 1, now);
   const today = days[0] ?? 0;
-  const baseline = Math.max(mean(days.slice(1)), SPIKE.baselineFloor);
+  const baseline = baselineOf(days.slice(1));
   if (today < Math.max(SPIKE.multiple * baseline, SPIKE.projectMinimum)) return;
   const flags = await store.flags(key);
   if (flags.volumeAlertedAt !== undefined && now - flags.volumeAlertedAt < DAY) return;
@@ -52,11 +67,18 @@ async function noteProjectVolume(deps: LessonDeps, store: LessonStore, key: Scop
   try { await alerts?.alert(key.workspaceId, key.project, "project_volume_spike"); } catch { /* the audit record holds */ }
 }
 
-/** True when any of a lesson's sources is paused: the lesson is held. */
+/**
+ * The sources a candidate is attributed to, for spike counting and for holds: the sources of the evidence it cites, plus every non-person source in the
+ * prompt (a channel, CI, a tracker feed). A member who merely appears in the prompt, without being cited, is not blamed for a flood around them.
+ */
+export const attributableSources = (provenance: { sources: readonly string[]; inputSources: readonly string[] }): string[] =>
+  [...new Set([...provenance.sources, ...provenance.inputSources.filter((s) => !s.startsWith("member:"))])];
+
+/** True when any of a lesson\'s attributable sources is paused: the lesson is held. */
 export const isHeldBySource = (flags: ProjectFlags, sources: readonly string[]): boolean => sources.some((s) => flags.pausedSources?.[s] !== undefined);
 
-/** A maintainer resumes one paused source. */
-export async function resumeSource(deps: LessonDeps, store: LessonStore, key: ScopeKey, source: string, actor: string): Promise<boolean> {
+/** Clears one source's pause and nothing else. Internal: callers use `resumeAndResettle`, which also re-settles the lessons that were held. */
+export async function clearSourcePause(deps: LessonDeps, store: LessonStore, key: ScopeKey, source: string, actor: string): Promise<boolean> {
   const flags = await store.flags(key);
   if (flags.pausedSources?.[source] === undefined) return false;
   const rest = { ...flags.pausedSources };
