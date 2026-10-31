@@ -13,6 +13,7 @@ import { codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 const FakeReady = (w: TrackingWorld) => async (_u: string, number: number) => { const current = w.github.statuses.get(number)!; w.github.statuses.set(number, { ...current, draft: false }); w.github.calls.push(`ready:${String(number)}`); return "ready" as const; };
 import { HEAD_A, HEAD_B, NOW, SESSION_ID, TASK_ID, sha, status, workflowOf, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
+import { statusOf } from "../../packages/broker/src/plugins/code-host/github/mapping.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const trackingKey = (number = 7, repository = "payments") => mergeTrackingKey(TASK_ID, repository, number);
@@ -138,7 +139,7 @@ describe("no CI", () => {
 
 describe("which checks count", () => {
   const check = (name: string, conclusion: "success" | "failure", required: boolean) => ({ name, status: "completed" as const, conclusion, required, url: "" });
-  const read = (input: Partial<ReturnType<typeof status>>) => readCi(status(input), { checksEverSeen: true, lastRovaraPushAt: NOW - 1e9, now: NOW });
+  const read = (input: Partial<ReturnType<typeof status>>) => readCi(statusOf(status(input)), { checksEverSeen: true, lastRovaraPushAt: NOW - 1e9, now: NOW });
 
   it("an unprotected base counts every check: a red non-required test is failing, on the all-checks basis", async () => {
     const w = world();
@@ -173,7 +174,7 @@ describe("which checks count", () => {
     // A failure still reads failing while another is missing.
     expect(read({ ...protectedBase, checks: [check("build", "failure", true)] })).toMatchObject({ ci: "failing", failingChecks: ["build"] });
     // Nothing has reported but two checks are required: never "no CI".
-    expect(readCi(status({ ...protectedBase, checks: [], headHasWorkflowFiles: false }), { checksEverSeen: false, lastRovaraPushAt: NOW - 1e9, now: NOW }).ci).toBe("pending");
+    expect(readCi(statusOf(status({ ...protectedBase, checks: [], headHasWorkflowFiles: false })), { checksEverSeen: false, lastRovaraPushAt: NOW - 1e9, now: NOW }).ci).toBe("pending");
   });
 
   it("counts a check protection names even when GitHub's isRequired does not say so (the name is the fallback)", () => {

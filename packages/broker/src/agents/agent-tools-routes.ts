@@ -19,6 +19,7 @@ import {
   ConnectorCallRequestSchema,
   ConnectorNameSchema,
   agentXError,
+  repositoryHostOf,
   type AgentXErrorCode,
   type ApprovalRules,
   type Autonomy,
@@ -28,6 +29,7 @@ import {
   type OrgId,
   type PresentedTool,
   type ProjectDefinition,
+  type RepositoryDefinition,
   type ResolvedRecipe,
   type WorkspaceInstance,
 } from "@agentx/contracts";
@@ -325,7 +327,16 @@ const LABEL_LIST_TOOLS: Readonly<Record<string, readonly string[]>> = { linear: 
 /** What a catalog read asks GitHub's tools list with: read permissions only. */
 const GITHUB_DISCOVERY_PERMISSIONS = { issues: "read", pull_requests: "read", contents: "read" } as const;
 
-const pinOf = (repository: { installationId?: number | undefined }): AgentTokenOptions => (repository.installationId === undefined ? {} : { installationId: repository.installationId });
+/**
+ * The installation a repository's record pins, read from its host record (task P7; the old top-level `installationId` reads as before). Only a GitHub host has one: a record on
+ * another code host pins nothing here, and its repository is not one this GitHub connector reaches (the connector is GitHub's, outside the code-host port).
+ * Latent asymmetry: other control-plane checks still read the top-level field alone (see project-working-branch-host.ts); no record that exists differs.
+ */
+const pinOf = (repository: Pick<RepositoryDefinition, "host" | "installationId" | "githubRepositoryId">): AgentTokenOptions => {
+  const host = repositoryHostOf(repository);
+  const installationId = host.kind === "github" ? (host as { installationId?: number | undefined }).installationId : undefined;
+  return installationId === undefined ? {} : { installationId };
+};
 
 /**
  * The project's GitHub connector as an agent uses it: the same repositories, tools and ledger, but the credential is an agent token for the run's org with
@@ -382,11 +393,12 @@ function pinOfRepository(connector: ResolvedConnector, found: { owner: string; r
 /** `owner/name` (as the URL spells it) and the pin of a GitHub scope's repository, or undefined for a scope that isn't one. */
 function githubScopeRepository(connector: ResolvedConnector, alias: string): { owner: string; name: string; installationId?: number } | undefined {
   const scope = connector.scopes.find((entry) => entry.alias === alias);
-  const repository = scope?.scope as { url?: unknown; installationId?: number } | undefined;
+  const repository = scope?.scope as ({ url?: unknown } & Pick<RepositoryDefinition, "host" | "installationId" | "githubRepositoryId">) | undefined;
   if (repository === undefined || typeof repository.url !== "string") return undefined;
   try {
     const parsed = parseGitHubRepository(repository.url);
-    return { owner: parsed.owner, name: parsed.name, ...(repository.installationId === undefined ? {} : { installationId: repository.installationId }) };
+    const pin = pinOf(repository).installationId;
+    return { owner: parsed.owner, name: parsed.name, ...(pin === undefined ? {} : { installationId: pin }) };
   } catch {
     return undefined;
   }

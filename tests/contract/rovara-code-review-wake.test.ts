@@ -12,6 +12,7 @@ import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { mergeViewOf } from "../../packages/broker/src/rovara-code/merge.js";
 import { trackTask, type MergeTrackingDependencies, type TrackedTask } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { boundInstallationOrg, wakeFromPullRequestEvent, wakesTrackingRow, type HeadEventDependencies } from "../../packages/broker/src/rovara-code/tracking-events.js";
+import { githubRepositoryOver } from "../../packages/broker/src/aws/broker/consumer-hosts.js";
 import { HEAD_A, NOW, TABLE, TASK_ID, FakeGithub, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
 import { GH, LOGIN, mergeWorld } from "../support/rovara-code-merge-world.js";
 import { PRIYA } from "../support/agent-session-world.js";
@@ -167,8 +168,9 @@ describe("approve, then the webhook, then the wake, then a pass: ready within on
     github.permissions.set(LOGIN.arjun, "write");
     github.permissions.set(LOGIN.reader, "read");
     const tracking: MergeTrackingDependencies = {
-      documentClient: w.db, tableName: "state", now, github, scope: (orgId) => ({ orgId }), loadTask: async (id) => w.db.get(taskKey(id)) as unknown as TrackedTask,
+      documentClient: w.db, tableName: "state", now, scope: (orgId) => ({ orgId }), loadTask: async (id) => w.db.get(taskKey(id)) as unknown as TrackedTask,
       repositoryUrl: async (_project, _revision, repositoryId) => `https://github.com/acme/${repositoryId}`, recordedHead: async () => undefined,
+      repository: async (_project, _revision, repositoryId) => githubRepositoryOver(github as never, `https://github.com/acme/${repositoryId}`),
     };
     const wakeDeps: HeadEventDependencies = {
       documentClient: w.db, tableName: "state", now, loadTask: (id) => w.host.loadTask(id), repositoryUrl: (...args) => w.host.repositoryUrl(...args),

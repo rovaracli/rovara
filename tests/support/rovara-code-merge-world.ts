@@ -17,7 +17,9 @@ import { DECIDE_COOKIE, DecideStore, csrfTokenFor, mintConfirmUrl, type DecideRe
 import { githubWorkflowPullRequestKey, taskKey } from "../../packages/broker/src/developer/task-records.js";
 import type { SessionShareDependencies } from "../../packages/broker/src/agent-sessions/shares.js";
 import { linkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";
-import type { CodeMergeGithub, CodeMergeHost } from "../../packages/broker/src/rovara-code/merge.js";
+import type { CodeMergeHost } from "../../packages/broker/src/rovara-code/merge.js";
+import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
+import type { CodeHost } from "../../packages/contracts/src/index.js";
 import { registerMergeApprovals } from "../../packages/broker/src/rovara-code/merge.js";
 import { registerCodeSettingsApprovals } from "../../packages/broker/src/rovara-code/code-settings.js";
 import type { MergePullRequestResult } from "../../packages/broker/src/github-app.js";
@@ -36,8 +38,11 @@ export const LOGIN = { priya: "priya-gh", arjun: "arjun-gh", max: "max-gh", ola:
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
-/** A GitHub that answers what the merge needs: a pull request's status, a person's permission, and the merge itself (every call is kept). */
-export class MergeGithub implements CodeMergeGithub {
+/**
+ * A GitHub that answers what the merge needs: a pull request's status, a person's permission, and the merge itself (every call is kept). It stands where the GitHub App provider stands:
+ * the merge goes through the GitHub CodeHost adapter (`githubCodeHost`) over it, exactly as the broker wires it.
+ */
+export class MergeGithub {
   readonly statuses = new Map<number, PullRequestStatus>();
   readonly permissions = new Map<string, "admin" | "write" | "read" | "none">();
   readonly mergeCalls: Array<{ number: number; sha: string; method: "squash" | "merge" }> = [];
@@ -47,8 +52,10 @@ export class MergeGithub implements CodeMergeGithub {
   readonly changedPaths = new Map<number, string[]>();
   codeOwners: string | undefined | Error;
   readonly teams = new Map<string, string[] | Error>();
-  async listChangedPaths(_url: string, number: number): Promise<{ paths: string[]; complete: boolean }> {
-    return { paths: this.changedPaths.get(number) ?? ["src/index.ts"], complete: true };
+  /** The provider reads the changed files a page at a time; the consumer reads them through the port's `changedFiles`. */
+  async listPullRequestFiles(_url: string, number: number, options: { page: number }): Promise<{ files: Array<{ filename: string; status: string; additions: number; deletions: number }>; nextPage?: number }> {
+    if (options.page > 1) return { files: [] };
+    return { files: (this.changedPaths.get(number) ?? ["src/index.ts"]).map((filename) => ({ filename, status: "modified", additions: 1, deletions: 0 })) };
   }
   async readCodeOwners(): Promise<string | undefined> {
     if (this.codeOwners instanceof Error) throw this.codeOwners;
@@ -67,9 +74,12 @@ export class MergeGithub implements CodeMergeGithub {
     if (found === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "no such pull request");
     return structuredClone(found);
   }
-  async getRepositoryPermission(_url: string, login: string): Promise<"admin" | "write" | "read" | "none"> {
+  async getRepositoryStanding(_url: string, login: string): Promise<{ permission: "admin" | "write" | "read" | "none"; userType?: string }> {
     this.calls.push(`permission:${login}`);
-    return this.permissions.get(login) ?? "none";
+    return { permission: this.permissions.get(login) ?? "none" };
+  }
+  async getRepositoryPermission(url: string, login: string): Promise<"admin" | "write" | "read" | "none"> {
+    return (await this.getRepositoryStanding(url, login)).permission;
   }
   async mergePullRequest(_url: string, number: number, input: { sha: string; method: "squash" | "merge" }): Promise<MergePullRequestResult> {
     this.calls.push(`merge:${String(number)}`);
@@ -96,7 +106,12 @@ export function pullStatus(number: number, overrides: Partial<PullRequestStatus>
   };
 }
 
+/** The GitHub CodeHost adapter over a GitHub-shaped fake: what the broker registers for a repository whose record names GitHub. */
+export const githubHostOver = (github: MergeGithub): CodeHost => githubCodeHost(github as never, { credentialRef: "github" });
+
 export interface MergeWorldOptions {
+  /** The code host the repositories live on, in place of the GitHub adapter over `MergeGithub`. The repositories keep their GitHub addresses. */
+  codeHost?: CodeHost;
   pullRequests?: Array<{ repositoryId: string; number: number }>;
   allowSelfApproval?: boolean;
   mergeMethod?: "squash" | "merge";
@@ -204,8 +219,14 @@ export function mergeWorld(options: MergeWorldOptions = {}): MergeWorld {
   });
   if (options.allowSelfApproval !== undefined || options.mergeMethod !== undefined) settings();
 
+  const codeHost = options.codeHost ?? githubHostOver(github);
   const host: CodeMergeHost = {
-    github, scope: (id) => ({ orgId: id }),
+    // Every repository of the project is on the one code host of the world; team membership is outside the port (GitHub's only).
+    repository: async (_project, _revision, repositoryId) => {
+      const url = `https://github.com/acme/${repositoryId}`;
+      return { url, codeHost, isTeamMember: async (team, login) => github.isTeamMember(url, team, login) };
+    },
+    scope: (id) => ({ orgId: id }),
     loadTask: async (id) => w.db.get(taskKey(id)) as never,
     repositoryUrl: async (_project, _revision, repositoryId) => `https://github.com/acme/${repositoryId}`,
     recordedBase: async () => "main",

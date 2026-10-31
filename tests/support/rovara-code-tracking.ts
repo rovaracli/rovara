@@ -1,6 +1,7 @@
 // Rovara Code (Plan 6 Task 14): a harness for merge tracking: a fake DynamoDB with one task, its linked pull requests and a fake GitHub that answers
 // `PullRequestStatus` and counts every request it is asked for against the pass's budget.
-import type { MergeTrackingDependencies, TrackedTask, TrackingGithub } from "../../packages/broker/src/rovara-code/merge-tracking.js";
+import type { MergeTrackingDependencies, TrackedTask } from "../../packages/broker/src/rovara-code/merge-tracking.js";
+import { githubRepositoryOver } from "../../packages/broker/src/aws/broker/consumer-hosts.js";
 import type { PullRequestStatus } from "../../packages/broker/src/github-pull-status.js";
 import type { GithubMergeReadBudget } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { githubWorkflowPullRequestKey } from "../../packages/broker/src/developer/task-records.js";
@@ -24,7 +25,11 @@ export function status(overrides: Partial<PullRequestStatus> = {}): PullRequestS
   };
 }
 
-export class FakeGithub implements TrackingGithub {
+/**
+ * A GitHub that answers what a tracking pass reads and does (every call is kept). The pass reaches it through the GitHub CodeHost adapter, as the broker wires it: the world's
+ * `repository` resolver reads `deps.github` each time, so a test may replace it.
+ */
+export class FakeGithub {
   readonly statuses = new Map<number, PullRequestStatus>();
   readonly permissions = new Map<string, "admin" | "write" | "read" | "none">();
   readonly calls: string[] = [];
@@ -66,7 +71,7 @@ export class FakeGithub implements TrackingGithub {
 export interface TrackingWorld {
   db: FakeDynamoDb;
   github: FakeGithub;
-  deps: MergeTrackingDependencies;
+  deps: MergeTrackingDependencies & { github: unknown };
   setNow(value: number): void;
   now(): number;
   task(): Record<string, unknown>;
@@ -82,7 +87,7 @@ export function workflowOf(pullRequests: Array<{ repositoryId: string; number: n
   };
 }
 
-export function world(options: { pullRequests?: Array<{ repositoryId: string; number: number; headSha?: string }>; sessionId?: string | null; definitionVersion?: string; deps?: Partial<MergeTrackingDependencies> } = {}): TrackingWorld {
+export function world(options: { pullRequests?: Array<{ repositoryId: string; number: number; headSha?: string }>; sessionId?: string | null; definitionVersion?: string; deps?: Partial<MergeTrackingDependencies> & { github?: unknown } } = {}): TrackingWorld {
   const db = new FakeDynamoDb();
   const github = new FakeGithub();
   let now = NOW;
@@ -101,9 +106,11 @@ export function world(options: { pullRequests?: Array<{ repositoryId: string; nu
   });
   db.set({ pk: "WORKFLOW_MERGE_RECOVERY", sk: `TASK#${TASK_ID}`, entityType: "WORKFLOW_MERGE_RECOVERY", taskId: TASK_ID, kind: "tracking", attempts: 0 });
   const loadTask = async (taskId: string): Promise<TrackedTask | undefined> => taskId === TASK_ID ? db.get(`DEVTASK#${TASK_ID}`, "META") as unknown as TrackedTask : undefined;
-  const deps: MergeTrackingDependencies = {
+  const deps: MergeTrackingDependencies & { github: unknown } = {
     documentClient: db, tableName: TABLE, now: () => now, github, scope: (orgId) => ({ orgId }), loadTask,
     repositoryUrl: async (_project, _revision, repositoryId) => `https://github.com/acme/${repositoryId}`,
+    // The code host is the GitHub adapter over whatever `deps.github` is now (a test replaces it to change what GitHub says).
+    repository: async (_project, _revision, repositoryId) => githubRepositoryOver(deps.github as never, `https://github.com/acme/${repositoryId}`),
     recordedHead: async () => undefined, ...options.deps,
   };
   return {

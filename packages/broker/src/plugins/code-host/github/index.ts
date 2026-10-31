@@ -64,8 +64,8 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       await provider.checkRepository({ credentialRef: options.credentialRef, url: repository.url }, checkedScope(scope));
     },
 
-    async standing(repository: RepositoryRef, person: HostAccount, scope: HostScope): Promise<HostStanding> {
-      const standing = await provider.getRepositoryStanding(repository.url, person.login, checkedScope(scope));
+    async standing(repository: RepositoryRef, person: HostAccount, scope: HostScope, budget?: ReadBudget): Promise<HostStanding> {
+      const standing = await provider.getRepositoryStanding(repository.url, person.login, checkedScope(scope), budget);
       return { permission: standing.permission, ...(standing.userType === undefined ? {} : { accountType: standing.userType }) };
     },
 
@@ -140,22 +140,22 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       return feedbackOf(ref.repository.url, await provider.getPullRequestFeedback(ref.repository.url, pullRequestNumber(ref), checkedScope(scope)));
     },
 
-    async reply(ref: ChangeRequestRef, commentId: string, body: string, scope: HostScope): Promise<"replied" | "gone"> {
+    async reply(ref: ChangeRequestRef, commentId: string, body: string, scope: HostScope, budget?: ReadBudget): Promise<"replied" | "gone"> {
       const number = pullRequestNumber(ref);
       const checked = checkedScope(scope);
       const target = replyTargetOf(commentId);
       // The text is checked first, whatever the comment: Rovara posts its own fixed text or nothing.
       if (body.length === 0 || body.length > 200 || /[\p{Cc}@]/u.test(body)) throw agentXError("CONFIG_INVALID", "the reply is not Rovara's fixed text");
       if (target.kind === "none") return "gone";
-      return provider.replyToReviewThread(ref.repository.url, number, target.id, body, checked);
+      return provider.replyToReviewThread(ref.repository.url, number, target.id, body, checked, budget);
     },
 
-    async markReady(ref: ChangeRequestRef, scope: HostScope): Promise<"ready" | "already_ready"> {
-      return provider.markPullRequestReady(ref.repository.url, pullRequestNumber(ref), checkedScope(scope));
+    async markReady(ref: ChangeRequestRef, scope: HostScope, budget?: ReadBudget): Promise<"ready" | "already_ready"> {
+      return provider.markPullRequestReady(ref.repository.url, pullRequestNumber(ref), checkedScope(scope), budget);
     },
 
-    async requestReviewers(ref: ChangeRequestRef, reviewers: readonly string[], scope: HostScope): Promise<"requested" | "refused"> {
-      return provider.requestReviewers(ref.repository.url, pullRequestNumber(ref), reviewers, checkedScope(scope));
+    async requestReviewers(ref: ChangeRequestRef, reviewers: readonly string[], scope: HostScope, budget?: ReadBudget): Promise<"requested" | "refused"> {
+      return provider.requestReviewers(ref.repository.url, pullRequestNumber(ref), reviewers, checkedScope(scope), budget);
     },
 
     async merge(ref: ChangeRequestRef, input: { revision: string; method: MergeMethod }, scope: HostScope): Promise<MergeResult> {

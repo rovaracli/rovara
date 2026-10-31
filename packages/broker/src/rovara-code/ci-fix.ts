@@ -24,7 +24,7 @@ import {
   type OrgId,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { GithubMergeRateLimitError } from "../github-app.js";
+import { isHostRateLimit } from "./host-port.js";
 import { logTail } from "../github-job-log.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";
 import type { TransactItem } from "../agents/table-writes.js";
@@ -127,9 +127,9 @@ function cleanUrl(address: string): string | undefined {
   }
 }
 
-/** The errors a pass must not swallow: GitHub's rate limit, and the pass running out of its allowance or time (the pass is tried again). */
+/** The errors a pass must not swallow: the host's rate limit, and the pass running out of its allowance or time (the pass is tried again). */
 function isPassLimit(error: unknown): boolean {
-  return error instanceof GithubMergeRateLimitError || error instanceof TrackingRequestCapError || (error instanceof Error && error.name === "GithubBudgetExhaustedError");
+  return isHostRateLimit(error) || error instanceof TrackingRequestCapError || (error instanceof Error && error.name === "GithubBudgetExhaustedError");
 }
 
 /**
@@ -141,7 +141,7 @@ export async function collectCiEvidence(context: Pick<MergeActionContext, "taskI
   for (const check of context.failing.slice(0, CI_FAILED_JOBS_MAX)) {
     const url = cleanUrl(check.url);
     const base = { name: oneLine(check.name, 100) || "a check", conclusion: oneLine(check.conclusion, 40) || "failure", ...(url === undefined ? {} : { url }) };
-    const actions = check.jobId !== undefined && (check.appId === undefined || check.appId === GITHUB_ACTIONS_APP_ID);
+    const actions = check.jobId !== undefined && (check.source === undefined || check.source === String(GITHUB_ACTIONS_APP_ID));
     if (!actions || context.readJobLog === undefined) {
       found.push({ ...base, note: "This check is not a GitHub Actions job, so its log can't be read here." });
       continue;

@@ -267,7 +267,7 @@ describe("code owners", () => {
   it("fails closed when GitHub's list of changed paths is cut short", async () => {
     const w = await ready();
     w.github.codeOwners = "/docs/ @max-gh\n";
-    w.github.listChangedPaths = async () => ({ paths: ["src/index.ts"], complete: false });
+    w.github.listPullRequestFiles = async (_url: string, _number: number, options: { page: number }) => ({ files: [{ filename: "src/index.ts", status: "modified", additions: 1, deletions: 0 }], nextPage: options.page + 1 });
     expect(await codeOf(webPress(w))).toEqual({ code: "MERGE_NOT_READY", message: M.codeOwnersUnreadable });
     expect(w.github.mergeCalls).toEqual([]);
   });

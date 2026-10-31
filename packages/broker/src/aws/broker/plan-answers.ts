@@ -27,6 +27,7 @@ import { PLAN_AUTO_REVISIONS_MAX, PlanSelfCheckRecordSchema, autoRevisableFindin
 import type { AwsBrokerDependencies } from "./definitions.js";
 import { requireRecordProject } from "./dependency-wiring.js";
 import { githubScopeOf, orgOfRecord, routingOf } from "./scope-helpers.js";
+import { consumerCodeHostRouter } from "./consumer-hosts.js";
 import { operationEventsNewestFirst } from "./terminal-and-github-events.js";
 import { githubLoginOfDeveloper } from "./thread-workspaces.js";
 import type { InlineEvidence } from "./workflow-items.js";
@@ -323,14 +324,16 @@ export async function storePlanAnswer(
   // With the evidence job configured, the code is read afterwards. Without it (no PlanEvidence function in this deployment),
   // it is read here as before, inside the old 12 second budget, and attached after the plan commits, the same way the job does.
   if (dependencies.startPlanEvidenceJob !== undefined) return { next, planUnreadable: null, evidenceJob: { artifactId, artifactSha256 }, ...withReplies };
-  const github = dependencies.githubPullRequests;
+  const router = consumerCodeHostRouter(dependencies);
   let bundle: PlanEvidenceBundle;
   try {
     bundle = await resolvePlanEvidence(plan, {
       ...planEvidenceSources(project, { workflow, preparedBase: task.preparedBase }),
+      // P5c: each cited repository is read through the code host its RECORD names; a record naming a host this install has not registered is refused (its places stay unavailable).
       readFile: async (url, path, commit, options) => {
-        if (github.getFileAtCommit === undefined) throw new Error("reading files from GitHub is not configured");
-        return github.getFileAtCommit(url, path, commit, await githubScopeOf(dependencies, task), options);
+        const record = project.definition.repositories.find((repository) => repository.url === url);
+        if (record === undefined) throw new Error("the cited repository is not in the task's project");
+        return router.forRecord(record).fileAtRevision({ url }, path, commit, await githubScopeOf(dependencies, task), options);
       },
     });
   } catch {

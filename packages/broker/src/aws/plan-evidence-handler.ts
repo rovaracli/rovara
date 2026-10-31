@@ -9,7 +9,8 @@ import { DeleteCommand, DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/l
 import { isConditional } from "./broker-shared.js";
 import { getItem } from "./cancellation.js";
 import { createGitHubAppCredentials } from "./github-credentials.js";
-import type { GitHubTokenScope } from "../github-app.js";
+import { githubCodeHost } from "../plugins/code-host/github/index.js";
+import { createPluginRegistry, type CodeHostRouter } from "../plugins/registry.js";
 import { installationBindingCheck } from "../org/github-connection.js";
 import { requiredEnvironment } from "./lambda.js";
 import { requireProject } from "./project-records.js";
@@ -20,7 +21,7 @@ import {
   type PlanEvidenceEvent, type PlanEvidenceJob,
 } from "../developer/plan-evidence-jobs.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
-import { agentXError, type OrgId, type PlanDocument } from "@agentx/contracts";
+import { agentXError, type HostScope, type OrgId, type PlanDocument } from "@agentx/contracts";
 import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 
 /** All cited code must be read inside this; the Lambda's own timeout (150 s) leaves room to attach and clean up. */
@@ -42,7 +43,11 @@ export interface PlanEvidenceRunDependencies {
   orgId: OrgId;
   /** Rovara Cloud (AGENTX_CLOUD): the provider checks the org's GitHub connection before every token. */
   cloud?: boolean;
-  github: { getFileAtCommit: (url: string, path: string, commit: string, scope: GitHubTokenScope, options: { untilLine?: number; timeoutMs?: number }) => Promise<string | undefined> };
+  /**
+   * The code host of each cited repository, by the repository's record in the project (task P7): the cited code is read with the host's `fileAtRevision`. A record that names a host this
+   * Lambda has not registered is refused (a fixed sentence) and its places stay unavailable; nothing falls back to GitHub.
+   */
+  codeHost: Pick<CodeHostRouter, "forRecord">;
   now: () => number;
   /** Operational log line (no model text); defaults to one JSON line on the console. */
   log?: (entry: Record<string, unknown>) => void;
@@ -139,17 +144,28 @@ export async function runPlanEvidenceJob(deps: PlanEvidenceRunDependencies, even
     const orgId = orgOf(deps.orgId, task as unknown as Record<string, unknown>);
     const project = await requireProject(deps, orgId, task.project, task.startingRevision);
     // The task's org: on a cloud install the code is read only while that org's GitHub connection holds the installation.
-    const scope: GitHubTokenScope = deps.cloud === true ? { orgId } : { system: "private-install" };
+    const scope: HostScope = deps.cloud === true ? { orgId } : { system: "private-install" };
     const deadline = deps.now() + RESOLVE_DEADLINE_MS;
     // Repositories (by URL) whose installation the org's GitHub connection no longer holds: no later read of them will succeed, so they
     // are not tried again. Other repositories, on installations still connected, are read as before.
     const notConnected = new Set<string>();
+    // Repositories whose record names a code host this Lambda has not registered: they cannot be read now or on a later attempt, so they are not tried again either.
+    const noHost = new Set<string>();
     const bundle = await resolvePlanEvidence(plan, {
       ...planEvidenceSources(project, task),
       readFile: async (url, path, commit, options) => {
         if (notConnected.has(url)) throw agentXError("GITHUB_NOT_CONNECTED", "the organization's GitHub connection no longer reaches this repository");
+        const record = project.definition.repositories.find((repository) => repository.url === url);
+        if (record === undefined) throw agentXError("CONFIG_INVALID", "the cited repository is not in the task's project");
+        let host: ReturnType<typeof deps.codeHost.forRecord>;
         try {
-          return await deps.github.getFileAtCommit(url, path, commit, scope, { ...options, timeoutMs: Math.max(1, Math.min(READ_TIMEOUT_MAX_MS, deadline - deps.now())) });
+          host = deps.codeHost.forRecord(record);
+        } catch (error) {
+          noHost.add(url);
+          throw error;
+        }
+        try {
+          return await host.fileAtRevision({ url }, path, commit, scope, { ...options, timeoutMs: Math.max(1, Math.min(READ_TIMEOUT_MAX_MS, deadline - deps.now())) });
         } catch (error) {
           if ((error as { code?: unknown }).code === "GITHUB_NOT_CONNECTED") notConnected.add(url);
           throw error;
@@ -162,7 +178,7 @@ export async function runPlanEvidenceJob(deps: PlanEvidenceRunDependencies, even
     // repository that is still connected and could not be read this time keeps the normal retry.
     if (notConnected.size > 0) log({ event: "plan_evidence.github_not_connected", taskId, artifactId, attempt, repositories: notConnected.size });
     const repositories = planEvidenceSources(project, task).repositories;
-    const disconnected = (path: string) => repositories.some((repository) => notConnected.has(repository.url) && path.startsWith(`${repository.path}/`));
+    const disconnected = (path: string) => repositories.some((repository) => (notConnected.has(repository.url) || noHost.has(repository.url)) && path.startsWith(`${repository.path}/`));
     if (bundle.excerpts.some((excerpt) => excerpt.status === "unavailable" && !disconnected(excerpt.path)) && attempt < PLAN_EVIDENCE_MAX_ATTEMPTS) {
       await reschedule(deps.now() + RETRY_MINUTES[attempt - 1]! * MS_PER_MINUTE);
       log({ event: "plan_evidence.retry", taskId, artifactId, attempt, reason: "unavailable" });
@@ -199,7 +215,11 @@ function productionDependencies(): PlanEvidenceRunDependencies {
     bucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),
     orgId: installOrgIdFromEnvironment(),
     ...(cloud ? { cloud } : {}),
-    github: createGitHubAppCredentials(new SecretsManagerClient(awsClientConfiguration), cloud ? { requireInstallationBound: installationBindingCheck({ documentClient, tableName }) } : undefined).provider,
+    // GitHub is the one code host this Lambda registers (the install's own). A repository whose record names another kind is refused, never read through GitHub.
+    codeHost: createPluginRegistry({
+      codeHosts: [githubCodeHost(createGitHubAppCredentials(new SecretsManagerClient(awsClientConfiguration), cloud ? { requireInstallationBound: installationBindingCheck({ documentClient, tableName }) } : undefined).provider, { credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF") })],
+      checkRunners: [],
+    }).codeHost,
     now: Date.now,
   };
   return production;

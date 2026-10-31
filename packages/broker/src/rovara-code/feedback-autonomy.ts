@@ -21,16 +21,17 @@ import {
   workflowFixRounds,
   workflowRequestId,
   type Autonomy,
+  type HostScope,
   type OrgId,
   type WorkflowFixRounds,
   type WorkflowSnapshot,
 } from "@agentx/contracts";
-import { GithubMergeRateLimitError, type GitHubTokenScope } from "../github-app.js";
 import type { GithubMergeReadBudget } from "../aws/workflow-merge-recovery.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../aws/broker-shared.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import { ciEvidenceItem, ciOutputBlock, collectCiEvidence, oneLine } from "./ci-fix.js";
 import { codeMilestoneItems } from "./milestones.js";
+import { changeRequestRef, isHostRateLimit, type ConsumerRepository, type RepositoryResolver } from "./host-port.js";
 import { PERMISSION_LOOKUPS_MAX, TrackingRequestCapError, registerMergeActionDecider, type MergeActionContext, type MergeActionInput, type MergeActionRequest, type RepositoryStanding } from "./merge-tracking.js";
 
 /** A login GitHub gives only to an App's bot account ends like this; a person's login can never contain brackets. */
@@ -74,7 +75,7 @@ export function commentAuthors(workflow: Pick<WorkflowSnapshot, "feedbackReview"
   return [...seen.values()];
 }
 
-const isPassLimit = (error: unknown): boolean => error instanceof GithubMergeRateLimitError || error instanceof TrackingRequestCapError || (error instanceof Error && error.name === "GithubBudgetExhaustedError");
+const isPassLimit = (error: unknown): boolean => isHostRateLimit(error) || error instanceof TrackingRequestCapError || (error instanceof Error && error.name === "GithubBudgetExhaustedError");
 
 /** The cheap checks first, so a round that cannot be automatic costs nobody a lookup: autonomy, rounds left, what the review made of every finding, how many people wrote. */
 function mayBeAutomatic(workflow: WorkflowSnapshot, autonomy: Autonomy): boolean {
@@ -226,9 +227,9 @@ export interface FeedbackReplyDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now(): number;
-  github: { replyToReviewThread(repositoryUrl: string, number: number, commentId: string, body: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"replied" | "gone"> };
-  scope(orgId: OrgId): GitHubTokenScope;
-  repositoryUrl(project: string, revision: number, repositoryId: string, orgId: OrgId): Promise<string | undefined>;
+  /** The repository as the task's project pins it, with the code host its record names: the reply goes through that host's port. */
+  repository: RepositoryResolver;
+  scope(orgId: OrgId): HostScope;
   log?(event: string, fields: Record<string, unknown>): void;
 }
 
@@ -262,11 +263,11 @@ export async function sendFeedbackReplies(deps: FeedbackReplyDependencies, task:
       if (error instanceof Error && error.name === "ConditionalCheckFailedException") continue;
       throw error;
     }
-    const url = await deps.repositoryUrl(task.project, task.startingRevision, repositoryId, task.orgId);
-    if (url === undefined) continue;
+    const home = await deps.repository(task.project, task.startingRevision, repositoryId, task.orgId);
+    if (home === undefined) continue;
     try {
       for (const commentId of commentIds.filter((id) => !repliedIds.includes(id))) {
-        await deps.github.replyToReviewThread(url, number, commentId, feedbackFixedReply(head), deps.scope(task.orgId), budget);
+        await home.codeHost.reply(changeRequestRef(home.url, number), commentId, feedbackFixedReply(head), deps.scope(task.orgId), budget);
         repliedIds.push(commentId);
         sent += 1;
         await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, UpdateExpression: "SET repliedIds = :replied", ExpressionAttributeValues: { ":replied": repliedIds } }));
@@ -299,9 +300,10 @@ export function feedbackApprovalMatchesDecision(
 export interface AutonomyHoldDependencies {
   /** The task's autonomy and the digest of its frozen recipe, read now: the stricter of the recipe and the company's limit (`suggest` when it cannot be read). */
   autonomy(): Promise<{ autonomy: Autonomy; recipeDigest?: string | undefined }>;
-  repositoryUrl(repositoryId: string): Promise<string | undefined>;
-  /** A person's standing on a repository, read now; undefined where this provider cannot ask. */
-  standing: ((repositoryUrl: string, login: string) => Promise<RepositoryStanding>) | undefined;
+  /** The repository of the task's project, with the code host its record names; undefined where the project has no such repository. */
+  repository(repositoryId: string): Promise<ConsumerRepository | undefined>;
+  /** Whose authority the host is asked under. */
+  scope: HostScope;
 }
 
 /**
@@ -315,18 +317,18 @@ export async function autonomyStillHolds(
 ): Promise<boolean> {
   const bound = binding.autonomy;
   const review = task.workflow?.feedbackReview;
-  if (bound === undefined || review === undefined || deps.standing === undefined) return false;
+  if (bound === undefined || review === undefined) return false;
   const live = await deps.autonomy();
   if (live.autonomy !== "prepare" && live.autonomy !== "run") return false;
   if (live.recipeDigest !== bound.recipeDigest) return false;
   try {
     for (const bundle of review.bundleRefs) {
-      const url = await deps.repositoryUrl(bundle.repositoryId);
-      if (url === undefined) return false;
+      const home = await deps.repository(bundle.repositoryId);
+      if (home === undefined) return false;
       for (const login of new Set(bundle.comments.map((comment) => comment.author))) {
         if (isBotLogin(login)) return false;
-        const standing = await deps.standing(url, login);
-        if ((standing.permission !== "write" && standing.permission !== "admin") || (standing.userType !== undefined && standing.userType !== "User")) return false;
+        const standing = await home.codeHost.standing({ url: home.url }, { login }, deps.scope);
+        if ((standing.permission !== "write" && standing.permission !== "admin") || (standing.accountType !== undefined && standing.accountType !== "User")) return false;
       }
     }
   } catch {

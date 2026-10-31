@@ -17,6 +17,9 @@ import { TRACKING_REQUESTS_BASE } from "../../packages/contracts/src/rovara-code
 import type { GithubMergeReadBudget } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { HEAD_A, NOW, SESSION_ID, TABLE, TASK_ID, FakeGithub, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { FakeCheckRunner } from "../../packages/broker/src/plugins/fake/check-runner.js";
+import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
+import { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
 
 const at = "2026-10-25T12:00:00.000Z";
 const OWNER = "a".repeat(64);
@@ -596,8 +599,8 @@ describe("collecting evidence", () => {
   it("reads a log only for an Actions job, a name goes through redaction and one line", async () => {
     const read: string[] = [];
     const evidence = await collectCiEvidence(context([
-      { name: `unit ${GHP}\n‮bad`, conclusion: "failure", url: "http://insecure.test/x", jobId: "1", appId: 15_368 },
-      { name: "app", conclusion: "failure", url: "https://user:pw@ci.test/x", jobId: "2", appId: 5 },
+      { name: `unit ${GHP}\n‮bad`, conclusion: "failure", url: "http://insecure.test/x", jobId: "1", source: "15368" },
+      { name: "app", conclusion: "failure", url: "https://user:pw@ci.test/x", jobId: "2", source: "5" },
       { name: "no id", conclusion: "timed_out", url: JOB_URL },
     ], async (jobId) => { read.push(jobId); return `log ${jobId}`; }));
     expect(read).toEqual(["1"]);
@@ -626,5 +629,52 @@ describe("collecting evidence", () => {
     expect(await readCiEvidence(w.deps, "00000000-0000-4000-8000-0000000000b2", TEST_ORG, 10)).toBeUndefined();
     w.db.set({ ...w.db.get(`DEVTASK#${TASK_ID}`, "CI_EVIDENCE#000000010")!, block: "not a block" });
     expect(await readCiEvidence(w.deps, TASK_ID, TEST_ORG, 10)).toBeUndefined();
+  });
+});
+
+// ---- the CI slot over the fake code host and the fake check runner (P5b): no GitHub-shaped provider anywhere
+
+describe("the CI slot on the code host and check runner ports", () => {
+  /** Change request 7 of a fake repository, with a failing check whose log the check runner holds. */
+  function fakeCi(options: { runner?: boolean; log?: string | undefined } = {}) {
+    const model = new FakeHostModel({ url: "https://github.com/acme/payments", id: "42", fullName: "acme/payments", webBase: "https://github.com" });
+    let head = "";
+    for (let n = 1; n <= 7; n += 1) { head = model.commit(`agentx/b${String(n)}`, { [`f${String(n)}.ts`]: "x\n" }); model.reconcile({ sourceBranch: `agentx/b${String(n)}`, targetBranch: "main", title: `t${String(n)}` }); }
+    model.setChecks(head, [{ name: "test", state: "completed", conclusion: "failure", required: false, url: JOB_URL, runId: "4242", source: "15368" }]);
+    if (options.log !== undefined) model.setLog("4242", options.log);
+    const runner = new FakeCheckRunner(model);
+    const w = world({ sessionId: SESSION_ID, pullRequests: [{ repositoryId: "payments", number: 7, headSha: head }],
+      deps: { repository: async () => ({ url: "https://github.com/acme/payments", codeHost: new FakeCodeHost(model), ...(options.runner === false ? {} : { checkRunner: runner }) }) } });
+    w.setTask({ workflow: waiting({ pullRequests: [{ ...PULL_REQUEST, headSha: head }] }) });
+    (w.deps as { autonomy?: unknown }).autonomy = () => "prepare";
+    return { w, model };
+  }
+
+  it("a failing check starts one round, and the log's end in the block is read by the host's check runner (a token redacted, the time stamps left off)", async () => {
+    installCiFixDecider();
+    const { w } = fakeCi({ log: `2026-10-25T11:00:00.0000000Z Error: boom\n2026-10-25T11:00:01.0000000Z token ${GHP}\n` });
+    expect(await trackPullRequest(w.deps, TASK_ID)).toBe("changed");
+    expect(workflowOf(w)).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "ci", fixProblems: ["test"], fixRounds: { ci: 1, conflict: 0, feedbackAuto: 0 } });
+    const [entry] = JSON.parse((await readCiEvidence(w.deps, TASK_ID, TEST_ORG, 10))!.split("\n")[1]!) as Array<{ check: string; log: string }>;
+    expect(entry!.log).toContain("Error: boom");
+    expect(entry!.log).not.toContain(GHP);
+    expect(entry!.log).not.toMatch(/\d{4}-\d{2}-\d{2}T/u);
+  });
+
+  it("a host with no check runner still starts the round, with a note instead of a log", async () => {
+    installCiFixDecider();
+    const { w } = fakeCi({ runner: false });
+    expect(await trackPullRequest(w.deps, TASK_ID)).toBe("changed");
+    const [entry] = JSON.parse((await readCiEvidence(w.deps, TASK_ID, TEST_ORG, 10))!.split("\n")[1]!) as Array<Record<string, string>>;
+    expect(entry!.log).toBeUndefined();
+    expect(entry!.note).toContain("can't be read here");
+  });
+
+  it("a runner whose log is gone gives the note for a job with no log; the round still starts", async () => {
+    installCiFixDecider();
+    const { w } = fakeCi({});
+    await trackPullRequest(w.deps, TASK_ID);
+    const [entry] = JSON.parse((await readCiEvidence(w.deps, TASK_ID, TEST_ORG, 10))!.split("\n")[1]!) as Array<Record<string, string>>;
+    expect(entry!.note).toBe("GitHub had no log for this job.");
   });
 });

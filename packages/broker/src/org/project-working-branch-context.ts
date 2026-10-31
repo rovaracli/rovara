@@ -2,6 +2,7 @@
 import { AgentXError, AgentXNameSchema, ProjectWorkingBranchContextQuerySchema, ProjectWorkingBranchContextSchema, agentXError, canonicalJson } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { parseGitHubRepository } from "../github-app.js";
+import { githubPinsOf } from "./project-working-branch-host.js";
 import { readProjectLifecycleAuthority as authority, readProjectLifecycleState as projectState, validateProjectLifecycleIdentifiers as identifiers } from "./reviewed-project-archive.js";
 type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">;
 const invalid = () => agentXError("CONFIG_INVALID", "Review valid company and project context values.");
@@ -22,8 +23,9 @@ export async function readProjectWorkingBranchContext(deps: Deps, caller: Develo
     let omittedUnsupported = false;
     for (const repo of state.definition.repositories) {
       try {
-        const github = parseGitHubRepository(repo.url);
-        if (/^\.+$/.test(github.name) || !Number.isSafeInteger(repo.installationId) || (repo.installationId ?? 0) < 1 || !Number.isSafeInteger(repo.githubRepositoryId) || (repo.githubRepositoryId ?? 0) < 1) throw invalid();
+        // A repository on another code host is not offered (the review is GitHub's today).
+        const pins = githubPinsOf(repo), github = parseGitHubRepository(repo.url);
+        if (/^\.+$/.test(github.name) || !Number.isSafeInteger(pins.installationId) || (pins.installationId ?? 0) < 1 || !Number.isSafeInteger(pins.githubRepositoryId) || (pins.githubRepositoryId ?? 0) < 1) throw invalid();
         repositories.push({ name: repo.name, fullName: `${github.owner}/${github.name}` });
       } catch { omittedUnsupported = true; }
     }

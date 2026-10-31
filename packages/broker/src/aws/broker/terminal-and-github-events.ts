@@ -8,7 +8,6 @@ import { AgentXError, WorkspaceClosePreflightResultSchema, agentXError, type Ope
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { queryAllItems } from "../admin-reads.js";
 import { flushAuditEvents } from "../../audit/flush.js";
-import type { GitHubTokenScope } from "../../github-app.js";
 import { GithubMergeRateLimitError } from "../../github-app.js";
 import { GithubWebhookRefusal, authorizeLinkedGithubWebhook, listDueGithubWebhookDeliveries, processGithubWebhookDelivery, reconcileTaskPullRequestFeedback, type ReceivedGithubWebhook } from "../github-webhooks.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
@@ -38,6 +37,7 @@ import { boundedTurnAdmission, TurnAdmissionLimitError } from "../../model-selec
 import { readObjectText } from "./plan-answers.js";
 import { describeFeedbackFixes } from "./pull-request-reconcile.js";
 import { githubScope, installOrgId, orgOfRecord, webhookRepositoryUrl } from "./scope-helpers.js";
+import { consumerRepositoryResolver } from "./consumer-hosts.js";
 import { taskOperationParts } from "./task-operations.js";
 import { latestChecksItem } from "./terminal-result.js";
 import { handleSpecPullRequestEvent } from "./spec-wiring.js";
@@ -563,14 +563,8 @@ function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<Me
   if (github.getPullRequestStatus === undefined || github.getRepositoryPermission === undefined || github.markPullRequestReady === undefined || github.requestReviewers === undefined) return undefined;
   return {
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
-    github: {
-      getPullRequestStatus: (...args) => github.getPullRequestStatus!.call(github, ...args),
-      getRepositoryPermission: (...args) => github.getRepositoryPermission!.call(github, ...args),
-      ...(github.getRepositoryStanding === undefined ? {} : { getRepositoryStanding: (...args: Parameters<NonNullable<typeof github.getRepositoryStanding>>) => github.getRepositoryStanding!.call(github, ...args) }),
-      markPullRequestReady: (...args) => github.markPullRequestReady!.call(github, ...args),
-      requestReviewers: (...args) => github.requestReviewers!.call(github, ...args),
-      ...(github.getJobLogTail === undefined ? {} : { getJobLogTail: (...args: Parameters<NonNullable<typeof github.getJobLogTail>>) => github.getJobLogTail!.call(github, ...args) }),
-    },
+    // P5a: the code host (and the runner that reads its builds) is the one each repository's record names; everything a pass reads or does goes through that host's port.
+    repository: consumerRepositoryResolver(dependencies),
     // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`; a recipe that cannot be read is `suggest`, so it asks first).
     autonomy: (task) => task.orgId === undefined ? "prepare" : taskAutonomy(() => readTaskRecipe(dependencies, task.taskId, task.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })), () => companyAutonomyLimit(dependencies, task.orgId!)),
     // The origin session links are made from (the approved milestone's "Ready to merge" link).
@@ -581,9 +575,9 @@ function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<Me
     feedbackRoundCheck: (task) => automaticFeedbackRoundIsSound(dependencies, task.taskId),
     ...(github.replyToReviewThread === undefined ? {} : { sendFeedbackReplies: (task: Parameters<typeof sendFeedbackReplies>[1], budget?: GithubMergeReadBudget) => sendFeedbackReplies({
       documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
-      github: { replyToReviewThread: (...args) => github.replyToReviewThread!.call(github, ...args) },
       scope: (orgId) => githubScope(dependencies, orgId),
-      repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
+      // P5b: the reply goes through the port of the code host each repository's record names.
+      repository: consumerRepositoryResolver(dependencies),
       log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
     }, task, budget) }),
     scope: (orgId) => githubScope(dependencies, orgId),
@@ -603,17 +597,9 @@ export function codeMergeHostOf(dependencies: AwsBrokerDependencies): CodeMergeH
   const github = dependencies.githubPullRequests;
   if (github.getPullRequestStatus === undefined || github.getRepositoryPermission === undefined || github.mergePullRequest === undefined) return undefined;
   return {
-    github: {
-      getPullRequestStatus: (url, number, scope) => github.getPullRequestStatus!.call(github, url, number, scope),
-      getRepositoryPermission: (url, login, scope) => github.getRepositoryPermission!.call(github, url, login, scope),
-      mergePullRequest: (url, number, input, scope) => github.mergePullRequest!.call(github, url, number, input, scope),
-      // Code owners (owner decision 2026-10-27): the CODEOWNERS file, the changed paths and team membership, read only. A provider that cannot read them leaves the check off.
-      ...(github.readCodeOwners === undefined || github.listChangedPaths === undefined ? {} : {
-        readCodeOwners: (url: string, branch: string, scope: GitHubTokenScope) => github.readCodeOwners!.call(github, url, branch, scope),
-        listChangedPaths: (url: string, number: number, scope: GitHubTokenScope) => github.listChangedPaths!.call(github, url, number, scope),
-      }),
-      ...(github.isTeamMember === undefined ? {} : { isTeamMember: (url: string, team: string, login: string, scope: GitHubTokenScope) => github.isTeamMember!.call(github, url, team, login, scope) }),
-    },
+    // P5a: status, standing, code owners, changed paths and the merge go through the port of the code host each repository's record names (task P7). Code owners (owner decision
+    // 2026-10-27) are read only; a host that cannot read them leaves the check off. Team membership is outside the port (`isTeamMember` on the repository).
+    repository: consumerRepositoryResolver(dependencies),
     scope: (orgId) => githubScope(dependencies, orgId),
     loadTask: (taskId) => getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId)),
     repositoryUrl: async (project, revision, repositoryId, orgId) => webhookRepositoryUrl(dependencies)(project, revision, repositoryId, orgId),
