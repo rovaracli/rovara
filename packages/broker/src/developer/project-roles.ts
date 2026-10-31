@@ -82,7 +82,7 @@ export const viewerCannotStartTasksMessage = (project: string) => `You can view 
 
 /**
  * Called only where new work starts. An archived project refuses every kind (PROJECT_ARCHIVED); a task start also needs the role to
- * allow starting tasks. `continue`, workflow decisions, `cancel`, PR follow-up and E2E rounds never call it.
+ * allow starting tasks. `continue`, workflow decisions that don't start a new run, `cancel`, PR follow-up and E2E rounds never call it.
  */
 export async function requireNewWorkAllowed(deps: ProjectMetaReader, orgId: OrgId, project: string, role: ProjectRole, kind: "task" | "setup_check"): Promise<void> {
   const meta = await readProjectMeta(deps, orgId, project);

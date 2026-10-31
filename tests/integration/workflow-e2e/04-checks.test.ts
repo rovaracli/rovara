@@ -22,6 +22,25 @@ const projectLabel = (e2e: WorkflowE2E) => e2e.workflow().checkPolicy!.required[
 describe("Suite 4: checks", () => {
   journeySuite();
 
+  it("refuses archived-project plan REQUEST_CHANGES before writes or a new planning run", async () => {
+    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
+    await atPlanReview(e2e);
+    const workflow = e2e.workflow();
+    const key = projectMetaKey(TEST_ORG, "payments");
+    e2e.db.set({ ...e2e.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
+    const before = structuredClone(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META"));
+    const count = e2e.invocations.length;
+    const response = await e2e.handler({ version: "2.0", rawPath: `/v1/dev/tasks/${e2e.taskId()}/workflow/decision`, rawQueryString: "",
+      headers: { authorization: await bearerFor(SLACK_MAYA), "content-type": "application/json" },
+      requestContext: { requestId: randomUUID(), http: { method: "POST" } },
+      body: JSON.stringify({ requestId: randomUUID(), expectedRevision: workflow.revision, decision: "REQUEST_CHANGES",
+        artifactDigest: workflow.artifacts.filter(artifact => artifact.type === "plan").at(-1)!.sha256, reason: "Revise the plan." }), isBase64Encoded: false });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body) as unknown).toMatchObject({ error: { code: "PROJECT_ARCHIVED" } });
+    expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")).toEqual(before);
+    expect(e2e.invocations).toHaveLength(count);
+  }, 120_000);
+
   it("refuses archived-project send-back before changing the task or queuing coding", async () => {
     let fail = false;
     const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS },

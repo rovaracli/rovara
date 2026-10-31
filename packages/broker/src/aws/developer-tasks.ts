@@ -3011,6 +3011,9 @@ export async function decideTaskWorkflow(
   const decisionRequest: WorkflowDecisionRequest = included.length === 0 && request.includedCommentIds === undefined
     ? boundDecisionRequest : { ...boundDecisionRequest, includedCommentIds: included.map((comment) => comment.commentId) };
   let next = transition(decisionRequest, decisions, workBreakdownDigest);
+  // A change request restarts planning; approval/rejection continue the existing workflow.
+  // Contributor leaves the role check with decidableTask/authorizeTaskAction, as for other restarts.
+  if (request.decision === "REQUEST_CHANGES") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   if (request.decision === "APPROVE" && documentType === "plan" && !(loaded?.format === "structured" && loaded.plan.e2e !== undefined)) {
     const pinnedProject = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
     if (pinnedProject === undefined) throw agentXError("CONFIG_INVALID", WORKFLOW_ACTIONABLE_REFUSALS.pinnedProjectUnavailable);
@@ -4318,6 +4321,8 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
     : next.stage === "REVIEW" && next.state === "WAITING" && next.candidate !== undefined ? "REVIEW"
     : next.stage === "IMPLEMENT" && next.state === "READY" ? "IMPLEMENT"
     : undefined;
+  // Accepting findings may make a custom sequence's new agent run due, rather than publication.
+  if (due === "IMPLEMENT" || due === "REVIEW") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   const dueDigest = next.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST;
   try {
     await deps.actions.transact([{ Update: {
