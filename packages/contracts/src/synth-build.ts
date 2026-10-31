@@ -26,6 +26,7 @@ export const SYNTH_CONTEXT_KEYS = [
   "rovaraEnterpriseEgressCidrs",
   "rovaraEnterpriseInternetEgress",
   "rovaraEnterpriseAllowPublicRanges",
+  "agentxEgressAllowDomains",
   "agentxAuditTsa",
   "agentxAuditTsaUrls",
   "agentxAuditTsaRootsParameter",
@@ -48,6 +49,26 @@ export const SYNTH_CONTEXT_KEYS = [
   "evidenceRetentionDays",
 ] as const;
 export type SynthContextKey = (typeof SYNTH_CONTEXT_KEYS)[number];
+/** The context every build takes from the install itself, never from the recorded settings (see `fixedSynthContext`). */
+export const SYNTH_FIXED_KEYS = ["agentxEnv", "agentxRegion", "agentxSynthesizer", "rovaraEdition", "agentxIdentity"] as const;
+/**
+ * Context keys the infrastructure code reads that a build made at approval deliberately does not take, each with the reason. A test scans `infra/` for every context key it reads and fails
+ * unless the key is in `SYNTH_CONTEXT_KEYS`, `SYNTH_FIXED_KEYS` or here, so a key added to the infrastructure later cannot be left out of the build unnoticed (review I1).
+ */
+export const SYNTH_EXCLUDED_KEYS: Readonly<Record<string, string>> = {
+  rovaraNewInstall: "set only by `init` for a new install; an install being upgraded is not new",
+  agentxCloud: "the hosted Rovara cloud; an Enterprise install is refused inside it",
+  agentxDeploymentMode: "only ec2-ebs is accepted; there is nothing to choose",
+  rovaraStdioMcpServers: "package-run MCP servers are switched off (owner decision 2026-10-31); asking for them stops the synth",
+  agentxInstaller: "the Launch in AWS installer stack, which no release deploys",
+  agentxEval: "the SWE-bench eval stack, which no release deploys",
+  agentxWebAssetHosting: "a build always uses the bootstrap-free synthesizer, which forces the web assets onto the cell; cloudfront is refused with it",
+  "agentx:autoRequalify": "Rovara's own scheduled runtime requalification, not an install setting",
+  "agentx:autoRequalifyHourUtc": "Rovara's own scheduled runtime requalification, not an install setting",
+  "agentx:autoRequalifySchedule": "Rovara's own scheduled runtime requalification, not an install setting",
+  "agentx:e2eQualificationTransport": "Rovara's own qualification transport, not an install setting",
+};
+
 /** Settings whose value is never written to the approval record, the summary or a log: only its hash is. */
 export const SYNTH_SENSITIVE_KEYS: readonly SynthContextKey[] = ["rovaraOperatorExternalId"];
 

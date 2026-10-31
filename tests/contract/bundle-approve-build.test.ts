@@ -158,6 +158,9 @@ describe("the recorded settings are the install's own", () => {
     await refused(recordSynthSettings({ store: s, install: INSTALL, settings: { ...SETTINGS_ENT(), extra: 1 } }), /not valid/);
     await refused(recordSynthSettings({ store: s, install: INSTALL, settings: SETTINGS_ENT({ rovaraEnterpriseEgressCidrs: "10.0.0.0/8\u0000" }) }), /not valid/);
     expect(s.values.size).toBe(0);
+    // The DNS firewall allow-list is an install setting too (review I1): an upgrade must rebuild the foundation with it.
+    await recordSynthSettings({ store: s, install: INSTALL, settings: SETTINGS_ENT({ agentxEgressAllowDomains: "pypi.internal.corp,*.artifactory.example.com" }) });
+    expect(JSON.parse(s.values.get("/agentx/ent/synth-settings")!).context.agentxEgressAllowDomains).toBe("pypi.internal.corp,*.artifactory.example.com");
     const ok = await recordSynthSettings({ store: s, install: INSTALL, settings: SETTINGS_ENT() });
     expect(ok.sha256).toBe(synthSettingsSha256(SETTINGS_ENT()));
   });
