@@ -62,6 +62,8 @@ export const bundleTrustParameter = (env: string): string => `${environmentSetti
 /** Mirrors the access stack's OperatorAccessState switch (`enabled` | `suspended`) so a deployer run already started can read it before every stack. Written by the stack only. */
 export const operatorAccessStateParameter = (env: string): string => `${environmentSettingsPrefix(env)}operator-access/state`;
 /** Held (create-only, expiring) by the one deployer run that is working. */
+/** A run that has held the lock longer than a function can run (15 minutes) is dead. */
+export const DEPLOY_LOCK_STALE_MS = 20 * 60 * 1000;
 export const deployLockParameter = (env: string): string => `${environmentSettingsPrefix(env)}deploy/lock`;
 export const deployProgressParameter = (env: string): string => `${environmentSettingsPrefix(env)}deploy/progress`;
 

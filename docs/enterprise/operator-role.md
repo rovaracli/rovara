@@ -30,7 +30,7 @@ An older release is refused unless the approval says `--rollback`. A bundle that
 It refuses unless every step holds, and it returns only fixed words and part names (never text from a stack or a file):
 
 0. The deployer publishes to your alert topic that it was called (the bundle id, or null for a malformed request). If it cannot, it does nothing. It publishes again with the outcome. Nothing here depends on CloudTrail data events.
-0. Your switch (`/agentx/<env>/operator-access/state`) says `enabled`, and no other run holds the lock (one run at a time, a lock that stale after 20 minutes is taken over).
+0. Your switch (`/agentx/<env>/operator-access/state`) says `enabled`, and no other run holds the lock (one run at a time; a lock older than 20 minutes is taken over, atomically: the run reads the parameter back and proceeds only if it holds exactly its own value at the next version; a lock that cannot be read is dated by when the parameter last changed).
 1. The request is exactly a bundle id (an extra field, a template, a stack name, a parameter is refused).
 2. `approvals/<id>.json` exists in the current version of your bucket and names this id.
 3. Your list of trusted signing keys (`/agentx/<env>/bundle-trust/public-keys`, written by your administrators; the operator role cannot even read it) is not empty.
@@ -89,9 +89,9 @@ The tests (`tests/contract/operator-access.test.ts`) evaluate the synthesised po
 
 **Say no to a bundle.** Do not approve it, or withdraw it (above). Nothing else can start it.
 
-**Name the people who may approve.** `rovaraBundleApproverArns` is required (comma-separated role or user ARNs; never `role/*`, and never this module's own roles). The bucket refuses approvals and withdrawals from every other principal of your account, administrators included unless named. With none named the build stops, so the default is that nobody can approve. The deployer's verified copies under `deploying/` can be written by the deployer alone, whoever else is named.
+**Name the people who may approve.** `rovaraBundleApproverArns` is required (comma-separated role or user ARNs; never `role/*`, and never this module's own roles). The bucket refuses approvals and withdrawals from every other principal of your account, administrators included unless named. With none named the build stops, so the default is that nobody can approve. Approvers must all be in your account: the build stops if one is in Rovara's account (the account of `rovaraOperatorPrincipalArn`), matches the Rovara principal, or is in another account than the others (and, when the stack's account is known at synth, another than the stack's). The deployer's verified copies under `deploying/` can be written by the deployer alone, whoever else is named, and are kept (only superseded versions of a copy expire after seven days): a rollback to the previous bundle's Lambda code, or one you approve later, needs them. Clearing old copies is your administrators' act, after checking no stack or approval needs them.
 
-**Clear a stuck deployment.** If a deployment failed and you do not mean to finish it (for example you withdrew its bundle), the deployer refuses every other bundle while its progress record stands. `agentx bundle reset-deployment` (your administrators; the operator role has no Parameter Store access) clears the record and the run lock. Stacks already updated stay as they are; check them first.
+**Clear a stuck deployment.** If a deployment failed and you do not mean to finish it (for example you withdrew its bundle), the deployer refuses every other bundle while its progress record stands. `agentx bundle reset-deployment` (your administrators; the operator role has no Parameter Store access) clears the record and the run lock. It refuses while a run holds a lock younger than 20 minutes, since that run may still be working. Stacks already updated stay as they are; check them first.
 
 **Change windows.** Not built. If you need the role to work only at set times, the same deny-all mechanism can be driven by a schedule you own. Owner to decide whether to build it.
 
@@ -110,7 +110,7 @@ Run these in the test account (Rovara's own, never a customer's) and write down 
 
 1. Assume the role through the regional STS endpoint and then the global one; only the regional one should succeed (`aws:RequestedRegion`), and an assumption event should reach the topic.
 2. Assume it from a session obtained with MFA and one without, and from an IAM Identity Center session; record which satisfy `aws:MultiFactorAuthPresent`. If Identity Center sessions never do, the owner decides how Rovara's operators sign in (the MFA condition is not weakened in code).
-3. Run the deployer for an approved test bundle; confirm CloudFormation reads the `?versionId=` template URL under `deploying/` with the deployer's credentials, and that Lambda starts from the copied package.
+3. Run the deployer for an approved test bundle; confirm CloudFormation reads the `?versionId=` template URL under `deploying/` with the deployer's credentials (the deployer holds `s3:GetObject` and `s3:GetObjectVersion` there, and CloudFormation fetches with the caller's credentials; if it does not, every change set is refused and nothing deploys), and that Lambda starts from the copied package.
 4. Suspend while a multi-stack run is going; confirm it stops before the next stack and resumes after.
 5. Withdraw an approval; confirm the next start is refused.
 6. Attach the manual customer deny; update the stack; confirm the deny survives.

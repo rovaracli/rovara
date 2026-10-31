@@ -9,7 +9,7 @@
 // with the customer's switches above it.
 //
 // Enterprise only. Absent in Public: nothing here is created unless the install says `rovaraOperatorAccess=enabled|suspended` in its CDK context.
-import { Aws, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, aws_events as events, aws_events_targets as targets, aws_iam as iam, aws_lambda as lambda, aws_lambda_nodejs as lambdaNodejs, aws_logs as logs, aws_s3 as s3, aws_sns as sns, aws_ssm as ssm } from "aws-cdk-lib";
+import { Aws, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Token, aws_events as events, aws_events_targets as targets, aws_iam as iam, aws_lambda as lambda, aws_lambda_nodejs as lambdaNodejs, aws_logs as logs, aws_s3 as s3, aws_sns as sns, aws_ssm as ssm } from "aws-cdk-lib";
 import { resolve } from "node:path";
 import { Construct } from "constructs";
 import {
@@ -101,7 +101,12 @@ export function parseOperatorAccessContext(input: { edition: string | undefined;
   const approverArns = approversRaw === undefined || approversRaw === "" ? [] : typeof approversRaw === "string" ? approversRaw.split(",").map((arn) => arn.trim()) : (() => { throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} must be a comma-separated list of ARNs`); })();
   if (approverArns.length === 0) throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} must name the roles or users that may approve bundles: with none named, nobody may (an approval is the customer's own act)`);
   for (const arn of approverArns) if (!/^arn:aws[a-z-]*:iam::\d{12}:(role|user)\/[A-Za-z0-9+=,.@_/*-]{1,512}$/.test(arn) || arn.endsWith(":role/*") || arn.endsWith(":user/*")) throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} names roles or users; ${JSON.stringify(arn)} is not specific enough`);
-  // The approvers must be the customer's people, never this module's own roles.
+  // The approvers must be the customer's people: one account, which is not Rovara's, and never the Rovara principal itself or this module's own roles.
+  const accounts = new Set(approverArns.map((arn) => arn.split(":")[4]));
+  if (accounts.size !== 1) throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} must name principals of one account, the install's own`);
+  const rovaraAccount = principal.split(":")[4];
+  if (accounts.has(rovaraAccount)) throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} may not name principals of Rovara's account (${OPERATOR_PRINCIPAL_CONTEXT_KEY} is in it): approvals are the customer's own act`);
+  // (The principal is in Rovara's account, so the account check above already bars it and any pattern that could match it.)
   for (const barred of [rovaraOperatorRoleName(input.env), `agentx-${input.env}-cloudformation`, bundleDeployerRoleName(input.env)]) {
     for (const arn of approverArns) {
       const pattern = new RegExp(`^${arn.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`);
@@ -140,6 +145,10 @@ export class OperatorAccess extends Construct {
     const env = naming.env;
     if (env === undefined) throw new Error("the operator role exists only for named environments");
     const roleName = rovaraOperatorRoleName(env);
+    // When the stack's account is known at synth, the approvers must be in it (a role of another account could not be the customer's).
+    if (!Token.isUnresolved(Stack.of(this).account)) {
+      for (const arn of settings.approverArns) if (arn.split(":")[4] !== Stack.of(this).account) throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} names ${arn}, which is not in this install's account ${Stack.of(this).account}`);
+    }
     const partition = Aws.PARTITION;
     const roleArn = `arn:${partition}:iam::${Aws.ACCOUNT_ID}:role/${roleName}`;
     const deployRoleArn = `arn:${partition}:iam::${Aws.ACCOUNT_ID}:role/${naming.cloudFormationRoleName}`;
@@ -164,8 +173,9 @@ export class OperatorAccess extends Construct {
       enforceSSL: true,
       versioned: true,
       removalPolicy: RemovalPolicy.RETAIN,
-      // The deployer's verified copies are short-lived. Approved files keep their versions, because the approval pins them.
-      lifecycleRules: [{ id: "ExpireDeployerCopies", prefix: DEPLOYING_PREFIX, expiration: Duration.days(14), noncurrentVersionExpiration: Duration.days(1) }],
+      // The deployer's current copies are kept: a stack that has to roll back to the previous bundle's Lambda code needs that bundle's copy, and so does a rollback the customer
+      // approves later. Only superseded versions of a copy (a re-run of the same bundle) expire. Approved files keep their versions, because the approval pins them.
+      lifecycleRules: [{ id: "ExpireSupersededDeployerCopies", prefix: DEPLOYING_PREFIX, noncurrentVersionExpiration: Duration.days(7) }],
     });
     const bucketArn = this.approvedBundles.bucketArn;
     const bucketName = this.approvedBundles.bucketName;
@@ -235,7 +245,7 @@ export class OperatorAccess extends Construct {
     });
     const deployerPolicy: Statement[] = [
       { Sid: "ReadApprovals", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion"], Resource: [approvedObjects, approvalObjects] },
-      { Sid: "WriteVerifiedCopies", Effect: "Allow", Action: ["s3:PutObject", "s3:GetObject"], Resource: deployingObjects },
+      { Sid: "WriteVerifiedCopies", Effect: "Allow", Action: ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion"], Resource: deployingObjects },
       { Sid: "ReadInstallRecords", Effect: "Allow", Action: ["ssm:GetParameter"], Resource: [`${prefix}settings`, `${prefix}bundle`, bundleTrustParameter(env), deployProgressParameter(env), operatorAccessStateParameter(env), deployLockParameter(env)].map(parameterArn) },
       { Sid: "TellTheCustomer", Effect: "Allow", Action: ["sns:Publish"], Resource: this.alertTopic.topicArn },
       { Sid: "OneRunAtATime", Effect: "Allow", Action: ["ssm:PutParameter", "ssm:DeleteParameter"], Resource: parameterArn(deployLockParameter(env)) },

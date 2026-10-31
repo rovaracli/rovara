@@ -102,8 +102,22 @@ describe("agentx bundle reset-deployment (review N8)", () => {
     await store.put(deployProgressParameter("ent"), JSON.stringify({ schemaVersion: 1, bundleId: "b".repeat(64), startedAt: "2026-10-31T10:00:00.000Z", done: ["foundation"] }));
     await store.put(deployLockParameter("ent"), JSON.stringify({ startedAt: 1 }));
     await store.put("/agentx/ent/settings", "{}");
-    expect(await resetDeployment({ store, env: "ent" })).toEqual({ bundleId: "b".repeat(64), clearedProgress: true, clearedLock: true });
+    expect(await resetDeployment({ store, env: "ent", now: 1 + 21 * 60_000 })).toEqual({ bundleId: "b".repeat(64), clearedProgress: true, clearedLock: true });
     expect([...store.values.keys()]).toEqual(["/agentx/ent/settings"]);
-    expect(await resetDeployment({ store, env: "ent" })).toEqual({ bundleId: undefined, clearedProgress: false, clearedLock: false });
+    expect(await resetDeployment({ store, env: "ent", now: 1 + 21 * 60_000 })).toEqual({ bundleId: undefined, clearedProgress: false, clearedLock: false });
+  });
+
+  it("refuses while a deployer run holds a live lock (it may still be working), clears an unreadable lock, and clears a stale one", async () => {
+    const { MemoryParameterStore } = await import("../support/memory-parameter-store.js");
+    const { resetDeployment } = await import("../../packages/cli/src/upgrade/bundle/reset-deployment.js");
+    const { deployLockParameter, deployProgressParameter } = await import("@agentx/contracts");
+    const store = new MemoryParameterStore();
+    await store.put(deployProgressParameter("ent"), JSON.stringify({ schemaVersion: 1, bundleId: "b".repeat(64), startedAt: "2026-10-31T10:00:00.000Z", done: [] }));
+    await store.put(deployLockParameter("ent"), JSON.stringify({ startedAt: 1_000_000, token: "x" }));
+    await expect(resetDeployment({ store, env: "ent", now: 1_000_000 + 5 * 60_000 })).rejects.toThrow(/may still be working; nothing was cleared/);
+    expect([...store.values.keys()].sort()).toEqual([deployLockParameter("ent"), deployProgressParameter("ent")].sort());
+    expect(await resetDeployment({ store, env: "ent", now: 1_000_000 + 21 * 60_000 })).toMatchObject({ clearedProgress: true, clearedLock: true });
+    await store.put(deployLockParameter("ent"), "garbage");
+    expect(await resetDeployment({ store, env: "ent", now: 5 })).toMatchObject({ clearedLock: true });
   });
 });

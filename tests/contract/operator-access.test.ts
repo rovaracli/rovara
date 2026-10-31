@@ -3,11 +3,12 @@
 // (explicit Deny, then Allow, then implicit deny) against concrete requests, so a deny that is present but ineffective is caught, not only a missing one.
 import { existsSync, mkdirSync } from "node:fs";
 import { generateKeyPairSync } from "node:crypto";
-import { Stack } from "aws-cdk-lib";
+import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { parseOperatorAccessContext } from "../../infra/lib/operator-access.js";
+import { OperatorAccess, parseOperatorAccessContext } from "../../infra/lib/operator-access.js";
+import { environmentNaming } from "../../infra/lib/naming.js";
 import { evaluate } from "../support/cfn-evaluate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -300,6 +301,14 @@ describe("the Rovara operator role", () => {
       }
     });
 
+    it("can read back the exact version of a copy it wrote (the template URL carries ?versionId=), and nothing outside deploying/ beyond the approvals", () => {
+      const copy = `arn:aws:s3:::${BUCKET}/deploying/${"a".repeat(64)}/control-plane.template.json`;
+      expect(allowed(deployer, "s3:GetObjectVersion", copy)).toBe(true);
+      expect(allowed(deployer, "s3:GetObject", copy)).toBe(true);
+      expect(allowed(deployer, "s3:GetObjectVersion", `arn:aws:s3:::${BUCKET}/other/x`)).toBe(false);
+      expect(allowed(deployer, "s3:DeleteObjectVersion", copy)).toBe(false);
+    });
+
     it("reads the approvals and writes only its own verified copies: it cannot place, change or withdraw an approval", () => {
       expect(allowed(deployer, "s3:GetObjectVersion", `arn:aws:s3:::${BUCKET}/approved/${"a".repeat(64)}/bundle.json`)).toBe(true);
       expect(allowed(deployer, "s3:GetObject", `arn:aws:s3:::${BUCKET}/approvals/${"a".repeat(64)}.json`)).toBe(true);
@@ -366,12 +375,44 @@ describe("the Rovara operator role", () => {
       }
     });
 
+    it("refuses approvers that are Rovara's: the Rovara principal itself (also by wildcard), anything in its account, and mixed or foreign accounts", () => {
+      const approve = (arn: string) => access({ ...ON, rovaraBundleApproverArns: arn });
+      expect(() => approve("arn:aws:iam::210987654321:role/rovara-operators"), "the principal").toThrow(/Rovara's account/);
+      expect(() => approve("arn:aws:iam::210987654321:role/someone-else"), "same account as the principal").toThrow(/Rovara's account/);
+      expect(() => approve("arn:aws:iam::123456789012:role/security-approvers,arn:aws:iam::111111111111:role/other"), "two accounts").toThrow(/one account/);
+      expect(() => access({ ...ON, rovaraOperatorPrincipalArn: "arn:aws:iam::123456789012:role/rovara-operators", rovaraBundleApproverArns: "arn:aws:iam::123456789012:role/rovara-*" }), "wildcard over the principal").toThrow(/Rovara's account/);
+    });
+
+    it("refuses, when the stack's account is known, an approver of another account", () => {
+      const app = new App();
+      const stack = new Stack(app, "Known", { env: { account: "123456789012", region: "us-east-1" } });
+      const settings = { state: "enabled" as const, principalArn: PRINCIPAL, externalId: EXTERNAL_ID, logGroups: [], signingKeys: [], approverArns: ["arn:aws:iam::999999999999:role/approvers"] };
+      expect(() => new OperatorAccess(stack, "OA", { naming: environmentNaming("ent"), settings })).toThrow(/not in this install's account 123456789012/);
+      const ok = new Stack(app, "Ok", { env: { account: "123456789012", region: "us-east-1" } });
+      expect(() => new OperatorAccess(ok, "OA", { naming: environmentNaming("ent"), settings: { ...settings, approverArns: ["arn:aws:iam::123456789012:role/approvers"] } })).not.toThrow();
+    });
+
+    it("keeps the deployer's copies (a rollback may need them): only superseded versions expire, never the current object", () => {
+      const [, bucket] = resources(template, "AWS::S3::Bucket").find(([id]) => id.includes("ApprovedBundles"))!;
+      const rule = (bucket.Properties.LifecycleConfiguration.Rules as Json[]).find((entry) => entry.Prefix === "deploying/")!;
+      expect(rule.Status).toBe("Enabled");
+      expect(rule.NoncurrentVersionExpiration).toEqual({ NoncurrentDays: 7 });
+      expect(rule.ExpirationInDays).toBeUndefined();
+      expect(rule.ExpirationDate).toBeUndefined();
+      expect((bucket.Properties.LifecycleConfiguration.Rules as Json[]).filter((entry) => entry.ExpirationInDays !== undefined)).toEqual([]);
+    });
+
     it("lets only the deployer write its verified copies (templates and packages): everyone else is denied on deploying/", () => {
       const statements = resources(template, "AWS::S3::BucketPolicy").find(([, p]) => JSON.stringify(p.Properties.PolicyDocument).includes("OnlyTheDeployerWritesCopies"))![1].Properties.PolicyDocument.Statement as Json[];
       const only = statements.find((statement) => statement.Sid === "OnlyTheDeployerWritesCopies")!;
       expect(only.Effect).toBe("Deny");
-      expect(only.Condition).toEqual({ ArnNotEquals: { "aws:PrincipalArn": expect.anything() } });
-      expect(JSON.stringify(only.Condition)).toContain("role/agentx-ent-bundle-deployer");
+      // The exemption is exactly one principal, the deployer's role: a single string (not a list), nothing alongside it.
+      expect(Object.keys(only.Condition)).toEqual(["ArnNotEquals"]);
+      expect(Object.keys(only.Condition.ArnNotEquals)).toEqual(["aws:PrincipalArn"]);
+      const exempt = only.Condition.ArnNotEquals["aws:PrincipalArn"];
+      expect(Array.isArray(exempt)).toBe(false);
+      expect(JSON.stringify(exempt).match(/role\/[A-Za-z0-9-]+/g)).toEqual(["role/agentx-ent-bundle-deployer"]);
+      expect(JSON.stringify(exempt)).not.toContain("*");
       expect(list(only.Action)).toEqual(expect.arrayContaining(["s3:PutObject*", "s3:DeleteObject*"]));
       expect(JSON.stringify(only.Resource)).toMatch(/\/deploying\/\*"/);
       expect(JSON.stringify(only.Resource)).not.toMatch(/approv/);

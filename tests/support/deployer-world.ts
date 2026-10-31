@@ -11,6 +11,8 @@ export const T0 = Date.parse("2026-10-31T12:00:00.000Z");
 export class World {
   readonly versions = new Map<string, Array<{ versionId: string; body: Buffer | "deleted" }>>();
   readonly params = new Map<string, string>();
+  readonly paramVersions = new Map<string, number>();
+  readonly paramModified = new Map<string, number>();
   readonly stacks = new Map<string, StackState & { template?: string }>();
   readonly log: string[] = [];
   readonly changeSets: Array<{ stackName: string; name: string; templateUrl: string; parameters: unknown[]; roleArn: string }> = [];
@@ -51,13 +53,16 @@ export class World {
       alert: { publish: async (message) => { this.log.push("alert"); if (this.failAlert) throw new Error("sns down"); this.alerts.push(message); } },
       ssm: {
         get: async (name) => this.params.get(name),
+        getVersioned: async (name) => { const value = this.params.get(name); return value === undefined ? undefined : { value, version: this.paramVersions.get(name) ?? 1, modifiedAt: this.paramModified.get(name) ?? this.now }; },
         put: async (name, value, options) => {
           this.log.push(`ssm.put ${name}`);
           if (this.failPut !== undefined && name.includes(this.failPut)) throw new Error("denied");
           if (options?.createOnly === true && this.params.has(name)) throw new Error("exists");
+          this.paramVersions.set(name, this.params.has(name) ? (this.paramVersions.get(name) ?? 1) + 1 : 1);
           this.params.set(name, value);
+          this.paramModified.set(name, this.now);
         },
-        delete: async (name) => { this.log.push(`ssm.delete ${name}`); this.params.delete(name); },
+        delete: async (name) => { this.log.push(`ssm.delete ${name}`); this.params.delete(name); this.paramVersions.delete(name); },
       },
       cfn: {
         describe: async (stackName) => this.stacks.get(stackName),

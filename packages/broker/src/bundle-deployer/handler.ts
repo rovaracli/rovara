@@ -66,6 +66,16 @@ export function buildPorts(deadlineAt: number): DeployerPorts {
           throw error;
         }
       },
+      async getVersioned(name) {
+        try {
+          const parameter = (await ssm.send(new GetParameterCommand({ Name: name }))).Parameter;
+          if (parameter?.Value === undefined) return undefined;
+          return { value: parameter.Value, version: parameter.Version ?? 0, modifiedAt: parameter.LastModifiedDate?.getTime() };
+        } catch (error) {
+          if (errorName(error) === "ParameterNotFound") return undefined;
+          throw error;
+        }
+      },
       async put(name, value, options) {
         await ssm.send(new PutParameterCommand({ Name: name, Value: value, Type: "String", Overwrite: options?.createOnly !== true }));
       },

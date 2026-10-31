@@ -358,6 +358,58 @@ describe("the customer is told first, and can stop a run (review N2, N4, N6)", (
     expect(changes(world)).toEqual([]);
   });
 
+  it("takes over a stale lock atomically: a run whose read-back shows another writer's value or version stops, so two runs never both go on", async () => {
+    const { bundle, world } = await ready();
+    const ports = world.ports();
+    const { runDeployer } = await import("../../packages/broker/src/bundle-deployer/deploy.js");
+    world.params.set(deployLockParameter("ent"), JSON.stringify({ startedAt: world.now - 30 * 60_000 }));
+    // Another run takes the lock right after this one's write.
+    const racing = { ...ports, ssm: { ...ports.ssm, put: async (name: string, value: string, options?: { createOnly?: true }) => {
+      await ports.ssm.put(name, value, options);
+      if (name === deployLockParameter("ent")) { world.params.set(name, JSON.stringify({ startedAt: world.now, token: "other" })); world.paramVersions.set(name, (world.paramVersions.get(name) ?? 1) + 1); }
+    } } };
+    expect(await runDeployer({ bundleId: bundle.bundleSha256 }, racing)).toMatchObject({ status: "refused", reason: expect.stringMatching(/another run/) });
+    expect(changes(world)).toEqual([]);
+    // The other run's lock is not released by this one.
+    expect(JSON.parse(world.params.get(deployLockParameter("ent"))!).token).toBe("other");
+  });
+
+  it("checks both the value and the version on read-back, and releases only its own lock", async () => {
+    const { bundle, world } = await ready();
+    const { runDeployer } = await import("../../packages/broker/src/bundle-deployer/deploy.js");
+    const ports = world.ports();
+    const stale = () => world.params.set(deployLockParameter("ent"), JSON.stringify({ startedAt: world.now - 30 * 60_000 }));
+    const afterPut = (change: () => void) => ({ ...ports, ssm: { ...ports.ssm, put: async (name: string, value: string, options?: { createOnly?: true }) => { await ports.ssm.put(name, value, options); if (name === deployLockParameter("ent")) change(); } } });
+    // Another writer's value at the version this run expected.
+    stale();
+    expect(await runDeployer({ bundleId: bundle.bundleSha256 }, afterPut(() => world.params.set(deployLockParameter("ent"), JSON.stringify({ startedAt: world.now, token: "other" }))))).toMatchObject({ status: "refused", reason: expect.stringMatching(/another run/) });
+    // This run's own value, but a version that shows a second write happened.
+    world.params.delete(deployLockParameter("ent"));
+    stale();
+    expect(await runDeployer({ bundleId: bundle.bundleSha256 }, afterPut(() => world.paramVersions.set(deployLockParameter("ent"), (world.paramVersions.get(deployLockParameter("ent")) ?? 1) + 1)))).toMatchObject({ status: "refused", reason: expect.stringMatching(/another run/) });
+    expect(changes(world)).toEqual([]);
+    // A run whose lock was taken over while it worked leaves the new holder's lock alone.
+    world.params.delete(deployLockParameter("ent"));
+    world.afterStack = (stackName) => { if (stackName === "agentx-ent-foundation") world.params.set(deployLockParameter("ent"), JSON.stringify({ startedAt: world.now, token: "new holder" })); };
+    expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("done");
+    expect(JSON.parse(world.params.get(deployLockParameter("ent"))!).token).toBe("new holder");
+  });
+
+  it("dates a lock it cannot read by when it last changed: fresh keeps out, older than a run can last is taken over; with no date it stays", async () => {
+    const { bundle, world } = await ready();
+    world.params.set(deployLockParameter("ent"), "garbage");
+    world.paramModified.set(deployLockParameter("ent"), world.now - 60_000);
+    expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/another run/) });
+    world.paramModified.set(deployLockParameter("ent"), world.now - 21 * 60_000);
+    expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("done");
+    expect(world.params.has(deployLockParameter("ent"))).toBe(false);
+    const ports = world.ports();
+    const { runDeployer } = await import("../../packages/broker/src/bundle-deployer/deploy.js");
+    world.params.set(deployLockParameter("ent"), "garbage");
+    const undated = { ...ports, ssm: { ...ports.ssm, getVersioned: async (name: string) => { const found = await ports.ssm.getVersioned(name); return found === undefined ? undefined : { ...found, modifiedAt: undefined }; } } };
+    expect(await runDeployer({ bundleId: bundle.bundleSha256 }, undated)).toMatchObject({ status: "refused", reason: expect.stringMatching(/another run/) });
+  });
+
   it("stops a run already going when the customer suspends: the stack being updated finishes, no next stack starts, the progress is kept", async () => {
     const { bundle, world } = await ready();
     world.afterStack = (stackName) => { if (stackName === "agentx-ent-identity") world.params.set(operatorAccessStateParameter("ent"), "suspended"); };

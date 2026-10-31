@@ -14,6 +14,7 @@ import {
   BundleManifestSchema,
   BundleSignatureSchema,
   DEPLOYER_PARTS,
+  DEPLOY_LOCK_STALE_MS,
   DeployerRequestSchema,
   ReleaseManifestSchema,
   bundleApprovalKey,
@@ -33,6 +34,7 @@ import {
   type DeployerPart,
   type DeployerResult,
 } from "@agentx/contracts";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 export interface StackState {
@@ -67,6 +69,8 @@ export interface DeployerPorts {
   alert: { publish(message: string): Promise<void> };
   ssm: {
     get(name: string): Promise<string | undefined>;
+    /** The value with its version number and last-change time (ms), for the run lock. */
+    getVersioned(name: string): Promise<{ value: string; version: number; modifiedAt: number | undefined } | undefined>;
     put(name: string, value: string, options?: { createOnly?: true }): Promise<void>;
     delete(name: string): Promise<void>;
   };
@@ -111,8 +115,7 @@ function compare(a: string, b: string): number | undefined {
   return 0;
 }
 
-/** A run that has held the lock longer than a function can run is dead. */
-const LOCK_STALE_MS = 20 * 60 * 1000;
+const LOCK_STALE_MS = DEPLOY_LOCK_STALE_MS;
 
 /** The customer's switch. Anything but an explicit `enabled` (absent, unreadable, `suspended`) counts as off. */
 async function isSuspended(ports: DeployerPorts): Promise<boolean> {
@@ -154,23 +157,35 @@ async function guarded(rawRequest: unknown, ports: DeployerPorts): Promise<Deplo
   if (await isSuspended(ports)) return refused("the operator's access is suspended by the customer");
   // One run at a time (a second would delete the first's change set).
   const lockName = deployLockParameter(ports.env);
-  const held = await ports.ssm.get(lockName);
-  let startedAt: number;
-  try {
-    startedAt = held === undefined ? 0 : z.object({ startedAt: z.number() }).parse(JSON.parse(held)).startedAt;
-  } catch {
-    startedAt = ports.now();
+  const held = await ports.ssm.getVersioned(lockName);
+  if (held !== undefined) {
+    // The lock's own start time; a lock that cannot be read is dated by when the parameter last changed, so it too ends. With no date at all it counts as fresh.
+    let since: number | undefined;
+    try {
+      since = z.object({ startedAt: z.number() }).passthrough().parse(JSON.parse(held.value)).startedAt;
+    } catch {
+      since = held.modifiedAt;
+    }
+    if (since === undefined || ports.now() - since < LOCK_STALE_MS) return refused("another run of this deployer is active");
   }
-  if (held !== undefined && ports.now() - startedAt < LOCK_STALE_MS) return refused("another run of this deployer is active");
+  // Taking the lock: a fresh lock is created create-only. A stale one is overwritten and then read back: this run proceeds only if the parameter holds exactly its own value
+  // at exactly the next version, so two runs that both saw the same stale lock cannot both go on (at worst both stop, and the next call succeeds).
+  const token = `${ports.now()}-${randomUUID()}`;
+  const mine = JSON.stringify({ startedAt: ports.now(), token });
   try {
-    await ports.ssm.put(lockName, JSON.stringify({ startedAt: ports.now() }), held === undefined ? { createOnly: true } : undefined);
+    await ports.ssm.put(lockName, mine, held === undefined ? { createOnly: true } : undefined);
+    if (held !== undefined) {
+      const after = await ports.ssm.getVersioned(lockName);
+      if (after === undefined || after.value !== mine || after.version !== held.version + 1) return refused("another run of this deployer is active");
+    }
   } catch {
     return refused("another run of this deployer is active");
   }
   try {
     return await deployVerified(rawRequest, ports);
   } finally {
-    await ports.ssm.delete(lockName);
+    // Only the run that holds the lock releases it.
+    if ((await ports.ssm.get(lockName)) === mine) await ports.ssm.delete(lockName);
   }
 }
 
