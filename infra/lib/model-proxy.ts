@@ -16,11 +16,12 @@ import {
   Stack,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { BUNDLE_IMAGE_NAMES, LITELLM_SOURCE_IMAGE, bundleImageRepositoryArn, bundleImageUri, imageDigestOf } from "./bundle-images.js";
 import type { AgentXNaming } from "./naming.js";
 import { enterpriseHttpsEgress } from "./vpc-endpoints.js";
 
-/** LiteLLM, pinned by digest (spike: docs/learnings/model-proxy-spike.md). ghcr.io is public; the tasks pull it through the NAT. */
-export const LITELLM_IMAGE = "ghcr.io/berriai/litellm-database:v1.105.1@sha256:2bcadb9905b692a5ca4dadd51bccaaa23a95dc8a0f9322d9c9787f0ac2aeb50e";
+/** LiteLLM, pinned by digest (spike: docs/learnings/model-proxy-spike.md). ghcr.io is public; a Public install's tasks pull it through the NAT. An Enterprise install pulls the same digest from its own ECR (`bundledImages`). */
+export const LITELLM_IMAGE = LITELLM_SOURCE_IMAGE;
 // Shared with the broker, which builds the proxy's URL from the load balancer's name and this port (derived-names.ts).
 export const MODEL_PROXY_PORT = MODEL_PROXY_INFERENCE_PORT;
 /**
@@ -77,6 +78,11 @@ export interface ModelProxyProps {
   models: ReadonlyArray<{ id: string }>;
   /** Enterprise installs: the ranges the proxy's tasks may reach over HTTPS (the VPC's endpoints and what the customer approved). Absent: HTTPS to the whole internet, as before. */
   privateEgressCidrs?: readonly string[];
+  /**
+   * Enterprise installs: run LiteLLM from the install's own ECR (loaded from the signed release bundle, same digest) instead of ghcr.io, and let
+   * the execution role pull it from there. Absent: the public image, as before.
+   */
+  bundledImages?: boolean;
 }
 
 /**
@@ -268,6 +274,15 @@ export class ModelProxy extends Construct {
       actions: ["secretsmanager:GetSecretValue"],
       resources: [this.masterKeySecret.secretArn, databaseUrl.secretArn, saltKey.secretArn],
     }));
+    if (props.bundledImages === true) {
+      // The execution role pulls the image: authorization is account-wide, the layers only from the bundle's repositories.
+      executionRole.addToPolicy(new iam.PolicyStatement({ sid: "EcrAuthorization", actions: ["ecr:GetAuthorizationToken"], resources: ["*"] }));
+      executionRole.addToPolicy(new iam.PolicyStatement({
+        sid: "PullBundledImages",
+        actions: ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
+        resources: BUNDLE_IMAGE_NAMES.map((name) => bundleImageRepositoryArn(naming.env ?? "", name)),
+      }));
+    }
     // Company Bedrock sources: the task role assumes the customer's role in the customer's own account (never ours), and only with an
     // external id that names a Rovara org. The ModelAccessFunction has the same statement for its trust-policy probe.
     this.taskRole.addToPolicy(assumeOrgBedrockRoles(stack));
@@ -291,7 +306,7 @@ export class ModelProxy extends Construct {
       taskRoleArn: this.taskRole.roleArn,
       containerDefinitions: [{
         name: "litellm",
-        image: LITELLM_IMAGE,
+        image: props.bundledImages === true ? bundleImageUri(naming.env ?? "", "litellm", imageDigestOf(LITELLM_IMAGE)) : LITELLM_IMAGE,
         essential: true,
         stopTimeout: 120,
         entryPoint: ["sh", "-c"],

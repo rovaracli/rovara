@@ -87,6 +87,8 @@ export interface ControlPlaneStackProps extends StackProps {
   reservedConcurrency?: boolean;
   /** Enterprise installs: the ranges the model proxy and the model access function may reach over HTTPS (never the whole internet). Absent: as before. */
   privateEgressCidrs?: readonly string[];
+  /** Enterprise installs: the model proxy runs LiteLLM from the install's own ECR (loaded from the signed release bundle). Absent: the public image, as before. */
+  bundledImages?: boolean;
   /** Extra environment variables for the broker, from the install's own settings (the private MCP ranges, `privateMcpBrokerEnvironment`). Absent: none. */
   brokerEnvironment?: Readonly<Record<string, string>>;
 }
@@ -1410,6 +1412,7 @@ export class ControlPlaneStack extends Stack {
         // Ruling R52: the geography follows the install's region (an eu install serves eu.* profiles); an unsupported region fails the synth.
         models: bedrockClaudeModelIds(proxyGeographyForRegion(props?.deploymentRegion ?? "us-east-1")).map((id) => ({ id })),
         ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: props.privateEgressCidrs }),
+        ...(props?.bundledImages === true ? { bundledImages: true } : {}),
       });
       grantProviderKeySecrets(this, [modelProxy.taskRole.roleName]);
       // Ruling R28: the broker is outside the VPC, so it mints member keys and reads spend through this

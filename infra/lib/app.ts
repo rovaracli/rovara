@@ -12,6 +12,7 @@ import { AGENTX_PRODUCTION_VPC_CIDR, ProductionFoundationStack } from "./product
 import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
 import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@agentx/contracts";
 import { EditionEnvironment } from "./edition-env.js";
+import { BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
 import { parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
@@ -145,6 +146,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       stackName: naming.stackName("access"),
       naming,
       ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }),
+      ...(explicitEdition === "enterprise" ? { bundleImageRepositories: BUNDLE_IMAGE_NAMES.map((name) => bundleImageRepository(naming.env!, name)) } : {}),
       terminationProtection: true,
       env: { region },
     });
@@ -157,7 +159,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     ...(Object.keys(privateMcpBrokerEnvironment(privateMcp)).length === 0 ? {} : { brokerEnvironment: privateMcpBrokerEnvironment(privateMcp) }),
     ...(reservedConcurrency ? {} : { reservedConcurrency: false }),
     ...(agentxCloud ? { cloud: true } : {}),
-    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs] } : {}),
+    ...(explicitEdition === "enterprise" ? { privateEgressCidrs: [AGENTX_PRODUCTION_VPC_CIDR, ...enterpriseCidrs], bundledImages: true } : {}),
     ...(deploymentRegion === undefined ? {} : { deploymentRegion }),
     ...(naming.env === undefined ? {} : { stackName: naming.stackName("control-plane") }),
   });

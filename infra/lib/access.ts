@@ -14,6 +14,11 @@ export interface AccessStackProps extends StackProps {
    * statement also excludes every account of that organization; when not, it excludes this account only (the fallback).
    */
   rovaraOrganizationId?: string;
+  /**
+   * Enterprise installs: the ECR repositories the signed release bundle's images are loaded into (`rovara-bundle/<name>`). They live here, in the stack that is
+   * deployed first, so `rovara upgrade --bundle` can load the images before any stack that runs them. Immutable tags, scanned on push, kept when the stack goes.
+   */
+  bundleImageRepositories?: readonly string[];
 }
 
 /**
@@ -25,7 +30,7 @@ export interface AccessStackProps extends StackProps {
 export class AccessStack extends Stack {
   constructor(scope: Construct, id: string, props: AccessStackProps) {
     super(scope, id, props);
-    const { naming, rovaraOrganizationId } = props;
+    const { naming, rovaraOrganizationId, bundleImageRepositories } = props;
     const env = naming.env;
     if (env === undefined) throw new Error("the access stack exists only for named environments");
     const ecsFailureRuleArn = Fn.sub(`arn:${"${AWS::Partition}"}:events:${"${AWS::Region}"}:${"${AWS::AccountId}"}:rule/agentx-${env}-*-service-failures`);
@@ -79,6 +84,15 @@ export class AccessStack extends Stack {
       ecrRepositoryPrefix: naming.pullThroughPrefix,
       upstreamRegistryUrl: "public.ecr.aws",
     });
+
+    for (const repositoryName of bundleImageRepositories ?? []) {
+      const repository = new ecr.CfnRepository(this, `BundleImage${repositoryName.replace(/[^A-Za-z0-9]/g, "")}`, {
+        repositoryName,
+        imageTagMutability: "IMMUTABLE",
+        imageScanningConfiguration: { scanOnPush: true },
+      });
+      repository.applyRemovalPolicy(RemovalPolicy.RETAIN);
+    }
 
     const policyScope = {
       env,
