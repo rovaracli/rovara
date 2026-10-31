@@ -370,6 +370,12 @@ describe("Fix round 2 (recheck)", () => {
     await w.sink.put(githubDraft({ source: "linear", kind: "ticket.created", repo: undefined, sourceRef: { system: "linear.app", id: "E1", version: "1" }, audience: PROJECT, scope: "linear:team/ENG", text: "billing zebra", links: [] }));
     await w.sink.tombstone({ workspaceId: ORG_A, system: "linear.app", sourceIds: ["E1"], cause: "source_deleted" });
     expect(await recordSearch(deps(w), person(), "web", { query: "zebra" })).toEqual({ hits: [], someHidden: false });
+    // a row hidden for everyone by pending work does not set it either
+    const q = world();
+    await addSource(q, { source: "linear", scope: "linear:team/ENG", audienceDefault: "project" });
+    await q.sink.put(githubDraft({ source: "linear", kind: "ticket.created", repo: undefined, sourceRef: { system: "linear.app", id: "E2", version: "1" }, audience: PROJECT, scope: "linear:team/ENG", text: "billing zebra", links: [] }));
+    await putScopeWork(q.table, ORG_A, { requestId: "pp", type: "tombstone", system: "linear.app", sourceIds: ["E2"], at: "2026-10-30T12:00:00.000Z", hidePending: true, hidden: 0, queuedAtSeconds: 1 });
+    expect(await recordSearch(deps(q), person(), "web", { query: "zebra" })).toEqual({ hits: [], someHidden: false });
     const p = world();
     await addSource(p, { source: "github", scope: GITHUB_SCOPE });
     await p.sink.put(githubDraft({ links: [], text: "billing zebra", audience: priv(GITHUB_SCOPE, ["999"]) }));

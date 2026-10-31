@@ -117,6 +117,21 @@ describe("W-1 Slack retention B goes through the record's checks before the dist
     expect(called).toBe(0);
   });
 
+  it("the distiller port itself refuses an erased person's draft: accepted false, no model call, no note", async () => {
+    const { w } = publicSlack();
+    await addSource(w, { source: "slack", scope: SCOPE, retention: "B", notesOptIn: true });
+    await erasePerson(deleteDeps(w).deps, ORG_A, { identities: [{ system: `slack:${TEAM}`, sourceId: USER }] }, "e-direct");
+    let called = 0;
+    const distiller = createTransientDistiller({ ingest: w.deps, distill: { model: async () => { called += 1; return "{}"; }, now: () => new Date(w.clock.ms).toISOString(), newId: () => "5b8e9f4c-2b1a-4c1e-9a53-3f2d3d1a0001" } });
+    const outcome = await distiller.distillTransient({
+      workspaceId: ORG_A, project: "web", source: "slack", kind: "slack.message", occurredAt: "2026-10-30T10:00:00.000Z", sourceRef: { system: TEAM, id: `${CH}/${TS}`, version: "m:1" },
+      actor: { sourceId: USER, trust: "member" }, trust: "member", audience: { kind: "restricted", acl: { source: "slack", scope: SCOPE, groups: [TEAM], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } }, links: [], retention: "B", text: "pin the base image",
+    });
+    expect(outcome).toEqual({ accepted: false });
+    expect(called).toBe(0);
+    expect(rows(w, "TEAM_RECORD_FACT")).toHaveLength(0);
+  });
+
   it("a message with attachments gives a note of outsider trust (the tap sets hasAttachments)", async () => {
     const { w, tap, message } = publicSlack();
     await addSource(w, { source: "slack", scope: SCOPE, retention: "B", notesOptIn: true });
@@ -161,10 +176,23 @@ describe("W-3 / W-4 storage interfaces", () => {
     const racing: HotArchiveSource = { ...source, async filterLive(workspaceId, ids) { const live = await source.filterLive(workspaceId, ids); await w.sink.tombstone({ workspaceId: ORG_A, system: "github.com", sourceIds: ["r1"], cause: "source_deleted" }); return live; } };
     const executed: string[] = [];
     const lake = { now: () => w.clock.ms, execute: async (sql: string) => { executed.push(sql); }, query: async () => ({ rows: [], truncated: false }) };
-    const summary = await runArchive({ source: racing, lake: lake, tableBucket: "tb", vectors: { dimension: 3, put: async () => ({ done: 0, failed: [] }), delete: async (keys: string[]) => { w.vectorDeletes.push(keys); return { done: keys.length, failed: [] }; }, query: async () => [], get: async () => [] }, lakeDeletes: tableLakeDeleteQueue(w.table) }, { workspaceId: ORG_A, budget: { maxRows: 100, maxMs: 10_000 } });
+    const summary = await runArchive({ source: racing, lake: lake, tableBucket: "rovara-record-lake", vectors: { dimension: 3, put: async () => ({ done: 0, failed: [] }), delete: async (keys: string[]) => { w.vectorDeletes.push(keys); return { done: keys.length, failed: [] }; }, query: async () => [], get: async () => [] }, lakeDeletes: tableLakeDeleteQueue(w.table) }, { workspaceId: ORG_A, budget: { maxRows: 100, maxMs: 10_000 } });
     expect(summary.archived).toBe(0);
     expect(summary.lateTombstoned).toBeGreaterThanOrEqual(1);
     expect((await tableLakeDeleteQueue(w.table).listPending(ORG_A, 10)).map((entry) => entry.target)).toContainEqual({ kind: "source", sourceHash: teamRecordSourceHash("github.com", "r1") });
+  });
+
+  it("when markArchived reports a lost row the archiver counts it, does not count it archived, and deletes its vector", async () => {
+    const w = world();
+    await addSource(w, { source: "github", scope: "github:repo/9" });
+    const old = new Date(w.clock.ms - 120 * 86_400_000).toISOString();
+    await w.sink.put({ workspaceId: ORG_A, project: "web", source: "github", kind: "github.review_comment", occurredAt: old, sourceRef: { system: "github.com", id: "r2", version: "1" }, actor: { sourceId: "1", trust: "member" }, trust: "member", audience: { kind: "project" }, scope: "github:repo/9", links: [], retention: "D", text: "t" });
+    const real = tableHotArchiveSource(w.table, { async projects() { return ["web"]; } }, tableLakeDeleteQueue(w.table));
+    const source: HotArchiveSource = { ...real, markArchived: async (_org, ids) => ids };
+    const lake = { now: () => w.clock.ms, execute: async () => undefined, query: async () => ({ rows: [], truncated: false }) };
+    const summary = await runArchive({ source, lake: lake, tableBucket: "rovara-record-lake", vectors: { dimension: 3, put: async () => ({ done: 1, failed: [] }), delete: async (keys: string[]) => { w.vectorDeletes.push(keys); return { done: keys.length, failed: [] }; }, query: async () => [], get: async () => [] }, lakeDeletes: tableLakeDeleteQueue(w.table) }, { workspaceId: ORG_A, budget: { maxRows: 100, maxMs: 10_000 } });
+    expect(summary).toMatchObject({ archived: 0, lateTombstoned: 1 });
+    expect(w.vectorDeletes.flat().some((key) => key.startsWith("event:"))).toBe(true);
   });
 
   it("the storage lake job builds a statement per table for the workspace target", () => {
