@@ -24,10 +24,11 @@ const ITEMS: Record<DecisionKind, DecisionItem> = {
   approve_spend: { ...base("spr1"), kind: "approve_spend", amountUsd: 5, scopeLabel: "this task" },
   approve_test_env: { ...base("env1"), kind: "approve_test_env", risk: "medium", riskReasons: [], tier: "sandbox" },
   confirm_env_change: { ...base("chg1"), kind: "confirm_env_change", what: "accounts" },
+  spec_choice: { ...base("spc1"), kind: "spec_choice", message: "The spec changed. Re-plan or keep?" },
 };
 const DEFAULT_RISK: Record<DecisionKind, DecisionRisk> = {
   approve_plan: "low", approve_requirements: "low", approve_design: "low", merge: "low", answer_question: "low", choose_checks: "low", approve_dependency: "medium", approve_e2e_plan: "medium",
-  review_feedback: "low", autofix_ask: "medium", approve_setting: "high", approve_spend: "low", approve_test_env: "medium", confirm_env_change: "medium",
+  review_feedback: "low", autofix_ask: "medium", approve_setting: "high", approve_spend: "low", approve_test_env: "medium", confirm_env_change: "medium", spec_choice: "low",
 };
 const cardOf = (item: DecisionItem, locks = {}) => {
   const result = cardOfItem(item, locks);
@@ -296,5 +297,30 @@ describe("a high card opens the confirmation page (I5)", () => {
   it("a spend above the admin amount needs a second person", () => {
     expect(cardOf({ ...(ITEMS.approve_spend), amountUsd: 250 } as DecisionItem).friction.secondPerson).toBe(true);
     expect(cardOf({ ...(ITEMS.approve_spend), amountUsd: 50 } as DecisionItem).friction.secondPerson).toBe(false);
+  });
+});
+
+describe("a spec on hold (wire lane D, MD-1)", () => {
+  it("is a card that only opens the task page: no approve, no reject, and the broker's fixed sentence", async () => {
+    const card = cardOf(ITEMS["spec_choice"]);
+    expect(card).toMatchObject({ kind: "spec_choice", status: "pending", risk: "low", question: "The spec changed. Re-plan or keep?", recommended: { action: "open" } });
+    expect(card.actions.map((action) => action.kind)).toEqual(["open"]);
+    expect(card.rejectReasons).toEqual([]);
+  });
+
+  it("is made from the spec's state only while something is held for the owner", async () => {
+    const { specChoiceItemOf } = await import("../../packages/broker/src/spec/decision-item.js");
+    const { newSpecState } = await import("../../packages/broker/src/spec/state.js");
+    const { SpecTargetSchema } = await import("@agentx/contracts");
+    const taskId = "11111111-1111-4111-8111-111111111111";
+    const now = "2026-10-31T10:00:00.000Z";
+    const base = newSpecState({ taskId, planDigest: "a".repeat(64), kind: "feature", target: SpecTargetSchema.parse({ format: "kiro" }), knowledgeCommit: "b".repeat(40), now });
+    const input = { taskId, project: "web", title: "Reset password", now };
+    expect(specChoiceItemOf({ ...input, state: undefined })).toBeUndefined();
+    expect(specChoiceItemOf({ ...input, state: { ...base, status: "failed", failure: { code: "publish_failed", at: now }, attempt: 1 } })).toMatchObject({ kind: "spec_choice", subjectId: taskId, message: "Spec pull request failed: Rovara could not open the spec pull request." });
+    expect(specChoiceItemOf({ ...input, state: { ...base, status: "skipped" } })).toBeUndefined();
+    expect(specChoiceItemOf({ ...input, state: undefined, corrupt: true })).toMatchObject({ kind: "spec_choice" });
+    const item = specChoiceItemOf({ ...input, state: { ...base, status: "failed", failure: { code: "publish_failed", at: now }, attempt: 1 } })!;
+    expect(DecisionCardSchema.safeParse(cardOf(item)).success).toBe(true);
   });
 });

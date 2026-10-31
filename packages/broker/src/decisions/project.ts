@@ -65,7 +65,9 @@ export type DecisionItem =
   | (ItemBase & { kind: "approve_setting"; settingLabel: string; secondPerson: boolean })
   | (ItemBase & { kind: "approve_spend"; amountUsd: number; scopeLabel: string })
   | (ItemBase & { kind: "approve_test_env"; risk: DecisionRisk; riskReasons: readonly string[]; tier: string })
-  | (ItemBase & { kind: "confirm_env_change"; what: "accounts" | "selection" | "environment" });
+  | (ItemBase & { kind: "confirm_env_change"; what: "accounts" | "selection" | "environment" })
+  /** Wire lane D (MD-1): a task's spec is on hold (people changed the spec pull request, or it could not be made); the owner chooses on the task page. `message` is the broker's fixed sentence. */
+  | (ItemBase & { kind: "spec_choice"; message: string });
 
 export interface ProjectOptions {
   /** A company's locks: raise a kind's tier, never lower it. */
@@ -175,6 +177,8 @@ function wordsOf(item: DecisionItem): { question: string; next: string; costUsd?
       return { question: plainLine(`Raise the limit for ${item.scopeLabel}?`, 160), next: `The limit goes up by ${usd(item.amountUsd)}.`, costUsd: item.amountUsd, evidence: [chip("cost", "Amount", usd(item.amountUsd), item.amountUsd > DECISION_SPEND_LOW_MAX_USD ? "warning" : "good")], why: "The task is paused until the limit is raised." };
     case "approve_test_env":
       return { question: "Approve this test setup?", next: "Tasks in this project use it from now on.", evidence: [chip("environment", "Tier", item.tier, item.risk === "high" ? "warning" : "unknown"), chip("risk", "Risk", item.risk, item.risk === "high" ? "bad" : "warning")], why: "Rovara booted the app and proved the setup." };
+    case "spec_choice":
+      return { question: plainLine(item.message, 160), next: "You choose on the task page; the code pull requests wait until you do.", evidence: [], why: "Only the task owner can choose." };
     case "confirm_env_change":
       return { question: "Accept this change to the test setup?", next: "The running task continues on the new setup.", evidence: [chip("environment", "Changed", item.what, "warning")], why: "The setup changed while the task was running." };
   }
@@ -201,6 +205,8 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   // A question or a checks choice is answered on its own page: the card only opens it (an answer or a choice is a POST of that page, never a link).
   if (item.kind === "answer_question") return { actions: [{ ...open, label: "Answer" }], recommended: "open" };
   if (item.kind === "choose_checks") return { actions: [{ ...open, label: "Choose checks" }], recommended: "open" };
+  // A held spec is answered on the task page (its buttons are POSTs of that page): the card only opens it.
+  if (item.kind === "spec_choice") return { actions: [{ ...open, label: "Choose" }], recommended: "open" };
   if (!APPROVABLE.has(item.kind)) return { actions: [open], recommended: "open" };
   const approve: CardAction = { kind: "approve", label: "Approve", href: `${base}/approve`, method: "POST" };
   const reject: CardAction = { kind: "reject", label: "Not now", href: `${base}/reject`, method: "POST" };

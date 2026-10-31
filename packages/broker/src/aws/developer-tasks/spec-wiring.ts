@@ -13,13 +13,14 @@ import { approvedPlanDigestOf } from "../../spec/plan.js";
 import { specTargetOf } from "../../spec/due.js";
 import { specRendererFor } from "../../spec/index.js";
 import { dynamoSpecStore } from "../../spec/store.js";
-import type { SpecGate, SpecState } from "../../spec/state.js";
+import { specGate, type SpecGate, type SpecState } from "../../spec/state.js";
 import type { TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { get, iso, taskBaseOption } from "./common.js";
 import { accessFence, authorizeTaskAction, systemTaskAccess } from "./access.js";
 import { approvedCodingPlan } from "./workflow-inputs.js";
+import { replanForSpecChange } from "./spec-replan.js";
 
 const refOf = (task: DeveloperTaskRecord): SpecTaskRef => ({ taskId: task.taskId, title: task.title, knowledgeCommit: task.knowledgeCommit });
 
@@ -225,6 +226,8 @@ async function queueRepublish(deps: DeveloperTaskRouteDependencies, task: Develo
 export async function specOwnerChoice(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, action: "retry" | "continue_without_spec" | "keep" | "replan"): Promise<{ status: string }> {
   const access = await authorizeTaskAction(deps, caller, taskId, "publish");
   const task = access.task;
+  // Re-plan sends the task back to plan approval (wire lane D, MD-1): the workflow, the planning run and the spec's record move in one transaction.
+  if (action === "replan") { await replanForSpecChange(deps, caller, taskId); return { status: "replan" }; }
   const hooks = createSpecHooks(worldFor(deps, task, accessFence(deps, access)));
   // "Retry" on a task with no record (the check itself failed) has nothing to change: it makes the waiting step due again, which looks again.
   if (action === "retry" && (await dynamoSpecStore(deps).load(taskId)).state === undefined) { await queueRepublish(deps, task, accessFence(deps, access)); return { status: "retrying" }; }
@@ -234,3 +237,21 @@ export async function specOwnerChoice(deps: DeveloperTaskRouteDependencies, call
   return { status: next.status };
 }
 
+
+const HOLD_TITLES: Record<Extract<SpecGate, { action: "hold" }>["reason"], string> = {
+  edited: "Spec changed", failed: "Spec on hold", writing: "Spec in progress", publishing: "Spec in progress", waiting_approval: "Waiting for the spec to be approved",
+};
+const HOLD_ROUTE_NAMES = { retry: "retry", continue_without_spec: "continue", keep: "keep", replan: "replan" } as const;
+
+/**
+ * What the task page shows of a spec on hold (wire lane D, MD-1): the state's fixed words and the owner's choices, or nothing when no spec is on hold. A task with no spec state costs one read.
+ * `mayChoose` is whether this reader may press (the owner, who may also start work on the project). Nothing in it is a model's, a repository's or a person's text.
+ */
+export async function specHoldOf(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, mayChoose: boolean): Promise<{ title: string; message: string; choices: Array<"retry" | "continue" | "keep" | "replan">; canChoose: boolean } | undefined> {
+  if (task.closedAt !== undefined) return undefined;
+  const { state, corrupt } = await dynamoSpecStore(deps).load(task.taskId);
+  if (state === undefined && !corrupt) return undefined;
+  const gate = specGate(state, corrupt, iso(deps));
+  if (gate.action !== "hold" || gate.ownerActions.length === 0) return undefined;
+  return { title: HOLD_TITLES[gate.reason], message: gate.message, choices: gate.ownerActions.map((action) => HOLD_ROUTE_NAMES[action]), canChoose: mayChoose };
+}

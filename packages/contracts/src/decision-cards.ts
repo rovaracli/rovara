@@ -33,6 +33,7 @@ export const DECISION_KINDS = [
   "approve_spend",
   "approve_test_env",
   "confirm_env_change",
+  "spec_choice",
 ] as const;
 export const DecisionKindSchema = z.enum(DECISION_KINDS);
 export type DecisionKind = z.infer<typeof DecisionKindSchema>;
@@ -63,6 +64,7 @@ export const DECISION_KIND_FLOOR_RISK: Record<DecisionKind, DecisionRisk> = {
   approve_spend: "low",
   approve_test_env: "medium",
   confirm_env_change: "medium",
+  spec_choice: "low",
 };
 
 export const DecisionFrictionSchema = z.object({ expandEvidenceFirst: z.boolean(), freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict();

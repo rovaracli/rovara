@@ -39,7 +39,7 @@ function comment(n: number, extra: Partial<PageCommentView> = {}): PageCommentVi
   };
 }
 
-interface PageOptions { applicationRetry?: { canRetry: boolean }; reviseOffer?: { canRevise: boolean }; version?: number; body?: PlanDocument; comments?: PageCommentView[]; access?: typeof owner | typeof commenter; waiting?: boolean; optionalChecks?: TaskDocumentView["optionalChecks"]; askAvailable?: boolean }
+interface PageOptions { applicationRetry?: { canRetry: boolean }; reviseOffer?: { canRevise: boolean }; specHold?: NonNullable<TaskDocumentView["specHold"]>; version?: number; body?: PlanDocument; comments?: PageCommentView[]; access?: typeof owner | typeof commenter; waiting?: boolean; optionalChecks?: TaskDocumentView["optionalChecks"]; askAvailable?: boolean }
 async function pageHtml(options: PageOptions = {}): Promise<string> {
   const version = options.version ?? 2;
   const documents = [doc(1, plan(), false), ...(version > 2 ? [doc(2, plan(), false)] : []), doc(version, options.body ?? plan())];
@@ -53,6 +53,7 @@ async function pageHtml(options: PageOptions = {}): Promise<string> {
     ...(options.askAvailable === undefined ? {} : { askAvailable: options.askAvailable }),
     ...(options.applicationRetry === undefined ? {} : { applicationRetry: options.applicationRetry }),
     ...(options.reviseOffer === undefined ? {} : { reviseOffer: options.reviseOffer }),
+    ...(options.specHold === undefined ? {} : { specHold: options.specHold }),
   };
   const web = createTaskWeb({ authenticateSession: async () => caller, getTaskDocumentView: async () => view });
   const answer = await web({ method: "GET", path: `/review/${taskId}/task`, headers: { cookie: SESSION }, requestId: "r" }, new URL(`https://agentx.example.test/review/${taskId}/task`));
@@ -194,6 +195,69 @@ describe("the deciding and commenting script", () => {
       expect(html).toContain("Only the task owner can revise the plan.");
       expect(boot(html).sent.filter((entry) => entry.method === "POST")).toEqual([]);
       expect(await pageHtml({ waiting: false })).not.toContain('aria-label="Revise the plan"');
+    });
+  });
+
+  // Wire lane D (MD-1): the spec pull request changed, or the spec could not be made: the owner chooses on the task page.
+  describe("a spec on hold", () => {
+    const edited = (canChoose = true): NonNullable<TaskDocumentView["specHold"]> => ({ title: "Spec changed", message: "The spec changed. Re-plan or keep?", choices: ["keep", "replan"], canChoose });
+    const answers = (status: number, body: unknown = {}) => (entry: Sent) => entry.url.includes("/api/spec/") ? { status, body } : { status: 200, body: {} };
+
+    it("shows the owner the held spec's words and one button for each choice the broker offers, and no other", async () => {
+      const html = await pageHtml({ waiting: false, specHold: edited() });
+      expect(html).toContain('aria-label="Spec on hold"');
+      expect(html).toContain("Spec changed");
+      expect(html).toContain("The spec changed. Re-plan or keep?");
+      expect(html).toContain('id="spec-choice-keep"');
+      expect(html).toContain('id="spec-choice-replan"');
+      expect(html).not.toContain('id="spec-choice-retry"');
+      expect(html).not.toContain('id="spec-choice-continue"');
+      const page = boot(html, { respond: answers(200, { status: "kept" }) });
+      expect(page.byId("spec-choice-keep").hidden).toBe(false);
+    });
+
+    it("posts the choice with the page's revision and a fresh request ID, then reloads; the same press keeps its ID", async () => {
+      let status = 503;
+      const page = boot(await pageHtml({ waiting: false, specHold: edited() }), { respond: (entry) => answers(status)(entry) });
+      page.byId("spec-choice-replan").click();
+      await page.settle();
+      page.byId("spec-choice-replan").click();
+      await page.settle();
+      const [first, second] = posts(page, "/api/spec/replan");
+      expect(first!.body).toEqual({ requestId: expect.stringMatching(/^aaaaaaaa-aaaa-4aaa-8aaa-/) as unknown, expectedRevision: 7 });
+      expect(second!.body.requestId).toBe(first!.body.requestId);
+      expect(first!.headers["x-agentx-csrf"]).toBeDefined();
+      expect(page.byId("spec-error").hidden).toBe(false);
+      status = 200;
+      page.byId("spec-choice-keep").click();
+      await page.settle();
+      expect(posts(page, "/api/spec/keep")).toHaveLength(1);
+      expect(page.reloads).toHaveLength(1);
+    });
+
+    it("says only the owner can choose when the broker answers 403, and offers no second press", async () => {
+      const page = boot(await pageHtml({ waiting: false, specHold: edited() }), { respond: answers(403, { error: "owners_only", message: "Only owners decide." }) });
+      page.byId("spec-choice-replan").click();
+      await page.settle();
+      expect(page.byId("spec-error").textContent).toBe("Only the task owner can choose what happens to the spec.");
+      expect(page.byId("spec-choice-replan").hidden).toBe(true);
+      page.byId("spec-choice-keep").click();
+      await page.settle();
+      expect(page.sent.filter((entry) => entry.method === "POST")).toHaveLength(1);
+    });
+
+    it("gives a reader who is not the owner no buttons and no way to post, and shows nothing when no spec is on hold", async () => {
+      const html = await pageHtml({ waiting: false, specHold: edited(false) });
+      expect(html).not.toContain('id="spec-choice-keep"');
+      expect(html).toContain("Only the task owner can choose what happens to the spec.");
+      expect(boot(html).sent.filter((entry) => entry.method === "POST")).toEqual([]);
+      expect(await pageHtml({ waiting: false })).not.toContain('aria-label="Spec on hold"');
+    });
+
+    it("writes the held words as text, never as markup", async () => {
+      const html = await pageHtml({ waiting: false, specHold: { title: "Spec on hold", message: "<img src=x onerror=alert(1)>", choices: ["retry"], canChoose: true } });
+      expect(html).not.toContain("<img src=x");
+      expect(html).toContain("&lt;img src=x");
     });
   });
 

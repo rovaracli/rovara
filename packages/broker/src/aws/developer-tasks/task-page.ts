@@ -75,6 +75,7 @@ import { OWNER_LABEL, TASK_PAGE_DOCUMENTS, get, log, ownerLabel, removedReasonOf
 import { taskView, workspaceReads } from "./task-view.js";
 import { decideTaskWorkflow } from "./decide.js";
 import { retryTaskWorkflow } from "./workflow-retry.js";
+import { specHoldOf } from "./spec-wiring.js";
 
 /**
  * Whether Merge may be pressed now, for the words a page or message uses about a Rovara Code (version 2) task that waits for its merge; undefined for any other task, for one with nothing
@@ -734,6 +735,8 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   }
   // AUTOFIX: what Rovara did by itself and, while the step is blocked, why it asks (the stored ask, read as data).
   const autofixAsk = AutoFixAskSchema.safeParse(task.autofixAsk);
+  // Wire lane D (MD-1): a spec on hold, for the owner's choices; read-only here, and a failure to read it only hides the card (the gates still hold the code).
+  const specHold = await specHoldOf(deps, task, can(access.role, "publish") && await projectWorkAllowed(deps, task, caller)).catch(() => undefined);
   const autofixLines = workflow === undefined ? [] : autoFixCardLines(workflow, workflow.state === "BLOCKED" && autofixAsk.success ? autofixAsk.data : undefined, { plain: true });
   // A coding run that needed no code change: the page says so and shows what the agent found (rebuilt, redacted and bounded again). Only while the step is blocked with that stop.
   const noChangeFound = workflow !== undefined && workflow.state === "BLOCKED" && task.closedAt === undefined && isNoCodeChangedReason(workflow.blockReason) ? noChangeFindingsFrom(workflow.noChangeFindings) : undefined;
@@ -749,6 +752,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     pullRequests: (workflow?.pullRequests ?? []).map((pullRequest) => ({ url: pullRequest.url, number: pullRequest.number, state: pullRequest.state })),
     ...(workflow !== undefined && task.closedAt === undefined && workflowApplicationRetryOffered(workflow) ? { applicationRetry: { canRetry: can(access.role, "retry") } } : {}),
     ...(workflow !== undefined && task.closedAt === undefined && workflowReviseOffered(workflow) ? { reviseOffer: { canRevise: can(access.role, "retry") } } : {}),
+    ...(specHold === undefined ? {} : { specHold }),
     ...(autofixLines.length === 0 ? {} : { autofix: { lines: autofixLines } }),
     ...(noChangeView === undefined ? {} : { noChange: noChangeView }),
     history, access: pageAccess(access, await projectWorkAllowed(deps, task, caller)), ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,

@@ -20,7 +20,7 @@ import type { PlanAnchor } from "./plan-page/render-plan.js";
 import { CSRF_COOKIE, PRIVATE_HEADERS, SESSION_COOKIE, csrfCookie, isCsrfToken, parseCookie, safeResponse, type WebResponse } from "./web-session.js";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-export const TASK_PAGE_API = new RegExp(`^/review/(${UUID})/task/api/(state|comments|comments/(${UUID})/(edit|delete)|suggestions|decision|retry|revise-plan|people|people/role|people/take-ownership|people/requests/(${UUID})(/confirm)?|e2e/artifacts/([0-9a-f]{64}))$`, "i");
+export const TASK_PAGE_API = new RegExp(`^/review/(${UUID})/task/api/(state|comments|comments/(${UUID})/(edit|delete)|suggestions|decision|retry|revise-plan|spec/(?:retry|continue|keep|replan)|people|people/role|people/take-ownership|people/requests/(${UUID})(/confirm)?|e2e/artifacts/([0-9a-f]{64}))$`, "i");
 /** Any path under the task page's API, known or not: it is the API's to answer, never the PR feedback page's. */
 export const TASK_PAGE_API_PREFIX = new RegExp(`^/review/(${UUID})/task/api(/|$)`, "i");
 
@@ -108,6 +108,8 @@ export interface TaskWebApiDependencies {
   retryApplicationRound?(caller: DeveloperCaller, taskId: string, input: PageRetryInput): Promise<{ revision: number }>;
   /** Live steer: the owner's Revise the plan press (coding stopped for a change outside the approved plan; only the owner, only then) and the new revision. Without it, the path is not found. */
   revisePlan?(caller: DeveloperCaller, taskId: string, input: PageRetryInput): Promise<{ revision: number }>;
+  /** Wire lane D (MD-1): the owner's choice on a spec on hold (`retry`, `continue`, `keep` or `replan`). Without it, the paths answer not found. */
+  specChoice?(caller: DeveloperCaller, taskId: string, choice: "retry" | "continue" | "keep" | "replan"): Promise<{ status: string }>;
   /**
    * The screenshot behind a row of the task's results (M1.3 Task 3.7), by its SHA-256: undefined for a digest the task's current display does not name. It must refuse a caller
    * who may not read the task (the page's own access rule) with an error carrying the code TASK_NOT_FOUND, TASK_ACCESS_DENIED, FORBIDDEN or NOT_FOUND. Without it the path is not found.
@@ -318,6 +320,11 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
         const parsedRevise = PageRetryInputSchema.safeParse(value);
         if (!parsedRevise.success) return invalid();
         return json(200, await deps.revisePlan(caller, taskId, parsedRevise.data));
+      }
+      if (endpoint.startsWith("spec/")) {
+        if (deps.specChoice === undefined) return json(404, { error: "not_found" });
+        if (!PageRetryInputSchema.safeParse(value).success) return invalid();
+        return json(200, await deps.specChoice(caller, taskId, endpoint.slice("spec/".length) as "retry" | "continue" | "keep" | "replan"));
       }
       if (endpoint === "retry") {
         if (deps.retryApplicationRound === undefined) return json(404, { error: "not_found" });

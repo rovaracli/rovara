@@ -80,7 +80,7 @@ class CanvasCloseoutPending extends Error {
 /** 30, 60, 120, 240, 480, then 900 seconds, by the delivery attempt that failed. */
 export const retryDelaySeconds = (attempt: number): number => Math.min(900, 30 * 2 ** Math.max(0, Math.min(attempt - 1, 5)));
 
-const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report"]);
+const NOTICE_KINDS = new Set(["start", "mode", "closed", "cancelled", "ready", "setup_failed", "ended", "pull_request", "workflow", "github_feedback", "canvas_closeout", "admin_change_dm", "admin_change_outcome", "admin_change_expiry", "workflow_refusal", "comment_nudge", "people_dm", "chatgpt_fallback", "agent_report", "spec_changed", "spec_hold"]);
 
 class PeopleDeliveryRetry extends Error {
   constructor(readonly attempt: number) { super("People notification delivery should retry"); this.name = "PeopleDeliveryRetry"; }
@@ -959,6 +959,9 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
   return { ...message, ...(blocks === undefined ? {} : { blocks }), sameAs: reopened ? `reopened:${workflow.revision}` : workflowMessageKey(workflow, { planAutoRevisions: context.planGroundingHeld === true ? 0 : planAutoRevisionsOf(task, workflow) }), ...(approval === undefined ? {} : { approval }) };
 }
 
+const SPEC_CHANGED_REPLY = "The spec changed. Re-plan or keep? The code pull requests wait until the task owner chooses on the task page.";
+const SPEC_HOLD_REPLY = "The spec could not be made, so the code pull requests are on hold. The task owner can try again or continue without the spec on the task page.";
+
 async function replyText(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, notice: Notice): Promise<Reply | undefined> {
   const operation = async () => (notice.workspaceId === undefined || notice.operationId === undefined
     ? undefined
@@ -971,6 +974,9 @@ async function replyText(deps: NotifierDependencies, task: DeveloperTaskRecord &
     // A change a later one replaced is not said: the later notice says the current mode.
     case "mode": return notice.mode === task.share.mode ? said(modeReply(task.share.mode)) : undefined;
     case "setup_failed": return said(setupFailedReply((await operation())?.error));
+    // Wire lane D (MD-1): fixed words; the choices are on the task page.
+    case "spec_changed": return said(SPEC_CHANGED_REPLY);
+    case "spec_hold": return said(SPEC_HOLD_REPLY);
     case "pull_request": {
       // A workflow task's pull request is said by its merge step, with the step's own words.
       if (task.workflow !== undefined) return undefined;

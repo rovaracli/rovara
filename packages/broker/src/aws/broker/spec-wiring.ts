@@ -229,3 +229,15 @@ export async function handleSpecPullRequestEvent(dependencies: AwsBrokerDependen
     console.log(JSON.stringify({ component: "broker", event: "spec.pull_request_event_failed", error: error instanceof Error ? error.name : "unknown" }));
   }
 }
+
+/**
+ * The three spec seams of the task route dependencies, from the broker's own dependencies: read a file of the meta repository at a commit, read the spec pull request, publish the spec. Every
+ * place the broker builds route dependencies for a task (the HTTP routes, a Slack press, the sweep) takes them from here, so a gate that needs the spec never waits on a path that lacks one.
+ */
+export function specSeamsOf(dependencies: AwsBrokerDependencies) {
+  return {
+    readMetaFile: readMetaFileOf(dependencies),
+    readSpecPullRequest: readSpecPullRequestOf(dependencies),
+    publishSpecFiles: publishSpecFilesOf(dependencies),
+  };
+}

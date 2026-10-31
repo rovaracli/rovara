@@ -1,6 +1,7 @@
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
 // The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
-import { SPEC_CHOICE_ROUTE, routeSpecChoice } from "./developer-routes/spec-routes.js";
+import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./developer-routes/spec-routes.js";
+import { specOwnerChoice } from "./developer-tasks/spec-wiring.js";
 import "../org/service-status.js";
 import "../model-selection/company-prepare.js";
 import "../model-selection/company-approval.js";
@@ -310,6 +311,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
           setSuggestion: (caller, taskId, input) => setPageSuggestion(routeDeps(caller), caller, taskId, input),
           decide: (caller, taskId, input) => decideOnPage(routeDeps(caller), caller, taskId, input),
           retryApplicationRound: (caller, taskId, input) => retryApplicationRoundOnPage(routeDeps(caller), caller, taskId, input),
+          // Wire lane D (MD-1): the owner's choice on a spec on hold (the same function as POST /v1/app/tasks/{id}/spec/{choice}).
+          specChoice: (caller, taskId, choice) => specOwnerChoice(routeDeps(caller), caller, taskId, SPEC_PAGE_CHOICES[choice]),
           revisePlan: async (caller, taskId, input) => { await reviseTaskWorkflowPlan(routeDeps(caller), caller, taskId, input); return { revision: (await getTaskFreshness(routeDeps(caller), caller, taskId)).revision }; },
           readE2EArtifact: (caller, taskId, sha256) => getTaskE2EArtifact(routeDeps(caller), caller, taskId, sha256),
           getPeople: (caller, taskId) => getTaskPeopleForPage(routeDeps(caller), caller, taskId),

@@ -9,7 +9,7 @@ export interface StreamRecord {
   eventName?: string;
   dynamodb?: { ApproximateCreationDateTime?: number; NewImage?: Record<string, AttributeValue>; OldImage?: Record<string, AttributeValue> };
 }
-export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report";
+export type NoticeKind = "start" | "mode" | "closed" | "cancelled" | "ready" | "setup_failed" | "ended" | "pull_request" | "workflow" | "github_feedback" | "canvas_closeout" | "admin_change_dm" | "admin_change_outcome" | "admin_change_expiry" | "workflow_refusal" | "comment_nudge" | "people_dm" | "chatgpt_fallback" | "agent_report" | "spec_changed" | "spec_hold";
 export interface Notice {
   /** Fixed per change, so a repeated delivery posts once (C9). */
   id: string;
@@ -160,6 +160,16 @@ export function noticesOf(previous: Record<string, unknown> | undefined, next: R
       const taskId = text(next.taskId);
       if (previous !== undefined || taskId === "" || next.status !== "PENDING") return [];
       return [{ id: `${taskId}:agent_report`, kind: "agent_report", taskId, at }];
+    }
+    // Wire lane D (MD-1): the owner hears when people changed the spec pull request ("Re-plan or keep?"), and when the spec could not be made and the code pull requests are on hold. Once per change.
+    case "SPEC_STATE": {
+      const taskId = text(next.taskId);
+      if (taskId === "") return [];
+      const edit = record(next.editPrompt);
+      const earlier = record(previous?.editPrompt);
+      if (edit?.status === "open" && typeof edit.headSha === "string" && earlier?.headSha !== edit.headSha) return [{ id: `${taskId}:spec_changed:${edit.headSha}`, kind: "spec_changed", taskId, at }];
+      if (next.status === "failed" && previous?.status !== "failed") return [{ id: `${taskId}:spec_hold:${String(next.revision)}`, kind: "spec_hold", taskId, at }];
+      return [];
     }
     case "ADMIN_CHANGE": {
       // Spec 025 E13: the Slack step started, or a change with a message ended. Only stored
