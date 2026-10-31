@@ -93,34 +93,44 @@ export async function replaceIntakeSources(table: IntakeTable, input: { orgId: O
   if (refs.length > INTAKE_MAX_SOURCES_PER_PROJECT) throw new Error("too many intake sources");
   const wanted = new Map(refs.map((ref) => [intakeSourceIdOf(ref), ref] as const));
   if (wanted.size !== refs.length) throw new Error("an intake source is named twice");
-  const now = table.now();
-  const at = new Date(now).toISOString();
-  const have = new Map((await listIntakeSources(table, input.orgId, input.project)).map((record) => [record.sourceId, record] as const));
-  const result: IntakeSourceRecord[] = [];
-  for (const [sourceId, ref] of wanted) {
-    const key = intakeSourceKey(input.orgId, input.project, sourceId);
-    const current = have.get(sourceId);
-    if (current === undefined) {
-      const record: IntakeSourceRecord = { orgId: input.orgId, project: input.project, sourceId, ref, setBy: input.setBy, createdAt: at, updatedAt: at, nextPollAt: now, failures: 0 };
-      await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...key, entityType: "INTAKE_SOURCE", ...record }, ConditionExpression: "attribute_not_exists(pk)" })).catch((error: unknown) => {
-        if (!isConditional(error)) throw error;
-      });
-      result.push(record);
-    } else {
-      await table.documentClient.send(new UpdateCommand({
-        TableName: table.tableName, Key: key, UpdateExpression: "SET #ref = :ref, #by = :by, #updated = :at", ConditionExpression: "attribute_exists(pk)",
-        ExpressionAttributeNames: { "#ref": "ref", "#by": "setBy", "#updated": "updatedAt" }, ExpressionAttributeValues: { ":ref": ref, ":by": input.setBy, ":at": at },
-      }));
-      result.push({ ...current, ref, setBy: input.setBy, updatedAt: at });
+  const countKey = intakeSourceCountKey(input.orgId, input.project);
+  // One transaction writes the whole set and the count kept beside it, conditional on the count being what was read: a card applied at the same moment (which raises the count) makes this one read
+  // again, so the count cannot drift from the sources.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const now = table.now();
+    const at = new Date(now).toISOString();
+    const have = new Map((await listIntakeSources(table, input.orgId, input.project)).map((record) => [record.sourceId, record] as const));
+    const counted = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: countKey, ConsistentRead: true }))) as { Item?: { count?: unknown } };
+    const items: Array<Record<string, unknown>> = [];
+    const result: IntakeSourceRecord[] = [];
+    for (const [sourceId, ref] of wanted) {
+      const key = intakeSourceKey(input.orgId, input.project, sourceId);
+      const current = have.get(sourceId);
+      if (current === undefined) {
+        const record: IntakeSourceRecord = { orgId: input.orgId, project: input.project, sourceId, ref, setBy: input.setBy, createdAt: at, updatedAt: at, nextPollAt: now, failures: 0 };
+        items.push({ Put: { TableName: table.tableName, Item: { ...key, entityType: "INTAKE_SOURCE", ...record }, ConditionExpression: "attribute_not_exists(pk)" } });
+        result.push(record);
+      } else {
+        items.push({ Update: {
+          TableName: table.tableName, Key: key, UpdateExpression: "SET #ref = :ref, #by = :by, #updated = :at", ConditionExpression: "attribute_exists(pk)",
+          ExpressionAttributeNames: { "#ref": "ref", "#by": "setBy", "#updated": "updatedAt" }, ExpressionAttributeValues: { ":ref": ref, ":by": input.setBy, ":at": at },
+        } });
+        result.push({ ...current, ref, setBy: input.setBy, updatedAt: at });
+      }
+    }
+    for (const [sourceId] of have) {
+      if (!wanted.has(sourceId)) items.push({ Delete: { TableName: table.tableName, Key: intakeSourceKey(input.orgId, input.project, sourceId) } });
+    }
+    const item = { ...countKey, entityType: "INTAKE_SOURCE_COUNT", orgId: input.orgId, project: input.project, count: result.length };
+    items.push({ Put: { TableName: table.tableName, Item: item, ...(counted.Item === undefined ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "#count = :seen", ExpressionAttributeNames: { "#count": "count" }, ExpressionAttributeValues: { ":seen": counted.Item.count } }) } });
+    try {
+      await table.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+      return result;
+    } catch (error) {
+      if (!(error instanceof Error) || (error.name !== "TransactionCanceledException" && !isConditional(error))) throw error;
     }
   }
-  for (const [sourceId] of have) {
-    if (wanted.has(sourceId)) continue;
-    await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: intakeSourceKey(input.orgId, input.project, sourceId) }));
-  }
-  // The count kept beside the sources follows what was set.
-  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...intakeSourceCountKey(input.orgId, input.project), entityType: "INTAKE_SOURCE_COUNT", orgId: input.orgId, project: input.project, count: result.length } }));
-  return result;
+  throw agentXError("RUNTIME_UNAVAILABLE", "The intake sources are being changed by someone else. Try again in a moment.");
 }
 
 /**
