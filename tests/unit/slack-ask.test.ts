@@ -189,6 +189,20 @@ describe("an Ask's record rides with the 'answered' call without breaking the ol
     expect(next.calls[0]).toMatchObject({ ask: { question: "What is left?", answer: "Two checks." } });
   });
 
+  it("a blank question (a bare chat:) or a blank answer still gets the note marked answered, with a new or an old broker (the Ask is simply not recorded)", async () => {
+    for (const kind of ["new", "old"] as const) {
+      for (const [text, answer] of [["chat:", "The plan covers the greeting."], ["chat:   ", "Two checks."], ["What is left?", "   "]] as const) {
+        const b = broker(kind);
+        const { marked } = await run(b.api, text, answer);
+        expect(marked, `${kind} ${text}|${answer}`).toHaveLength(1);
+        if (answer.trim() === "") continue;
+        expect(b.calls, `${kind} ${text}`).toHaveLength(1);
+        expect(b.calls[0], text).not.toHaveProperty("ask");
+        expect(b.calls[0], text).toMatchObject({ taskId, messageTs: "1695500002.000007" });
+      }
+    }
+  });
+
   it("another failure is not retried without the field (the service then tells the sender in its own words)", async () => {
     const failing = broker("failing");
     await run(failing.api, "What is left?", "Two checks.");

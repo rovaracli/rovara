@@ -111,7 +111,10 @@ export async function handleTaskQuestion(message: SlackRequestMessage, route: Ta
       deps.log("task_question.footer_post_failed", { ...fields, errorName: errorName(error) });
     }
     try {
-      await deps.markAnswered({ taskId: route.taskId, messageTs: route.noteTs, thread: message.thread, ask: { question: cutUnits(withoutChatPrefix(message.text), ASK_QUESTION_MAX_CHARS), answer: cutUnits(answered, 20_000) } });
+      // The Ask's record rides along only when there is a question and an answer to record: a blank one (a bare `chat:`) would make the broker's body schema refuse the whole call, and the note must be marked answered.
+      const question = cutUnits(withoutChatPrefix(message.text), ASK_QUESTION_MAX_CHARS);
+      const kept = cutUnits(answered, 20_000);
+      await deps.markAnswered({ taskId: route.taskId, messageTs: route.noteTs, thread: message.thread, ...(question.trim() === "" || kept.trim() === "" ? {} : { ask: { question, answer: kept } }) });
     } catch (error) {
       // The answer stands; the note is still read as an instruction by the next step.
       deps.log("task_question.mark_failed", { ...fields, errorName: errorName(error) });
