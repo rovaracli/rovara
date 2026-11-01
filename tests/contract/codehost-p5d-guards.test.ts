@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createCandidateManifest, createWorkflowSnapshot, editionPolicy, type WorkflowSnapshot } from "@agentx/contracts";
-import { acceptPullRequestLifecycle } from "../../packages/broker/src/aws/broker/acceptance.js";
+import { acceptPullRequest, acceptPullRequestLifecycle } from "../../packages/broker/src/aws/broker/acceptance.js";
 import { brokerDependencies } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
 import { completedBranchSyncItems, completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";
 import { verifyTaskFeedbackForWorkerStart } from "../../packages/broker/src/aws/broker/feedback-and-codebuild.js";
@@ -202,5 +202,32 @@ describe("the exported tree is held to the tree the repository's host has for th
     const w = hostWorld({ github: { getCommitTree: undefined } });
     const web = projectRowRecord("web", w);
     expect(await baseTreeHolds(w.dependencies, web, COMMIT, SCOPE, "t".repeat(40))).toBe(true);
+  });
+});
+
+describe("acceptance of a workflow's publication, on a host that is not GitHub", () => {
+  const P = "9".repeat(64);
+  it.each([
+    ["a registered other host", { kind: "fake", ref: "r1" }, GITHUB_ONLY_MESSAGE],
+    ["a host this install has not registered", { kind: "gitfarm" }, NO_HOST_MESSAGE],
+  ])("%s: refused before the idempotency row is written, the workspace claimed, the push sent or its grant issued", async (_name, host, message) => {
+    const w = await world();
+    w.setHost(host);
+    // The workspace is free (setup done, nothing running), as it is when a publication is due.
+    w.h.db.set({ ...(w.h.db.get(`WORKSPACE#${w.workspaceId}`, "META") as object), status: "READY", activeOperationId: undefined });
+    const workspaceBefore = JSON.stringify(w.h.db.get(`WORKSPACE#${w.workspaceId}`, "META"));
+    const identity = { issuer: "test", subject: MAYA.developerId, ownerKey: String(w.h.db.get(`WORKSPACE#${w.workspaceId}`, "META")!.ownerKey), orgId: TEST_ORG, isAdministrator: false, claims: {} } as never;
+    const issue = vi.spyOn(w.dependencies.repositoryGrants, "issue");
+    const rows = () => w.h.db.find((item) => String(item.pk).startsWith("IDEMPOTENCY#") || item.entityType === "OPERATION" && item.kind === "publish" || item.entityType === "OUTBOX");
+    const before = rows().length;
+    const candidate = {
+      repositoryId: "demo", treeSha: TREE, candidateDigest: "c".repeat(64), baseCommitSha: BASE, publicationMode: "CHECKED_TREE" as const,
+      admittedPinnedRevision: 1, admittedLatestRevision: 1, admittedMaterialDigest: "a".repeat(64), admittedWorkflowRevision: 3,
+      admittedPlanArtifact: { id: "plan-1", sha256: P }, admittedOwnerApproval: { artifactDigest: P }, admittedWorkflowAuthorityDigest: "b".repeat(64),
+    };
+    await expect(acceptPullRequest(w.dependencies, identity, w.workspaceId, { requestId: randomUUID(), repository: "demo", title: "Fix it" }, undefined, { workflowCandidate: candidate } as never)).rejects.toThrow(refusal(message));
+    expect(rows()).toHaveLength(before);
+    expect(JSON.stringify(w.h.db.get(`WORKSPACE#${w.workspaceId}`, "META"))).toBe(workspaceBefore);
+    expect(issue).not.toHaveBeenCalled();
   });
 });
