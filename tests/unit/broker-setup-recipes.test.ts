@@ -356,7 +356,7 @@ describe("sharing a confirmed project setup", () => {
     repos: [{
       repositoryId: "svc",
       setupCommands: [{ cwd: "svc", executable: "uv", args: ["sync"], timeoutSeconds: 600, env: { TOKEN_HINT: "x" } }],
-      checks: [{ id: "unit", label: "Unit", command: { cwd: "svc/tests", executable: "pytest", args: [], timeoutSeconds: 600 }, kind: "test", reportPath: "reports/junit.xml", selectArgs: ["{tests}"] }],
+      checks: [{ id: "unit", label: "Unit", command: { cwd: "svc/tests", executable: "pytest", args: [], timeoutSeconds: 600 }, kind: "test", reportPath: "svc/reports/junit.xml", coveragePath: "svc/coverage.xml", selectArgs: ["{tests}"] }],
     }],
     roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] },
     nightly: { enabled: false, cronUtc: "0 6 * * *", branch: "main" },
@@ -372,6 +372,9 @@ describe("sharing a confirmed project setup", () => {
     expect(result.body.setupCommands).toEqual([{ cwd: "{repo}", executable: "uv", args: ["sync"], timeoutSeconds: 600 }]);
     expect(result.body.checks[0]?.command.cwd).toBe("{repo}/tests");
     expect(JSON.stringify(result.body)).not.toContain("TOKEN_HINT");
+    // Report paths are {repo} templates too: the workspace directory never reaches the recipe.
+    expect(result.body.checks[0]).toMatchObject({ reportPath: "{repo}/reports/junit.xml", coveragePath: "{repo}/coverage.xml" });
+    expect(JSON.stringify(result.body)).not.toContain("svc/");
     expect(result.body.match.markerFiles).toEqual(["pyproject.toml"]);
     expect(setupFingerprint(result.body.match)).toBe(setupFingerprint(FITS));
   });
@@ -380,6 +383,11 @@ describe("sharing a confirmed project setup", () => {
     expect(recipeBodyFromProjectSetup({ ...input, repositoryDir: "other" })).toEqual({ ok: false, reason: "command_outside_repository" });
     expect(recipeBodyFromProjectSetup({ ...input, repositoryId: "nope" })).toEqual({ ok: false, reason: "repository_not_in_environment" });
     expect(recipeBodyFromProjectSetup({ ...input, approvedHosts: ["10.0.0.1"] })).toEqual({ ok: false, reason: "invalid_recipe" });
+  });
+
+  it("stops when a report path is outside the repository's directory", () => {
+    const outsideReport = TestEnvironmentBodySchema.parse({ ...environment, repos: [{ ...environment.repos[0], checks: [{ ...environment.repos[0]!.checks[0], reportPath: "elsewhere/junit.xml" }] }] });
+    expect(recipeBodyFromProjectSetup({ ...input, environment: outsideReport })).toEqual({ ok: false, reason: "path_outside_repository" });
   });
 
   it("refuses a repository directory that is not a plain relative path", () => {

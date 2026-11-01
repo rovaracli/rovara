@@ -81,6 +81,12 @@ const RecipeCwdSchema = z.string().refine((value) => {
   return value.startsWith(`${REPO_PLACEHOLDER}/`) && RelativeWorkspacePathSchema.safeParse(value.slice(REPO_PLACEHOLDER.length + 1)).success;
 }, "a working directory is {repo} or {repo}/<path inside it>");
 
+/** A path inside the repository, written `{repo}/<path>`. A report, coverage or SARIF path is relative to the repository like a command's directory, so the workspace layout never shows. */
+export const RecipePathSchema = z.string().refine((value) => value.startsWith(`${REPO_PLACEHOLDER}/`) && RelativeWorkspacePathSchema.safeParse(value.slice(REPO_PLACEHOLDER.length + 1)).success, "a path is {repo}/<path inside it>");
+
+/** The text `selectArgs` must hold exactly once: the same marker the test environment uses. */
+export const RECIPE_SELECT_PLACEHOLDER = "{tests}";
+
 /** A command template. It has no `env` field: variables stay with the project, and a recipe never carries one that could hold a secret. */
 export const RecipeCommandSchema = z.object({
   cwd: RecipeCwdSchema,
@@ -95,11 +101,14 @@ export const RecipeCheckSchema = z.object({
   label: line(80),
   command: RecipeCommandSchema,
   kind: CheckKindSchema,
-  reportPath: RelativeWorkspacePathSchema.optional(),
-  coveragePath: RelativeWorkspacePathSchema.optional(),
-  sarifPath: RelativeWorkspacePathSchema.optional(),
+  reportPath: RecipePathSchema.optional(),
+  coveragePath: RecipePathSchema.optional(),
+  sarifPath: RecipePathSchema.optional(),
   selectArgs: z.array(z.string().min(1).max(256)).max(8).optional(),
-}).strict();
+}).strict().superRefine((check, context) => {
+  if (check.selectArgs !== undefined && check.selectArgs.filter((arg) => arg === RECIPE_SELECT_PLACEHOLDER).length !== 1) context.addIssue({ code: "custom", path: ["selectArgs"], message: "selectArgs holds {tests} exactly once" });
+  if (check.selectArgs !== undefined && check.kind !== "test") context.addIssue({ code: "custom", path: ["selectArgs"], message: "only a test check selects tests" });
+});
 export type RecipeCheck = z.infer<typeof RecipeCheckSchema>;
 
 const IMAGE_REFERENCE = /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[a-f0-9]{64})?$/u;
@@ -175,7 +184,9 @@ export function recipeNamesRepository(body: SetupRecipeBody, repositoryNames: re
   for (const name of names) {
     const trimmed = name.trim();
     if (trimmed.length < 2) continue;
-    if (new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(trimmed)}(?![A-Za-z0-9])`, "iu").test(text)) return true;
+    // `orders-api`, `orders_api`, `orders.api` and `orders api` are the same name here.
+    const pattern = trimmed.split(/[-_. ]+/u).map(escapeRegExp).join("[-_. ]+");
+    if (new RegExp(`(?<![A-Za-z0-9])${pattern}(?![A-Za-z0-9])`, "iu").test(text)) return true;
   }
   return false;
 }

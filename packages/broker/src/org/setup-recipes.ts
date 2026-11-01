@@ -484,12 +484,19 @@ export interface ProjectSetupShareInput {
  * The generic part of a confirmed project setup, as a recipe body: working directories become `{repo}` templates, and a command that runs outside the repository's directory stops the share (it would carry the workspace's
  * layout). The environment's `env` variables stay with the project (a variable may hold anything). Pure; the result is a body for `proposeRecipe`, which still checks it.
  */
-export function recipeBodyFromProjectSetup(input: ProjectSetupShareInput): { ok: true; body: SetupRecipeBody } | { ok: false; reason: "repository_not_in_environment" | "command_outside_repository" | "invalid_recipe" } {
+export function recipeBodyFromProjectSetup(input: ProjectSetupShareInput): { ok: true; body: SetupRecipeBody } | { ok: false; reason: "repository_not_in_environment" | "command_outside_repository" | "path_outside_repository" | "invalid_recipe" } {
   const repo = input.environment.repos.find((item) => item.repositoryId === input.repositoryId);
   if (repo === undefined) return { ok: false, reason: "repository_not_in_environment" };
   const dir = RelativeWorkspacePathSchema.safeParse(input.repositoryDir.replace(/\/+$/u, ""));
   if (!dir.success) return { ok: false, reason: "command_outside_repository" };
   let outside = false;
+  let pathOutside = false;
+  /** A report, coverage or SARIF path is relative to the workspace in the environment; in a recipe it is `{repo}/<path>`. */
+  const pathTemplate = (workspacePath: string): string => {
+    if (workspacePath.startsWith(`${dir.data}/`)) return `{repo}/${workspacePath.slice(dir.data.length + 1)}`;
+    pathOutside = true;
+    return "{repo}/x";
+  };
   const template = (command: ProjectCommand): { cwd: string; executable: string; args: string[]; timeoutSeconds: number } => {
     let cwd: string | undefined;
     if (command.cwd === dir.data) cwd = "{repo}";
@@ -506,14 +513,15 @@ export function recipeBodyFromProjectSetup(input: ProjectSetupShareInput): { ok:
     updateCommands: (input.updateCommands ?? []).map(template),
     checks: repo.checks.map((check) => ({
       id: check.id, label: check.label, kind: check.kind, command: template(check.command),
-      ...(check.reportPath === undefined ? {} : { reportPath: check.reportPath }), ...(check.coveragePath === undefined ? {} : { coveragePath: check.coveragePath }),
-      ...(check.sarifPath === undefined ? {} : { sarifPath: check.sarifPath }), ...(check.selectArgs === undefined ? {} : { selectArgs: check.selectArgs }),
+      ...(check.reportPath === undefined ? {} : { reportPath: pathTemplate(check.reportPath) }), ...(check.coveragePath === undefined ? {} : { coveragePath: pathTemplate(check.coveragePath) }),
+      ...(check.sarifPath === undefined ? {} : { sarifPath: pathTemplate(check.sarifPath) }), ...(check.selectArgs === undefined ? {} : { selectArgs: check.selectArgs }),
     })),
     approvedHosts: [...input.approvedHosts],
     ...(input.devcontainerBaseImage === undefined ? {} : { devcontainerBaseImage: input.devcontainerBaseImage }),
     match: { markerFiles: [...input.match.markerFiles], registryHosts: [...input.match.registryHosts] },
   };
   if (outside) return { ok: false, reason: "command_outside_repository" };
+  if (pathOutside) return { ok: false, reason: "path_outside_repository" };
   const parsed = SetupRecipeBodySchema.safeParse(candidate);
   return parsed.success ? { ok: true, body: parsed.data } : { ok: false, reason: "invalid_recipe" };
 }

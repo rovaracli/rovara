@@ -12,7 +12,7 @@ const recipe = (): SetupRecipeBody => SetupRecipeBodySchema.parse({
   toolchains: [{ tool: "python", version: "3.12" }],
   setupCommands: [cmd("uv", ["sync", "--frozen"])],
   updateCommands: [cmd("uv", ["sync", "--frozen"])],
-  checks: [{ id: "unit", label: "Unit tests", command: cmd("pytest", ["-q"], "{repo}/tests"), kind: "test", reportPath: "reports/junit.xml", selectArgs: ["{tests}"] }],
+  checks: [{ id: "unit", label: "Unit tests", command: cmd("pytest", ["-q"], "{repo}/tests"), kind: "test", reportPath: "{repo}/reports/junit.xml", selectArgs: ["{tests}"] }],
   approvedHosts: ["Pypi.Internal.Example.com"],
   devcontainerBaseImage: "mcr.microsoft.com/devcontainers/python:3.12",
   match: { markerFiles: ["pyproject.toml", "requirements.txt"], registryHosts: ["pypi.internal.example.com"] },
@@ -82,7 +82,22 @@ describe("recipe body", () => {
     const body = recipe();
     for (const cwd of ["service", "/abs", "{repo}/../x", "{repo}x", "{repo}//x", "other/{repo}"]) expect(SetupRecipeBodySchema.safeParse({ ...body, setupCommands: [cmd("npm", ["ci"], cwd)] }).success, cwd).toBe(false);
     expect(SetupRecipeBodySchema.safeParse({ ...body, setupCommands: [cmd("npm", ["ci"], "{repo}/web")] }).success).toBe(true);
-    expect(SetupRecipeBodySchema.safeParse({ ...body, checks: [{ ...body.checks[0], reportPath: "../x.xml" }] }).success).toBe(false);
+    const withPath = (field: string, value: string) => SetupRecipeBodySchema.safeParse({ ...body, checks: [{ ...body.checks[0], [field]: value }] }).success;
+    for (const field of ["reportPath", "coveragePath", "sarifPath"]) {
+      expect(withPath(field, "{repo}/reports/x.xml"), field).toBe(true);
+      // A bare workspace path (`orders-api/reports/junit.xml`), a path above the repository, an absolute path and the bare placeholder are all refused.
+      for (const bad of ["orders-api/reports/junit.xml", "reports/junit.xml", "../x.xml", "{repo}/../x.xml", "/abs/x.xml", "{repo}", "{repo}//x"]) expect(withPath(field, bad), `${field} ${bad}`).toBe(false);
+    }
+  });
+
+  it("holds {tests} exactly once in selectArgs, and only for a test check", () => {
+    const body = recipe();
+    const withArgs = (selectArgs: string[], kind = "test") => SetupRecipeBodySchema.safeParse({ ...body, checks: [{ ...body.checks[0], kind, selectArgs }] }).success;
+    expect(withArgs(["{tests}"])).toBe(true);
+    expect(withArgs(["-k", "{tests}"])).toBe(true);
+    expect(withArgs(["-k"])).toBe(false);
+    expect(withArgs(["{tests}", "{tests}"])).toBe(false);
+    expect(withArgs(["{tests}"], "lint")).toBe(false);
   });
 
   it("refuses wildcard hosts, IP hosts and a dev container image that is not an image reference", () => {
@@ -126,6 +141,15 @@ describe("repository names", () => {
     expect(recipeNamesRepository(body, ["cwd", "executable", "args"])).toBe(false);
     expect(recipeNamesRepository(body, ["", "a"])).toBe(false);
     expect(recipeNamesRepository(body, ["pyth"])).toBe(false);
+  });
+
+  it("treats - _ . and space in a name as the same separator", () => {
+    const body = recipe();
+    for (const text of ["orders-api", "orders_api", "Orders.Api", "orders api"]) {
+      expect(recipeNamesRepository({ ...body, label: `Setup for ${text}` }, ["acme/orders-api"]), text).toBe(true);
+    }
+    expect(recipeNamesRepository({ ...body, label: "ordersapi" }, ["acme/orders-api"])).toBe(false);
+    expect(recipeNamesRepository({ ...body, setupCommands: [{ cwd: "{repo}", executable: "pip", args: ["install", "-r", "/home/ci/orders-api/requirements.txt"], timeoutSeconds: 60 }] }, ["orders-api"])).toBe(true);
   });
 });
 
