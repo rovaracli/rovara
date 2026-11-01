@@ -267,6 +267,11 @@ describe("what is ignored without a word, and writes nothing", () => {
     unknown.deps.reply = { reply: async () => undefined, ownActorId: async () => { throw new Error("no Linear"); } };
     await ignored(unknown, unknown.comment(`@rovara ask ${QUESTION}`));
     expect(unknown.outcomes).toEqual(["ignored"]);
+    // So does one that resolves to nothing (Rovara's own account is not known): no person's comment is believed then.
+    const nothing = await world();
+    nothing.deps.reply = { reply: async () => undefined, ownActorId: async () => undefined };
+    await ignored(nothing, nothing.comment(`@rovara ask ${QUESTION}`));
+    expect(nothing.outcomes).toEqual(["ignored"]);
   });
 
   it("Rovara's own words can never start another reply: every reply it makes, posted back as a person's comment, is ignored or answered with nothing", async () => {

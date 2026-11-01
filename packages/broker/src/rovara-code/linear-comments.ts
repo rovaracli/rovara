@@ -86,8 +86,9 @@ export async function handleLinearComment(deps: LinearCommentDependencies, input
   if (comment === undefined || !MENTION.test(comment.text)) return "ignored";
   const { orgId } = input;
   // Rovara's own account is never a person asking (its replies must never start another reply). An id that cannot be read ends the comment too: fail closed.
+  // An id that is not known (it resolved to nothing, or could not be read) ends the comment: fail closed.
   const own = await deps.reply.ownActorId(orgId).then((id) => ({ id }), () => undefined);
-  if (own === undefined || own.id === comment.authorId) return "ignored";
+  if (own?.id === undefined || own.id === comment.authorId) return "ignored";
   // The issue must be one a session of this hook's org AND project follows; anything else is ignored without a word (an unbound issue is not Rovara's business).
   const session = await sessionForSurface({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, { kind: "linear_issue", issueId: comment.issueKey, url: `https://linear.app/issue/${comment.issueKey}` });
   if (session === undefined || session.kind !== "task" || session.subject.kind !== "task" || session.project !== input.hook.project) return "ignored";
