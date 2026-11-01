@@ -1,0 +1,415 @@
+// Setup and test health SH29 (design setup-test-health.md, section 7; owner decisions Q2 and Q11; DECISIONS M8): company setup recipes and company locks.
+//
+// A company recipe is the generic part of a confirmed project setup (SH4), kept per company. It is only ever a PROPOSAL for a new project whose fingerprint matches: it never applies, runs or approves anything by
+// itself, and the project still proves and confirms it. This module holds the AUTHORITY around that, and nothing else:
+//   - a project maintainer may PROPOSE a recipe from a confirmed project setup (status `proposed`: not offered to anyone);
+//   - only a company admin, with a fresh sign-in, may APPROVE it (pinned to the exact revision and digest the admin saw), write one directly, change who it is offered to, or revoke it;
+//   - "offer only to these projects" is a plain list of project names (Q11, no groups yet); without it a recipe is offered to every project of the company;
+//   - company LOCKS (setup agent off, lower limits, hosts only from the company list, dev container images only from a list, nightly health on, host approver admin) can only make projects STRICTER (M8): `applyCompanyLocks`
+//     takes the stricter of the project's value and the lock, per field, and never the looser one;
+//   - no repository name is ever stored: a body that names the repository it came from is refused, not edited.
+//
+// Not wired: no route, no table, no switch (`sp`, SH36). The store is an interface (`SetupRecipeStore`); the DynamoDB adapter and the routes are wiring (see the lane report). Everything is keyed by the company id the caller
+// proves; nothing is read across companies. Nothing here touches the egress list: a recipe's `approvedHosts` are RECORDS of what the admin approved; making them company allow-list entries goes through the egress change plan.
+import {
+  OrgIdSchema, RelativeWorkspacePathSchema, SetupRecipeBodySchema, SetupRecipeIdSchema, agentXError, recipeFits, recipeNamesRepository, setupFingerprint, setupRecipeDigest,
+  type OrgId, type ProjectCommand, type SetupFingerprintInput, type SetupRecipeBody, type TestEnvironmentBody,
+} from "@agentx/contracts";
+import { createHash } from "node:crypto";
+import { z } from "zod";
+
+// ---- bounds
+/** A company holds this many recipes at most, in any status. */
+export const SETUP_RECIPES_MAX_PER_ORG = 200;
+/** Recipes waiting for an admin, at most (a maintainer cannot fill the admin's queue without bound). */
+export const SETUP_RECIPES_MAX_PROPOSED = 50;
+export const SETUP_RECIPE_SCOPE_MAX_PROJECTS = 100;
+/** A fresh sign-in counts for this long (the same ten minutes as a decision's). */
+export const SETUP_RECIPE_FRESH_SIGN_IN_SECONDS = 600;
+const CLOCK_SKEW_SECONDS = 30;
+
+const projectHash = (orgId: string, project: string): string => createHash("sha256").update(`${orgId}\n${project}`, "utf8").digest("hex").slice(0, 32);
+const DeveloperId = z.string().regex(/^[a-f0-9]{64}$/u);
+const ProjectName = z.string().min(1).max(200).regex(/^[^\p{Cc}\p{Cf}]+$/u);
+
+// ---- records
+export const RecipeScopeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("company") }).strict(),
+  /** "Offer only to these projects": a plain list of project names, not a team. */
+  z.object({ kind: z.literal("projects"), projects: z.array(ProjectName).min(1).max(SETUP_RECIPE_SCOPE_MAX_PROJECTS) }).strict(),
+]);
+export type RecipeScope = z.infer<typeof RecipeScopeSchema>;
+
+export type RecipeStatus = "proposed" | "approved" | "revoked";
+
+export interface StoredRecipe {
+  orgId: OrgId;
+  recipeId: string;
+  /** Starts at 1; every change (approval, scope, revoke) adds one. The value source is `recipe:<id>@<revision>`. */
+  revision: number;
+  status: RecipeStatus;
+  body: SetupRecipeBody;
+  /** sha256 of the body: what an approval pins. */
+  bodyDigest: string;
+  fingerprint: string;
+  scope: RecipeScope;
+  /** A hash of the project a maintainer proposed it from (so the same proposal is not stored twice); absent when an admin wrote it. The project's name itself is not kept here. */
+  proposedFromProjectHash?: string;
+  createdBy: string;
+  createdAt: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  updatedAt: string;
+}
+
+export type RecipeAuditAction = "recipe_proposed" | "recipe_created" | "recipe_approved" | "recipe_revoked" | "recipe_scope_changed" | "locks_changed";
+/** What the audit ledger gets: ids, digests and fixed words only. Never the recipe's text. */
+export interface RecipeAuditEntry {
+  action: RecipeAuditAction;
+  orgId: OrgId;
+  actor: string;
+  at: string;
+  proof: "fresh_sign_in" | "project_maintainer";
+  recipeId?: string;
+  revision?: number;
+  bodyDigest?: string;
+}
+
+export interface SetupRecipeStore {
+  getRecipe(orgId: OrgId, recipeId: string): Promise<StoredRecipe | undefined>;
+  /** All recipes of the company, at most `limit`. */
+  listRecipes(orgId: OrgId, limit: number): Promise<StoredRecipe[]>;
+  /** Writes `next` and the audit entry together or neither, only while the stored revision is `expectedRevision` (null: no row yet). False when the row changed meanwhile. */
+  commitRecipe(next: StoredRecipe, expectedRevision: number | null, audit: RecipeAuditEntry): Promise<boolean>;
+  getLocks(orgId: OrgId): Promise<StoredLocks | undefined>;
+  commitLocks(next: StoredLocks, expectedRevision: number | null, audit: RecipeAuditEntry): Promise<boolean>;
+}
+
+// ---- company locks (M8: stricter only)
+/** The setup agent's limits (design 3.2), each with the design's maximum. */
+export const SETUP_LIMIT_MAXIMA = { commands: 120, sameStepTries: 5, wallClockMinutes: 120, spendUsd: 20, hostAsks: 10 } as const;
+export type SetupLimits = { [K in keyof typeof SETUP_LIMIT_MAXIMA]: number };
+const LIMIT_KEYS = Object.keys(SETUP_LIMIT_MAXIMA) as Array<keyof SetupLimits>;
+const limitField = (key: keyof SetupLimits) => z.number().min(1).max(SETUP_LIMIT_MAXIMA[key]);
+
+const ImageReference = SetupRecipeBodySchema.shape.devcontainerBaseImage.unwrap();
+
+export const CompanySetupLocksSchema = z.object({
+  /** The setup agent may not run in any project of the company. */
+  setupAgentOff: z.literal(true).optional(),
+  /** Lower limits: a project's limit is the smaller of its own and this. */
+  limits: z.object({
+    commands: limitField("commands").optional(), sameStepTries: limitField("sameStepTries").optional(), wallClockMinutes: limitField("wallClockMinutes").optional(),
+    spendUsd: limitField("spendUsd").optional(), hostAsks: limitField("hostAsks").optional(),
+  }).strict().optional(),
+  /** A project may use only hosts on the company list. */
+  hostsOnlyFromCompanyList: z.literal(true).optional(),
+  /** Dev container base images only from this list (an empty list allows none). */
+  devcontainerImages: z.array(ImageReference).max(50).optional(),
+  /** Nightly health is on for every project. */
+  nightlyHealthOn: z.literal(true).optional(),
+  /** New hosts are approved by an admin, never by a maintainer. */
+  hostApprover: z.literal("admin").optional(),
+}).strict();
+export type CompanySetupLocks = z.infer<typeof CompanySetupLocksSchema>;
+
+export interface StoredLocks { orgId: OrgId; revision: number; locks: CompanySetupLocks; updatedBy: string; updatedAt: string }
+
+/** The setup settings a project has, as far as locks reach. */
+export interface ProjectSetupSettings {
+  setupAgentEnabled: boolean;
+  limits: SetupLimits;
+  hostsOnlyFromCompanyList: boolean;
+  /** undefined: any image the project's other rules allow. */
+  devcontainerImages: readonly string[] | undefined;
+  nightlyHealthEnabled: boolean;
+  hostApprover: "admin" | "maintainer";
+}
+
+/**
+ * The project's settings with the company's locks applied. Per field the STRICTER value wins, so a lock never loosens a project (M8): a lock that is weaker than the project's own value changes nothing, and a missing lock
+ * changes nothing.
+ */
+export function applyCompanyLocks(project: ProjectSetupSettings, locks: CompanySetupLocks | undefined): ProjectSetupSettings {
+  const lock = locks ?? {};
+  const limits = { ...project.limits };
+  for (const key of LIMIT_KEYS) {
+    const cap = lock.limits?.[key];
+    if (cap !== undefined) limits[key] = Math.min(project.limits[key], cap);
+  }
+  let images: readonly string[] | undefined = project.devcontainerImages;
+  if (lock.devcontainerImages !== undefined) {
+    const allowed = new Set(lock.devcontainerImages);
+    images = project.devcontainerImages === undefined ? [...allowed] : project.devcontainerImages.filter((image) => allowed.has(image));
+  }
+  return {
+    setupAgentEnabled: project.setupAgentEnabled && lock.setupAgentOff !== true,
+    limits,
+    hostsOnlyFromCompanyList: project.hostsOnlyFromCompanyList || lock.hostsOnlyFromCompanyList === true,
+    devcontainerImages: images,
+    nightlyHealthEnabled: project.nightlyHealthEnabled || lock.nightlyHealthOn === true,
+    hostApprover: lock.hostApprover === "admin" ? "admin" : project.hostApprover,
+  };
+}
+
+// ---- authority
+export interface RecipeCaller {
+  orgId: OrgId;
+  developerId: string;
+  /** The time of the person's fresh sign-in, as the broker's verified session says (never a client claim). Required for every admin action. */
+  freshSignInAt?: string | undefined;
+}
+
+export interface SetupRecipeDeps {
+  store: SetupRecipeStore;
+  /** Live company owner or admin, read now (wire `requireLiveCompanyAdmin`). Throws FORBIDDEN. */
+  requireAdmin(caller: { orgId: OrgId; developerId: string }): Promise<void>;
+  /** The caller may maintain this project (wire the project role check). Throws FORBIDDEN. */
+  requireProjectMaintainer(caller: { orgId: OrgId; developerId: string }, project: string): Promise<void>;
+  /** Hosts a company must never approve (IP literals, pastes, shorteners, raw object storage, the production deny list): the host-ask list of SH12. */
+  isHostRefused(host: string): boolean;
+  now(): Date;
+  /** 20 random lower-case hex characters. */
+  newRecipeSuffix(): string;
+}
+
+const forbidden = () => agentXError("FORBIDDEN", "Live company owner or admin access is required.");
+const reauth = () => agentXError("REAUTH_REQUIRED", "Sign in again to confirm this company change.");
+const stale = () => agentXError("CHANGE_STALE", "That recipe changed. Refresh before continuing.");
+const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
+
+function validCaller(caller: RecipeCaller): void {
+  if (!OrgIdSchema.safeParse(caller.orgId).success || !DeveloperId.safeParse(caller.developerId).success) throw forbidden();
+}
+
+/** Admin now, then a sign-in no older than ten minutes. The admin check comes first and reads nothing else. */
+async function requireFreshAdmin(deps: SetupRecipeDeps, caller: RecipeCaller): Promise<void> {
+  validCaller(caller);
+  await deps.requireAdmin({ orgId: caller.orgId, developerId: caller.developerId });
+  const at = caller.freshSignInAt === undefined ? Number.NaN : Date.parse(caller.freshSignInAt);
+  const age = (deps.now().getTime() - at) / 1000;
+  if (!Number.isFinite(age) || age > SETUP_RECIPE_FRESH_SIGN_IN_SECONDS || age < -CLOCK_SKEW_SECONDS) throw reauth();
+}
+
+const iso = (deps: SetupRecipeDeps): string => deps.now().toISOString();
+
+/** Parses a body, refuses a host the host-ask list refuses, and refuses a body that names the repositories it came from. */
+function checkedBody(deps: SetupRecipeDeps, input: unknown, repositoryNames: readonly string[]): SetupRecipeBody {
+  const parsed = SetupRecipeBodySchema.safeParse(input);
+  if (!parsed.success) throw invalid("That recipe is not valid. Check its commands, hosts and image.");
+  if (parsed.data.approvedHosts.some((host) => deps.isHostRefused(host))) throw invalid("A recipe cannot approve that kind of host.");
+  if (recipeNamesRepository(parsed.data, repositoryNames)) throw invalid("A recipe cannot name a repository. Remove the name and share again.");
+  return parsed.data;
+}
+
+function newRecipe(deps: SetupRecipeDeps, caller: RecipeCaller, body: SetupRecipeBody, scope: RecipeScope, status: RecipeStatus, project: string | undefined): StoredRecipe {
+  const now = iso(deps);
+  const recipeId = SetupRecipeIdSchema.parse(`rcp_${deps.newRecipeSuffix()}`);
+  return {
+    orgId: caller.orgId, recipeId, revision: 1, status, body, bodyDigest: setupRecipeDigest(body), fingerprint: setupFingerprint(body.match), scope,
+    ...(project === undefined ? {} : { proposedFromProjectHash: projectHash(caller.orgId, project) }), createdBy: caller.developerId, createdAt: now,
+    ...(status === "approved" ? { approvedBy: caller.developerId, approvedAt: now } : {}), updatedAt: now,
+  };
+}
+
+const auditOf = (deps: SetupRecipeDeps, caller: RecipeCaller, action: RecipeAuditAction, proof: RecipeAuditEntry["proof"], recipe?: StoredRecipe): RecipeAuditEntry => ({
+  action, orgId: caller.orgId, actor: caller.developerId, at: iso(deps), proof,
+  ...(recipe === undefined ? {} : { recipeId: recipe.recipeId, revision: recipe.revision, bodyDigest: recipe.bodyDigest }),
+});
+
+async function load(deps: SetupRecipeDeps, caller: RecipeCaller, recipeId: string): Promise<StoredRecipe> {
+  const found = SetupRecipeIdSchema.safeParse(recipeId).success ? await deps.store.getRecipe(caller.orgId, recipeId) : undefined;
+  // A stored row that names another company is no row: a store bug never leaks across companies.
+  if (found === undefined || found.orgId !== caller.orgId) throw agentXError("NOT_FOUND", "That recipe was not found.");
+  return found;
+}
+
+async function ensureRoom(deps: SetupRecipeDeps, orgId: OrgId, status: RecipeStatus): Promise<StoredRecipe[]> {
+  const all = await deps.store.listRecipes(orgId, SETUP_RECIPES_MAX_PER_ORG + 1);
+  if (all.length >= SETUP_RECIPES_MAX_PER_ORG) throw invalid("This company has reached its limit of setup recipes. Revoke one first.");
+  if (status === "proposed" && all.filter((recipe) => recipe.status === "proposed").length >= SETUP_RECIPES_MAX_PROPOSED) throw invalid("Too many recipes are waiting for an admin. Ask an admin to review them.");
+  return all;
+}
+
+// ---- operations
+
+export interface ProposeInput {
+  project: string;
+  /** Every name the project's repositories go by (full names, short names, directories): the body is refused if it holds one. */
+  repositoryNames: readonly string[];
+  body: unknown;
+  scope?: RecipeScope;
+}
+
+/**
+ * "Share as company recipe": a maintainer of a project proposes the generic part of a confirmed setup. It is stored as `proposed` and offered to nobody until an admin approves it. The same proposal twice (the same project and
+ * the same body) answers the first one.
+ */
+export async function proposeRecipe(deps: SetupRecipeDeps, caller: RecipeCaller, input: ProposeInput): Promise<StoredRecipe> {
+  validCaller(caller);
+  const project = ProjectName.safeParse(input.project);
+  if (!project.success) throw invalid("Name the project to share from.");
+  await deps.requireProjectMaintainer({ orgId: caller.orgId, developerId: caller.developerId }, project.data);
+  const body = checkedBody(deps, input.body, input.repositoryNames);
+  const scope = RecipeScopeSchema.safeParse(input.scope ?? { kind: "company" });
+  if (!scope.success) throw invalid("That project list is not valid.");
+  const digest = setupRecipeDigest(body);
+  const all = await ensureRoom(deps, caller.orgId, "proposed");
+  const same = all.find((recipe) => recipe.status === "proposed" && recipe.proposedFromProjectHash === projectHash(caller.orgId, project.data) && recipe.bodyDigest === digest);
+  if (same !== undefined) return same;
+  const recipe = newRecipe(deps, caller, body, scope.data, "proposed", project.data);
+  if (!await deps.store.commitRecipe(recipe, null, auditOf(deps, caller, "recipe_proposed", "project_maintainer", recipe))) throw stale();
+  return recipe;
+}
+
+/** An admin writes a recipe directly: it is approved by the same act (company admin, fresh sign-in). */
+export async function createRecipeAsAdmin(deps: SetupRecipeDeps, caller: RecipeCaller, input: { repositoryNames?: readonly string[]; body: unknown; scope?: RecipeScope }): Promise<StoredRecipe> {
+  await requireFreshAdmin(deps, caller);
+  const body = checkedBody(deps, input.body, input.repositoryNames ?? []);
+  const scope = RecipeScopeSchema.safeParse(input.scope ?? { kind: "company" });
+  if (!scope.success) throw invalid("That project list is not valid.");
+  await ensureRoom(deps, caller.orgId, "approved");
+  const recipe = newRecipe(deps, caller, body, scope.data, "approved", undefined);
+  if (!await deps.store.commitRecipe(recipe, null, auditOf(deps, caller, "recipe_created", "fresh_sign_in", recipe))) throw stale();
+  return recipe;
+}
+
+/** The admin approves exactly the revision and body they saw: a recipe edited or replaced since is refused (CHANGE_STALE). The hosts are checked again against the host-ask list. */
+export async function approveRecipe(deps: SetupRecipeDeps, caller: RecipeCaller, input: { recipeId: string; expectedRevision: number; expectedDigest: string }): Promise<StoredRecipe> {
+  await requireFreshAdmin(deps, caller);
+  const current = await load(deps, caller, input.recipeId);
+  if (current.status !== "proposed") throw agentXError("CHANGE_STALE", "Only a recipe that is waiting for approval can be approved.");
+  if (current.revision !== input.expectedRevision || current.bodyDigest !== input.expectedDigest || setupRecipeDigest(current.body) !== current.bodyDigest) throw stale();
+  if (current.body.approvedHosts.some((host) => deps.isHostRefused(host))) throw invalid("A recipe cannot approve that kind of host.");
+  const now = iso(deps);
+  const next: StoredRecipe = { ...current, status: "approved", revision: current.revision + 1, approvedBy: caller.developerId, approvedAt: now, updatedAt: now };
+  if (!await deps.store.commitRecipe(next, current.revision, auditOf(deps, caller, "recipe_approved", "fresh_sign_in", next))) throw stale();
+  return next;
+}
+
+/** Stops a recipe being offered. It is kept (the history of what was approved), and projects that already used it keep their own confirmed setups. */
+export async function revokeRecipe(deps: SetupRecipeDeps, caller: RecipeCaller, input: { recipeId: string; expectedRevision: number }): Promise<StoredRecipe> {
+  await requireFreshAdmin(deps, caller);
+  const current = await load(deps, caller, input.recipeId);
+  if (current.revision !== input.expectedRevision) throw stale();
+  if (current.status === "revoked") return current;
+  const next: StoredRecipe = { ...current, status: "revoked", revision: current.revision + 1, updatedAt: iso(deps) };
+  if (!await deps.store.commitRecipe(next, current.revision, auditOf(deps, caller, "recipe_revoked", "fresh_sign_in", next))) throw stale();
+  return next;
+}
+
+/** "Offer only to these projects" (or back to the whole company). The body is untouched. */
+export async function setRecipeScope(deps: SetupRecipeDeps, caller: RecipeCaller, input: { recipeId: string; expectedRevision: number; scope: RecipeScope }): Promise<StoredRecipe> {
+  await requireFreshAdmin(deps, caller);
+  const scope = RecipeScopeSchema.safeParse(input.scope);
+  if (!scope.success) throw invalid("That project list is not valid.");
+  const current = await load(deps, caller, input.recipeId);
+  if (current.revision !== input.expectedRevision) throw stale();
+  const next: StoredRecipe = { ...current, scope: scope.data, revision: current.revision + 1, updatedAt: iso(deps) };
+  if (!await deps.store.commitRecipe(next, current.revision, auditOf(deps, caller, "recipe_scope_changed", "fresh_sign_in", next))) throw stale();
+  return next;
+}
+
+/** Whether a recipe is offered to a project by its scope. */
+export const recipeOfferedTo = (recipe: Pick<StoredRecipe, "scope">, project: string): boolean => recipe.scope.kind === "company" || recipe.scope.projects.includes(project);
+
+export interface OfferedRecipe { recipeId: string; revision: number; bodyDigest: string; body: SetupRecipeBody }
+
+/**
+ * The approved recipes that fit a project: offered to it by scope, fingerprint equal to its repository's, and not against the company's locks (a recipe whose dev container image is not on the lock's list is not offered).
+ * Server-side use only (the proposal builder, SH30). It is not a user route: a screen that lists recipes needs its own authority check. Newest first.
+ */
+export async function offeredRecipes(deps: Pick<SetupRecipeDeps, "store">, input: { orgId: OrgId; project: string; repository: SetupFingerprintInput }): Promise<OfferedRecipe[]> {
+  if (!OrgIdSchema.safeParse(input.orgId).success) return [];
+  const [recipes, locks] = await Promise.all([deps.store.listRecipes(input.orgId, SETUP_RECIPES_MAX_PER_ORG), deps.store.getLocks(input.orgId)]);
+  const images = locks?.orgId === input.orgId ? locks.locks.devcontainerImages : undefined;
+  return recipes
+    .filter((recipe) => recipe.orgId === input.orgId && recipe.status === "approved" && recipeOfferedTo(recipe, input.project) && recipeFits(recipe.body, input.repository)
+      && (images === undefined || recipe.body.devcontainerBaseImage === undefined || images.includes(recipe.body.devcontainerBaseImage)))
+    .sort((left, right) => (left.updatedAt < right.updatedAt ? 1 : left.updatedAt > right.updatedAt ? -1 : left.recipeId < right.recipeId ? -1 : 1))
+    .map((recipe) => ({ recipeId: recipe.recipeId, revision: recipe.revision, bodyDigest: recipe.bodyDigest, body: recipe.body }));
+}
+
+/** The hosts the admin has approved through recipes, as a sorted set: what SH30 may show as "already approved by your company". Not an allow-list change (that goes through the egress plan). */
+export async function companyApprovedHosts(deps: Pick<SetupRecipeDeps, "store">, orgId: OrgId): Promise<string[]> {
+  if (!OrgIdSchema.safeParse(orgId).success) return [];
+  const recipes = await deps.store.listRecipes(orgId, SETUP_RECIPES_MAX_PER_ORG);
+  return [...new Set(recipes.filter((recipe) => recipe.orgId === orgId && recipe.status === "approved").flatMap((recipe) => recipe.body.approvedHosts))].sort();
+}
+
+/** The company's locks, or none. Server-side use. */
+export async function readCompanyLocks(deps: Pick<SetupRecipeDeps, "store">, orgId: OrgId): Promise<StoredLocks | undefined> {
+  if (!OrgIdSchema.safeParse(orgId).success) return undefined;
+  const found = await deps.store.getLocks(orgId);
+  return found?.orgId === orgId ? found : undefined;
+}
+
+/**
+ * Sets the company's locks (admin, fresh sign-in, against the revision the admin saw). A lock only ever makes PROJECTS stricter (`applyCompanyLocks`); the admin may remove or relax a lock the same way they set it.
+ */
+export async function setCompanyLocks(deps: SetupRecipeDeps, caller: RecipeCaller, input: { locks: unknown; expectedRevision: number | null }): Promise<StoredLocks> {
+  await requireFreshAdmin(deps, caller);
+  const locks = CompanySetupLocksSchema.safeParse(input.locks);
+  if (!locks.success) throw invalid("Those company locks are not valid.");
+  const current = await readCompanyLocks(deps, caller.orgId);
+  if ((current?.revision ?? null) !== input.expectedRevision) throw stale();
+  const next: StoredLocks = { orgId: caller.orgId, revision: (current?.revision ?? 0) + 1, locks: locks.data, updatedBy: caller.developerId, updatedAt: iso(deps) };
+  if (!await deps.store.commitLocks(next, current?.revision ?? null, auditOf(deps, caller, "locks_changed", "fresh_sign_in"))) throw stale();
+  return next;
+}
+
+// ---- share from a project
+
+export interface ProjectSetupShareInput {
+  environment: TestEnvironmentBody;
+  /** The project's id of the repository whose setup is shared (the environment's `repos[].repositoryId`). */
+  repositoryId: string;
+  /** The repository's directory in the workspace, as the environment's command `cwd`s start with it (a command directory is never `.`, so a repository always has one). */
+  repositoryDir: string;
+  label: string;
+  buildSystems: readonly string[];
+  toolchains: ReadonlyArray<{ tool: string; version: string }>;
+  updateCommands?: readonly ProjectCommand[];
+  approvedHosts: readonly string[];
+  devcontainerBaseImage?: string;
+  /** From `markerFilesOf` and the project's registry hosts. */
+  match: SetupFingerprintInput;
+}
+
+/**
+ * The generic part of a confirmed project setup, as a recipe body: working directories become `{repo}` templates, and a command that runs outside the repository's directory stops the share (it would carry the workspace's
+ * layout). The environment's `env` variables stay with the project (a variable may hold anything). Pure; the result is a body for `proposeRecipe`, which still checks it.
+ */
+export function recipeBodyFromProjectSetup(input: ProjectSetupShareInput): { ok: true; body: SetupRecipeBody } | { ok: false; reason: "repository_not_in_environment" | "command_outside_repository" | "invalid_recipe" } {
+  const repo = input.environment.repos.find((item) => item.repositoryId === input.repositoryId);
+  if (repo === undefined) return { ok: false, reason: "repository_not_in_environment" };
+  const dir = RelativeWorkspacePathSchema.safeParse(input.repositoryDir.replace(/\/+$/u, ""));
+  if (!dir.success) return { ok: false, reason: "command_outside_repository" };
+  let outside = false;
+  const template = (command: ProjectCommand): { cwd: string; executable: string; args: string[]; timeoutSeconds: number } => {
+    let cwd: string | undefined;
+    if (command.cwd === dir.data) cwd = "{repo}";
+    else if (command.cwd.startsWith(`${dir.data}/`)) cwd = `{repo}/${command.cwd.slice(dir.data.length + 1)}`;
+    if (cwd === undefined) { outside = true; cwd = "{repo}"; }
+    return { cwd, executable: command.executable, args: [...command.args], timeoutSeconds: command.timeoutSeconds };
+  };
+  const candidate = {
+    schemaVersion: 1,
+    label: input.label,
+    buildSystems: [...input.buildSystems],
+    toolchains: [...input.toolchains],
+    setupCommands: repo.setupCommands.map(template),
+    updateCommands: (input.updateCommands ?? []).map(template),
+    checks: repo.checks.map((check) => ({
+      id: check.id, label: check.label, kind: check.kind, command: template(check.command),
+      ...(check.reportPath === undefined ? {} : { reportPath: check.reportPath }), ...(check.coveragePath === undefined ? {} : { coveragePath: check.coveragePath }),
+      ...(check.sarifPath === undefined ? {} : { sarifPath: check.sarifPath }), ...(check.selectArgs === undefined ? {} : { selectArgs: check.selectArgs }),
+    })),
+    approvedHosts: [...input.approvedHosts],
+    ...(input.devcontainerBaseImage === undefined ? {} : { devcontainerBaseImage: input.devcontainerBaseImage }),
+    match: { markerFiles: [...input.match.markerFiles], registryHosts: [...input.match.registryHosts] },
+  };
+  if (outside) return { ok: false, reason: "command_outside_repository" };
+  const parsed = SetupRecipeBodySchema.safeParse(candidate);
+  return parsed.success ? { ok: true, body: parsed.data } : { ok: false, reason: "invalid_recipe" };
+}
