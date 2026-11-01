@@ -50,7 +50,7 @@ import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole, sharedThre
 import { viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
 import { AuditEventInputSchema, auditEventId, canonicalJson } from "@agentx/contracts";
 import { TaskFundingProofSchema, actualCompanyFunding, fundingAuditItems, fundingRevisionCheck } from "../../org/task-stop-funding.js";
-import { type TransactItem, failedIndexes } from "../../agents/table-writes.js";
+import { type TransactItem, failedIndexes, isTransactionConflict } from "../../agents/table-writes.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { agentRouteDependencies, developerTaskActions } from "./dependency-wiring.js";
 import { auditPendingItem } from "../../audit/outbox.js";
@@ -551,9 +551,13 @@ export async function mintChatTurnKey(
         throw error;
       }
     } else if (guard !== undefined && guard.checks.length > 0) {
-      // No key record is written here (an install without agents), so the same conditions are asserted in a write of their own before the key is handed out.
+      // No key record is written here (an install without agents), so the same conditions are asserted in a write of their own before the key is handed out. A cancellation by a
+      // concurrent write (no condition failed) is tried once more; a failed condition is a refusal.
       try {
-        await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: guard.checks }));
+        for (let attempt = 0; ; attempt += 1) {
+          try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: guard.checks })); break; }
+          catch (error) { if (attempt === 0 && isTransactionConflict(error)) continue; throw error; }
+        }
       } catch (error) {
         await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
         if (failedIndexes(error)?.size) throw guard.refusal();

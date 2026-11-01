@@ -165,20 +165,24 @@ export async function registerKey(deps: LedgerDependencies, input: KeyInput, gua
   checkInput(input);
   const { record, index } = recordItems(deps, { ...input, scopes: uniqueScopes(input.scopes) }, false, deps.now());
   const checks = guard?.checks ?? [];
-  try {
-    await send(deps, [
-      { Put: { TableName: deps.tableName, Item: record, ConditionExpression: NOT_EXISTS } },
-      { Put: { TableName: deps.tableName, Item: index, ConditionExpression: NOT_EXISTS } },
-      ...checks,
-    ]);
-    return record as unknown as ModelKeyRecord;
-  } catch (error) {
-    const failed = failedIndexes(error);
-    // A guard that no longer holds refuses before a repeat is looked for: the key is not recorded, and the caller gives it back.
-    if (guard !== undefined && failed !== undefined && checks.some((_check, position) => failed.has(2 + position))) throw guard.refusal();
-    const existing = failed === undefined ? undefined : await readRecord(deps, input.orgId, input.keyId);
-    if (existing === undefined) throw error;
-    return existing;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await send(deps, [
+        { Put: { TableName: deps.tableName, Item: record, ConditionExpression: NOT_EXISTS } },
+        { Put: { TableName: deps.tableName, Item: index, ConditionExpression: NOT_EXISTS } },
+        ...checks,
+      ]);
+      return record as unknown as ModelKeyRecord;
+    } catch (error) {
+      // Another write touching a guarded record at the same moment cancels the transaction without any condition failing: it is tried once more, and a second conflict is the caller's.
+      if (guard !== undefined && attempt === 0 && isTransactionConflict(error)) continue;
+      const failed = failedIndexes(error);
+      // A guard that no longer holds refuses before a repeat is looked for: the key is not recorded, and the caller gives it back.
+      if (guard !== undefined && failed !== undefined && checks.some((_check, position) => failed.has(2 + position))) throw guard.refusal();
+      const existing = failed === undefined ? undefined : await readRecord(deps, input.orgId, input.keyId);
+      if (existing === undefined) throw error;
+      return existing;
+    }
   }
 }
 

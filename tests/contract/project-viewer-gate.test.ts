@@ -762,6 +762,49 @@ describe("SY-7: a removal or ban written between the requester check and the key
     }
   });
 
+  // Fix round 1 (S2): a cancellation by a concurrent write is tried once more; a failed condition is a refusal and is not retried.
+  const conflictOnce = (h: Harness, times: number) => {
+    const send = h.db.send.bind(h.db);
+    const guarded = { attempts: 0 };
+    h.db.send = (async (command: { constructor: { name: string }; input?: { TransactItems?: Array<Record<string, unknown>> } }) => {
+      if (command.constructor.name === "TransactWriteCommand" && (command.input?.TransactItems ?? []).some((item) => item["ConditionCheck"] !== undefined)) {
+        guarded.attempts += 1;
+        if (guarded.attempts <= times) throw Object.assign(new Error("conflict"), { name: "TransactionCanceledException", CancellationReasons: (command.input?.TransactItems ?? []).map(() => ({ Code: "TransactionConflict" })) });
+      }
+      return send(command as never);
+    });
+    return guarded;
+  };
+
+  it.each([true, false])("a transaction cancelled by a conflict (no condition failed) is tried once more and then served (agents=%s)", async (agents) => {
+    const h = await install(() => undefined, { agents });
+    const guarded = conflictOnce(h, 1);
+    const answered = await ask(h);
+    expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+    expect(guarded.attempts).toBe(2);
+    expect(h.revokeKey).not.toHaveBeenCalled();
+    if (agents) expect(keyRecords(h)).toHaveLength(1);
+  });
+
+  it.each([true, false])("a second conflict is the proxy-unavailable refusal after exactly two tries, and the key is given back (agents=%s)", async (agents) => {
+    const h = await install(() => undefined, { agents });
+    const guarded = conflictOnce(h, 2);
+    const refused = await ask(h);
+    expect(refused.status).toBe(503);
+    expect(refused.body.error).toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
+    expect(guarded.attempts).toBe(2);
+    expect(h.revokeKey).toHaveBeenCalledTimes(1);
+    expect(keyRecords(h)).toHaveLength(0);
+  });
+
+  it.each([true, false])("a failed condition is refused as REMOVED_FROM_ORG on the first try, not retried (agents=%s)", async (agents) => {
+    const h = await install(removal, { agents });
+    const guarded = conflictOnce(h, 0);
+    const refused = await ask(h);
+    expect(refused.body.error).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    expect(guarded.attempts).toBe(1);
+  });
+
   it("an install that records no key (no agents) still refuses a removal that lands before the key is handed out", async () => {
     const h = await install(removal, { agents: false });
     const refused = await ask(h);
