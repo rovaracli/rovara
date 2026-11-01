@@ -161,7 +161,8 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
   const releaseJsonHash = await sha256OfFile(releaseJson);
   files.push({ file: "release.json", kind: "release-manifest", ...releaseJsonHash });
   for (const entry of release.templates) files.push({ file: entry.file, kind: "template", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
-  for (const entry of release.packages) files.push({ file: entry.file, kind: "package", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
+  // Both lists are signed as packages: the second holds the code only an Enterprise install's stacks use, and a build made at approval may use no package the signed manifest does not list.
+  for (const entry of [...release.packages, ...(release.enterprisePackages ?? [])]) files.push({ file: entry.file, kind: "package", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
   for (const entry of release.legalDocuments ?? []) files.push({ file: entry.file, kind: "legal", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
 
   if (input.synthKitDir !== undefined) {

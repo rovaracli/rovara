@@ -16,6 +16,20 @@ const TEMPLATE_FILE_PATTERN = /^templates\/[a-z0-9-]+\/[a-z-]+\.template\.json$/
 const PACKAGE_FILE_PATTERN = /^packages\/[a-f0-9]{64}\.zip$/;
 const LEGAL_FILE_PATTERN = /^legal\/(LICENSE|LICENSE-APACHE|RELICENSED\.md)$/;
 
+const ReleasePackageSchema = z
+  .object({
+    assetId: z.string().regex(/^[a-f0-9]{64}$/),
+    file: z.string().regex(PACKAGE_FILE_PATTERN),
+    sha256: Sha256,
+    parts: z.array(z.string()).min(1),
+    bucketParameter: z.string(),
+    keyParameter: z.string(),
+    hashParameter: z.string(),
+    keyParameterValue: z.string(),
+  })
+  .strict()
+  .refine((pkg) => pkg.file === `packages/${pkg.assetId}.zip`, "file must equal packages/<assetId>.zip");
+
 export const ReleaseManifestSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -38,21 +52,10 @@ export const ReleaseManifestSchema = z
         (templates) => new Set(templates.map((t) => `${t.region}/${t.part}`)).size === templates.length,
         "each (region, part) pair must appear exactly once in templates",
       ),
-    packages: z.array(
-      z
-        .object({
-          assetId: z.string().regex(/^[a-f0-9]{64}$/),
-          file: z.string().regex(PACKAGE_FILE_PATTERN),
-          sha256: Sha256,
-          parts: z.array(z.string()).min(1),
-          bucketParameter: z.string(),
-          keyParameter: z.string(),
-          hashParameter: z.string(),
-          keyParameterValue: z.string(),
-        })
-        .strict()
-        .refine((pkg) => pkg.file === `packages/${pkg.assetId}.zip`, "file must equal packages/<assetId>.zip"),
-    ),
+    packages: z.array(ReleasePackageSchema),
+    // Code packages only an Enterprise install's stacks use (for example the operator-access stack's deployer function). A Public install ignores this list (nothing deploys these
+    // files there), a bundle signs them like every other package, and a build made at approval may use no package that neither list names. Absent from releases before the synthesis kit.
+    enterprisePackages: z.array(ReleasePackageSchema).optional(),
     // Optional for compatibility with release manifests created before license documents were
     // checksummed. New release builders include the current license, retained Apache license,
     // and the grant-history notice.

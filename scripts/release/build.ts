@@ -3,13 +3,19 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ENVIRONMENT_PLACEHOLDER, STACK_PARTS, environmentStackName } from "@agentx/contracts";
-import type { AssetMetadataEntry } from "@aws-cdk/cloud-assembly-schema";
 import { CONTEXT_ENV, CONTEXT_OVERFLOW_LOCATION_ENV } from "aws-cdk-lib/cx-api";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";
+import { Asset } from "aws-cdk-lib/aws-s3-assets";
+import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
+import type { CloudAssembly } from "aws-cdk-lib/cx-api";
+import { accumulateAsset, assetSignatureMismatch, type PackageAccumulator, type ReleaseAssetLike } from "./assets.js";
 import { sha256Hex } from "./hash.js";
+import { enterpriseReleaseProfiles } from "./profiles.js";
 import { ImageDigest, ReleaseManifestSchema, type ReleaseManifest } from "./manifest.js";
 import { zipDirectory } from "./zip.js";
+
+export { accumulateAsset, assetSignatureMismatch, type PackageAccumulator, type ReleaseAssetLike };
 
 export interface BuildReleaseInput {
   version: string;
@@ -111,6 +117,33 @@ export function withRepoRootCwd<T>(run: () => T): T {
   }
 }
 
+/** One Lambda function of an app and the id of the code package it runs, as the real build (esbuild, from source) made it. */
+export interface FunctionCode {
+  /** The function's construct path, for example "AgentXControlPlane/Broker". It is the same in every edition. */
+  path: string;
+  assetId: string;
+}
+
+/**
+ * Synthesises the app for `context` the way the release always does (bootstrap-free synthesizer, fixed depth under the repo root, repo root as the working directory), and reads off the
+ * code package of every Lambda function by walking the construct tree, so no part of CDK is patched. `outdir` must be under RELEASE_SYNTH_ROOT (see REPO_ROOT's comment).
+ */
+export function synthReleaseProfile(input: { context: Readonly<Record<string, string>>; outdir: string }): { assembly: CloudAssembly; functions: FunctionCode[] } {
+  return withRepoRootCwd(() => {
+    const app = buildAgentXApp({ ...input.context, agentxSynthesizer: "legacy", outdir: input.outdir });
+    const assembly = app.synth();
+    const functions: FunctionCode[] = [];
+    for (const construct of app.node.findAll()) {
+      if (!(construct instanceof NodejsFunction)) continue;
+      const code = construct.node.tryFindChild("Code");
+      if (!(code instanceof Asset)) throw new Error(`function ${construct.node.path} has no code asset`);
+      functions.push({ path: construct.node.path, assetId: code.assetHash });
+    }
+    functions.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    return { assembly, functions };
+  });
+}
+
 /** The out directory must not already hold a release; it is created if absent. */
 async function claimOutDir(out: string): Promise<void> {
   let existing: string[];
@@ -126,89 +159,6 @@ async function claimOutDir(out: string): Promise<void> {
   if (existing.length > 0) {
     throw new Error(`release output directory is not empty: ${out}`);
   }
-}
-
-export interface PackageAccumulator {
-  assetId: string;
-  directory: string;
-  parts: string[];
-  bucketParameter: string;
-  keyParameter: string;
-  hashParameter: string;
-}
-
-/** The shape of a CDK FileAssetMetadataEntry/ContainerImageAssetMetadataEntry this function needs. */
-export interface ReleaseAssetLike {
-  packaging: string;
-  id: string;
-  s3BucketParameter: string;
-  s3KeyParameter: string;
-  artifactHashParameter: string;
-}
-
-/**
- * Folds one stack's asset into the running per-assetId accumulator (mutates `packagesById`). Only
- * zip-packaged Lambda code assets are supported; anything else (a Docker image asset, or a plain
- * "file"-packaged asset) is an error naming it, because images are published separately and this
- * release has no other asset kind today. The legacy synthesizer names a parameter from the asset id
- * alone, so the same asset id must produce the same parameter names in every stack that uses it;
- * that is checked here rather than assumed.
- */
-export function accumulateAsset(
-  packagesById: Map<string, PackageAccumulator>,
-  asset: ReleaseAssetLike | AssetMetadataEntry,
-  part: string,
-  directory: string,
-): void {
-  if (asset.packaging !== "zip") {
-    throw new Error(
-      `unsupported asset packaging ${JSON.stringify(asset.packaging)} for asset ${asset.id} in the ${part} template; only zip-packaged Lambda code assets are supported here, images are published separately`,
-    );
-  }
-  const existing = packagesById.get(asset.id);
-  if (existing === undefined) {
-    packagesById.set(asset.id, {
-      assetId: asset.id,
-      directory,
-      parts: [part],
-      bucketParameter: asset.s3BucketParameter,
-      keyParameter: asset.s3KeyParameter,
-      hashParameter: asset.artifactHashParameter,
-    });
-  } else if (
-    existing.bucketParameter !== asset.s3BucketParameter ||
-    existing.keyParameter !== asset.s3KeyParameter ||
-    existing.hashParameter !== asset.artifactHashParameter
-  ) {
-    throw new Error(`asset ${asset.id} has different parameter names across stacks, which the legacy synthesizer should never produce`);
-  } else {
-    existing.parts.push(part);
-  }
-}
-
-/**
- * Code packages are shared across regions: an asset's id is a hash of its content, and Lambda code
- * doesn't depend on region, so every region's synth is expected to accumulate the very same set of
- * asset ids, each with the same parameter names. Returns true when `candidate` (a later region)
- * disagrees with `baseline` (the first region synthesized) in either respect.
- */
-export function assetSignatureMismatch(
-  baseline: ReadonlyMap<string, PackageAccumulator>,
-  candidate: ReadonlyMap<string, PackageAccumulator>,
-): boolean {
-  if (baseline.size !== candidate.size) return true;
-  for (const [assetId, expected] of baseline) {
-    const actual = candidate.get(assetId);
-    if (
-      actual === undefined ||
-      actual.bucketParameter !== expected.bucketParameter ||
-      actual.keyParameter !== expected.keyParameter ||
-      actual.hashParameter !== expected.hashParameter
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 export async function buildRelease(input: BuildReleaseInput): Promise<ReleaseManifest> {
@@ -273,25 +223,66 @@ export async function buildRelease(input: BuildReleaseInput): Promise<ReleaseMan
       }
     }
 
+    // The Enterprise profiles (first region only: code does not depend on the region, which the loop above checks): a code package an Enterprise install's stacks use and the
+    // placeholder templates do not (the operator-access deployer, for one) goes into `enterprisePackages`. A build made at approval may use no package outside the signed lists, so
+    // a package missing here would make the install's upgrade refuse; a package two lists disagree about stops the release.
+    const [firstRegion] = SUPPORTED_REGIONS;
+    if (firstRegion === undefined) throw new Error("no supported region");
+    const enterpriseOnly = new Map<string, PackageAccumulator>();
+    for (const profile of enterpriseReleaseProfiles()) {
+      const synthDir = await mkdtemp(join(RELEASE_SYNTH_ROOT, "run-"));
+      synthDirs.push(synthDir);
+      const { assembly } = synthReleaseProfile({ context: { ...profile.context, agentxEnv: ENVIRONMENT_PLACEHOLDER, agentxRegion: firstRegion }, outdir: synthDir });
+      const stackByName = new Map(assembly.stacks.map((stack) => [stack.stackName, stack]));
+      const profileAssets = new Map<string, PackageAccumulator>();
+      for (const part of STACK_PARTS) {
+        const stack = stackByName.get(environmentStackName(ENVIRONMENT_PLACEHOLDER, part));
+        if (!stack) {
+          if (part === "identity" && profile.context.agentxIdentity === "oidc") continue;
+          throw new Error(`release synth of profile ${profile.name} produced no ${part} stack`);
+        }
+        for (const asset of stack.assets) accumulateAsset(profileAssets, asset, part, join(assembly.directory, asset.path));
+      }
+      for (const [assetId, found] of profileAssets) {
+        const known = packagesById.get(assetId) ?? enterpriseOnly.get(assetId);
+        if (known === undefined) {
+          enterpriseOnly.set(assetId, found);
+        } else if (known.bucketParameter !== found.bucketParameter || known.keyParameter !== found.keyParameter || known.hashParameter !== found.hashParameter) {
+          throw new Error(`asset ${assetId} has different parameter names in profile ${profile.name}, which the legacy synthesizer should never produce`);
+        } else if (enterpriseOnly.has(assetId)) {
+          for (const part of found.parts) if (!known.parts.includes(part)) known.parts.push(part);
+        }
+      }
+    }
+
     // Zip and write each distinct asset once, sorted by asset id for a stable manifest order.
     await mkdir(join(input.out, "packages"), { recursive: true });
-    const packages: ReleaseManifest["packages"] = [];
-    for (const assetId of [...packagesById.keys()].sort()) {
-      const accumulated = packagesById.get(assetId);
-      if (accumulated === undefined) throw new Error(`missing accumulated package for asset ${assetId}`);
+    const writePackage = async (assetId: string, accumulated: PackageAccumulator, parts: string[]): Promise<ReleaseManifest["packages"][number]> => {
       const zipBuffer = await zipDirectory(accumulated.directory);
       const file = `packages/${assetId}.zip`;
       await writeFile(join(input.out, file), zipBuffer);
-      packages.push({
+      return {
         assetId,
         file,
         sha256: sha256Hex(zipBuffer),
-        parts: accumulated.parts,
+        parts,
         bucketParameter: accumulated.bucketParameter,
         keyParameter: accumulated.keyParameter,
         hashParameter: accumulated.hashParameter,
         keyParameterValue: `packages/||${assetId}.zip`,
-      });
+      };
+    };
+    const packages: ReleaseManifest["packages"] = [];
+    for (const assetId of [...packagesById.keys()].sort()) {
+      const accumulated = packagesById.get(assetId);
+      if (accumulated === undefined) throw new Error(`missing accumulated package for asset ${assetId}`);
+      packages.push(await writePackage(assetId, accumulated, accumulated.parts));
+    }
+    const enterprisePackages: NonNullable<ReleaseManifest["enterprisePackages"]> = [];
+    for (const assetId of [...enterpriseOnly.keys()].sort()) {
+      const accumulated = enterpriseOnly.get(assetId);
+      if (accumulated === undefined) throw new Error(`missing accumulated package for asset ${assetId}`);
+      enterprisePackages.push(await writePackage(assetId, accumulated, [...new Set(accumulated.parts)].sort()));
     }
 
     // Include both current and previously granted license texts plus the grant history in the
@@ -317,6 +308,7 @@ export async function buildRelease(input: BuildReleaseInput): Promise<ReleaseMan
       environmentPlaceholder: ENVIRONMENT_PLACEHOLDER,
       templates,
       packages,
+      ...(enterprisePackages.length === 0 ? {} : { enterprisePackages }),
       legalDocuments,
       images,
       bootStage2Sha256,

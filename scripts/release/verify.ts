@@ -59,6 +59,7 @@ export async function verifyRelease(input: VerifyReleaseInput): Promise<VerifyRe
 
   await checkFileChecksums(dir, manifest.templates, problems);
   await checkFileChecksums(dir, manifest.packages, problems);
+  await checkFileChecksums(dir, manifest.enterprisePackages ?? [], problems);
   await checkFileChecksums(dir, manifest.legalDocuments ?? [], problems);
 
   const rebuildParent = await mkdtemp(join(tmpdir(), "agentx-verify-rebuild-"));
@@ -90,9 +91,11 @@ export async function verifyRelease(input: VerifyReleaseInput): Promise<VerifyRe
       }
     }
 
-    const rebuiltPackagesById = new Map(rebuilt.packages.map((p) => [p.assetId, p]));
-    const releasePackageIds = new Set(manifest.packages.map((p) => p.assetId));
-    for (const pkg of manifest.packages) {
+    // Both package lists (the Public install's and the Enterprise-only one) are compared with the rebuild.
+    const everyPackage = (m: ReleaseManifest) => [...m.packages, ...(m.enterprisePackages ?? [])];
+    const rebuiltPackagesById = new Map(everyPackage(rebuilt).map((p) => [p.assetId, p]));
+    const releasePackageIds = new Set(everyPackage(manifest).map((p) => p.assetId));
+    for (const pkg of everyPackage(manifest)) {
       const rebuiltPkg = rebuiltPackagesById.get(pkg.assetId);
       if (rebuiltPkg === undefined) {
         problems.push(`${pkg.file}: rebuilding from current source did not produce this package`);
@@ -102,7 +105,7 @@ export async function verifyRelease(input: VerifyReleaseInput): Promise<VerifyRe
         );
       }
     }
-    for (const rebuiltPkg of rebuilt.packages) {
+    for (const rebuiltPkg of everyPackage(rebuilt)) {
       if (!releasePackageIds.has(rebuiltPkg.assetId)) {
         problems.push(`${rebuiltPkg.file}: rebuilding from current source produces a package not present in this release`);
       }
