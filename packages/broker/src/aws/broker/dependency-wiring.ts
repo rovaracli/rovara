@@ -422,14 +422,18 @@ export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId
 
 /**
  * The ONE rule for who a Slack requester is in the org its team is bound to, shared by the ingress callers (slackCallerFor) and the service routes (slackServiceIdentity,
- * slackRequesterRole), so they cannot disagree. The person's own org must be the team's org (a Slack Connect guest or a stale link of another org is refused); the company sign-in
- * must still allow them (I-1); their role is read under every id they answer to, so a member merged into another person is judged by the surviving record, and anything that is not
- * a writer's role (the Auditor, an unknown role, a record with no role) is refused (I-2). With no member record at all the person is the implicit member of a single-org install
- * only: a multi-org install, a cloud install and an Enterprise (Auditor-role) install refuse it, and so does a removed, banned or merged-away person's removal row.
+ * slackRequesterRole, model access), so they cannot disagree. A person whose own org is another org (a Slack Connect guest, a stale link) is refused; the company sign-in must still
+ * allow them (I-1); their role is read under every id they answer to, so a member merged into another person is judged by the surviving record, and anything that is not a writer's role
+ * (the Auditor, an unknown role, a record with no role) is refused (I-2). With no member record at all: an Enterprise (Auditor-role) install refuses them, a removed or banned person
+ * (their ORG_REMOVED / ORG_BAN row, under any id they answer to) is refused everywhere, and anyone else is the implicit member of a single-org install. Where a person may be UNLINKED
+ * (`allowUnlinked`, the service routes: ruling R31, Slack-first work paid by the project or org when no member is known) a person with no org at all is that same implicit member; the
+ * ingress callers need a real caller identity, so for them an unlinked person is refused.
  */
-export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId): Promise<WriterOrgRole> {
+export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean } = {}): Promise<WriterOrgRole> {
   const developerId = developerIdForSlackUser(userId);
-  const orgId = requireOrgId(await orgResolverOf(dependencies)({ developerId }));
+  // The single-org resolver answers the install's org for everyone, which says nothing about this person; only a tenant-resolving install (an orgResolver) can say they are of another org.
+  const resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? teamOrg : await orgResolverOf(dependencies)({ developerId });
+  const orgId = resolved === undefined && options.allowUnlinked === true ? teamOrg : requireOrgId(resolved);
   if (orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   // I1 (Slack allowed by the company sign-in) first, then I2: the Slack caller carries the person's real company role, not a stand-in "member".
   await requireSlackAllowedByEdition(dependencies, userId, orgId);
@@ -440,7 +444,6 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
   if (dependencies.editionPolicy !== undefined && featureEnabled(dependencies.editionPolicy, "auditorRole")) {
     throw agentXError("FORBIDDEN", "this Slack member has not signed in to Rovara; sign in once, then try again");
   }
-  if (dependencies.orgResolver !== undefined || dependencies.cloud === true) throw agentXError("FORBIDDEN", "you are no longer a member of this organization");
   for (const id of await personIds(live, developerId)) {
     for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
       if (await getItem(dependencies, key) !== undefined) throw agentXError("FORBIDDEN", "you are no longer a member of this organization");

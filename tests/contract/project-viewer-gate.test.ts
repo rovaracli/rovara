@@ -107,9 +107,9 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     await refusedOnEveryRoute(h, GUEST);
   });
 
-  it("a member removed from a cloud org is no longer a member: a missing record is not the implicit member there", async () => {
+  it("a member removed from a cloud org is refused: the removal row ends the implicit membership there too", async () => {
     const h = await withKit({ brokerExtra: { cloud: true } });
-    seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+    h.db.set({ ...orgRemovedKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId });
     await refusedOnEveryRoute(h, GUEST);
   });
 

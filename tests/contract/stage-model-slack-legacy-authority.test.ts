@@ -1,12 +1,11 @@
 import type {DeveloperTaskRecord} from "../../packages/broker/src/developer/task-records.js";
 import {beforeAll,expect,it} from "vitest";
 import {randomUUID} from "node:crypto";
-import {orgMemberKey,orgRemovedKey,orgBanKey,developerOrgKey,projectMemberKey,slackBindingKey} from "@agentx/contracts";
+import {orgRemovedKey,orgBanKey,developerOrgKey,projectMemberKey,slackBindingKey} from "@agentx/contracts";
 import {developerIdForSlackUser} from "../../packages/broker/src/aws/admin-actions.js";
 import {readTurnActorChecks} from "../../packages/broker/src/model-selection/turn-authority.js";
 import {call,createAuditedSlackBroker,loadSlackBroker,registerSlackProject,ensureWorkspace,markReady,serviceCall,SLACK_TEAM,SLACK_CHANNEL} from "../support/slack-broker.js";
 import {TEST_ORG} from "../support/orgs.js";
-import {seedMembership} from "../support/developer-task-broker.js";
 beforeAll(loadSlackBroker);
 const user="U0123456789",actor=developerIdForSlackUser(user),thread=`${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000090`;
 async function fixture(){
@@ -46,13 +45,9 @@ it("checks the bound channel again for runtime fallback without browser auth",as
 
 it("does not give a tenant-resolving install the single-org implicit enrollment path",async()=>{
  const h=createAuditedSlackBroker({extra:{cloud:true,orgResolver:async()=>TEST_ORG}});await registerSlackProject(h.handler);
- // A person with no member record is refused up front on a tenant-resolving install (they are not the implicit member of a single-org one); the record is seeded so the workspace exists, then removed.
- const unprepared=await ensureWorkspace(h.handler,thread,user);expect(unprepared.status).toBe(403);
- seedMembership(h.db,actor,{orgId:TEST_ORG,role:"member"});
  const workspace=await ensureWorkspace(h.handler,thread,user),workspaceId=String(workspace.body.workspaceId);markReady(h.db,workspaceId);
  const conversation=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
- h.db.delete(orgMemberKey(TEST_ORG,actor));
- const response=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Fix"});expect(response.status).toBe(403);
+ const response=await serviceCall(h.handler,thread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Fix"});expect(response).toMatchObject({status:403,body:{error:{code:"MODEL_NOT_ALLOWED"}}});
 });
 for(const change of ["removed","banned","other-org","identity","binding","viewer"] as const)it(`fences an implicit Slack ${change} change between read and commit`,async()=>{
  const h=await fixture();const {DeveloperSignInStore}=await import("../../packages/broker/src/developer/store.js"),{TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");

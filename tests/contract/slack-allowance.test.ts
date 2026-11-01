@@ -61,7 +61,7 @@ describe("the Slack ingress", () => {
     expect(wiring).toMatch(/const role = await requireSlackRequesterWriterRole\(dependencies, userId, teamOrg\);\s*return requireWriterCaller\(\{ \.\.\.slackWorkflowCaller/);
     const preparation = readFileSync(new URL("../../packages/broker/src/aws/broker/workspace-preparation.ts", import.meta.url), "utf8");
     expect(preparation).toMatch(/await requireSlackAllowedByEdition\(dependencies, context\.requester\.userId, orgId\);/);
-    expect(preparation).toMatch(/await requireSlackRequesterWriterRole\(dependencies, slack\.requester\.userId, orgId\)/);
+    expect(preparation).toMatch(/await requireSlackRequesterWriterRole\(dependencies, userId, orgId, \{ allowUnlinked: true \}\)/);
   });
 });
 
