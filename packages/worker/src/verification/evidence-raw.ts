@@ -117,13 +117,16 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
 
     // P4, findings: new ones are those the scan has now and its run on the original code did not. No baseline, no finding is reported.
     const findings = new Map<number, NonNullable<EvidenceRaw["checks"][number]["findings"]>>();
-    if (scans.length > 0 && input.baselineScans !== undefined) {
-      const baselines = await input.baselineScans(scans.map((scan): BaselineScan => ({ index: scan.index, command: scan.command, argument: scan.argument, path: scan.path, candidateBytes: scan.candidateBytes }))).catch((error: unknown) => {
+    // A scan with no finding at all has none that is new, whatever the baseline says: it costs no working-tree swap, no second scan and none of the test proof's time.
+    for (const scan of scans) if (scan.candidate.findings.length === 0) findings.set(scan.index, findingsPart(scan.candidate.tool, []));
+    const asking = scans.filter((scan) => scan.candidate.findings.length > 0);
+    if (asking.length > 0 && input.baselineScans !== undefined) {
+      const baselines = await input.baselineScans(asking.map((scan): BaselineScan => ({ index: scan.index, command: scan.command, argument: scan.argument, path: scan.path, candidateBytes: scan.candidateBytes }))).catch((error: unknown) => {
         // The one fault that must stop the task is not swallowed: the agent's files are not back.
         if (error instanceof AgentFilesRestoreError) throw error;
         return new Map<number, string>();
       });
-      for (const scan of scans) {
+      for (const scan of asking) {
         const text = baselines.get(scan.index);
         const baseline = text === undefined ? undefined : parseSarif(text, roots);
         if (baseline !== undefined) findings.set(scan.index, findingsPart(scan.candidate.tool, newFindings(scan.candidate.findings, baseline.findings)));

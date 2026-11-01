@@ -148,6 +148,18 @@ describe("the evidence a CHECKS run saves for a scanner", () => {
     expect(EvidenceRawSchema.safeParse(raw).success).toBe(true);
   });
 
+  it("does not run a baseline for a scan that found nothing: nothing is new, and the answer is certain", async () => {
+    await writeFile(join(root, "bandit.sarif"), sarif([]));
+    let asked = 0;
+    const raw = await collectEvidenceRaw(input({ entries: [entry(0, { after: "passed", class: "passing", exitCode: 0 })], baselineScans: async (scans: readonly BaselineScan[]) => { asked += scans.length; return new Map<number, string>(); } }));
+    expect(asked).toBe(0);
+    expect(raw?.checks[0]?.findings).toMatchObject({ tool: "Bandit", newCount: 0, items: [] });
+    // With a finding the baseline is asked for, and only for that scan.
+    await writeFile(join(root, "bandit.sarif"), sarif([{ ruleId: "B608" }]));
+    await collectEvidenceRaw(input({ baselineScans: async (scans: readonly BaselineScan[]) => { asked += scans.length; return new Map<number, string>(); } }));
+    expect(asked).toBe(1);
+  });
+
   it("reports nothing without a baseline: no baseline function, a baseline that did not run, or one that is not SARIF (never a clean scan)", async () => {
     await writeFile(join(root, "bandit.sarif"), sarif([{ ruleId: "B608" }]));
     expect(await collectEvidenceRaw(input())).toBeUndefined();
