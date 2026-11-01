@@ -1,0 +1,232 @@
+// Learning v2 L3b: what the Lessons tab, the Sources tab and the task page's lessons list read (design 1.2). Everything a viewer is told goes through `readVisible` (the frozen
+// snapshot AND the access records now), so a lesson from a source the viewer cannot see is counted for a person who decides and otherwise not mentioned. People are named the way the
+// rest of Rovara names them (`attributionNameOf`; an erased or unreadable person is "a former member"). Nothing here writes: the writes are in routes.ts, through the lesson library.
+import { agentXError, type LessonPerson, type LessonView, type LessonsViewAnswer, type OrgId } from "@agentx/contracts";
+import { attributionNameOf, type AttributionReader } from "../attribution/resolve.js";
+import type { TeamRecordTable } from "../team-record/types.js";
+import { listSourceConfigs } from "../team-record/store.js";
+import type { AccessCheckPort } from "../team-record/access-port.js";
+import { approversRequired, resolveLearning, stricterMode, LearningModeSchema, type LearningSettingsReader } from "./policy.js";
+import { buildWeeklyDigest } from "./digest.js";
+import { lessonPanelRows } from "./panel.js";
+import { readVisible, type LessonLog } from "./read-visible.js";
+import type { ApproverDirectory } from "./ports.js";
+import type { LessonStore, ScopeKey } from "./store.js";
+import { ERASED_MARK, idIn, normId, normSource, sameId, type IdentitySet, type Lesson } from "./types.js";
+import { lessonValue } from "./value.js";
+
+export interface LessonViewDeps {
+  store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader; access: AccessCheckPort;
+  /** Names of the people a lesson mentions. */
+  names: AttributionReader;
+  now: () => number;
+  log?: LessonLog;
+  /** The Team record table, for the Sources tab. Absent: the sources route answers "not set up". */
+  sources?: { table: TeamRecordTable };
+}
+export interface LessonCaller { orgId: OrgId; developerId: string }
+
+export const WAITING_MAX = 100;
+export const ACTIVE_MAX = 200;
+export const REMOVED_MAX = 50;
+export const SNAPSHOTS_MAX = 20;
+const FORMER = "a former member";
+const NAME_BATCH = 10;
+const NAMES_MAX = 300;
+
+const keyOf = (caller: LessonCaller, project: string): ScopeKey => ({ workspaceId: caller.orgId, project });
+
+/** Who may decide lessons here: the project's maintainers, How-we-work editors and company admins, as the directory says. An incomplete answer is nobody. */
+async function deciderState(deps: LessonViewDeps, key: ScopeKey, caller: LessonCaller): Promise<{ canDecide: boolean; eligibleCount: number; viewer: IdentitySet }> {
+  const [group, viewer] = await Promise.all([
+    deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined),
+    deps.directory.identity(key.workspaceId, caller.developerId),
+  ]);
+  const canDecide = group !== undefined && group.complete && idIn(group.eligibleIds, caller.developerId);
+  return { canDecide, eligibleCount: group?.eligibleIds.length ?? 0, viewer };
+}
+
+/** Display names for the people a set of lessons names. A person who was erased, or whose record cannot be read, is "a former member"; the signed-in person is marked. */
+async function namePeople(deps: LessonViewDeps, orgId: OrgId, me: string, ids: readonly string[]): Promise<(id: string) => LessonPerson> {
+  const unique = new Map<string, string>();
+  for (const id of ids) if (id !== ERASED_MARK && !id.startsWith("system:") && !unique.has(normId(id))) unique.set(normId(id), id);
+  const wanted = [...unique.values()].slice(0, NAMES_MAX);
+  const found = new Map<string, string>();
+  for (let at = 0; at < wanted.length; at += NAME_BATCH) {
+    await Promise.all(wanted.slice(at, at + NAME_BATCH).map(async (id) => {
+      try {
+        if (await deps.names.isErased(orgId, id)) return;
+        const name = await deps.names.memberName(orgId, id);
+        if (name !== undefined) found.set(normId(id), attributionNameOf(name, id));
+      } catch { /* in doubt, the person is not named */ }
+    }));
+  }
+  return (id) => {
+    const name = found.get(normId(id));
+    return name === undefined ? { name: FORMER } : { name, ...(sameId(id, me) ? { you: true as const } : {}) };
+  };
+}
+
+const personIdsOf = (lesson: Lesson): string[] => [...lesson.provenance.authors, ...lesson.approvals.map((a) => a.by)];
+
+/** What a pending lesson still needs: the people the policy asks for, who approved first, and the groups not yet represented. */
+function needsOf(lesson: Lesson, required: 0 | 1 | 2, groups: readonly string[], person: (id: string) => LessonPerson): LessonView["needs"] {
+  const people = lesson.approvals.filter((a) => a.mode !== "auto");
+  const distinct = new Set(people.map((a) => normId(a.by)));
+  const total = Math.max(required, lesson.reviewRequired === true ? 1 : 0, 1) as 1 | 2;
+  const first = people[0];
+  return {
+    required: total, have: Math.min(5, distinct.size), groups: [...groups],
+    ...(first === undefined ? {} : { first: person(first.by), firstAt: first.at }),
+  };
+}
+
+interface Context { canDecide: boolean; eligibleCount: number; me: string; required: (lesson: Lesson) => 0 | 1 | 2; groups: readonly string[]; person: (id: string) => LessonPerson }
+
+/** The people a lesson comes from, each once; everyone who cannot be named is one "a former member", so the count of erased people is not shown. */
+function fromPeople(ids: readonly string[], person: (id: string) => LessonPerson): LessonPerson[] {
+  const named = new Map<string, LessonPerson>();
+  let former = false;
+  for (const id of ids) {
+    if (id === ERASED_MARK) { former = true; continue; }
+    const p = person(id);
+    if (p.name === FORMER) former = true; else named.set(normId(id), p);
+  }
+  return [...named.values(), ...(former ? [{ name: FORMER }] : [])];
+}
+
+function toView(lesson: Lesson, ctx: Context): LessonView {
+  const checks = lesson.citationChecks ?? [];
+  const citations: LessonView["citations"] = lesson.citations.map((citation, index): LessonView["citations"][number] => {
+    if (citation.kind === "code") {
+      const check = checks.find((c) => c.index === index);
+      return { kind: "code", repo: citation.repo, path: citation.path, startLine: citation.startLine, endLine: citation.endLine, check: check?.result ?? "unchecked", ...(check === undefined ? {} : { checkedAt: check.at }) };
+    }
+    if (citation.kind === "pr") return { kind: "pr", url: citation.url };
+    if (citation.kind === "task") return { kind: "task", taskId: citation.taskId };
+    // A record citation is a row id inside the Team record: it carries no link a person could follow, and the id is not shown.
+    return { kind: "record" };
+  });
+  const pending = lesson.status === "pending";
+  const approvedByMe = lesson.approvals.some((a) => sameId(a.by, ctx.me));
+  const isAuthor = idIn(lesson.provenance.authors, ctx.me);
+  // The library decides at the click; this only hides a button the person could not use (they approved already, or they helped write it and someone else could decide).
+  const canApprove = ctx.canDecide && pending && !approvedByMe && !(isAuthor && ctx.eligibleCount > 1);
+  const last = lesson.lastHelpfulAt;
+  return {
+    id: lesson.id, version: lesson.version, type: lesson.type, stages: [...lesson.stages], title: lesson.title, description: lesson.description, body: lesson.body,
+    scope: { repos: [...(lesson.scope.repos ?? [])], paths: [...(lesson.scope.paths ?? [])], languages: [...(lesson.scope.languages ?? [])] },
+    tier: lesson.tier, tierReasons: [...lesson.tierReasons], status: lesson.status,
+    counters: { loaded: lesson.counters.loaded, helpful: lesson.counters.helpful, harmful: lesson.counters.harmful },
+    createdAt: lesson.createdAt, updatedAt: lesson.updatedAt, expiresAt: lesson.expiresAt, ...(last === undefined ? {} : { lastUsedAt: last }),
+    citations,
+    from: fromPeople(lesson.provenance.authors, ctx.person),
+    measured: lesson.provenance.measured, supportTasks: new Set(lesson.provenance.supportTasks).size,
+    ...(pending ? { needs: needsOf(lesson, ctx.required(lesson), ctx.groups, ctx.person) } : {}),
+    approvals: lesson.approvals.map((a) => ({ by: ctx.person(a.by), at: a.at, mode: a.mode })),
+    ...(lesson.reviewRequired === true ? { reviewRequired: true as const } : {}), ...(lesson.contradictsWith === undefined ? {} : { contradicts: lesson.contradictsWith }),
+    ...(lesson.retireProposedAt === undefined ? {} : { retireProposed: true as const }), ...(lesson.supersedes === undefined ? {} : { supersedes: lesson.supersedes }),
+    ...(lesson.status === "rejected" && lesson.rejectedReason !== undefined ? { rejectedReason: lesson.rejectedReason } : {}),
+    canApprove, canReject: ctx.canDecide && pending, canRetire: ctx.canDecide && (lesson.status === "active" || lesson.status === "stale" || pending),
+  };
+}
+
+export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCaller, project: string): Promise<LessonsViewAnswer> {
+  const key = keyOf(caller, project);
+  const [resolved, raw, state] = await Promise.all([
+    resolveLearning(deps.settings, key.workspaceId, key.project),
+    deps.settings.read(key.workspaceId, key.project).catch(() => ({})),
+    deciderState(deps, key, caller),
+  ]);
+  const own = LearningModeSchema.safeParse((raw as { mode?: unknown }).mode ?? "On");
+  const lock = LearningModeSchema.safeParse((raw as { companyLock?: unknown }).companyLock);
+  // The lock is "the reason" only when it made the mode stricter than the project's own choice.
+  const lockedByCompany = lock.success && own.success && stricterMode(own.data, lock.data) !== own.data;
+
+  const all = await deps.store.list(key);
+  const shown = await readVisible({ access: deps.access, key, viewer: state.viewer, lessons: all, where: "view", log: deps.log });
+  const byValue = (a: Lesson, b: Lesson): number => lessonValue(b) - lessonValue(a) || b.createdAt - a.createdAt || a.id.localeCompare(b.id);
+  // People who do not decide read the active lessons only: the approval queue, who approved and what waits are for the people who can act on them.
+  const waitingAll = state.canDecide ? shown.filter((l) => l.status === "pending").sort(byValue) : [];
+  const activeAll = shown.filter((l) => l.status === "active" || l.status === "stale").sort(byValue);
+  const removedAll = shown.filter((l) => l.status === "retired" || l.status === "expired" || l.status === "rejected").sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+  const waiting = waitingAll.slice(0, WAITING_MAX), active = activeAll.slice(0, ACTIVE_MAX), removed = state.canDecide ? removedAll.slice(0, REMOVED_MAX) : [];
+  const person = await namePeople(deps, caller.orgId, caller.developerId, [...waiting, ...active, ...removed].flatMap(personIdsOf));
+  const ctx: Context = { canDecide: state.canDecide, eligibleCount: state.eligibleCount, me: caller.developerId, required: (lesson) => approversRequired(lesson.tier, resolved.approval), groups: resolved.requiredGroups, person };
+
+  const setVersion = await deps.store.setVersion(key);
+  const snapshots = state.canDecide ? (await deps.store.snapshots(key)).filter((s) => s.setVersion !== setVersion).slice(-SNAPSHOTS_MAX).map((s) => ({ setVersion: s.setVersion, at: s.at, lessons: s.members.length })) : [];
+  const truncated: Array<"waiting" | "active" | "removed"> = [];
+  if (waitingAll.length > WAITING_MAX) truncated.push("waiting");
+  if (activeAll.length > ACTIVE_MAX) truncated.push("active");
+  if (state.canDecide && removedAll.length > REMOVED_MAX) truncated.push("removed");
+  return {
+    project, mode: resolved.mode, lockedByCompany,
+    approval: { tier0: resolved.approval.tier0, tier1: resolved.approval.tier1, requiredGroups: [...resolved.requiredGroups] },
+    ...(resolved.expiryDays === undefined ? {} : { expiryDays: resolved.expiryDays }),
+    canDecide: state.canDecide,
+    waiting: waiting.map((l) => toView(l, ctx)), active: active.map((l) => toView(l, ctx)), removed: removed.map((l) => toView(l, ctx)),
+    queued: state.canDecide ? shown.filter((l) => l.status === "candidate").length : 0,
+    hidden: state.canDecide ? all.filter((l) => l.status !== "candidate").length - shown.filter((l) => l.status !== "candidate").length : 0,
+    truncated, setVersion, snapshots,
+  };
+}
+
+/** One lesson's versions: who approved each. Only for a person who decides, and only for a lesson they may see. */
+export async function buildLessonHistory(deps: LessonViewDeps, caller: LessonCaller, project: string, lessonId: string) {
+  const key = keyOf(caller, project);
+  const state = await deciderState(deps, key, caller);
+  if (!state.canDecide) throw agentXError("FORBIDDEN", "Only a maintainer of this project, or an admin, can see a lesson's history.");
+  const head = await deps.store.getHead(key, lessonId);
+  if (head === undefined || (await readVisible({ access: deps.access, key, viewer: state.viewer, lessons: [head], where: "view", log: deps.log })).length !== 1) throw agentXError("NOT_FOUND", "This lesson isn't available.");
+  const versions = (await readVisible({ access: deps.access, key, viewer: state.viewer, lessons: await deps.store.versions(key, lessonId), where: "view", log: deps.log })).sort((a, b) => b.version - a.version).slice(0, 50);
+  const person = await namePeople(deps, caller.orgId, caller.developerId, versions.flatMap((v) => v.approvals.map((a) => a.by)));
+  return { versions: versions.map((v) => ({ version: v.version, at: v.updatedAt, status: v.status, title: v.title, body: v.body, approvedBy: v.approvals.filter((a) => a.mode !== "auto").map((a) => person(a.by)) })) };
+}
+
+/** The weekly digest, led by the top lessons. For people who decide. */
+export async function buildLessonsDigest(deps: LessonViewDeps, caller: LessonCaller, project: string) {
+  const key = keyOf(caller, project);
+  const state = await deciderState(deps, key, caller);
+  if (!state.canDecide) throw agentXError("FORBIDDEN", "Only a maintainer of this project, or an admin, can read the weekly digest.");
+  const digest = await buildWeeklyDigest(deps.store, key, deps.now(), state.viewer, deps.access, deps.log);
+  const item = (i: { id: string; title: string; type: Lesson["type"]; tier: Lesson["tier"]; links: string[] }) => ({ id: i.id, title: i.title, type: i.type, tier: i.tier, links: i.links.slice(0, 10) });
+  return {
+    since: digest.since, top: digest.top.map(item), needsReview: digest.needsReview.map(item), autoApplied: digest.autoApplied.map(item), waiting: digest.waiting.slice(0, 100).map(item),
+    retired: digest.retired.slice(0, 100).map(item), staleOrRetireProposed: digest.staleOrRetireProposed.slice(0, 100).map(item),
+    queued: digest.queuedCount, pausedSources: digest.pausedSources.slice(0, 50), pausedSourcesHidden: digest.pausedSourcesHidden, hidden: digest.restrictedHidden,
+  };
+}
+
+/** Does a pause key (`slack:C9`, `github:acme/api`) belong to a source row? Either the whole scope, or the source's name and the last part of its scope. */
+function pauseMatches(pauseKey: string, source: string, scope: string): boolean {
+  const key = normSource(pauseKey).toLowerCase();
+  return key === scope.toLowerCase() || key === `${source}:${scope.split("/").pop() ?? ""}`.toLowerCase();
+}
+
+/** The sources that feed the record for this project: what is kept, for how long, and how the source is doing. A source kept for maintainers only is named only to a person who decides. */
+export async function buildLessonSources(deps: LessonViewDeps, caller: LessonCaller, project: string) {
+  if (deps.sources === undefined) throw agentXError("NOT_FOUND", "The team record isn't set up here.");
+  const key = keyOf(caller, project);
+  const [rows, flags, state] = await Promise.all([listSourceConfigs(deps.sources.table, caller.orgId, project), deps.store.flags(key), deciderState(deps, key, caller)]);
+  const pausedKeys = Object.keys(flags.pausedSources ?? {});
+  const matched = new Set<string>();
+  const sources = rows.slice(0, 200).map((row) => {
+    const pausedBy = pausedKeys.filter((k) => pauseMatches(k, row.source, row.scope));
+    for (const k of pausedBy) matched.add(k);
+    const nameable = state.canDecide || row.audienceDefault === "project";
+    return {
+      kind: row.source, ...(nameable ? { scope: row.scope } : {}), enabled: row.enabled, retention: row.retention, ...(row.notesOptIn === true ? { notesOptIn: true as const } : {}),
+      health: row.health, audience: row.audienceDefault, ...(state.canDecide ? { excluded: Math.min(200, row.exclude.length) } : {}), updatedAt: row.updatedAt, paused: pausedBy.length > 0,
+    };
+  });
+  return { sources, otherPaused: state.canDecide ? pausedKeys.filter((k) => !matched.has(k)).length : 0 };
+}
+
+/** The lessons a task loaded, as this viewer may see them. */
+export async function buildLoadedLessons(deps: LessonViewDeps, caller: LessonCaller, project: string, taskId: string) {
+  const key = keyOf(caller, project);
+  const viewer = await deps.directory.identity(key.workspaceId, caller.developerId);
+  const rows = await lessonPanelRows(deps.store, key, taskId, viewer, deps.access, deps.log);
+  return { lessons: rows.slice(0, 500).map((r) => ({ stage: r.stage, round: r.round, lessonId: r.lessonId, version: r.version, why: r.why, citation: r.citation, visible: r.visible, ...(r.title === undefined ? {} : { title: r.title }), ...(r.type === undefined ? {} : { type: r.type }), ...(r.helpful === undefined ? {} : { helpful: r.helpful }), ...(r.harmful === undefined ? {} : { harmful: r.harmful }), canMark: r.canMark })) };
+}

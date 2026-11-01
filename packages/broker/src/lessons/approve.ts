@@ -74,7 +74,11 @@ export async function activateLesson(deps: LessonDeps & { store: LessonStore }, 
   return undefined;
 }
 
-export interface ApproveInput { workspaceId: string; project: string; lessonId: string; approverId: string; edit?: { title: string; description: string; body: string } }
+export interface ApproveInput {
+  workspaceId: string; project: string; lessonId: string; approverId: string; edit?: { title: string; description: string; body: string };
+  /** The version the approver read. When given, an approval of any other version is a conflict: a person approves the text they saw. */
+  expectedVersion?: number;
+}
 
 export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Promise<ApprovalResult> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
@@ -90,6 +94,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     if (lesson === undefined) return { ok: false, code: "not_found" };
     if (lesson.status !== "pending") return { ok: false, code: "not_pending" };
     if (!(await mayHandle(deps, key, lesson, input.approverId))) return { ok: false, code: "not_permitted" };
+    if (input.expectedVersion !== undefined && lesson.version !== input.expectedVersion) return { ok: false, code: "conflict" };
 
     // Edit and approve: the edited text is cleaned and screened, and the tier is worked out again on it.
     let working: Lesson = lesson;
@@ -186,7 +191,7 @@ export function trySecondPerson(group: Awaited<ReturnType<ApproverDirectory["eli
   }
 }
 
-async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; actorId: string; allowed: readonly Lesson["status"][]; to: "rejected" | "retired"; reason: string; action: "lesson.rejected" | "lesson.retired" }): Promise<{ ok: true } | { ok: false; code: ApprovalFailure }> {
+async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; actorId: string; expectedVersion?: number; allowed: readonly Lesson["status"][]; to: "rejected" | "retired"; reason: string; action: "lesson.rejected" | "lesson.retired" }): Promise<{ ok: true } | { ok: false; code: ApprovalFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
@@ -196,6 +201,8 @@ async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; proje
   if (!input.allowed.includes(lesson.status)) return { ok: false, code: "not_pending" };
   // Reading a restricted lesson to reject it needs the same access as approving it. Retire is the kill switch: it shows no text, so it is never blocked.
   if (input.to === "rejected" && !(await mayHandle(deps, key, lesson, input.actorId))) return { ok: false, code: "not_permitted" };
+  // A person rejects the text they read: a lesson that moved on since is not rejected under them.
+  if (input.expectedVersion !== undefined && lesson.version !== input.expectedVersion) return { ok: false, code: "conflict" };
   if (input.to === "retired") return (await retireLesson(deps, key, lesson.id, input.reason, input.actorId, "lesson.retired")) ? { ok: true } : { ok: false, code: "conflict" };
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     const fresh = await deps.store.get(key, lesson.id);
@@ -211,7 +218,7 @@ async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; proje
 }
 
 /** A maintainer rejects a pending lesson. The reason is kept (cleaned), and a similar lesson is not proposed again. */
-export const rejectLesson = (deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; approverId: string; reason: string }) =>
+export const rejectLesson = (deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; approverId: string; reason: string; expectedVersion?: number }) =>
   decideOnce(deps, { ...input, actorId: input.approverId, allowed: ["pending"], to: "rejected", reason: input.reason, action: "lesson.rejected" });
 
 /** A maintainer retires a lesson (active, stale or pending). Always possible for an eligible person: this is the kill switch (C14). */
