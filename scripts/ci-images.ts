@@ -142,7 +142,7 @@ export async function mirrorImage(image: CiImage, owner: string, deps: Deps): Pr
 
 /**
  * The Dockerfile with every FROM of a pinned image pointed at its local alias, so `docker build` finds the base in the daemon and pulls nothing. Every FROM line must name
- * a pinned image; anything else is refused, so a base that is not mirrored cannot slip in. FROM is matched without regard to case, after any leading whitespace, and with LF or
+ * a pinned image (or exactly `FROM scratch`, which has nothing to pin); anything else is refused, so a base that is not mirrored cannot slip in. FROM is matched without regard to case, after any leading whitespace, and with LF or
  * CRLF line endings (each line keeps its own). `COPY/ADD --from=` and `RUN --mount=...,from=` may name only a build stage, never an image (anything with a `/` or `:`, or a name that
  * is not an earlier stage), because the builder would pull that image.
  */
@@ -155,14 +155,18 @@ export function rewriteDockerfile(text: string, images: CiImage[]): string {
     const line = cr === "" ? raw : raw.slice(0, -1);
     const from = /^(\s*FROM\s+(?:--\S+\s+)*)(\S+)(.*)$/i.exec(line);
     if (from) {
-      const image = images.find((candidate) => from[2] === pinnedRef(candidate));
-      if (!image) throw new Error(`the Dockerfile line "${line.trim()}" does not name a pinned CI image`);
+      // `FROM scratch` is Docker's empty base: nothing is pulled and there is no digest to pin. It is accepted exactly (lower case, no tag, no digest), with at most an `AS <name>`
+      // after it; `scratch:latest`, `scratchy` and every other base still have to be a pinned CI image.
+      const scratch = from[2] === "scratch";
+      const image = scratch ? undefined : images.find((candidate) => from[2] === pinnedRef(candidate));
+      if (!scratch && !image) throw new Error(`the Dockerfile line "${line.trim()}" does not name a pinned CI image`);
+      if (scratch && !/^(\s+AS\s+\S+)?\s*$/i.test(from[3]!)) throw new Error(`the Dockerfile line "${line.trim()}" does not name a pinned CI image`);
       rewritten += 1;
       stages.add(String(stageIndex));
       stageIndex += 1;
       const alias = /^\s+AS\s+(\S+)/i.exec(from[3]!);
       if (alias) stages.add(alias[1]!.toLowerCase());
-      return `${from[1]}${localAlias(image)}${from[3]}${cr}`;
+      return image ? `${from[1]}${localAlias(image)}${from[3]}${cr}` : raw;
     }
     const options = /^\s*(COPY|ADD|RUN)\s+((?:--\S+\s+)*)/i.exec(line);
     if (options) {
