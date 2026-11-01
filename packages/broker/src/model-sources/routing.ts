@@ -212,7 +212,7 @@ export function chatGptServing(connections: Pick<ChatGptConnections, "settings" 
   return {
     async serves(developerId, model) {
       // OpenAI models that Bedrock serves are OpenAI's by company but are reached through Bedrock, never through a person's ChatGPT plan.
-      if (model.provider === "amazon-bedrock" || modelCompany(model) !== "openai") return undefined;
+      if (model.provider.toLowerCase() === "amazon-bedrock" || modelCompany(model) !== "openai") return undefined;
       try {
         if (!(await connections.settings()).enabled) return undefined;
         const view = await connections.view(developerId);

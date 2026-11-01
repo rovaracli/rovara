@@ -283,6 +283,8 @@ describe("personal-chatgpt", () => {
     const serveBedrock = (modelId: string) => chatGptServing(connections({ enabled: true, models: ["gpt-5.4", "gpt-oss-120b-1:0", "openai.gpt-oss-120b-1:0"] }) as never, () => Date.parse("2026-10-21T12:00:00Z")).serves("maya", { provider: "amazon-bedrock", modelId });
     expect(await serveBedrock("openai.gpt-oss-120b-1:0")).toBeUndefined();
     expect(await serveBedrock("us.openai.gpt-oss-120b-1:0")).toBeUndefined();
+    const wrongCase = chatGptServing(connections({ enabled: true, models: ["gpt-5.4", "openai.gpt-oss-120b-1:0"] }) as never, () => Date.parse("2026-10-21T12:00:00Z"));
+    expect(await wrongCase.serves("maya", { provider: "Amazon-Bedrock", modelId: "openai.gpt-oss-120b-1:0" })).toBeUndefined();
   });
 });
 

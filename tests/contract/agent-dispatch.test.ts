@@ -216,6 +216,16 @@ describe("applyAgentStep: a different AI company", () => {
     expect(apply({ recipe: two, mode: "REVIEW", priorOperations: prior }).model).toEqual(HAIKU);
   });
 
+  it("never counts a Bedrock-routed OpenAI model as served by the person's ChatGPT plan, whatever the provider's case (SH33 fix round 1)", () => {
+    const rule = guardrails({ requireCrossCompanyReview: true });
+    const oss: ModelSelection = { provider: "Amazon-Bedrock", modelId: "openai.gpt-oss-120b-1:0" };
+    const planned = recipeOf([build({ model: SONNET }), review({ model: oss })]);
+    // The plan serves exactly this id, but the step's model is reached through Bedrock, so it does not run on the plan.
+    const result = apply({ recipe: planned, mode: "REVIEW", guardrails: rule, priorOperations: priorBuild(SONNET), chatgptModel: { provider: "openai", modelId: oss.modelId } });
+    expect(result.dropChatgpt).toBe(true);
+    expect(result.model).toEqual(oss);
+  });
+
   it("lets a Nova review of a Claude build pass the cross-company rule, and holds back Nova against Nova and unrecognised Bedrock models (SH33)", () => {
     const rule = guardrails({ requireCrossCompanyReview: true });
     const nova: ModelSelection = { provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v1:0" };

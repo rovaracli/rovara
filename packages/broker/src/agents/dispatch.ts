@@ -195,7 +195,7 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
   const notAllowed = (model: ModelIdentifier) => agentXError("MODEL_NOT_ALLOWED", `${ref.name}'s ${stepName} step uses ${label(model)}, which isn't allowed on ${input.project}. Ask the agent's owner to pick another model.`);
   // The person's plan model is a model like any other: one the company forbids is not used, and the operation runs on the proxy instead.
   const planModel = input.chatgptModel !== undefined && !forbidden.has(canonicalModelName(input.chatgptModel)) ? input.chatgptModel : undefined;
-  const servedByPlan = (model: ModelIdentifier): boolean => planModel !== undefined && modelCompany(model) === "openai" && model.modelId === planModel.modelId;
+  const servedByPlan = (model: ModelIdentifier): boolean => planModel !== undefined && model.provider.toLowerCase() !== "amazon-bedrock" && modelCompany(model) === "openai" && model.modelId === planModel.modelId;
   /** The model the operation would really run on if `chosen` were picked: the person's plan unless the step picked a model of its own that the plan does not serve. */
   const ranOn = (chosen: ModelSelection | undefined, own: boolean): ModelSelection | undefined =>
     planModel !== undefined && !(own && chosen !== undefined && !servedByPlan(chosen)) ? planModel : chosen;
