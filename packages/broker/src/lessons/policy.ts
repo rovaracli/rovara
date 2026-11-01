@@ -143,5 +143,5 @@ export async function emitAudit(sink: LessonAuditSink, event: LessonAuditEvent):
  * and a failed write returns false so the caller refuses the change (fail closed). The kill switches (retire) use `emitAudit`, so they always work.
  */
 export async function requireAudit(sink: LessonAuditSink, event: LessonAuditEvent): Promise<boolean> {
-  try { await sink.emit(safeFacts(event)); return true; } catch { return false; }
+  try { await sink.emit(safeFacts(event), { required: true }); return true; } catch { return false; }
 }

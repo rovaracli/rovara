@@ -36,7 +36,8 @@ export interface LessonAuditEvent {
   /** Ids, counts and fixed codes only; never lesson text or anything a person wrote. */
   facts: Record<string, string | number | boolean>;
 }
-export interface LessonAuditSink { emit(event: LessonAuditEvent): Promise<void> }
+/** `required`: the event grants something (`requireAudit`), so a sink that has no ledger name for it must FAIL (throw) instead of passing without a record. */
+export interface LessonAuditSink { emit(event: LessonAuditEvent, options?: { required?: boolean }): Promise<void> }
 export interface AlertSink { alert(workspaceId: string, project: string, code: "source_spike_paused" | "project_volume_spike" | "lesson_contradiction" | "retire_proposed"): Promise<void> }
 export interface Metrics { count(name: string, tags?: Record<string, string>): void }
 

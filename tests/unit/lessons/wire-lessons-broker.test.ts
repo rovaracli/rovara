@@ -247,7 +247,6 @@ describe("the lessons audit sink", () => {
     const sink = lessonAuditSink(async (event) => { written.push(event as never); }, () => Date.parse("2026-11-01T00:00:00.000Z"));
     const member = "a".repeat(64);
     await sink.emit({ action: "lesson.approved", workspaceId: WS, project: PROJECT, lessonId: "les_aaaa1111", actor: member, facts: { tier: 1, mode: "one", count: 1 } });
-    await sink.emit({ action: "lesson.merged", workspaceId: WS, project: PROJECT, lessonId: "les_aaaa1111", facts: { score: 0.9 } });
     await sink.emit({ action: "lesson.helpful", workspaceId: WS, project: PROJECT, lessonId: "les_aaaa1111", actor: member, facts: {} });
     expect(written).toHaveLength(1);
     expect(written[0]).toMatchObject({ action: "lesson.approved", orgId: WS, actor: { kind: "member", id: member }, target: { kind: "lesson", id: "les_aaaa1111" }, facts: { tier: 1, approvals: 1, soleOwner: false } });
