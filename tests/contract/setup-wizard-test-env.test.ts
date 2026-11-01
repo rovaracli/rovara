@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { TestEnvironmentStateSchema, projectMetaKey, testEnvDigest } from "../../packages/contracts/src/index.js";
+import { mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
 import { commandsToApply, runsOf, shownLine } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
 import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
@@ -219,6 +220,9 @@ describe("approving a change that is less safe than the sandbox", () => {
       const viaToken = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 });
       expect(viaToken.status).toBe(403);
       expect(errorOf(viaToken).message).toContain("in a browser");
+      // A token whose session record happens to carry a fresh sign-in time is still a token: only a browser session shows a sign-in.
+      t.db.set({ ...(t.db.get(`SESSION#${OMAR.sessionId}`, "META") as Record<string, unknown>), authTime: new Date().toISOString() });
+      expect(errorOf(await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 })).message).toContain("in a browser");
       t.ageSignIn(OMAR, 11);
       const old = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 });
       expect(old.status).toBe(403);
@@ -360,6 +364,74 @@ describe("approving a change that is less safe than the sandbox", () => {
       const approved = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 });
       expect(approved.status, JSON.stringify(approved.body)).toBe(200);
       expect(approved.body).toMatchObject({ revision: 2 });
+    });
+  });
+});
+
+describe("the second person's card", () => {
+  it("only a live second person may decide it: an owner or admin, or a maintainer of the project; not a member, not an outsider, not the asker while another is eligible", async () => {
+    const t = await setupWizardBench();
+    await t.person(MAYA, "admin");
+    await withSwitch("1", async () => {
+      const digest = await lessSafeProposal(t);
+      await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+      const [card] = t.approvals();
+      const rule = (who: Developer) => mayDecideApproval({ documentClient: t.db, tableName: "state", now: () => Date.now(), modelSignInTableName: "signin" } as never, { orgId: TEST_ORG, developerId: who.developerId, orgRole: "member" } as never, card as never);
+      expect(await rule(MAYA)).toBe(true);
+      expect(await rule(OMAR)).toBe(false); // the asker, while Maya is eligible
+      const stranger: Developer = { developerId: "8".repeat(64), name: "Stranger", provider: "oidc", sessionId: "s-stranger" };
+      expect(await rule(stranger)).toBe(false);
+      await t.person(stranger, "member");
+      t.db.set({ pk: `DEVELOPER#${stranger.developerId}`, sk: "META", developerId: stranger.developerId, provider: stranger.provider, displayName: stranger.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+      expect(await rule(stranger)).toBe(false); // a member with no project grant
+      await t.person(stranger, "member", "maintainer");
+      expect(await rule(stranger)).toBe(true); // a maintainer of the project
+      // Without the sign-in table nobody can be judged, so nobody may decide.
+      expect(await mayDecideApproval({ documentClient: t.db, tableName: "state", now: () => Date.now() } as never, { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "admin" } as never, card as never)).toBe(false);
+    });
+  });
+
+  it("a confirmation counts only when the confirmation page recorded a fresh sign-in; a card declined, decided without the page, or expired is not one, and an expired one is asked for again", async () => {
+    const t = await setupWizardBench();
+    await t.person(MAYA, "admin");
+    await withSwitch("1", async () => {
+      const digest = await lessSafeProposal(t);
+      await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+      const [card] = t.approvals();
+      const stored = () => t.db.find((item) => item.entityType === "APPROVAL" && item.approvalId === card!.approvalId)[0]!;
+      const attempt = () => t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 });
+      // Decided, but not on the confirmation page (no fresh sign-in proof).
+      t.db.set({ ...stored(), status: "APPROVED_DONE", decidedBy: MAYA.developerId, decision: "APPROVE", decisionProof: { kind: "none" } });
+      expect(errorOf(await attempt()).message).toContain("second person");
+      // Declined.
+      t.db.set({ ...stored(), status: "DECLINED", decidedBy: MAYA.developerId, decision: "DECLINE" });
+      expect(errorOf(await attempt()).message).toContain("second person");
+      expect((await t.state()).proposal!.approval.status).toBe("expired");
+      // A card nobody decided before its time ran out is not waiting any more either.
+      t.db.set({ ...stored(), status: "PENDING", decidedBy: undefined, decision: undefined, decisionProof: undefined, expiresAt: new Date(Date.now() - 1000).toISOString() });
+      expect((await t.state()).proposal!.approval.status).toBe("expired");
+      // A declined card is asked for again as a new card.
+      const again = await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+      expect(again.body).toMatchObject({ status: "pending" });
+      expect(t.approvals()).toHaveLength(2);
+      expect(t.approvals().filter((entry) => Date.parse(String(entry.expiresAt)) > Date.now())).toHaveLength(1);
+    });
+  });
+});
+
+describe("applying commands where the project's commands run in more than one directory", () => {
+  it("is refused rather than moving them", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", async () => {
+      await t.drafted(draftOf(draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900), command("make", ["deps"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }] }] })));
+      await t.dev(OMAR, "POST", `${ENV}/propose`, {});
+      const digest = testEnvDigest(draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900), command("make", ["deps"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }] }] }));
+      // The project already has a command in another directory: a save would move it into the first repository.
+      const revision = t.db.find((item) => item.entityType === "PROJECT")[0] as { definition: { setup: Array<Record<string, unknown>> } } & Record<string, unknown>;
+      t.db.set({ ...revision, definition: { ...revision.definition, setup: [...revision.definition.setup, { cwd: "repo/other", executable: "make", args: ["other"], timeoutSeconds: 60 }] } });
+      const refused = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 1 });
+      expect(refused.status).toBe(400);
+      expect(errorOf(refused).message).toContain("more than one directory");
     });
   });
 });

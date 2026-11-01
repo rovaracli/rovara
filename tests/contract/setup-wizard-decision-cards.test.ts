@@ -3,8 +3,9 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { DecisionCardsViewSchema, testEnvDigest, type DecisionCard } from "../../packages/contracts/src/index.js";
-import { takesTheChange } from "../../packages/broker/src/decisions/test-env-source.js";
+import { answerEnvChange, takesTheChange } from "../../packages/broker/src/decisions/test-env-source.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
+import { TEST_ORG } from "../support/orgs.js";
 import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
 
 const withCards = async <T>(run: () => Promise<T>): Promise<T> => {
@@ -53,6 +54,29 @@ describe("approve_test_env", () => {
       expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toHaveLength(1);
       expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")[0]).toMatchObject({ digest, approvedBy: OMAR.developerId, revision: 1 });
       expect(ofKind((await cards(t)).cards, "approve_test_env")).toEqual([]);
+    }));
+  });
+
+  it("a later revision is approved from its card at the revision the person looked at, and a card for a revision that has moved on is refused as changed", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", () => withCards(async () => {
+      await t.approveFirst();
+      const next = draftBody({ selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [".github/**"] } });
+      await t.web(OMAR, "POST", `${ENV}/edit`, { environment: next });
+      const digest = testEnvDigest(next);
+      await t.web(OMAR, "POST", `${ENV}/prove`, { digest });
+      const { cards: list, digests } = await cards(t);
+      const card = ofKind(list, "approve_test_env")[0]!;
+      const base = `/v1/app/decisions/approve_test_env/${digest}`;
+      await t.dev(OMAR, "POST", `${base}/evidence-opened`, { requestId: randomUUID(), shownDigest: digests[card.id] });
+      // Someone approves another revision first (a different environment), so the card's revision has moved on.
+      const other = draftBody({ selection: { method: "coverage_map", alwaysRun: ["unit"], fullSuiteOn: [] } });
+      await t.web(OMAR, "POST", `${ENV}/edit`, { environment: other });
+      await t.web(OMAR, "POST", `${ENV}/prove`, { digest: testEnvDigest(other) });
+      expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest: testEnvDigest(other), expectedRevision: 1 })).status).toBe(200);
+      const stale = await t.dev(OMAR, "POST", `${base}/approve`, { requestId: randomUUID(), shownDigest: digests[card.id] });
+      expect(stale.status).toBeGreaterThanOrEqual(400);
+      expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toHaveLength(2);
     }));
   });
 
@@ -198,6 +222,29 @@ describe("confirm_env_change", () => {
       expect(ofKind((await cards(ended)).cards, "confirm_env_change")).toHaveLength(1);
     }));
     await withSwitch(undefined, () => withCards(async () => { expect(ofKind((await cards(ended)).cards, "confirm_env_change")).toEqual([]); }));
+  });
+
+  it("only the task's CURRENT owner is asked and can answer: after a take-over the card moves with the task, and a non-owner's answer changes nothing", async () => {
+    const t = await setupWizardBench();
+    await t.person(MAYA, "member", "maintainer");
+    await withSwitch("1", () => withCards(async () => {
+      await t.approveFirst();
+      const taskId = await startTask(t);
+      await approveSecond(t);
+      expect(ofKind((await cards(t)).cards, "confirm_env_change")).toHaveLength(1);
+      const task = t.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown>;
+      const ports = { store: { documentClient: t.db, tableName: "state", now: () => Date.now() }, task: async () => t.db.get(`DEVTASK#${taskId}`, "META") as never };
+      // Maya answers a task that is Omar's: nothing.
+      expect(await answerEnvChange(ports as never, { orgId: TEST_ORG, developerId: MAYA.developerId }, taskId, "approve")).toBe("gone");
+      expect(pinOf(t, taskId)).toMatchObject({ revision: 1 });
+      // The task is taken over by Maya: it is no longer Omar's to answer.
+      t.db.set({ ...task, currentOwner: { developerId: MAYA.developerId, name: MAYA.name, provider: MAYA.provider, since: new Date().toISOString() } });
+      expect(await answerEnvChange(ports as never, { orgId: TEST_ORG, developerId: OMAR.developerId }, taskId, "approve")).toBe("gone");
+      expect(ofKind((await cards(t)).cards, "confirm_env_change")).toEqual([]);
+      expect(pinOf(t, taskId)).toMatchObject({ revision: 1 });
+      expect(await answerEnvChange(ports as never, { orgId: TEST_ORG, developerId: MAYA.developerId }, taskId, "approve")).toBe("moved");
+      expect(pinOf(t, taskId)).toMatchObject({ revision: 2 });
+    }));
   });
 
   it("a running task is never moved to something less safe, or to different checks (the rule on its own)", () => {
