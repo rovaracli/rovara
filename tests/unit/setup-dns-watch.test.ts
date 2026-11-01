@@ -20,6 +20,15 @@ function query(name: string, type: number = TYPE.A, id = 0x1234): Buffer {
   header.writeUInt16BE(1, 4);
   return Buffer.concat([header, question]);
 }
+/** A query whose question is the given labels exactly (a label may contain a dot). */
+function rawQuery(labels: string[], type: number = TYPE.A, id = 0x2222): Buffer {
+  const question = Buffer.concat([...labels.map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label, "ascii")])), Buffer.from([0]), Buffer.from([type >> 8, type & 0xff, 0, 1])]);
+  const header = Buffer.alloc(12);
+  header.writeUInt16BE(id, 0);
+  header.writeUInt16BE(0x0100, 2);
+  header.writeUInt16BE(1, 4);
+  return Buffer.concat([header, question]);
+}
 /** The answer to a query: the same id and question, the response bit, the given rcode, and one A record when it is NOERROR. */
 function answer(request: Buffer, rcode: number, extra?: { truncated?: boolean }): Buffer {
   const copy = Buffer.from(request);
@@ -30,9 +39,9 @@ function answer(request: Buffer, rcode: number, extra?: { truncated?: boolean })
   return Buffer.concat([copy, Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 93, 184, 216, 34])]);
 }
 
-interface FakeUpstream { port: number; seen: string[]; close(): Promise<void> }
+interface FakeUpstream { port: number; seen: string[]; tcpConnects: () => number; close(): Promise<void> }
 /** A resolver that answers by a table: name -> rcode (anything not in the table is NOERROR). `silent` names get no answer at all. */
-async function upstream(rcodes: Record<string, number>, options: { silent?: string[]; truncate?: string[]; wrongId?: string[]; wrongQuestion?: string[] } = {}): Promise<FakeUpstream> {
+async function upstream(rcodes: Record<string, number>, options: { silent?: string[]; truncate?: string[]; wrongId?: string[]; wrongQuestion?: string[]; bigTcp?: string[] } = {}): Promise<FakeUpstream> {
   const seen: string[] = [];
   const udp = createSocket("udp4");
   const handle = (request: Buffer): Buffer | undefined => {
@@ -41,17 +50,21 @@ async function upstream(rcodes: Record<string, number>, options: { silent?: stri
     seen.push(`${parsed.name}/${String(parsed.type)}`);
     if (options.silent?.includes(parsed.name)) return undefined;
     let reply = answer(request, rcodes[parsed.name] ?? RCODE.ok, { truncated: options.truncate?.includes(parsed.name) === true });
+    if (options.bigTcp?.includes(parsed.name)) reply = Buffer.concat([reply, Buffer.alloc(6_000)]);
     if (options.wrongId?.includes(parsed.name)) reply.writeUInt16BE((parsed.id + 1) & 0xffff, 0);
     if (options.wrongQuestion?.includes(parsed.name)) reply = answer(query("other.example.org", parsed.type, parsed.id), rcodes[parsed.name] ?? RCODE.ok);
     return reply;
   };
   udp.on("message", (message, remote) => {
     const reply = handle(message);
+    if (reply !== undefined && reply.length > 4_096) return;
     if (reply !== undefined) udp.send(reply, remote.port, remote.address);
   });
   await new Promise<void>((resolve) => udp.bind(0, "127.0.0.1", resolve));
   const port = udp.address().port;
+  let tcpConnects = 0;
   const tcp = createServer((socket) => {
+    tcpConnects += 1;
     let buffered = Buffer.alloc(0);
     socket.on("data", (chunk) => {
       buffered = Buffer.concat([buffered, chunk]);
@@ -65,7 +78,7 @@ async function upstream(rcodes: Record<string, number>, options: { silent?: stri
     socket.on("error", () => undefined);
   });
   await new Promise<void>((resolve) => tcp.listen(port, "127.0.0.1", resolve));
-  return { port, seen, close: () => Promise.all([new Promise<void>((resolve) => udp.close(() => resolve())), new Promise<void>((resolve) => tcp.close(() => resolve()))]).then(() => undefined) };
+  return { port, seen, tcpConnects: () => tcpConnects, close: () => Promise.all([new Promise<void>((resolve) => udp.close(() => resolve())), new Promise<void>((resolve) => tcp.close(() => resolve()))]).then(() => undefined) };
 }
 
 /** Asks the forwarder over UDP and returns the reply (undefined when none comes in `waitMs`). */
@@ -98,7 +111,7 @@ afterEach(async () => { await Promise.all(closers.splice(0).map((close) => close
 async function forwarder(rcodes: Record<string, number>, upstreamOptions: Parameters<typeof upstream>[1] = {}, options: Partial<ConstructorParameters<typeof SetupDnsWatch>[0]> = {}) {
   const fake = await upstream(rcodes, upstreamOptions);
   closers.push(() => fake.close());
-  const watch = new SetupDnsWatch({ listenAddress: "127.0.0.1", port: 0, upstream: { address: "127.0.0.1", port: fake.port }, upstreamTimeoutMs: 300, ...options });
+  const watch = new SetupDnsWatch({ listenAddress: "127.0.0.1", allowLoopback: true, allowedSources: ["127.0.0.1"], port: 0, upstream: { address: "127.0.0.1", port: fake.port }, upstreamTimeoutMs: 300, ...options });
   const bound = await watch.start();
   closers.push(() => watch.stop());
   return { watch, fake, port: bound.port };
@@ -257,7 +270,100 @@ describe("the setup sandbox's DNS forwarder", () => {
 
   it("refuses to start with an address that is not a literal IP, or an upstream that is not", async () => {
     expect(() => new SetupDnsWatch({ listenAddress: "localhost", upstream: { address: "127.0.0.1" } })).toThrow(/IP address/u);
-    expect(() => new SetupDnsWatch({ listenAddress: "127.0.0.1", upstream: { address: "dns.example.com" } })).toThrow(/IP address/u);
+    expect(() => new SetupDnsWatch({ listenAddress: "10.0.0.1", upstream: { address: "dns.example.com" } })).toThrow(/IP address/u);
+  });
+
+  it("listens only on an explicit private address: not 0.0.0.0 or ::, not multicast, not a public address, and not loopback unless a test asks", () => {
+    const upstreamOption = { address: "10.0.0.2" };
+    for (const bad of ["0.0.0.0", "::", "224.0.0.1", "239.1.2.3", "ff02::1", "8.8.8.8", "2001:4860:4860::8888", "127.0.0.1", "::1", "255.255.255.255", "::ffff:10.0.0.1"]) {
+      expect(() => new SetupDnsWatch({ listenAddress: bad, upstream: upstreamOption }), bad).toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
+    }
+    for (const good of ["10.0.0.1", "172.18.0.1", "172.31.255.1", "192.168.1.1", "fd00::1", "fe80::1"]) {
+      expect(() => new SetupDnsWatch({ listenAddress: good, upstream: upstreamOption }), good).not.toThrow();
+    }
+    for (const bad of ["172.15.0.1", "172.32.0.1", "11.0.0.1"]) expect(() => new SetupDnsWatch({ listenAddress: bad, upstream: upstreamOption }), bad).toThrow();
+    expect(() => new SetupDnsWatch({ listenAddress: "127.0.0.1", allowLoopback: true, upstream: upstreamOption })).not.toThrow();
+    expect(() => new SetupDnsWatch({ listenAddress: "0.0.0.0", allowLoopback: true, upstream: upstreamOption })).toThrow();
+  });
+
+  it("serves and records nothing until its allowed sources are set, then only those; the sources are replaced by the next call, and must be IP addresses", async () => {
+    const fake = await upstream({ "x.example.com": RCODE.nxdomain });
+    closers.push(() => fake.close());
+    const watch = new SetupDnsWatch({ listenAddress: "127.0.0.1", allowLoopback: true, port: 0, upstream: { address: "127.0.0.1", port: fake.port }, upstreamTimeoutMs: 300 });
+    const { port } = await watch.start();
+    closers.push(() => watch.stop());
+    expect(await ask(port, query("x.example.com"), 400)).toBeUndefined();
+    expect(await askTcp(port, query("x.example.com"), 400)).toBeUndefined();
+    expect(fake.seen).toEqual([]);
+    expect(watch.blockedHosts()).toEqual([]);
+    watch.setAllowedSources(["10.9.8.7"]);
+    expect(await ask(port, query("x.example.com"), 400)).toBeUndefined();
+    expect(watch.blockedHosts()).toEqual([]);
+    watch.setAllowedSources(["127.0.0.1"]);
+    expect(rcodeOf(await ask(port, query("x.example.com")))).toBe(RCODE.nxdomain);
+    expect(watch.blockedHosts()).toEqual(["x.example.com"]);
+    for (const bad of [[], ["sandbox"], ["0.0.0.0"], ["::"], ["224.0.0.1"], ["127.0.0.1", "nope"]]) expect(() => watch.setAllowedSources(bad), JSON.stringify(bad)).toThrowError(expect.objectContaining({ code: "CONFIG_INVALID" }));
+    expect(() => new SetupDnsWatch({ listenAddress: "10.0.0.1", allowedSources: [], upstream: { address: "10.0.0.2" } })).toThrow();
+  });
+});
+
+describe("the TCP path is bounded", () => {
+  /** Opens one connection and writes `count` queries back to back. */
+  function flood(port: number, count: number): Promise<{ closed: Promise<void>; socket: ReturnType<typeof connect> }> {
+    return new Promise((resolve) => {
+      const socket = connect(port, "127.0.0.1");
+      const closed = new Promise<void>((done) => { socket.on("close", () => done()); socket.on("error", () => undefined); });
+      socket.on("connect", () => {
+        const parts: Buffer[] = [];
+        for (let i = 0; i < count; i += 1) { const q = query("silent.example.com", TYPE.A, i); parts.push(Buffer.from([q.length >> 8, q.length & 0xff]), q); }
+        socket.write(Buffer.concat(parts));
+        resolve({ closed, socket });
+      });
+    });
+  }
+
+  it("closes a connection that queues more than 8 queries at once, and forwards at most 8 of them upstream", async () => {
+    const { watch, fake, port } = await forwarder({}, { silent: ["silent.example.com"] }, { upstreamTimeoutMs: 100 });
+    const { closed } = await flood(port, 2_000);
+    await closed;
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(fake.tcpConnects()).toBeLessThanOrEqual(8);
+    await watch.stop();
+    const atStop = fake.tcpConnects();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(fake.tcpConnects()).toBe(atStop);
+  });
+
+  it("makes no upstream connection after stop(), even for queries already queued when the client leaves", async () => {
+    const { watch, fake, port } = await forwarder({}, { silent: ["silent.example.com"] }, { upstreamTimeoutMs: 200 });
+    const { socket } = await flood(port, 6);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    socket.destroy();
+    await watch.stop();
+    const atStop = fake.tcpConnects();
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(fake.tcpConnects()).toBe(atStop);
+  });
+
+  it("relays a TCP answer larger than 4096 bytes (queries stay capped at 4096)", async () => {
+    const { watch, port } = await forwarder({ "big.example.com": RCODE.nxdomain }, { bigTcp: ["big.example.com"] });
+    const reply = await askTcp(port, query("big.example.com"));
+    expect(reply).toBeDefined();
+    expect(reply!.length).toBeGreaterThan(6_000);
+    expect(rcodeOf(reply)).toBe(RCODE.nxdomain);
+    expect(watch.blockedHosts()).toEqual(["big.example.com"]);
+    const oversized = Buffer.concat([query("q.example.com"), Buffer.alloc(5_000)]);
+    expect(await askTcp(port, oversized, 400)).toBeUndefined();
+  });
+});
+
+describe("a name the resolver was not asked for by its dotted form", () => {
+  it("is not recorded when one label contains a dot (the joined name would read as a different host), but the answer is still relayed", async () => {
+    const { watch, port } = await forwarder({ "a.b.example.com": RCODE.nxdomain });
+    expect(rcodeOf(await ask(port, rawQuery(["a.b", "example", "com"])))).toBe(RCODE.nxdomain);
+    expect(watch.blockedHosts()).toEqual([]);
+    expect(rcodeOf(await ask(port, rawQuery(["a", "b", "example", "com"])))).toBe(RCODE.nxdomain);
+    expect(watch.blockedHosts()).toEqual(["a.b.example.com"]);
   });
 });
 
