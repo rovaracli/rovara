@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_LIMITS_MAX, SETUP_AGENT_LIMIT_NAMES, SETUP_AGENT_PURPOSE, SETUP_JOURNAL_MAX_ENTRIES, SETUP_PERSON_SOURCE, SETUP_RUN_END_WORDS, SETUP_RUN_LIMIT_STOPS,
-  SetupAgentLimitSettingSchema, SetupAgentLimitsSchema, SetupHostAskSchema, SetupHostSchema, SetupJournalEntrySchema, SetupRunSummarySchema, SetupValueSourceSchema,
+  SetupAgentLimitSettingSchema, SetupAgentLimitsSchema, SetupHostAskSchema, SetupReplacementSchema, setupReplacementText, SetupHostSchema, SetupJournalEntrySchema, SetupRunSummarySchema, SetupValueSourceSchema,
   effectiveSetupAgentLimits, isSetupRunLimitStop, observedSource, recipeSource,
 } from "../../packages/contracts/src/setup-run.js";
 import { TestEnvironmentProposalSchema, TestEnvValueSourceSchema } from "../../packages/contracts/src/test-environment.js";
@@ -145,5 +145,19 @@ describe("value sources", () => {
   it("is accepted in a proposal's valueSources", () => {
     const shape = TestEnvironmentProposalSchema.shape.valueSources.element.shape.source;
     expect(shape.safeParse(observedSource("run-9", 12)).success).toBe(true);
+  });
+});
+
+describe("replacements", () => {
+  const replacement = { field: "repos[0].setupCommands[0]", detected: "uv sync --frozen", replacedBy: "uv sync", failedAtN: 7, workedAtN: 9 };
+  it("accepts a replacement and writes the card's sentence in fixed words around the two commands", () => {
+    expect(SetupReplacementSchema.safeParse(replacement).success).toBe(true);
+    expect(SetupReplacementSchema.safeParse({ ...replacement, workedAtN: undefined }).success).toBe(true);
+    expect(setupReplacementText(SetupReplacementSchema.parse(replacement))).toBe("detected uv sync --frozen, replaced by uv sync because uv sync --frozen failed (journal #7)");
+  });
+  it("is strict, one line, and bounded to the journal", () => {
+    for (const bad of [{ ...replacement, extra: 1 }, { ...replacement, detected: "a\nb" }, { ...replacement, replacedBy: "" }, { ...replacement, failedAtN: 0 }, { ...replacement, failedAtN: 401 }, { ...replacement, workedAtN: 401 }, { ...replacement, detected: "x".repeat(1_025) }]) {
+      expect(SetupReplacementSchema.safeParse(bad).success, JSON.stringify(bad).slice(0, 80)).toBe(false);
+    }
   });
 });

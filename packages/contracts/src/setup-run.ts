@@ -141,6 +141,29 @@ export const SetupHostAskSchema = z
   .strict();
 export type SetupHostAsk = z.infer<typeof SetupHostAskSchema>;
 
+// ---- what the run changed from the detectors (design 3.2: "Code first still holds")
+
+/**
+ * A detected value the run replaced because running it failed. Shown on the confirm card as "detected X, replaced by Y because X failed (journal #n)". The two commands are the repository's and the
+ * run's own text, redacted and on one line, shown as quoted text and never read as instructions. `failedAtN` is the journal position of the failed run of the detected command; `workedAtN`, of the
+ * run of the replacement that worked.
+ */
+export const SetupReplacementSchema = z
+  .object({
+    field: line(200),
+    detected: line(1_024),
+    replacedBy: line(1_024),
+    failedAtN: z.number().int().min(1).max(SETUP_JOURNAL_MAX_ENTRIES),
+    workedAtN: z.number().int().min(1).max(SETUP_JOURNAL_MAX_ENTRIES).optional(),
+  })
+  .strict();
+export type SetupReplacement = z.infer<typeof SetupReplacementSchema>;
+
+/** The card's sentence for a replacement. Fixed words around the two commands. */
+export function setupReplacementText(replacement: SetupReplacement): string {
+  return `detected ${replacement.detected}, replaced by ${replacement.replacedBy} because ${replacement.detected} failed (journal #${String(replacement.failedAtN)})`;
+}
+
 // ---- what a run reports at its end
 
 export const SetupRunSummarySchema = z
