@@ -364,13 +364,19 @@ export class FakeGitHub {
     verifyWebhookRepository: async (): Promise<boolean> => {
       return this.fault("verifyWebhookRepository") !== "not_found";
     },
+    // As the real provider: `getBranchHead` takes only Rovara's own `agentx/*` branches; any other branch (a base such as `main`) is read with `getDefaultBranchHead`.
     getBranchHead: async (_repositoryUrl: string, branch: string): Promise<string> => {
       this.fault("getBranchHead");
-      const base = this.baseHeads.get(branch);
-      if (base !== undefined) return base;
+      if (!/^agentx\/[0-9a-f-]{36}$/iu.test(branch)) throw agentXError("CONFIG_INVALID", "branch name is invalid");
       const pushed = this.pushes.get(branch);
       if (pushed === undefined) throw new Error(`GitHub has no branch ${branch}`);
       return pushed.commit;
+    },
+    getDefaultBranchHead: async (_repositoryUrl: string, branch: string): Promise<string> => {
+      this.fault("getDefaultBranchHead");
+      const base = this.baseHeads.get(branch);
+      if (base === undefined) throw new Error(`GitHub has no branch ${branch}`);
+      return base;
     },
     getCommitTree: async (_repositoryUrl: string, commit: string): Promise<string> => {
       this.fault("getCommitTree");

@@ -1496,6 +1496,31 @@ export class GitHubAppCredentialProvider {
     return target.sha;
   }
 
+  /**
+   * The commit a repository's branch points at now, for any ordinary branch name (a project's default branch), as GitHub says; throws when the branch does not exist.
+   * `getBranchHead` is for Rovara's own `agentx/*` branches only.
+   */
+  async getDefaultBranchHead(repositoryUrl: string, branch: string, scope: GitHubTokenScope): Promise<string> {
+    if (!GitBranchNameSchema.safeParse(branch).success) throw agentXError("CONFIG_INVALID", "branch name is invalid");
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.readTokenFor(repository, scope);
+    const response = await this.fetchImplementation(
+      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`,
+      { headers: githubHeaders(token), signal: AbortSignal.timeout(8_000), redirect: "error" },
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw agentXError("RUNTIME_UNAVAILABLE", `GitHub branch lookup failed with HTTP ${response.status}`);
+    }
+    const value = feedbackRecord(await response.json());
+    const target = feedbackRecord(value.object);
+    if (value.ref !== `refs/heads/${branch}` || target.type !== "commit" || typeof target.sha !== "string" || !/^[a-f0-9]{40}$/u.test(target.sha)) {
+      throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid branch reference");
+    }
+    return target.sha;
+  }
+
+
   /** GitHub's immutable tree object identifies code content independently of publication commit metadata. */
   private async getCommitTreeSha(repository: InstalledRepository, commitSha: string, token: string): Promise<string> {
     const value = await this.getCommitObject(repository, commitSha, token);
