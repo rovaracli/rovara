@@ -6,9 +6,10 @@
 //   POST /v1/app/projects/{name}/test-environment/prove      derive the Prove report of a proposal from the project's setup check (prove-from-setup-check.ts)
 //   POST /v1/app/projects/{name}/test-environment/approve    approve a proved proposal as the next revision
 //
-// What the routes do NOT do (the approval card, E4, does): take an edited body, ask for a fresh sign-in or a second person, or approve anything that is less safe than the sandbox. A proposal made here is the sandbox
-// tier with no services, accounts, preview, shared environment, video, traces or nightly run (a draft with more is refused when it is stored), so the approval needs only a maintainer; `approveTestEnvironment` itself
-// refuses a less-safe change that comes without the second person and the fresh sign-in, and these routes never supply either.
+// What the routes do NOT do (the approval card, E4, does): take an edited body, ask for a fresh sign-in or a second person, or approve anything that is less safe than the sandbox. A DRAFT is the sandbox tier with no
+// services, accounts, preview, shared environment, video, traces or nightly run (a draft with more is refused when it is stored). A PROPOSAL on a project that already has an approved environment also keeps what a person
+// set there (tier, services, accounts, nightly run, production list), which can be less safe: `approveTestEnvironment` itself refuses a less-safe or high-risk change that comes without the second person and the fresh
+// sign-in, and these routes never supply either, so such a proposal cannot be approved here (REAUTH_REQUIRED or FORBIDDEN).
 import {
   projectAllows,
   TestEnvApproveBodySchema,
@@ -132,6 +133,14 @@ const bodyError = (error: { issues: ReadonlyArray<{ path: PropertyKey[]; message
   return agentXError("CONFIG_INVALID", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
 };
 
+/** The Prove report of a proposal from the project's setup check as it stands NOW. */
+async function deriveProve(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, proposal: TestEnvironmentBody) {
+  const latest = await latestOf(deps, orgId, name);
+  const meta = await readProjectMeta({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, name);
+  const setup = await setupStateOf(setupCheckDepsOf(deps), meta, latest.definition);
+  return proveReportFromSetupCheck({ environment: proposal, definition: { revision: latest.definition.revision, setup: latest.definition.setup, readiness: latest.definition.readiness }, setup, nowMs: deps.now() });
+}
+
 /** `/v1/app/projects/{name}/test-environment*`: the reply, or undefined when the switch is off or the path is not one of these. */
 export async function routeTestEnvironment(
   deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, hooks: TestEnvRouteHooks = {}, env: NodeJS.ProcessEnv = process.env,
@@ -168,10 +177,7 @@ export async function routeTestEnvironment(
     if (!projectAllows(role, "setup_check")) throw agentXError("FORBIDDEN", "only a project maintainer can prove a test environment");
     const proposal = await readProposal(store, caller.orgId, name, parsed.data.digest);
     if (proposal === undefined) throw refuse("no_proposal");
-    const latest = await latestOf(deps, caller.orgId, name);
-    const meta = await readProjectMeta({ documentClient: deps.documentClient, tableName: deps.tableName }, caller.orgId, name);
-    const setup = await setupStateOf(setupCheckDepsOf(deps), meta, latest.definition);
-    const derived = proveReportFromSetupCheck({ environment: proposal, definition: { revision: latest.definition.revision, setup: latest.definition.setup, readiness: latest.definition.readiness }, setup, nowMs: deps.now() });
+    const derived = await deriveProve(deps, caller.orgId, name, proposal);
     if (!derived.ok) throw refuse(derived.refusal);
     const recorded = await recordTestEnvProveReport(store, { orgId: caller.orgId, project: name, report: derived.report });
     logDeveloperEvent({ event: "developer.test_env_proved", orgId: caller.orgId, project: name, digest: parsed.data.digest, proved: String(recorded.proved) });
@@ -181,6 +187,15 @@ export async function routeTestEnvironment(
   const parsed = TestEnvApproveBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
   const requestId = parsed.data.requestId ?? testEnvRequestId(parsed.data.digest, parsed.data.expectedRevision, caller.developerId);
+  // The proof is read again NOW: a proposal proved at an earlier settings revision is not approved after a command it was proved with was removed. (A replay of an approval already made skips this: it changes nothing.)
+  const current = await readApprovedTestEnvironment(store, caller.orgId, name);
+  if (current === undefined || testEnvDigest(current.environment) !== parsed.data.digest) {
+    const proposal = await readProposal(store, caller.orgId, name, parsed.data.digest);
+    if (proposal !== undefined) {
+      const again = await deriveProve(deps, caller.orgId, name, proposal);
+      if (!again.ok) throw refuse(again.refusal);
+    }
+  }
   // No second person and no fresh sign-in are supplied here, on purpose: a change that needs them is refused by `approveTestEnvironment`.
   const approvedNow = await approveTestEnvironment(store, { orgId: caller.orgId, project: name, digest: parsed.data.digest, expectedRevision: parsed.data.expectedRevision, requestId, approvedBy: caller.developerId, role });
   logDeveloperEvent({ event: "developer.test_env_approved", orgId: caller.orgId, project: name, revision: String(approvedNow.revision), replayed: String(approvedNow.replayed) });
