@@ -188,7 +188,10 @@ describe("the handler's meta repo wiring", () => {
   });
   it("reads a config file with the size cap, in the org's scope", async () => {
     const getFileAtCommit = vi.fn(async () => "version: 1\n");
-    const readers = metaRepositoryReaders({ cloud: true, githubPullRequests: { getFileAtCommit } } as never);
+    // The code host of the repository is found from the project's record (task P5e), so the project is there.
+    const db = new FakeDynamoDb();
+    db.set({ ...projectRevisionKey(TEST_ORG, PROJECT, 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z", runtimeBinding: BINDING, definition });
+    const readers = metaRepositoryReaders({ cloud: true, tableName: "state", documentClient: db, githubPullRequests: { getFileAtCommit } } as never);
     await readers.readMetaFile({ orgId: TEST_ORG, project: PROJECT, repository: { name: "m", url: META.url }, commit: "a".repeat(40), path: ".rovara/project.yaml" });
     expect(getFileAtCommit).toHaveBeenCalledWith(META.url, ".rovara/project.yaml", "a".repeat(40), { orgId: TEST_ORG }, { maxBytes: 262_144 });
   });

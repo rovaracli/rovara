@@ -12,16 +12,27 @@ import type { AwsBrokerDependencies } from "./definitions.js";
 import { repositoryGateOf } from "./dependency-wiring.js";
 import { registerProjectFor } from "./project-registration.js";
 import { githubScope } from "./scope-helpers.js";
+import { githubProviderOfRecord, repositoryOfProject } from "./repository-hosts.js";
+import { requireLatestProject } from "./records.js";
 
 /** The reads of the meta repository the config import needs: the branch head and a file at a commit (read with the config size cap, so an oversized file stops the read). */
 export function metaRepositoryReaders(dependencies: AwsBrokerDependencies): Pick<QueueDependencies, "readMetaFile" | "getHead"> {
   const github = dependencies.githubPullRequests;
+  // P5e: the two reads have no code host port counterpart yet (a read capped in size, and the head of the default branch), so they are GitHub's alone. The repository's record decides: an unknown
+  // host kind is refused with the router's fixed sentence, and a repository on another host with `GITHUB_ONLY_MESSAGE`; neither is ever asked of GitHub. Left for P6.
+  const requireGithubRepository = async (orgId: OrgId, project: string, repository: { name: string; url: string }): Promise<void> => {
+    const record = repositoryOfProject((await requireLatestProject(dependencies, orgId, project)).definition.repositories, repository);
+    if (record === undefined) throw agentXError("CONFIG_INVALID", "the repository is not part of the project");
+    githubProviderOfRecord(dependencies, record);
+  };
   return {
-    readMetaFile: async ({ orgId, repository, commit, path }) => {
+    readMetaFile: async ({ orgId, project, repository, commit, path }) => {
+      await requireGithubRepository(orgId, project, repository);
       if (github.getFileAtCommit === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "reading the meta repo is not set up in this deployment");
       return github.getFileAtCommit(repository.url, path, commit, githubScope(dependencies, orgId), { maxBytes: META_CONFIG_MAX_BYTES });
     },
-    getHead: async ({ orgId, repository }) => {
+    getHead: async ({ orgId, project, repository }) => {
+      await requireGithubRepository(orgId, project, repository);
       if (github.getDefaultBranchHead === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "reading the meta repo is not set up in this deployment");
       return github.getDefaultBranchHead(repository.url, repository.defaultBranch, githubScope(dependencies, orgId));
     },

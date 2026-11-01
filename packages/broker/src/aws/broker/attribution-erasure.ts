@@ -10,6 +10,7 @@ import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.
 import { getItem } from "../cancellation.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 import { githubScopeOf } from "./scope-helpers.js";
+import { changeRequestRef, hostOfTaskRepository } from "./repository-hosts.js";
 
 type Role = "requester" | "approver";
 
@@ -32,10 +33,14 @@ export async function rewriteDescriptionsOfTask(dependencies: AwsBrokerDependenc
   for (const record of pullRequests) {
     const repositoryUrl = String(record.repositoryUrl);
     const number = Number(record.number);
-    const current = (await dependencies.githubPullRequests.getPullRequest(repositoryUrl, number, scope)).body;
+    // P5e: the description is read and rewritten on the code host the pull request's repository record names. An unknown host kind throws the router's fixed sentence, so the erasure keeps the
+    // person's rows and is retried (as for any host that cannot be read); it is never done through GitHub.
+    const host = await hostOfTaskRepository(dependencies, task, { name: typeof record.repository === "string" ? record.repository : undefined, url: repositoryUrl });
+    const ref = changeRequestRef(repositoryUrl, number);
+    const current = (await host.getChangeRequest(ref, scope)).body;
     if (current !== undefined && current !== null) {
       const next = rewriteAttributionBody(current, role);
-      if (next !== current) await dependencies.githubPullRequests.updatePullRequest(repositoryUrl, number, { body: next }, scope);
+      if (next !== current) await host.updateChangeRequest(ref, { body: next }, scope);
     }
     if (typeof record.body === "string") await rewriteStored(dependencies, { pk: String(record.pk), sk: String(record.sk) }, "body", record.body, role);
   }

@@ -77,6 +77,7 @@ import { getAppProject, startProjectSetupCheck } from "./project-archive-setup.j
 import { projectRoleForRoute } from "./project-members.js";
 import { putProjectSettings } from "./project-settings.js";
 import { checkProjectAccess } from "./project-access.js";
+import { requireGithubRecord } from "../../plugins/code-host/github-only.js";
 
 /** What the setup-draft routes (Plan 6 Task 10) need, from the developer API's dependencies and for one caller. */
 export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDependencies {
@@ -259,7 +260,11 @@ export function sessionReadDependencies(deps: DeveloperRouteDependencies, caller
       pullRequests: workspaceId => taskDeps.actions.pullRequests(workspaceId),
       repository: async (orgId, project, revision, repository) => {
         const registered = await tasks.projectRevision(orgId, project, revision);
-        return registered?.definition.repositories.find(item => item.name === repository)?.url;
+        const record = registered?.definition.repositories.find(item => item.name === repository);
+        // P5e: the change list is read with GitHub's pull request files (`sessionDiffFiles`), which the code host port does not carry as GitHub shapes them (left for P6). A repository on another
+        // host is refused here with a clear sentence, and one whose host this install has not registered with the router's fixed sentence; neither is ever asked of GitHub.
+        if (record !== undefined) requireGithubRecord(record, deps.codeHost);
+        return record?.url;
       },
     } satisfies NonNullable<SessionRouteDependencies["diff"]> }),
     ...(taskDeps.actions.turnRecordsTableName === undefined ? {} : { turnRecordsTableName: taskDeps.actions.turnRecordsTableName }),
