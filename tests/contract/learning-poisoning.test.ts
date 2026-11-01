@@ -141,15 +141,17 @@ describe("P1 MINJA: an outsider files tickets and Slack asks with bridging steps
     expect(buildReflectorInput(base({ intentTrust: "outsider" }))).toMatchObject({ eligible: false, reason: "outsider_intent" });
     expect(buildReflectorInput(base({ steeringTrust: ["member", "outsider"] }))).toMatchObject({ eligible: false, reason: "outsider_steered" });
     expect(buildReflectorInput(base({ initiatorTrust: undefined }))).toMatchObject({ eligible: false, reason: "unknown_initiator" });
+    expect(buildReflectorInput(base({ steeringTrust: undefined }))).toMatchObject({ eligible: false, reason: "unknown_steering" });
     expect(buildReflectorInput(base({ intentTrust: undefined }))).toMatchObject({ eligible: false, reason: "outsider_intent" });
     expect(buildReflectorInput(base({}))).toMatchObject({ eligible: true });
   });
 
-  // GAP-1 (see report). A task whose steering trust was never stated is treated as unsteered: the ineligibility rule fails OPEN when the connecting source forgets the field,
-  // although the rule above it (initiator, intent) fails closed on a missing value.
-  it.fails("a task whose steering trust is not stated is ineligible (unknown is outsider)", () => {
+  // GAP-1 (fixed in fix round 1): a task whose steering trust was never stated used to count as unsteered, so the rule failed open when a connecting source forgot the field.
+  // Unknown is outsider; an explicit [] still means nobody steered it.
+  it("a task whose steering trust is not stated is ineligible (unknown is outsider); an explicit [] is eligible", () => {
     const subject: ReflectSubject = { kind: "task", id: "t", workspaceId: WS, project: PROJECT, repositories: ["api"], initiatorTrust: "member", intentTrust: "member", spans: [memberSpan("x")] };
-    expect(buildReflectorInput(subject)).toMatchObject({ eligible: false });
+    expect(buildReflectorInput(subject)).toMatchObject({ eligible: false, reason: "unknown_steering" });
+    expect(buildReflectorInput({ ...subject, steeringTrust: [] })).toMatchObject({ eligible: true });
   });
 
   it("an eligible task that also carries the outsider's text: the text is removed in code before the model, and the prompt never holds it", async () => {

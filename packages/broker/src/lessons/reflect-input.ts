@@ -44,7 +44,7 @@ export interface ReflectSubject {
   evalRun?: boolean;
 }
 
-export type IneligibleReason = "eval_run" | "unknown_initiator" | "outsider_initiated" | "outsider_steered" | "outsider_intent" | "no_member_reason" | "no_usable_evidence";
+export type IneligibleReason = "eval_run" | "unknown_initiator" | "unknown_steering" | "outsider_initiated" | "outsider_steered" | "outsider_intent" | "no_member_reason" | "no_usable_evidence";
 export interface MarkedSpan { id: string; kind: SpanKind; trust: TrustClass; eventId?: string; authorId?: string; sourceKey?: string; audience?: Audience; scopes?: readonly string[] }
 export type ReflectorInput =
   | { eligible: false; reason: IneligibleReason; removedOutsider: number }
@@ -76,7 +76,9 @@ export function buildReflectorInput(subject: ReflectSubject): ReflectorInput {
   if (subject.kind === "task") {
     if (subject.initiatorTrust === undefined) return { eligible: false, reason: "unknown_initiator", removedOutsider: 0 };
     if (subject.initiatorTrust === "outsider") return { eligible: false, reason: "outsider_initiated", removedOutsider: 0 };
-    if ((subject.steeringTrust ?? []).includes("outsider")) return { eligible: false, reason: "outsider_steered", removedOutsider: 0 };
+    // Unknown is outsider: a source that does not say who steered the task is refused, like a missing initiator or intent. An explicit `[]` means nobody steered it.
+    if (subject.steeringTrust === undefined) return { eligible: false, reason: "unknown_steering", removedOutsider: 0 };
+    if (subject.steeringTrust.includes("outsider")) return { eligible: false, reason: "outsider_steered", removedOutsider: 0 };
     if (subject.intentTrust === undefined || subject.intentTrust === "outsider") return { eligible: false, reason: "outsider_intent", removedOutsider: 0 };
   }
 
