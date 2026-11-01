@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-press.js";
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
@@ -223,7 +224,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         timedSettlementJob({
           name: "resume-learning-walks", pick: "learning", startedAt, now: Date.now, ...learningPriority,
           onSkip: (name) => console.log(JSON.stringify({ component: "broker", event: "learning.settlement_job_skipped", job: name, reason: "not enough time left" })),
-          run: (budgetMs) => resumeOpenLearningWalks(learningWalkDeps({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }), { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))),
+          run: async (budgetMs) => {
+            const started = Date.now();
+            const learning = await resumeOpenLearningWalks(learningWalkDeps({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }), { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })));
+            // Proof and evidence (wire-proof fix round 2): the evidence erases a company close, a project archive or a person erase left unfinished are finished here, from their cursors, with what is left of the slice. Not behind the proof switch.
+            const evidence = await resumeEvidence(dependencies, Math.max(0, budgetMs - (Date.now() - started)));
+            return { learning, evidence };
+          },
         }),
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
@@ -380,7 +387,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     // Decision cards (wire-proof): a card's button pressed in Slack. Answered with one fixed sentence for the interactivity Lambda to say privately; `enabled: false` while the cards switch is off.
     if (isSlackDecisionPressEvent(event)) {
       if (!decisionCardsEnabled() || dependencies.developer === undefined) return json({ enabled: false }, "slack-ingress");
-      return json(await handleSlackDecisionPress(dependencies, { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies), ...(agents === undefined ? {} : { agents }) }, event), "slack-ingress");
+      return json(await handleSlackDecisionPress(dependencies, { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies), ...routeEditionDependencies(dependencies), ...(agents === undefined ? {} : { agents }) }, event), "slack-ingress");
     }
     if (isSlackTaskAuthorizationEvent(event)) {
       try { return json(await authorizeSlackTaskAction(dependencies, tasks, event), "slack-ingress"); }
@@ -470,6 +477,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...routeEditionDependencies(dependencies),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
+          evidenceErase: evidenceEraseOf(dependencies),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           ...repositoriesGateRoute(dependencies),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
@@ -754,6 +762,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           ...githubConnectRoute(dependencies),
+          // Proof and evidence (wire-proof fix round 1): the stored evidence of an archived project or a closed company is deleted with it.
+          evidenceErase: evidenceEraseOf(dependencies),
           ...(agents === undefined ? {} : { agents }),
           // Meta repo lane B: the setup agent's citations are re-read from GitHub, through the org's own installation.
           ...(dependencies.githubPullRequests.getFileAtCommit === undefined ? {} : {

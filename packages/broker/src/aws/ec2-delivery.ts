@@ -385,10 +385,6 @@ async function forWorkerFeatures(
   if (invocation.kind === "task" && invocation.payload.diagnosis !== undefined && !features.includes(DIAGNOSIS_WORKER_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
-  // Proof and evidence: a run that is asked to gather the checks' test reports is never sent to a worker that does not list it (an older worker's strict parse would refuse the field), and the field is never dropped.
-  if (invocation.kind === "task" && invocation.payload.evidenceCapture === true && !features.includes(EVIDENCE_CAPTURE_FEATURE)) {
-    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
-  }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.
   if (invocation.kind === "task" && (invocation.payload.workflowMode === "SPEC_WRITE" || invocation.payload.specWrite !== undefined) && !features.includes("task.specWrite.v1")) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
@@ -524,7 +520,14 @@ async function forWorkerFeatures(
   // I3: rolling deploys put a new broker in front of an old worker, so an old worker must not fail the publication. It is sent no attribution and publishes as before, with no trailer on
   // the commit; the broker wrote the requester and approver lines into the description itself (it owns that text) and recorded the audit link and the people on the operation.
   const attributionUnsupported = carriesAttribution && !features.includes("publish.attribution");
-  const withAttribution = attributionUnsupported ? withoutAttribution(invocation) : invocation;
+  // Proof and evidence (wire-proof fix round 1): the request to gather the checks' test reports is informational (it changes nothing the run does or proves), so a worker that does not list it is sent no
+  // field and runs the checks as before; no evidence is captured for that run, and the broker finds no raw file and keeps no pack. A run built while the proof switch was on and retried or re-delivered
+  // after a worker-image rollback is therefore never failed on it.
+  const evidenceUnsupported = invocation.kind === "task" && invocation.payload.evidenceCapture === true && !features.includes(EVIDENCE_CAPTURE_FEATURE);
+  if (evidenceUnsupported) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.evidence_capture_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId, evidence: "not_captured" }));
+  }
+  const withAttribution = withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported);
   if (attributionUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.attribution_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
@@ -897,6 +900,14 @@ function withoutUnparsedFields(invocation: WorkerInvocation, features: readonly 
 }
 
 /** A publication without the attribution field (and the very object back for anything else). */
+/** The invocation without the evidence request when `drop` (and the very object back otherwise). */
+function withoutEvidenceCapture(invocation: WorkerInvocation, drop: boolean): WorkerInvocation {
+  if (!drop || invocation.kind !== "task") return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.evidenceCapture;
+  return { ...invocation, payload };
+}
+
 function withoutAttribution(invocation: WorkerInvocation): WorkerInvocation {
   if (invocation.kind !== "publish" || invocation.payload.attribution === undefined) return invocation;
   const payload = { ...invocation.payload };

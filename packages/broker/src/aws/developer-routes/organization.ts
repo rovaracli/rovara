@@ -286,6 +286,17 @@ export async function removeOrganizationMember(deps: DeveloperRouteDependencies,
 const LeaveBodySchema = z.object({ requestId: z.string().uuid().optional() }).strict();
 
 /**
+ * What closing a company clears besides its connections, triggers, hooks and sessions, in the close's learning step: its learning data, then its stored proof evidence (not behind the proof switch). The
+ * evidence erase records its pending erase before any work, so a pass that does not finish is resumed by the scheduled job. The Team record is its own close step (`clearTeamRecord`).
+ */
+export function clearOrgData(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now" | "evidenceErase">): (orgId: OrgId) => Promise<void> {
+  return async (orgId) => {
+    await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId);
+    await deps.evidenceErase?.workspace(orgId);
+  };
+}
+
+/**
  * `POST /v1/app/org/leave`. Members and admins leave. An owner leaves when another owner exists; an owner who is the only member
  * closes the org (its GitHub connection and Slack workspace are released, its projects archived). Otherwise LAST_OWNER (409).
  */
@@ -325,7 +336,8 @@ export async function leaveOrganization(deps: DeveloperRouteDependencies, caller
     });
     const clearSessions = deps.closeOrgHooks?.clearSessions ?? ((orgId: OrgId) => closeOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId));
     // v1.2 learning loop: the company's learning data is deleted by a bounded walk over its projects; a walk that does not finish is resumed later (`resumeLearningWalks`).
-    const clearLearning = deps.closeOrgHooks?.clearLearning ?? (async (orgId: OrgId) => { await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId); });
+    // v1.2 learning loop and stored proof evidence: `clearOrgData` (learning walk, then the evidence erase, which records its pending erase before any work so the scheduled job resumes it).
+    const clearLearning = deps.closeOrgHooks?.clearLearning ?? clearOrgData(deps);
     // Team record (wire-team-record): the company's whole record (rows, vectors, facts, lessons, lake) is erased with it, where the record's switch is on. Unlike the learning walk this is NOT best
     // effort: the hook writes an erase-in-progress marker first (a failure stops the close and a fresh close resumes it) and does one bounded pass; the hourly job finishes the rest, the lake rows included.
     const clearTeamRecord = deps.closeOrgHooks?.clearTeamRecord ?? (deps.teamRecord === undefined ? undefined : (orgId: OrgId) => deps.teamRecord!.erase.workspace(orgId));
