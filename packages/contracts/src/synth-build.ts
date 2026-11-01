@@ -69,6 +69,7 @@ export const SYNTH_EXCLUDED_KEYS: Readonly<Record<string, string>> = {
   agentxCloud: "the hosted Rovara cloud; an Enterprise install is refused inside it",
   agentxDeploymentMode: "only ec2-ebs is accepted; there is nothing to choose",
   rovaraStdioMcpServers: "package-run MCP servers are switched off (owner decision 2026-10-31); asking for them stops the synth. The release that turns them on moves this key to SYNTH_CONTEXT_KEYS together with STDIO_MCP_RELEASED (a test keeps the two in step)",
+  agentxTeamRecord: "the Team record storage is a new surface that ships switched off (it creates a table, vector and lake storage and schedules); no Enterprise install is built with it yet, so it stays off in a build made at approval. The release that offers it to Enterprise moves this key and its settings (agentxTeamRecord followed by EmbeddingModelId, KmsKeyArn, Lake, AthenaUsers, EnterpriseWorkspaceId) to SYNTH_CONTEXT_KEYS",
   agentxInstaller: "the Launch in AWS installer stack, which no release deploys",
   agentxEval: "the SWE-bench eval stack, which no release deploys",
   agentxWebAssetHosting: "a build always uses the bootstrap-free synthesizer, which forces the web assets onto the cell; cloudfront is refused with it",
