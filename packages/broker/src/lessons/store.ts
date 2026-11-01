@@ -11,7 +11,7 @@ import { LessonSchema, normId, normSource, type Lesson, type LessonStatus, type 
 import type { LessonStage } from "@agentx/contracts";
 
 export interface ScopeKey { workspaceId: string; project: string }
-export type CommitResult = { ok: true; setVersion: number; /** Lessons a rollback brought back; each comes back needing a person. */ restored?: string[] } | { ok: false; reason: "conflict" | "erased" };
+export type CommitResult = { ok: true; setVersion: number; /** Lessons a rollback brought back; each comes back needing a person. */ restored?: string[] } | { ok: false; reason: "conflict" | "erased" | "fenced" };
 
 /**
  * A durable record of a multi-step deletion (forget, withdraw, purge). It is written BEFORE the first step and marked finished only after the last, and each
@@ -49,8 +49,11 @@ export interface LessonStore {
   setVersion(key: ScopeKey): Promise<number>;
   versions(key: ScopeKey, id: string): Promise<Lesson[]>;
   snapshots(key: ScopeKey): Promise<SetSnapshot[]>;
-  /** Writes new versions in one conditional step. */
-  commit(key: ScopeKey, expectedSetVersion: number, writes: readonly Lesson[], at: number): Promise<CommitResult>;
+  /**
+   * Writes new versions in one conditional step. `fence` is the opaque set of commit conditions a decision rested on (who may approve, read from the membership records); they commit
+   * WITH the write, so a person removed since the read stops it ("fenced"). A store that cannot honour a fence refuses the write: it never ignores one.
+   */
+  commit(key: ScopeKey, expectedSetVersion: number, writes: readonly Lesson[], at: number, fence?: readonly unknown[]): Promise<CommitResult>;
   /** Restores the lessons of an earlier set version as a new set version. */
   rollback(key: ScopeKey, targetSetVersion: number, expectedSetVersion: number, at: number): Promise<CommitResult>;
   /** Changes the volatile fields of a lesson in place; `fn` returns the new values (or undefined for no change). */
@@ -114,6 +117,8 @@ interface ProjectState {
 
 export class InMemoryLessonStore implements LessonStore {
   private readonly state = new Map<string, ProjectState>();
+  /** `fenceCheck` stands in for the table's condition evaluation in tests: it gets the fence's conditions and says whether they still hold. Without one, a fenced commit is refused. */
+  constructor(private readonly options: { fenceCheck?: (conditions: readonly unknown[]) => boolean } = {}) {}
 
   private of(key: ScopeKey): ProjectState {
     const id = scopeId(key);
@@ -152,9 +157,10 @@ export class InMemoryLessonStore implements LessonStore {
   async versions(key: ScopeKey, id: string): Promise<Lesson[]> { return clone(this.of(key).versions.get(id) ?? []); }
   async snapshots(key: ScopeKey): Promise<SetSnapshot[]> { return clone(this.of(key).sets); }
 
-  async commit(key: ScopeKey, expectedSetVersion: number, writes: readonly Lesson[], at: number): Promise<CommitResult> {
+  async commit(key: ScopeKey, expectedSetVersion: number, writes: readonly Lesson[], at: number, conditions?: readonly unknown[]): Promise<CommitResult> {
     const s = this.of(key);
     if (s.sets.at(-1)!.setVersion !== expectedSetVersion) return { ok: false, reason: "conflict" };
+    if (conditions !== undefined && conditions.length > 0 && this.options.fenceCheck?.(conditions) !== true) return { ok: false, reason: "fenced" };
     const staged: Lesson[] = [];
     const fence = this.fenceView(s);
     for (const raw of writes) {

@@ -47,8 +47,8 @@ async function mayHandle(deps: { directory: ApproverDirectory; access: AccessChe
   } catch { return false; }
 }
 
-/** What a go-live rests on: the exact lesson version the approvals were given for, the set version that was current when the decision was made. */
-export interface ActivationPin { version: number; setVersion: number }
+/** What a go-live rests on: the exact lesson version the approvals were given for, the set version that was current when the decision was made, and the decision's own commit conditions. */
+export interface ActivationPin { version: number; setVersion: number; fence?: readonly unknown[] }
 
 /**
  * Makes a lesson live: status active, expiry set, approvals recorded, and the lesson it supersedes retired. ONE conditional commit, pinned: it applies only if the stored lesson is still
@@ -76,7 +76,7 @@ export async function activateLesson(deps: LessonDeps & { store: LessonStore }, 
     if (old !== undefined && old.status === "active") writes.push({ ...old, version: nextVersion(old, await deps.store.versions(key, old.id)), status: "retired", updatedAt: now });
   }
   // The set version is the one the decision was made on, never one read now: if anything was committed since, this write is refused.
-  const result = await deps.store.commit(key, pin.setVersion, writes, now);
+  const result = await deps.store.commit(key, pin.setVersion, writes, now, pin.fence);
   return result.ok ? next : undefined;
 }
 
@@ -92,8 +92,9 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
   if (!modeAllows(resolved.mode, "load")) return { ok: false, code: "mode_off" };
 
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
-    // Every attempt reads who may approve afresh: a person removed since a lost race cannot decide on a retry.
-    const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
+    // Every attempt reads who may approve afresh, with the commit conditions that pin that answer: a person removed since a lost race cannot decide on a retry, and the writes below
+    // carry the conditions, so a removal between this read and the write stops them.
+    const group = await deps.directory.eligibility(key.workspaceId, key.project, { approverId: input.approverId }).catch(() => undefined);
     if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
     if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };
     // The set version is read BEFORE the lesson and then used for every write of this attempt: anything committed after this point (another person's edit, approval, rollback) moves the
@@ -175,10 +176,10 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     if (complete && inGroup) {
       // The edited text must be saved with the activation: write the edit first as a version of the pending lesson when there is one. The go-live is then pinned to THAT version and the
       // set version the edit produced, so nothing written between the two steps is made live under these approvals.
-      let pin: ActivationPin = { version: lesson.version, setVersion };
+      let pin: ActivationPin = { version: lesson.version, setVersion, ...(group.fence === undefined ? {} : { fence: group.fence }) };
       if (input.edit !== undefined) {
         const version = nextVersion(lesson, await deps.store.versions(key, lesson.id));
-        const saved = await deps.store.commit(key, setVersion, [{ ...working, approvals: [], version, updatedAt: now }], now);
+        const saved = await deps.store.commit(key, setVersion, [{ ...working, approvals: [], version, updatedAt: now }], now, group.fence);
         if (!saved.ok) continue;
         working = { ...working, approvals: [], version, updatedAt: now };
         pin = { ...pin, version, setVersion: saved.setVersion };
@@ -190,7 +191,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     }
     // Not complete: keep the lesson pending with this approval, on the version and set this decision was made on.
     const saved: Lesson = { ...working, version: nextVersion(lesson, await deps.store.versions(key, lesson.id)), approvals, updatedAt: now };
-    const result = await deps.store.commit(key, setVersion, [saved], now);
+    const result = await deps.store.commit(key, setVersion, [saved], now, group.fence);
     if (!result.ok) continue;
     return { ok: true, status: "pending", lesson: saved, needs: complete ? "group_member" : "second_person" };
   }
@@ -259,7 +260,7 @@ export const retireByPerson = (deps: ApproveDeps, input: { workspaceId: string; 
 /** Restores an earlier lesson-set version (design §4.6). Audited `lesson.rolled_back`. */
 export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId: string; project: string; targetSetVersion: number; actorId: string; /** The set version the person saw: the store\'s conditional write enforces it, so a set that moved since is not rolled away. */ expectedSetVersion?: number; /** Runs the normal tier check again on each restored lesson (the caller passes `settleLesson`). */ onRestored?: (lessonId: string) => Promise<unknown> }): Promise<{ ok: true; setVersion: number; restored: string[] } | { ok: false; code: ApprovalFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
-  const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
+  const group = await deps.directory.eligibility(key.workspaceId, key.project, { approverId: input.actorId }).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.actorId)) return { ok: false, code: "not_eligible" };
   const current = input.expectedSetVersion ?? await deps.store.setVersion(key);
@@ -288,7 +289,7 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
   const valid = persons.filter((a) => eligible.has(normId(a.by)));
   if (valid.length !== lesson.approvals.length) {
     const next: Lesson = { ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: valid, updatedAt: deps.now() };
-    const kept = await deps.store.commit(key, setVersion, [next], deps.now());
+    const kept = await deps.store.commit(key, setVersion, [next], deps.now(), group.fence);
     if (!kept.ok) return;
     lesson = next; setVersion = kept.setVersion;
   }
@@ -300,7 +301,7 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
   const countable = group.eligibleIds.length > 1 ? valid.filter((a) => !idIn(authors, a.by) || a.mode === "second_person") : valid;
   if (countable.length !== valid.length) {
     const next: Lesson = { ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: countable, updatedAt: deps.now() };
-    const kept = await deps.store.commit(key, setVersion, [next], deps.now());
+    const kept = await deps.store.commit(key, setVersion, [next], deps.now(), group.fence);
     if (!kept.ok) return;
     lesson = next; setVersion = kept.setVersion;
   }
@@ -312,7 +313,7 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
   const groupsOk = resolved.requiredGroups.every((name) => standing.some((a) => idIn(group.groups?.[name] ?? [], a.by)));
   if (standing.length === 0 || !enough || !groupsOk) return;
   // Pinned to the version these approvals were judged on (the one this function read or wrote last) and the set version that goes with it.
-  try { await activateLesson(deps, key, lesson, standing, resolved.expiryDays, "lesson.activated", { version: lesson.version, setVersion }); } catch (error) { if (!(error instanceof AuditUnavailable)) throw error; }
+  try { await activateLesson(deps, key, lesson, standing, resolved.expiryDays, "lesson.activated", { version: lesson.version, setVersion, ...(group.fence === undefined ? {} : { fence: group.fence }) }); } catch (error) { if (!(error instanceof AuditUnavailable)) throw error; }
 }
 
 /**

@@ -47,8 +47,13 @@ export interface CitationVerifier {
 
 /** Who may approve lessons for a project (project maintainers, How-we-work editors, company admins). `complete: false` means the answer is not trustworthy. */
 export interface ApproverDirectory {
-  eligibility(workspaceId: string, project: string): Promise<{
+  /**
+   * `who` names the person the answer is for. A production directory that can pin the answer returns `fence`: the commit conditions that hold only while the membership generation and
+   * that person's authority are as read (`readSecondPersonApprovalEvidence`'s). The approval's writes carry them (`LessonStore.commit`), so a person removed between the read and the write cannot activate.
+   */
+  eligibility(workspaceId: string, project: string, who?: { approverId: string }): Promise<{
     complete: boolean; membershipVersion: number; ownerIds: string[]; eligibleIds: string[]; lastEligibleLossAtMs: number | null;
+    fence?: readonly unknown[];
     /** Named groups (Enterprise): group id to member ids. */
     groups?: Record<string, string[]>;
   }>;
