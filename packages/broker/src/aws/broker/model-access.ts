@@ -1,13 +1,13 @@
 // Part of the broker (split out of ../broker.ts): write gate, model access (web and Slack), turn routing and budgets.
 
-import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, orgMemberKey, orgMetaKey, orgRemovedKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, PER_TASK_BUDGET_USD, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place } from "@agentx/contracts";
+import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, PER_TASK_BUDGET_USD, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place } from "@agentx/contracts";
 import { queryAllItems } from "../admin-reads.js";
 import { DynamoConnectorLedger, GITHUB_LEDGER, connectorLedgerKeys } from "../connector-ledger.js";
 import { callConnector } from "../connector-routes.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import { monthOf } from "../../org/trial.js";
 import { TERMINAL, getItem, operationKey, requestCancellation, requireOperation, type CallbackClaims, type OperationRecord } from "../cancellation.js";
-import { requireCreatorStillMember } from "../../developer/creator-member.js";
+import { requireCreatorStillMember, requireOrgOpenFor, taskWorkStart } from "../../developer/creator-member.js";
 import type { AgentRunHost } from "../../agents/run-engine.js";
 import { requireRecipeAllowed } from "../../agents/roster.js";
 import { developerTaskIdentity, effectiveTaskOwner, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -201,28 +201,6 @@ export function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: Dev
 }
 
 /**
- * Task 21, Re-check R-2: no key is minted once the org is closed, or for work whose owner (or whose paying member) has been removed from it. Read live at every mint, so work that
- * is still running when an org closes (a plain task, a task from before sessions, a Slack thread's operation) gets no new key at its next model call. A read that fails is the proxy's
- * retryable answer, and nothing is minted. An org with no record of its own (an install from before orgs) is not closed by this; a person with no member record and no removal tombstone never joined.
- */
-async function requireOrgOpenFor(dependencies: AwsBrokerDependencies, orgId: OrgId, people: ReadonlyArray<string | undefined>): Promise<void> {
-  const denied = agentXError("TASK_ACCESS_DENIED", "This organization is closed, or the person this work is for has left it, so Rovara stopped this work.");
-  try {
-    const meta = await getItem<{ closedAt?: unknown }>(dependencies, orgMetaKey(orgId));
-    if (meta?.closedAt !== undefined) throw denied;
-    for (const developerId of new Set(people)) {
-      if (developerId === undefined) throw denied;
-      if (await getItem(dependencies, orgMemberKey(orgId, developerId)) !== undefined) continue;
-      if (await getItem(dependencies, orgRemovedKey(orgId, developerId)) !== undefined) throw denied;
-    }
-  } catch (error) {
-    if (error === denied) throw error;
-    console.log(JSON.stringify({ component: "broker", event: "model_access.org_state_unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
-    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
-  }
-}
-
-/**
  * Ruling R29: the key a running task's worker calls models with, minted for the task's org and developer and capped at the
  * task's budget. The capability is checked like a callback's (signature, expiry, scope, fence); a refused one is 401.
  * The proxy's own failures all answer MODEL_PROXY_UNAVAILABLE, without their detail. The key is never stored or logged.
@@ -278,7 +256,7 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
       // A payer recorded before a merge counts against the member they are now (Task 21, M-3); a merge pointer that can't be read is the proxy's retryable answer.
       const payment = withAgents ? await unreadable("payer", () => paymentOfTaskResolved(task, resolveMember)) : undefined;
       // The org must be open and the task's owner (and the member whose budget pays) still in it, or no key is minted (Task 21, Re-check R-2).
-      await requireOrgOpenFor(dependencies, task.orgId, [tryEffectiveTaskOwner(task)?.developerId, ...(payment?.payer.kind === "member" ? [payment.payer.developerId] : [])]);
+      await requireOrgOpenFor(dependencies, task.orgId, [tryEffectiveTaskOwner(task)?.developerId, ...(payment?.payer.kind === "member" ? [payment.payer.developerId] : [])], () => taskWorkStart(dependencies, task.orgId!, task));
       if (current.spendingAdmission !== undefined || current.spendingTaskId !== undefined || task.spendingStop !== undefined || task.spendingAdmission !== undefined) {
         if (current.orgId !== task.orgId || task.workspaceId !== claims.workspaceId || current.spendingTaskId !== task.taskId || current.spendingAdmission === undefined || task.spendingStop === undefined || task.spendingAdmission === undefined
           || canonicalJson(current.spendingAdmission) !== canonicalJson(task.spendingAdmission)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation spending window is unavailable or changed.");
@@ -394,7 +372,7 @@ export async function handleModelAccess(dependencies: AwsBrokerDependencies, req
     const requesterId = requestedBy === undefined ? undefined : await unreadable("requester", () => resolveMember(
       "kind" in requestedBy ? requestedBy.developerId : developerIdForSlackUser(requestedBy.userId),
     ));
-    await requireOrgOpenFor(dependencies, current.orgId, [...(requesterId === undefined ? [] : [requesterId]), ...(keyed === undefined ? [] : [keyed])]);
+    await requireOrgOpenFor(dependencies, current.orgId, [...(requesterId === undefined ? [] : [requesterId]), ...(keyed === undefined ? [] : [keyed])], current.createdAt);
     return {
       orgId: current.orgId, developerId: keyed, refId: current.id,
       ...(route === undefined ? {} : { route }),

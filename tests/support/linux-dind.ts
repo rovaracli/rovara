@@ -48,11 +48,15 @@ export async function startDind(image: string, shared: { path: string; readOnly?
   };
   try {
     let version = "";
-    for (let attempt = 0; attempt < 120 && version === ""; attempt += 1) {
+    // A cold dind daemon on a shared CI runner has taken longer than a minute to answer (2 of 4 linux-runtime runs on 2026-10-31); allow two.
+    for (let attempt = 0; attempt < 240 && version === ""; attempt += 1) {
       version = await inner("version", "--format", "{{.Server.Version}}").catch(() => "");
       if (version === "") await sleep(500);
     }
-    if (version === "") throw new Error("the Docker daemon inside the dind container did not start");
+    if (version === "") {
+      const logs = await execFileAsync("docker", ["logs", "--tail", "60", name]).then((out) => `${out.stdout}${out.stderr}`.trim(), () => "(no container logs)");
+      throw new Error(`the Docker daemon inside the dind container did not start; its last log lines:\n${logs}`);
+    }
     // The production host spawns one binary with the docker arguments; this one runs them in the dind container.
     const binary = join(scratch, "docker");
     await writeFile(binary, `#!/bin/sh\nexec docker exec ${name} docker "$@"\n`);

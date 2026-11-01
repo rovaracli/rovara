@@ -24,9 +24,15 @@ export const MERGE_HOPS = 8;
  * merges and the link together. Refuses (FORBIDDEN) when the walk loops or is longer than MERGE_HOPS: an identity that cannot be traced to its survivor is not served.
  */
 export async function personIds(deps: { documentClient: DocumentClient; signInTableName?: string | undefined }, developerId: string): Promise<string[]> {
-  if (deps.signInTableName === undefined) return [developerId];
+  return (await personWalk(deps, developerId)).ids;
+}
+
+/** `personIds`, and the identity link's `unlinkedFrom` (the developer a Slack identity was unlinked from) from the same read of the link, so a caller needs one walk, not two. */
+export async function personWalk(deps: { documentClient: DocumentClient; signInTableName?: string | undefined }, developerId: string): Promise<{ ids: string[]; unlinkedFrom: string | undefined }> {
+  if (deps.signInTableName === undefined) return { ids: [developerId], unlinkedFrom: undefined };
   const read = async (key: { pk: string; sk: string }) => (await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
   const link = await read({ pk: `SIGNIN_IDENTITY#${developerId}`, sk: "META" });
+  const unlinkedFrom = typeof link?.["unlinkedFrom"] === "string" ? link["unlinkedFrom"] : undefined;
   let pendingLink = link !== undefined && link["unlinkedFrom"] === undefined && typeof link["developerId"] === "string" && link["developerId"] !== developerId ? link["developerId"] : undefined;
   const ids = [developerId];
   for (let hops = 0; ; hops += 1) {
@@ -36,10 +42,32 @@ export async function personIds(deps: { documentClient: DocumentClient; signInTa
       next = ids.includes(pendingLink) ? undefined : pendingLink;
       pendingLink = undefined;
     }
-    if (next === undefined) return ids;
+    if (next === undefined) return { ids, unlinkedFrom };
     if (ids.includes(next) || hops >= MERGE_HOPS) throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
     ids.push(next);
   }
+}
+
+/**
+ * The company role of a person whose ids were already walked (`personWalk`), read from the SURVIVOR's record only (the last id): a stale record under an earlier id gives no role, so a
+ * duplicate that was once an admin is not an admin because the survivor has no record. `undefined` when the survivor has none. Every record under any id must still be readable and, unless
+ * `readOnly`, a writer's: a record that is not (the Auditor, an unknown role, no role field) is refused whichever id holds it.
+ */
+export async function survivorRole(deps: { documentClient: DocumentClient; tableName: string }, orgId: OrgId, ids: readonly string[], readOnly: boolean): Promise<OrgRole | undefined> {
+  let found: OrgRole | undefined;
+  for (const [index, id] of ids.entries()) {
+    const stored = await liveStoredRole(deps, orgId, id);
+    if (!stored.present) continue;
+    if (readOnly) {
+      const role = OrgRoleSchema.safeParse(stored.role);
+      if (!role.success) throw agentXError("FORBIDDEN", "your company role could not be read");
+      if (index === ids.length - 1) found = role.data;
+    } else {
+      if (!isWriterOrgRole(stored.role)) throw agentXError("FORBIDDEN", NOT_A_WRITER_MESSAGE);
+      if (index === ids.length - 1) found = stored.role;
+    }
+  }
+  return found;
 }
 
 /**

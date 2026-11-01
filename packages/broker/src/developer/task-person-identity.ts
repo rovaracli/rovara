@@ -15,6 +15,7 @@ import {
 import { developerIdForSlackUser } from "../aws/admin-actions.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
+import { isRemovedFromOrg } from "../org/member-removal/guards.js";
 import type { DeveloperTaskRecord } from "./task-records.js";
 import type { DeveloperRecord } from "./store.js";
 
@@ -200,6 +201,9 @@ async function qualifyCurrent(
     || (task.share !== undefined && task.share.teamId !== deps.slackTeamId)
     || new Set(memberOf).size !== memberOf.length || memberOf.some((channelId) => !requested.has(channelId))) return unavailable();
   const channelMember = task.share === undefined || memberOf.includes(task.share.channelId);
+  // A person removed from the company is no longer eligible, whatever Slack and the project grants still say (member removal). Read at every qualification, so a stored proof
+  // is checked again at each use. A task from before orgs names none, and a person who never joined has no tombstone.
+  if (task.orgId !== undefined && await isRemovedFromOrg(deps, task.orgId, subject.developerId)) return { eligible: false, channelMember };
   let access: void | "viewer";
   try {
     access = await deps.targetProjectAccess(subject, task.project, memberOf);

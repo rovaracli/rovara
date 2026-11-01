@@ -175,7 +175,7 @@ async function liveSessionIds(deps: SessionLifecycleDeps, orgId: OrgId): Promise
  * Takes a removed member out of the sessions of the org: the shares made with them (the item on the session and its index row, together), their follows (counted off the
  * session) and presence on every session they had a share on or that is live, and their devices (revoked). Nothing passes to anyone. Repeatable.
  */
-export async function onSessionMemberRemoved(deps: SessionLifecycleDeps, removal: { orgId: string; developerId: string }): Promise<void> {
+export async function onSessionMemberRemoved(deps: SessionLifecycleDeps, removal: { orgId: string; developerId: string; /** A person who is a member again: only shares and devices from before this instant go (a follow or a presence item can't give access, so they all go). */ since?: string }): Promise<void> {
   const orgId = requireIds(removal.orgId, removal.developerId);
   const { developerId } = removal;
   const principal: AgentPrincipal = { kind: "member", developerId };
@@ -190,6 +190,8 @@ export async function onSessionMemberRemoved(deps: SessionLifecycleDeps, removal
         await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: String(row["pk"]), sk: String(row["sk"]) } }));
         continue;
       }
+      // After a rejoin only what was shared before the removal goes; one shared since belongs to the new membership.
+      if (removal.since !== undefined && typeof row["sharedAt"] === "string" && row["sharedAt"] >= removal.since) continue;
       touched.add(sessionId);
       // Both go or neither: an index row with no share (or the reverse) would list a session to someone who cannot open it, or open one nobody lists.
       await deps.documentClient.send(new TransactWriteCommand({
@@ -202,7 +204,7 @@ export async function onSessionMemberRemoved(deps: SessionLifecycleDeps, removal
   }, PAGES_MAX);
   for (const sessionId of await liveSessionIds(deps, orgId)) touched.add(sessionId);
   await dropFollowsAndPresence(deps, orgId, developerId, [...touched]);
-  await revokeDevices(deps, orgId, developerId);
+  await revokeDevices(deps, orgId, developerId, removal.since);
 }
 
 /** Deletes the person's follow (with the count) and presence items on these sessions. A follow another request removed first is gone, which is what is wanted. */
@@ -224,7 +226,7 @@ async function dropFollowsAndPresence(deps: SessionLifecycleDeps, orgId: OrgId, 
  * Marks each of the person's devices revoked (Task 17's `revokedAt`), once, and lets the record go a year later, and ends the open sessions of every one of them (Task 18): also for a
  * device already marked, so a run that stopped between the mark and the end is finished by the next.
  */
-async function revokeDevices(deps: SessionLifecycleDeps, orgId: OrgId, developerId: string): Promise<void> {
+async function revokeDevices(deps: SessionLifecycleDeps, orgId: OrgId, developerId: string, since?: string): Promise<void> {
   const at = isoOf(deps.now());
   const expires = Math.floor(deps.now() / 1000) + REVOKED_DEVICE_KEEP_DAYS * DAY_SECONDS;
   await eachPage(deps, { pk: memberDevicesKey(orgId, developerId, "dvc_00000000000000000000").pk }, async (rows) => {
@@ -232,6 +234,8 @@ async function revokeDevices(deps: SessionLifecycleDeps, orgId: OrgId, developer
       checkTime(deps);
       const deviceId = DeviceIdSchema.safeParse(row["sk"]);
       if (!deviceId.success || row["orgId"] !== orgId) continue;
+      // A device registered since a rejoin belongs to the new membership.
+      if (since !== undefined && typeof row["createdAt"] === "string" && row["createdAt"] >= since) continue;
       try {
         await deps.documentClient.send(new UpdateCommand({
           TableName: deps.tableName, Key: deviceKey(orgId, deviceId.data), UpdateExpression: "SET revokedAt = :at, #expires = :expires",
@@ -874,8 +878,8 @@ export function registerSessionMemberMover(): () => void {
   return registerMemberMover({
     name: "agent_sessions",
     merged: (deps, merge) => onSessionMembersMerged(deps, merge),
-    removed: (deps, removal) => onSessionMemberRemoved(deps, removal),
-    orphaned: (deps, removal) => onSessionMemberRemoved(deps, removal),
+    // A step of a removal's cut-off: it runs also when the person has rejoined, then only for what was theirs before the removal.
+    cutOff: (deps, cut) => onSessionMemberRemoved(deps, { orgId: cut.orgId, developerId: cut.developerId, ...(cut.rejoined && cut.removedAt !== undefined ? { since: cut.removedAt } : {}) }),
   });
 }
 

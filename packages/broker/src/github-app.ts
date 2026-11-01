@@ -2167,6 +2167,8 @@ export class GitHubAppCredentialProvider {
 
 export interface GitHubFeedbackComment {
   id: string; threadId?: string; kind: "REVIEW" | "REVIEW_COMMENT" | "DISCUSSION";
+  /** In-memory identity only; never part of feedback bundles or refs. */
+  authorId?: string; authorType?: string;
   url: string; author: string; updatedAt: string; body: string; path?: string; line?: number;
 }
 export interface GitHubFeedbackThread { id: string; resolved: boolean; commentIds: string[] }
@@ -2218,7 +2220,9 @@ function parseFeedbackComment(record: Record<string, unknown>, repository: Insta
     || typeof timestamp !== "string" || !/^\d{4}-\d\d-\d\dT/.test(timestamp) || !Number.isFinite(Date.parse(timestamp))) throw feedbackReadError("invalid comment content");
   if (record.path !== undefined && (typeof record.path !== "string" || record.path.length > 1024)) throw feedbackReadError("invalid comment path");
   if (record.line !== undefined && record.line !== null && (!Number.isSafeInteger(record.line) || (record.line as number) < 1)) throw feedbackReadError("invalid comment line");
-  return { id: `${prefix}:${commentId}`, kind, url: expected, author: user.login, updatedAt: new Date(timestamp).toISOString(), body: (record.body) ?? "",
+  return { id: `${prefix}:${commentId}`, kind, url: expected, author: user.login,
+    ...(typeof user.id === "number" && Number.isSafeInteger(user.id) && user.id > 0 ? { authorId: String(user.id) } : {}),
+    ...(typeof user.type === "string" && user.type.length <= 40 ? { authorType: user.type } : {}), updatedAt: new Date(timestamp).toISOString(), body: (record.body) ?? "",
     ...(kind === "REVIEW_COMMENT" && typeof record.path === "string" ? { path: record.path } : {}),
     ...(kind === "REVIEW_COMMENT" && typeof record.line === "number" ? { line: record.line } : {}) };
 }

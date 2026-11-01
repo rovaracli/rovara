@@ -15,7 +15,7 @@ import { requireSessionLevel } from "../../agent-sessions/access.js";
 import { slackReplyAuthor } from "../../agent-sessions/events.js";
 import { codeIntentDependenciesOf, developerTaskRouteDependencies, type DeveloperCaller, type DeveloperRouteDependencies } from "../developer-routes.js";
 import type { DeveloperTaskActions } from "../developer-task-actions.js";
-import { captureWorkflowFeedbackNote, confirmTaskPeopleProposal, getTaskPeople, getWorkflowFeedbackReview, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision } from "../developer-tasks.js";
+import { SLACK_SEND_BACK_INSTRUCTIONS, captureWorkflowFeedbackNote, confirmTaskPeopleProposal, getTaskPeople, getWorkflowFeedbackReview, recordWorkflowThreadNote, retryTaskWorkflowFeedbackReview, routeDeveloperTaskRequest, submitSlackTaskOwnership, submitSlackTaskPeopleRole, submitWorkflowFeedbackDecision } from "../developer-tasks.js";
 import { ownerKeyForSubject } from "../lambda.js";
 import { stopSwebenchRun } from "../swebench.js";
 import { startCodeIntent } from "../../rovara-code/intent.js";
@@ -481,7 +481,7 @@ export async function reviseSlackWorkflowPlan(dependencies: AwsBrokerDependencie
 export async function sendSlackWorkflowBack(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackWorkflowSendBackEvent) {
   const { taskId, requestId, caller, developer } = await ownedSlackWorkflowTask(dependencies, event, "send this task back to coding");
   const routeDeps = slackWorkflowRouteDependencies(dependencies, tasks, developer, caller);
-  const body = JSON.stringify({ requestId, expectedRevision: event.expectedRevision, instructions: "Fix the problems listed above, then report what changed." });
+  const body = JSON.stringify({ requestId, expectedRevision: event.expectedRevision, instructions: SLACK_SEND_BACK_INSTRUCTIONS });
   const path = `/v1/dev/tasks/${taskId}/workflow/send-back`;
   return routeDeveloperTaskRequest(routeDeps, caller, { method: "POST", path, headers: {}, requestId, body }, new URL(path, "https://agentx.invalid"));
 }

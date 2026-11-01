@@ -255,7 +255,7 @@ export const LearningRuleRemoveBodySchema = z.object({ requestId: RequestIdSchem
 export const LearningSettingsBodySchema = z.object({ expectedRevision: RevisionSchema, prComments: z.enum(LEARNING_PR_COMMENT_SETTINGS) }).strict();
 /** `PUT /v1/app/org/learning-settings`: owner or admin of the company, a live browser session. `expectedRevision` is 0 while the company has no record. */
 export const LearningCompanySettingsBodySchema = z.object({ expectedRevision: RevisionSchema, suggestions: LearningSuggestionSwitchSchema }).strict();
-export const LearningProposalDecisionBodySchema = z.object({ decision: z.enum(["approve", "decline"]) }).strict();
+export const LearningProposalDecisionBodySchema = z.object({ decision: z.enum(["approve", "decline"]), soleOwnerAcknowledged: z.boolean().optional() }).strict();
 
 /**
  * The task page's comment listing (`GET /review/<task>/task/api/comments`), for a person with standing in the project only: whether a comment is already remembered, and its correction. Both

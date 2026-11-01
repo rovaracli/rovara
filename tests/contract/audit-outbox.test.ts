@@ -703,6 +703,7 @@ describe("I4: the builders", () => {
     ["auditMemberRoleChanged", (occurrence) => builders.auditMemberRoleChanged({ ...base, occurrence, details, memberId: "dev_2", fromRole: "member", toRole: "admin" })],
     ["auditMemberRemoved", (occurrence) => builders.auditMemberRemoved({ ...base, occurrence, details, memberId: "dev_2", role: "member" })],
     ["auditMemberLeft", (occurrence) => builders.auditMemberLeft({ ...base, occurrence, details, memberId: "dev_2", role: "member" })],
+    ["auditMemberRemovalCompleted", (occurrence) => builders.auditMemberRemovalCompleted({ ...base, occurrence, details, memberId: "dev_2", outcome: "done", wasRole: "member", counts: { approvalsMoved: 1, grantsRemoved: 2, signInEnded: true, countsComplete: true } })],
     ["auditProjectMemberChanged", (occurrence) => builders.auditProjectMemberChanged({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", fromRole: "viewer", toRole: "editor" })],
     ["auditProjectMemberRemoved", (occurrence) => builders.auditProjectMemberRemoved({ ...base, occurrence, details, projectName: "Secret Project", memberId: "dev_2", role: "viewer" })],
     ["auditIdentityLinked", (occurrence) => builders.auditIdentityLinked({ ...base, occurrence, details, memberId: "dev_2", provider: "github" })],

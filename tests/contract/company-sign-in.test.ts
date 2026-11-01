@@ -2,6 +2,8 @@ import { decodeJwt } from "jose";
 import { describe, expect, it, vi } from "vitest";
 import { BREAK_GLASS_NOT_FRESH_MESSAGE, BREAK_GLASS_NOT_RECORDED_MESSAGE, ENTERPRISE_SESSION_MAX_SECONDS, GROUP_MAPPING_MESSAGES, editionPolicy, orgMetaKey } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
+import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
+import { REMOVED_FROM_ORG_MESSAGE } from "../../packages/broker/src/org/sign-in.js";
 import { decideCompanySignIn } from "../../packages/broker/src/developer/sso-sign-in.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { OIDC_ISSUER, T0, authorizeQuery, httpEvent, identityHarness, type FakeOidcUser } from "../support/developer-fakes.js";
@@ -129,6 +131,116 @@ describe("refusals (fail closed, and before anything is written about the person
     expect(lookup).not.toHaveBeenCalled();
     expect(capture!.recordedBy("sso.sign_in_refused")[0]).toMatchObject({ facts: { refusal: reason } });
     expect(capture!.recordedBy("sso.sign_in")).toEqual([]);
+  });
+
+  it("a banned person is refused with only the refusal on record: no allowed sign-in, no Slack allowance", async () => {
+    const { h, capture } = await world();
+    const first = await signInAs(h, "una");
+    expect(roleOf(first.tokens)).toBe("member");
+    const id = ownerKeyForSubject(OIDC_ISSUER, "una");
+    await h.orgs.removeMember({ orgId: TEST_ORG, developerId: id, emails: [], ban: true, by: { kind: "member", id: ownerId } });
+    vi.spyOn(h.deps.directory, "lookupByEmail").mockResolvedValue({ userId: "U0UNA0001" });
+    const record = vi.spyOn(h.deps.sso!.slack, "record");
+    const allowed = capture!.recordedBy("sso.sign_in").length;
+    const refused = await signInAs(h, "una");
+    expect(refused.tokens).toBeUndefined();
+    expect(refused.redirect.searchParams.get("error")).toBe("access_denied");
+    expect(refused.redirect.searchParams.get("error_description")).toBe(REMOVED_FROM_ORG_MESSAGE);
+    expect(record).not.toHaveBeenCalled();
+    expect(capture!.recordedBy("sso.sign_in")).toHaveLength(allowed);
+    expect(capture!.recordedBy("sso.sign_in_refused").at(-1)).toMatchObject({ facts: { refusal: "removed_from_org" } });
+  });
+
+  describe("a banned person and an invite", () => {
+    const una_id = ownerKeyForSubject(OIDC_ISSUER, "una");
+    /** `una` signed in, then removed with a ban (a single-org install's removal). */
+    async function banned() {
+      const w = await world();
+      expect(roleOf((await signInAs(w.h, "una")).tokens)).toBe("member");
+      await w.h.orgs.removeMember({ orgId: TEST_ORG, developerId: una_id, emails: [], ban: true, by: { kind: "member", id: ownerId } });
+      expect(await w.h.orgs.isBanned(TEST_ORG, una_id)).toBe(true);
+      return w;
+    }
+    const joinWith = async (h: World, token: string) => {
+      const start = await h.http(httpEvent("GET", `/v1/auth/join/start?invite=${token}`));
+      const cookie = start.cookies!.find((value) => value.startsWith("__Host-rovara_join_pkce="))!.split(";")[0]!;
+      return h.http({ ...httpEvent("GET", h.oidc.approve(start.headers.location!, "una")), headers: { cookie } });
+    };
+
+    it("a valid re-invite brings them back through a company sign-in join, and the ban is cleared", async () => {
+      const { h } = await banned();
+      const { token } = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member" });
+      const joined = await joinWith(h, token);
+      expect(joined.cookies?.some((value) => value.startsWith("__Host-agentx_review_session="))).toBe(true);
+      expect(await h.orgs.isBanned(TEST_ORG, una_id)).toBe(false);
+      expect((await h.orgs.orgForDeveloper(una_id))?.role).toBe("member");
+    });
+
+    /** The CLI sign-in carries any well-formed invite token, so a forged one reaches the check too. */
+    const withInvite = async (h: World, token: string) => {
+      let started = await h.http(httpEvent("GET", authorizeQuery({ invite: token })));
+      if (started.statusCode === 200) started = await h.http(httpEvent("GET", /href="([^"]*method=oidc)"/.exec(started.body)![1]!.replaceAll("&amp;", "&")));
+      return new URL((await h.http(httpEvent("GET", h.oidc.approve(started.headers.location!, "una")))).headers.location ?? "https://none.invalid/");
+    };
+    /** Refused at the early check: before the person is looked up in Slack or anything of them is written (`early: false`, a refusal that comes only after the org is resolved). */
+    const expectRefused = async (h: World, token: string, how: string, early = true) => {
+      const lookup = vi.spyOn(h.deps.directory, "lookupByEmail");
+      lookup.mockClear();
+      const refused = await withInvite(h, token);
+      if (early) expect(lookup, how).not.toHaveBeenCalled();
+      expect(refused.searchParams.get("code"), how).toBeNull();
+      expect(refused.searchParams.get("error_description"), how).toBe(REMOVED_FROM_ORG_MESSAGE);
+      expect(await h.orgs.isBanned(TEST_ORG, una_id), how).toBe(true);
+    };
+
+    it("an expired invite, a used invite or one of another org leaves them refused, with the ban kept and only the refusal on record", async () => {
+      const { h, capture } = await banned();
+      const OTHER = "org_cccccccccccccccccccc";
+      const stranger = "c".repeat(64);
+      await h.orgs.ensureOrg(OTHER, "other");
+      await h.orgs.addMember({ orgId: OTHER, developerId: stranger, role: "owner" });
+      const expired = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member", ttlSeconds: 0 });
+      const used = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member" });
+      await h.orgs.acceptInvite({ tokenHash: inviteTokenHash(used.token), developerId: "d".repeat(64) });
+      const otherOrg = await h.orgs.createInvite({ orgId: OTHER, createdBy: stranger, role: "member" });
+      const allowed = capture!.recordedBy("sso.sign_in").length;
+      expect((await h.orgs.describeInviteByHash(inviteTokenHash(expired.token)))?.state).toBe("expired");
+      expect((await h.orgs.describeInviteByHash(inviteTokenHash(used.token)))?.state).toBe("used");
+      for (const [how, token] of [["expired", expired.token], ["used", used.token], ["other org", otherOrg.token], ["not an invite", "A".repeat(43)]] as const) await expectRefused(h, token, how);
+      expect(capture!.recordedBy("sso.sign_in")).toHaveLength(allowed);
+      expect(capture!.recordedBy("sso.sign_in_refused").at(-1)).toMatchObject({ facts: { refusal: "removed_from_org" } });
+    });
+
+    it("an invite written for another person's address leaves them refused, with the ban kept; one written for their own address brings them back", async () => {
+      const { h } = await banned();
+      const forSomeoneElse = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member", email: "someone-else@example.test" });
+      await expectRefused(h, forSomeoneElse.token, "another person's address");
+      const forThem = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member", email: una.email! });
+      const back = await withInvite(h, forThem.token);
+      expect(back.searchParams.get("code")).not.toBeNull();
+      expect(await h.orgs.isBanned(TEST_ORG, una_id)).toBe(false);
+    });
+
+    it("an invite that goes stale between the early check and accepting it leaves no session, no Slack allowance and no allowed record, only the refusal", async () => {
+      const { h, capture } = await banned();
+      const { token } = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member" });
+      vi.spyOn(h.deps.directory, "lookupByEmail").mockResolvedValue({ userId: "U0UNA0001" });
+      const record = vi.spyOn(h.deps.sso!.slack, "record");
+      // The invite is valid when the early check reads it, and revoked before the sign-in accepts it.
+      const describe = h.deps.orgs.describeInviteByHash.bind(h.deps.orgs);
+      vi.spyOn(h.deps.orgs, "describeInviteByHash").mockImplementation(async (hash) => {
+        const answer = await describe(hash);
+        for (const row of h.state.find((item) => item.entityType === "ORG_INVITE")) h.state.set({ ...row, revokedAt: new Date().toISOString() });
+        return answer;
+      });
+      const allowed = capture!.recordedBy("sso.sign_in").length;
+      const sessions = h.db.find((item) => String(item.pk).startsWith("SESSION#")).length;
+      await expectRefused(h, token, "stale invite", false);
+      expect(record).not.toHaveBeenCalled();
+      expect(capture!.recordedBy("sso.sign_in")).toHaveLength(allowed);
+      expect(capture!.recordedBy("sso.sign_in_refused").at(-1)).toMatchObject({ facts: { refusal: "removed_from_org" } });
+      expect(h.db.find((item) => String(item.pk).startsWith("SESSION#"))).toHaveLength(sessions);
+    });
   });
 
   it("no saved mapping refuses everyone who is not a break-glass owner", async () => {

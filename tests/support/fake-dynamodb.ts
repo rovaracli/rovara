@@ -27,12 +27,13 @@ interface WriteAction {
 /** DynamoDB's item size limit: 400 KB, where a KB is 1,024 bytes. */
 export const DYNAMODB_ITEM_MAX_BYTES = 409_600;
 /**
- * DynamoDB's TransactWriteItems limits: 100 actions and 4 MB in all. The fake enforces them only for transactions that touch a v1.2 learning partition
- * (`PROJECT_LEARNING#` or `LEARNING_WALK`): the learning writes are the ones built to stay inside them, and other suites were written without the check.
+ * DynamoDB's TransactWriteItems limits: 100 actions and 4 MB in all. The fake enforces them only for transactions that touch a partition whose writes are built to stay
+ * inside them: a v1.2 learning partition (`PROJECT_LEARNING#` or `LEARNING_WALK`) or the member-removal record (`MEMBER_REMOVAL`, whose one transaction holds the whole
+ * removal). Other suites were written without the check.
  */
 export const DYNAMODB_TRANSACTION_MAX_ITEMS = 100;
 export const DYNAMODB_TRANSACTION_MAX_BYTES = 4 * 1024 * 1024;
-const LEARNING_PARTITION = /#(PROJECT_LEARNING#|LEARNING_WALK$)/;
+const SIZE_CHECKED_PARTITION = /#(PROJECT_LEARNING#|LEARNING_WALK$|MEMBER_REMOVAL$)/;
 
 interface InjectedFault {
   command?: string | undefined;
@@ -289,18 +290,18 @@ export class FakeDynamoDb {
         if (new Set(named).size !== named.length) {
           throw Object.assign(new Error("Transaction request cannot include multiple operations on one item"), { name: "ValidationException", $metadata: {} });
         }
-        const learning = entries.some((entry) => {
+        const sizeChecked = entries.some((entry) => {
           const action = Object.values(entry)[0] as Record<string, unknown>;
           const key = (action.Key ?? action.Item) as { pk?: unknown };
-          return typeof key.pk === "string" && LEARNING_PARTITION.test(key.pk);
+          return typeof key.pk === "string" && SIZE_CHECKED_PARTITION.test(key.pk);
         });
-        if (learning && entries.length > DYNAMODB_TRANSACTION_MAX_ITEMS) {
+        if (sizeChecked && entries.length > DYNAMODB_TRANSACTION_MAX_ITEMS) {
           throw Object.assign(new Error("Member must have length less than or equal to 100 (TransactItems)"), { name: "ValidationException", $metadata: {} });
         }
         this.commit(entries.map((entry) => {
           const [kind, action] = Object.entries(entry)[0] as [WriteAction["kind"], Record<string, unknown>];
           return toAction(kind, action);
-        }), "TransactionCanceledException", learning);
+        }), "TransactionCanceledException", sizeChecked);
         return {};
       }
       default:

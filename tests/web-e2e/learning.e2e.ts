@@ -115,3 +115,28 @@ test("an admin turns suggestions on from the company How we work page, through t
  expect(put?.body).toEqual({ expectedRevision: 0, suggestions: "on" });
  await checkA11y(page, { theme: "light" });
 });
+test("turning on PR comment learning waits for a second person; approving makes it on; turning off applies at once", async ({ page, context, request, baseURL }) => {
+ await openTab(page, context, request, baseURL);
+ const setting = page.getByRole("group", { name: "Learn from PR review comments" });
+ await expect(setting.getByText("Status: Off")).toBeVisible();
+ await expect(setting.getByText("Off by default. Turning it on needs a second person; turning it off applies at once.")).toBeVisible();
+ await setting.getByRole("button", { name: "Turn on…" }).click();
+ await expect(setting.getByText("Turning on is waiting for a second person")).toBeVisible();
+ await expect(setting.getByRole("button", { name: "Turn on…" })).toHaveCount(0);
+ await setting.getByRole("button", { name: "Approve" }).click();
+ await expect(setting.getByText("Status: On")).toBeVisible();
+ await setting.getByRole("button", { name: "Turn off" }).click();
+ await expect(setting.getByText("Status: Off")).toBeVisible();
+ const sent = (await writes(request)).map(item => item.method + " " + item.path.replace(BASE, ""));
+ expect(sent).toEqual(["PUT /settings", "POST /settings/proposals/prop_1/decide", "PUT /settings"]);
+ await checkA11y(page, { theme: "dark" });
+});
+test("a project the company has locked shows the setting off with no buttons", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "project" } });await request.post("/__mock/learning-lock");
+ await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);await mockRealtime(page);
+ await page.goto("/app/projects/payments?tab=how-we-work");
+ const setting = page.getByRole("group", { name: "Learn from PR review comments" });
+ await expect(setting.getByText("Your company has turned this off.")).toBeVisible();
+ await expect(setting.getByText("Status: Off")).toBeVisible();
+ await expect(setting.getByRole("button")).toHaveCount(0);
+});

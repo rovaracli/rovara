@@ -63,7 +63,7 @@ export const NO_ORG_ON_INSTALL_MESSAGE = "Sign in with Rovara on this install: S
 export const REMOVED_FROM_ORG_MESSAGE = "You were removed from this organization. Ask an admin to invite you again.";
 const codeOf = (error: unknown) => (error as { code?: unknown }).code;
 /** The same address on both sides, and only for ASCII ones: Unicode folding must not make two different addresses equal (U+212A is "k"). */
-const sameEmail = (a: string, b: string) => {
+export const sameEmail = (a: string, b: string) => {
   const [left, right] = [normalizeEmail(a), normalizeEmail(b)];
   return left.ascii && right.ascii && left.email === right.email;
 };

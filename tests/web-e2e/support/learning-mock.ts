@@ -1,5 +1,5 @@
 // The project's learning routes for the "Suggested rules" journey: the view, accept, dismiss, reopen and remove. State lives for one scenario. Bodies are parsed by the contract's strict schemas, as the real routes do.
-import { LearningCompanySettingsAnswerSchema, LearningCompanySettingsBodySchema, ProjectOverviewLearningSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LearningViewAnswerSchema } from "@agentx/contracts/web";
+import { LearningCompanySettingsAnswerSchema, LearningCompanySettingsBodySchema, ProjectOverviewLearningSchema, LearningAcceptBodySchema, LearningDismissBodySchema, LearningReopenBodySchema, LearningRuleRemoveBodySchema, LearningViewAnswerSchema, LearningSettingsBodySchema, LearningProposalDecisionBodySchema } from "@agentx/contracts/web";
 import type { MockExchange } from "./how-we-work-mock.js";
 import { mockCellOrigin } from "./port.js";
 interface Suggestion { id: string; stage: string; text: string; revision: number }
@@ -9,12 +9,15 @@ let state = fresh();
 // The company's master switch (for the project and the company page): on and chosen by the company, until a journey sets it with POST /__mock/learning-settings.
 let company = freshCompany();
 function freshCompany() { return { suggestions: "on" as "on" | "off", source: "company" as "company" | "install_default", revision: 1, corrections: 4 }; }
-function fresh() { return { suggestions: [{ id: "sug_build", stage: "build", text: "Add a test for every bug fix.", revision: 1 }, { id: "sug_plan", stage: "plan", text: "Name the files a plan will touch.", revision: 1 }] as Suggestion[], dismissed: [] as Dismissed[], rules: [] as Rule[], version: 2 }; }
+function fresh() { return { suggestions: [{ id: "sug_build", stage: "build", text: "Add a test for every bug fix.", revision: 1 }, { id: "sug_plan", stage: "plan", text: "Name the files a plan will touch.", revision: 1 }] as Suggestion[], dismissed: [] as Dismissed[], rules: [] as Rule[], version: 2, settings: { prComments: "off" as "on" | "off", locked: false, revision: 1, pending: undefined as string | undefined } }; }
 export function resetLearning(): void { state = fresh();company = freshCompany(); }
+/** The company has locked PR comment learning off (the lock row of the guardrails). */
+export function lockLearning(): void { state.settings.locked = true; }
+const settingsView = () => ({ prComments: state.settings.locked ? "off" as const : state.settings.prComments, locked: state.settings.locked, ...(state.settings.locked ? { lockedBy: "company" as const } : {}), revision: state.settings.revision, ...(state.settings.pending === undefined ? {} : { pendingProposal: { id: state.settings.pending } }) });
 const off = () => ({ error: { code: "LEARNING_SUGGESTIONS_OFF", message: "Suggestions are off for this company." } });
 const source = (taskId: string, label: string) => ({ kind: "comment", taskId, label, at: "2026-10-28T10:00:00.000Z", standing: "member", href: `/review/${taskId}/task` });
 const view = () => LearningViewAnswerSchema.parse({
- settings: { prComments: "off", locked: false }, canDecide: true, skippedUnlinked: 0,
+ settings: settingsView(), canDecide: true, skippedUnlinked: 0,
  ...(company.suggestions === "off" ? { suggestionsState: { state: "collecting", corrections: company.corrections } } : {}),
  suggestions: company.suggestions === "off" ? [] : state.suggestions.map(item => ({ id: item.id, stage: item.stage, status: "open", proposedText: item.text, allFromOnePerson: false, lessSafe: false, lessSafeWords: [], overlaps: [], sources: [source("tsk_a", "Please add a test."), source("tsk_b", "Tests are missing again.")], revision: item.revision, sourceCount: 2, canDecide: true })),
  dismissed: state.dismissed.map(item => ({ id: item.id, stage: item.stage, dismissedAt: item.at, dismissKind: item.kind })),
@@ -26,6 +29,22 @@ export async function learningMock({ url, method, body, json, record }: MockExch
  const base = "/v1/web/projects/payments/learning";
  if (url.pathname === base && method === "GET") { json(200, view());return true; }
  const accept = new RegExp(`^${base}/suggestions/([A-Za-z0-9_-]+)/accept$`).exec(url.pathname), dismiss = new RegExp(`^${base}/suggestions/([A-Za-z0-9_-]+)/dismiss$`).exec(url.pathname), reopen = new RegExp(`^${base}/dismissed/([A-Za-z0-9_-]+)/reopen$`).exec(url.pathname), remove = new RegExp(`^${base}/rules/([A-Za-z0-9_-]+)/remove$`).exec(url.pathname);
+ // The settings: turning on waits for a second person (a proposal); turning off applies at once.
+ if (url.pathname === base + "/settings" && method === "PUT") {
+  const input = LearningSettingsBodySchema.parse(await body());record(input);
+  if (state.settings.locked) { json(403, { error: { code: "FORBIDDEN", message: "Your company has turned this off." } });return true; }
+  if (input.expectedRevision !== state.settings.revision) { json(409, { error: { code: "CHANGE_STALE", message: "Learning settings changed. Refresh before deciding." } });return true; }
+  state.settings.revision += 1;
+  if (input.prComments === "on") { state.settings.pending = "prop_1";json(200, { applied: false, proposalId: "prop_1" });return true; }
+  state.settings.prComments = "off";state.settings.pending = undefined;json(200, { applied: true, settings: settingsView() });return true;
+ }
+ const settled = new RegExp(`^${base}/settings/proposals/([A-Za-z0-9_-]+)/decide$`).exec(url.pathname);
+ if (settled !== null && method === "POST") {
+  const input = LearningProposalDecisionBodySchema.parse(await body());record(input);
+  if (state.settings.pending !== settled[1]) { json(409, { error: { code: "CHANGE_STALE", message: "Learning settings changed. Refresh before deciding." } });return true; }
+  state.settings.revision += 1;state.settings.pending = undefined;if (input.decision === "approve") state.settings.prComments = "on";
+  json(200, { settings: settingsView() });return true;
+ }
  if (method !== "POST" || (accept === null && dismiss === null && reopen === null && remove === null)) return false;
  if (company.suggestions === "off" && (accept !== null || dismiss !== null || reopen !== null)) { json(409, off());return true; }
  if (accept !== null) {

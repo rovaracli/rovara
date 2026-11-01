@@ -7,9 +7,10 @@
 // Stated limit: a subscription that already exists outlives a share or membership removal until the client reconnects (at most the token's lifetime for a client that
 // reconnects with a new token, at most 24 hours for a connection). A notice carries ids only, and every detail read is checked again.
 //
-// Accepted limit (Task 8 review): the token's own facts are not checked live. The user channel (the person) and the project list in the token are read once, when the token is
-// made, and the authorizer does not look at them again: a person removed from a project, or from the company, can still subscribe to that project's channel for as long as
-// their token lives (`REALTIME_TOKEN_SECONDS`, 900 s), and the removal reaches them when they next ask for a token. This is acceptable because a notice carries ids only
+// Accepted limit (Task 8 review): the token's own facts are not checked live, except that the person is still a member of the company (member removal, v1.1: read on connect and on
+// every subscribe). The project list in the token is read once, when the token is made, and the authorizer does not look at it again: a person removed from a project can still
+// subscribe to that project's channel for as long as their token lives (`REALTIME_TOKEN_SECONDS`, 900 s), and the removal reaches them when they next ask for a token. A subscription
+// that already exists outlives a removal until its connection ends. This is acceptable because a notice carries ids only
 // (never a title, text, name or cost), and every read of the session behind an id is checked live. A session channel is the exception: its level is read live on each subscribe.
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
@@ -89,6 +90,9 @@ export async function authorizeRealtime(event: RealtimeAuthorizerEvent, deps: Au
     if (operation !== "EVENT_CONNECT" && operation !== "EVENT_SUBSCRIBE") return refuse("operation");
     const claims = await verifyRealtimeToken(deps.publicKey, event.authorizationToken, deps.now());
     if (claims === undefined) return refuse("token");
+    // The person is read live, on connect and on every subscribe: a token (900 s) and a connection (up to 24 h) of someone removed from the company open nothing new. The rest of the
+    // token is not checked live (see the accepted limit above). A member who rejoined passes, and carries only ids; every read behind an id is checked against the live session.
+    if (await get(deps, orgMemberKey(claims.org, claims.sub)) === undefined) return refuse("member");
     if (operation === "EVENT_CONNECT") return ALLOW;
     const channel = event.requestContext?.channel;
     const parsed = typeof channel === "string" ? parseRealtimeChannel(channel) : undefined;

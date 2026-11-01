@@ -138,6 +138,9 @@ function actualInviteComposition(e2e: WorkflowE2E, directory: ReturnType<typeof 
       };
       return projected;
     },
+    async readOrgRecord({ key }) {
+      return e2e.db.get(key.pk, key.sk);
+    },
     projectAuthorityReader,
     async taskPersonProof(request) { return { result: await directory.proof(request), slackCallsUsed: 1 }; },
   };

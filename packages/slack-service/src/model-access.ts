@@ -67,7 +67,8 @@ export function turnModelAccessSource(input: TurnModelAccessInput): () => Promis
           // Task 26: no AI source serves the turn's model. Its words say what an admin must do, so the member is shown them; no other refusal's words are kept.
           const refused = error?.code === "MODEL_NOT_ALLOWED" ? safeRefusalWords(error.message) : undefined;
           if (refused !== undefined) throw agentXError("MODEL_NOT_ALLOWED", refused);
-          throw agentXError(error?.code === "FORBIDDEN" ? "FORBIDDEN" : "MODEL_PROXY_UNAVAILABLE", `model access request failed with HTTP ${response.status}`);
+          // A refusal of the person (not of the proxy): a removed or banned member is refused as a forbidden one is, not reported as a proxy fault.
+          throw agentXError(error?.code === "FORBIDDEN" || error?.code === "REMOVED_FROM_ORG" ? "FORBIDDEN" : "MODEL_PROXY_UNAVAILABLE", `model access request failed with HTTP ${response.status}`);
         }
         current = parseTurnModelAccess(await response.json().catch(() => undefined));
         return current;

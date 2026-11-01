@@ -28,6 +28,7 @@ import type { z } from "zod";
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { aiToolTurn, developerTaskIdentity, partyOfTask, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { announceTaskSendBack } from "./learning-events.js";
+import { captureSendBackQuietly, codeSendBackStage } from "../../learning/capture-decision.js";
 import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, isConditional, workflowDispatchItem, type WorkflowDispatchRecord } from "../broker-shared.js";
 import type { DeveloperCaller } from "../developer-routes.js";
 import { operationKey } from "../cancellation.js";
@@ -393,10 +394,19 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   const queued = await queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next,
     request: request.instructions, response: workflowDependencies === undefined ? "AgentX sent the change back to coding" : "AgentX restarted the approved ordered work plan",
     ...(restartApprovedGraph === undefined ? {} : { workflowDependencies: restartApprovedGraph }) });
+  // Slack's button has no text box and sends a fixed note: that is not the person's reason, so the record gets none (the round still counts).
   // Learning (WA-2): the send-back has been accepted; tell the record WHO sent it back (a listener exists only where learning is wired; it never fails the send-back).
-  await announceTaskSendBack({ task, callerDeveloperId: caller.developerId, requestId: request.requestId, instructions: request.instructions, earlierSendBacks: workflow.decisions.filter((decision) => decision.source === "SEND_BACK").length, at: receivedAt });
+  await announceTaskSendBack({ task, callerDeveloperId: caller.developerId, requestId: request.requestId, instructions: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, earlierSendBacks: workflow.decisions.filter((decision) => decision.source === "SEND_BACK").length, at: receivedAt });
+  // v1.2 learning loop: a person's reason for sending CODE back becomes a correction, as a plan send-back's does (capture-decision.ts). This is the one path for the page, the developer API,
+  // Slack and MCP. It runs last, after the new coding run has committed and the index is synced, within capture's own time budget: a slow or failing capture cannot fail or hold up the
+  // send-back. A replayed request returned early above and never reaches here. The caller is the decider, so the standing is theirs; Rovara's own automatic send-back
+  // (`autoSendBackToCodingFromSystem`) is another function and never captures. A code send-back carries no included comments. Slack's fixed note is not a person's reason.
+  await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, included: [], stage: await codeSendBackStage(deps, caller.orgId, task.taskId, next) });
   return queued;
 }
+
+/** What Slack's "Send back to coding" button sends as the owner's note: the button has no text box, so these are not a person's words. */
+export const SLACK_SEND_BACK_INSTRUCTIONS = "Fix the problems listed above, then report what changed.";
 
 /**
  * The owner answers each blocking review finding: accept it with a reason, or have it fixed (with optional

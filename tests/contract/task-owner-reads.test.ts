@@ -170,7 +170,8 @@ const ROWS: readonly Row[] = [
   ["aws/workflow-e2e-artifacts.ts", "loadStoredScenarioResults", "principal", ".ownerKey"],
   ["aws/workflow-e2e-artifacts.ts", "loadWorkflowE2EArtifact", "principal", ".ownerKey"],
   ["aws/workflow-e2e-artifacts.ts", "storeWorkflowE2EArtifacts", "principal", ".ownerKey"],
-  ["aws/task-person-runtime.ts", "identityDocumentClient>send", "other-record", ".developerId*3"],
+  // Member removal: the two org keys (member row, tombstone) the client may read are built from the checked person's id, as the task-partition keys are.
+  ["aws/task-person-runtime.ts", "identityDocumentClient>send", "other-record", ".developerId*5"],
   ["aws/task-person-runtime.ts", "createTaskPersonRuntime>stateAuthorityWitnessForOwnerActor", "caller-actor", "taskOwnerKey()"],
   ["aws/plan-evidence-handler.ts", "runPlanEvidenceJob", "principal", ".ownerKey"],
   ["aws/unwaited-tasks.ts", "candidate", "principal", ".ownerKey*2"],

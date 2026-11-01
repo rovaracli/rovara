@@ -1393,6 +1393,8 @@ describe("write approvals through the agent routes", () => {
     const broker = await loadSlackBroker() as unknown as { createAgentRouteDependencies(input: never): ApprovalDependencies | undefined };
     const deps = broker.createAgentRouteDependencies(w.brokerInput as never);
     if (deps === undefined) throw new Error("the broker has no agent route dependencies");
+    // A decision commits only while the decider still holds the role it was judged under, so the person who decides here really is an owner of the org.
+    w.db.set({ ...w.db.get(orgMemberKey(TEST_ORG, MAYA.developerId))!, role: "owner" });
     const approve = (approvalId: string, requestId: string = randomUUID()) =>
       decideApproval(deps, { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "owner" }, approvalId, { requestId, decision: "APPROVE" });
     const saves = () => w.linear.calls.filter((entry) => entry.name === "save_issue");
@@ -1559,7 +1561,8 @@ describe("write approvals through the agent routes", () => {
       setRole(refused.w, OMAR, "member");
       refused.w.db.delete(projectMemberKey(TEST_ORG, String(refused.run.task.ownerKey), "payments"));
       takeOver(refused.w, refused.run.taskId);
-      const decided = await refused.approve(String(asked.body.approvalId));
+      // Maya is an admin now (her row says so), and decides as one.
+      const decided = await decideApproval(refused.deps, { orgId: TEST_ORG, developerId: MAYA.developerId, orgRole: "admin" }, String(asked.body.approvalId), { requestId: randomUUID(), decision: "APPROVE" });
       expect(decided.status).toBe("APPROVED_FAILED");
       expect(refused.saves()).toEqual([]);
     });

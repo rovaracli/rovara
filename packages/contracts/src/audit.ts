@@ -120,6 +120,7 @@ export const AUDIT_ACTIONS = [
   "member.joined",
   "member.role_changed",
   "member.removed",
+  "member.removal_completed",
   "member.left",
   "member.renamed",
   "org.closed",
@@ -295,6 +296,15 @@ const SPEND_REQUEST_FACTS = ["kind", "scopeKind", "amountCents", "newLimitCents"
 const SPEND_REQUEST_DECIDED_FACTS = [...SPEND_REQUEST_FACTS, "approvedAmountCents", "appliedLimitCents", "topUpMonth"] as const;
 
 /**
+ * What a finished member removal says (at most `AUDIT_MAX_FACTS`): how it ended (`done` or `cancelled_rejoined`), the role the person had, what moved to the
+ * successor and what was cut. Counts come from the mover results kept on the marker, so `countsComplete` is false after a run that stopped part-way.
+ * The exact list is the per-item events (`approval.rerouted`, `spend_request.rerouted`, `*.owner_changed`).
+ */
+const MEMBER_REMOVAL_COMPLETED_FACTS = [
+  "outcome", "wasRole", "approvalsMoved", "spendRequestsMoved", "agentsMoved", "skillsMoved", "chainsMoved", "triggersMoved", "grantsRemoved", "grantsKept", "signInEnded", "countsComplete",
+] as const;
+
+/**
  * The facts each action may carry. Every value is a fixed-vocabulary word, a count, a sequence number, an amount
  * in cents or a flag: never a name, an email, a login, a repository or project name, a domain or a reason.
  * Where a key is a version, `from` and `to` are integers (a spend threshold in cents, the multiplier in hundredths). For `local_agents.policy_changed` they are
@@ -327,7 +337,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "pull_request.merge_requested": ["number", "method"],
   "member.joined": ["role", "via"],
   "member.role_changed": ["fromRole", "toRole"],
-  "member.removed": ["role"],
+  "member.removed": ["role", "removalId", "successorKind"],
+  "member.removal_completed": MEMBER_REMOVAL_COMPLETED_FACTS,
   "member.left": ["role"],
   "member.renamed": [],
   "org.closed": ["plan"],

@@ -27,12 +27,11 @@ import type { TaskAccess } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { issueRepositoryGrant, membershipRecord, object, workspaceItem, workspaceKey, workspaceRuntime } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies, MembershipRecord, RegisteredProjectRecord } from "./definitions.js";
-import { developerTaskActions, orgStoreOf, requireSlackAllowedByEdition, requireSlackRequesterWriterRole, slackTeamOrg } from "./dependency-wiring.js";
+import { developerTaskActions, orgStoreOf, requireSlackAllowedByEdition, requireSlackRequesterWriterRole, slackRequesterStanding, slackTeamOrg } from "./dependency-wiring.js";
 import { getMembership, requireAdministrator, requireLatestProject, requireWorkspace } from "./records.js";
 import { ensureInstallOrg } from "./scope-helpers.js";
 import { slackTaskAccess } from "./slack-workflow-events.js";
 import { requesterOf } from "./thread-workspaces.js";
-import { personIds } from "../../org/live-role.js";
 import { metaPrepareFor, type MetaHeadReader } from "../../meta-repo/prepare-meta.js";
 import { githubScope } from "./scope-helpers.js";
 
@@ -277,10 +276,10 @@ export async function slackRequesterProjectRole(dependencies: AwsBrokerDependenc
   const developerId = developerIdForSlackUser(userId);
   // The one rule for the requester's own identity, shared with the ingress callers (slackCallerFor): their org must be the team's, the company sign-in must allow them, their role is read
   // under every id they answer to (a merge), and the Auditor, a role this release does not know, a record with no role and a missing record outside a single-org install are all refused.
-  const orgRole = await requireSlackRequesterWriterRole(dependencies, userId, orgId, { allowUnlinked: true });
-  // The explicit grant is read under the id whose role wins, as the role is: the survivor's grant first, then back along the merge and link chain to the Slack id's own. An explicit grant
-  // (a viewer's included) is applied before channel access, so linking or merging a Slack identity into a developer with a restrictive grant does not hand it the channel's contributor role.
-  const ids = await personIds({ documentClient: dependencies.documentClient, signInTableName: dependencies.developer?.signInTableName }, developerId);
+  const { role: orgRole, ids } = await slackRequesterStanding(dependencies, userId, orgId, { allowUnlinked: true });
+  // The explicit grant is read under the id whose role wins, as the role is: the survivor's grant first, then back along the merge and link chain to the Slack id's own. The ids are the ones the
+  // rule just walked and org-checked (not walked again here). An explicit grant (a viewer's included) is applied before channel access, so linking or merging a Slack identity into a
+  // developer with a restrictive grant does not hand it the channel's contributor role.
   let grant: Awaited<ReturnType<typeof getMembership>>;
   for (const id of [...ids].reverse()) {
     grant = await getMembership(dependencies, orgId, id, projectName);
@@ -319,6 +318,10 @@ export async function slackServiceIdentity(
   await requireSlackAllowedByEdition(dependencies, context.requester.userId, orgId);
   const binding = await getSlackBinding(dependencies, orgId, context.thread.teamId, context.thread.channelId);
   if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
+  // A person removed from the company (or banned), of another org, or with an unreadable role record is refused here, for every Slack service route (member removal), by the one requester rule
+  // (requireSlackRequesterWriterRole): the routes that start or change work add the writer check on top (requireSlackRequesterMayWork), and the Auditor, who only reads, is let through here
+  // alone. A person who never joined has no tombstone and is served as before.
+  await requireSlackRequesterWriterRole(dependencies, context.requester.userId, orgId, { allowUnlinked: true, allowReadOnly: true });
   const subject = slackThreadSubject(context.thread);
   const threadOwnerKey = ownerKeyForSubject(SLACK_THREAD_OWNER_ISSUER, subject);
   const own: AuthenticatedIdentity = {

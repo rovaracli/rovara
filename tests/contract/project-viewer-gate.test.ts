@@ -3,7 +3,7 @@
 // dispatch for a viewer's task starts, tasks without a People sidecar included. People with no grant keep the share design.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, sharedTaskKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { editionPolicy, orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, sharedTaskKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
@@ -13,7 +13,7 @@ import type { createDeveloperTaskBroker} from "../support/developer-task-broker.
 import { createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
-import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, serviceCall } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, loadSlackBroker, serviceCall } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
@@ -164,6 +164,154 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     seedMembership(h.db, guestId, { orgId: OTHER_ORG, role: "member" });
     h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
     await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("a removed or banned member is refused with REMOVED_FROM_ORG on the read-only service routes too, and a person who never joined is served", async () => {
+    const readOnly = (h: Harness, who: string) => serviceCall(h.handler, thread, who, "GET", "/v1/service/project/models");
+    for (const row of [orgRemovedKey(TEST_ORG, guestId), orgBanKey(TEST_ORG, guestId)]) {
+      const h = await withKit();
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: guestId });
+      const refused = await readOnly(h, GUEST);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+      expect(refused.body.error).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    }
+    const never = await readOnly(await withKit(), GUEST);
+    expect((never.body.error as { code?: string } | undefined)?.code, JSON.stringify(never.body)).not.toBe("REMOVED_FROM_ORG");
+    expect(never.status, JSON.stringify(never.body)).not.toBe(403);
+  });
+
+  it("an unreadable member record (no role, a role this release does not know, or one under the merge survivor) is refused on the read-only service routes too", async () => {
+    const survivor = "9".repeat(64);
+    for (const arrange of [
+      (h: Harness) => { h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId }); },
+      (h: Harness) => { h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "future-role" }); },
+      (h: Harness) => { h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor }); h.db.set({ ...orgMemberKey(TEST_ORG, survivor), orgId: TEST_ORG, developerId: survivor }); },
+    ]) {
+      const h = await withKit();
+      arrange(h);
+      await refusedOnEveryRoute(h, GUEST);
+      expect((await serviceCall(h.handler, thread, GUEST, "GET", "/v1/service/project/models")).status).toBe(403);
+    }
+  });
+
+  it("an Auditor reads on the read-only service routes and starts or changes nothing on the others", async () => {
+    const h = await withKit();
+    seedMembership(h.db, guestId, { orgId: TEST_ORG, role: "auditor" });
+    const read = await serviceCall(h.handler, thread, GUEST, "GET", "/v1/service/project/models");
+    expect(read.status, JSON.stringify(read.body)).not.toBe(403);
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  describe("removal rows and the walk: a ban under any id refuses, a removal row only a person the survivor has no record for", () => {
+    const survivorId = "8".repeat(64);
+    const code = async (h: Harness) => (await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() })).body.error as { code?: string } | undefined;
+    /** The Slack id reaches `survivorId` by a merge, or by a relink (an active link with no merge); the Slack id keeps no member record of its own. */
+    const reach: Array<[string, (h: Harness) => void]> = [
+      ["merged", (h) => { h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivorId }); h.db.delete(orgMemberKey(TEST_ORG, guestId)); }],
+      ["relinked", (h) => {
+        h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId });
+        h.db.delete(orgMemberKey(TEST_ORG, guestId));
+        h.db.set({ pk: `SIGNIN_IDENTITY#${guestId}`, sk: "META", identityKey: guestId, developerId: survivorId, provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" });
+      }],
+    ];
+
+    it("a ban row under the merged-away or relinked Slack id refuses it, though the survivor is a member", async () => {
+      for (const [how, arrange] of reach) {
+        const h = await withKit();
+        seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "member" });
+        arrange(h);
+        h.db.set({ ...orgBanKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId });
+        expect(await code(h), how).toMatchObject({ code: "REMOVED_FROM_ORG" });
+      }
+    });
+
+    it("a removal row under the merged-away or relinked Slack id does not refuse it when the survivor is a member", async () => {
+      for (const [how, arrange] of reach) {
+        const h = await withKit();
+        seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "member" });
+        arrange(h);
+        h.db.set({ ...orgRemovedKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId });
+        const answered = await code(h);
+        expect(answered?.code, how).not.toBe("REMOVED_FROM_ORG");
+        expect(answered?.code, how).not.toBe("FORBIDDEN");
+      }
+    });
+
+    it("a removed or banned person on an install with the Auditor role is told they were removed, not to sign in once", async () => {
+      const enterprise = { ...editionPolicy("enterprise"), features: { ...editionPolicy("enterprise").features, sso: false } };
+      for (const row of [orgRemovedKey(TEST_ORG, guestId), orgBanKey(TEST_ORG, guestId)]) {
+        const h = await withKit({ brokerExtra: { editionPolicy: enterprise } });
+        h.db.set({ ...row, orgId: TEST_ORG, developerId: guestId });
+        expect(await code(h)).toMatchObject({ code: "REMOVED_FROM_ORG" });
+      }
+      // The control: with no tombstone the Enterprise install still asks the person to sign in once.
+      const never = await withKit({ brokerExtra: { editionPolicy: enterprise } });
+      expect(await code(never)).toMatchObject({ code: "FORBIDDEN" });
+    });
+
+    it("the company role comes from the survivor's record only: a stale owner record under the Slack id is no role when the survivor has none", async () => {
+      for (const [how, arrange] of reach) {
+        const h = await withKit();
+        arrange(h);
+        // Arranged after the reach, which clears the Slack id's own record: a stale owner record there, a viewer grant under the Slack id, and no record under the survivor.
+        h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "owner" });
+        setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
+        expect(await code(h), `${how} stale owner`).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+      }
+      // And with a survivor who is a member the stale owner record gives no maintainer role either.
+      for (const [how, arrange] of reach) {
+        const h = await withKit();
+        seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "member" });
+        arrange(h);
+        h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "owner" });
+        setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
+        expect(await code(h), `${how} stale owner, member survivor`).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+      }
+    });
+
+    it("a non-writer record under the Slack id refuses it, though the developer it is linked to is an admin (fail closed, not only the survivor's record is read)", async () => {
+      for (const stale of ["auditor", "future-role"]) {
+        const h = await withKit();
+        seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "admin" });
+        reach[1]![1](h);
+        // The Slack id keeps a record of its own (relinked, not merged): an Auditor's, or a role this release does not know.
+        h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: stale });
+        await refusedOnEveryRoute(h, GUEST);
+        expect((await code(h))?.code, stale).toBe("FORBIDDEN");
+      }
+      // The control: with no record of its own the same link is served as the admin.
+      const control = await withKit();
+      seedMembership(control.db, survivorId, { orgId: TEST_ORG, role: "admin" });
+      reach[1]![1](control);
+      expect((await code(control))?.code).not.toBe("FORBIDDEN");
+    });
+
+    it("a survivor's viewer grant beats a stale contributor grant under the Slack id", async () => {
+      for (const [how, arrange] of reach) {
+        const h = await withKit();
+        seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "member" });
+        setGrant(h.db, { ...KIT, developerId: survivorId }, "viewer");
+        arrange(h);
+        setGrant(h.db, { ...KIT, developerId: guestId }, "contributor");
+        expect(await code(h), how).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+      }
+    });
+
+    it("the person's ids are walked once per role read, and the grant is read under exactly those ids", async () => {
+      const h = await withKit();
+      seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "member" });
+      reach[0]![1](h);
+      const { slackRequesterProjectRole } = await import("../../packages/broker/src/aws/broker/workspace-preparation.js");
+      let reads = 0;
+      const send = h.db.send.bind(h.db);
+      h.db.send = async (command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
+        if (command.constructor.name === "GetCommand" && (command.input?.Key?.pk === `SIGNIN_IDENTITY#${guestId}` || command.input?.Key?.pk === `DEVELOPER#${guestId}`)) reads += 1;
+        return send(command as never);
+      };
+      await slackRequesterProjectRole(h.brokerInput as never, TEST_ORG, GUEST, "payments");
+      // One read of the Slack id's link and one of its record, by the single walk; the grant read reuses its ids.
+      expect(reads).toBe(2);
+    });
   });
 
   it("a member record with no role field is unreadable and refused, not defaulted to member", async () => {
@@ -376,6 +524,19 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
     expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("FORBIDDEN");
+  });
+});
+
+describe("the task paths read a member record that has no role as unreadable", () => {
+  it("refuses it, whatever grant the person still holds, and does not for a member with the same grant", async () => {
+    const h = await withKit();
+    const who = "6".repeat(64);
+    const { requireProjectAuthority } = await loadSlackBroker() as unknown as { requireProjectAuthority: (...args: unknown[]) => Promise<unknown> };
+    h.db.set({ ...projectMemberKey(TEST_ORG, who, "payments"), entityType: "MEMBERSHIP", ownerKey: who, projectName: "payments", role: "developer", projectRole: "maintainer", grantId: "g2" });
+    seedMembership(h.db, who, { orgId: TEST_ORG, role: "member" });
+    await expect(requireProjectAuthority(h.brokerInput, TEST_ORG, who, "payments")).resolves.toMatchObject({ kind: "grant" });
+    h.db.set({ ...orgMemberKey(TEST_ORG, who), orgId: TEST_ORG, developerId: who });
+    await expect(requireProjectAuthority(h.brokerInput, TEST_ORG, who, "payments")).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
   });
 });
 

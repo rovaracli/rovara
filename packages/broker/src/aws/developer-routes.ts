@@ -40,6 +40,7 @@ import "../developer/log.js";
 import "../org/invite-directory.js";
 import "../org/role-changes.js";
 import "../org/directory.js";
+import "../org/member-removal/routes.js";
 import "../app-nav/read-cache.js";
 import "../app-nav/nav.js";
 import "../agent-sessions/live.js";
@@ -141,6 +142,7 @@ import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
 import { OrgMemberRoleChangeBodySchema } from "@agentx/contracts";
 import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
+import { getMemberRemoval, previewMemberRemoval, startMemberRemovalRoute } from "../org/member-removal/routes.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
 import { AgentXNameSchema, RenameOrganizationBodySchema, agentXError, projectAllows } from "@agentx/contracts";
 import { requireReviewedModelSourceWebWrite } from "../model-sources/routes.js";
@@ -227,6 +229,7 @@ import {
   jsonBody,
   leaveOrganization,
   putOrganizationBudget,
+  removalHelpers,
   removeOrganizationMember,
   routeChatGptConnection,
   setMyName,
@@ -557,6 +560,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     const projectFor = (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName);
     const learned = await routeLearning({
       task: developerTaskRouteDependencies(deps, caller), projectFor, audit: deps.agents?.audit,
+      settings: { documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...(deps.agents?.audit === undefined ? {} : { audit: deps.agents.audit }) },
       ...(deps.agents === undefined ? {} : { decide: { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents.store, audit: deps.agents.audit, approvals: deps.agents, projectFor } }),
     }, caller, request.method, url, () => jsonBody(request));
     if (learned !== undefined) return learned;
@@ -646,6 +650,13 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   const identityRoute = /^\/v1\/app\/me\/identities\/([a-z]{1,16})$/.exec(url.pathname);
   if (identityRoute !== null && request.method === "DELETE") return unlinkAppIdentity(deps, caller, identityRoute[1]!);
   if (identityRoute !== null && request.method === "POST") return startAppIdentityLink(deps, caller, identityRoute[1]!);
+  // Member removal (v1.1): a preview of what moves and what ends, the removal with a receipt per request id, and its status.
+  const removalPreview = /^\/v1\/app\/org\/members\/([a-f0-9]{64})\/removal-preview$/.exec(url.pathname);
+  if (removalPreview !== null && request.method === "GET") return previewMemberRemoval(deps, caller, removalPreview[1]!, url);
+  const removalStart = /^\/v1\/app\/org\/members\/([a-f0-9]{64})\/removal$/.exec(url.pathname);
+  if (removalStart !== null && request.method === "POST") return startMemberRemovalRoute(deps, caller, removalStart[1]!, jsonBody(request), removalHelpers(deps), deps.cloud === true);
+  const removalStatus = /^\/v1\/app\/org\/removals\/([^/]+)$/.exec(url.pathname);
+  if (removalStatus !== null && request.method === "GET") return getMemberRemoval(deps, caller, removalStatus[1]!);
   const memberRoute = /^\/v1\/app\/org\/members\/([a-f0-9]{64})(\/role)?$/.exec(url.pathname);
   if (memberRoute !== null && request.method === "PUT" && memberRoute[2] !== undefined) {
     const body = jsonBody(request);

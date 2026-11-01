@@ -30,6 +30,7 @@ import { attachEvidence, planEvidenceJobItem } from "../../packages/broker/src/d
 import { noticesFromStream } from "../../packages/broker/src/developer/notifications.js";
 import { DEV_ISSUER, MAYA, OMAR, createSingleAnswerPlanBroker, markThreadPosted, recordStream, teammate } from "../support/developer-task-broker.js";
 import type { Developer } from "../support/developer-task-broker.js";
+import { SLACK_SEND_BACK_INSTRUCTIONS } from "../../packages/broker/src/aws/developer-tasks.js";
 import { registerHumanSendBackListener } from "../../packages/broker/src/lessons/send-back-events.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call, registerSlackProject } from "../support/slack-broker.js";
@@ -2355,6 +2356,22 @@ describe("exits for blocked work (Task 16)", () => {
       // A replay answers from the first and tells nobody again.
       expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, body)).status).toBe(200);
       expect(seen).toHaveLength(1);
+    } finally { remove(); }
+  });
+
+  it("does not give the learning lane Slack's fixed send-back note as the person's reason, and still counts the send-back", async () => {
+    const harness = await createSingleAnswerPlanBroker();
+    const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
+    await finishImplementation();
+    const review = operations(harness, workspaceId).find((item) => item.workflowMode === "REVIEW")!;
+    await harness.finish(workspaceId, String(review.id), "SUCCEEDED", findingsReview(String(review.id), candidate, false));
+    const seen: Array<{ requestId: string; instructions: string; round: number }> = [];
+    const remove = registerHumanSendBackListener(async (event) => { seen.push(event); });
+    try {
+      const requestId = randomUUID();
+      const body = { requestId, expectedRevision: taskWorkflow(harness, taskId).revision, instructions: SLACK_SEND_BACK_INSTRUCTIONS };
+      expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, body)).status).toBe(200);
+      expect(seen).toEqual([expect.objectContaining({ requestId, instructions: "", round: 1 })]);
     } finally { remove(); }
   });
 
