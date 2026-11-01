@@ -75,7 +75,7 @@ describe("the person's routes", () => {
     const id = `dgn_${"a".repeat(20)}`;
     for (const [method, path] of [["POST", "/v1/app/diagnoses"], ["GET", `/v1/app/diagnoses/${id}`], ["GET", "/v1/app/diagnoses"], ["POST", `/v1/app/diagnoses/${id}`]] as const) {
       await expect(routeDiagnosisRequest(undefined, caller, method, path, () => ({})), `${method} ${path}`).rejects.toMatchObject({ code: "NOT_FOUND" });
-      await expect(routeDiagnosisRequest({ ...w.diagnosis, deep: undefined }, caller, method, path, () => ({})), `${method} ${path} (off)`).rejects.toMatchObject({ code: "NOT_FOUND" });
+      await expect(routeDiagnosisRequest({ ...w.diagnosis, deep: undefined, propose: undefined }, caller, method, path, () => ({})), `${method} ${path} (off)`).rejects.toMatchObject({ code: "NOT_FOUND" });
     }
     await expect(routeDiagnosisRequest(undefined, caller, "GET", "/v1/app/sessions", () => ({}))).resolves.toBeUndefined();
   });
@@ -83,12 +83,12 @@ describe("the person's routes", () => {
   it("with the switch on: POST starts one (202 queued), GET reads it, and a wrong method or an id of the wrong shape is NOT_FOUND", async () => {
     const w = diagnosisWorld();
     const caller = w.w.caller(PRIYA);
-    const started = await routeDiagnosisRequest({ ...w.diagnosis, deep: undefined }, caller, "POST", "/v1/app/diagnoses", () => ({ requestId: randomUUID(), errorRef: w.ref() })) as { statusCode: number; body: { diagnosisId: string; state: string } };
+    const started = await routeDiagnosisRequest({ ...w.diagnosis, deep: undefined, propose: undefined }, caller, "POST", "/v1/app/diagnoses", () => ({ requestId: randomUUID(), errorRef: w.ref() })) as { statusCode: number; body: { diagnosisId: string; state: string } };
     expect(started.statusCode).toBe(202);
     expect(started.body.state).toBe("queued");
-    const read = await routeDiagnosisRequest({ ...w.diagnosis, deep: undefined }, caller, "GET", `/v1/app/diagnoses/${started.body.diagnosisId}`, () => ({})) as { diagnosisId: string };
+    const read = await routeDiagnosisRequest({ ...w.diagnosis, deep: undefined, propose: undefined }, caller, "GET", `/v1/app/diagnoses/${started.body.diagnosisId}`, () => ({})) as { diagnosisId: string };
     expect(read.diagnosisId).toBe(started.body.diagnosisId);
-    await expect(routeDiagnosisRequest({ ...w.diagnosis, deep: undefined }, caller, "DELETE", `/v1/app/diagnoses/${started.body.diagnosisId}`, () => ({}))).rejects.toMatchObject({ code: "NOT_FOUND" });
-    await expect(routeDiagnosisRequest({ ...w.diagnosis, deep: undefined }, caller, "GET", "/v1/app/diagnoses/not-an-id", () => ({}))).resolves.toBeUndefined();
+    await expect(routeDiagnosisRequest({ ...w.diagnosis, deep: undefined, propose: undefined }, caller, "DELETE", `/v1/app/diagnoses/${started.body.diagnosisId}`, () => ({}))).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(routeDiagnosisRequest({ ...w.diagnosis, deep: undefined, propose: undefined }, caller, "GET", "/v1/app/diagnoses/not-an-id", () => ({}))).resolves.toBeUndefined();
   });
 });

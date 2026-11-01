@@ -119,6 +119,7 @@ export const DIAGNOSIS_REFUSALS = {
   noPath: "This change can't be proposed from here. Make it where the setting lives.",
   staleProposal: "This proposal is out of date: the setting has changed since the diagnosis was made. Ask for a new diagnosis.",
   citationsUnchecked: "Rovara could not read again what this proposal quotes, so it can't be proposed. Ask for a new diagnosis.",
+  citationsWrong: "Rovara read again what this proposal quotes and did not find it, so it can't be proposed. Ask for a new diagnosis.",
   notProposal: "That is not a change that can be proposed.",
   roleNeeded: "Only a project maintainer can propose a change to these settings.",
 } as const;

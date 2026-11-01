@@ -78,6 +78,7 @@ import { getAppProject, startProjectSetupCheck } from "./project-archive-setup.j
 import { projectRoleForRoute } from "./project-members.js";
 import { putProjectSettings } from "./project-settings.js";
 import { checkProjectAccess } from "./project-access.js";
+import { putCodeSettings, readCodeSettings } from "../../rovara-code/code-settings.js";
 import { requireGithubRecord } from "../../plugins/code-host/github-only.js";
 import { diagnosisEnabled, diagnosisTagKeyOf } from "../../diagnosis/switch.js";
 import type { DiagnosisRouteDependencies } from "../../diagnosis/routes.js";
@@ -125,6 +126,17 @@ export function diagnosisRouteDepsOf(deps: DeveloperRouteDependencies, caller: D
     log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
     // The deep tier starts a read-only task as the person (the ordinary start: their role, their payer, the allowed models, the budget floor and the planning limit).
     deep: (() => { const starter = agentRunStarterOf(deps); return starter === undefined ? undefined : { starter }; })(),
+    // "Propose this change" goes through the ordinary settings routes, as the person: the project's code settings and its settings save. A citation is read again with the setup draft's file reader.
+    propose: {
+      project: async (orgId, project) => {
+        const latest = await latestRevision(table, orgId, project);
+        return latest === undefined ? undefined : { revision: latest.definition.revision, devcontainer: latest.definition.devcontainer, repositories: latest.definition.repositories.map((repository) => ({ name: repository.name, url: repository.url })) };
+      },
+      codeSettings: (orgId, project) => readCodeSettings(table, orgId, project),
+      putCodeSettings: (who, project, body) => putCodeSettings({ ...table, now: deps.now, projectFor: (person, rawName) => projectRoleForRoute(deps, person, rawName) }, who, project, body, deps.agents),
+      updateSettings: (who, project, body, options) => putProjectSettings(deps, who, encodeURIComponent(project), body, options),
+      ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),
+    },
     context: {
       ...table, edition: deps.editionPolicy?.edition ?? "public", tagKey: diagnosisTagKeyOf(sessions.cursorKey),
       // The person's own view of the task: its error reference, failure and events, as the app shows them. `details: false` reads nothing the diagnosis does not use and writes nothing.
