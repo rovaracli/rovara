@@ -12,6 +12,7 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   REDIRECT_LEFT_BLOCKED_MESSAGE,
+  REDIRECT_NOT_CARRIED_OUT_MESSAGE,
   REDIRECT_STOPPING_SWEEP_MINUTES,
   REDIRECT_TEXT_MAX_CHARS,
   WORKFLOW_BLOCK_REASONS,
@@ -83,11 +84,11 @@ export function judgeRedirect(record: RedirectRecord, task: DeveloperTaskRecord 
   return workflow.blockReason !== undefined && reasons.includes(workflow.blockReason) ? { kind: "go" } : { kind: "end", to: "left_blocked" };
 }
 
-/** The line a redirect that did not restart leaves on the session's timeline (fixed words, never the instruction). Best effort: the state of the redirect is the record. */
-async function tellLeftBlocked(deps: RedirectEndDependencies, record: RedirectRecord): Promise<void> {
+/** The line a redirect that did not restart leaves on the session's timeline (fixed words, never the instruction): the step is left stopped (`left_blocked`: press Retry) or nothing was stopped (`failed`). Best effort: the state of the redirect is the record. */
+async function tellEnded(deps: RedirectEndDependencies, record: RedirectRecord, to: "left_blocked" | "failed"): Promise<void> {
   try {
     const item: TransactItem = sessionEventItem(deps, { orgId: record.orgId, sessionId: record.sessionId }, {
-      eventId: sessionEventId("redirect_left_blocked", record.requestId), at: isoOf(deps.now()), type: "status", actor: { kind: "agent" }, text: REDIRECT_LEFT_BLOCKED_MESSAGE,
+      eventId: sessionEventId("redirect_left_blocked", record.requestId), at: isoOf(deps.now()), type: "status", actor: { kind: "agent" }, text: to === "left_blocked" ? REDIRECT_LEFT_BLOCKED_MESSAGE : REDIRECT_NOT_CARRIED_OUT_MESSAGE,
     });
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [item] }));
   } catch {
@@ -100,7 +101,7 @@ async function finish(deps: RedirectEndDependencies, record: RedirectRecord, fro
   const outcome = to === "restarted" || to === "revise_started" || to === "left_blocked" ? to : "refused";
   const audit = await redirectOutcomeAudit(deps, record, outcome, isoOf(deps.now()));
   const ended = await endRedirect(deps, record, from, to, audit);
-  if (ended && (to === "left_blocked" || to === "failed")) await tellLeftBlocked(deps, record);
+  if (ended && (to === "left_blocked" || to === "failed")) await tellEnded(deps, record, to);
   return ended;
 }
 

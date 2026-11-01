@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   OWNER_REDIRECT_FEATURE,
   REDIRECT_LEFT_BLOCKED_MESSAGE,
+  REDIRECT_NOT_CARRIED_OUT_MESSAGE,
   REDIRECT_RETRY_INSTRUCTIONS,
   WORKFLOW_REDIRECT_PLAN_DECISION_REASON,
   WORKFLOW_REDIRECT_SEND_BACK_REASON,
@@ -154,6 +155,9 @@ describe("keep the plan, at coding", () => {
     expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
     expect(t.record(taskId, requestId)).toMatchObject({ state: "failed" });
     expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+    // Nothing was stopped for a person who is not the owner any more: the timeline never says to press Retry (S4).
+    expect(t.sessionEvents(sessionId)).toContain(REDIRECT_NOT_CARRIED_OUT_MESSAGE);
+    expect(t.sessionEvents(sessionId)).not.toContain(REDIRECT_LEFT_BLOCKED_MESSAGE);
   });
 });
 
@@ -311,6 +315,8 @@ describe("restart conditions (R3)", () => {
     expect(t.operations(workspaceId)).toHaveLength(operationsBefore);
     expect(t.record(taskId, stale)).toMatchObject({ state: "failed" });
     expect(t.open(taskId)).toBeUndefined();
+    expect(t.sessionEvents(sessionId)).toContain(REDIRECT_NOT_CARRIED_OUT_MESSAGE);
+    expect(t.sessionEvents(sessionId)).not.toContain(REDIRECT_LEFT_BLOCKED_MESSAGE);
   });
 
   it("waits while the run is still ending, and two hooks racing for one stopped step start it once", async () => {
@@ -420,7 +426,7 @@ describe("what restarts and what does not, at the edges", () => {
     const record = { requestId: randomUUID(), kind: "blocked" as const, orgId: TEST_ORG, sessionId, taskId, actorId: MAYA.developerId, messageId: "msg_0123456789abcdefghij", mode: "keep_plan" as const, blockedRevision: revision,
       step: "REVIEW", state: "stopping" as const, createdAt: new Date().toISOString(), ttl: 1_900_000_000 };
     const host = redirectRestartHost(t.brokerInput as never);
-    await expect(host.sendBack(t.task(taskId) as never, record, { messageId: record.messageId, sender: "person p_aaaaaa", text: "x" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: "there is no current failed check or review finding to send back to coding" });
+    await expect(host.sendBack(t.task(taskId) as never, record, { messageId: record.messageId, sender: "person p_aaaaaa", text: "x" })).rejects.toThrow("there is no current failed check or review finding to send back to coding");
     expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
   });
 

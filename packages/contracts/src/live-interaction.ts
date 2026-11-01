@@ -89,6 +89,8 @@ export const REDIRECT_MESSAGE_REASON = "redirect" as const;
 
 /** Fixed words. The instruction text is never repeated in any of them. */
 export const REDIRECT_LEFT_BLOCKED_MESSAGE = "Stopped for your new instruction. Press Retry to continue with it." as const;
+/** The line a redirect that ended `failed` leaves (the task moved on, was closed or changed hands): nothing was stopped, so it never says to press Retry (fix round 1, S4). */
+export const REDIRECT_NOT_CARRIED_OUT_MESSAGE = "Your redirect was not carried out because the task moved on; your instruction is saved as a note." as const;
 export const REDIRECT_BUDGET_PAUSE_MESSAGE = "Paused for budget: your instruction is saved and used when work resumes." as const;
 // Replaces: REDIRECT_OLD_WORKER_NOTE (an older worker got the instruction as an ordinary note). Owner decision 2026-11-01: a redirect is refused on an older worker, never degraded.
 /** What a restarted coding step's own prompt says in place of the owner's words (the words travel in `ownerRedirect`, framed; they are never in this line). */
