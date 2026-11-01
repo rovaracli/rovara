@@ -2,7 +2,7 @@
 // or closes, and the task ends. Every hook is best effort: a failing write is counted and never reaches the caller.
 import { describe, expect, it } from "vitest";
 import type { WorkflowSnapshot } from "../../packages/contracts/src/index.js";
-import type { PullRequestStatus } from "../../packages/broker/src/github-pull-status.js";
+import type { ChangeRequestStatus } from "../../packages/contracts/src/index.js";
 import type { OutcomeDependencies } from "../../packages/broker/src/rovara-code/outcomes.js";
 import {
   observeCandidateCode, outcomeRoundOf, recordPlanOutcome, recordPublicationOutcomes, scoreChangesRequested, scoreMergedCandidate, settleSuperseded, settleTaskOutcomes,
@@ -41,14 +41,14 @@ function published(extra: Record<string, unknown> = {}): WorkflowSnapshot {
 }
 const PROVES = { verdicts: ["proves_change", "not_applicable"] as Array<"proves_change" | "not_applicable">, candidateDigest: CANDIDATE };
 
-function status(overrides: Partial<PullRequestStatus> = {}): PullRequestStatus {
+function status(overrides: Partial<ChangeRequestStatus> = {}): ChangeRequestStatus {
   return {
-    number: 7, state: "merged", draft: false, headSha: "a".repeat(40), baseBranch: "main", mergeableState: "clean", mergeable: true, behindBy: 0,
-    checks: [{ name: "test", status: "completed", conclusion: "success", required: false, url: "https://example.test/1" }],
-    requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [], ...overrides,
+    id: "7", state: "merged", draft: false, headRevision: "a".repeat(40), targetBranch: "main", mergeableState: "clean", mergeable: true, behindBy: 0,
+    checks: [{ name: "test", state: "completed", conclusion: "success", required: false, url: "https://example.test/1" }],
+    requiredChecks: [], targetHasRequiredChecks: false, headDefinesChecks: true, requestedReviewers: 0, reviews: [], ...overrides,
   };
 }
-const person = (state: "APPROVED" | "CHANGES_REQUESTED", id = "1", userType = "User") => ({ githubUserId: id, login: `user${id}`, userType, state, commitId: "a".repeat(40), submittedAt: T1 });
+const person = (state: "APPROVED" | "CHANGES_REQUESTED", id = "1", accountType = "User") => ({ reviewer: { login: `user${id}`, hostUserId: id }, accountType, state, revision: "a".repeat(40), submittedAt: T1 });
 const workflowOf = (prs: Array<{ number: number; state: string; repositoryId?: string; candidateDigest?: string }>) => ({
   pullRequests: prs.map((pr) => ({ repositoryId: pr.repositoryId ?? "web", number: pr.number, state: pr.state, candidateDigest: pr.candidateDigest ?? CANDIDATE })),
 }) as unknown as WorkflowSnapshot;
@@ -198,7 +198,7 @@ describe("a person asks for changes", () => {
 });
 
 /** GitHub's answer for each merged pull request of the candidate, by number (the same one for any not listed). */
-function readerOf(statuses: Record<number, PullRequestStatus> = {}, fallback: PullRequestStatus = status(), writers: readonly string[] = ["user1", "user2", "user3"]) {
+function readerOf(statuses: Record<number, ChangeRequestStatus> = {}, fallback: ChangeRequestStatus = status(), writers: readonly string[] = ["user1", "user2", "user3"]) {
   const calls: number[] = [];
   const read: EndedPullRequestReader = async (_repositoryId, number) => {
     calls.push(number);
@@ -206,7 +206,7 @@ function readerOf(statuses: Record<number, PullRequestStatus> = {}, fallback: Pu
   };
   return { read, calls };
 }
-async function merge(w: ReturnType<typeof world>, overrides: Partial<PullRequestStatus> = {}, prs = [{ number: 7, state: "MERGED" }], options: { reader?: ReturnType<typeof readerOf> } = {}) {
+async function merge(w: ReturnType<typeof world>, overrides: Partial<ChangeRequestStatus> = {}, prs = [{ number: 7, state: "MERGED" }], options: { reader?: ReturnType<typeof readerOf> } = {}) {
   const reader = options.reader ?? readerOf({}, status(overrides));
   const result = await scoreMergedCandidate(w.deps, { ...task, workflow: workflowOf(prs) }, { candidateDigest: CANDIDATE, read: reader.read, now: T2 });
   return { result, reader };
@@ -246,14 +246,14 @@ describe("a pull request merges", () => {
 
   it("only reviews on the candidate's own head count for it: an old review on an earlier head affects nothing", async () => {
     const w = await seeded();
-    await merge(w, { reviews: [{ ...person("CHANGES_REQUESTED"), commitId: "9".repeat(40) }, { ...person("APPROVED", "2"), commitId: "8".repeat(40) }] });
+    await merge(w, { reviews: [{ ...person("CHANGES_REQUESTED"), revision: "9".repeat(40) }, { ...person("APPROVED", "2"), revision: "8".repeat(40) }] });
     expect(byClaim(w.db, "review_pass:CRITIC")[0]).toMatchObject({ state: "held", reason: "merged_without_person_review", unreviewedMerge: true });
   });
 
   it("fresh CI decides the proof: failing, pending, none and an unreadable check list each have their own result", async () => {
-    const failing = [{ name: "test", status: "completed", conclusion: "failure", required: false, url: "https://example.test/1" }];
-    const pending = [{ name: "test", status: "in_progress", conclusion: null, required: false, url: "https://example.test/1" }];
-    const cases: Array<[Partial<PullRequestStatus>, string, string]> = [
+    const failing = [{ name: "test", state: "completed", conclusion: "failure", required: false, url: "https://example.test/1" }];
+    const pending = [{ name: "test", state: "pending", required: false, url: "https://example.test/1" }];
+    const cases: Array<[Partial<ChangeRequestStatus>, string, string]> = [
       [{ checks: failing } as never, "not_held", "ci_failing"], [{ checks: pending } as never, "no_outcome", "ci_pending"],
       [{ checks: [] }, "no_outcome", "ci_none"], [{ checksUnavailable: true }, "no_outcome", "ci_none"],
     ];
@@ -265,7 +265,7 @@ describe("a pull request merges", () => {
   });
 
   it("a candidate with two pull requests waits until both are over, and is aggregated: any failing CI or request for changes is not held", async () => {
-    const failing = [{ name: "test", status: "completed", conclusion: "failure", required: false, url: "https://example.test/1" }];
+    const failing = [{ name: "test", state: "completed", conclusion: "failure", required: false, url: "https://example.test/1" }];
     const both = (second: string) => [{ number: 7, state: "MERGED" }, { number: 8, state: second, repositoryId: "api" }];
     const waiting = await seeded();
     expect((await merge(waiting, {}, both("OPEN"))).result).toBe("nothing");
@@ -277,12 +277,12 @@ describe("a pull request merges", () => {
     expect(stateOf(clean.db, "review_pass:CRITIC")).toBe("held");
 
     const oneFailing = await seeded();
-    await merge(oneFailing, {}, both("MERGED"), { reader: readerOf({ 8: status({ number: 8, checks: failing } as never) }, status({ reviews: [person("APPROVED")] })) });
+    await merge(oneFailing, {}, both("MERGED"), { reader: readerOf({ 8: status({ id: "8", checks: failing } as never) }, status({ reviews: [person("APPROVED")] })) });
     expect(byClaim(oneFailing.db, "proves_change")[0]).toMatchObject({ state: "not_held", reason: "ci_failing", pr: { repositoryId: "api", number: 8, mergeCommit: MERGE_COMMIT } });
     expect(stateOf(oneFailing.db, "review_pass:CRITIC")).toBe("held");
 
     const oneAsked = await seeded();
-    await merge(oneAsked, {}, both("MERGED"), { reader: readerOf({ 8: status({ number: 8, reviews: [person("CHANGES_REQUESTED", "2")] }) }, status({ reviews: [person("APPROVED")] })) });
+    await merge(oneAsked, {}, both("MERGED"), { reader: readerOf({ 8: status({ id: "8", reviews: [person("CHANGES_REQUESTED", "2")] }) }, status({ reviews: [person("APPROVED")] })) });
     expect(stateOf(oneAsked.db, "review_pass:CRITIC")).toBe("not_held");
     expect(stateOf(oneAsked.db, "risk_low")).toBe("not_held");
 
@@ -339,7 +339,7 @@ describe("a fix replaces a candidate", () => {
     expect(byClaim(w.db, "proves_change")[0]).toMatchObject({ state: "not_held", reason: "ci_failing", scoredAt: T1 });
     await settleSuperseded(w.deps, { ...task, workflow: workflowOf([{ number: 7, state: "OPEN", candidateDigest: SECOND_CANDIDATE }]) }, { candidateDigest: CANDIDATE, now: T1 });
     await recordPublicationOutcomes(w.deps, task, { workflow: second(), proof: PROVES_B(), now: T1 });
-    await merge2(w, [{ number: 7, state: "MERGED", candidateDigest: SECOND_CANDIDATE }], SECOND_CANDIDATE, status({ reviews: [{ ...person("APPROVED"), commitId: "a".repeat(40) }] }));
+    await merge2(w, [{ number: 7, state: "MERGED", candidateDigest: SECOND_CANDIDATE }], SECOND_CANDIDATE, status({ reviews: [{ ...person("APPROVED"), revision: "a".repeat(40) }] }));
     expect(stateOf(w.db, "proves_change")).toBe("not_held");
     expect(stateOf(w.db, "proves_change", outcomeRoundOf(SECOND_CANDIDATE))).toBe("held");
     expect(stateOf(w.db, "review_pass:CRITIC")).toBe("no_outcome");
@@ -389,7 +389,7 @@ describe("a fix replaces a candidate", () => {
   });
 
   function PROVES_B() { return { verdicts: ["proves_change" as const], candidateDigest: SECOND_CANDIDATE }; }
-  async function merge2(w: ReturnType<typeof world>, prs: Array<{ number: number; state: string; candidateDigest?: string }>, digest: string, fresh: PullRequestStatus) {
+  async function merge2(w: ReturnType<typeof world>, prs: Array<{ number: number; state: string; candidateDigest?: string }>, digest: string, fresh: ChangeRequestStatus) {
     return scoreMergedCandidate(w.deps, { ...task, workflow: workflowOf(prs) }, { candidateDigest: digest, read: readerOf({}, fresh).read, now: T2 });
   }
 });

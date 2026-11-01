@@ -1,7 +1,7 @@
 // v1.2 learning loop (B6 round): the walk-resume job in the 5-minute settlement run. Spend settlement is a money job: the learning job runs AFTER every settlement job, has its own 3 s slice,
 // is skipped (with a log line) unless that slice and a margin remain, and can never reduce what settlement itself is given. An open-walk entry goes only when its walk truly finishes, a
 // walk that crashed is picked up again, and every tick logs ids and counts for each walk it ran.
-import { readFileSync } from "node:fs";
+import { readBrokerSource } from "../support/broker-source.js";
 import { describe, expect, it } from "vitest";
 import { clearOrgLearning, resumeOpenLearningWalks } from "../../packages/broker/src/learning/cleanup.js";
 import { WALK_INDEX_PK } from "../../packages/broker/src/learning/walk.js";
@@ -62,7 +62,7 @@ describe("the learning slice of the settlement run", () => {
   });
 
   it("is in the broker's list of jobs AFTER every settlement job, including the key audit", () => {
-    const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    const source = readBrokerSource();
     const order = ["drain-member-merges", "expire-approvals", "escalate-owner-requests", "sweep-model-sources", "sweep-spend", "audit-model-keys", "resume-learning-walks"].map((name) => source.indexOf(`"${name}"`));
     expect(order.every((index) => index > 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
@@ -185,7 +185,7 @@ describe("the learning slice is not starved by busy ticks (I4)", () => {
   });
 
   it("is wired in broker.ts for the key audit and the learning job, and a skipped learning job has its own event name", () => {
-    const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    const source = readBrokerSource();
     expect(source).toMatch(/learningFirstTick\(startedAt\)/);
     const block = source.slice(source.indexOf('name: "resume-learning-walks"'), source.indexOf('name: "resume-learning-walks"') + 900);
     expect(block).toContain("learning.settlement_job_skipped");

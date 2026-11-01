@@ -14,7 +14,7 @@ import { acceptRequestId, acceptSuggestion, appendRuleToOverlay, dismissSuggesti
 import { routeLearning } from "../../packages/broker/src/learning/routes.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { eraseLearningSubject, learningWalkDeps, resumeOpenLearningWalks } from "../../packages/broker/src/learning/cleanup.js";
-import { readFileSync } from "node:fs";
+import { readBrokerSource } from "../support/broker-source.js";
 import { viewLearning } from "../../packages/broker/src/learning/view.js";
 import { forgetCorrection, groupCorrections } from "../../packages/broker/src/learning/grouping.js";
 import { learningSettler, settleProject } from "../../packages/broker/src/learning/settle.js";
@@ -1136,7 +1136,7 @@ describe("erase emits rule.withdrawn with the cause `erased`, through the wiring
   });
 
   it("broker.ts builds both the erase hook and the walk-resume job through it, with the install's ledger", () => {
-    const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    const source = readBrokerSource();
     expect(source).toMatch(/eraseLearning: learningEraseHook\(learningWalkDeps\(\{[^}]*audit[^}]*\}\)\)/);
     expect(source).toMatch(/resumeOpenLearningWalks\(learningWalkDeps\(\{[^}]*audit: dependencies\.audit[^}]*\}\)/);
   });

@@ -207,7 +207,7 @@ describe("where the early score may appear", () => {
   it("is named only in the contract, the task view's builder and compatibility projection, and the task page", () => {
     const named = walk(root).filter((path) => /earlyRiskSignal|EarlyRiskSignal/.test(readFileSync(path, "utf8"))).map((path) => relative(root, path)).sort();
     expect(named).toEqual([
-      "broker/src/aws/developer-tasks.ts",
+      "broker/src/aws/developer-tasks/task-view.ts",
       "broker/src/rovara-code/early-risk-signal.ts",
       "broker/src/rovara-code/task-view-compat.ts",
       "contracts/src/developer-tasks.ts",
