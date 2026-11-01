@@ -252,7 +252,7 @@ describe("a close or an archive that does not finish is not left behind", () => 
     const b = populate();
     const w = interrupted(t, b);
     // The close's step: the way OrgStore.closeOrg runs it (it catches and logs what the step throws).
-    await clearOrgData({ documentClient: { send: vi.fn(async () => ({ Items: [] })) }, tableName: "State", now: () => 0, evidenceErase: w.slow } as never)(ORG).catch(() => undefined);
+    await clearOrgData({ documentClient: { send: vi.fn(async () => ({ Items: [] })) }, tableName: "State", now: () => 0, evidenceErase: w.slow })(ORG).catch(() => undefined);
     expect(evidenceLeft(b).length).toBeGreaterThan(0);
     expect(pendingOf(t)).toHaveLength(1);
     expect(pendingOf(t)[0]).toMatchObject({ orgId: ORG, kind: "workspace" });
@@ -268,7 +268,7 @@ describe("a close or an archive that does not finish is not left behind", () => 
     const t = table();
     const b = populate();
     const w = interrupted(t, b);
-    await expect(clearArchivedProjectLearning({ documentClient: { send: vi.fn(async () => ({})) }, tableName: "State", now: () => 0, evidenceErase: w.slow } as never, ORG, "web")).resolves.toBeUndefined();
+    await expect(clearArchivedProjectLearning({ documentClient: { send: vi.fn(async () => ({})) }, tableName: "State", now: () => 0, evidenceErase: w.slow }, ORG, "web")).resolves.toBeUndefined();
     expect(pendingOf(t)).toHaveLength(1);
     expect(pendingOf(t)[0]).toMatchObject({ orgId: ORG, kind: "project", scopeKey: "web" });
     await resumeEvidenceErase(w.resumer, w.resumeErase, { millis: 60_000 });
@@ -280,9 +280,9 @@ describe("a close or an archive that does not finish is not left behind", () => 
     const t = table();
     const b = populate();
     const broken = { send: async () => { throw new Error("store down"); } } as unknown as S3Client;
-    await expect(createEvidenceErase({ s3: broken, artifactBucketName: "bucket", ...t } as never).project(ORG, "web")).rejects.toThrow("store down");
+    await expect(createEvidenceErase({ s3: broken, artifactBucketName: "bucket", ...t }).project(ORG, "web")).rejects.toThrow("store down");
     expect(pendingOf(t)).toHaveLength(1);
-    await resumeEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t } as never, createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t } as never), { millis: 60_000 });
+    await resumeEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }, createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }), { millis: 60_000 });
     expect(pendingOf(t)).toEqual([]);
   });
 
