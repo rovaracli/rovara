@@ -96,6 +96,9 @@ export async function buildAtApproval(input: { bundle: VerifiedBundle; settings:
     throw refuse("the synthesis kit's manifest is not valid");
   }
   if (!kitEntries.some((entry) => entry.file === kit.entry)) throw refuse("the kit's entry is not one of the files the signed bundle lists");
+  // The kit names the release it was made from; it must be the release this bundle carries.
+  const signedRelease = bundle.manifest.files.find((entry) => entry.file === "release.json");
+  if (signedRelease === undefined || kit.releaseSha256 !== signedRelease.sha256 || kit.gitCommit !== bundle.manifest.gitCommit) throw refuse("the synthesis kit was made from another release than this bundle's");
   const major = input.nodeMajor ?? Number(process.versions.node.split(".")[0]);
   if (kit.nodeMajor !== major) throw refuse(`the kit was built for Node ${String(kit.nodeMajor)} and this agentx runs on Node ${String(major)}`);
 

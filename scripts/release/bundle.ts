@@ -16,6 +16,7 @@ import {
   BundleManifestSchema,
   BundleSignatureSchema,
   SynthKitManifestSchema,
+  type SynthKitManifest,
   ImageDigest,
   ReleaseManifestSchema,
   parseBundlePublicKey,
@@ -94,7 +95,7 @@ async function copyReleaseFile(releaseDir: string, out: string, file: string, ex
 }
 
 /** The kit's files, relative and "/"-separated: regular files only (a link is refused), kit.json present and valid, the entry it names present. */
-async function listKitFiles(root: string): Promise<string[]> {
+async function listKitFiles(root: string): Promise<{ files: string[]; kit: SynthKitManifest }> {
   const found: string[] = [];
   const walk = async (relative: string, depth: number): Promise<void> => {
     if (depth > 6) throw new Error("the synthesis kit nests deeper than allowed");
@@ -110,7 +111,7 @@ async function listKitFiles(root: string): Promise<string[]> {
   if (!found.includes("kit.json")) throw new Error("the synthesis kit has no kit.json");
   const kit = SynthKitManifestSchema.parse(JSON.parse(await readFile(join(root, "kit.json"), "utf8")));
   if (!found.includes(kit.entry.replace(/^synth-kit\//, ""))) throw new Error("the synthesis kit's entry is not in the kit");
-  return found.sort();
+  return { files: found.sort(), kit };
 }
 
 /** Builds the bundle; on any failure the output directory it claimed is removed, so a half-written bundle is never left to be mistaken for one. */
@@ -166,7 +167,10 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
   for (const entry of release.legalDocuments ?? []) files.push({ file: entry.file, kind: "legal", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
 
   if (input.synthKitDir !== undefined) {
-    for (const file of await listKitFiles(resolve(input.synthKitDir))) {
+    const { files: kitFiles, kit } = await listKitFiles(resolve(input.synthKitDir));
+    // The kit is bound to one release: the hash of this release.json and its commit. A kit made from another release (or another commit) is never signed into this bundle.
+    if (kit.releaseSha256 !== releaseJsonHash.sha256 || kit.gitCommit !== release.gitCommit) throw new Error("the synthesis kit was made from a different release than the one being bundled; make it again from this release (release:kit)");
+    for (const file of kitFiles) {
       const target = join(out, "synth-kit", ...file.split("/"));
       await mkdir(dirname(target), { recursive: true });
       await copyFile(join(resolve(input.synthKitDir), ...file.split("/")), target);

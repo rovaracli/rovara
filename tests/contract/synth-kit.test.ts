@@ -19,9 +19,15 @@ import { fakeExporter, IMAGES, newTestKey, type BuiltBundle } from "../support/b
 import { EnterpriseWorld, SETTINGS_ENT } from "../support/enterprise-approval-world.js";
 import { testRunner } from "../support/kit-runner.js";
 import { writeFakeKit } from "../support/synth-kit-fixture.js";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { assertSourceIsRelease, gitSourceState, releaseCheckRunner, type SourceState } from "../../scripts/release/synth-kit.js";
+import { sandboxAvailable } from "../support/kit-runner.js";
 
 if (!existsSync("packages/web/dist/app/index.html")) throw new Error("the release build needs the web app first: run `npm run build:web`");
 
+/** The checkout this test stands in for: the release below is built with this commit, from a clean tree. */
+const ON_RELEASE_COMMIT: SourceState = { head: () => "b".repeat(40), dirtyFiles: () => [] };
 const made: BuiltBundle[] = [];
 let root: string;
 let release: ReleaseManifest;
@@ -47,7 +53,7 @@ beforeAll(async () => {
   await buildRelease({ version: "1.4.0", out: releaseDir, gitCommit: "b".repeat(40) });
   release = ReleaseManifestSchema.parse(JSON.parse(await readFile(join(releaseDir, "release.json"), "utf8")));
   // The step under test: it runs the kit twice and against the release itself before it returns.
-  sandboxed = (await buildSynthKit({ releaseDir, out: kitDir })).sandboxed;
+  sandboxed = (await buildSynthKit({ releaseDir, out: kitDir, source: ON_RELEASE_COMMIT })).sandboxed;
   const key = newTestKey();
   const dir = join(root, "bundle");
   const { bundleSha256 } = await buildBundle({ releaseDir, out: dir, images: IMAGES.filter((image) => image.name === "litellm"), exportImage: fakeExporter, signer: key.signer, synthKitDir: kitDir });
@@ -310,12 +316,12 @@ describe("the kit step's refusals", () => {
     delete manifest.enterprisePackages;
     await writeFile(join(lacking, "release.json"), JSON.stringify(manifest));
     const out = join(root, "kit-lacking");
-    await expect(buildSynthKit({ releaseDir: lacking, out })).rejects.toThrow(/does not list/);
+    await expect(buildSynthKit({ releaseDir: lacking, out, source: ON_RELEASE_COMMIT })).rejects.toThrow(/does not list/);
     expect(existsSync(out)).toBe(false);
   }, 600_000);
 
   it("refuses an output folder that is not empty", async () => {
-    await expect(buildSynthKit({ releaseDir, out: kitDir })).rejects.toThrow(/not empty/);
+    await expect(buildSynthKit({ releaseDir, out: kitDir, source: ON_RELEASE_COMMIT })).rejects.toThrow(/not empty/);
   }, 600_000);
 });
 
@@ -340,5 +346,110 @@ describe("the kit makes no AWS call", () => {
   it("takes only text settings", () => {
     expect(checkedContext({ a: "b" })).toEqual({ a: "b" });
     for (const bad of [null, [], "x", { a: 1 }, { a: { b: "c" } }, Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`k${String(i)}`, "v"]))]) expect(() => checkedContext(bad)).toThrow();
+  });
+});
+
+describe("the kit is tied to its release", () => {
+  const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+  const cloneRelease = async (name: string): Promise<string> => {
+    const copy = join(root, name);
+    await cp(releaseDir, copy, { recursive: true, mode: constants.COPYFILE_FICLONE });
+    return copy;
+  };
+
+  it("records the release.json hash and the commit in kit.json", async () => {
+    const kit = SynthKitManifestSchema.parse(JSON.parse(await readFile(join(kitDir, "kit.json"), "utf8")));
+    expect(kit.releaseSha256).toBe(sha256(await readFile(join(releaseDir, "release.json"))));
+    expect(kit.gitCommit).toBe(release.gitCommit);
+  });
+
+  it("is not made when the checkout is at another commit than the release, or has changed files, and nothing is written", async () => {
+    const out = join(root, "kit-wrong-tree");
+    await expect(buildSynthKit({ releaseDir, out, source: { head: () => "c".repeat(40), dirtyFiles: () => [] } })).rejects.toThrow(/working tree is at cccccccccccc but the release was built from bbbbbbbbbbbb/);
+    await expect(buildSynthKit({ releaseDir, out, source: { head: () => "b".repeat(40), dirtyFiles: () => [" M infra/lib/operator-access.ts", "?? notes.txt"] } })).rejects.toThrow(/2 changed file\(s\) \( M infra\/lib\/operator-access\.ts/);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("reads the real state from git: a clean checkout of the commit passes, a changed or untracked file does not", async () => {
+    const repo = await realpath(await mkdtemp(join(tmpdir(), "kit-git-")));
+    try {
+      const git = (...args: string[]): string => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], { cwd: repo, encoding: "utf8" });
+      git("init", "-q");
+      await writeFile(join(repo, "a.txt"), "one");
+      git("add", "a.txt");
+      git("commit", "-q", "-m", "one");
+      const head = git("rev-parse", "HEAD").trim();
+      const state = gitSourceState(repo);
+      expect(state.head()).toBe(head);
+      expect(() => assertSourceIsRelease(state, { gitCommit: head })).not.toThrow();
+      expect(() => assertSourceIsRelease(state, { gitCommit: "d".repeat(40) })).toThrow(/working tree is at/);
+      await writeFile(join(repo, "a.txt"), "two");
+      expect(() => assertSourceIsRelease(state, { gitCommit: head })).toThrow(/changed file/);
+      git("checkout", "--", "a.txt");
+      await writeFile(join(repo, "untracked.txt"), "x");
+      expect(() => assertSourceIsRelease(state, { gitCommit: head })).toThrow(/changed file/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("is refused by the bundle step when it was made from another release", async () => {
+    const other = await cloneRelease("release-other");
+    const manifest = JSON.parse(await readFile(join(other, "release.json"), "utf8")) as { version: string };
+    manifest.version = "1.4.1";
+    await writeFile(join(other, "release.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    const out = join(root, "bundle-other");
+    await expect(buildBundle({ releaseDir: other, out, images: IMAGES.filter((image) => image.name === "litellm"), exportImage: fakeExporter, signer: newTestKey().signer, synthKitDir: kitDir })).rejects.toThrow(/different release than the one being bundled/);
+    expect(existsSync(out)).toBe(false);
+  }, 300_000);
+
+  it("fails the self-check when only an Enterprise template differs from a build from source", async () => {
+    const copy = join(root, "kit-enterprise-drift");
+    await cp(kitDir, copy, { recursive: true, mode: constants.COPYFILE_FICLONE });
+    const text = await readFile(join(copy, "synth.mjs"), "utf8");
+    const changed = text.replaceAll('"StartTheDeployer"', '"StartTheDeployeR"');
+    expect(changed).not.toBe(text);
+    await writeFile(join(copy, "synth.mjs"), changed);
+    // Everything the release's own (Public) templates cover is untouched, so only the Enterprise comparison can see it.
+    await expect(selfCheck({ kitRoot: copy, release, releaseDir, runner: testRunner })).rejects.toThrow(/differs from a build from source for the Enterprise profile enterprise-all-settings/);
+  }, 600_000);
+
+  it("is not made, and nothing is left, when the self-check fails (the step runs the self-check)", async () => {
+    const bad = await cloneRelease("release-bad-template");
+    const file = join(bad, "templates", "us-east-1", "slack.template.json");
+    const template = JSON.parse(await readFile(file, "utf8")) as { Description?: string };
+    template.Description = `${template.Description ?? ""} (changed)`;
+    const text = `${JSON.stringify(template, null, 2)}\n`;
+    await writeFile(file, text);
+    const manifest = JSON.parse(await readFile(join(bad, "release.json"), "utf8")) as { templates: Array<{ file: string; sha256: string }> };
+    manifest.templates.find((entry) => entry.file === "templates/us-east-1/slack.template.json")!.sha256 = sha256(Buffer.from(text));
+    await writeFile(join(bad, "release.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    const out = join(root, "kit-bad-template");
+    await expect(buildSynthKit({ releaseDir: bad, out, source: ON_RELEASE_COMMIT })).rejects.toThrow(/slack template differs from the release's own/);
+    expect(existsSync(out)).toBe(false);
+  }, 600_000);
+});
+
+describe("the release check needs a sandbox", () => {
+  const none = { platform: "freebsd" as NodeJS.Platform, find: () => undefined, realHome: undefined, nodeBinary: process.execPath };
+
+  it("refuses to run the kit without one, and says why", () => {
+    expect(() => releaseCheckRunner({ environment: none })).toThrow(/no sandbox.*network access/);
+  });
+
+  it("runs without one only when asked to, and says the kit had network access", () => {
+    const { runner, sandboxed } = releaseCheckRunner({ environment: none, allowUnsandboxed: true });
+    expect(sandboxed).toBe(false);
+    expect(runner.sandbox).toMatch(/network access/);
+  });
+
+  it.runIf(sandboxAvailable)("uses the sandbox when there is one", () => {
+    expect(releaseCheckRunner().sandboxed).toBe(true);
+  });
+
+  it("stops the kit step before any work when there is none", async () => {
+    const out = join(root, "kit-no-sandbox");
+    await expect(buildSynthKit({ releaseDir, out, source: ON_RELEASE_COMMIT, sandboxEnvironment: none })).rejects.toThrow(/no sandbox/);
+    expect(existsSync(out)).toBe(false);
   });
 });

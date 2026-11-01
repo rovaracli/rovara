@@ -11,14 +11,15 @@
 //
 // Before it returns, the step runs the finished kit the way approval will (in the same sandbox where the computer has one) and requires: (1) the same context twice, in two different
 // directories, gives byte-identical output (the same inputs are the same hash); (2) the release's own placeholder context gives the release's own templates and packages.
+import { execFileSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ENVIRONMENT_PLACEHOLDER, SynthKitManifestSchema, canonicalJson, type SynthKitManifest } from "@agentx/contracts";
+import { BUILT_PARTS, ENVIRONMENT_PLACEHOLDER, SynthKitManifestSchema, canonicalJson, environmentStackName, type SynthKitManifest } from "@agentx/contracts";
 import { build, type Plugin } from "esbuild";
 import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";
-import { createNodeSynthRunner, runKitProcess, type SynthRunner } from "../../packages/cli/src/upgrade/bundle/synth-run.js";
+import { createNodeSynthRunner, runKitProcess, systemSandboxEnvironment, type SandboxEnvironment, type SynthRunner } from "../../packages/cli/src/upgrade/bundle/synth-run.js";
 import { RELEASE_SYNTH_ROOT, synthReleaseProfile, type FunctionCode } from "./build.js";
 import { sha256Hex } from "./hash.js";
 import { ReleaseManifestSchema, type ReleaseManifest } from "./manifest.js";
@@ -109,11 +110,33 @@ export async function collectCodeMap(): Promise<FunctionCode[]> {
   return [...found].map(([path, assetId]) => ({ path, assetId })).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
-/** The sandboxed runner approval uses where this computer has a sandbox; otherwise the same process start without one (this is our own freshly built kit, checked on our own machine). */
-export function releaseCheckRunner(): { runner: SynthRunner; sandboxed: boolean } {
-  const real = createNodeSynthRunner();
+/**
+ * The runner for the release's own checks of a finished kit: the sandbox approval uses (macOS sandbox-exec, Linux bubblewrap). Where this computer has none it REFUSES: running the kit
+ * without a sandbox would run it with network access, and a release check that passes that way can pass a kit that approval then fails (or one that reaches out). `allowUnsandboxed`
+ * (`--allow-unsandboxed-check`, for a developer's own computer) runs it without one and says so; it is never the default.
+ */
+export function releaseCheckRunner(options: { allowUnsandboxed?: boolean; environment?: SandboxEnvironment } = {}): { runner: SynthRunner; sandboxed: boolean } {
+  const real = createNodeSynthRunner(options.environment ?? systemSandboxEnvironment());
   if (real.sandbox !== "none") return { runner: real, sandboxed: true };
-  return { runner: { confined: false, sandbox: "none (release check, no sandbox on this computer)", run: (input) => runKitProcess(input, undefined) }, sandboxed: false };
+  if (options.allowUnsandboxed !== true) throw new Error("this computer has no sandbox to check the synthesis kit in (macOS sandbox-exec, or bubblewrap on Linux). The release check does not run the kit without one, because it would have network access; install bubblewrap, or pass --allow-unsandboxed-check on your own computer only");
+  return { runner: { confined: false, sandbox: "none (release check, no sandbox on this computer; the kit had network access)", run: (input) => runKitProcess(input, undefined) }, sandboxed: false };
+}
+
+/** Where the working tree stands: the commit it is at and the files that differ from it (modified, staged or untracked and not ignored). */
+export interface SourceState {
+  head(): string;
+  dirtyFiles(): string[];
+}
+export function gitSourceState(cwd: string): SourceState {
+  const git = (...args: string[]): string => execFileSync("git", args, { cwd, encoding: "utf8" });
+  return { head: () => git("rev-parse", "HEAD").trim(), dirtyFiles: () => git("status", "--porcelain").split("\n").filter((line) => line !== "") };
+}
+/** A kit is made from the release's own commit, from a clean tree: otherwise the kit holds infrastructure that is in no release. */
+export function assertSourceIsRelease(source: SourceState, release: { gitCommit: string }): void {
+  const head = source.head();
+  if (head !== release.gitCommit) throw new Error(`the working tree is at ${head.slice(0, 12)} but the release was built from ${release.gitCommit.slice(0, 12)}; check out the release's commit before making its kit`);
+  const dirty = source.dirtyFiles();
+  if (dirty.length > 0) throw new Error(`the working tree has ${String(dirty.length)} changed file(s) (${dirty.slice(0, 3).join(", ")}); a kit is made from a clean checkout of the release's commit`);
 }
 
 /** Every file under `root`, relative and "/"-separated, sorted. */
@@ -156,8 +179,14 @@ export interface BuildSynthKitInput {
   releaseDir: string;
   /** Must be absent or empty. */
   out: string;
-  /** Runs the finished kit for the self-checks. Defaults to the sandbox approval uses (see releaseCheckRunner). */
+  /** Runs the finished kit for the self-checks. Defaults to the sandbox approval uses (see releaseCheckRunner), and with none the step refuses. */
   runner?: SynthRunner;
+  /** Runs the self-checks without a sandbox where there is none (a developer's own computer). */
+  allowUnsandboxedCheck?: boolean;
+  /** For tests: the sandboxes this computer is taken to have. */
+  sandboxEnvironment?: SandboxEnvironment;
+  /** Where the checkout stands. Defaults to git in this repository. */
+  source?: SourceState;
 }
 export interface BuildSynthKitResult {
   manifest: SynthKitManifest;
@@ -173,7 +202,13 @@ export async function buildSynthKit(input: BuildSynthKitInput): Promise<BuildSyn
   if (nodeMajor !== SYNTH_KIT_NODE_MAJOR) throw new Error(`the synthesis kit is built on Node ${String(SYNTH_KIT_NODE_MAJOR)} (this is Node ${String(nodeMajor)}): it is run by an agentx on that version`);
   const releaseDir = resolve(input.releaseDir);
   const out = resolve(input.out);
-  const release: ReleaseManifest = ReleaseManifestSchema.parse(JSON.parse(await readFile(join(releaseDir, "release.json"), "utf8")));
+  const releaseBytes = await readFile(join(releaseDir, "release.json"));
+  const release: ReleaseManifest = ReleaseManifestSchema.parse(JSON.parse(releaseBytes.toString("utf8")));
+  // Refused before any work: the kit is made from the release's own commit, from a clean tree, and is checked in the sandbox approval uses.
+  assertSourceIsRelease(input.source ?? gitSourceState(REPO_ROOT), release);
+  const { runner, sandboxed } = input.runner === undefined
+    ? releaseCheckRunner({ ...(input.allowUnsandboxedCheck === true ? { allowUnsandboxed: true } : {}), ...(input.sandboxEnvironment === undefined ? {} : { environment: input.sandboxEnvironment }) })
+    : { runner: input.runner, sandboxed: input.runner.sandbox !== "none" };
   const listed = new Map([...release.packages, ...(release.enterprisePackages ?? [])].map((pkg) => [pkg.assetId, pkg]));
 
   // The functions and their code, from this source tree; every package must be one the release lists, with the bytes the release lists.
@@ -196,10 +231,10 @@ export async function buildSynthKit(input: BuildSynthKitInput): Promise<BuildSyn
     for (const assetId of [...used].sort()) await copyFile(join(releaseDir, listed.get(assetId)!.file), join(out, kitCodeFile(assetId)));
     await writeFile(join(out, KIT_CODE_MAP_FILE), `${JSON.stringify(CodeMapSchema.parse({ schemaVersion: 1, functions }), null, 2)}\n`, "utf8");
     const { bytes } = await bundleKitEntry(join(out, "synth.mjs"));
-    const manifest = SynthKitManifestSchema.parse({ schemaVersion: 1, format: "rovara-synth-kit", entry: "synth-kit/synth.mjs", nodeMajor: SYNTH_KIT_NODE_MAJOR });
+    const manifest = SynthKitManifestSchema.parse({ schemaVersion: 1, format: "rovara-synth-kit", entry: "synth-kit/synth.mjs", nodeMajor: SYNTH_KIT_NODE_MAJOR, releaseSha256: sha256Hex(releaseBytes), gitCommit: release.gitCommit });
     await writeFile(join(out, "kit.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 
-    const sandboxed = await selfCheck({ kitRoot: out, release, releaseDir, runner: input.runner });
+    await selfCheck({ kitRoot: out, release, releaseDir, runner });
     return { manifest, functions: functions.length, packages: used.size, entryBytes: bytes, sandboxed };
   } catch (error) {
     await rm(out, { recursive: true, force: true });
@@ -207,9 +242,9 @@ export async function buildSynthKit(input: BuildSynthKitInput): Promise<BuildSyn
   }
 }
 
-/** The two checks every kit passes before the release ships it. Returns whether they ran inside the sandbox. */
-export async function selfCheck(input: { kitRoot: string; release: ReleaseManifest; releaseDir: string; runner?: SynthRunner | undefined }): Promise<boolean> {
-  const { runner, sandboxed } = input.runner === undefined ? releaseCheckRunner() : { runner: input.runner, sandboxed: input.runner.sandbox !== "none" };
+/** The checks every kit passes before the release ships it (see the header). Throws on the first failure. */
+export async function selfCheck(input: { kitRoot: string; release: ReleaseManifest; releaseDir: string; runner: SynthRunner }): Promise<void> {
+  const { runner } = input;
   const [region] = SUPPORTED_REGIONS;
   if (region === undefined) throw new Error("no supported region");
   // Real paths: the permission model compares the paths a kit opens (resolved) with the ones it was allowed, and a temp directory may sit behind a link (macOS /var).
@@ -218,12 +253,14 @@ export async function selfCheck(input: { kitRoot: string; release: ReleaseManife
   try {
     // (1) The same inputs are the same bytes, wherever the kit runs: two runs in directories of different depth and name.
     const installContext = { agentxEnv: "kitcheck", agentxRegion: region, agentxSynthesizer: "legacy" };
+    const profileOutputs: Array<{ name: string; context: Record<string, string>; out: string }> = [];
     for (const profile of enterpriseReleaseProfiles()) {
       const context = { ...profile.context, ...installContext };
       const first = await runKit({ runner, kitRoot, context, parent: join(scratch, `a-${profile.name}`) });
       const second = await runKit({ runner, kitRoot, context, parent: join(scratch, "much", "deeper", `b-${profile.name}`) });
       const difference = await firstTreeDifference(first, second);
       if (difference !== undefined) throw new Error(`the kit is not deterministic (${profile.name}): two runs gave different output (${difference})`);
+      profileOutputs.push({ name: profile.name, context, out: first });
     }
     // (2) The release's own context gives the release's own templates and code packages, in every region the release covers: the stand-in for the source bundler changes nothing the
     // templates say.
@@ -242,14 +279,33 @@ export async function selfCheck(input: { kitRoot: string; release: ReleaseManife
         if (entry === undefined || sha256Hex(await readFile(join(publicOut, "packages", file))) !== entry.sha256) throw new Error(`the kit's package ${file.slice(0, 16)} is not the release's`);
       }
     }
-    return sandboxed;
+    // (3) Every Enterprise profile gives the templates a build from source gives for the same install: what only an Enterprise install has (operator access, private MCP, egress, audit
+    // replica) is compared too, not only what the release's own Public templates hold.
+    await mkdir(RELEASE_SYNTH_ROOT, { recursive: true });
+    for (const profile of profileOutputs) {
+      const synthDir = await mkdtemp(join(RELEASE_SYNTH_ROOT, "run-"));
+      try {
+        const { assembly } = synthReleaseProfile({ context: profile.context, outdir: synthDir });
+        const stacks = new Map(assembly.stacks.map((stack) => [stack.stackName, stack]));
+        const kitParts = (await readdir(join(profile.out, "templates"))).sort();
+        const sourceParts = BUILT_PARTS.filter((part) => stacks.has(environmentStackName("kitcheck", part))).map((part) => `${part}.template.json`).sort();
+        if (kitParts.join(",") !== sourceParts.join(",")) throw new Error(`the kit makes other stacks than a build from source (${profile.name}): ${kitParts.join(", ")} against ${sourceParts.join(", ")}`);
+        for (const part of BUILT_PARTS) {
+          const stack = stacks.get(environmentStackName("kitcheck", part));
+          if (stack === undefined) continue;
+          if (canonicalJson(JSON.parse(await readFile(join(profile.out, "templates", `${part}.template.json`), "utf8"))) !== canonicalJson(stack.template)) throw new Error(`the kit's ${part} template differs from a build from source for the Enterprise profile ${profile.name}`);
+        }
+      } finally {
+        await rm(synthDir, { recursive: true, force: true });
+      }
+    }
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
 }
 
 function usage(): string {
-  return "Usage: tsx scripts/release/synth-kit.ts --release <dir> --out <dir>\n(Makes the synthesis kit of a release; pass the folder to scripts/release/bundle.ts with --synth-kit.)\n";
+  return "Usage: tsx scripts/release/synth-kit.ts --release <dir> --out <dir> [--allow-unsandboxed-check]\n(Makes the synthesis kit of a release, from a clean checkout of the release's commit; pass the folder to scripts/release/bundle.ts with --synth-kit. The self-checks run the kit in a sandbox and refuse without one; --allow-unsandboxed-check runs them without, with network access, on your own computer only.)\n";
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -265,7 +321,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const release = value("--release");
       const out = value("--out");
       if (!release || !out || release.startsWith("--") || out.startsWith("--")) throw new Error("--release and --out are required");
-      const result = await buildSynthKit({ releaseDir: release, out });
+      const result = await buildSynthKit({ releaseDir: release, out, ...(argv.includes("--allow-unsandboxed-check") ? { allowUnsandboxedCheck: true } : {}) });
       process.stdout.write(`wrote the synthesis kit to ${resolve(out)}: ${String(result.functions)} functions, ${String(result.packages)} code packages, entry ${String(result.entryBytes)} bytes; checked ${result.sandboxed ? "inside the sandbox" : "WITHOUT a sandbox (none on this computer)"}\n`);
     })().catch((error: unknown) => {
       process.stderr.write(`agentx synthesis kit build failed: ${error instanceof Error ? error.message : String(error)}\n`);

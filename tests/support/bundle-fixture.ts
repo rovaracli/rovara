@@ -1,7 +1,7 @@
 // Test support for the signed release bundle (N2, N3): keys are generated at run time (no key material in the repository), the release is a tiny
 // valid one, and the image exporter writes bytes instead of calling skopeo.
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ReleaseManifestSchema, STACK_PARTS } from "@agentx/contracts";
@@ -77,7 +77,7 @@ export async function builtBundle(options: { version?: string; key?: TestKey; te
   const key = options.key ?? newTestKey();
   const dir = join(root, "bundle");
   const kitDir = join(root, "kit");
-  if (options.kit !== undefined) await writeFakeKit(kitDir, options.kit);
+  if (options.kit !== undefined) await writeFakeKit(kitDir, { releaseSha256: sha(await readFile(join(release, "release.json"))), ...options.kit });
   const { bundleSha256 } = await buildBundle({ releaseDir: release, out: dir, images: IMAGES, exportImage: fakeExporter, signer: key.signer, notes: "Notes.\n", ...(options.kit === undefined ? {} : { synthKitDir: kitDir }) });
   return { root, dir, bundleSha256, key, cleanup: () => rm(root, { recursive: true, force: true }) };
 }

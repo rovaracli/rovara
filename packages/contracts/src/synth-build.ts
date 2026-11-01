@@ -146,6 +146,9 @@ export const SynthKitManifestSchema = z
     entry: BundlePath,
     /** The Node major version the kit was built for; the runner refuses another. */
     nodeMajor: z.number().int().min(18).max(99),
+    /** SHA-256 of the release.json this kit was made from, and that release's git commit: the kit is bound to ONE release (a bundle of another release refuses it, and so does approval). */
+    releaseSha256: Sha256,
+    gitCommit: z.string().regex(/^[a-f0-9]{40}$/),
   })
   .strict()
   .superRefine((kit, context) => {
