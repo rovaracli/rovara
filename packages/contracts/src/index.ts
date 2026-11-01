@@ -253,6 +253,7 @@ export * from "./loaded-knowledge.js";
 export * from "./test-environment-prod-deny.js";
 export * from "./service-mock-additions.js";
 export * from "./test-env-nightly.js";
+export * from "./verification-result.js";
 export * from "./e2e-model-spend.js";
 
 // Learning v2: the Team record and lessons (R1).
