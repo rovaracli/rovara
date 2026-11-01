@@ -59,7 +59,7 @@ export class EnterpriseWorld {
       for (const part of ["access", "foundation", "identity", "runtime", "control-plane", "slack"] as const) {
         const file = built.files.find((entry) => entry.file === `built/templates/${part}.template.json`)?.body.toString("utf8");
         const stack = this.world.stacks.get(environmentStackName("ent", part))!;
-        this.world.stacks.set(environmentStackName("ent", part), { ...stack, template: part === "access" ? file : JSON.stringify({ Resources: { Old: { Type: "AWS::SSM::Parameter", Properties: { Type: "String", Value: "x" } } } }) });
+        this.world.stacks.set(environmentStackName("ent", part), { ...stack, template: part === "access" ? file : JSON.stringify({ Resources: { Old: { Type: "AWS::SSM::Parameter", Properties: { Type: "String", Value: "x" } } } }) } as typeof stack);
       }
     } finally {
       await verified.cleanup();

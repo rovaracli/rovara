@@ -53,8 +53,8 @@ function harness(startMs = Date.UTC(2026, 9, 30, 10, 0, 0)) {
     await recordTestEnvProveReport(deps, { orgId: ORG, project: PROJECT, report: proved(proposal.digest, over) });
     return proposal;
   };
-  const approve = (digest: string, over: Partial<Parameters<typeof approveTestEnvironment>[1]> = {}) =>
-    approveTestEnvironment(deps, { orgId: ORG, project: PROJECT, digest, expectedRevision: 0, requestId: `request-${digest.slice(0, 8)}`, approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: clock.now - 30_000, ...over });
+  const approve = (digest: string, over: Partial<Omit<Parameters<typeof approveTestEnvironment>[1], "approvedBySignedInAtMs">> & { approvedBySignedInAtMs?: number | undefined } = {}) =>
+    approveTestEnvironment(deps, { orgId: ORG, project: PROJECT, digest, expectedRevision: 0, requestId: `request-${digest.slice(0, 8)}`, approvedBy: "dev_a", role: "maintainer", approvedBySignedInAtMs: clock.now - 30_000, ...over } as Parameters<typeof approveTestEnvironment>[1]);
   return { db, audit, clock, deps, records, proposeAndProve, approve };
 }
 
@@ -181,7 +181,7 @@ describe("production is refused", () => {
 });
 
 describe("a less-safe change", () => {
-  const preprodAsSecond = (h: ReturnType<typeof harness>, over: Partial<Parameters<typeof approveTestEnvironment>[1]> = {}) =>
+  const preprodAsSecond = (h: ReturnType<typeof harness>, over: Partial<Omit<Parameters<typeof approveTestEnvironment>[1], "approvedBySignedInAtMs">> & { approvedBySignedInAtMs?: number | undefined } = {}) =>
     h.approve(over.digest ?? "", { approval: { approverId: "dev_b", signedInAtMs: h.clock.now - 60_000, sessionRef: sha("5") }, ...over });
   it("needs a second person who signed in just now; the risk of the card is high", async () => {
     const h = harness();

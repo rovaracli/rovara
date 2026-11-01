@@ -133,7 +133,7 @@ async function setup(options: { proxy?: boolean; memberLimit?: number; files?: R
     await h.finish(run.workspaceId, run.own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_DRAFT", setupProposal: answer } });
     return run;
   };
-  const latestDefinition = () => (h.db.find((item) => item.entityType === "PROJECT" && item.pk === projectRevisionKey(TEST_ORG, NAME, 1).pk).sort((a, b) => Number((a.definition as { revision: number }).revision) - Number((b.definition as { revision: number }).revision)).at(-1)!.definition) as { revision: number; repositories: Array<{ name: string; url: string }>; setup: Array<{ executable: string; args: string[] }>; readiness: Array<{ executable: string; args: string[] }>; network?: { allowedDomains: string[] }; devcontainer?: { repository: string; configPath?: string } };
+  const latestDefinition = () => (h.db.find((item) => item.entityType === "PROJECT" && item.pk === projectRevisionKey(TEST_ORG, NAME, 1).pk).sort((a, b) => Number((a.definition as { revision: number }).revision) - Number((b.definition as { revision: number }).revision)).at(-1)!.definition) as { revision: number; repositories: Array<{ name: string; url: string }>; setup: Array<{ executable: string; args: string[] }>; readiness: Array<{ executable: string; args: string[] }>; network?: { allowedDomains: string[] }; devcontainer?: { repository: string; configPath?: string }; origins?: Record<string, string> };
   const latestSettings = latestDefinition;
   const meta = () => h.db.get(projectMetaKey(TEST_ORG, NAME)) as { setupCheck?: { workspaceId: string; revision: number } } | undefined;
   const proposal = async (): Promise<SetupProposal> => ((await read()).body.proposal as SetupProposal);

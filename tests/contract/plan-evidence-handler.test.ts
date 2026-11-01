@@ -32,7 +32,7 @@ const citing = (...paths: string[]) => planDocument({
   decisions: [],
 });
 
-async function plannedTask(harness: Harness, paths = ["repo/demo/src/charge.ts"], prepared: unknown = PREPARED) {
+async function plannedTask(harness: Harness, paths = ["repo/demo/src/charge.ts"], prepared: { result?: unknown; error?: string } = PREPARED) {
   const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Retry failed payments", client: "test-client", workflow: true, workflowPath: "QUICK" });
   const taskId = String((started.body.task as { taskId: string }).taskId);
   const workspaceId = String(taskRecord(harness, taskId).workspaceId);

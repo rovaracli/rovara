@@ -5,6 +5,10 @@ import { resolveKnowledge, type FileInPlay, type KnowledgeSourceEntry } from "..
 import { memoryKnowledgeSource } from "../../packages/worker/src/knowledge/source.js";
 import { readKnowledgeTool } from "../../packages/worker/src/read-knowledge-tool.js";
 import type { KnowledgeStage } from "../../packages/worker/src/knowledge/model.js";
+import type { InlineExtension } from "@earendil-works/pi-coding-agent";
+
+/** The factory of the object form of an inline extension (the form `knowledgeExtension` returns). */
+const factoryOf = (extension: InlineExtension) => (extension as Extract<InlineExtension, { factory: unknown }>).factory as (pi: unknown) => void;
 
 const FILES = {
   "AGENTS.md": "root rules",
@@ -139,7 +143,7 @@ describe("the extension", () => {
   function install(session: MidRunKnowledge) {
     const handlers = new Map<string, (event: unknown) => Promise<unknown>>();
     const extension = knowledgeExtension(session);
-    (extension.factory as (pi: unknown) => void)({ on: (name: string, handler: (event: unknown) => Promise<unknown>) => { handlers.set(name, handler); return () => undefined; } });
+    (factoryOf(extension))({ on: (name: string, handler: (event: unknown) => Promise<unknown>) => { handlers.set(name, handler); return () => undefined; } });
     return handlers.get("tool_result")!;
   }
 
@@ -159,7 +163,7 @@ describe("the extension", () => {
     const diagnostics: string[] = [];
     const broken = { onPathTouched: () => Promise.reject(new Error("PRIVATE PATH /x")) } as unknown as MidRunKnowledge;
     const handlers = new Map<string, (event: unknown) => Promise<unknown>>();
-    (knowledgeExtension(broken, (message) => diagnostics.push(message)).factory as (pi: unknown) => void)({ on: (name: string, handler: (event: unknown) => Promise<unknown>) => { handlers.set(name, handler); return () => undefined; } });
+    (factoryOf(knowledgeExtension(broken, (message) => diagnostics.push(message))))({ on: (name: string, handler: (event: unknown) => Promise<unknown>) => { handlers.set(name, handler); return () => undefined; } });
     expect(await handlers.get("tool_result")!({ toolName: "read", isError: false, input: { path: "a" }, content: [] })).toBeUndefined();
     expect(diagnostics).toEqual(["could not load the rules for a file the agent opened"]);
     void session;

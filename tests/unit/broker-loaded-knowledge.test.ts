@@ -41,7 +41,7 @@ function table() {
         if (name === "PutCommand") { rows.set(`${String(command.input.Item.pk)}|${String(command.input.Item.sk)}`, command.input.Item); return {}; }
         if (name === "QueryCommand") {
           const pk = command.input.ExpressionAttributeValues[":pk"]; const prefix = command.input.ExpressionAttributeValues[":prefix"];
-          return { Items: [...rows.values()].filter((row) => row.pk === pk && String(row.sk).startsWith(prefix)) };
+          return { Items: [...rows.values()].filter((row) => row.pk === pk && String(row.sk).startsWith(String(prefix))) };
         }
         if (name === "GetCommand") return { Item: { taskId: TASK, orgId: "org-1", project: "payments" } };
         throw new Error(name);

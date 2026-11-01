@@ -186,7 +186,7 @@ describe("one switch: the tier-0 approval default", () => {
     const s = await auto.store.setVersion(KEY);
     await seed(auto.store, lessonRecord({ id: "les_later001" }));
     // The project now runs with "one".
-    const deps: ApproveDeps = { access: allowAllAccess, ...auto.approve, settings: settings({ tier0Approval: "one" }) };
+    const deps: ApproveDeps = { ...auto.approve, settings: settings({ tier0Approval: "one" }) };
     await rollbackLessonSet(deps, { ...KEY, targetSetVersion: s, actorId: "ann" });
     expect(await auto.store.get(KEY, live.id)).toMatchObject({ status: "pending", approvals: [] });
   });

@@ -4,7 +4,7 @@ import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletio
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { Audit, Clock, KEY, MemoryVectors, PROJECT, WS, draft, lessonRecord, seed } from "./lesson-helpers.js";
 
-const restricted = (principals: string[]) => ({ kind: "restricted" as const, acl: { source: "slack", scope: "slack:T1/C1", principals, capturedAt: "2026-10-30T09:00:00.000Z", liveCheck: "none" as const } });
+const restricted = (principals: string[]) => ({ kind: "restricted" as const, acl: { source: "slack" as const, scope: "slack:T1/C1", principals, capturedAt: "2026-10-30T09:00:00.000Z", liveCheck: "none" as const } });
 const withAudience = (id: string, principals: string[], over: Partial<Parameters<typeof lessonRecord>[0]> = {}) => lessonRecord({ id, provenance: { ...draft().provenance, authors: ["carl"], audience: restricted(principals) }, ...over });
 const principalsOf = (lesson: { provenance: { audience: unknown } }): string[] => ((lesson.provenance.audience as { acl?: { principals?: string[] } }).acl?.principals) ?? [];
 

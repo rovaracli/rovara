@@ -104,7 +104,7 @@ describe("refreshing from GitHub", () => {
     const { store } = memory();
     const state = published();
     await store.save(state, undefined);
-    const racing = { store: { load: (taskId: string) => store.load(taskId), save: async () => false }, now: () => NOW, read: async () => facts({ headSha: EDIT }) };
+    const racing = { store: { load: (taskId: string) => store.load(taskId), save: async () => false, force: async () => false }, now: () => NOW, read: async () => facts({ headSha: EDIT }) };
     expect(await refreshSpecState(racing, TASK)).toMatchObject({ changed: false });
     expect((await store.load(TASK)).state!.editPrompt).toBeUndefined();
   });

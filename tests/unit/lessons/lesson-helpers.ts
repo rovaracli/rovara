@@ -1,5 +1,6 @@
 // Shared fakes for the learning v2 lane tests (L1-L5). No AWS, no network: every port of packages/broker/src/lessons/ports.ts has an in-memory stand-in.
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
+import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import type {
   AlertSink, ApproverDirectory, CitationVerifier, CorrectionJudge, Embedder, LearningSpend, LessonAuditEvent, LessonAuditSink, LessonVectors, PipelineModel, RulePublisher,
@@ -187,4 +188,6 @@ export function classifyTier(input: TierInput, context?: TierContext, floor?: { 
 }
 
 /** An access-check port that lets every place through: for the tests that exercise the lessons themselves, not the access records. */
+/** What `recordFeedback` takes: the counter ports plus the record core's access check. */
+export type FeedbackDeps = CounterDeps & { access: AccessCheckPort };
 export const allowAllAccess: AccessCheckPort = { mayRead: async (_org, _viewer, places) => places.map(() => true) };

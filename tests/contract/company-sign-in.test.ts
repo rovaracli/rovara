@@ -220,7 +220,7 @@ describe("owners", () => {
   });
 
   it("a listed owner whose token carries no groups claim at all is refused too (the provider leaves an empty claim out): not break-glass, because the mapping is fine", async () => {
-    const { h, capture } = await world({ breakGlass: true, users: [{ ...owner, groups: undefined } as FakeOidcUser] });
+    const { h, capture } = await world({ breakGlass: true, users: [{ ...owner, groups: undefined } as unknown as FakeOidcUser] });
     const refused = await signInAs(h, "owner-1");
     expect(refused.tokens).toBeUndefined();
     expect(refused.redirect.searchParams.get("error_description")).toBe(GROUP_MAPPING_MESSAGES.no_group);

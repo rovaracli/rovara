@@ -68,6 +68,9 @@ const NODE_CODE: Record<string, string> = {
   ".github/workflows/ci.yml": "jobs:\n  test:\n    steps:\n      - run: npm test\n",
 };
 
+/** A scanned item is `unknown` in the scan's own type; the tests read its `from` and `confidence`. */
+const itemOf = (value: unknown) => value as { from?: unknown; confidence?: unknown } | undefined;
+
 describe("the scan (plain code)", () => {
   it("finds a Kiro-style meta repository's knowledge, spec format, sources and hooks, each cited", async () => {
     const rootPath = await workspace({ meta: KIRO_META, web: NODE_CODE });
@@ -154,13 +157,13 @@ describe("the scan (plain code)", () => {
     const rootPath = await workspace({ meta: { "kalmius/project.json": file } });
     const scan = await scanRepositories(rootPath, repositoriesOf(["meta"]), { metaRepo: "meta" });
     const lineOf = (needle: string) => file.split("\n").findIndex((line) => line.includes(needle)) + 1;
-    expect(scan.repositories[0]?.from).toEqual([{ kind: "file", repo: "meta", path: "kalmius/project.json", line: lineOf("acme/api"), quote: "\"url\": \"https://github.com/acme/api\"" }]);
-    expect(scan.setup[0]?.from).toEqual([
+    expect(itemOf(scan.repositories[0])?.from).toEqual([{ kind: "file", repo: "meta", path: "kalmius/project.json", line: lineOf("acme/api"), quote: "\"url\": \"https://github.com/acme/api\"" }]);
+    expect(itemOf(scan.setup[0])?.from).toEqual([
       { kind: "file", repo: "meta", path: "kalmius/project.json", line: lineOf("npm ci"), quote: "\"npm ci\"," },
       { kind: "file", repo: "meta", path: "kalmius/project.json", line: lineOf("npm run build"), quote: "\"npm run build\"" },
     ]);
-    expect(scan.tests[0]?.from).toEqual([{ kind: "file", repo: "meta", path: "kalmius/project.json" }]);
-    expect(scan.setup[0]?.confidence).toBe("low");
+    expect(itemOf(scan.tests[0])?.from).toEqual([{ kind: "file", repo: "meta", path: "kalmius/project.json" }]);
+    expect(itemOf(scan.setup[0])?.confidence).toBe("low");
   });
 
   it("stops listing folders when its overall budget of entries is spent, says so, and keeps what it found before that", async () => {

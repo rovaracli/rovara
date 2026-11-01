@@ -317,7 +317,7 @@ describe("rovara upgrade --bundle", () => {
 
   it("refuses a bundle with images when this agentx cannot load them, before anything is touched", async () => {
     const bundle = await build();
-    const h = await harness(bundle, { loadBundleImages: undefined });
+    const h = await harness(bundle, { loadBundleImages: undefined } as unknown as Partial<UpgradeDependencies>);
     await expect(runUpgrade(options(bundle), h.deps)).rejects.toThrow(/cannot load the bundle's images/);
     nothingTouched(h);
   });

@@ -86,7 +86,7 @@ describe("team record storage per edition", () => {
   it("I-8: the default stack needs a broker principal; only an explicit test flag gives the broker role index/* on every workspace", () => {
     const stack = new Stack(new App(), "T", { env: { account: "111122223333", region: "us-west-2" } });
     expect(() => new TeamRecordStorage(stack, "S", { namePrefix: "rovara-test", context: {} })).toThrow(/brokerPrincipal is required/);
-    const unsafe = build({}, { brokerPrincipal: undefined, unsafeTenantWideBrokerAccess: true });
+    const unsafe = build({}, { brokerPrincipal: undefined, unsafeTenantWideBrokerAccess: true } as unknown as Partial<ConstructorParameters<typeof TeamRecordStorage>[2]>);
     expect(actions(unsafe)).toContain("s3vectors:QueryVectors");
     expect(build({}).storage.vectors.dataRole).toBeDefined();
   });

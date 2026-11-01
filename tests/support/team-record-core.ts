@@ -70,13 +70,15 @@ export async function addSource(w: World, input: { orgId?: OrgId; project?: stri
 }
 
 export const GITHUB_SCOPE = "github:repo/9";
-export function githubDraft(extra: Partial<RecordDraft> = {}): RecordDraft {
+/** A draft's overrides: a field may be named with `undefined` to drop it, as the tests do for `repo`. */
+export type DraftOverrides = { [K in keyof RecordDraft]?: RecordDraft[K] | undefined };
+export function githubDraft(extra: DraftOverrides = {}): RecordDraft {
   return {
     workspaceId: ORG_A, project: "web", repo: "acme/api", source: "github", sourceRef: { system: "github.com", id: "c-1", version: "1", url: "https://github.com/acme/api/pull/12#c-1" },
     kind: "github.review_comment", occurredAt: "2026-10-30T10:00:00.000Z", actor: { sourceId: "123", developerId: "dev-1", trust: "member" }, trust: "member",
     audience: { kind: "restricted", acl: { source: "github", scope: GITHUB_SCOPE, principals: ["123"], capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } },
     text: "Please use withRetry here.", links: ["https://github.com/acme/api/pull/12#c-1"], retention: "D", ...extra,
-  };
+  } as RecordDraft;
 }
 
 export function caller(extra: Partial<RecordCaller> = {}): RecordCaller {

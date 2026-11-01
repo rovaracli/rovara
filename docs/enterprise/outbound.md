@@ -48,7 +48,7 @@ Enterprise: Reached in the customer's own account. An Enterprise install reaches
 
 - Wildcard for AWS API hosts in the default allow-list; the CloudWatch connector's host; the domain-suffix checks in the CLI.
   `*.amazonaws.com`, `amazonaws.com`, `amazonaws.com.cn`, `monitoring.amazonaws.com`
-- The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list. (only in `infra/lib/vpc-endpoints.ts`)
+- The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list; and, as the CloudTrail event source an alert rule matches (a pattern, not a call), in the operator-assumption alert. (only in `infra/lib/vpc-endpoints.ts`, `infra/lib/operator-access.ts`)
   `sts.amazonaws.com`
 
 ## Audit anchor timestamp authorities

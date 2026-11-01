@@ -143,7 +143,7 @@ describe("S3VectorsIndex queries", () => {
     const { port } = fakePort({ queryVectors: async (r) => { seen.push(asReq(r)); return pages[seen.length - 1]!; } });
     const hits = await make(port).query({ vector: vec(1), topK: 150, filter: { project: "p1" } });
     expect(seen[0]).toMatchObject({ queryMode: "ENHANCED", filter: { project: { $eq: "p1" } }, topK: 150 });
-    expect(seen[1].nextToken).toBe("t1");
+    expect(seen[1]!.nextToken).toBe("t1");
     expect(hits.map((h) => h.key)).toEqual(["fact:c", "fact:a", "fact:b"]);
   });
   it("drops a hit with malformed metadata or from another project (fail closed)", async () => {

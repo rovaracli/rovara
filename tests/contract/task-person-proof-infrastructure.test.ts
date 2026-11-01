@@ -294,18 +294,22 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-10-31, cloud/next: the named and foreign digests were retaken after three intended additions to the named control plane (compared against cloud/integration's template: nothing else moved): the evidence lifecycle rules
     // (ExpireEvidenceShort and ExpireEvidenceStd on the artifact bucket, proof and evidence P6), the intake poll schedule (IntakePollSchedule, meta repo lane F), and the gateway route for GET /v1/internal/context-tools
     // (ContextToolsListRoute, meta repo lane E). The legacy digests did not move (named environments only).
+    // 2026-11-01, cloud/next after the enterprise lanes: the named and foreign digests were retaken after two intended additions, checked by synthesizing the template at the previous pin
+    // (01eabca8b) and now and comparing the parent remainders (asset hashes aside, nothing else moved): the `ReadEditionRecord` statement (ssm:GetParameter on the install's edition record and
+    // its backup) on the broker's policy and on the sign-in function's policy (Enterprise foundations I-2, `grantEditionRecordRead`), and `SPEC_STATE` in the notifier's stream filter (wire lane D).
+    // The legacy digests did not move (named environments only), which is the check that its template is untouched.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "8648f653bee1b771425e76a726d50aecdca5b090635097687e9073219ab709f2",
-        withoutRoute: "fa1badcaa22e30861ecd572c6732ecb0ed313dd6f91fbeff42349486f13fdbfd",
+        withRoute: "65b51951d0c039c5f1502e2bce773ee41c79cac7ec44db4e35d9eb61726695e0",
+        withoutRoute: "44a1860493231beae8acc4ec0e23719e08bb608c73519668ee13ddb3b62e10a1",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "aceac3ad18fda7375c8ca1ccfe947664c4b9331e68c29e83f574fc8b61430e1c",
-        withoutRoute: "1fb28fe0dfaa1005844fa691ad03bf2f47f8f28c42232e8890d77a5119c14005",
+        withRoute: "1d40cfff0db6c4fdd60f73588e3a6f88b7334586fb0c34db300f3b5a4362787f",
+        withoutRoute: "2dd13ddd9349f68bcfaee13fcbf64424c2b59708bf61108f7b751d9a5ac046d9",
       },
       {
         label: "legacy",

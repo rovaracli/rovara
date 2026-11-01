@@ -21,9 +21,9 @@ describe("switches", () => {
   it("has three distinct two-letter codes that do not collide with an existing broker setting (fx is the autofix switch)", () => {
     const codes = Object.values(LIVE_INTERACTION_FLAGS).map((spec) => spec.code);
     expect(new Set(codes).size).toBe(3);
-    const taken = new Set(Object.values(BROKER_SETTINGS).map((spec) => spec.code));
+    const taken = new Set<string>(Object.values(BROKER_SETTINGS).map((spec) => spec.code));
     for (const code of codes) expect(taken.has(code), code).toBe(false);
-    const variables = new Set(Object.values(BROKER_SETTINGS).map((spec) => spec.variable));
+    const variables = new Set<string>(Object.values(BROKER_SETTINGS).map((spec) => spec.variable));
     for (const spec of Object.values(LIVE_INTERACTION_FLAGS)) expect(variables.has(spec.variable), spec.variable).toBe(false);
   });
 

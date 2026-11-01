@@ -179,7 +179,7 @@ function memoryWorld(options: { busy?: boolean } = {}) {
   const store: SpecStore = {
     load: async (taskId) => ({ state: rows.get(taskId), corrupt: false }),
     save: async (next, replaces) => { try { apply([specStateItem("t", next, replaces)]); return true; } catch { return false; } },
-    force: async (next) => { rows.set(next.taskId, next); },
+    force: async (next) => { rows.set(next.taskId, next); return true; },
   };
   const published: Array<{ branch: string; files: number }> = [];
   const outcome: { value: { ok: true; pullRequest: SpecPullRequest } | { ok: false; transient: boolean } } = { value: { ok: true, pullRequest: { number: 12, url: `${META}/pull/12`, repositoryUrl: META, headBranch: "agentx/placeholder", commit: "c".repeat(40) } } };
@@ -323,7 +323,7 @@ describe("the gate, with the effects", () => {
 const DRAFT = { version: 1, kind: "feature", title: "Reset password", summary: "s", planDigest: PLAN, requirements: [{ title: "r", criteria: [{ when: "a user asks", shall: "send a link" }] }], design: "d", tasks: [{ title: "t", covers: ["1.1"] }] };
 function endEnvironment(rows: Map<string, SpecState>, overrides: Partial<SpecEndEnvironment> = {}): SpecEndEnvironment {
   const { world } = memoryWorld();
-  const store: SpecStore = { load: async (id) => ({ state: rows.get(id), corrupt: false }), save: async (next) => { rows.set(next.taskId, next); return true; }, force: async (next) => { rows.set(next.taskId, next); } };
+  const store: SpecStore = { load: async (id) => ({ state: rows.get(id), corrupt: false }), save: async (next) => { rows.set(next.taskId, next); return true; }, force: async (next) => { rows.set(next.taskId, next); return true; } };
   return {
     tableName: "t", store, now: () => NOW, approvedPlanDigest: async () => PLAN, taskKey: () => "task-1", template: async () => undefined, forbiddenFolders: async () => [],
     existingFolders: async () => [], republishItem: async () => ({ Put: { TableName: "t", Item: { pk: "republish", sk: "x" } } }),

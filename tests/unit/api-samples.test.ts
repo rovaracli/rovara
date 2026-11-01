@@ -24,7 +24,8 @@ const redactor = () => createCredentialRedactor([{ profileId: "orders-owner", em
 const JSON_CT = { "content-type": "application/json; charset=utf-8" };
 const build = (over: Partial<Parameters<typeof buildApiSample>[0]> = {}) => {
   const built = buildApiSample({ method: "GET", path: "/orders", status: 200, responseHeaders: JSON_CT, responseBody: enc({ orders: [{ id: "o-1", total: 12.5, paid: true }] }), ...over });
-  return { built, sample: built.bytes === undefined ? undefined : parseApiSample(built.bytes)! };
+  // Every test here expects a built sample; a missing one fails at the first property read.
+  return { built, sample: (built.bytes === undefined ? undefined : parseApiSample(built.bytes)) as NonNullable<ReturnType<typeof parseApiSample>> };
 };
 
 describe("headers are an allow-list", () => {
@@ -193,7 +194,7 @@ describe("recording from the API runtime", () => {
   it("passes the approved safe paths, and defaults to none", async () => {
     const seen: Uint8Array[] = [];
     await recordApiSample({ samples: { safePaths: ["ok"], record: async (item) => { seen.push(item.bytes); } }, caseId: "c", step: 0, method: "GET", path: "/x", requestBody: undefined, response });
-    expect((parseApiSample(seen[0]!)!.response.body as { value: { ok: string } }).value.ok).toBe("yes");
+    expect((parseApiSample(seen[0]!)!.response.body as { kind: "json"; value: { ok: string } }).value.ok).toBe("yes");
   });
   it("does nothing without a port, and absorbs a recorder that refuses", async () => {
     await expect(recordApiSample({ samples: undefined, caseId: "c", step: 0, method: "GET", path: "/x", requestBody: undefined, response })).resolves.toBeUndefined();

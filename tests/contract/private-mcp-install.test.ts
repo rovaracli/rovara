@@ -66,7 +66,7 @@ describe("the MCP host's certificate", () => {
     expect(mcpHostPropsFromInstall(parsePrivateMcpContext({ edition: "enterprise", get: context(full) }))).toEqual({ certificateArn: CERT, hostName: "mcp-host.example.net", hostedZoneId: "Z0123456789ABCDEFGHIJ" });
     expect(() => mcpHostPropsFromInstall(parsePrivateMcpContext({ edition: "enterprise", get: context({}) }))).toThrow(new RegExp(KEYS.certificateArn, "u"));
     for (const key of Object.keys(full)) {
-      const { [key]: _removed, ...rest } = full; // eslint-disable-line @typescript-eslint/no-unused-vars -- the one setting left out
+      const { [key]: _removed, ...rest } = full as Record<string, string>; // eslint-disable-line @typescript-eslint/no-unused-vars -- the one setting left out
       expect(() => mcpHostPropsFromInstall(parsePrivateMcpContext({ edition: "enterprise", get: context(rest) })), key).toThrow(new RegExp(key, "u"));
     }
     for (const bad of ["", "not-an-arn", "arn:aws:iam::111111111111:role/x", "arn:aws:acm:us-east-1:111111111111:certificate/", "arn:aws:acm:us-east-1:abc:certificate/x"]) {
@@ -108,7 +108,8 @@ describe("the app, built as `rovara deploy` builds it", () => {
     expect(plain).not.toHaveProperty("ROVARA_PRIVATE_MCP_CIDRS");
     expect(plain).not.toHaveProperty("ROVARA_STDIO_MCP_SERVERS");
     expect(plain).not.toHaveProperty("MCP_HOST_URL");
-  });
+    // Two whole-app synths with real Lambda bundling: about 20 s here and over 60 s on the 2 vCPU runner, so it takes the timeout of the other synth tests.
+  }, 240_000);
   it("stops synth for a wrong setting, for package-run servers, and for any setting outside Enterprise", () => {
     expect(() => buildAgentXApp({ ...ENTERPRISE, [KEYS.cidrs]: "8.8.8.0/24" })).toThrow(new RegExp(KEYS.cidrs, "u"));
     expect(() => buildAgentXApp({ ...ENTERPRISE, [KEYS.cidrs]: "10.42.0.0/24" })).toThrow(/overlaps the network Rovara/u);

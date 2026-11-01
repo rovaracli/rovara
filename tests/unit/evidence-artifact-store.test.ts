@@ -24,7 +24,7 @@ const OWNER = { ownerKey: "owner-1", workspaceId: "ws-1", taskId: "t-1" };
 
 /** An in-memory S3 that records tags and metadata, as the calls the store makes need. */
 function memoryS3() {
-  const objects = new Map<string, { body: Uint8Array; tagging?: string; contentType?: string; metadata?: Record<string, string> }>();
+  const objects = new Map<string, { body: Uint8Array; tagging?: string | undefined; contentType?: string | undefined; metadata?: Record<string, string> | undefined }>();
   const sent: string[] = [];
   return { objects, sent, s3: { async send(command: unknown) {
     if (command instanceof PutObjectCommand) { const i = command.input; objects.set(i.Key!, { body: i.Body as Uint8Array, tagging: i.Tagging, contentType: i.ContentType, metadata: i.Metadata }); sent.push("put"); return {}; }
@@ -280,7 +280,7 @@ describe("the lifecycle rules on the artifact bucket", () => {
   type Rule = { Id?: string; Status: string; ExpirationInDays?: number; Prefix?: string; TagFilters?: Array<{ Key: string; Value: string }> };
   type Bucket = { Properties: { LifecycleConfiguration?: { Rules: Rule[] } } };
   const rulesOf = (context?: Record<string, unknown>) => {
-    const template = Template.fromStack(new ControlPlaneStack(new App({ context }), "EvidenceRetention", { naming: environmentNaming("live25d") }));
+    const template = Template.fromStack(new ControlPlaneStack(new App(context === undefined ? {} : { context }), "EvidenceRetention", { naming: environmentNaming("live25d") }));
     const buckets = Object.values(template.findResources("AWS::S3::Bucket") as Record<string, Bucket>);
     return buckets.flatMap((bucket) => bucket.Properties.LifecycleConfiguration?.Rules ?? []).filter((rule) => rule.TagFilters !== undefined);
   };
