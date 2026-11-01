@@ -33,6 +33,7 @@ export async function checkProjectAccess(
   caller: ProjectAccessCaller,
   project: string,
   membership?: { freshMemberOf: readonly string[] },
+  options: { ignoreTasksOff?: boolean } = {},
 ): Promise<{ revision: number; policy: DeveloperTaskPolicy; access: "granted" | "channel"; channelIds: string[]; role: ProjectRole }> {
   // A name that is not a project name is never echoed back: it could be long or carry markup.
   if (!AgentXNameSchema.safeParse(project).success) throw agentXError("PROJECT_NOT_FOUND", "that is not a valid AgentX project name");
@@ -47,7 +48,8 @@ export async function checkProjectAccess(
   const projectMemberships = grant !== undefined || orgMaintainer ? [{ projectName: project, role: "developer" }] : [];
   const evaluate = (freshMemberOf?: readonly string[]) => evaluateProjectAuthority({
     project,
-    revision: { revision: known.revision, definition: { developerTasks: known.policy } },
+    // `ignoreTasksOff` asks for the same access rule with the project's tasks-off switch set aside: sending an existing task back to coding (owner, 0.4.27).
+    revision: { revision: known.revision, definition: { developerTasks: options.ignoreTasksOff === true ? { ...known.policy, enabled: true } : known.policy } },
     memberships: projectMemberships,
     bindings,
     ...(freshMemberOf === undefined ? {} : { freshMemberOf }),
@@ -80,7 +82,7 @@ export async function checkProjectAccess(
   // starts, because the E2E rechecks of a running task's creator also come through here.
   const role = effectiveProjectRole(caller, grant, result.access === "channel");
   if (role === undefined) throw agentXError("PROJECT_ACCESS_DENIED", accessDeniedMessage(project, []));
-  return { revision: result.revision, policy: result.policy, access: result.access, channelIds: result.channelIds, role };
+  return { revision: result.revision, policy: options.ignoreTasksOff === true ? known.policy : result.policy, access: result.access, channelIds: result.channelIds, role };
 }
 
 /**

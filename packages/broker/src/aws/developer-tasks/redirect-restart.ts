@@ -32,7 +32,8 @@ import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { AUTOMATIC_KEEPS_WINDOW, actionableWorkspace, busyOrClosing, refuseAutomaticWhilePaused } from "./task-window.js";
 import { fedThroughUpdate, promptTagId, sendBackProblemsPromptSection, withCurrentThreadNotes } from "./thread-notes.js";
 import { NO_PUBLISH_NOTE, approvedCodingPlan, approvedWorkflowDependencies, ownerConstraintsSection, retiredClaimIdList } from "./workflow-inputs.js";
-import { queueWorkflowCoding, retryWorkflowImplementation } from "./workflow-coding.js";
+import { queueWorkflowCoding, retryWorkflowImplementation, sharedAccessCheck } from "./workflow-coding.js";
+import { requireProjectSendBackRole } from "../../developer/task-access.js";
 import { queueWorkflowUnderstand } from "./workflow-starts.js";
 import { revisePlanHost } from "./workflow-revise.js";
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
@@ -119,7 +120,10 @@ export async function restartCodingForRedirect(deps: DeveloperTaskRouteDependenc
  * send-back with fixed words; no learning event is raised for it (it is not a reason a person wrote). The approved plan, any ordered work plan and the owner's constraints go to the coder as in a send-back.
  */
 export async function sendBackForRedirect(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, record: RedirectRecord, ownerRedirect: OwnerRedirectInvocation): Promise<void> {
-  const { access, task, workflow } = await currentTask(deps, caller, record, "work");
+  const checked = sharedAccessCheck(deps);
+  const { access, task, workflow } = await currentTask(checked, caller, record, "work");
+  // This restarts coding as a send-back, so it needs the project access a send-back needs (0.4.27) for the person who redirected: owner or co-owner of the task is not enough on its own. Refused before anything is written.
+  await requireProjectSendBackRole(checked, task, caller);
   // A step that was blocked already restarts coding only where the owner's own send-back would be offered (S3); a step this redirect stopped has no finding to send back and is exempt.
   if (record.kind === "blocked" && !workflowSendBackOffered(workflow)) throw agentXError("CONFIG_INVALID", REDIRECT_REFUSAL_MESSAGES.nothing_to_send_back);
   const receivedAt = iso(deps);

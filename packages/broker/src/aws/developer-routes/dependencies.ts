@@ -466,7 +466,7 @@ export function developerTaskRouteDependencies(
     }),
     ...(deps.refreshTaskFeedback === undefined ? {} : { refreshTaskFeedback: deps.refreshTaskFeedback.bind(deps) }),
     ...(initialSlackThread === undefined ? {} : { initialSlackThread }),
-    checkAccess: (project) => checkProjectAccess(deps, caller, project),
+    checkAccess: (project, options) => checkProjectAccess(deps, caller, project, undefined, options),
     channelMember: async (slackUserId, channelId) => {
       const answer = await safeChannelMembers(deps)({ kind: "channel-members", slackUserId, channelIds: [channelId] });
       if (!answer.ok) throw agentXError("SLACK_UNAVAILABLE", "Slack could not be reached to check your membership of that channel; try again shortly");

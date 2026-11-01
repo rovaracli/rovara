@@ -36,7 +36,7 @@ export async function workspaceWorkerFeatures(dependencies: Pick<AwsBrokerDepend
 }
 
 /**
- * The person who redirected, as a task caller: their live org role and their name as the sign-in record keeps it. A person who is no longer a member of the org is no caller: the restart throws, and
+ * The person who redirected, as a task caller: their live org role and their name and Slack identity as the sign-in record keeps them. A person who is no longer a member of the org is no caller: the restart throws, and
  * the redirect ends with the step left stopped.
  */
 async function redirectCaller(dependencies: AwsBrokerDependencies, record: RedirectRecord): Promise<DeveloperCaller> {
@@ -44,10 +44,12 @@ async function redirectCaller(dependencies: AwsBrokerDependencies, record: Redir
   const role = member?.role;
   if (role !== "owner" && role !== "admin" && role !== "member") throw new Error("the person who redirected is not a member of the organization any more");
   const developer = dependencies.developer === undefined ? undefined
-    : ((await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.developer.signInTableName, Key: { pk: `DEVELOPER#${record.actorId}`, sk: "META" }, ConsistentRead: true }))) as { Item?: { displayName?: unknown; provider?: unknown } }).Item;
+    : ((await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.developer.signInTableName, Key: { pk: `DEVELOPER#${record.actorId}`, sk: "META" }, ConsistentRead: true }))) as { Item?: { displayName?: unknown; provider?: unknown; slackUserId?: unknown } }).Item;
   const provider: DeveloperSignInMethod = developer?.provider === "slack" || developer?.provider === "cloud" || developer?.provider === "github" ? developer.provider : "oidc";
   return {
     developerId: record.actorId, sessionId: "redirect", amr: provider, name: safeDisplayName(typeof developer?.displayName === "string" ? developer.displayName : "", record.actorId), orgId: record.orgId, orgRole: role,
+    // As a signed-in request carries it: the project access check reads a Slack channel's contributor access through it, and the send-back gate (0.4.27) needs that access.
+    ...(typeof developer?.slackUserId === "string" && developer.slackUserId !== "" ? { slackUserId: developer.slackUserId } : {}),
   };
 }
 
