@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { AgentXError, developerOrgKey, errorStatus, orgMemberKey, orgMetaKey, projectMetaKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
-import { recordAndLessonRouteDependencies } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
+import { installLessons, lessonsRuntimeFor, recordAndLessonRouteDependencies } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { createLessonsRuntime } from "../../packages/broker/src/lessons/runtime.js";
 import { createApproverDirectory } from "../../packages/broker/src/lessons/directory.js";
@@ -114,6 +114,22 @@ describe("what the broker hands the developer routes", () => {
 });
 
 describe("the lessons runtime the broker builds", () => {
+  it("is built only where the Team record is on (and the install has a sign-in table); otherwise nothing is installed", () => {
+    const off = { documentClient: {}, tableName: "t", developer: { signInTableName: "signin" } } as never;
+    expect(lessonsRuntimeFor(off)).toBeUndefined();
+    const noSignIn = { documentClient: {}, tableName: "t", teamRecord: { table: { documentClient: {}, tableName: "record" } } } as never;
+    expect(lessonsRuntimeFor(noSignIn)).toBeUndefined();
+    const dependencies = { documentClient: {}, tableName: "t", developer: { signInTableName: "signin" } } as { lessons?: unknown };
+    installLessons(dependencies as never);
+    expect(dependencies.lessons).toBeUndefined();
+    const on = { documentClient: new FakeDynamoDb(), tableName: "t", developer: { signInTableName: "signin" }, teamRecord: { table: { documentClient: new FakeDynamoDb(), tableName: "record" } } } as { lessons?: unknown };
+    installLessons(on as never);
+    expect(on.lessons).toBeDefined();
+    const given = {}, kept = { lessons: given } as { lessons?: unknown };
+    installLessons(kept as never);
+    expect(kept.lessons).toBe(given);
+  });
+
   const input = () => {
     const db = new FakeDynamoDb();
     return createLessonsRuntime({
