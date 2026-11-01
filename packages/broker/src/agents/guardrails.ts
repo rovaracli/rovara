@@ -103,6 +103,7 @@ const modelLabel = (model: ModelIdentifier): string => `${model.provider}/${mode
 export function lessSafeGuardrailChanges(current: AgentGuardrails, next: AgentGuardrails): string[] {
   const changes: string[] = [];
   changes.push(...classifyStageChoiceChange({ kind: "guardrails", before: current, after: next }));
+  if (current.prCommentLearning === "locked_off" && next.prCommentLearning !== "locked_off") changes.push("Allows learning from PR review comments again");
   if (next.maxAgentMonthlyUsd > current.maxAgentMonthlyUsd) changes.push(`Raises the most one agent can spend in a month, from $${String(current.maxAgentMonthlyUsd)} to $${String(next.maxAgentMonthlyUsd)}`);
   if (next.maxPerRunCeilingUsd > current.maxPerRunCeilingUsd) changes.push(`Raises the most one run can be limited to, from $${String(current.maxPerRunCeilingUsd)} to $${String(next.maxPerRunCeilingUsd)}`);
   if (current.maxStepBudgetUsd !== undefined) {

@@ -27,6 +27,7 @@ import { installCiFixDecider, taskAutonomy, taskAutonomyBinding } from "../../ro
 import { installBranchSyncDeciders } from "../../rovara-code/branch-sync.js";
 import { installFeedbackDecider, sendFeedbackReplies } from "../../rovara-code/feedback-autonomy.js";
 import { backfillGithubMembers } from "../../rovara-code/github-members.js";
+import { capturePullRequestCorrections } from "../../learning/capture-pr.js";
 import { boundInstallationOrg, resolveHeadEventTask, wakeFromHeadEvent, wakeFromPullRequestEvent, wakesTrackingRow, type HeadEventDependencies } from "../../rovara-code/tracking-events.js";
 import { STUCK_SETUP_MESSAGE } from "../stuck-setup.js";
 import { parseStoredEvent, pullRequestKey, workspaceKey } from "./admin-and-helpers.js";
@@ -405,6 +406,7 @@ export async function processGithubWorkflowEvent(
   if (getFeedback === undefined) throw agentXError("RUNTIME_UNAVAILABLE", options === undefined
     ? "current GitHub feedback collection is not configured"
     : "current GitHub merge observation is not configured");
+  const learningBudget = { remaining: 20, skipped: 0 };
   const changed = await reconcileTaskPullRequestFeedback({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName,
     repositoryFullName: event.fullName, number: event.number, deliveryId,
@@ -415,6 +417,12 @@ export async function processGithubWorkflowEvent(
       ? dependencies.githubPullRequests.getPullRequestFeedback!.call(dependencies.githubPullRequests, url, number, githubScope(dependencies, orgId))
       : { pullRequest: await dependencies.githubPullRequests.getPullRequestMergeObservation!.call(dependencies.githubPullRequests, url, number, options.budget, githubScope(dependencies, orgId)), comments: [], threads: [] },
     ...(options === undefined ? {} : { observationMode: options.observationMode }),
+    ...(options === undefined && event.installationId > 0 ? { onFeedbackRead: async (task, comments) => {
+      if (task.orgId === undefined) return;
+      // The original delivery's binding, never a login or webhook body claim, fences company intake.
+      const installationOrgId = await boundInstallationOrg({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, event.installationId);
+      await capturePullRequestCorrections({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: () => Date.now(), ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, { task: { taskId: task.taskId, orgId: task.orgId, project: task.project }, installationOrgId, repositoryId: task.repositoryId, comments, budget: learningBudget });
+    } } : {}),
     recordedHead: async (workspaceId, repositoryId, number) => (await getItem<PullRequestRecord>(dependencies, pullRequestKey(workspaceId, repositoryId, number)))?.expectedHeadCommit,
     ...(dependencies.githubPullRequests.getCommitParents === undefined ? {} : {
       commitParents: (url: string, commit: string, orgId: OrgId | undefined) => dependencies.githubPullRequests.getCommitParents!(url, commit, githubScope(dependencies, orgId)),

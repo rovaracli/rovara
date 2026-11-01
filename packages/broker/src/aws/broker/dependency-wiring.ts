@@ -42,6 +42,8 @@ import { AgentStore } from "../../agents/store.js";
 import { followMerges } from "../../agents/access.js";
 import { runLimitRequester } from "../../spend/requests.js";
 import type { AgentRouteDependencies } from "../../agents/routes.js";
+import type { LifecycleDeps } from "../../agents/lifecycle.js";
+import { REMOVED_FROM_ORG_MESSAGE } from "../../org/sign-in.js";
 import { ChainStore } from "../../chains/store.js";
 import { TriggerStore } from "../../triggers/store.js";
 import { dispatchTriggerEvent, type TriggerDispatchContext } from "../../triggers/dispatch.js";
@@ -388,6 +390,12 @@ export async function developerDisplayName(dependencies: Pick<AwsBrokerDependenc
   return chosen ?? (typeof out.Item?.displayName === "string" ? safeDisplayName(out.Item.displayName, developerId) : undefined);
 }
 
+/** What a member's removal runs with: the agents' dependencies and the sign-in function that ends the person's sessions (the removal's sign-in step). */
+export function removalDepsOf(agents: AgentRouteDependencies, dependencies: Pick<AwsBrokerDependencies, "developer">): AgentRouteDependencies & LifecycleDeps {
+  const end = dependencies.developer?.endDeveloperSessions;
+  return end === undefined ? agents : { ...agents, endDeveloperSessions: end };
+}
+
 export function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit">, memberRemoval?: MemberRemovalHook): OrgStore {
   return new OrgStore({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
@@ -450,7 +458,7 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
   const role = options.allowReadOnly === true ? await liveReadRole(live, orgId, developerId) : await liveWriterRole(live, orgId, developerId);
   const refuseIfRemoved = async (id: string): Promise<void> => {
     for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
-      if (await getItem(dependencies, key) !== undefined) throw agentXError("FORBIDDEN", "you are no longer a member of this organization");
+      if (await getItem(dependencies, key) !== undefined) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
     }
   };
   // A Slack identity that was unlinked from a developer (the unlink also drops the merge) is judged by that developer's removal too: removal marks the survivor only, so a removed or banned

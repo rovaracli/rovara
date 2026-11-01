@@ -73,8 +73,8 @@ export const AgentGuardrailsSchema = z.object({
 }).strict();
 export type AgentGuardrails = z.infer<typeof AgentGuardrailsSchema>;
 
-/** What a request to change the guardrails may hold: the reader's document without `prCommentLearning`, which has no writer before B8. */
-export const AgentGuardrailsWriteSchema = AgentGuardrailsSchema.refine((value) => value.prCommentLearning === undefined, { path: ["prCommentLearning"], message: "can't be set yet" });
+/** B8 writer: reader-first PR capture field is now accepted, using existing loosening approval. */
+export const AgentGuardrailsWriteSchema = AgentGuardrailsSchema;
 
 /** What an org has until its owners and admins change it. `maxStepBudgetUsd` is left unset. */
 export const DEFAULT_AGENT_GUARDRAILS: AgentGuardrails = {

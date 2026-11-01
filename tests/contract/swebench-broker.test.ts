@@ -680,6 +680,17 @@ for (const enrolled of [true, false]) it(`an Auditor cannot start an eval run (I
   expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")).toHaveLength(0);
 });
 
+// A record with no role is unreadable, so it is refused too (the same writer check).
+for (const enrolled of [true, false]) it(`a requester record with no role cannot start an eval run, with spending stops ${enrolled ? "enabled" : "disabled"}`, async () => {
+  const h = enrolled ? await enrolledEvalBroker() : { ...(await evalBroker()), developerId: developerIdForSlackUser(member) };
+  if (!enrolled) await enable(h.handler);
+  h.db.set({ ...orgMemberKey(TEST_ORG, h.developerId), orgId: TEST_ORG, developerId: h.developerId });
+  const context = { orgId: TEST_ORG, developerId: h.developerId, thread: slackThread, requester: { userId: member } as never, projectName: "payments", projectModel: async () => undefined };
+  await expect(startSwebenchRun(swebenchDependencies(h.brokerInput as never), context, { requestId: randomUUID(), dataset: "verified", instanceId: "django__django-11099" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  expect(h.startExecution).not.toHaveBeenCalled();
+  expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")).toHaveLength(0);
+});
+
 for (const loss of ["member", "project"] as const) it(`M47 eval refuses ${loss} loss after acceptance before dispatch`, async () => {
   const h = await enrolledEvalBroker(), send = h.db.send.bind(h.db); let changed = false;
   h.db.send = async command => {

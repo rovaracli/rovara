@@ -6,7 +6,7 @@ import { agentXError, type SlackRequestMessage } from "../../packages/contracts/
 import type { OrgId } from "../../packages/contracts/src/org-node.js";
 import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgBanKey, orgRemovedKey } from "../../packages/contracts/src/index.js";
+import { orgBanKey, orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { createModelClassifier } from "../../packages/orchestrator/src/action-classifier.js";
@@ -79,12 +79,13 @@ describe("POST /v1/service/model-access", () => {
     expect(h.mintKey.mock.calls[0]![0]).not.toHaveProperty("developerId");
   });
 
-  it("refuses an Auditor, a removed member and a banned member before routing, admitting or minting: no key, no spend read, nothing reserved", async () => {
+  it("refuses an Auditor, a removed member, a banned member and a record with no role before routing, admitting or minting: no key, no spend read, nothing reserved", async () => {
     const guest = developerIdForSlackUser(SLACK_USER);
     const cases: Array<[string, (h: Awaited<ReturnType<typeof boundInstall>>) => void]> = [
       ["an Auditor", (h) => seedMembership(h.db, guest, { orgId: TEST_ORG, role: "auditor" })],
       ["a removed member", (h) => h.db.set({ ...orgRemovedKey(TEST_ORG, guest), orgId: TEST_ORG, developerId: guest })],
       ["a banned member", (h) => h.db.set({ ...orgBanKey(TEST_ORG, guest), orgId: TEST_ORG, developerId: guest })],
+      ["a record with no role", (h) => h.db.set({ ...orgMemberKey(TEST_ORG, guest), orgId: TEST_ORG, developerId: guest })],
     ];
     for (const [label, arrange] of cases) {
       const h = await boundInstall();

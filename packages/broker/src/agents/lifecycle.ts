@@ -15,9 +15,11 @@
 // deciders of approvals and spend requests use.
 import { DeleteCommand, GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  BUILTIN_AGENT_IDS, MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, orgMemberKey, orgPk, projectAgentKey, projectAllows,
-  type AgentId, type AgentPrincipal, type OrgId,
+  BUILTIN_AGENT_IDS, MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, MEMBER_REMOVAL_SUCCESSOR_HOPS, memberRemovalRecordKey, orgMemberKey, orgPk, orgRemovedKey, projectAgentKey, projectAllows,
+  type AgentId, type AgentPrincipal, type EndDeveloperSessionsRequest, type EndDeveloperSessionsResponse, type MemberRemovalRecord, type OrgId, type OrgKey,
 } from "@agentx/contracts";
+import { runAccessStep, type AccessStepResult } from "../org/member-removal/access.js";
+import { finishRemoval } from "../org/member-removal/finish.js";
 import type { MemberRemovalHook } from "../org/store.js";
 import { checkOwnerBudget } from "../spend/settings.js";
 import { orgRoleOf, resolveSurvivor, type AgentAccessDeps } from "./access.js";
@@ -31,6 +33,11 @@ export interface LifecycleDeps extends AgentAccessDeps {
    * API request sets it, and leaves the rest to its queued marker; the settlement run has its own budget and leaves it unset.
    */
   deadline?: number;
+  /**
+   * Ends a person's sign-in sessions through DeveloperIdentity (the sign-in step of a removal). Absent on an install with no sign-in function: the step is then skipped and
+   * logged, and the route that removed the person ends them itself.
+   */
+  endDeveloperSessions?: (request: EndDeveloperSessionsRequest) => Promise<EndDeveloperSessionsResponse>;
 }
 
 /** A merge that happened: `duplicateId` is now `survivorId`, in `orgId`. */
@@ -69,6 +76,39 @@ export interface MemberMover {
   merged?(deps: LifecycleDeps, merge: MergedMembers): Promise<void | readonly string[]>;
   removed?(deps: LifecycleDeps, removal: RemovedMember): Promise<void | readonly string[]>;
   orphaned?(deps: LifecycleDeps, removal: OrphanedMember): Promise<void>;
+  /**
+   * Member removal (v1.1): a step of the CUT-OFF. It runs on every run of a removal, also when the person has rejoined since (a rejoin cancels only the hand-offs), so it
+   * must cut only what was theirs before `removedAt` when `rejoined` is true. Repeatable.
+   */
+  cutOff?(deps: LifecycleDeps, cut: CutOff): Promise<void>;
+  /**
+   * Runs instead of `removed` and `orphaned` when the person has rejoined: drops what the leaver was listed for before `removedAt`, hands nothing to anyone. Repeatable.
+   */
+  dropped?(deps: LifecycleDeps, cut: CutOff): Promise<void>;
+}
+
+/** What a cut-off step is told about a removal. `removedAt` is S0's commit time (absent for a caller that does not know it: the step then cuts everything). */
+export interface CutOff {
+  orgId: OrgId;
+  developerId: string;
+  by: string;
+  removedAt?: string;
+  /** The person is a member again. */
+  rejoined: boolean;
+}
+
+/** What one run of a removal is told: the person, who removed them, and what S0 recorded on the marker (a marker from before this release has none of it). */
+export interface RemovalEvent {
+  orgId: OrgId;
+  developerId: string;
+  by: string;
+  removalId?: string | undefined;
+  removedAt?: string | undefined;
+  successorId?: string | undefined;
+  /** The marker, deleted by the removal's last step. */
+  marker?: OrgKey | undefined;
+  /** How many runs of this removal failed before (the marker's attempts). */
+  attempts?: number | undefined;
 }
 
 const movers = new Map<string, MemberMover>();
@@ -289,8 +329,9 @@ registerMemberMover({
 registerMemberMover({
   name: "shares",
   merged: (deps, { orgId, survivorId, duplicateId }) => moveShares(deps, orgId, duplicateId, survivorId, { kind: "member_merged", developerId: duplicateId }),
-  // A person who is gone keeps no share: it is deleted, not handed to the owner (who already manages what they took over).
-  removed: (deps, { orgId, developerId }) => moveShares(deps, orgId, developerId, undefined, { kind: "member_removed", developerId }),
+  // A person who is gone keeps no share: it is deleted, not handed to the owner (who already manages what they took over). This is a step of the cut-off: it runs also when the
+  // person has rejoined, and then drops every share (a share carries no time, so one given after the rejoin goes too: the safer side; an admin shares again).
+  cutOff: (deps, { orgId, developerId }) => moveShares(deps, orgId, developerId, undefined, { kind: "member_removed", developerId }),
 });
 
 /** Another maintainer of the project by grant, else `fallback` (the first owner of the org): who takes over what `leaving` is accountable for on the project. */
@@ -406,29 +447,142 @@ export async function onMembersMerged(deps: LifecycleDeps, merge: MergedMembers,
 }
 
 /**
- * A member was removed: what they owned moves to the first owner of the org (agents and skills, with one `owner_changed` event naming the
- * removal; their agent budgets count against that owner's total), `accountable` moves to another maintainer of that project by grant, else to
- * that owner, their shares are deleted and whatever other movers are registered re-route. Repeatable. An org with no other owner (a closed one,
- * or one whose last owner left) has nobody to hand anything to: that is logged, nothing is handed over, and each mover's `orphaned` part runs (the
- * triggers they created are turned off and an org admin is told; their follows, shares and devices go). When the run succeeds, the cap is looked at for that owner and for everyone
- * a mover (this run's or an earlier one's, through `ledger`) gave something to.
+ * The successor of a removal, read again at each run: the one S0 recorded (or, if they have left since, the one they were replaced by, up to
+ * `MEMBER_REMOVAL_SUCCESSOR_HOPS` hops), else the person who removed them, else the first owner. A marker from before this release names no successor and keeps today's
+ * rule: the first owner. Undefined when the org has nobody to hand anything to.
  */
-export async function onMemberRemoved(deps: LifecycleDeps, removal: { orgId: OrgId; developerId: string; by: string }, ledger?: RecipientLedger): Promise<void> {
+async function resolveSuccessor(deps: LifecycleDeps, removal: RemovalEvent): Promise<string | undefined> {
   const { orgId, developerId, by } = removal;
-  const successorId = await firstOwner(deps, orgId, developerId);
-  if (successorId === undefined) {
-    log(deps, "member_removed.no_successor", { orgId, developerId });
-    const { failure } = await runMovers(deps, "member_removed.mover_failed", { orgId, developerId }, (mover) => mover.orphaned?.(deps, { orgId, developerId, by }));
-    if (failure !== undefined) throw failure as Error;
+  const stillThere = async (id: string) => id !== developerId && await isMember(deps, orgId, id) && await resolveMember(deps, orgId, id) === id;
+  if (removal.successorId !== undefined) {
+    let candidate: string | undefined = removal.successorId;
+    for (let hop = 0; candidate !== undefined && hop <= MEMBER_REMOVAL_SUCCESSOR_HOPS; hop += 1) {
+      if (await stillThere(candidate)) return candidate;
+      const tombstone = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgRemovedKey(orgId, candidate), ConsistentRead: true })) as { Item?: Item };
+      const next: unknown = tombstone.Item?.["successorId"];
+      candidate = typeof next === "string" ? next : undefined;
+    }
+    if (MEMBER_ID.test(by) && await stillThere(by)) return by;
+  }
+  return firstOwner(deps, orgId, developerId);
+}
+
+/**
+ * Ends the person's sign-in sessions at the removal's own time, through the sign-in function; false when there is none wired (nothing was ended). A `not_found` answer is an
+ * answer (they never signed in); any other failure fails the run.
+ */
+async function endSessionsAt(deps: LifecycleDeps, developerId: string, at: string): Promise<boolean> {
+  if (deps.endDeveloperSessions === undefined) {
+    log(deps, "member_removal.sign_in_not_wired", { developerId });
+    return false;
+  }
+  const answer = await deps.endDeveloperSessions({ kind: "end-developer-sessions", developerId, at });
+  if (!answer.ok && answer.error !== "not_found") throw new Error(`member_removal_sign_in_${answer.error}`);
+  return true;
+}
+
+async function readRemovalRecord(deps: LifecycleDeps, orgId: OrgId, removalId: string): Promise<MemberRemovalRecord | undefined> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: memberRemovalRecordKey(orgId, removalId), ConsistentRead: true })) as { Item?: MemberRemovalRecord };
+  return response.Item;
+}
+
+/**
+ * A run of a member's removal (the request's own, within its budget, or the sweep's). In two parts:
+ *
+ * 1. The CUT-OFF always runs, also when the person has rejoined since: the grants, the leftover email pointers and the monthly limit S0 recorded (`access`), the sign-in sessions
+ *    (ended at the removal's own time, never "now"), and every mover's `cutOff` (shares, follows, devices). After a rejoin they cut only what was there before the removal.
+ * 2. The HAND-OFFS run only while the person is still not a member: what they owned moves to the successor (agents, skills, accountable, chains, triggers, the approvals and
+ *    spend requests that list them, with `requestedBy` kept), read again at every mover. An org with nobody to hand anything to runs each mover's `orphaned` part. After a
+ *    rejoin the hand-offs are cancelled (logged), and the approvals and spend requests that listed them before the removal are only dropped (`dropped`).
+ *
+ * Repeatable: every step is conditional on what it read. When all of it succeeded, the removal's record ends and its marker goes (`finishRemoval`, S7); a failure leaves the marker,
+ * and the sweep runs this again. When the run succeeds, the cap is looked at for the successor and for everyone a mover (this run's or an earlier one's, through `ledger`) gave
+ * something to.
+ */
+export async function onMemberRemoved(deps: LifecycleDeps, removal: RemovalEvent, ledger?: RecipientLedger): Promise<void> {
+  const { orgId, developerId, by } = removal;
+  const record = removal.removalId === undefined ? undefined : await readRemovalRecord(deps, orgId, removal.removalId);
+  const fields = { orgId, developerId };
+  // A removal that is already finished (a repeat, or a marker left behind): only the marker is left to remove.
+  if (record !== undefined && record.state !== "STARTED") {
+    if (removal.marker !== undefined) await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: removal.marker }));
     return;
   }
-  const moved: RemovedMember = { orgId, developerId, by, successorId };
-  const { owners, failure } = await runMovers(deps, "member_removed.mover_failed", { orgId, developerId }, (mover) => mover.removed?.(deps, moved));
+  const failures: unknown[] = [];
+  const attempt = async <T>(step: string, run: () => Promise<T>): Promise<T | undefined> => {
+    try {
+      return await run();
+    } catch (error) {
+      failures.push(error);
+      log(deps, "member_removed.mover_failed", { ...fields, mover: step, error: errorName(error) });
+      return undefined;
+    }
+  };
+  const { removedAt } = removal;
+  // ---- the cut-off
+  let access: AccessStepResult | undefined;
+  if (record !== undefined) {
+    access = await attempt("access", () => runAccessStep(
+      { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) },
+      { orgId, leaverId: developerId, removedAt: record.removedAt, grants: record.grants, memberLimitUsd: record.memberLimitUsd, leftoverEmailPointers: record.leftoverEmailPointers },
+    ));
+  }
+  let signInEnded = false;
+  if (removedAt !== undefined) signInEnded = (await attempt("sign-in", () => endSessionsAt(deps, developerId, removedAt))) === true;
+  const rejoinedAtStart = removedAt !== undefined && await isMember(deps, orgId, developerId);
+  const cut: CutOff = { orgId, developerId, by, ...(removedAt === undefined ? {} : { removedAt }), rejoined: rejoinedAtStart };
+  const cutResult = await runMovers(deps, "member_removed.mover_failed", fields, (mover) => mover.cutOff?.(deps, cut));
+  if (cutResult.failure !== undefined) failures.push(cutResult.failure);
+
+  // ---- the hand-offs
+  const owners = new Set<string>();
+  let cancelled = rejoinedAtStart;
+  let lastSuccessor: string | undefined;
+  if (!cancelled) {
+    for (const mover of [...movers.values()]) {
+      // Read again at every mover: the person may have come back, and the successor may have left.
+      // (Only for a removal that says when it happened: a caller that does not know is told the person is gone.)
+      if (removedAt !== undefined && await isMember(deps, orgId, developerId)) { cancelled = true; break; }
+      try {
+        const successorId = await resolveSuccessor(deps, removal);
+        if (successorId === undefined) {
+          log(deps, "member_removed.no_successor", fields);
+          await mover.orphaned?.(deps, { orgId, developerId, by });
+        } else {
+          lastSuccessor = successorId;
+          for (const owner of await mover.removed?.(deps, { orgId, developerId, by, successorId }) ?? []) owners.add(owner);
+          // The movers that write item by item (agents, skills, chains, triggers) read the successor once per page: one removed since got what moved. Their own removal moves it on
+          // when it has not finished; otherwise this line is what an admin finds it by.
+          if (!await isMember(deps, orgId, successorId)) log(deps, "member_removal.moved_to_removed", { ...fields, successorId, mover: mover.name });
+        }
+      } catch (error) {
+        failures.push(error);
+        log(deps, "member_removed.mover_failed", { ...fields, mover: mover.name, error: errorName(error) });
+      }
+    }
+  }
+  if (cancelled) {
+    log(deps, "member_removal.handoffs_cancelled", fields);
+    const dropResult = await runMovers(deps, "member_removed.mover_failed", fields, (mover) => mover.dropped?.(deps, { ...cut, rejoined: true }));
+    if (dropResult.failure !== undefined) failures.push(dropResult.failure);
+  }
   const recipients = new Set([...(ledger?.carried ?? []), ...owners]);
   await remember(deps, orgId, ledger, recipients);
-  if (failure !== undefined) throw failure as Error;
-  recipients.add(successorId);
+  if (failures.length > 0) throw failures[0] as Error;
+  if (lastSuccessor !== undefined) recipients.add(lastSuccessor);
   for (const owner of recipients) await noteOwnerCap(deps, orgId, owner, "member_removed");
+
+  // ---- S7
+  if (record !== undefined) {
+    await finishRemoval(
+      { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) },
+      {
+        orgId, removalId: record.removalId, leaverId: developerId, role: record.role, successorId: record.successorId, by: record.by, outcome: cancelled ? "cancelled_rejoined" : "done",
+        counts: { ...(access === undefined ? {} : { grantsRemoved: access.grantsRemoved, grantsKept: access.grantsKept }), signInEnded, countsComplete: (removal.attempts ?? 0) === 0 },
+        marker: removal.marker,
+      },
+    );
+  }
 }
 
 /**
@@ -458,7 +612,7 @@ export interface DrainReport {
 type Queue = "merge" | "removal";
 type Marker =
   | { kind: "merged"; orgId: OrgId; survivorId: string; duplicateId: string }
-  | { kind: "removed"; orgId: OrgId; developerId: string; by: string };
+  | { kind: "removed"; orgId: OrgId; developerId: string; by: string; removalId?: string; removedAt: string; successorId?: string };
 
 const QUEUE_PK: Record<Queue, string> = { merge: MEMBER_MERGE_QUEUE_PK, removal: MEMBER_REMOVAL_QUEUE_PK };
 
@@ -473,7 +627,14 @@ function readMarker(item: Item, queue: Queue): Marker | undefined {
   if (!ORG_ID.test(String(orgId)) || item["orgId"] !== orgId) return undefined;
   if (queue === "removal") {
     const by = item["by"];
-    return item["developerId"] === memberId && typeof by === "string" && by.length > 0 ? { kind: "removed", orgId: orgId as OrgId, developerId: memberId!, by } : undefined;
+    if (item["developerId"] !== memberId || typeof by !== "string" || by.length === 0) return undefined;
+    const removalId = item["removalId"];
+    const successorId = item["successorId"];
+    // A marker from before this release has no removal id: its time is the one in its key, and its successor is the org's first owner.
+    return {
+      kind: "removed", orgId: orgId as OrgId, developerId: memberId!, by, removedAt: String(item["sk"]).split("#")[0]!,
+      ...(typeof removalId === "string" ? { removalId } : {}), ...(typeof successorId === "string" && MEMBER_ID.test(successorId) ? { successorId } : {}),
+    };
   }
   const survivorId = item["survivorId"];
   return item["duplicateId"] === memberId && typeof survivorId === "string" && MEMBER_ID.test(survivorId) && survivorId !== memberId
@@ -488,9 +649,8 @@ function readMarker(item: Item, queue: Queue): Marker | undefined {
 type Verdict = { ok: true; kind: "move"; survivorId: string } | { ok: true; kind: "survivor_gone" } | { ok: false; reason: string };
 
 async function verify(deps: LifecycleDeps, marker: Marker): Promise<Verdict> {
-  if (marker.kind === "removed") {
-    return await isMember(deps, marker.orgId, marker.developerId) ? { ok: false, reason: "member_still_in_org" } : { ok: true, kind: "move", survivorId: marker.developerId };
-  }
+  // A removal is always run: a person who has rejoined since still has the cut-off to finish (only the hand-offs are cancelled, in `onMemberRemoved`).
+  if (marker.kind === "removed") return { ok: true, kind: "move", survivorId: marker.developerId };
   const { orgId, duplicateId } = marker;
   if ((await deps.signInStore.getDeveloper(duplicateId))?.mergedInto !== marker.survivorId) return { ok: false, reason: "duplicate_not_merged" };
   if (await isMember(deps, orgId, duplicateId)) return { ok: false, reason: "duplicate_still_member" };
@@ -547,7 +707,12 @@ async function drainQueue(deps: LifecycleDeps, now: number, queue: Queue, cursor
         continue;
       }
       const ledger = markerLedger(deps, { pk, sk: String(item["sk"]) }, recipientsOf(item));
-      if (marker.kind === "removed") await onMemberRemoved(deps, { orgId: marker.orgId, developerId: marker.developerId, by: marker.by }, ledger);
+      if (marker.kind === "removed") {
+        await onMemberRemoved(deps, {
+          orgId: marker.orgId, developerId: marker.developerId, by: marker.by, removedAt: marker.removedAt, marker: { pk, sk: String(item["sk"]) }, attempts,
+          ...(marker.removalId === undefined ? {} : { removalId: marker.removalId }), ...(marker.successorId === undefined ? {} : { successorId: marker.successorId }),
+        }, ledger);
+      }
       else if (verdict.kind === "survivor_gone") {
         log(deps, "member_merge.survivor_gone", { orgId: marker.orgId, survivorId: marker.survivorId, duplicateId: marker.duplicateId });
         await onMemberRemoved(deps, { orgId: marker.orgId, developerId: marker.duplicateId, by: SYSTEM }, ledger);

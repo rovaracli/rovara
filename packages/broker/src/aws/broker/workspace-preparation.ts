@@ -319,6 +319,10 @@ export async function slackServiceIdentity(
   await requireSlackAllowedByEdition(dependencies, context.requester.userId, orgId);
   const binding = await getSlackBinding(dependencies, orgId, context.thread.teamId, context.thread.channelId);
   if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
+  // A person removed from the company (or banned), of another org, or with an unreadable role record is refused here, for every Slack service route (member removal), by the one requester rule
+  // (requireSlackRequesterWriterRole): the routes that start or change work add the writer check on top (requireSlackRequesterMayWork), and the Auditor, who only reads, is let through here
+  // alone. A person who never joined has no tombstone and is served as before.
+  await requireSlackRequesterWriterRole(dependencies, context.requester.userId, orgId, { allowUnlinked: true, allowReadOnly: true });
   const subject = slackThreadSubject(context.thread);
   const threadOwnerKey = ownerKeyForSubject(SLACK_THREAD_OWNER_ISSUER, subject);
   const own: AuthenticatedIdentity = {

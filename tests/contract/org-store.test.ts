@@ -215,13 +215,18 @@ describe("B33 approval membership generation", () => {
 
 
 describe("B33 membership removal grant-loss boundary", () => {
-  it("retains generation and scoped loss when removal stops after grants go", async () => {
+  const withGrant = async () => {
     const { store, db, clock } = setup();
     const orgId = await store.createOrgWithOwner({ name: "Acme", developerId: "owner" });
     await store.addMember({ orgId, developerId: "member", role: "member" });
     const grantKey = projectMemberKey(orgId, "member", "payments");
     db.set({ ...projectMetaKey(orgId, "payments"), entityType: "PROJECT_META", status: "active" });
     db.set({ ...grantKey, entityType: "MEMBERSHIP", role: "developer", projectRole: "maintainer", grantId: "grant1", projectName: "payments" });
+    return { store, db, clock, orgId, grantKey };
+  };
+
+  it("deletes nothing when the removal stops before its transaction: the grants stay (G2) and no loss is recorded", async () => {
+    const { store, db, clock, orgId, grantKey } = await withGrant();
     const before = db.get(orgMetaKey(orgId))?.approvalMembershipVersion;
     clock.now += 1_000;
     const send = db.send.bind(db);
@@ -230,9 +235,19 @@ describe("B33 membership removal grant-loss boundary", () => {
       return send(command);
     };
     await expect(store.removeMember({ orgId, developerId: "member", emails: [], ban: false })).rejects.toThrow("stopped");
-    expect(db.get(grantKey)).toBeUndefined();
+    expect(db.get(grantKey)).toBeDefined();
     expect(db.get(orgMemberKey(orgId, "member"))).toBeDefined();
-    expect(db.get(orgMetaKey(orgId))?.approvalMembershipVersion).toBe(Number(before) + 1);
+    expect(db.get(orgMetaKey(orgId))?.approvalMembershipVersion).toBe(before);
+    expect(db.get(projectMetaKey(orgId, "payments"))?.approvalLastMaintainerLossAt).toBeUndefined();
+  });
+
+  it("bumps the generation with the membership and again, with the scoped maintainer loss, when the access step deletes the recorded grant", async () => {
+    const { store, db, clock, orgId, grantKey } = await withGrant();
+    const before = Number(db.get(orgMetaKey(orgId))?.approvalMembershipVersion);
+    clock.now += 1_000;
+    await store.removeMember({ orgId, developerId: "member", emails: [], ban: false });
+    expect(db.get(grantKey)).toBeUndefined();
+    expect(db.get(orgMetaKey(orgId))?.approvalMembershipVersion).toBe(before + 2);
     expect(db.get(projectMetaKey(orgId, "payments"))?.approvalLastMaintainerLossAt).toBe(new Date(clock.now).toISOString());
   });
 });

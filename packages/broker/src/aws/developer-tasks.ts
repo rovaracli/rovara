@@ -154,7 +154,7 @@ export { type SpendResumeInput, continueAsTask, prepareTaskApprovalAdmission, re
 export { decideTaskWorkflow } from "./developer-tasks/decide.js";
 export { startTaskWorkflowPlanRevisionFromSystem } from "./developer-tasks/workflow-retry.js";
 export { planUnreadablePrompt, publicWorkflowDecision } from "./developer-tasks/workflow-inputs.js";
-export { resolveTaskWorkflowFindings, resumeAfterRunLimitApproval, sendTaskWorkflowBackToCoding } from "./developer-tasks/workflow-coding.js";
+export { SLACK_SEND_BACK_INSTRUCTIONS, resolveTaskWorkflowFindings, resumeAfterRunLimitApproval, sendTaskWorkflowBackToCoding } from "./developer-tasks/workflow-coding.js";
 export { laterProgramBuild, startTaskWorkflowImplementationFromSystem, startTaskWorkflowReviewFromSystem, understandWatchdogDueAt } from "./developer-tasks/workflow-review.js";
 export {
   type AutomaticRetry,

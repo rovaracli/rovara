@@ -259,8 +259,10 @@ describe("GET learning: the settings block", () => {
 
   it("shows a pending proposal's id", async () => {
     const w = world();
-    put(w, "SETTINGS", { entityType: "LEARNING_SETTINGS", revision: 1, prComments: "off", changedBy: MAX, changedAt: "2026-10-05T00:00:00.000Z", pendingProposalId: "prop-1" });
-    expect((await view(w, MAX)).settings.pendingProposal).toEqual({ id: "prop-1" });
+    const proposalId=randomUUID();
+    put(w, "SETTINGS", { entityType: "LEARNING_SETTINGS", revision: 1, prComments: "off", changedBy: MAX, changedAt: "2026-10-05T00:00:00.000Z", pendingProposalId: proposalId });
+    put(w, `PROPOSAL#${proposalId}`, { proposalId, by:MAX, state:"pending", baseRevision:1, expiresAt:new Date(w.clock.now+86400000).toISOString(), indexExpiresAt:Math.floor(w.clock.now/1000)+31*86400 });
+    expect((await view(w, MAX)).settings.pendingProposal).toEqual({ id: proposalId });
   });
 });
 
@@ -439,4 +441,17 @@ describe("GET learning: the company's master suggestions switch", () => {
   it("an older server's answer (no suggestionsState) still reads: the field is optional", () => {
     expect(LearningViewAnswerSchema.safeParse({ settings: { prComments: "off", locked: false }, suggestions: [], dismissed: [], rules: [], skippedUnlinked: 0, canDecide: true }).success).toBe(true);
   });
+});
+
+it("B8 review I2 lock immediately hides PR-only suggestions; grouping withdraws once with audit",async()=>{
+ const w=world(),id=await suggest(w,[{author:PRIYA,task:"pr-t1",text:RETRY_A,source:"pr_comment"},{author:ARJUN,task:"pr-t2",text:RETRY_B,source:"pr_comment"}]);
+ w.db.set({...agentGuardrailsKey(ORG_A),revision:1,guardrails:{...DEFAULT_AGENT_GUARDRAILS,prCommentLearning:"locked_off"}});
+ expect((await view(w,MAX)).suggestions).toEqual([]);expect(w.db.find(r=>String(r.sk).startsWith("CORRECTION#")).every(r=>typeof r.text==="string")).toBe(true);
+ await groupCorrections(learning(w),SCOPE);expect(w.db.get(projectLearningKey(ORG_A,"web",`SUGGESTION#${id}`))?.status).toBe("withdrawn");expect(w.audit.recordedBy("rule.withdrawn")).toHaveLength(1);
+ await groupCorrections(learning(w),SCOPE);expect(w.audit.recordedBy("rule.withdrawn")).toHaveLength(1);
+});
+it("B8 review I2 a ledger-backed view lazily withdraws through the shared helper",async()=>{
+ const w=world(),id=await suggest(w,[{author:PRIYA,task:"pr-t1",text:RETRY_A,source:"pr_comment"},{author:ARJUN,task:"pr-t2",text:RETRY_B,source:"pr_comment"}]);
+ w.db.set({...agentGuardrailsKey(ORG_A),revision:1,guardrails:{...DEFAULT_AGENT_GUARDRAILS,prCommentLearning:"locked_off"}});
+ expect((await view(w,MAX,{audit:w.audit.audit})).suggestions).toEqual([]);expect(w.db.get(projectLearningKey(ORG_A,"web",`SUGGESTION#${id}`))?.status).toBe("withdrawn");expect(w.audit.recordedBy("rule.withdrawn")).toHaveLength(1);
 });

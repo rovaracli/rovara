@@ -274,3 +274,11 @@ describe("the company's master suggestions switch", () => {
     } finally { setLearningHomeSettler(undefined); }
   });
 });
+
+it("B8 review I2 company lock hides a Home card whose suggestions depend only on PR corrections",async()=>{
+ const {agentGuardrailsKey,DEFAULT_AGENT_GUARDRAILS}=await import("@agentx/contracts"),{seedCorrection}=await import("../support/learning-world.js"),w=world();w.state("web",{openSuggestions:1});
+ const ids:string[]=[];for(const n of [1,2]){const sk=seedCorrection(w.db,ORG_A,"web",n,{createdAtMs:w.clock.now-1000,projectCreatedAt:PC});const key=projectLearningKey(ORG_A,"web",sk),c=w.db.get(key)!;w.db.set({...c,source:"pr_comment"});ids.push(String(c.id));}
+ w.db.set({...projectLearningKey(ORG_A,"web","SUGGESTION#pr-only"),id:"pr-only",stage:"build",status:"open",correctionIds:ids,allFromOnePerson:false,proposedText:"Use the shared retry helper.",signature:["h"],lessSafe:false,kinds:[],overlaps:[],revision:0,createdAt:new Date(w.clock.now).toISOString(),projectCreatedAt:PC});
+ w.db.set({...projectLearningKey(ORG_A,"web","SETTINGS"),projectCreatedAt:PC,prComments:"on",revision:1,changedBy:MAX,changedAt:new Date(w.clock.now).toISOString()});expect(await w.cardsOf(MAX)).toHaveLength(1);
+ w.db.set({...agentGuardrailsKey(ORG_A),revision:1,guardrails:{...DEFAULT_AGENT_GUARDRAILS,prCommentLearning:"locked_off"}});expect(await w.cardsOf(MAX)).toEqual([]);
+});

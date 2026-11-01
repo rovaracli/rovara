@@ -14,6 +14,7 @@ import { previewCompanyPolicy, saveCompanyPolicy, COMPANY_POLICY_PATH } from "..
 import { EFFORT_OPTIONS, REFUSAL_TEXT, candidateBlock, codedText, effortLabel } from "../../project/stage-model-text.js";
 import { ReadSection, checkedTime, useAdminRead } from "../models/read.js";
 import { useAdminContext } from "../AdminLayout.js";
+import { PrLearningLockRow } from "../agents/PrLearningLockRow.js";
 import { incompleteLocks, lockIncomplete, normalize, patchRow, rowEntry, rowSplit, sameOverrides, type CompanyRow, type EffortChoice } from "./company-edit.js";
 import * as T from "./company-text.js";
 import { LearningSuggestionsRow } from "./LearningSuggestionsRow.js";
@@ -34,6 +35,7 @@ export function HowWeWorkCompanyScreen() {
   {notice?.kind === "saved" && <p role="status">{T.SAVED}</p>}
   {notice?.kind === "saved_reload_failed" && <p role="alert">{T.SAVED_RELOAD_FAILED} <Button onClick={() => { setNotice(undefined);void read.refetch(); }}>Reload</Button></p>}
   <ReadSection read={read} label="Company model defaults">{policy => <Editor key={read.dataUpdatedAt} policy={policy} notice={notice} setNotice={setNotice} reread={reread} reload={() => { setNotice(undefined);void read.refetch(); }} />}</ReadSection>
+  <PrLearningLockRow />
  </section>;
 }
 
