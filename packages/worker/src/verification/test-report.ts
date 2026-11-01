@@ -46,7 +46,7 @@ export function plainName(text: string): string {
   return line === "" ? "test" : Array.from(line).slice(0, NAME_MAX).join("");
 }
 
-function counted(format: ParsedTestReport["format"], tests: ReportedTest[]): ParsedTestReport {
+export function counted(format: ParsedTestReport["format"], tests: ReportedTest[]): ParsedTestReport {
   const count = (status: ReportedTestStatus) => tests.filter((test) => test.status === status).length;
   return { format, total: tests.length, passed: count("passed"), failed: count("failed"), skipped: count("skipped"), errored: count("errored"), tests };
 }
