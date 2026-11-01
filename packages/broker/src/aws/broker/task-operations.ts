@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): agent steps, the task operation parts, application selection, agent skills and tools.
 
+import { proofEvidenceEnabled } from "../../proof/switch.js";
 import { readTurnActorChecks } from "../../model-selection/turn-authority.js";
 import { turnStagesForMode, prepareTurnModelPolicy } from "../../model-selection/turn-policy.js";
 import { reviewFailures, criticFailures } from "../../model-selection/task-failures.js";
@@ -535,6 +536,8 @@ export async function taskOperationParts(
       ...(input.workflowReviewRisk === true ? { workflowReviewRisk: true as const } : {}),
       // Plan 6 Task 15: the run fixes a pull request that is already open; a worker without "task.workflowFix" is refused the run at delivery, never sent it without the field.
       ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
+      // Proof and evidence: a verification run that has project checks also reads their test reports, only while the proof switch is on. A worker without "task.evidenceCapture.v1" is refused the run at delivery, never sent it without the field.
+      ...(input.workflowMode === "CHECKS" && (input.readiness?.length ?? 0) > 0 && proofEvidenceEnabled() ? { evidenceCapture: true as const } : {}),
       // Stop & redirect (keep the plan): the owner's instruction, framed by the worker. A worker without "task.ownerRedirect.v1" is refused the run at delivery, never sent it without the field.
       ...(input.ownerRedirect === undefined ? {} : { ownerRedirect: input.ownerRedirect }),
       // Meta repo lane D: the spec write's binding; a worker without "task.specWrite.v1" is refused the run at delivery, never sent it without the field.

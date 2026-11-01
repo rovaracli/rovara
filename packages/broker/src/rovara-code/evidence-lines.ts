@@ -94,6 +94,8 @@ export function coverageLine(pack: EvidencePack): string | undefined {
 /** The Environment line (never dropped; shorter at level 3 and above): the tier, each service's mode (mocked ones with their recording), the accounts' kind and the data. */
 export function environmentLine(pack: EvidencePack, level: number): string {
   const env = pack.environment;
+  // Revision 0 is "no approved test environment" (the test environment features are a later lane): the line says so instead of claiming synthetic test data nobody checked. Replaces: the pack's "Test data: synthetic" for such a pack.
+  if (env.envRevision === 0 && env.services.length === 0 && env.accounts.length === 0) return `Environment: ${TIER_WORDS[env.tier]}. No approved test environment: the project's own test setup was used.`;
   const services = env.services.map((service) => {
     const name = inertLine(service.name, 40);
     const recorded = service.mode === "mocked" && service.recordedAt !== undefined ? ` (recorded ${service.recordedAt.slice(0, 10)}${service.schemaVersion === undefined ? "" : `, schema v${service.schemaVersion}`})` : "";

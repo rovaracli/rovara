@@ -134,6 +134,8 @@ export interface DeveloperRouteDependencies {
   taskAutonomyNow?: DeveloperTaskRouteDependencies["taskAutonomyNow"];
   workflowE2EScenarioResults?: DeveloperTaskRouteDependencies["workflowE2EScenarioResults"];
   workflowE2EArtifact?: DeveloperTaskRouteDependencies["workflowE2EArtifact"];
+  /** Proof and evidence (wire-proof): present only while the proof switch is on. */
+  evidence?: DeveloperTaskRouteDependencies["evidence"];
   startWorkflowE2EBaseline?: DeveloperTaskRouteDependencies["startWorkflowE2EBaseline"];
   /** Checks a plan's application E2E intent when the owner approves it. */
   validateWorkflowE2EApplicationPlan?: DeveloperTaskRouteDependencies["validateWorkflowE2EApplicationPlan"];

@@ -170,6 +170,10 @@ export const BROKER_SETTINGS = {
   teamRecord: { code: "tn", variable: "TEAM_RECORD_ENABLED" },
   teamRecordEmbeddingModel: { code: "te", variable: "TEAM_RECORD_EMBEDDING_MODEL_ID" },
   teamRecordLake: { code: "tl", variable: "TEAM_RECORD_LAKE_ENABLED" },
+  // Proof and evidence (wire-proof): the evidence of a task's checks is gathered, kept and shown (the PR's evidence lines and link, the task page's Evidence tab, the download route). Stack parameter ProofEvidenceEnabled, "0" by default: the broker reads it as PROOF_EVIDENCE_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
+  proofEvidence: { code: "pe", variable: "PROOF_EVIDENCE_ENABLED" },
+  // Decision cards (wire-proof): the card routes (`/v1/app/decisions*`) and the Slack card press. Stack parameter DecisionCardsEnabled, "0" by default: the broker reads it as DECISION_CARDS_ENABLED, and the routes exist only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
+  decisionCards: { code: "dk", variable: "DECISION_CARDS_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

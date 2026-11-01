@@ -322,6 +322,8 @@ export async function taskView(
   // Playbook P3: the proof table of the approved plan's requirements, as the pull request's Proof section has it (full reads only). Informational: a fault in any input leaves it out. A blocked task keeps it:
   // a failed requirement matters most there. (A plan whose document could not be verified is blocked only while it waits for approval, when no plan is approved and the table is absent anyway.)
   const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
+  // Proof and evidence (wire-proof): the evidence kept for the task's current code (full reads only, like the proof table), with each stored artifact as a link. Present only while the proof switch is on (`deps.evidence`); a fault leaves it out.
+  const evidence = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.evidence !== undefined ? await deps.evidence.view(task, task.workflow.candidate?.digest).catch(() => undefined) : undefined;
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
   const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
   // v1.2 track record: the early "PR risk low" score is the task owner's alone. It is read only for a view built for the owner (an explicit `actor: "owner"`; no named actor and a viewer never get it), on a
@@ -339,6 +341,7 @@ export async function taskView(
     ...(workflow === undefined ? {} : { workflow }),
     ...(verification === undefined ? {} : { verificationReport: verification }),
     ...(proofTable === undefined ? {} : { proofTable }),
+    ...(evidence === undefined ? {} : { evidence }),
     ...(modelLines.length === 0 ? {} : { reviewModelLines: modelLines }),
     ...(reviewRound === undefined ? {} : { reviewRound }),
     ...(tracked.length === 0 ? {} : { mergeTracking: tracked.map(publicTrackingItem) }),

@@ -9,6 +9,7 @@ import type {
   TaskPersonInviteOutcome,
   ProjectRole,
 } from "@agentx/contracts";
+import type { EvidencePort } from "./evidence-port.js";
 import type { BoundChannel } from "../../developer/share.js";
 import type { ModelAccess } from "../../model-proxy/access.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -90,6 +91,8 @@ export interface DeveloperTaskRouteDependencies {
   /** M1.3 Task 3.7: the per-scenario rows of the task's current browser and API round, for the task page; the screenshot behind a row, by digest; the baseline round asked for at APPROVE. */
   workflowE2EScenarioResults?(input: { task: DeveloperTaskRecord; operations: readonly unknown[]; actor: "owner" | "viewer" }): Promise<E2EScenarioResults | undefined>;
   workflowE2EArtifact?(input: { task: DeveloperTaskRecord; sha256: string }): Promise<{ contentType: "image/jpeg"; bytes: Uint8Array } | undefined>;
+  /** Proof and evidence (wire-proof): the evidence of a task's checks, for the pull request, the task page and the download. Present only while the proof switch is on; absent, nothing reads or shows any. */
+  evidence?: EvidencePort;
   startWorkflowE2EBaseline?(input: { task: DeveloperTaskRecord }): Promise<unknown>;
   /**
    * Evaluates a plan's schema-v2 application intent for approval against the task's pinned project, the approved setup snapshot and the runtime rows

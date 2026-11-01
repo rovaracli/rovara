@@ -193,6 +193,9 @@ import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
 import { getTaskE2EArtifact } from "./task-e2e-artifact.js";
+import { EVIDENCE_DOWNLOAD_PATH, routeEvidenceDownload } from "./task-evidence-download.js";
+import { isDecisionPath, decisionRouteDepsOf } from "./developer-routes/decisions.js";
+import { routeDecisionCards } from "../decisions/routes.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./developer-routes/types.js";
 import { PROJECT_NOT_FOUND_IN_APP, bodyError } from "./developer-routes/common.js";
 import { authenticateDeveloper, authenticateDeveloperSessionId } from "./developer-routes/authentication.js";
@@ -394,6 +397,20 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isAgentSessionRoute(url.pathname)) return routeAgentSessionRequest(sessionReadDependencies(deps, caller), caller, request, url);
   // Live interaction F2 to F4: Fix with agent (`/v1/app/diagnoses*`); the dependencies exist only while the `fd` switch is on.
   if (isDiagnosisPath(url.pathname)) return (await routeDiagnosisRequest(diagnosisRouteDepsOf(deps, caller), caller, request.method, url.pathname, () => jsonBody(request)))!;
+  // Proof and evidence (wire-proof): one stored artifact of a task's evidence. A route only while the proof switch is on (`deps.evidence`); with it off the path is not matched and falls through as any unknown path.
+  const evidenceDownload = request.method === "GET" && deps.evidence !== undefined ? EVIDENCE_DOWNLOAD_PATH.exec(url.pathname) : null;
+  if (evidenceDownload !== null) {
+    const found = await routeEvidenceDownload({ deps: developerTaskRouteDependencies(deps, caller), caller, taskId: evidenceDownload[1]!, sha256: evidenceDownload[2]!, requestId: request.requestId, now: deps.now });
+    if (found !== undefined) return found;
+  }
+  // Decision cards (wire-proof): `/v1/app/decisions*`. The dependencies exist only while the cards switch is on; with it off the path falls through as any unknown path.
+  if (isDecisionPath(url.pathname)) {
+    const cardDeps = decisionRouteDepsOf(deps, caller);
+    if (cardDeps !== undefined) {
+      const answer = await routeDecisionCards(cardDeps, caller, { method: request.method, pathname: url.pathname, searchParams: url.searchParams, body: request.method === "POST" ? jsonBody(request) : undefined });
+      if (answer !== undefined) return answer;
+    }
+  }
   // Plan 5, Tasks 17, 18 and 22: `/v1/app/devices*` (the Mac's command poll, and a removal that ends the sessions on it) and `/v1/app/org/local-agents`.
   if (isDeviceRoute(url.pathname)) {
     const log = sessionDependenciesOf(deps)?.log;

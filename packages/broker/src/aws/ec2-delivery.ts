@@ -13,6 +13,7 @@ import {
   E2E_REPLAY_CHECKS_FEATURE,
   GROUNDING_CHECKS_FEATURE,
   DIAGNOSIS_WORKER_FEATURE,
+  EVIDENCE_CAPTURE_FEATURE,
   OWNER_REDIRECT_FEATURE,
   PLAN_DRY_RUN_FEATURE,
   E2E_APPLICATION_ADMISSION_SCHEMA_V2,
@@ -382,6 +383,10 @@ async function forWorkerFeatures(
   }
   // Live interaction F3: a deep diagnosis is never sent to a worker that does not list it: an older worker would run the look as a setup draft and answer a proposal this broker does not read.
   if (invocation.kind === "task" && invocation.payload.diagnosis !== undefined && !features.includes(DIAGNOSIS_WORKER_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Proof and evidence: a run that is asked to gather the checks' test reports is never sent to a worker that does not list it (an older worker's strict parse would refuse the field), and the field is never dropped.
+  if (invocation.kind === "task" && invocation.payload.evidenceCapture === true && !features.includes(EVIDENCE_CAPTURE_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.

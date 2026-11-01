@@ -44,6 +44,7 @@ import { specEndEnvironmentOf } from "./spec-wiring.js";
 import { MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES, type AwsBrokerDependencies, type PullRequestRecord } from "./definitions.js";
 import { knowledgeCommitToStore, taskPreparedUpdate } from "../../meta-repo/prepare-meta.js";
 import { requireRecordProject } from "./dependency-wiring.js";
+import { keepEvidenceAfterChecks } from "./evidence-wiring.js";
 import { readUnderstandingArtifact, runWorkflowDispatch } from "./dispatch.js";
 import { PLAN_GROUNDING_HOLD_PK, isNonCandidateRound, sweepGroundingHolds } from "./e2e-rounds.js";
 import { workflowCandidateSourceExportSchema } from "./evidence-and-setup.js";
@@ -895,6 +896,8 @@ export async function completedWorkflowItems(
           now,
           ...(e2eQualification === undefined ? {} : { e2eQualification }),
         });
+        // Proof and evidence (wire-proof): the verification is recorded, so the run's evidence is assembled for this code. Off unless the proof switch is on; informational and bounded; never throws.
+        await keepEvidenceAfterChecks(dependencies, { task, operation, workflow: task.workflow, candidateDigest: candidate.digest, checks: checks.data.checks });
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.verification_blocked", taskId: task.taskId, operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown", reason: verificationFailure, ...(verificationDetail === undefined ? {} : { detail: verificationDetail }) }));
         if (verificationFailure === WORKFLOW_BLOCK_REASONS.fixChangedNothing && task.workflow.fixSource === "ci" && task.orgId !== undefined) {
