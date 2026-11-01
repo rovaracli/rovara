@@ -4,8 +4,11 @@
 //
 //  - A STRICTER (or equal) write (auto to one or two, one to two) applies at once, by an eligible maintainer or admin.
 //  - ANY loosening (two to one, one to auto, two to auto; at project level or as the company floor) never applies as a direct write (controller decision 2026-10-31, owner decision M8:
-//    projects loosen through their normal approval steps). It opens a proposal; a DIFFERENT eligible maintainer or admin approves it. The proposer can never approve their own
-//    change, and the sole-owner exception does not apply here (a team of one cannot loosen this on its own).
+//    projects loosen through their normal approval steps). It opens a proposal; a DIFFERENT eligible maintainer or admin approves it. The proposer cannot approve their own change
+//    while anyone else is eligible. The one exception is the shared sole-owner exception (`org/second-person-approval.ts`, the same rule lesson approval uses): when the proposer is the
+//    ONLY eligible person and nobody eligible left or was removed in the last 24 hours, they approve alone, and the audit records mode "sole_owner_exception". Within 24 hours the
+//    answer is "sole_owner_cool_off" with the time it opens. A company setting (`soleOwnerLoosening`, default ON) turns the exception off for loosening (owner decision 2026-11-01,
+//    "One-admin companies"; replaces "there is no sole-owner path for loosening"). A setting that cannot be read counts as OFF.
 //  - Nothing loosens TO "auto" while automatic go-live is not enabled (`autoApplyEnabled`), whoever approves.
 //  - Every write is conditional on the value it was made against: a stricter write made in between is never overwritten (the result is "stale").
 //  - A company floor can only be stricter: a project value below the floor is refused, at request and again at approval.
@@ -52,12 +55,14 @@ export interface Tier0Deps {
   settings: Tier0SettingsStore; changes: Tier0ChangeStore; audit: LessonAuditSink; authority: Tier0Authority; now(): number;
   /** Whether automatic go-live may be switched on at all. False until the "Before auto-apply is turned on" list has passed review. */
   autoApplyEnabled(): boolean;
+  /** The company setting that allows the sole-owner exception for loosening (default ON when never set). Asked only when a person approves their own loosening; a throw counts as OFF. */
+  soleOwnerLoosening(workspaceId: string): Promise<boolean>;
   newId?: () => string;
 }
 
 export type Tier0Failure =
   | "invalid_value" | "not_eligible" | "eligibility_unavailable" | "below_company_floor" | "auto_apply_not_enabled" | "already_open" | "audit_unavailable"
-  | "not_found" | "not_pending" | "expired" | "stale" | "second_person_required" | "conflict";
+  | "not_found" | "not_pending" | "expired" | "stale" | "second_person_required" | "sole_owner_cool_off" | "conflict";
 export type Tier0Request = { ok: true; status: "applied"; value: Tier0Level } | { ok: true; status: "needs_approval"; changeId: string } | { ok: false; code: Tier0Failure };
 
 const NO_PROJECT = "_workspace";
@@ -72,6 +77,10 @@ async function currentOf(deps: Tier0Deps, scope: Tier0Scope): Promise<Tier0Level
 /** The company floor ("auto" when there is none). A project cannot go below it. */
 async function floorOf(deps: Tier0Deps, scope: Tier0Scope): Promise<Tier0Level> {
   return (await deps.settings.read({ kind: "company", workspaceId: scope.workspaceId })) ?? "auto";
+}
+/** Whether the company allows the sole-owner exception for loosening. A reader that fails counts as OFF. */
+async function soleOwnerAllowed(deps: Tier0Deps, scope: Tier0Scope): Promise<boolean> {
+  try { return (await deps.soleOwnerLoosening(scope.workspaceId)) === true; } catch { return false; }
 }
 async function groupOf(deps: Tier0Deps, scope: Tier0Scope) {
   const group = await deps.authority.eligibility(scope).catch(() => undefined);
@@ -105,7 +114,11 @@ export async function requestTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   return created ? { ok: true, status: "needs_approval", changeId: id } : { ok: false, code: "conflict" };
 }
 
-export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0Scope; changeId: string; approverId: string }): Promise<{ ok: true; value: Tier0Level } | { ok: false; code: Tier0Failure }> {
+/** The shared rule's cool-off after an eligible person left (`COOL_OFF_MS` in org/second-person-approval.ts); the test "is refused within 24 h" pins that both agree to the millisecond. */
+const SOLE_OWNER_COOL_OFF_MS = 86_400_000;
+export type Tier0ApproveResult = { ok: true; value: Tier0Level } | { ok: false; code: Tier0Failure; availableAt?: string };
+
+export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0Scope; changeId: string; approverId: string }): Promise<Tier0ApproveResult> {
   const { scope } = input;
   const change = await deps.changes.get(scope, input.changeId);
   // A change is read through its own scope: under another scope it does not exist.
@@ -113,14 +126,22 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   if (change.state !== "pending") return { ok: false, code: "not_pending" };
   const at = deps.now();
   if (change.expiresAt <= at) return { ok: false, code: "expired" };
-  // The proposer never approves their own change, however the id is spelled; there is no sole-owner path for loosening.
-  if (sameId(change.proposedBy, input.approverId)) return { ok: false, code: "second_person_required" };
+  // The proposer approves their own change only through the sole-owner exception (below), however the id is spelled.
+  const selfApproval = sameId(change.proposedBy, input.approverId);
   const group = await groupOf(deps, scope);
   if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };
   const decision = trySecondPerson(group, change.proposedBy, input.approverId, at);
-  if (!decision.ok) return { ok: false, code: decision.code === "eligibility_unavailable" ? "eligibility_unavailable" : "second_person_required" };
-  if (decision.mode !== "second_person") return { ok: false, code: "second_person_required" };
+  if (!decision.ok) {
+    if (decision.code === "eligibility_unavailable") return { ok: false, code: "eligibility_unavailable" };
+    if (decision.code === "sole_owner_cool_off" && selfApproval && group.lastEligibleLossAtMs !== null) {
+      if (!(await soleOwnerAllowed(deps, scope))) return { ok: false, code: "second_person_required" };
+      return { ok: false, code: "sole_owner_cool_off", availableAt: new Date(group.lastEligibleLossAtMs + SOLE_OWNER_COOL_OFF_MS).toISOString() };
+    }
+    return { ok: false, code: "second_person_required" };
+  }
+  // The exception is asked for only by a person approving their own change; a company can turn it off.
+  if (decision.mode === "sole_owner_exception" && !(selfApproval && (await soleOwnerAllowed(deps, scope)))) return { ok: false, code: "second_person_required" };
   if (change.to === "auto" && !deps.autoApplyEnabled()) return { ok: false, code: "auto_apply_not_enabled" };
   // The world moved since the proposal: the value, or the company floor.
   if ((await currentOf(deps, scope)) !== change.from) return { ok: false, code: "stale" };
@@ -137,7 +158,7 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   // (conditionally: only if the value is still the one this approval wrote), and the change is closed: nothing loosened stays unaudited.
   const audited = await requireAudit(deps.audit, {
     action: "lesson.tier0_setting_changed", workspaceId: scope.workspaceId, project: projectOf(scope), actor: input.approverId,
-    facts: { scope: scope.kind, from: change.from, to: change.to, mode: "second_person", proposedBy: change.proposedBy, changeId: change.id },
+    facts: { scope: scope.kind, from: change.from, to: change.to, mode: decision.mode, proposedBy: change.proposedBy, changeId: change.id },
   });
   if (!audited) {
     await deps.settings.write(scope, change.from, { by: input.approverId, at }, change.to).catch(() => false);

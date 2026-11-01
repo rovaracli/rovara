@@ -1,5 +1,5 @@
 // Wiring lane B, LR-W3: the stored tier-0 setting, its proposals and the settings reader over the TeamRecord table; the whole path from a loosening request to the effective approval.
-import { learningModeKey, learningModeLockKey } from "@agentx/contracts";
+import { learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { dynamoLearningSettings, DynamoTier0Settings } from "../../../packages/broker/src/lessons/dynamo-settings.js";
 import { approversRequired, resolveLearning } from "../../../packages/broker/src/lessons/policy.js";
@@ -18,7 +18,7 @@ function setup(autoEnabled = true) {
   const clock = new Clock();
   const audit = new Audit();
   const group = { complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner", "ann", "bob"], lastEligibleLossAtMs: null };
-  const deps: Tier0Deps = { settings: store, changes: store, audit, authority: { eligibility: async () => group }, now: clock.now, autoApplyEnabled: () => autoEnabled };
+  const deps: Tier0Deps = { settings: store, changes: store, audit, authority: { eligibility: async () => group }, now: clock.now, autoApplyEnabled: () => autoEnabled, soleOwnerLoosening: (workspaceId) => store.soleOwnerLoosening(workspaceId) };
   return { w, store, deps, clock, audit, reader: dynamoLearningSettings(w.table, store) };
 }
 
@@ -59,6 +59,42 @@ describe("the stored setting and its proposals", () => {
     expect(await store.open(project(), 50)).toBeUndefined();
     expect(await store.get(project(), "c1")).toMatchObject({ state: "applied" });
     expect(await store.get(project(ORG_B), "c1")).toBeUndefined();
+  });
+});
+
+describe("the company sole-owner switch", () => {
+  it("is ON until set, per workspace, and an invalid stored value is an error (the caller treats it as OFF)", async () => {
+    const { w, store } = setup();
+    expect(await store.soleOwnerLoosening(ORG_A)).toBe(true);
+    await store.setSoleOwnerLoosening(ORG_A, false, 1);
+    expect(await store.soleOwnerLoosening(ORG_A)).toBe(false);
+    expect(await store.soleOwnerLoosening(ORG_B)).toBe(true);
+    await store.setSoleOwnerLoosening(ORG_A, true, 2);
+    expect(await store.soleOwnerLoosening(ORG_A)).toBe(true);
+    w.db.set({ pk: teamRecordPk(ORG_B, undefined), sk: "LESSONSET#COMPANYSOLE", entityType: "LESSON_SOLE_OWNER_SETTING", enabled: "no" });
+    await expect(store.soleOwnerLoosening(ORG_B)).rejects.toThrow();
+  });
+  it("writing it does not disturb the company floor, and the workspace erase wipes it", async () => {
+    const { w, store } = setup();
+    await store.write(company(), "two", { by: "owner", at: 1 }, "auto");
+    await store.setSoleOwnerLoosening(ORG_A, false, 2);
+    await store.write(company(), "one", { by: "owner", at: 3 }, "two").catch(() => false);
+    expect(await store.read(company())).toBe("one");
+    expect(await store.soleOwnerLoosening(ORG_A)).toBe(false);
+    expect((await eraseWorkspace(deleteDeps(w).deps, ORG_A, [], "close-sole")).complete).toBe(true);
+    expect(w.db.find((item) => String(item.pk).startsWith(`WS#${ORG_A}#`) && !String(item.sk).startsWith("LAKEDEL#"))).toEqual([]);
+  });
+  it("the whole path: a sole admin loosens alone through the stored switch; switched off it is refused", async () => {
+    const { store, deps, clock } = setup();
+    const solo = { ...deps, authority: { eligibility: async () => ({ complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner"], lastEligibleLossAtMs: null }) } };
+    await requestTier0Change(solo, { scope: company(), value: "two", requestedBy: "owner" });
+    expect(await requestTier0Change(solo, { scope: company(), value: "one", requestedBy: "owner" })).toMatchObject({ status: "needs_approval" });
+    await store.setSoleOwnerLoosening(ORG_A, false, clock.now());
+    const pending = await store.open(company(), clock.now());
+    expect(await approveTier0Change(solo, { scope: company(), changeId: pending!.id, approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    await store.setSoleOwnerLoosening(ORG_A, true, clock.now());
+    expect(await approveTier0Change(solo, { scope: company(), changeId: pending!.id, approverId: "owner" })).toEqual({ ok: true, value: "one" });
+    expect(await store.read(company())).toBe("one");
   });
 });
 

@@ -1,5 +1,7 @@
 // Wiring lane B, LR-W3: a write that loosens the tier-0 approval to "auto" (project or company) needs a SECOND person: a different eligible maintainer or admin approves a proposal.
 // Stricter writes apply directly. A company floor can only be stricter. Nothing loosens while automatic go-live is not enabled.
+// One-admin companies (owner 2026-11-01): the sole-owner exception (shared with lesson approval) lets the only eligible person approve their own loosening after the 24 h cool-off;
+// a company setting turns the exception off. Replaces: no sole-owner path for tier-0 loosening.
 import { describe, expect, it } from "vitest";
 import {
   approveTier0Change, cancelTier0Change, requestTier0Change, type Tier0Change, type Tier0ChangeStore, type Tier0Deps, type Tier0Level, type Tier0Scope, type Tier0SettingsStore,
@@ -36,15 +38,17 @@ class Changes implements Tier0ChangeStore {
   }
 }
 
-function world(over: { eligible?: string[]; owners?: string[]; autoEnabled?: boolean; complete?: boolean } = {}) {
+function world(over: { eligible?: string[]; owners?: string[]; autoEnabled?: boolean; complete?: boolean; soleOwner?: boolean | "throws" } = {}) {
   const settings = new Settings();
   const changes = new Changes();
   const audit = new Audit();
   const clock = new Clock();
   const group = { complete: over.complete ?? true, membershipVersion: 3, ownerIds: over.owners ?? ["owner"], eligibleIds: over.eligible ?? ["owner", "ann", "bob"], lastEligibleLossAtMs: null as number | null };
   const authority = { calls: 0, failing: false, async eligibility() { this.calls += 1; if (this.failing) throw new Error("down"); return group; } };
-  const deps: Tier0Deps = { settings, changes, audit, authority, now: clock.now, autoApplyEnabled: () => over.autoEnabled ?? true, newId: (() => { let n = 0; return () => `chg-${++n}`; })() };
-  return { deps, settings, changes, audit, clock, authority, group };
+  const soleOwner = { asked: [] as string[] };
+  const soleOwnerLoosening = async (workspaceId: string): Promise<boolean> => { soleOwner.asked.push(workspaceId); if (over.soleOwner === "throws") throw new Error("down"); return over.soleOwner ?? true; };
+  const deps: Tier0Deps = { settings, changes, audit, authority, now: clock.now, autoApplyEnabled: () => over.autoEnabled ?? true, soleOwnerLoosening, newId: (() => { let n = 0; return () => `chg-${++n}`; })() };
+  return { deps, settings, changes, audit, clock, authority, group, soleOwner };
 }
 
 describe("stricter writes apply directly", () => {
@@ -103,8 +107,8 @@ describe("loosening to auto needs a second person", () => {
     expect(w.settings.writes).toEqual([]);
     expect(w.audit.actions()).toEqual(["lesson.tier0_setting_proposed"]);
   });
-  it("the proposer cannot approve their own change, in any way (no sole-owner exception)", async () => {
-    const w = world({ eligible: ["owner"], owners: ["owner"] });
+  it("the proposer cannot approve their own change while another eligible person exists, however the id is spelled", async () => {
+    const w = world({ eligible: ["owner", "bob"], owners: ["owner"] });
     await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
     w.clock.advance(3 * 86_400_000);
     expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
@@ -113,6 +117,10 @@ describe("loosening to auto needs a second person", () => {
     expect(await approveTier0Change(w2.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: " ann " })).toEqual({ ok: false, code: "second_person_required" });
     expect(w.settings.writes).toEqual([]);
     expect(w2.settings.writes).toEqual([]);
+    // a proposer who is not the only owner, with a lone eligible group, still has no exception
+    const w3 = world({ eligible: ["ann"], owners: ["owner"] });
+    await requestTier0Change(w3.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    expect(await approveTier0Change(w3.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "ann" })).toEqual({ ok: false, code: "second_person_required" });
   });
   it("a different eligible maintainer or admin approves and the value changes, audited, once", async () => {
     const w = world();
@@ -249,5 +257,113 @@ describe("fails closed", () => {
     const w = world();
     w.audit.emit = async () => { throw new Error("audit down"); };
     expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "two", requestedBy: "ann" })).toMatchObject({ ok: true, status: "applied" });
+  });
+});
+
+describe("one-admin companies: the sole-owner exception for loosening", () => {
+  const solo = (over: Parameters<typeof world>[0] = {}) => world({ eligible: ["owner"], owners: ["owner"], ...over });
+  const DAY = 86_400_000;
+
+  it("the only eligible person approves their own loosening alone (project), audited with the mode", async () => {
+    const w = solo();
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" })).toMatchObject({ status: "needs_approval" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "one" });
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
+    expect(w.audit.events.at(-1)).toMatchObject({ action: "lesson.tier0_setting_changed", actor: "owner", facts: { from: "two", to: "one", mode: "sole_owner_exception", proposedBy: "owner", changeId: "chg-1", scope: "project" } });
+    expect(w.soleOwner.asked).toEqual([WS]);
+  });
+  it("the same for one to auto and at company level", async () => {
+    const w = solo();
+    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" })).toMatchObject({ status: "needs_approval" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "auto" });
+    const c = solo();
+    c.settings.values.set(scopeId(COMPANY_SCOPE), "two");
+    await requestTier0Change(c.deps, { scope: COMPANY_SCOPE, value: "one", requestedBy: "owner" });
+    expect(await approveTier0Change(c.deps, { scope: COMPANY_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "one" });
+    expect(c.audit.events.at(-1)).toMatchObject({ facts: { scope: "company", mode: "sole_owner_exception" } });
+  });
+  it("a second person's approval is still recorded as second_person, even when the exception is on", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" });
+    expect(w.audit.events.at(-1)).toMatchObject({ facts: { mode: "second_person" } });
+    expect(w.soleOwner.asked).toEqual([]);
+  });
+  it("is refused within 24 h of another eligible person leaving, with the time it opens; allowed from that time", async () => {
+    const w = solo();
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    const left = w.clock.now() - 2 * 3_600_000;
+    w.group.lastEligibleLossAtMs = left;
+    const result = await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" });
+    expect(result).toEqual({ ok: false, code: "sole_owner_cool_off", availableAt: new Date(left + DAY).toISOString() });
+    expect(w.settings.writes).toEqual([]);
+    expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
+    w.clock.t = left + DAY - 1;
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toMatchObject({ ok: false, code: "sole_owner_cool_off" });
+    w.clock.t = left + DAY;
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "one" });
+  });
+  it("a departure longer than 24 h ago no longer blocks", async () => {
+    const w = solo();
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    w.group.lastEligibleLossAtMs = w.clock.now() - 2 * DAY;
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "one" });
+  });
+  it("with the company switch OFF the exception is refused and nothing changes", async () => {
+    const w = solo({ soleOwner: false });
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(w.settings.writes).toEqual([]);
+    expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
+    const c = solo({ soleOwner: false });
+    c.settings.values.set(scopeId(COMPANY_SCOPE), "two");
+    await requestTier0Change(c.deps, { scope: COMPANY_SCOPE, value: "one", requestedBy: "owner" });
+    expect(await approveTier0Change(c.deps, { scope: COMPANY_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+  });
+  it("a switch that cannot be read counts as OFF (fail closed)", async () => {
+    const w = solo({ soleOwner: "throws" });
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(w.settings.writes).toEqual([]);
+  });
+  it("the switch does not affect a second person's approval", async () => {
+    const w = world({ soleOwner: false });
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: true, value: "auto" });
+  });
+  it("the other guards still hold for a sole owner: not to auto while go-live is off, stale value, company floor, audit outage", async () => {
+    const off = solo({ autoEnabled: true });
+    await requestTier0Change(off.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    expect(await approveTier0Change({ ...off.deps, autoApplyEnabled: () => false }, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "auto_apply_not_enabled" });
+    const stale = solo();
+    await requestTier0Change(stale.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    stale.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    expect(await approveTier0Change(stale.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "stale" });
+    const floor = solo();
+    await requestTier0Change(floor.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    floor.settings.values.set(scopeId(COMPANY_SCOPE), "one");
+    expect(await approveTier0Change(floor.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "below_company_floor" });
+    const audit = solo();
+    await requestTier0Change(audit.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    audit.audit.emit = async () => { throw new Error("audit down"); };
+    expect(await approveTier0Change(audit.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "audit_unavailable" });
+    expect(audit.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
+  });
+  it("a stricter change by a sole owner still applies directly, without asking the switch", async () => {
+    const w = solo({ soleOwner: false });
+    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "two", requestedBy: "owner" })).toEqual({ ok: true, status: "applied", value: "two" });
+    expect(w.soleOwner.asked).toEqual([]);
+  });
+  it("an ineligible or incomplete group never gets the exception", async () => {
+    const w = solo();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    w.group.complete = false;
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "eligibility_unavailable" });
+    w.group.complete = true; w.group.eligibleIds = ["someone"];
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "not_eligible" });
   });
 });

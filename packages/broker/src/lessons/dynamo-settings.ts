@@ -2,6 +2,7 @@
 //   project: pk of the project, sk `LESSONSET#SETTINGS`      (`tier0`: the project's tier0Approval)
 //   company: pk of the workspace, sk `LESSONSET#COMPANY`      (`tier0`: the company floor, companyApproval.tier0)
 //   proposals: the same pk, sk `LESSONSET#TIER0CHG#<id>`
+//   company sole-owner switch: the workspace pk, sk `LESSONSET#COMPANYSOLE` (`enabled`: whether the sole-owner exception may approve a loosening; absent means ON). It holds no person.
 // Every sort key starts with `LESSONSET`, which the project erase and the workspace erase already wipe.
 import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { LEARNING_MODE_DEFAULT, learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
@@ -13,6 +14,7 @@ import type { Tier0Change, Tier0ChangeStore, Tier0Level, Tier0Scope, Tier0Settin
 const pkOf = (scope: Tier0Scope): string => teamRecordPk(scope.workspaceId, scope.kind === "project" ? scope.project : undefined);
 const settingKey = (scope: Tier0Scope) => ({ pk: pkOf(scope), sk: scope.kind === "project" ? "LESSONSET#SETTINGS" : "LESSONSET#COMPANY" });
 const changeKey = (scope: Tier0Scope, id: string) => ({ pk: pkOf(scope), sk: `LESSONSET#TIER0CHG#${id.replace(/#/gu, "_")}` });
+const SOLE_OWNER_SK = "LESSONSET#COMPANYSOLE";
 const isLevel = (value: unknown): value is Tier0Level => value === "auto" || value === "one" || value === "two";
 /** The contracts' mode names (lower case) and the policy's (capitalised). */
 type Mode = NonNullable<LearningSettings["mode"]>;
@@ -46,6 +48,18 @@ export class DynamoTier0Settings implements Tier0SettingsStore, Tier0ChangeStore
       if (errorName(error) === "ConditionalCheckFailedException") return false;
       throw error;
     }
+  }
+
+  /** The company switch for the sole-owner exception on loosening. Never set means ON (the default); a stored value that is not a boolean throws, and the caller treats that as OFF. */
+  async soleOwnerLoosening(workspaceId: string): Promise<boolean> {
+    const item = await this.item({ pk: teamRecordPk(workspaceId, undefined), sk: SOLE_OWNER_SK });
+    if (item === undefined) return true;
+    if (typeof item.enabled !== "boolean") throw new Error("the stored sole-owner setting is not valid");
+    return item.enabled;
+  }
+  /** Writes the switch. (Who may call this, and the audit event, belong to the route that wraps it.) */
+  async setSoleOwnerLoosening(workspaceId: string, enabled: boolean, at: number): Promise<void> {
+    await this.table.documentClient.send(new PutCommand({ TableName: this.table.tableName, Item: { pk: teamRecordPk(workspaceId, undefined), sk: SOLE_OWNER_SK, entityType: "LESSON_SOLE_OWNER_SETTING", enabled, updatedAt: at } }));
   }
 
   async create(change: Tier0Change): Promise<boolean> {
