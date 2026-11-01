@@ -733,3 +733,74 @@ describe("fix round 2, review N2: a changed tool description pauses the server l
     expect((await mcp(w.brokerUrl, ID)).status).toBe(409);
   });
 });
+
+describe("fix round 2, re-check N3: a lost pause event is sent again by the reconcile pass", () => {
+  const changed = { runner: { tools: () => [{ name: "echo", inputSchema: {} }, { name: "other", inputSchema: {} }] } };
+  const observed = toolsHashOfNames([{ name: "echo", inputSchema: {} }, { name: "other", inputSchema: {} }]);
+  const wanted = { type: "changed_needs_review", serverId: ID, approved: toolsHashOfNames(ECHO), observed };
+  /** A sink that loses the first "changed, needs review" and keeps the rest. */
+  function lossy() {
+    const events: Told[] = [];
+    let lost = 0;
+    return { events, lost: () => lost, sink: async (event: Told): Promise<void> => { if (event.type === "changed_needs_review" && lost === 0) { lost += 1; throw new Error("table down"); } events.push(event); } };
+  }
+  const settle = async (): Promise<void> => { await new Promise((resolve) => setTimeout(resolve, 10)); };
+  it("sends the event again at the next pass when the first one was lost, so the admin gets the card", async () => {
+    const sink = lossy();
+    const w = await lifecycle({ ...changed, controller: { events: sink.sink } });
+    expect((await mcp(w.brokerUrl, ID)).status).toBe(409);
+    await settle();
+    expect(sink.lost()).toBe(1);
+    expect(sink.events.filter((event) => event.type === "changed_needs_review")).toEqual([]);
+    await w.controller.reconcile();
+    await settle();
+    expect(sink.events.filter((event) => event.type === "changed_needs_review")).toEqual([wanted]);
+  });
+  it("keeps sending it at each pass while the entry has not moved, and stops once the registry no longer approves it (the broker moved it)", async () => {
+    const sink = lossy();
+    const w = await lifecycle({ ...changed, controller: { events: sink.sink } });
+    await mcp(w.brokerUrl, ID);
+    await w.controller.reconcile();
+    await w.controller.reconcile();
+    await settle();
+    expect(sink.events.filter((event) => event.type === "changed_needs_review")).toHaveLength(2);
+    // the broker moved the entry to changed_needs_review: the registry gives nothing for it
+    const entry = w.approved.get(ID)!;
+    w.approved.delete(ID);
+    await w.controller.reconcile();
+    await settle();
+    expect(sink.events.filter((event) => event.type === "changed_needs_review")).toHaveLength(2);
+    // and it is not sent again later, even if the server is approved again under the same hash
+    w.approved.set(ID, entry);
+    await w.controller.reconcile();
+    await settle();
+    expect(sink.events.filter((event) => event.type === "changed_needs_review")).toHaveLength(2);
+  });
+  it("stops when the approval changed (the admin approved the new tools, or another bundle), and sends nothing for a registry it cannot read", async () => {
+    const sink = lossy();
+    const w = await lifecycle({ ...changed, controller: { events: sink.sink } });
+    await mcp(w.brokerUrl, ID);
+    w.state.registryDown = true;
+    await w.controller.reconcile();
+    await settle();
+    expect(sink.events.filter((event) => event.type === "changed_needs_review")).toEqual([]);
+    w.state.registryDown = false;
+    // a pass that could not read the registry forgot nothing: the next one that can sends the event
+    await w.controller.reconcile();
+    await settle();
+    expect(sink.events.filter((event) => event.type === "changed_needs_review")).toEqual([wanted]);
+    w.approved.set(ID, approvedOf({ toolsHash: observed }));
+    await w.controller.reconcile();
+    await w.controller.reconcile();
+    await settle();
+    expect(sink.events.filter((event) => event.type === "changed_needs_review")).toEqual([wanted]);
+  });
+  it("sends nothing at a pass for a server that was never paused", async () => {
+    const sink = lossy();
+    const w = await lifecycle({ controller: { events: sink.sink } });
+    await mcp(w.brokerUrl, ID);
+    await w.controller.reconcile();
+    await settle();
+    expect(sink.events.filter((event) => event.type === "changed_needs_review")).toEqual([]);
+  });
+});

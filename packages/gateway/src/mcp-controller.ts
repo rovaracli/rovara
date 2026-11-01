@@ -593,6 +593,7 @@ export function createMcpController(options: McpControllerOptions): McpControlle
         // Paused right here, by the controller that saw it (S2): before anything else, so a failure below cannot leave the server free to restart.
         await pauses.set(serverId, { toolsHash: approved.toolsHash, bundleHash: approved.spec.bundleHash }).catch(() => { log("mcp_controller.pause_not_kept", { serverId }); });
         emit({ type: "task_stopped", serverId, reason: "tools_changed" });
+        unreported.set(serverId, { approved: approved.toolsHash, observed, bundleHash: approved.spec.bundleHash });
         emit({ type: "changed_needs_review", serverId, approved: approved.toolsHash, observed });
         await options.registry.toolsChanged?.(serverId, { approved: approved.toolsHash, observed }).catch(() => undefined);
         throw new ControllerError("tools_changed");
@@ -925,11 +926,24 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   }
 
   // ---- reconcile ---------------------------------------------------------------------------------------------
+  /**
+   * Fix round 2 (re-check N3): the pauses whose "changed, needs review" event this controller made but has not seen taken. The event is sent without waiting and can be lost; the pause itself is
+   * safe either way, but the admin only sees a card once the broker moves the entry. Each pass re-sends the event for a pause whose approval is still the registry's (the entry has not moved yet);
+   * once the registry no longer approves it, or approves something else, the server is dropped from the list. Held in memory: a restart forgets it, and the next call that is refused re-adds it.
+   */
+  const unreported = new Map<string, { approved: string; observed: string; bundleHash: string }>();
+
   async function reconcile(): Promise<void> {
     if (closed || sweeping) return;
     sweeping = true;
     try {
       const at = now();
+      for (const [serverId, pending] of [...unreported]) {
+        let approved: ApprovedServer | undefined;
+        try { approved = await options.registry.approved(serverId); } catch { continue; }
+        if (approved === undefined || approved.toolsHash !== pending.approved || approved.spec.bundleHash !== pending.bundleHash) { unreported.delete(serverId); continue; }
+        emit({ type: "changed_needs_review", serverId, approved: pending.approved, observed: pending.observed });
+      }
       // 1. Tasks this controller is serving: idle, too old, or dead.
       for (const entry of [...serving.values()]) {
         if (entry.cancelled || entry.base === undefined) continue;
