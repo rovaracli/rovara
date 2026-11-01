@@ -64,7 +64,7 @@ export function setupAgentInstructions(input: SetupAgentInstructionsInput): stri
     `- If setup cannot work without a change to the repository's own files (a broken lock file, a missing manifest), do not try to fix it. Begin your final answer with the line \`${SETUP_AGENT_NEEDS_CODE_CHANGE_MARKER} <one sentence>\`, then give the proposal for what you learned.`,
     "",
     "Limits (the run stops when one is used up, and keeps what you learned as a partial proposal; a command over a limit is not run):",
-    `- at most ${String(limits.commands)} commands in all (hard maximum ${String(SETUP_AGENT_LIMITS_MAX.commands)}); at most ${String(limits.sameStepTries)} tries of the same failing step, then move on or say what blocks it;`,
+    `- at most ${String(limits.commands)} commands in all (hard maximum ${String(SETUP_AGENT_LIMITS_MAX.commands)}); at most ${String(limits.sameStepTries)} tries of the same failing step (one more try of a step that failed that often, with nothing changed in between, ends the run), so move on or say what blocks it;`,
     `- ${String(limits.wallClockMin)} minutes in all; about $${dollars} of model spend; at most ${String(limits.hostAsks)} new hosts.`,
     "- Prefer one command that does one thing, and read the whole error before you try again. Do not retry a command that failed for the same reason.",
     "",

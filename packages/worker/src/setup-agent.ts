@@ -177,6 +177,10 @@ export type SetupCommandDecision = { allow: true } | { allow: false };
 export interface SetupAgentHooks {
   beforeCommand?(command: string, flagged: boolean): SetupCommandDecision | Promise<SetupCommandDecision>;
   afterCommand?(record: SetupCommandRecord): void | Promise<void>;
+  /** The most seconds the next command may run (the wall clock that is left). The shell never gives a command more, whatever the model asked. */
+  maxTimeoutSeconds?(): number;
+  /** The shell ended the run because a command changed the repositories. */
+  onEnded?(word: "changed_repository_files"): void;
 }
 
 export interface SetupAgentShell {
@@ -220,7 +224,8 @@ export function setupAgentShell(input: SetupAgentShellInput): SetupAgentShell {
       if (decision?.allow === false) return refuse();
       // A time limit always: the model's, up to the most, else the default.
       const requested = options.timeout !== undefined && options.timeout > 0 ? options.timeout : SETUP_COMMAND_DEFAULT_TIMEOUT_SECONDS;
-      const timeout = Math.min(requested, SETUP_COMMAND_MAX_TIMEOUT_SECONDS);
+      const left = input.hooks?.maxTimeoutSeconds?.();
+      const timeout = Math.max(1, Math.min(requested, SETUP_COMMAND_MAX_TIMEOUT_SECONDS, left === undefined || !Number.isFinite(left) ? Infinity : Math.floor(left)));
       let captured = "";
       const startedAt = now();
       let exitCode: number | null = null;
@@ -248,6 +253,7 @@ export function setupAgentShell(input: SetupAgentShellInput): SetupAgentShell {
         last = await input.checkFiles();
         if (!last.ok) {
           ended = "changed_repository_files";
+          input.hooks?.onEnded?.("changed_repository_files");
           options.onData(Buffer.from("\nRovara found that this command changed the project's files, so the setup run has ended.\n"));
         }
       }
