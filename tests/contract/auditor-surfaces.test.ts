@@ -51,6 +51,30 @@ describe("the live role of a person", () => {
   });
 });
 
+describe("the live role of a person whose earlier id holds the non-writer record", () => {
+  const writer = "w".repeat(64);
+  const world = (staleRole: string) => {
+    const db = new FakeDynamoDb();
+    const stale = "t".repeat(64);
+    db.set({ ...orgMemberKey(TEST_ORG, writer), orgId: TEST_ORG, developerId: writer, role: "admin" });
+    db.set({ pk: `DEVELOPER#${stale}`, sk: "META", developerId: stale, mergedInto: writer });
+    db.set({ ...orgMemberKey(TEST_ORG, stale), orgId: TEST_ORG, developerId: stale, role: staleRole });
+    return { deps: { documentClient: db, tableName: "state", signInTableName: "state" }, stale, db };
+  };
+
+  it("is refused when ANY id in the walk holds a non-writer record, the survivor being a writer (an Auditor or a role this release does not know)", async () => {
+    for (const role of ["auditor", "future-role"]) {
+      const w = world(role);
+      expect(await refused(liveWriterRole(w.deps, TEST_ORG, w.stale)), role).toMatchObject({ code: "FORBIDDEN" });
+    }
+  });
+
+  it("is the survivor's writer role when the earlier id's record is a writer's too", async () => {
+    const w = world("member");
+    expect(await liveWriterRole(w.deps, TEST_ORG, w.stale)).toBe("admin");
+  });
+});
+
 describe("Slack", () => {
   async function resolved(setup: (h: Awaited<ReturnType<typeof createDeveloperTaskBroker>>) => void, edition?: "enterprise" | "public") {
     const h = await createDeveloperTaskBroker();
