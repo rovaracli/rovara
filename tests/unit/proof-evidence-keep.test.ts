@@ -32,10 +32,11 @@ function world(rawText: string | undefined, over: { key?: string } = {}) {
     async artifacts() { return rawText === undefined ? [] : [{ name: "evidence-raw.json", objectKey: over.key ?? `${PREFIX}evidence-raw.json` }]; },
     async readArtifact(key, max) { reads.push(key); return key.startsWith(PREFIX) && rawText !== undefined ? rawText.slice(0, max) : objects.get(key) ?? ""; },
   };
-  const deps: KeepEvidenceDeps = { actions: { ...actions, readArtifact: async (key, max) => (objects.has(key) ? objects.get(key)!.slice(0, max) : actions.readArtifact(key, max)) }, store: { s3, artifactBucketName: "bucket" } };
-  return { deps, objects, sent, reads };
+  const marked: string[] = [];
+  const deps: KeepEvidenceDeps = { markStored: async (orgId) => { marked.push(`${orgId}@${String(sent.length)}`); }, actions: { ...actions, readArtifact: async (key, max) => (objects.has(key) ? objects.get(key)!.slice(0, max) : actions.readArtifact(key, max)) }, store: { s3, artifactBucketName: "bucket" } };
+  return { deps, objects, sent, reads, marked };
 }
-const input = (over: Record<string, unknown> = {}) => ({ task: TASK, operationId: OP, candidateDigest: DIGEST, checks: [entry("readiness:0", "pytest -q"), entry("readiness:1", "ruff check .")], ...over });
+const input = (over: Record<string, unknown> = {}) => ({ orgId: "org-a", task: TASK, operationId: OP, candidateDigest: DIGEST, checks: [entry("readiness:0", "pytest -q"), entry("readiness:1", "ruff check .")], ...over });
 
 describe("assembling the evidence of a run", () => {
   it("keeps a pack bound to the code, with the test details from the worker, the broker's own verdicts, and the output tail of a failed check stored first", async () => {
@@ -95,6 +96,16 @@ describe("assembling the evidence of a run", () => {
     await keepEvidence(w.deps, input());
     const pack = await loadEvidencePack(w.deps.actions, TASK, DIGEST);
     expect(pack?.checks[0]?.tests).toBeUndefined();
+  });
+
+  it("marks the org before the first object is stored, and stores nothing when the mark fails", async () => {
+    const w = world(JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }])));
+    expect(await keepEvidence(w.deps, input())).toMatchObject({ kept: true });
+    // Marked when no object had been put yet.
+    expect(w.marked[0]).toBe("org-a@0");
+    const failing = world(JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }])));
+    expect(await keepEvidence({ ...failing.deps, markStored: async () => { throw new Error("down"); } }, input())).toEqual({ kept: false, reason: "fault" });
+    expect(failing.sent).toEqual([]);
   });
 
   it("writes nothing more once its time has run out", async () => {

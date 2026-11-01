@@ -31,6 +31,8 @@ const NO_ENVIRONMENT_ITEM: EvidenceNotTested = { kind: "environment", id: "test_
 const WITHHELD_ITEM: EvidenceNotTested = { kind: "environment", id: "data_guard", text: "Some test details were left out", reason: "personal or production data found" };
 
 export interface KeepEvidenceInput {
+  /** The org the task belongs to: the first pack an org keeps marks it, so an erase for an org that never kept evidence costs one read. */
+  orgId: string;
   task: EvidenceTask;
   operationId: string;
   candidateDigest: string;
@@ -45,6 +47,8 @@ export interface KeepEvidenceInput {
 export interface KeepEvidenceDeps {
   actions: Pick<TestProofActions, "artifacts" | "readArtifact">;
   store: EvidenceArtifactStore;
+  /** Marks that the org has kept evidence (`markEvidenceStored`). Called BEFORE anything is stored, and nothing is stored if it fails. */
+  markStored(orgId: string): Promise<void>;
   /** An abandoned call (its time has run out) writes nothing more. */
   late?: (() => boolean) | undefined;
   log?: ((event: string, fields: Record<string, unknown>) => void) | undefined;
@@ -101,6 +105,8 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
       pack = { ...pack, notTested: [...pack.notTested, WITHHELD_ITEM].slice(0, EVIDENCE_NOT_TESTED_MAX) };
     }
     if (deps.late?.() === true) return { kept: false, reason: "fault" };
+    // The org is marked before the first object is stored, so an erase never skips an org that holds evidence.
+    await deps.markStored(input.orgId);
     // The tails are stored first: a pack never names a file the store does not hold.
     const owner = { ownerKey: input.task.ownerKey, workspaceId: input.task.workspaceId, taskId: input.task.taskId };
     const stored = await storeEvidenceArtifacts(deps.store, owner, guardedPack.newArtifacts.map((artifact) => ({ kind: "log_txt" as const, bytes: Buffer.from(artifact.text, "utf8"), sha256: artifact.ref.sha256 })));

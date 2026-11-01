@@ -1,10 +1,10 @@
 // Proof and evidence (wire-proof fix round 1): the pack carries the evidence-std retention tag like the tails, and erasing a person, archiving a project or closing a company deletes everything the evidence
 // path stored for that scope (the pack and the tails), and nothing outside it.
 import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
-import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { WORKSPACE_PROJECT_INDEX, orgProjectCatalogPk, workspaceProjectIndexValue, type OrgId } from "../../packages/contracts/src/index.js";
-import { createEvidenceErase, evidencePrefixesOf } from "../../packages/broker/src/rovara-code/evidence-erase.js";
+import { createEvidenceErase, evidencePrefixesOf, evidenceStoredIn, markEvidenceStored } from "../../packages/broker/src/rovara-code/evidence-erase.js";
 import { evidencePackKey, keepEvidence } from "../../packages/broker/src/rovara-code/evidence-keep.js";
 import { clearArchivedProjectLearning } from "../../packages/broker/src/aws/developer-routes/project-archive-setup.js";
 import { clearOrgData } from "../../packages/broker/src/aws/developer-routes/organization.js";
@@ -34,30 +34,52 @@ function bucket(initial: string[] = []) {
   return { objects, s3, failDeletes };
 }
 
-/** A table with a person's task rows, task records, workspaces of two projects and the project catalog. */
-function table() {
+/**
+ * A table with a person's task rows (`extraTasks` more, each with a task record and no evidence), task records, workspaces of two projects and the project catalog, an item store for the marker and the
+ * pending records, and the pagination (`Limit`, `ExclusiveStartKey`) the walk uses. `marked: false` is an install that never kept evidence.
+ */
+function table(options: { marked?: boolean; extraTasks?: number } = {}) {
+  const items = new Map<string, Record<string, unknown>>();
+  if (options.marked !== false) items.set(`EVIDENCE_STORED#${ORG}|META`, { pk: `EVIDENCE_STORED#${ORG}`, sk: "META" });
+  const extra = Array.from({ length: options.extraTasks ?? 0 }, (_, index) => ({ taskId: `x${String(index)}`, orgId: ORG }));
+  const personRows = [{ taskId: "t1", orgId: ORG }, { taskId: "t9", orgId: OTHER_ORG }, ...extra];
+  const calls = { queries: [] as Array<Record<string, unknown>>, taskGets: 0 };
+  const page = <T>(rows: T[], input: { Limit?: number; ExclusiveStartKey?: { i: number } }) => {
+    const from = input.ExclusiveStartKey?.i ?? 0;
+    const to = input.Limit === undefined ? rows.length : Math.min(rows.length, from + input.Limit);
+    return { Items: rows.slice(from, to), ...(to < rows.length ? { LastEvaluatedKey: { i: to } } : {}) };
+  };
   const send = vi.fn(async (command: unknown) => {
+    if (command instanceof PutCommand) { items.set(`${String(command.input.Item!.pk)}|${String(command.input.Item!.sk)}`, command.input.Item!); return {}; }
+    if (command instanceof DeleteCommand) { items.delete(`${String(command.input.Key!.pk)}|${String(command.input.Key!.sk)}`); return {}; }
     if (command instanceof QueryCommand) {
+      calls.queries.push(command.input);
       const values = command.input.ExpressionAttributeValues as Record<string, string>;
+      const input = command.input as unknown as { Limit?: number; ExclusiveStartKey?: { i: number } };
       if (command.input.IndexName === WORKSPACE_PROJECT_INDEX.name) {
         const rows: Record<string, Array<Record<string, unknown>>> = {
           [workspaceProjectIndexValue(ORG, "web")]: [{ id: "ws1", ownerKey: "own1" }, { id: "ws2", ownerKey: "own2" }],
           [workspaceProjectIndexValue(ORG, "api")]: [{ id: "ws3", ownerKey: "own3" }],
           [workspaceProjectIndexValue(OTHER_ORG, "web")]: [{ id: "wsx", ownerKey: "ownx" }],
         };
-        return { Items: rows[values[":project"]!] ?? [] };
+        return page(rows[values[":project"]!] ?? [], input);
       }
       if (values[":pk"] === orgProjectCatalogPk(ORG)) return { Items: [{ sk: "PROJECT#web" }, { sk: "PROJECT#api" }] };
-      if (values[":pk"] === `DEVELOPER#${DEV}`) return { Items: [{ taskId: "t1", orgId: ORG }, { taskId: "t9", orgId: OTHER_ORG }] };
+      if (values[":pk"] === `DEVELOPER#${DEV}`) return page(personRows, input);
+      if (values[":pk"] === "EVIDENCE_ERASE_PENDING") return { Items: [...items.values()].filter((item) => item.pk === "EVIDENCE_ERASE_PENDING") };
       return { Items: [] };
     }
     if (command instanceof GetCommand) {
+      const key = command.input.Key as { pk: string; sk: string };
+      if (key.pk.startsWith("EVIDENCE_")) return { Item: items.get(`${key.pk}|${key.sk}`) };
+      calls.taskGets += 1;
       const tasks: Record<string, Record<string, unknown>> = { "DEVTASK#t1": { ownerKey: "own1", workspaceId: "ws1", orgId: ORG }, "DEVTASK#t9": { ownerKey: "ownx", workspaceId: "wsx", orgId: OTHER_ORG } };
-      return { Item: tasks[String(command.input.Key!.pk)] };
+      for (const row of extra) tasks[`DEVTASK#${row.taskId}`] = { ownerKey: `ownx${row.taskId}`, workspaceId: `wsx${row.taskId}`, orgId: ORG };
+      return { Item: tasks[key.pk] };
     }
     throw new Error("unexpected command");
   });
-  return { documentClient: { send }, tableName: "State" };
+  return { documentClient: { send }, tableName: "State", items, calls };
 }
 
 const populate = () => bucket([
@@ -75,7 +97,7 @@ describe("the pack's retention", () => {
     const prefix = "private/own1/ws1/op-1/";
     const actions = { artifacts: async () => [{ name: "evidence-raw.json", objectKey: `${prefix}evidence-raw.json` }], readArtifact: async (k: string) => (k.startsWith(prefix) ? raw : b.objects.get(k)?.body ?? "") };
     const entry = { id: "readiness:0", label: "pytest", source: "project" as const, before: "passed" as const, after: "passed" as const, class: "passing" as const, output: "", durationMs: 5, exitCode: 0 };
-    expect(await keepEvidence({ actions, store: { s3: b.s3, artifactBucketName: "bucket" } }, { task: { ownerKey: "own1", workspaceId: "ws1", taskId: "t1" }, operationId: "op-1", candidateDigest: DIGEST, checks: [entry] })).toMatchObject({ kept: true });
+    expect(await keepEvidence({ actions, store: { s3: b.s3, artifactBucketName: "bucket" }, markStored: async () => undefined }, { orgId: ORG, task: { ownerKey: "own1", workspaceId: "ws1", taskId: "t1" }, operationId: "op-1", candidateDigest: DIGEST, checks: [entry] })).toMatchObject({ kept: true });
     expect(b.objects.get(evidencePackKey({ ownerKey: "own1", workspaceId: "ws1", taskId: "t1" }, DIGEST))?.tagging).toBe("rovara-retention=evidence-std");
   });
 });
@@ -149,7 +171,7 @@ describe("what the erase refuses and reports", () => {
 
   it("a record with a path-like workspace id deletes nothing", async () => {
     const b = populate();
-    const doc = { send: vi.fn(async (command: unknown) => (command instanceof QueryCommand ? { Items: [{ id: "../ws1", ownerKey: "own1" }] } : { Item: undefined })) };
+    const doc = { send: vi.fn(async (command: unknown) => (command instanceof QueryCommand ? { Items: [{ id: "../ws1", ownerKey: "own1" }] } : command instanceof GetCommand ? { Item: { marked: true } } : {})) };
     await erase(b, { documentClient: doc }).project(ORG, "web");
     expect(b.objects.size).toBe(8);
   });
@@ -161,5 +183,55 @@ describe("what the erase refuses and reports", () => {
     b.failDeletes.on = false;
     let clock = 0;
     await expect(erase(b, { now: () => (clock += 30_000), maxMs: 20_000 }).project(ORG, "web")).rejects.toMatchObject({ name: "EvidenceEraseUnfinished" });
+  });
+});
+
+describe("an install that never kept evidence, and a walk that continues", () => {
+  const PERSON_TASKS = 500;
+
+  it("a person with 500 tasks and no evidence is erased on the first pass: one read, no task read, no list, no 'send again'", async () => {
+    const t = table({ marked: false, extraTasks: PERSON_TASKS });
+    const b = populate();
+    const sent = vi.spyOn(b.s3, "send");
+    await expect(createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }).person(ORG, DEV)).resolves.toBeUndefined();
+    expect(t.calls.taskGets).toBe(0);
+    expect(t.calls.queries).toEqual([]);
+    expect(sent).not.toHaveBeenCalled();
+    // The same for a project and a company.
+    await createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }).project(ORG, "web");
+    await createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t }).workspace(ORG);
+    expect(sent).not.toHaveBeenCalled();
+  });
+
+  it("the first pack an org keeps marks the org, and the marker is there before anything is stored; an org with the marker is walked", async () => {
+    const t = table({ marked: false });
+    expect(await evidenceStoredIn(t, ORG)).toBe(false);
+    await markEvidenceStored(t, ORG);
+    expect(await evidenceStoredIn(t, ORG)).toBe(true);
+    await markEvidenceStored(t, ORG);
+    expect(await evidenceStoredIn(t, "org-z")).toBe(false);
+  });
+
+  it("with evidence kept, a person with 500 tasks is walked a page at a time, and a pass that runs out of time is continued from its cursor, not from the start", async () => {
+    const t = table({ extraTasks: PERSON_TASKS });
+    const b = populate();
+    let clock = 0;
+    // Each S3 call moves the clock; the pass is allowed 5 s, so it stops after a few pages.
+    const timed = { ...b.s3, send: async (command: unknown) => { clock += 20; return b.s3.send(command as never); } } as unknown as S3Client;
+    const make = (maxMs: number) => createEvidenceErase({ s3: timed, artifactBucketName: "bucket", ...t, now: () => clock, maxMs });
+    await expect(make(5_000).person(ORG, DEV)).rejects.toMatchObject({ name: "EvidenceEraseUnfinished" });
+    const pending = [...t.items.values()].filter((item) => item.pk === "EVIDENCE_ERASE_PENDING");
+    expect(pending).toHaveLength(1);
+    const cursor = (pending[0]!.cursor as { i: number }).i;
+    expect(cursor).toBeGreaterThan(0);
+    expect(cursor).toBeLessThan(PERSON_TASKS);
+    // The next call starts at the saved cursor: no query starts before it, and it finishes.
+    t.calls.queries.length = 0;
+    await make(60_000).person(ORG, DEV);
+    const starts = t.calls.queries.map((query) => (query.ExclusiveStartKey as { i: number } | undefined)?.i ?? 0);
+    expect(Math.min(...starts)).toBe(cursor);
+    expect([...t.items.values()].filter((item) => item.pk === "EVIDENCE_ERASE_PENDING")).toEqual([]);
+    // And the person's own evidence is gone.
+    expect([...b.objects.keys()].some((k) => k.startsWith("private/own1/ws1/evidence-pack/t1/"))).toBe(false);
   });
 });

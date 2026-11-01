@@ -51,7 +51,7 @@ async function kept(issuer: string | undefined) {
   const { objects, s3 } = bucket();
   const actions = { artifacts: async () => [{ name: "evidence-raw.json", objectKey: `${PREFIX}evidence-raw.json` }], readArtifact: async (key: string, max: number) => (key.startsWith(PREFIX) ? raw(CODE.digest).slice(0, max) : objects.get(key) ?? "") };
   const store = { s3, artifactBucketName: "bucket" };
-  await keepEvidence({ actions, store }, { task: TASK, operationId: "op-1", candidateDigest: CODE.digest, checks: [entry] });
+  await keepEvidence({ actions, store, markStored: async () => undefined }, { orgId: "org-a", task: TASK, operationId: "op-1", candidateDigest: CODE.digest, checks: [entry] });
   const port = createEvidencePort({ actions: { readArtifact: async (key, max) => { const found = objects.get(key); if (found === undefined) throw new Error("NoSuchKey"); return found.slice(0, max); } }, store, issuer });
   return { port, objects };
 }
