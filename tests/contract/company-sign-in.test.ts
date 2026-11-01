@@ -220,6 +220,27 @@ describe("refusals (fail closed, and before anything is written about the person
       expect(back.searchParams.get("code")).not.toBeNull();
       expect(await h.orgs.isBanned(TEST_ORG, una_id)).toBe(false);
     });
+
+    it("an invite that goes stale between the early check and accepting it leaves no session, no Slack allowance and no allowed record, only the refusal", async () => {
+      const { h, capture } = await banned();
+      const { token } = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member" });
+      vi.spyOn(h.deps.directory, "lookupByEmail").mockResolvedValue({ userId: "U0UNA0001" });
+      const record = vi.spyOn(h.deps.sso!.slack, "record");
+      // The invite is valid when the early check reads it, and revoked before the sign-in accepts it.
+      const describe = h.deps.orgs.describeInviteByHash.bind(h.deps.orgs);
+      vi.spyOn(h.deps.orgs, "describeInviteByHash").mockImplementation(async (hash) => {
+        const answer = await describe(hash);
+        for (const row of h.state.find((item) => item.entityType === "ORG_INVITE")) h.state.set({ ...row, revokedAt: new Date().toISOString() });
+        return answer;
+      });
+      const allowed = capture!.recordedBy("sso.sign_in").length;
+      const sessions = h.db.find((item) => String(item.pk).startsWith("SESSION#")).length;
+      await expectRefused(h, token, "stale invite", false);
+      expect(record).not.toHaveBeenCalled();
+      expect(capture!.recordedBy("sso.sign_in")).toHaveLength(allowed);
+      expect(capture!.recordedBy("sso.sign_in_refused").at(-1)).toMatchObject({ facts: { refusal: "removed_from_org" } });
+      expect(h.db.find((item) => String(item.pk).startsWith("SESSION#"))).toHaveLength(sessions);
+    });
   });
 
   it("no saved mapping refuses everyone who is not a break-glass owner", async () => {

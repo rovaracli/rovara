@@ -40,6 +40,14 @@ export type CompanySignIn =
     event: AuditEventInput;
   };
 
+/** The refusal record for a company sign-in that was allowed by its mapping and then refused later in the same sign-in (the person was removed with a ban and the invite went stale): one of the fixed refusal words. */
+export function companySignInRefusalEvent(input: { orgId: OrgId; developerId: string; occurrence: string; nowMs: number; reason: string }): AuditEventInput {
+  return auditSsoSignInRefused({
+    orgId: input.orgId, actor: { kind: "member", id: input.developerId }, occurredAt: new Date(input.nowMs).toISOString(), occurrence: auditOccurrence(input.occurrence, input.developerId),
+    memberId: input.developerId, reason: input.reason,
+  });
+}
+
 export async function decideCompanySignIn(input: {
   policy: EditionPolicy;
   /** Absent only by a wiring mistake: the sign-in is then refused as a mapping that is not configured. */

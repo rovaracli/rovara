@@ -69,7 +69,7 @@ import type { SlackDirectory } from "./slack-directory.js";
 import { endedByAdmin, endedByUnlink, isFreshSignIn, startedBeforeMethodOn, type AuthRequestRecord, type DeveloperSignInStore, type JoinOutcome, type SessionRecord } from "./store.js";
 import { sendDecideSignInAddedNotice, sendIdentityLinkedNotice, type IdentityNoticeDependencies } from "./identity-notice.js";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "./edition-methods.js";
-import { decideCompanySignIn, type CompanySignIn, type SsoStores } from "./sso-sign-in.js";
+import { companySignInRefusalEvent, decideCompanySignIn, type CompanySignIn, type SsoStores } from "./sso-sign-in.js";
 import { recordAuditEventDurably, recordAuditRead } from "../audit/flush.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { createDecideSignIn, type DecideSignInDependencies } from "./decide-signin.js";
@@ -610,7 +610,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (outcome.allow && outcome.breakGlass) {
       await recordAuditEventDurably(audit, outcome.event);
       deps.log({ event: "signin.break_glass_used", level: "alert", developerId });
-    } else if (outcome.event !== undefined) {
+    } else if (outcome.event !== undefined && !outcome.allow) {
+      // A refusal is recorded now. An allowed sign-in is recorded by the caller once the sign-in has gone through (the person's org was resolved), not before.
       await recordAuditRead(audit, outcome.event);
     }
     return outcome;
@@ -685,10 +686,6 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       const link = await deps.directory.lookupByEmail(identity.email);
       slackUserId = link === "unavailable" ? existing?.slackUserId : link === "none" ? undefined : link.userId;
     }
-    // Enterprise foundations I-6: the Slack user this person is, allowed until their session ends. Without a Slack account there is nothing for Slack to act as.
-    if (companySignIn !== undefined && slackUserId !== undefined && deps.sso !== undefined && deps.singleOrgId !== undefined) {
-      await deps.sso.slack.record(deps.singleOrgId, slackUserId, developerId, companySignIn.sessionEndsAt);
-    }
     // The developer record keeps the first identity's issuer and subject (ownerKeyForSubject(issuer, subject) === developerId, which
     // task-person-identity.ts relies on), so a linked sign-in only records that it happened.
     if (resolved.link === "new-self" || (resolved.link === "existing" && developerId === identityKey)) {
@@ -723,8 +720,18 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       // A removed member (single-org ban) is told so, not shown an internal error.
       if ((error as { code?: unknown } | null)?.code !== "REMOVED_FROM_ORG") throw error;
       deps.log({ event: "signin.refused", method, reason: "removed_from_org", developerId });
+      // The mapping allowed this sign-in but nothing of it was recorded as allowed: the refusal is what goes on record.
+      if (companySignIn !== undefined && deps.singleOrgId !== undefined) {
+        await recordAuditRead(deps.audit === undefined ? {} : { audit: deps.audit }, companySignInRefusalEvent({ orgId: deps.singleOrgId, developerId, occurrence: request.id, nowMs: deps.now(), reason: "removed_from_org" }));
+      }
       if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "removed");
       return client({ error: "access_denied", error_description: (error as Error).message.replace(/^REMOVED_FROM_ORG: /, "") });
+    }
+    // The sign-in is through: now its "allowed" record and the Slack user's allowance are made (a sign-in refused above, such as a ban whose invite went stale, leaves neither).
+    // Enterprise foundations I-6: the Slack user this person is, allowed until their session ends. Without a Slack account there is nothing for Slack to act as.
+    if (companySignIn !== undefined) {
+      if (!companySignIn.breakGlass && companySignIn.event !== undefined) await recordAuditRead(deps.audit === undefined ? {} : { audit: deps.audit }, companySignIn.event);
+      if (slackUserId !== undefined && deps.sso !== undefined && deps.singleOrgId !== undefined) await deps.sso.slack.record(deps.singleOrgId, slackUserId, developerId, companySignIn.sessionEndsAt);
     }
     // The mapped role replaces the person's role at every sign-in (an owner is never changed by a mapping): leaving a group takes the access away at the next sign-in.
     if (companySignIn !== undefined && org.orgId !== undefined && org.role !== companySignIn.orgRole) {
