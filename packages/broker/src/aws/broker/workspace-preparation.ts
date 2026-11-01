@@ -32,6 +32,7 @@ import { getMembership, requireAdministrator, requireLatestProject, requireWorks
 import { ensureInstallOrg } from "./scope-helpers.js";
 import { slackTaskAccess } from "./slack-workflow-events.js";
 import { requesterOf } from "./thread-workspaces.js";
+import { personIds } from "../../org/live-role.js";
 import { metaPrepareFor, type MetaHeadReader } from "../../meta-repo/prepare-meta.js";
 import { githubScope } from "./scope-helpers.js";
 
@@ -277,7 +278,15 @@ export async function slackRequesterProjectRole(dependencies: AwsBrokerDependenc
   // The one rule for the requester's own identity, shared with the ingress callers (slackCallerFor): their org must be the team's, the company sign-in must allow them, their role is read
   // under every id they answer to (a merge), and the Auditor, a role this release does not know, a record with no role and a missing record outside a single-org install are all refused.
   const orgRole = await requireSlackRequesterWriterRole(dependencies, userId, orgId, { allowUnlinked: true });
-  return effectiveProjectRole({ developerId, orgRole }, await getMembership(dependencies, orgId, developerId, projectName), true) ?? "contributor";
+  // The explicit grant is read under the id whose role wins, as the role is: the survivor's grant first, then back along the merge and link chain to the Slack id's own. An explicit grant
+  // (a viewer's included) is applied before channel access, so linking or merging a Slack identity into a developer with a restrictive grant does not hand it the channel's contributor role.
+  const ids = await personIds({ documentClient: dependencies.documentClient, signInTableName: dependencies.developer?.signInTableName }, developerId);
+  let grant: Awaited<ReturnType<typeof getMembership>>;
+  for (const id of [...ids].reverse()) {
+    grant = await getMembership(dependencies, orgId, id, projectName);
+    if (grant !== undefined) break;
+  }
+  return effectiveProjectRole({ developerId, orgRole }, grant, true) ?? "contributor";
 }
 
 /**

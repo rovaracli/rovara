@@ -2,7 +2,7 @@
 // approval page, GitHub reviews, task paths). The dispatcher holds an Auditor to a short allow-list; these surfaces ask here instead, and a person who is not a writer
 // (the Auditor, or a role this release does not know) is refused. A person with no member record has no role: the caller decides what that means for its surface.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, isWriterOrgRole, orgMemberKey, type OrgId, type WriterOrgRole } from "@agentx/contracts";
+import { OrgRoleSchema, agentXError, isWriterOrgRole, orgMemberKey, type OrgId, type OrgRole, type WriterOrgRole } from "@agentx/contracts";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };
 
@@ -14,17 +14,32 @@ export async function liveStoredRole(deps: { documentClient: DocumentClient; tab
 
 export const NOT_A_WRITER_MESSAGE = "Your company role can read the audit log and nothing else.";
 
-/** The ids a person answers to: their own, then the person each was merged into (a Slack identity linked to another sign-in is merged into it). Bounded; a loop stops. */
+/** How many merges a person's id is followed through (the same bound as the agent access rules). */
+export const MERGE_HOPS = 8;
+
+/**
+ * The ids a person answers to: their own, then the person each was merged into (a Slack identity linked to another sign-in is merged into it), then the developer their identity is linked to
+ * NOW and whoever that developer was merged into. The last matters after an unlink and a relink: the relink writes the link back without restoring the merge the unlink dropped, so the
+ * link itself says who the identity belongs to. Later ids are the more current ones (the survivor wins). ONE walk: the link counts as a hop, and the hop limit and the loop check cover the
+ * merges and the link together. Refuses (FORBIDDEN) when the walk loops or is longer than MERGE_HOPS: an identity that cannot be traced to its survivor is not served.
+ */
 export async function personIds(deps: { documentClient: DocumentClient; signInTableName?: string | undefined }, developerId: string): Promise<string[]> {
+  if (deps.signInTableName === undefined) return [developerId];
+  const read = async (key: { pk: string; sk: string }) => (await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+  const link = await read({ pk: `SIGNIN_IDENTITY#${developerId}`, sk: "META" });
+  let pendingLink = link !== undefined && link["unlinkedFrom"] === undefined && typeof link["developerId"] === "string" && link["developerId"] !== developerId ? link["developerId"] : undefined;
   const ids = [developerId];
-  if (deps.signInTableName === undefined) return ids;
-  for (let hop = 0; hop < 5; hop += 1) {
-    const response = await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: { pk: `DEVELOPER#${ids[ids.length - 1]!}`, sk: "META" }, ConsistentRead: true })) as { Item?: { mergedInto?: unknown } };
-    const next = response.Item?.mergedInto;
-    if (typeof next !== "string" || next === "" || ids.includes(next)) break;
+  for (let hops = 0; ; hops += 1) {
+    const merged = (await read({ pk: `DEVELOPER#${ids[ids.length - 1]!}`, sk: "META" }))?.["mergedInto"];
+    let next = typeof merged === "string" && merged !== "" ? merged : undefined;
+    if (next === undefined && pendingLink !== undefined) {
+      next = ids.includes(pendingLink) ? undefined : pendingLink;
+      pendingLink = undefined;
+    }
+    if (next === undefined) return ids;
+    if (ids.includes(next) || hops >= MERGE_HOPS) throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
     ids.push(next);
   }
-  return ids;
 }
 
 /**
@@ -37,7 +52,24 @@ export async function liveWriterRole(deps: { documentClient: DocumentClient; tab
     const stored = await liveStoredRole(deps, orgId, id);
     if (!stored.present) continue;
     if (!isWriterOrgRole(stored.role)) throw agentXError("FORBIDDEN", NOT_A_WRITER_MESSAGE);
-    found ??= stored.role;
+    // Each id is followed to the person it was merged into, so a later record is the more current one: the survivor's role wins over a stale merged-away record's.
+    found = stored.role;
+  }
+  return found;
+}
+
+/**
+ * The person's role now, whatever it is, for a surface that only READS (a task answer, a read-only view with no tools): `undefined` when they have no member record under any id they answer
+ * to, the survivor's record winning. A record whose role is missing or not one this release knows is refused (FORBIDDEN) as unreadable; the Auditor is allowed here, and only here.
+ */
+export async function liveReadRole(deps: { documentClient: DocumentClient; tableName: string; signInTableName?: string | undefined }, orgId: OrgId, developerId: string): Promise<OrgRole | undefined> {
+  let found: OrgRole | undefined;
+  for (const id of await personIds(deps, developerId)) {
+    const stored = await liveStoredRole(deps, orgId, id);
+    if (!stored.present) continue;
+    const role = OrgRoleSchema.safeParse(stored.role);
+    if (!role.success) throw agentXError("FORBIDDEN", "your company role could not be read");
+    found = role.data;
   }
   return found;
 }

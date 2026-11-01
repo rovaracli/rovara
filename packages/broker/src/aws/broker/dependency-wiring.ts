@@ -6,8 +6,8 @@ import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "..
 import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
-import { liveWriterRole, personIds } from "../../org/live-role.js";
+import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type OrgRole, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
+import { liveReadRole, liveStoredRole, liveWriterRole, personIds } from "../../org/live-role.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
 import { adminReader, queryAllItems, type AdminReadDependencies } from "../admin-reads.js";
 import { outcomeMetric } from "../admin-change-audit.js";
@@ -429,7 +429,10 @@ export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId
  * (`allowUnlinked`, the service routes) a person with no org at all is that same implicit member: the existing behaviour for an unlinked requester, whose spend ruling R31 admits against the org alone (R31 is a budget ruling and says nothing about roles); the
  * ingress callers need a real caller identity, so for them an unlinked person is refused.
  */
-export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean } = {}): Promise<WriterOrgRole> {
+export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options?: { allowUnlinked?: boolean; allowReadOnly?: false }): Promise<WriterOrgRole>;
+/** With `allowReadOnly`, for a surface that only reads (a task answer), the Auditor passes too: every other refusal stands. */
+export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean; allowReadOnly: true }): Promise<OrgRole>;
+export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean; allowReadOnly?: boolean } = {}): Promise<OrgRole> {
   const developerId = developerIdForSlackUser(userId);
   // The single-org resolver answers the install's org for everyone, which says nothing about this person; only a tenant-resolving install (an orgResolver) can say they are of another org.
   const resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? teamOrg : await orgResolverOf(dependencies)({ developerId });
@@ -438,17 +441,31 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
   // I1 (Slack allowed by the company sign-in) first, then I2: the Slack caller carries the person's real company role, not a stand-in "member".
   await requireSlackAllowedByEdition(dependencies, userId, orgId);
   const live = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName: dependencies.developer?.signInTableName };
-  const role = await liveWriterRole(live, orgId, developerId);
+  // The person the id was finally merged into must belong to the team's org too, not only the Slack-derived id.
+  const survivor = (await personIds(live, developerId)).at(-1)!;
+  if (survivor !== developerId && dependencies.orgResolver !== undefined) {
+    const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
+    if (survivorOrg === undefined ? options.allowUnlinked !== true || resolved !== undefined : survivorOrg !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+  }
+  const role = options.allowReadOnly === true ? await liveReadRole(live, orgId, developerId) : await liveWriterRole(live, orgId, developerId);
+  const refuseIfRemoved = async (id: string): Promise<void> => {
+    for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
+      if (await getItem(dependencies, key) !== undefined) throw agentXError("FORBIDDEN", "you are no longer a member of this organization");
+    }
+  };
+  // A Slack identity that was unlinked from a developer (the unlink also drops the merge) is judged by that developer's removal too: removal marks the survivor only, so a removed or banned
+  // person must not become a clean unlinked requester by unlinking the Slack identity afterwards. This covers people already removed. Their record, if any, gives no role here.
+  const former = dependencies.developer === undefined ? undefined
+    : (await new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }).getIdentityLink(developerId))?.unlinkedFrom;
+  if (former !== undefined && former !== developerId) {
+    for (const id of await personIds(live, former)) if ((await liveStoredRole(live, orgId, id)).present === false) await refuseIfRemoved(id);
+  }
   if (role !== undefined) return role;
   // An Enterprise install has one company whose people all sign in; a Slack identity with no member record is nobody's, so it is not let in as an implicit member there.
   if (dependencies.editionPolicy !== undefined && featureEnabled(dependencies.editionPolicy, "auditorRole")) {
     throw agentXError("FORBIDDEN", "this Slack member has not signed in to Rovara; sign in once, then try again");
   }
-  for (const id of await personIds(live, developerId)) {
-    for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
-      if (await getItem(dependencies, key) !== undefined) throw agentXError("FORBIDDEN", "you are no longer a member of this organization");
-    }
-  }
+  for (const id of await personIds(live, developerId)) await refuseIfRemoved(id);
   return "member";
 }
 
