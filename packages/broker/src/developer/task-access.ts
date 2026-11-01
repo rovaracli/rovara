@@ -1,7 +1,7 @@
 // Spec 061 slice 2: who may do what on a task page. Every check goes through resolveTaskAccess and the one role-to-action
 // table below, so roles (slice 3) change only these two places; callers never decide roles themselves.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, emailSafeName, projectAllows, projectMemberKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { AgentXError, agentXError, emailSafeName, projectAllows, projectMemberKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
 import { effectiveProjectRole, viewerCannotStartTasksMessage } from "./project-roles.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
@@ -80,6 +80,50 @@ export async function requireNativeProjectWorkRole(
     throw agentXError("RUNTIME_UNAVAILABLE", "your role in this project could not be checked; try again in a moment");
   }
   requireProjectWorkRoleValue(task.project, role, true);
+}
+
+/** The refusal for sending a task back to coding without the project access starting a task needs: the viewer's code, worded for no access. */
+export const sendBackNoAccessMessage = (project: string) => `You don't have access to start tasks in \`${project}\`, so you can't send this task back to coding. Ask a maintainer to make you a contributor.`;
+
+/**
+ * Sending a task back to coding (a send-back, or a review finding to fix) needs the project access starting a task needs (owner decision, 0.4.27).
+ * `requireProjectWorkRole` lets a person with no grant through, as the share design wants for other work; send-back does not: a company owner or
+ * admin passes, anyone else needs the project access check to give them a role that may start tasks (a grant, or a bound Slack channel's
+ * contributor access). A viewer gets the viewer message; no access gets the same PROJECT_ACCESS_DENIED. The task already exists, so the project's
+ * tasks-off switch does not apply: the same rule is asked with the switch set aside. When the check is unavailable (Slack, a read) the retryable
+ * error stands. When it failed otherwise, it judges by the person's own grant row (no channel) and refuses without one.
+ */
+export async function requireProjectSendBackRole(
+  deps: Pick<AccessDependencies, "checkAccess" | "documentClient" | "tableName">,
+  task: { project: string },
+  actor: { developerId: string; orgId: OrgId; orgRole: OrgRole },
+): Promise<void> {
+  if (actor.orgRole === "owner" || actor.orgRole === "admin") return;
+  let role: ProjectRole | undefined;
+  try {
+    role = await sendBackProjectRole(deps, task.project);
+  } catch (error) {
+    if (error instanceof AgentXError && (error.code === "SLACK_UNAVAILABLE" || error.code === "RUNTIME_UNAVAILABLE")) throw error;
+    if (error instanceof AgentXError && (error.code === "PROJECT_ACCESS_DENIED" || error.code === "PROJECT_NOT_FOUND")) throw agentXError("PROJECT_ACCESS_DENIED", sendBackNoAccessMessage(task.project));
+    try {
+      const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMemberKey(actor.orgId, actor.developerId, task.project), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+      role = effectiveProjectRole(actor, response.Item, false);
+    } catch {
+      throw agentXError("RUNTIME_UNAVAILABLE", "your role in this project could not be checked; try again in a moment");
+    }
+  }
+  if (role === undefined) throw agentXError("PROJECT_ACCESS_DENIED", sendBackNoAccessMessage(task.project));
+  if (!projectAllows(role, "start_tasks")) throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(task.project));
+}
+
+/** The person's role from the project access check, asked again with the tasks-off switch set aside when the project turned tasks off. */
+async function sendBackProjectRole(deps: Pick<AccessDependencies, "checkAccess">, project: string): Promise<ProjectRole> {
+  try {
+    return (await deps.checkAccess(project)).role;
+  } catch (error) {
+    if (!(error instanceof AgentXError) || error.code !== "PROJECT_TASKS_DISABLED") throw error;
+    return (await deps.checkAccess(project, { ignoreTasksOff: true })).role;
+  }
 }
 
 /** Whether the actor may start or change work on the task now: false for a project viewer (or when that cannot be told). For the page's controls. */
