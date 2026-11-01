@@ -245,10 +245,10 @@ describe("the intersection of a report with the diff", () => {
 
   it("bounds the part the pack holds: 100 files, 200 uncovered lines each, repository-qualified paths for several repositories, one plain line", () => {
     const files = Array.from({ length: 130 }, (_, index) => ({ repositoryId: "api", path: `src/f${String(index)}.py`, changed: 300, covered: 0, uncovered: Array.from({ length: 300 }, (_unused, line) => line + 1) }));
-    const part = coveragePart({ linesChanged: 39_000, linesCovered: 0, files }, 1);
+    const part = coveragePart({ linesChanged: 39_000, linesCovered: 0, files, unlistedFiles: 0 }, 1);
     expect(part.files).toHaveLength(100);
     expect(part.files[0]?.uncovered).toHaveLength(200);
-    expect(coveragePart({ linesChanged: 1, linesCovered: 1, files: [{ repositoryId: "web", path: "a\nb.ts", changed: 1, covered: 1, uncovered: [] }] }, 2).files[0]?.path).toBe("web/a b.ts");
+    expect(coveragePart({ linesChanged: 1, linesCovered: 1, unlistedFiles: 0, files: [{ repositoryId: "web", path: "a\nb.ts", changed: 1, covered: 1, uncovered: [] }] }, 2).files[0]?.path).toBe("web/a b.ts");
   });
 });
 
