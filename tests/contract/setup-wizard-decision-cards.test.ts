@@ -57,7 +57,25 @@ describe("approve_test_env", () => {
     }));
   });
 
-  it("a later revision is approved from its card at the revision the person looked at, and a card for a revision that has moved on is refused as changed", async () => {
+  it("a later revision is approved from its card, as the next revision after the one the person looked at", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", () => withCards(async () => {
+      await t.approveFirst();
+      const next = draftBody({ selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [".github/**"] } });
+      await t.web(OMAR, "POST", `${ENV}/edit`, { environment: next });
+      const digest = testEnvDigest(next);
+      await t.web(OMAR, "POST", `${ENV}/prove`, { digest });
+      const { cards: list, digests } = await cards(t);
+      const card = ofKind(list, "approve_test_env")[0]!;
+      const base = `/v1/app/decisions/approve_test_env/${digest}`;
+      await t.dev(OMAR, "POST", `${base}/evidence-opened`, { requestId: randomUUID(), shownDigest: digests[card.id] });
+      const approved = await t.dev(OMAR, "POST", `${base}/approve`, { requestId: randomUUID(), shownDigest: digests[card.id] });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION" && item.revision === 2)[0]).toMatchObject({ digest });
+    }));
+  });
+
+  it("a card for a revision that has moved on is refused as changed", async () => {
     const t = await setupWizardBench();
     await withSwitch("1", () => withCards(async () => {
       await t.approveFirst();
