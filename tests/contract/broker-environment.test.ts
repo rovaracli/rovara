@@ -38,6 +38,9 @@ const NAMES = {
   modelAccessFunction: "agentx-staging-control-plane-ModelAccessFunction1B50ECC9-1A2B3C4D5E6F7",
   slackRequestQueue: "agentx-staging-control-plane-SlackRequestQueueCC82C864-1A2B3C4D5E6F7",
   slackOrchestratorRole: "agentx-staging-control-plane-SlackOrchestratorTaskRole2372FE40-1A2B3C4D5E6F7",
+  // wire-team-record: present only in an install synthesised with the Team record switched on.
+  teamRecordVectorsRole: "agentx-staging-control-plane-TeamRecordVectorsDataRole8A1B2C3D-1A2B3C4D5E6F7",
+  teamRecordKmsKey: "1a2b3c4d-4e5f-6789-abcd-ef0123456789",
   chatGptConnectionKey: "1a2b3c4d-4e5f-6789-abcd-ef0123456789",
   provisionerStateMachine: "agentx-staging-control-plane-SessionsProvisioner9C44055B-1A2B3C4D5E6F7",
   deleterStateMachine: "agentx-staging-control-plane-SessionsDeleterB48741EA-1A2B3C4D5E6F7",
@@ -119,6 +122,7 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       MODEL_ACCESS_FUNCTION_NAME: NAMES.modelAccessFunction,
       SLACK_REQUEST_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.slackRequestQueue}`,
       SLACK_ORCHESTRATOR_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.slackOrchestratorRole}`,
+      TEAM_RECORD_VECTORS_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.teamRecordVectorsRole}`,
       CHATGPT_CONNECTION_KEY_ARN: "arn:aws:kms:us-west-2:123456789012:key/1a2b3c4d-4e5f-6789-abcd-ef0123456789",
       PROVISIONER_ARN: `arn:aws:states:us-west-2:123456789012:stateMachine:${NAMES.provisionerStateMachine}`,
       DELETER_ARN: `arn:aws:states:us-west-2:123456789012:stateMachine:${NAMES.deleterStateMachine}`,

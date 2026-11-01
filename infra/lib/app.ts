@@ -16,6 +16,7 @@ import { BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
 import { parseOperatorAccessContext } from "./operator-access.js";
 import { assertStdioHostStackBuilt, parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
+import { parseTeamRecordSwitch } from "./team-record-wiring.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
 import { RetainExceptOnCreate } from "./retention.js";
 import { EnvironmentRolePath } from "./role-path.js";
@@ -159,9 +160,12 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   const privateMcp = parsePrivateMcpContext({ edition: explicitEdition, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], get: (key) => app.node.tryGetContext(key) as unknown });
   // Past the release flag a build must also contain the host's stack; until it does, asking for package-run servers stops here (see private-mcp.ts).
   assertStdioHostStackBuilt(privateMcp);
+  // The Team record's switch (off by default; `-c agentxTeamRecord=enabled` turns its storage, schedules and broker setting on). Checked here so a wrong value stops the synth.
+  const teamRecord = parseTeamRecordSwitch({ get: (key) => app.node.tryGetContext(key) as unknown, env: naming.env, edition: explicitEdition, cloud: agentxCloud });
   new ControlPlaneStack(app, "AgentXControlPlane", {
     description: "AgentX authenticated control plane and durable dispatch foundation",
     naming,
+    ...(teamRecord === undefined ? {} : { teamRecord }),
     ...(Object.keys(privateMcpBrokerEnvironment(privateMcp)).length === 0 ? {} : { brokerEnvironment: privateMcpBrokerEnvironment(privateMcp) }),
     ...(reservedConcurrency ? {} : { reservedConcurrency: false }),
     ...(agentxCloud ? { cloud: true } : {}),
