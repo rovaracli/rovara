@@ -22,7 +22,7 @@ const ITEMS: Record<DecisionKind, DecisionItem> = {
   autofix_ask: { ...base("af1"), kind: "autofix_ask", reasonWords: "the same check failed twice", attempts: 2 },
   approve_setting: { ...base("set1"), kind: "approve_setting", settingLabel: "Allow video capture", secondPerson: true },
   approve_spend: { ...base("spr1"), kind: "approve_spend", amountUsd: 5, scopeLabel: "this task" },
-  approve_test_env: { ...base("env1"), kind: "approve_test_env", risk: "medium", riskReasons: [], tier: "sandbox" },
+  approve_test_env: { ...base("env1"), kind: "approve_test_env", risk: "medium", riskReasons: [], tier: "sandbox", expectedRevision: 1 },
   confirm_env_change: { ...base("chg1"), kind: "confirm_env_change", what: "accounts" },
   spec_choice: { ...base("spc1"), kind: "spec_choice", message: "The spec changed. Re-plan or keep?" },
 };
