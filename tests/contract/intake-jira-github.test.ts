@@ -272,7 +272,7 @@ function dispatchWorld(options: { members?: Record<string, string> } = {}) {
     sessionOfTicket: async () => undefined,
   };
   const intake = { ingest: async (candidate: IntakeCandidate, options?: { admit?: () => Promise<boolean> }): Promise<IntakeOutcome> => { ingested.push(candidate); return ingestIntake(ports, candidate, options?.admit === undefined ? {} : { admit: options.admit }); } };
-  const dispatch = (event: TriggerEvent, withIntake = true) => dispatchTriggerEvent({ ...v.routeDeps, ...(withIntake ? { intake } : {}) }, ORG_A, event);
+  const dispatch = (event: TriggerEvent, withIntake = true) => dispatchTriggerEvent({ ...v.routeDeps, ...(withIntake ? { intake } : {}) } as Parameters<typeof dispatchTriggerEvent>[0], ORG_A, event);
   const trigger = (over: Record<string, unknown> = {}) => v.seed({ target: CODE, spec: SPEC, createdBy: DANA, ...over });
   return { v, started, ingested, ports, dispatch, trigger };
 }

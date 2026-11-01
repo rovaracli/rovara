@@ -2,7 +2,7 @@
 // start; each label event counts once (a replayed webhook starts nothing more); a re-label while the earlier task runs is a duplicate; a ticket that still carries its label after its task ended
 // never restarts by itself (a poll has no label event).
 import { describe, expect, it } from "vitest";
-import { AgentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId } from "@agentx/contracts";
+import { agentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId } from "@agentx/contracts";
 import { ingestIntake, startWaitingIntake, type IntakeCandidate, type IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import { listWaitingIntakeItems, readIntakeItem } from "../../packages/broker/src/intake/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -24,7 +24,7 @@ function world() {
   const ended = new Set<string>();
   const freed: string[] = [];
   const linked: Array<{ next: string; previous: string }> = [];
-  const state: { fail?: Error } = {};
+  const state: { fail?: Error | undefined } = {};
   let tasks = 0;
   const key = (binding: { system: string; id: string }) => `${binding.system}:${binding.id}`;
   const ports: IntakePorts = {
@@ -41,7 +41,7 @@ function world() {
       tasks += 1;
       const sessionId = `ses_${String(tasks).padStart(20, "0")}`;
       if (request.binding?.kind === "tracker_item") {
-        if (bound.has(key(request.binding))) throw new AgentXError("CONFIG_INVALID", "This ticket already follows another session.");
+        if (bound.has(key(request.binding))) throw agentXError("CONFIG_INVALID", "This ticket already follows another session.");
         bound.set(key(request.binding), sessionId);
       }
       return { task: { taskId: `task-${String(tasks)}` }, sessionId };

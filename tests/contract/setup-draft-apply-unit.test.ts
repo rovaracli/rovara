@@ -137,7 +137,7 @@ describe("the dev container pull request under one approval", () => {
     for (const approvalId of ["apr_a", "apr_b"]) {
       await applier.apply({
         project: "web", taskId: "t", item, proposal: withContainer.proposal, approvedBy: "admin", approvalId, requestId: "same-press", revision: 1,
-        host: { updateSettings: async () => ({ warnings: [] }), startPullRequest: async ({ requestId }) => { ids.push(requestId); return { taskId: randomUUID() }; }, claimPullRequest: async () => undefined, releasePullRequestClaim: async () => undefined },
+        host: { updateSettings: async () => ({ warnings: [] }), startPullRequest: async ({ requestId }) => { ids.push(requestId); return { taskId: randomUUID() }; }, claimPullRequest: async () => undefined, releasePullRequestClaim: async () => undefined, addIntakeSource: async () => "added", connectionExists: async () => false },
       });
     }
     expect(ids[0]).not.toBe(ids[1]);

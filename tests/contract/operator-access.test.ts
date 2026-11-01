@@ -141,7 +141,7 @@ describe("the Rovara operator role", () => {
 
     it("lets only log groups that hold no content be named", () => {
       const parse = (groups: string) => parseOperatorAccessContext({ edition: "enterprise", env: "ent", workerLogGroup: "/agentx/ent/worker", get: (key) => ({ rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID, rovaraBundleApproverArns: APPROVERS, rovaraOperatorLogGroups: groups })[key] });
-      expect(parse("/aws/lambda/agentx-ent-doctor").logGroups).toEqual(["/aws/lambda/agentx-ent-doctor"]);
+      expect(parse("/aws/lambda/agentx-ent-doctor")?.logGroups).toEqual(["/aws/lambda/agentx-ent-doctor"]);
       expect(() => parse("/agentx/ent/worker")).toThrow(/holds task content/);
       expect(() => parse("/agentx/ent/worker/i-123")).toThrow(/holds task content/);
       expect(() => parse("/aws/lambda/*")).toThrow(/exact log groups/);

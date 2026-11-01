@@ -102,7 +102,7 @@ describe("the decision source for held specs (review round 1)", () => {
     const t = await editedSpecTask();
     const { specChoiceItemsFor } = await import("../../packages/broker/src/aws/developer-tasks/spec-wiring.js");
     const { developerTaskRouteDependencies } = await import("../../packages/broker/src/aws/developer-routes/dependencies.js");
-    const input = t.brokerInput as { documentClient: never; tableName: string; developer: never };
+    const input = t.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
     const caller = (who: typeof MAYA) => ({ developerId: who.developerId, sessionId: who.sessionId, amr: who.provider, name: who.name, orgId: TEST_ORG, orgRole: "member" as const });
     const deps = (who: typeof MAYA) => developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: t.actions }, caller(who));
     const mine = await specChoiceItemsFor(deps(MAYA), caller(MAYA));

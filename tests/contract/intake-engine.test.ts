@@ -26,7 +26,7 @@ interface World {
   /** Members who hold a role that starts tasks. */
   mayStart: Set<string>;
   bound: Map<string, string>;
-  failNext: { error?: Error };
+  failNext: { error?: Error | undefined };
 }
 
 function world(): World {
@@ -318,7 +318,7 @@ describe("a start that does not happen", () => {
 
   it("throws a fault that may pass and leaves the ticket to be tried again", async () => {
     const w = world();
-    w.failNext.error = new AgentXError("RUNTIME_UNAVAILABLE", "away");
+    w.failNext.error = agentXError("RUNTIME_UNAVAILABLE", "away");
     await expect(ingestIntake(w.ports, candidate())).rejects.toBeInstanceOf(AgentXError);
     expect(w.started).toEqual([]);
     expect(await ingestIntake(w.ports, candidate())).toMatchObject({ outcome: "started" });

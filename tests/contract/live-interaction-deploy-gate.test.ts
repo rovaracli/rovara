@@ -56,7 +56,7 @@ describe("the ask switch's hard deploy gates", () => {
 
   it("the ask switch is in no deploy file yet, or else BOTH gates hold: the erase step is wired and a production file calls the daily sweep", () => {
     const switchFiles = deployFiles().filter((file) => namesAskSwitch(readFileSync(file, "utf8")) && !file.endsWith("live-interaction.ts"));
-    const switchInBrokerSettings = Object.values(BROKER_SETTINGS).some((spec) => spec.variable === LIVE_INTERACTION_FLAGS.ask.variable || spec.code === LIVE_INTERACTION_FLAGS.ask.code);
+    const switchInBrokerSettings = (Object.values(BROKER_SETTINGS) as Array<{ variable: string; code: string }>).some((spec) => spec.variable === LIVE_INTERACTION_FLAGS.ask.variable || spec.code === LIVE_INTERACTION_FLAGS.ask.code);
     if (switchFiles.length === 0 && !switchInBrokerSettings) return;
     expect(REQUIRED_ERASE_STEPS, `the ask switch is in ${switchFiles.join(", ")}`).toContain("asks");
     const callers = productionFiles().filter((file) => callsSweep(readFileSync(file, "utf8")));
