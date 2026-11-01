@@ -4,12 +4,13 @@
 //   proposals: the same pk, sk `LESSONSET#TIER0CHG#<id>`
 //   company sole-owner switch: the workspace pk, sk `LESSONSET#COMPANYSOLE` (`enabled`: whether the sole-owner exception may approve a loosening; absent means ON). It holds no person.
 // Every sort key starts with `LESSONSET`, which the project erase and the workspace erase already wipe.
-import { GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { LEARNING_MODE_DEFAULT, learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
+import type { TransactItem } from "../audit/outbox.js";
 import { errorName, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import { TIER0_APPROVAL_DEFAULT, type LearningSettings, type LearningSettingsReader } from "./policy.js";
-import type { Tier0Change, Tier0ChangeStore, Tier0Level, Tier0Scope, Tier0SettingsStore } from "./tier0-setting.js";
+import type { Tier0Change, Tier0ChangeStore, Tier0Fence, Tier0Level, Tier0Scope, Tier0SettingsStore } from "./tier0-setting.js";
 
 const pkOf = (scope: Tier0Scope): string => teamRecordPk(scope.workspaceId, scope.kind === "project" ? scope.project : undefined);
 const settingKey = (scope: Tier0Scope) => ({ pk: pkOf(scope), sk: scope.kind === "project" ? "LESSONSET#SETTINGS" : "LESSONSET#COMPANY" });
@@ -35,17 +36,23 @@ export class DynamoTier0Settings implements Tier0SettingsStore, Tier0ChangeStore
     return item.tier0;
   }
 
-  async write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level): Promise<boolean> {
+  async write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level, fence?: Tier0Fence): Promise<boolean> {
     // Conditional on the value the caller read; an absent item is the default, so it matches only when `from` is the default.
     const isDefault = from === (scope.kind === "project" ? TIER0_APPROVAL_DEFAULT : "auto");
+    const put = {
+      TableName: this.table.tableName, Item: { ...settingKey(scope), entityType: "LESSON_SETTINGS", tier0: value, updatedBy: meta.by, updatedAt: meta.at },
+      ConditionExpression: isDefault ? "attribute_not_exists(pk) OR #t = :from" : "#t = :from", ExpressionAttributeNames: { "#t": "tier0" }, ExpressionAttributeValues: { ":from": from },
+    };
     try {
-      await this.table.documentClient.send(new PutCommand({
-        TableName: this.table.tableName, Item: { ...settingKey(scope), entityType: "LESSON_SETTINGS", tier0: value, updatedBy: meta.by, updatedAt: meta.at },
-        ConditionExpression: isDefault ? "attribute_not_exists(pk) OR #t = :from" : "#t = :from", ExpressionAttributeNames: { "#t": "tier0" }, ExpressionAttributeValues: { ":from": from },
-      }));
+      // With a fence the setting and the membership conditions commit together: one change in who may approve, and nothing is written.
+      if (fence?.conditions !== undefined && fence.conditions.length > 0) {
+        await this.table.documentClient.send(new TransactWriteCommand({ TransactItems: [...(fence.conditions as TransactItem[]), { Put: put }] }));
+      } else {
+        await this.table.documentClient.send(new PutCommand(put));
+      }
       return true;
     } catch (error) {
-      if (errorName(error) === "ConditionalCheckFailedException") return false;
+      if (errorName(error) === "ConditionalCheckFailedException" || errorName(error) === "TransactionCanceledException") return false;
       throw error;
     }
   }

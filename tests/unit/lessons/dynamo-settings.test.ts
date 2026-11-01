@@ -62,6 +62,21 @@ describe("the stored setting and its proposals", () => {
   });
 });
 
+describe("the fenced write", () => {
+  const metaCheck = (version: number) => ({ ConditionCheck: { TableName: "TeamRecord", Key: { pk: teamRecordPk(ORG_A, undefined), sk: "FENCE#META" }, ConditionExpression: "approvalMembershipVersion = :v", ExpressionAttributeValues: { ":v": version } } });
+  it("commits the setting together with the membership conditions; a changed membership writes nothing", async () => {
+    const { w, store } = setup();
+    w.db.set({ pk: teamRecordPk(ORG_A, undefined), sk: "FENCE#META", approvalMembershipVersion: 4 });
+    expect(await store.write(company(), "two", { by: "owner", at: 1 }, "auto", { membershipVersion: 3, conditions: [metaCheck(3)] })).toBe(false);
+    expect(await store.read(company())).toBeUndefined();
+    expect(await store.write(company(), "two", { by: "owner", at: 1 }, "auto", { membershipVersion: 4, conditions: [metaCheck(4)] })).toBe(true);
+    expect(await store.read(company())).toBe("two");
+    // a stale value is still refused inside the transaction
+    expect(await store.write(company(), "one", { by: "owner", at: 2 }, "auto", { membershipVersion: 4, conditions: [metaCheck(4)] })).toBe(false);
+    expect(await store.read(company())).toBe("two");
+  });
+});
+
 describe("the company sole-owner switch", () => {
   it("is ON until set, per workspace, and an invalid stored value is an error (the caller treats it as OFF)", async () => {
     const { w, store } = setup();

@@ -4,7 +4,7 @@
 // a company setting turns the exception off. Replaces: no sole-owner path for tier-0 loosening.
 import { describe, expect, it } from "vitest";
 import {
-  approveTier0Change, cancelTier0Change, requestTier0Change, type Tier0Change, type Tier0ChangeStore, type Tier0Deps, type Tier0Level, type Tier0Scope, type Tier0SettingsStore,
+  approveTier0Change, cancelTier0Change, requestTier0Change, type Tier0Change, type Tier0ChangeStore, type Tier0Deps, type Tier0Fence, type Tier0Level, type Tier0Scope, type Tier0SettingsStore,
 } from "../../../packages/broker/src/lessons/tier0-setting.js";
 import { Audit, Clock, PROJECT, WS } from "./lesson-helpers.js";
 
@@ -19,9 +19,14 @@ class Settings implements Tier0SettingsStore {
   async read(scope: Tier0Scope): Promise<Tier0Level | undefined> { return this.values.get(scopeId(scope)); }
   /** Runs between a caller's read and its write: another writer got in. */
   beforeWrite: (() => void) | undefined;
-  async write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level): Promise<boolean> {
+  /** The membership generation in force now (what a real store's commit conditions pin); a write whose fence names another generation commits nothing. */
+  membershipNow: () => number = () => 3;
+  fences: Array<Tier0Fence | undefined> = [];
+  async write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level, fence?: Tier0Fence): Promise<boolean> {
     if (this.failWrite) throw new Error("down");
     this.beforeWrite?.();
+    this.fences.push(fence);
+    if (fence !== undefined && fence.membershipVersion !== this.membershipNow()) return false;
     const current = this.values.get(scopeId(scope)) ?? (scope.kind === "project" ? "one" : "auto");
     if (current !== from) return false;
     this.values.set(scopeId(scope), value); this.writes.push({ scope: scopeId(scope), value, by: meta.by });
@@ -44,7 +49,8 @@ function world(over: { eligible?: string[]; owners?: string[]; autoEnabled?: boo
   const audit = new Audit();
   const clock = new Clock();
   const group = { complete: over.complete ?? true, membershipVersion: 3, ownerIds: over.owners ?? ["owner"], eligibleIds: over.eligible ?? ["owner", "ann", "bob"], lastEligibleLossAtMs: null as number | null };
-  const authority = { calls: 0, failing: false, async eligibility() { this.calls += 1; if (this.failing) throw new Error("down"); return group; } };
+  settings.membershipNow = () => group.membershipVersion;
+  const authority = { calls: 0, failing: false, asked: [] as Array<{ proposerId: string; approverId: string }>, async eligibility(_scope: Tier0Scope, who: { proposerId: string; approverId: string }) { this.calls += 1; this.asked.push(who); if (this.failing) throw new Error("down"); return { ...group, fence: [{ pinned: group.membershipVersion }] }; } };
   const soleOwner = { asked: [] as string[] };
   const soleOwnerLoosening = async (workspaceId: string): Promise<boolean> => { soleOwner.asked.push(workspaceId); if (over.soleOwner === "throws") throw new Error("down"); return over.soleOwner ?? true; };
   const deps: Tier0Deps = { settings, changes, audit, authority, now: clock.now, autoApplyEnabled: () => over.autoEnabled ?? true, soleOwnerLoosening, newId: (() => { let n = 0; return () => `chg-${++n}`; })() };
@@ -382,5 +388,37 @@ describe("one-admin companies: the sole-owner exception for loosening", () => {
     expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "eligibility_unavailable" });
     w.group.complete = true; w.group.eligibleIds = ["someone"];
     expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "not_eligible" });
+  });
+});
+
+describe("the membership fence: a change in who may approve between the read and the write stops it", () => {
+  it("a second admin added after a sole owner's eligibility read: the self-approval is not applied", async () => {
+    const w = world({ eligible: ["owner"], owners: ["owner"] });
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    w.settings.beforeWrite = () => { w.group.eligibleIds = ["owner", "newadmin"]; w.group.membershipVersion = 4; };
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "stale" });
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("two");
+    expect(w.settings.writes).toEqual([]);
+    expect(w.changes.rows.get("chg-1")?.state).toBe("cancelled");
+    expect(w.audit.actions()).not.toContain("lesson.tier0_setting_changed");
+  });
+  it("an approver removed after the read (second-person mode): not applied", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    w.settings.beforeWrite = () => { w.group.eligibleIds = ["owner", "ann"]; w.group.membershipVersion = 4; };
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBeUndefined();
+  });
+  it("every loosening write carries the fence the eligibility answer gave (version and conditions); the authority is asked about the proposer and the approver", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" });
+    expect(w.settings.fences).toEqual([{ membershipVersion: 3, conditions: [{ pinned: 3 }] }]);
+    expect(w.authority.asked.at(-1)).toEqual({ proposerId: "ann", approverId: "bob" });
+    const direct = world();
+    await requestTier0Change(direct.deps, { scope: PROJECT_SCOPE, value: "two", requestedBy: "ann" });
+    expect(direct.settings.fences).toEqual([{ membershipVersion: 3, conditions: [{ pinned: 3 }] }]);
+    expect(direct.authority.asked).toEqual([{ proposerId: "ann", approverId: "ann" }]);
   });
 });

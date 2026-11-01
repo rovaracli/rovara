@@ -35,8 +35,12 @@ export const TIER0_CHANGE_TTL_MS = 7 * 86_400_000;
 /** The stored value of one scope: the project's `tier0Approval`, or the company floor. Undefined when none was ever set. */
 export interface Tier0SettingsStore {
   read(scope: Tier0Scope): Promise<Tier0Level | undefined>;
-  /** Writes only if the stored value is still `from` (an absent value counts as the default). False: it moved, and nothing was written. */
-  write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level): Promise<boolean>;
+  /**
+   * Writes only if the stored value is still `from` (an absent value counts as the default). False: it moved, and nothing was written.
+   * With a `fence` the write also commits only if the membership the decision rested on still holds (the same transaction, so a person added or removed between the eligibility
+   * read and this write stops it): the store carries `fence.conditions` into its commit. A store that cannot honour a fence must refuse (throw), never ignore it.
+   */
+  write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level, fence?: Tier0Fence): Promise<boolean>;
 }
 export interface Tier0ChangeStore {
   /** False when the id is taken. */
@@ -47,10 +51,14 @@ export interface Tier0ChangeStore {
   /** Moves a change from one state to another only if it is still in `from`; true when it moved (the one claim that stops two approvers racing). */
   transition(scope: Tier0Scope, id: string, from: Tier0Change["state"], to: Tier0Change["state"]): Promise<boolean>;
 }
-/** Who may change the setting: the project's maintainers and admins, or the company's admins. */
+/** What a decision rested on: the membership generation, and the opaque commit conditions (`readSecondPersonApprovalEvidence`'s) that pin both people's live authority. */
+export interface Tier0Fence { membershipVersion: number; conditions?: readonly unknown[] }
+export interface Tier0Group { complete: boolean; membershipVersion: number; ownerIds: string[]; eligibleIds: string[]; lastEligibleLossAtMs: number | null; /** Commit conditions for the writes that rest on this answer. */ fence?: readonly unknown[] }
+/** Who may change the setting: the project's maintainers and admins, or the company's admins. `who` names the proposer and the approver the answer is for (the same person when one acts alone). */
 export interface Tier0Authority {
-  eligibility(scope: Tier0Scope): Promise<{ complete: boolean; membershipVersion: number; ownerIds: string[]; eligibleIds: string[]; lastEligibleLossAtMs: number | null }>;
+  eligibility(scope: Tier0Scope, who: { proposerId: string; approverId: string }): Promise<Tier0Group>;
 }
+const fenceOf = (group: Tier0Group): Tier0Fence => ({ membershipVersion: group.membershipVersion, ...(group.fence === undefined ? {} : { conditions: group.fence }) });
 export interface Tier0Deps {
   settings: Tier0SettingsStore; changes: Tier0ChangeStore; audit: LessonAuditSink; authority: Tier0Authority; now(): number;
   /** Whether automatic go-live may be switched on at all. False until the "Before auto-apply is turned on" list has passed review. */
@@ -82,15 +90,15 @@ async function floorOf(deps: Tier0Deps, scope: Tier0Scope): Promise<Tier0Level> 
 async function soleOwnerAllowed(deps: Tier0Deps, scope: Tier0Scope): Promise<boolean> {
   try { return (await deps.soleOwnerLoosening(scope.workspaceId)) === true; } catch { return false; }
 }
-async function groupOf(deps: Tier0Deps, scope: Tier0Scope) {
-  const group = await deps.authority.eligibility(scope).catch(() => undefined);
+async function groupOf(deps: Tier0Deps, scope: Tier0Scope, who: { proposerId: string; approverId: string }) {
+  const group = await deps.authority.eligibility(scope, who).catch(() => undefined);
   return group !== undefined && group.complete ? group : undefined;
 }
 
 export async function requestTier0Change(deps: Tier0Deps, input: { scope: Tier0Scope; value: Tier0Level; requestedBy: string }): Promise<Tier0Request> {
   const { scope, value } = input;
   if (!isLevel(value)) return { ok: false, code: "invalid_value" };
-  const group = await groupOf(deps, scope);
+  const group = await groupOf(deps, scope, { proposerId: input.requestedBy, approverId: input.requestedBy });
   if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.requestedBy)) return { ok: false, code: "not_eligible" };
   const current = await currentOf(deps, scope);
@@ -101,7 +109,7 @@ export async function requestTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   });
   if (LEVEL[value] >= LEVEL[current]) {
     // Stricter or equal: applied now, against the value it was read at. An audit outage never blocks the stricter side.
-    if (!(await deps.settings.write(scope, value, { by: input.requestedBy, at }, current))) return { ok: false, code: "stale" };
+    if (!(await deps.settings.write(scope, value, { by: input.requestedBy, at }, current, fenceOf(group)))) return { ok: false, code: "stale" };
     await emitAudit(deps.audit, event("lesson.tier0_setting_changed", { mode: "direct" }));
     return { ok: true, status: "applied", value };
   }
@@ -126,7 +134,7 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   if (change.expiresAt <= at) return { ok: false, code: "expired" };
   // The proposer approves their own change only through the sole-owner exception (below), however the id is spelled.
   const selfApproval = sameId(change.proposedBy, input.approverId);
-  const group = await groupOf(deps, scope);
+  const group = await groupOf(deps, scope, { proposerId: change.proposedBy, approverId: input.approverId });
   if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };
   const decision = trySecondPersonTimed(group, change.proposedBy, input.approverId, at);
@@ -154,8 +162,9 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   // One claim: of two approvers at once, only one moves the change out of pending.
   if (!(await deps.changes.transition(scope, change.id, "pending", "applied"))) return { ok: false, code: "not_pending" };
   // The write is conditional on the value the change was made against: a stricter write made since is never overwritten. A failed write throws (or is refused): the stricter value
-  // stays in force (the safe side), the change is closed, and the proposer asks again.
-  if (!(await deps.settings.write(scope, change.to, { by: input.approverId, at }, change.from))) {
+  // stays in force (the safe side), the change is closed, and the proposer asks again. The write is also fenced on the membership the decision rested on (a person added or removed since the
+  // eligibility read, or an approver who lost authority, stops it as "stale" the same way).
+  if (!(await deps.settings.write(scope, change.to, { by: input.approverId, at }, change.from, fenceOf(group)))) {
     await deps.changes.transition(scope, change.id, "applied", "cancelled").catch(() => false);
     return { ok: false, code: "stale" };
   }
@@ -175,7 +184,7 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
 
 /** An eligible maintainer or admin withdraws a pending proposal. */
 export async function cancelTier0Change(deps: Tier0Deps, input: { scope: Tier0Scope; changeId: string; actorId: string }): Promise<{ ok: true } | { ok: false; code: Tier0Failure }> {
-  const group = await groupOf(deps, input.scope);
+  const group = await groupOf(deps, input.scope, { proposerId: input.actorId, approverId: input.actorId });
   if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.actorId)) return { ok: false, code: "not_eligible" };
   const change = await deps.changes.get(input.scope, input.changeId);
