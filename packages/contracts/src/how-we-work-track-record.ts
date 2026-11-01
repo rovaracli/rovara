@@ -3,6 +3,8 @@
 // Browser-safe: nothing here imports a Node module, and every text is plain text that a reader escapes for its own markup.
 import { z } from "zod";
 import { OUTCOME_READ_CAP } from "./outcomes.js";
+import type { EarlyRiskSignal } from "./early-risk-signal.js";
+export { EarlyRiskSignalSchema, EarlyRiskSignalReadSchema, type EarlyRiskSignal } from "./early-risk-signal.js";
 
 /** The claims a stage card shows. The PR risk claim is no part of it: it is private to the task's owner (`EarlyRiskSignalSchema`). */
 export const HOW_WE_WORK_TRACK_CLAIMS = ["plan_ready", "review_pass:CRITIC", "review_pass:SECURITY", "proves_change"] as const;
@@ -128,26 +130,6 @@ export function stepOfLessSafeReason<T extends { id: string; name: string; kind:
 const CHECKING_CHANGE = /^(?:Changes the instructions of|Removes|Gives|Moves|Makes|Stops|Lowers how many times) the (?:plan check|review step)\b/;
 
 // ---- the early signal for the task's owner (PR risk "low")
-
-/**
- * What the owner of a task reads on the task page when its pull request was published with risk "low": how PRs this project rated low risk went in the last 30 days. Private: the broker sets it only
- * when the viewer is the task's owner, and it is never on the shared card, in a thread or on the pull request. It stays private even above ten samples.
- */
-export const EarlyRiskSignalSchema = z.object({
-  held: Count,
-  notHeld: Count,
-  /** The limits the card shows beside a rate, so the early score never reads better than the data. */
-  closedUnmerged: Count,
-  noOutcome: Count,
-  unreviewedMerges: Count,
-  windowDays: WindowDays,
-  capped: z.boolean(),
-  enough: z.boolean(),
-});
-export type EarlyRiskSignal = z.infer<typeof EarlyRiskSignalSchema>;
-
-/** The score as a view carries it: one this version cannot read is left out, and the rest of the view loads. */
-export const EarlyRiskSignalReadSchema = z.unknown().transform((value): EarlyRiskSignal | undefined => { const read = EarlyRiskSignalSchema.safeParse(value); return read.success ? read.data : undefined; });
 
 /** The words of the early signal. The sample count is always there; below ten samples it says "Early signal, few samples". The limits are the card's: what was closed unmerged, merged unreviewed, and what is not tracked. */
 export function earlyRiskSignalText(signal: EarlyRiskSignal): string {

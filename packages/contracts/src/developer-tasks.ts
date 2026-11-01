@@ -13,7 +13,7 @@ import { PlanOneScreenSchema } from "./plan-one-screen.js";
 import { MergeTrackingItemSchema, MergeViewSchema, ProofTableViewSchema, VerificationReportSchema } from "./rovara-code.js";
 import { readsAsUnknown } from "./forward-reader-unknown.js";
 import { ErrorRefSchema } from "./live-interaction.js";
-import { EarlyRiskSignalReadSchema } from "./how-we-work-track-record.js";
+import { EarlyRiskSignalReadSchema } from "./early-risk-signal.js";
 
 export const DEVELOPER_TASK_SUMMARY_MAX = 4_000;
 

@@ -27,6 +27,7 @@
   "packages/contracts/src/display-name.ts",
   "packages/contracts/src/e2e-view.ts",
   "packages/contracts/src/e2e.ts",
+  "packages/contracts/src/early-risk-signal.ts",
   "packages/contracts/src/errors.ts",
   "packages/contracts/src/evidence.ts",
   "packages/contracts/src/forward-reader-unknown.ts",
