@@ -59,7 +59,7 @@ function duration(seconds: number | undefined, unit: "s" | "ms"): number | undef
 // ---- JUnit XML
 
 const ENTITY = /&(?:lt|gt|quot|apos|amp|#(\d{1,7})|#x([0-9a-fA-F]{1,6}));/g;
-function unescapeXml(text: string): string {
+export function unescapeXml(text: string): string {
   return text.replace(ENTITY, (match, decimal: string | undefined, hex: string | undefined) => {
     if (decimal !== undefined || hex !== undefined) {
       const code = decimal !== undefined ? Number(decimal) : parseInt(hex!, 16);
@@ -73,7 +73,7 @@ function unescapeXml(text: string): string {
  * Removes comments and CDATA sections in one pass, so text inside them can never look like a test case. A comment or CDATA section that is never closed makes the file unreadable (`undefined`):
  * the rest could be anything.
  */
-function withoutCommentsAndCdata(text: string): string | undefined {
+export function withoutCommentsAndCdata(text: string): string | undefined {
   const pieces: string[] = [];
   let position = 0;
   for (;;) {
@@ -92,7 +92,7 @@ function withoutCommentsAndCdata(text: string): string | undefined {
 }
 
 /** The end of the tag that starts at `from` (the index of its `>`), reading quotes so a `>` inside an attribute value does not end it. -1 when it never ends. */
-function tagEnd(text: string, from: number): number {
+export function tagEnd(text: string, from: number): number {
   let quote = "";
   for (let index = from; index < text.length; index += 1) {
     const char = text[index]!;
@@ -105,12 +105,12 @@ function tagEnd(text: string, from: number): number {
 }
 
 /** A tag's attribute text longer than this makes the file unreadable: no real test case has attributes this long. */
-const ATTRIBUTE_TEXT_MAX = 16_384;
+export const ATTRIBUTE_TEXT_MAX = 16_384;
 const NAME_CHAR = /[\w:.-]/;
 const SPACE = /\s/;
 
 /** `name="value"` and `name='value'` pairs in one forward pass (no regular expression, no backtracking): each character is looked at once. A malformed pair is skipped, never retried. */
-function parseAttributes(text: string): Map<string, string> {
+export function parseAttributes(text: string): Map<string, string> {
   const attributes = new Map<string, string>();
   let index = 0;
   while (index < text.length) {

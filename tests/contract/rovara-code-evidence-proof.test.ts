@@ -106,7 +106,7 @@ describe("what the evidence never says", () => {
   });
   it("says coverage was not measured when a test check ran and no check measured it, and says nothing without a test check", () => {
     const noCoverage = pack({ checks: [checkEntry({ tests: { total: 1, passed: 1, failed: 0, skipped: 0, errored: 0, names: [], newTests: [] } })], selection: { method: "full", selected: 1, total: 1 } });
-    expect(evidenceLines(context({ pack: noCoverage }), CODE.digest, 0).lines).toContain("Changed lines covered by tests: not measured");
+    expect(evidenceLines(context({ pack: noCoverage }), CODE.digest, 0).lines).toContain("Changed lines covered by tests: no coverage report");
     const onlyLint = pack({ checks: [checkEntry({ kind: "lint" })], selection: { method: "full", selected: 0, total: 0 } });
     expect(evidenceLines(context({ pack: onlyLint }), CODE.digest, 0).lines.some((line) => line.startsWith("Changed lines"))).toBe(false);
   });

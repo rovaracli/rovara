@@ -1,0 +1,66 @@
+// Proof and evidence (P3, P4): how the worker reads a report file a project's own check already wrote (a coverage file, a SARIF file). The path comes from the check's own command line or from a fixed list of
+// default names, so it is data the repository influences: it is read only through a path that stays inside the workspace, is a plain file (never a link, at any step of the path) and is within a size cap, and
+// only when the check wrote it during this round (a file left by an earlier run, or put there by the agent before the checks ran, says nothing about this code). Nothing is written, moved or run.
+//
+// The file is opened with O_NOFOLLOW and measured through the open handle, so a link swapped in after the path was checked is refused by the system, and a file that grows while it is read is cut at the cap
+// and refused. A failure is a fixed code, never a message: callers say "not measured".
+import { constants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
+export type ReportFileFailure = "missing" | "unsafe_path" | "too_large" | "stale" | "unreadable";
+export type ReportFileRead = { ok: true; bytes: Buffer; path: string } | { ok: false; reason: ReportFileFailure };
+
+/** The most a file's modification time may precede the round's start and still count as written in it (file systems keep time in whole seconds). */
+export const REPORT_FRESHNESS_SLACK_MS = 2_000;
+
+/** The real path of a file under `root`: its directory must exist, resolve inside the real root, and the file itself must not be a link. Undefined when the path is unsafe. `missing` when the file is not there. */
+export async function containedReportPath(root: string, cwd: string, argument: string): Promise<{ path: string } | "missing" | undefined> {
+  try {
+    if (argument === "" || argument.includes("\0")) return undefined;
+    const realRoot = await realpath(root);
+    const target = resolve(root, cwd, argument);
+    const path = join(await realpath(dirname(target)), basename(target));
+    const fromRoot = relative(realRoot, path);
+    if (fromRoot === "" || fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot) || resolve(realRoot, fromRoot) !== path) return undefined;
+    const existing = await lstat(path).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? "missing" as const : null));
+    if (existing === "missing") return "missing";
+    if (existing === null || existing.isSymbolicLink() || !existing.isFile()) return undefined;
+    return { path };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The bytes of the report at `argument` (relative to the check's `cwd` under `root`), within `maxBytes`, written at or after `notBeforeMs` (less the slack). Without `notBeforeMs` nothing is read: a caller that cannot say
+ * when its round began must not trust a file that may be old.
+ */
+export async function readContainedReport(input: { root: string; cwd: string; argument: string; maxBytes: number; notBeforeMs: number | undefined }): Promise<ReportFileRead> {
+  if (input.notBeforeMs === undefined || !Number.isFinite(input.notBeforeMs)) return { ok: false, reason: "stale" };
+  const contained = await containedReportPath(input.root, input.cwd, input.argument);
+  if (contained === undefined) return { ok: false, reason: "unsafe_path" };
+  if (contained === "missing") return { ok: false, reason: "missing" };
+  const { path } = contained;
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const info = await handle.stat();
+    if (!info.isFile()) return { ok: false, reason: "unsafe_path" };
+    if (info.size > input.maxBytes) return { ok: false, reason: "too_large" };
+    if (info.mtimeMs < input.notBeforeMs - REPORT_FRESHNESS_SLACK_MS) return { ok: false, reason: "stale" };
+    // One byte more than the file had when it was measured: a file that grew while it is read does not fit, and is refused.
+    const buffer = Buffer.alloc(info.size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    return length > info.size || length > input.maxBytes ? { ok: false, reason: "too_large" } : { ok: true, bytes: buffer.subarray(0, length), path };
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}

@@ -504,7 +504,7 @@ async function runTask(
         });
       }
       // Proof and evidence (wire-proof): the checks' own test reports are read before TESTPROOF runs the original code. Only when the broker asked (its proof switch is on); informational.
-      if (invocation.payload.evidenceCapture === true && !stop.signal.aborted) await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore });
+      if (invocation.payload.evidenceCapture === true && !stop.signal.aborted) await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted });
       // TESTPROOF: informational only. It changes no check result and no artifact above; only a failure to put the agent's files back stops the task.
       // It runs after the browser and API checks, so their evidence never sees the build output of a run on the original code. Known limitation: files the
       // original code's run left that git ignores (build output, caches) are not removed and can remain for the stages after this one.

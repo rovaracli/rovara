@@ -8,6 +8,8 @@
 import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_RAW_ARTIFACT, EVIDENCE_RAW_MAX_BYTES, EvidenceRawSchema, createCandidateManifest, redactText, type CandidateRepository, type CheckEntry, type EvidenceRaw, type ProjectCommand } from "@agentx/contracts";
 import type { ArtifactSink } from "../artifacts.js";
 import type { CheckPlan } from "./checks.js";
+import { coveragePart, readChangedCoverage, type RepositoryChanges } from "./changed-coverage.js";
+import { candidateChanges } from "./diff.js";
 import { changedTestFiles, readCheckReport, type TestProofRepository } from "./test-proof.js";
 import { evidenceTests, parseTestReport } from "./test-report.js";
 
@@ -22,6 +24,8 @@ export interface CollectEvidenceInput {
   candidateDigest: string;
   /** Where the task started, for the tests the change added or changed. A repository that cannot be read leaves its tests out of "new". */
   repositories: readonly TestProofRepository[];
+  /** When the check round began (ms since the epoch). A coverage report older than this was not written by this round, so without it no coverage is read. */
+  roundStartedAtMs?: number | undefined;
 }
 
 const OUTPUT_TAIL_BYTES = Math.min(EVIDENCE_ARTIFACT_MAX_BYTES.log_txt, 16 * 1024);
@@ -44,17 +48,29 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
     }
     const checks: EvidenceRaw["checks"] = [];
     let measured = 0;
+    // Changed-line coverage (P3): the diff is read once, and only if some check wrote a coverage report; one report file is the evidence of one check.
+    let changes: Promise<RepositoryChanges[] | undefined> | undefined;
+    const diffs = (): Promise<RepositoryChanges[] | undefined> => (changes ??= Promise.all(input.repositories.map(async (repository) => ({
+      repositoryId: repository.repositoryId, directory: repository.directory,
+      changes: await candidateChanges({ directory: repository.directory, baseCommitSha: repository.startCommit, treeSha: repository.candidateTreeSha }, { exactLines: true }),
+    }))).then((read) => (read.length === 0 ? undefined : read), () => undefined));
+    const usedReports = new Set<string>();
     for (const [index, command] of input.commands.entries()) {
       const entry = input.entries.find((candidate) => candidate.id === `readiness:${String(index)}`);
       if (entry === undefined) continue;
       const read = await readCheckReport(input.rootPath, command).catch(() => undefined);
       const parsed = read === undefined ? undefined : parseTestReport(read.text, read.kind);
       const outputTail = entry.after === "failed" ? outputTailOf(entry.output) : undefined;
-      if (parsed === undefined && outputTail === undefined) continue;
+      // A timed-out, stopped or never-run check may have left an older report on disk: only a check that ended is read.
+      const covered = entry.after === "passed" || entry.after === "failed"
+        ? await readChangedCoverage({ rootPath: input.rootPath, command, repositories: diffs, notBeforeMs: input.roundStartedAtMs, used: usedReports }) : undefined;
+      const coverage = covered !== undefined && "coverage" in covered ? coveragePart(covered.coverage, input.repositories.length) : undefined;
+      if (parsed === undefined && outputTail === undefined && coverage === undefined) continue;
       if (parsed !== undefined) measured += parsed.total;
       checks.push({
         checkId: entry.id,
         ...(parsed === undefined ? {} : { tests: evidenceTests(parsed, { changedTestPaths }) }),
+        ...(coverage === undefined ? {} : { coverage }),
         ...(outputTail === undefined ? {} : { outputTail }),
       });
     }
@@ -78,11 +94,13 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
 export async function saveEvidenceRaw(input: {
   sink: ArtifactSink; rootPath: string; plan: CheckPlan; entries: readonly CheckEntry[];
   repositories: ReadonlyArray<{ repositoryId: string; directory: string; baseCommitSha?: string | undefined }>; candidateBefore: ReadonlyArray<CandidateRepository>;
+  /** When the check round began: the coverage report must have been written at or after it. */
+  roundStartedAtMs?: number | undefined;
 }): Promise<boolean> {
   try {
     if (input.plan.source !== "project" || input.plan.readiness === undefined) return false;
     const raw = await collectEvidenceRaw({
-      rootPath: input.rootPath, commands: input.plan.readiness, entries: input.entries, candidateDigest: createCandidateManifest(input.candidateBefore).digest,
+      rootPath: input.rootPath, commands: input.plan.readiness, entries: input.entries, candidateDigest: createCandidateManifest(input.candidateBefore).digest, roundStartedAtMs: input.roundStartedAtMs,
       repositories: input.repositories.map((repository) => ({
         repositoryId: repository.repositoryId, directory: repository.directory, startCommit: repository.baseCommitSha ?? "",
         candidateTreeSha: input.candidateBefore.find((entry) => entry.repositoryId === repository.repositoryId)?.treeSha ?? "",

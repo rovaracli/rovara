@@ -82,13 +82,17 @@ export function testsLine(pack: EvidencePack, proven?: ProvenTestNames): string 
   return parts.length === 0 ? undefined : cutLine(`Checks by kind: ${parts.slice(0, 12).join(" · ")}${parts.length > 12 ? ` · and ${parts.length - 12} more` : ""}`);
 }
 
-/** The changed-line coverage line (dropped from shrink level 2): the changed lines the tests cover, over every check that measured it; "not measured" when a test check ran and none did. */
+/**
+ * The changed-line coverage line (dropped from shrink level 2): the changed lines the tests cover, over every check that measured it. "No coverage report" when a test check ran and none wrote one this round (or the
+ * one it wrote could not be read); a report that lists none of the changed lines says so instead of a bare "0 of 0". Replaces: "not measured", which did not say why.
+ */
 export function coverageLine(pack: EvidencePack): string | undefined {
   const measured = pack.checks.filter((check) => check.coverage !== undefined);
-  if (measured.length === 0) return pack.checks.some((check) => check.kind === "test") ? "Changed lines covered by tests: not measured" : undefined;
+  if (measured.length === 0) return pack.checks.some((check) => check.kind === "test") ? "Changed lines covered by tests: no coverage report" : undefined;
   const changed = measured.reduce((sum, check) => sum + check.coverage!.linesChanged, 0);
   const covered = measured.reduce((sum, check) => sum + check.coverage!.linesCovered, 0);
-  return `Changed lines covered by tests: ${number(covered)} of ${number(changed)}${changed === 0 ? "" : ` (${Math.round((covered / changed) * 100)}%)`}`;
+  if (changed === 0) return "Changed lines covered by tests: the coverage report lists none of the changed lines";
+  return `Changed lines covered by tests: ${number(covered)} of ${number(changed)} (${Math.round((covered / changed) * 100)}%)`;
 }
 
 /** The Environment line (never dropped; shorter at level 3 and above): the tier, each service's mode (mocked ones with their recording), the accounts' kind and the data. */
