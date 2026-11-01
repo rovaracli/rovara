@@ -180,10 +180,10 @@ describe("refusals (fail closed, and before anything is written about the person
       const { h, capture } = await banned();
       const OTHER = "org_cccccccccccccccccccc";
       const stranger = "c".repeat(64);
-      await h.orgs.ensureOrg(OTHER as never, "other");
-      await h.orgs.addMember({ orgId: OTHER as never, developerId: stranger, role: "owner" });
+      await h.orgs.ensureOrg(OTHER, "other");
+      await h.orgs.addMember({ orgId: OTHER, developerId: stranger, role: "owner" });
       const expired = await h.orgs.createInvite({ orgId: TEST_ORG, createdBy: ownerId, role: "member", ttlSeconds: 0 });
-      const otherOrg = await h.orgs.createInvite({ orgId: OTHER as never, createdBy: stranger, role: "member" });
+      const otherOrg = await h.orgs.createInvite({ orgId: OTHER, createdBy: stranger, role: "member" });
       const allowed = capture!.recordedBy("sso.sign_in").length;
       expect((await h.orgs.describeInviteByHash(inviteTokenHash(expired.token)))?.state).toBe("expired");
       // The CLI sign-in carries any well-formed invite token, so a forged one reaches the check too.
