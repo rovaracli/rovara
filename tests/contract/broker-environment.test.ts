@@ -41,6 +41,7 @@ const NAMES = {
   // wire-team-record: present only in an install synthesised with the Team record switched on.
   teamRecordVectorsRole: "agentx-staging-control-plane-TeamRecordVectorsDataRole8A1B2C3D-1A2B3C4D5E6F7",
   teamRecordKmsKey: "1a2b3c4d-4e5f-6789-abcd-ef0123456789",
+  teamRecordDeadLetters: "agentx-staging-control-plane-TeamRecordOpsDeadLetters4C5D6E7F-1A2B3C4D5E6F7",
   chatGptConnectionKey: "1a2b3c4d-4e5f-6789-abcd-ef0123456789",
   provisionerStateMachine: "agentx-staging-control-plane-SessionsProvisioner9C44055B-1A2B3C4D5E6F7",
   deleterStateMachine: "agentx-staging-control-plane-SessionsDeleterB48741EA-1A2B3C4D5E6F7",
@@ -138,6 +139,8 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       "slack-requests": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.slackRequestDeadLetters}`,
       "developer-notices": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.developerNoticeDeadLetters}`,
       "developer-notice-stream": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.developerNoticeStreamFailures}`,
+      // wire-team-record: the record's operations queue's dead letters, present only where the record is switched on.
+      "team-record": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.teamRecordDeadLetters}`,
     });
     // Every name in the table came back under its variable.
     for (const spec of Object.values(BROKER_NAMES)) expect(env[spec.variable], spec.variable).toBeTruthy();
