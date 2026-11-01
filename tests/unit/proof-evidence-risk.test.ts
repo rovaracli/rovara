@@ -1,0 +1,162 @@
+// Proof and evidence P4, the broker's half: scanner findings and migration evidence reach the pack, the pull request shows counts, and a NEW high or critical finding from a SECURITY scan raises the risk to high (the
+// design's rule). The signal comes only from a pack for exactly this code, only from checks of kind security, and can only raise the level. With no port (the proof switch off) there is no signal and nothing is read.
+import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
+import { describe, expect, it } from "vitest";
+import { createCandidateManifest, type CheckEntry, type EvidencePack, type EvidenceRaw, type VerificationReport } from "../../packages/contracts/src/index.js";
+import { evidenceLines } from "../../packages/broker/src/rovara-code/evidence-lines.js";
+import { keepEvidence, loadEvidencePack, type KeepEvidenceDeps } from "../../packages/broker/src/rovara-code/evidence-keep.js";
+import { evidenceRiskSignal, kindOfRawCheck } from "../../packages/broker/src/rovara-code/evidence-risk.js";
+import { assessRisk, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
+import { recomputeRisk } from "../../packages/broker/src/rovara-code/pull-request-body.js";
+import { evidenceRiskOfTask } from "../../packages/broker/src/aws/developer-tasks/evidence-risk-input.js";
+
+const DIGEST = "c".repeat(64);
+const OTHER = "e".repeat(64);
+const TASK = { ownerKey: "owner-1", workspaceId: "ws-1", taskId: "task-1" };
+const OP = "op-1";
+const PREFIX = `private/${TASK.ownerKey}/${TASK.workspaceId}/${OP}/`;
+const entry = (id: string, label: string, over: Partial<CheckEntry> = {}): CheckEntry => ({ id, label, source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 700, exitCode: 0, ...over });
+const severities = (over: Record<string, number> = {}) => ({ critical: 0, high: 0, medium: 0, low: 0, info: 0, ...over });
+const findings = (tool: string, bySeverity: Record<string, number>, items: unknown[] = []) => ({ tool, newCount: Object.values(bySeverity).reduce((sum, count) => sum + count, 0), bySeverity: severities(bySeverity), items }) as NonNullable<EvidenceRaw["checks"][number]["findings"]>;
+const rawOf = (checks: unknown[]) => ({ schemaVersion: 1, candidateDigest: DIGEST, checks });
+
+function world(rawText: string) {
+  const objects = new Map<string, string>();
+  const s3 = { async send(command: unknown) {
+    if (command instanceof PutObjectCommand) { objects.set(command.input.Key!, String(command.input.Body as string)); return {}; }
+    if (command instanceof GetObjectCommand) { const found = objects.get(command.input.Key!); if (found === undefined) throw new Error("NoSuchKey"); return { Body: { transformToString: async () => found } }; }
+    throw new Error("unexpected command");
+  } } as unknown as S3Client;
+  const actions: KeepEvidenceDeps["actions"] = {
+    async artifacts() { return [{ name: "evidence-raw.json", objectKey: `${PREFIX}evidence-raw.json` }]; },
+    async readArtifact(key, max) { return key.startsWith(PREFIX) ? rawText.slice(0, max) : objects.get(key)?.slice(0, max) ?? ""; },
+  };
+  return { deps: { actions, store: { s3, artifactBucketName: "bucket" } } satisfies KeepEvidenceDeps };
+}
+async function keep(checks: unknown[], entries: CheckEntry[], policyKinds?: ReadonlyMap<string, "security" | "lint" | "migration" | "test">) {
+  const w = world(JSON.stringify(rawOf(checks)));
+  await keepEvidence(w.deps, { task: TASK, operationId: OP, candidateDigest: DIGEST, checks: entries, ...(policyKinds === undefined ? {} : { policyKinds }) });
+  return loadEvidencePack(w.deps.actions, TASK, DIGEST);
+}
+const prLine = (pack: EvidencePack) => evidenceLines({ pack, mode: "summary" }, DIGEST, 0).lines[0] ?? "";
+
+describe("scanner findings and migrations in the pack", () => {
+  const items = [{ ruleId: "B608", severity: "high", path: "src/db.py", line: 7, message: "SQL built from input" }];
+
+  it("a scan by a known security scanner is a security check; the pull request shows counts only, with high and critical named", async () => {
+    const pack = await keep([{ checkId: "readiness:0", findings: findings("Bandit", { high: 1, low: 1 }, items) }], [entry("readiness:0", "bandit -r .", { after: "failed", exitCode: 1 })]);
+    expect(pack?.checks[0]).toMatchObject({ kind: "security", findings: { tool: "Bandit", newCount: 2, bySeverity: { high: 1, low: 1 } } });
+    expect(prLine(pack!)).toBe("Checks by kind: security scan ✗: 2 new (1 high or critical)");
+    expect(prLine(pack!)).not.toMatch(/B608|SQL|db\.py/u);
+  });
+
+  it("a scan by any other tool is a lint check: it shows its count, and never raises the risk", async () => {
+    const pack = await keep([{ checkId: "readiness:0", findings: findings("ESLint", { high: 3 }) }], [entry("readiness:0", "eslint .", { after: "failed", exitCode: 1 })]);
+    expect(pack?.checks[0]?.kind).toBe("lint");
+    expect(prLine(pack!)).toBe("Checks by kind: lint ✗ (3 new findings)");
+    expect(evidenceRiskSignal(pack, DIGEST)).toBeUndefined();
+  });
+
+  it("the approved check policy's kind wins over the guess", async () => {
+    const pack = await keep([{ checkId: "readiness:0", findings: findings("Custom Scanner", { critical: 1 }) }], [entry("readiness:0", "custom", { after: "failed", exitCode: 1 })], new Map([["readiness:0", "security"]]));
+    expect(pack?.checks[0]?.kind).toBe("security");
+    expect(evidenceRiskSignal(pack, DIGEST)).toEqual({ highNewFindings: 1 });
+    const lint = await keep([{ checkId: "readiness:0", findings: findings("Bandit", { critical: 1 }) }], [entry("readiness:0", "bandit", { after: "failed", exitCode: 1 })], new Map([["readiness:0", "lint"]]));
+    expect(evidenceRiskSignal(lint, DIGEST)).toBeUndefined();
+  });
+
+  it("a scan that was already failing and has nothing new keeps its (empty) findings; a scan that newly failed with none is not shown as clean", async () => {
+    const already = await keep([{ checkId: "readiness:0", findings: findings("Bandit", {}) }], [entry("readiness:0", "bandit", { before: "failed", after: "failed", class: "already_failing", exitCode: 1 })]);
+    expect(already?.checks[0]?.findings?.newCount).toBe(0);
+    expect(prLine(already!)).toBe("Checks by kind: security scan ✗: 0 new findings");
+    const regression = await keep([{ checkId: "readiness:0", findings: findings("Bandit", {}) }], [entry("readiness:0", "bandit", { after: "failed", class: "regression", exitCode: 1 })]);
+    expect(regression?.checks[0]?.findings).toBeUndefined();
+  });
+
+  it("migration evidence marks a migration check; the pull request says applied and rolled back, or that the rollback failed", async () => {
+    const pack = await keep([{ checkId: "readiness:0", migrations: { applied: ["0002_orders"], rolledBack: true, schemaChanges: ["create table orders"] } }], [entry("readiness:0", "alembic upgrade head")]);
+    expect(pack?.checks[0]?.kind).toBe("migration");
+    expect(prLine(pack!)).toBe("Checks by kind: migrations: 1 applied and rolled back cleanly");
+    const failed = await keep([{ checkId: "readiness:0", migrations: { applied: ["0002_orders"], rolledBack: false, schemaChanges: [] } }], [entry("readiness:0", "alembic upgrade head")]);
+    expect(prLine(failed!)).toBe("Checks by kind: migrations: 1 applied, rollback failed");
+    const unknown = await keep([{ checkId: "readiness:0", migrations: { applied: ["0002_orders"], rolledBack: null, schemaChanges: [] } }], [entry("readiness:0", "alembic upgrade head")]);
+    expect(prLine(unknown!)).toBe("Checks by kind: migrations: 1 applied");
+  });
+
+  it("a finding or schema name that holds personal data loses the check's details, not the pack (the data guard)", async () => {
+    const pack = await keep([{ checkId: "readiness:0", findings: findings("Bandit", { high: 1 }, [{ ruleId: "B1", severity: "high", path: "fixtures/jane.doe@gmail.com.py", line: 1, message: "x" }]) }], [entry("readiness:0", "bandit", { after: "failed", exitCode: 1 })]);
+    expect(pack?.checks[0]?.findings).toBeUndefined();
+    expect(evidenceRiskSignal(pack, DIGEST)).toBeUndefined();
+  });
+
+  it("a migration name that holds personal data loses the check's migration details (the data guard), and the check keeps the broker's own verdict", async () => {
+    const pack = await keep([{ checkId: "readiness:0", migrations: { applied: ["0002_jane.doe@gmail.com"], rolledBack: true, schemaChanges: [] } }], [entry("readiness:0", "alembic upgrade head")]);
+    expect(pack?.checks[0]?.migrations).toBeUndefined();
+    expect(pack?.checks[0]).toMatchObject({ after: "passed" });
+  });
+
+  it("guesses a kind only from what the raw part carries", () => {
+    expect(kindOfRawCheck({ checkId: "a" })).toBeUndefined();
+    expect(kindOfRawCheck({ checkId: "a", findings: findings("Semgrep OSS", {}) })).toBe("security");
+    expect(kindOfRawCheck({ checkId: "a", findings: findings("CodeQL", {}) })).toBe("security");
+    expect(kindOfRawCheck({ checkId: "a", findings: findings("pylint", {}) })).toBe("lint");
+  });
+});
+
+describe("the risk rule", () => {
+  const code = createCandidateManifest([{ repositoryId: "payments", commitSha: "1".repeat(40), treeSha: "1".repeat(40), baseCommitSha: "e".repeat(40) }]);
+  const clean: VerificationReport = { reviewOnly: false, passed: [{ label: "Unit tests" }], failed: [], notChecked: [], testsAdded: [] };
+  const input = (over: Partial<RiskInput> = {}): RiskInput => ({ changedFiles: [{ repository: "payments", path: "src/retry.ts", added: 3, removed: 1 }], changedFilesComplete: true, report: clean, acceptedFindings: [], securityFindings: 0, candidateDigest: code.digest, ...over });
+  const pack = (kind: string, bySeverity: Record<string, number>, digest = code.digest) => ({ schemaVersion: 1, candidateDigest: digest, checks: [{ checkId: "readiness:0", kind, label: "scan", before: "passed", after: "failed", class: "regression", durationMs: 1, findings: findings("Bandit", bySeverity) }] }) as unknown as EvidencePack;
+
+  it("a new high or critical security finding makes the change high risk, with a fixed reason", () => {
+    const risk = assessRisk(input({ evidence: { highNewFindings: 2 } }));
+    expect(risk.level).toBe("high");
+    expect(risk.reasons).toContain("A security scan found 2 new high or critical findings.");
+    expect(assessRisk(input({ evidence: { highNewFindings: 1 } })).reasons).toContain("A security scan found 1 new high or critical finding.");
+  });
+
+  it("changes nothing without the signal: no evidence, or none high, gives the level and reasons the change had before evidence existed", () => {
+    expect(assessRisk(input())).toEqual(assessRisk(input({ evidence: undefined })));
+    expect(assessRisk(input({ evidence: { highNewFindings: 0 } }))).toEqual(assessRisk(input()));
+    expect(assessRisk(input()).level).toBe("low");
+  });
+
+  it("only raises: a change that is already high stays high, with the finding added to its reasons", () => {
+    const risk = assessRisk(input({ changedFiles: [{ repository: "payments", path: "infra/main.ts", added: 1, removed: 1 }], evidence: { highNewFindings: 1 } }));
+    expect(risk.level).toBe("high");
+    expect(risk.reasons).toHaveLength(2);
+  });
+
+  it("the signal counts critical and high from security checks of a pack for exactly this code, and nothing else", () => {
+    expect(evidenceRiskSignal(pack("security", { high: 1, critical: 2, medium: 5 }), code.digest)).toEqual({ highNewFindings: 3 });
+    expect(evidenceRiskSignal(pack("security", { medium: 5, low: 2 }), code.digest)).toBeUndefined();
+    expect(evidenceRiskSignal(pack("lint", { high: 5 }), code.digest)).toBeUndefined();
+    expect(evidenceRiskSignal(pack("security", { high: 1 }, OTHER), code.digest)).toBeUndefined();
+    expect(evidenceRiskSignal(pack("security", { high: 1 }), undefined)).toBeUndefined();
+    expect(evidenceRiskSignal(undefined, code.digest)).toBeUndefined();
+  });
+
+  it("with no port (the proof switch off) nothing is read and there is no signal; a port that fails is no signal; a port is asked for exactly this code", async () => {
+    expect(await evidenceRiskOfTask(undefined, TASK, code.digest)).toBeUndefined();
+    const asked: Array<string | undefined> = [];
+    const port = { async pack(_task: unknown, digest: string | undefined) { asked.push(digest); return pack("security", { high: 1 }); } };
+    expect(await evidenceRiskOfTask(port, TASK, undefined)).toBeUndefined();
+    expect(asked).toEqual([]);
+    expect(await evidenceRiskOfTask(port, TASK, code.digest)).toEqual({ highNewFindings: 1 });
+    expect(asked).toEqual([code.digest]);
+    expect(await evidenceRiskOfTask({ pack: async () => { throw new Error("down"); } }, TASK, code.digest)).toBeUndefined();
+    expect(await evidenceRiskOfTask({ pack: async () => pack("security", { high: 1 }, OTHER) }, TASK, code.digest)).toBeUndefined();
+  });
+
+  it("recomputeRisk gives the recorded level of the code with the signal, and is the same object-for-object without it", async () => {
+    const { createWorkflowSnapshot } = await import("../../packages/contracts/src/task-workflow-node.js");
+    const workflow = { ...createWorkflowSnapshot({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", ownerId: "a".repeat(64), now: "2026-11-04T12:00:00.000Z", definitionVersion: "1.1.0" }), candidate: code };
+    const files = { files: [{ repository: "payments", path: "src/retry.ts", added: 3, removed: 1 }], complete: true };
+    const without = recomputeRisk(workflow, files, {});
+    expect(recomputeRisk(workflow, files, {}, undefined)).toEqual(without);
+    const withSignal = recomputeRisk(workflow, files, {}, { highNewFindings: 1 });
+    expect(withSignal.risk?.level).toBe("high");
+    expect(without.risk?.level).not.toBe("high");
+  });
+});

@@ -14,8 +14,8 @@ export type ReportFileRead = { ok: true; bytes: Buffer; path: string } | { ok: f
 /** The most a file's modification time may precede the round's start and still count as written in it (file systems keep time in whole seconds). */
 export const REPORT_FRESHNESS_SLACK_MS = 2_000;
 
-/** The real path of a file under `root`: its directory must exist, resolve inside the real root, and the file itself must not be a link. Undefined when the path is unsafe. `missing` when the file is not there. */
-export async function containedReportPath(root: string, cwd: string, argument: string): Promise<{ path: string } | "missing" | undefined> {
+/** The real path of a file under `root`: its directory must exist, resolve inside the real root, and the file itself must not be a link (unless `allowLink`: see below). Undefined when the path is unsafe. `missing` when the file is not there. */
+export async function containedReportPath(root: string, cwd: string, argument: string, options: { allowLink?: boolean } = {}): Promise<{ path: string } | "missing" | undefined> {
   try {
     if (argument === "" || argument.includes("\0")) return undefined;
     const realRoot = await realpath(root);
@@ -25,7 +25,8 @@ export async function containedReportPath(root: string, cwd: string, argument: s
     if (fromRoot === "" || fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot) || resolve(realRoot, fromRoot) !== path) return undefined;
     const existing = await lstat(path).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? "missing" as const : null));
     if (existing === "missing") return "missing";
-    if (existing === null || existing.isSymbolicLink() || !existing.isFile()) return undefined;
+    // `allowLink` is for putting a file back: a link in its place is then the caller's to replace (never to follow); the directory part was resolved above and is inside the root either way.
+    if (existing === null || (existing.isSymbolicLink() ? options.allowLink !== true : !existing.isFile())) return undefined;
     return { path };
   } catch {
     return undefined;

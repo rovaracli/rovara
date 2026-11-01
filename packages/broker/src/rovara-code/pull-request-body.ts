@@ -9,6 +9,7 @@ import { reviewModelLines } from "./review-model-lines.js";
 import { linearCloseLine, neutralizeLinearWords, normalizeIssueKey, sealLinearText } from "./linear-close.js";
 import { PROOF_LEVEL_LAST, proofSection, type ProofContext } from "./proof-section.js";
 import { testProofLinesOf } from "./proof-table.js";
+import type { EvidenceRiskSignal } from "./evidence-risk.js";
 import { assessRisk, riskHeading } from "./risk.js";
 import { verificationReport, type ChangedFileEntry, type VerificationProject } from "./verification-report.js";
 
@@ -47,6 +48,8 @@ export interface PullRequestBodyContext {
   reviewSameModel?: boolean | undefined;
   /** The approved plan, the browser/API rows and the test proof for the Proof section (Playbook P1). Absent, or without a plan with claims: the description has no Proof section. */
   proof?: ProofContext | undefined;
+  /** Proof and evidence P4: a security scan's new high findings on this code (the evidence pack, only while the proof switch is on). It can only raise the risk shown. */
+  evidenceRisk?: EvidenceRiskSignal | undefined;
   /** I3: who asked for the work and who approved its plan, built by the broker from its own records (`broker/src/attribution`). Lines outside the marked block, so a status rewrite leaves them. */
   attribution?: ActingAttribution | undefined;
 }
@@ -61,7 +64,7 @@ function reviewerRiskOf(workflow: WorkflowSnapshot): RiskAssessment["level"] | u
 }
 
 /** The risk of the workflow's current code, from the files, the report, the findings and the reviewer. Undefined without a candidate. */
-export function assessWorkflowRisk(workflow: WorkflowSnapshot, read: ChangedFilesRead | undefined, project: VerificationProject): RiskAssessment | undefined {
+export function assessWorkflowRisk(workflow: WorkflowSnapshot, read: ChangedFilesRead | undefined, project: VerificationProject, evidence?: EvidenceRiskSignal): RiskAssessment | undefined {
   const digest = workflow.candidate?.digest;
   if (digest === undefined) return undefined;
   const files = read?.files ?? [];
@@ -75,6 +78,7 @@ export function assessWorkflowRisk(workflow: WorkflowSnapshot, read: ChangedFile
     securityFindings, ...(reviewerRisk === undefined ? {} : { reviewerRisk }), candidateDigest: digest,
     // A change made as a fix (CI, a conflict or comments) is judged for hiding the failure it was asked to fix.
     ...(workflow.fixSource === undefined ? {} : { fix: true }),
+    ...(evidence === undefined ? {} : { evidence }),
   });
 }
 
@@ -82,16 +86,17 @@ export function assessWorkflowRisk(workflow: WorkflowSnapshot, read: ChangedFile
  * The workflow with its risk recomputed for its current code. Call it whenever the candidate changes (the pull request opens, a fix or a sync is pushed). A version 1 task shows no risk level and is
  * returned as it is.
  */
-export function recomputeRisk(workflow: WorkflowSnapshot, read: ChangedFilesRead | undefined, project: VerificationProject): WorkflowSnapshot {
+export function recomputeRisk(workflow: WorkflowSnapshot, read: ChangedFilesRead | undefined, project: VerificationProject, evidence?: EvidenceRiskSignal): WorkflowSnapshot {
   if (workflow.definitionVersion !== "1.1.0") return workflow;
-  const risk = assessWorkflowRisk(workflow, read, project);
+  const risk = assessWorkflowRisk(workflow, read, project, evidence);
   return risk === undefined ? workflow : { ...workflow, risk };
 }
 
 /** The risk the description shows: computed from the files when they are known, else the one recorded for this very code, else computed without the files (never low). */
 function riskShown(workflow: WorkflowSnapshot, context: PullRequestBodyContext): RiskAssessment | undefined {
   if (context.changedFiles === undefined && workflow.risk !== undefined && workflow.risk.candidateDigest === workflow.candidate?.digest) return workflow.risk;
-  return assessWorkflowRisk(workflow, context.changedFiles, { ...(context.ciBasis === undefined ? {} : { ciBasis: context.ciBasis }) });
+  // The evidence (kept for exactly this code, only while the proof switch is on) can only raise the level, through a security scan's new high findings.
+  return assessWorkflowRisk(workflow, context.changedFiles, { ...(context.ciBasis === undefined ? {} : { ciBasis: context.ciBasis }) }, context.evidenceRisk);
 }
 
 const more = (count: number, listed: number) => (count > listed ? ` and ${count - listed} more` : "");

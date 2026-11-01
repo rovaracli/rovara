@@ -16,6 +16,7 @@ import type { TestProofActions } from "../developer/test-proof-lines.js";
 import { storeEvidenceArtifacts, type EvidenceArtifactStore } from "../aws/evidence-artifacts.js";
 import { buildEvidencePack, type EvidenceProblem } from "./evidence-pack.js";
 import { NO_PROD_DENY, guardPack, guardRaw } from "./evidence-guard.js";
+import { kindOfRawCheck } from "./evidence-risk.js";
 
 export interface EvidenceTask { ownerKey: string; workspaceId: string; taskId: string }
 
@@ -83,6 +84,8 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
     // A check whose raw part carries a test report is a test check; the approved policy's kind wins where it names one.
     const kinds = new Map<string, CheckKind>(input.policyKinds ?? []);
     for (const entry of parsedRaw?.checks ?? []) if (entry.tests !== undefined && !kinds.has(entry.checkId)) kinds.set(entry.checkId, "test");
+    // P4: migration evidence marks a migration check, and findings mark a security scan (a known scanner) or a lint check; the approved policy's kind still wins.
+    for (const entry of parsedRaw?.checks ?? []) { const kind = kindOfRawCheck(entry); if (kind !== undefined && !kinds.has(entry.checkId)) kinds.set(entry.checkId, kind); }
     const environment = input.environment ?? DEFAULT_EVIDENCE_ENVIRONMENT;
     const built = buildEvidencePack({
       candidateDigest: input.candidateDigest, rawText, checks: input.checks, checkKinds: kinds, environment,

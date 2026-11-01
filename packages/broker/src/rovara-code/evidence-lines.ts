@@ -75,7 +75,10 @@ export function testsLine(pack: EvidencePack, proven?: ProvenTestNames): string 
       if (check.after !== "passed" || migrations === undefined) parts.push(`migrations ${OUTCOME_WORDS[check.after]}`);
       else parts.push(`migrations: ${number(migrations.applied.length)} applied${migrations.rolledBack === true ? " and rolled back cleanly" : migrations.rolledBack === false ? ", rollback failed" : ""}`);
     } else {
-      parts.push(`${check.kind === "other" ? label : KIND_WORDS[check.kind]} ${OUTCOME_WORDS[check.after]}`);
+      // A lint or type check that wrote SARIF also says how many findings are new (counts only; a finding's text is not on the pull request).
+      const found = check.findings;
+      const note = found === undefined ? "" : found.newCount === 0 ? " (no new findings)" : ` (${number(found.newCount)} new finding${found.newCount === 1 ? "" : "s"})`;
+      parts.push(`${check.kind === "other" ? label : KIND_WORDS[check.kind]} ${OUTCOME_WORDS[check.after]}${note}`);
     }
   }
   if (pack.selection.selected < pack.selection.total) parts.push(`${number(pack.selection.selected)} of ${number(pack.selection.total)} tests selected (${SELECTION_WORDS[pack.selection.method]})`);
