@@ -107,6 +107,16 @@ describe("test selection for a task", () => {
     expect(applied.readiness[0]!.args).toEqual(["-q", "tests/test_rank.py::test_c", "tests/test_util.py::test_d"]);
   });
 
+  it("never passes a test id that reads as an argument file (@file) or an option, whatever the map says", async () => {
+    changes.byDirectory.set("/work/service", [{ path: "src/score.py", status: "MODIFIED", hunks: [] }]);
+    for (const id of ["@args.txt", "-x"]) {
+      const hostile = { builtAt: FRESH, files: { ...map.files, "src/score.py": [id, "tests/test_score.py::test_a"] } };
+      const applied = (await apply({ plan: plan({ coverageMap: hostile }) }))!;
+      expect(applied.readiness, id).toEqual(readiness);
+      expect(applied.selection?.fallbackReason, id).toBe("over_selected");
+    }
+  });
+
   it("is ignored whole when the run has fewer commands than the plan has checks", async () => {
     expect(await apply({ readiness: [cmd("pytest", ["-q"])] })).toBeUndefined();
   });
