@@ -59,7 +59,7 @@ export const NIGHTLY_ENVIRONMENT_CAUSES = [
   "check_never_started", "check_timed_out", "no_tests_collected", "no_report_written", "collection_errors",
 ] as const;
 export type NightlyEnvironmentCause = (typeof NIGHTLY_ENVIRONMENT_CAUSES)[number];
-export const NIGHTLY_UNCLEAR_CAUSES = ["unreadable", "steps_disagree", "all_tests_failed", "few_errors", "other"] as const;
+export const NIGHTLY_UNCLEAR_CAUSES = ["unreadable", "steps_disagree", "incomplete_run", "all_tests_failed", "few_errors", "other"] as const;
 export type NightlyUnclearCause = (typeof NIGHTLY_UNCLEAR_CAUSES)[number];
 
 export type NightlyHealth =
@@ -96,7 +96,14 @@ export function classifyNightlyHealth(input: unknown): NightlyHealth {
 
   // A test step that failed while the counts show no failure cannot be read either way.
   const testStepFailed = steps.some((entry) => entry.status === "failed" && (NIGHTLY_HEALTH_TEST_STEPS as readonly string[]).includes(entry.step));
-  if (tests.failures + tests.errors === 0) return testStepFailed ? { class: "unclear", cause: "steps_disagree" } : { class: "passed" };
+  if (tests.failures + tests.errors === 0) {
+    if (testStepFailed) return { class: "unclear", cause: "steps_disagree" };
+    // A run in which no test actually ran (nothing collected, or everything skipped) proves nothing: the environment is not healthy.
+    if (tests.total - tests.skipped === 0) return { class: "environment", cause: "no_tests_collected" };
+    // "Passed" needs the whole run on record: at least one check, a passing test, no setup step failed (checked above), and both test steps present and passed.
+    const testStepsPassed = NIGHTLY_HEALTH_TEST_STEPS.every((step) => steps.some((entry) => entry.step === step && entry.status === "passed"));
+    return checks.length > 0 && tests.passed > 0 && testStepsPassed ? { class: "passed" } : { class: "unclear", cause: "incomplete_run" };
+  }
 
   // 4. real assertion failures next to tests that passed
   if (tests.failures > 0 && tests.passed > 0) return { class: "tests" };

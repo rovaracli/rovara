@@ -17,8 +17,25 @@ describe("a passing night", () => {
   it("is passed when every step passed or was skipped and nothing failed", () => {
     expect(classifyNightlyHealth(run())).toEqual({ class: "passed" });
     expect(classifyNightlyHealth(run({ steps: withStep("boot", "skipped") }))).toEqual({ class: "passed" });
-    expect(classifyNightlyHealth(run({ steps: [] }))).toEqual({ class: "passed" });
     expect(classifyNightlyHealth(run({ tests: counts(90, 0, 0, 10) }))).toEqual({ class: "passed" });
+  });
+});
+
+describe("a run that proves nothing is never healthy (review fix 1)", () => {
+  const T = (over: Over) => ({ total: 0, passed: 0, failures: 0, errors: 0, skipped: 0, ...over });
+  it("reads an empty run and an all-skipped run as the environment, not healthy", () => {
+    expect(classifyNightlyHealth({ steps: [], checks: [], tests: T({}) })).toEqual({ class: "environment", cause: "no_tests_collected" });
+    expect(classifyNightlyHealth({ steps: [], checks: [], tests: T({ total: 50, skipped: 50 }) })).toEqual({ class: "environment", cause: "no_tests_collected" });
+    expect(classifyNightlyHealth({ steps: [{ step: "setup", status: "skipped" }, { step: "full_suite", status: "skipped" }], checks: [], tests: T({}) })).toEqual({ class: "environment", cause: "no_tests_collected" });
+  });
+
+  it("reads a run without a check, a passing test, or both test steps passed as unclear", () => {
+    const smokeOnly = { steps: [{ step: "smoke", status: "passed" }], checks: [okCheck], tests: T({ total: 3, passed: 3 }) };
+    expect(classifyNightlyHealth(smokeOnly)).toEqual({ class: "unclear", cause: "incomplete_run" });
+    expect(classifyNightlyHealth(run({ steps: [] }))).toEqual({ class: "unclear", cause: "incomplete_run" });
+    expect(classifyNightlyHealth(run({ checks: [] }))).toEqual({ class: "unclear", cause: "incomplete_run" });
+    expect(classifyNightlyHealth(run({ steps: withStep("full_suite", "skipped") }))).toEqual({ class: "unclear", cause: "incomplete_run" });
+    expect(classifyNightlyHealth(run({ steps: withStep("smoke", "skipped") }))).toEqual({ class: "unclear", cause: "incomplete_run" });
   });
 });
 
