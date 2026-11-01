@@ -652,6 +652,8 @@ export type AgentSessionItemSk =
   | `REQUEST#${string}`
   | `HANDOFF_PENDING#${string}`
   | `ASK#${string}`
+  | `ASKREQ#${string}`
+  | `ASKLOCK#${string}`
   | "RETRIED";
 
 /** One session's partition: its META header, shares, followers, who is looking now, messages, local turns, events, legs and the marks a take-over owes (`TAKE_OVER_FOLLOW_UP#<approvalId>`), the requests a stop or retry answered (`REQUEST#<requestId>`) and the one retry a session had (`RETRIED`). */
@@ -662,6 +664,19 @@ export function agentSessionKey(orgId: OrgId, sessionId: SessionId, sk: AgentSes
 /** Live interaction A5: one "Ask about this task" record, `ASK#<askId>`, in the session's own partition. */
 export function sessionAskKey(orgId: OrgId, sessionId: SessionId, askId: string): OrgKey {
   return agentSessionKey(orgId, sessionId, `ASK#${keyPart(askId, "an ask id")}`);
+}
+
+/**
+ * Live interaction A3: an Ask that is waiting for the chat service to answer it (`ASKREQ#<askId>`, in the session's partition). It holds ids and the state only, never the question (the
+ * question travels in the queue message), and expires on its own.
+ */
+export function askRequestKey(orgId: OrgId, sessionId: SessionId, askId: string): OrgKey {
+  return agentSessionKey(orgId, sessionId, `ASKREQ#${keyPart(askId, "an ask id")}`);
+}
+
+/** The one-at-a-time lock of a person's Asks on a session (`ASKLOCK#<developerId>`): held while one of their Asks is being answered, and it expires on its own. */
+export function askLockKey(orgId: OrgId, sessionId: SessionId, developerId: string): OrgKey {
+  return agentSessionKey(orgId, sessionId, `ASKLOCK#${keyPart(developerId, "a developer id")}`);
 }
 
 /** The index of the Asks a person asked, so erasing the person finds them: partition `ASKBY#<developerId>`, one item per Ask. It holds ids only and goes with the Ask. */
@@ -693,6 +708,33 @@ export function askMentionPk(orgId: OrgId, personTag: string): string {
  */
 export function askExpiryKey(orgId: OrgId, day: string, sessionId: SessionId, askId: string): OrgKey {
   return { pk: askExpiryPk(orgId, day), sk: `${keyPart(sessionId, "a session id")}#${keyPart(askId, "an ask id")}` };
+}
+
+/**
+ * Public edition: the number of Asks a project had on one UTC day (`YYYY-MM-DD`), one item per project in the day's partition `ASKCOUNT#<day>`. The daily audit event is made from it once the day is over. A count and a
+ * project name only; it expires on its own.
+ */
+export function askCountKey(orgId: OrgId, day: string, project: string): OrgKey {
+  return { pk: askCountPk(orgId, day), sk: keyPart(project, "a project name") };
+}
+
+/** The partition of one day's Ask counts. */
+export function askCountPk(orgId: OrgId, day: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(day)) throw new Error("a count day is YYYY-MM-DD");
+  return orgScoped(orgId, `ASKCOUNT#${day}`);
+}
+
+/**
+ * The aliases of an erased person that an Ask still being answered must not write (`ASKERASED#`, one item per erased person, keyed by their person label tag `p_xxxxxx`, never their developer id; kept at most
+ * `ASK_RETENTION_DAYS` days; see register LI-2 in the lane report). The partition is the org's.
+ */
+export function askErasedAliasKey(orgId: OrgId, personTag: string): OrgKey {
+  return { pk: askErasedAliasPk(orgId), sk: keyPart(personTag, "a person tag") };
+}
+
+/** The partition of an org's erased-person aliases. */
+export function askErasedAliasPk(orgId: OrgId): string {
+  return orgScoped(orgId, "ASKERASED");
 }
 
 /** The partition of one day's expiring Asks. */
@@ -761,7 +803,7 @@ export function sessionRequestKey(orgId: OrgId, developerId: string, requestId: 
  * The item that counts one person's comments (`kind` "comment") or changes to them ("change") on one session in the current ten-minute window, or their messages to the agent
  * ("steer") in the current hour: `<kind>#<developerId>` in the session's rate partition. `steer_all` counts every person's messages to the agent on the session (its `developerId` is the word `session`).
  */
-export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all" | "local_update" | "local_status" | "local_stop"): OrgKey {
+export function sessionRateKey(orgId: OrgId, sessionId: SessionId, developerId: string, kind: "comment" | "change" | "steer" | "steer_all" | "local_update" | "local_status" | "local_stop" | "ask" | "ask_day"): OrgKey {
   return { pk: orgScoped(orgId, `SESSION_RATE#${keyPart(sessionId, "a session id")}`), sk: `${kind}#${keyPart(developerId, "a developer id")}` };
 }
 

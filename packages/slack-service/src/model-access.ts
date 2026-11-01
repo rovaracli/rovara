@@ -26,6 +26,8 @@ export interface TurnModelAccessInput {
   /** The models the turn will call with the key: the control plane routes the orchestrator's and keeps the classifier on Rovara's catalog (Task 26). */
   models?: { orchestrator?: { provider: string; modelId: string }; classifier?: { provider: string; modelId: string } };
   now?: () => number;
+  /** Live interaction A3: an Ask about a task asks its own route (`/v1/asks/model-access`) and names the Ask in the body; a Slack turn keeps the default route and body. */
+  route?: { path: string; body: Readonly<Record<string, string>> };
 }
 
 const KEY_PATTERN = /^[^\s]{1,16384}$/u;
@@ -47,10 +49,10 @@ function parseTurnModelAccess(body: unknown): TurnModelAccess {
 /** The turn's current model access, fetched when there is none or it is about to expire; concurrent callers share one fetch. */
 export function turnModelAccessSource(input: TurnModelAccessInput): () => Promise<TurnModelAccess> {
   const now = input.now ?? Date.now;
-  const url = `${input.controlPlaneUrl.replace(/\/$/u, "")}/v1/model-access`;
+  const url = `${input.controlPlaneUrl.replace(/\/$/u, "")}${input.route?.path ?? "/v1/model-access"}`;
   // The member comes from the signed Slack user header, so only the org (when known) and the turn go in the body.
   const body = JSON.stringify({
-    ...(input.orgId === undefined ? {} : { orgId: input.orgId }), turnId: input.turnId,
+    ...(input.orgId === undefined ? {} : { orgId: input.orgId }), ...(input.route?.body ?? {}), turnId: input.turnId,
     ...(input.models?.orchestrator === undefined ? {} : { model: input.models.orchestrator }),
     ...(input.models?.classifier === undefined ? {} : { classifierModel: input.models.classifier }),
   });

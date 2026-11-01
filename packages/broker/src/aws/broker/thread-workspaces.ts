@@ -22,7 +22,9 @@ import { hashJson, isConditional } from "../broker-shared.js";
 import { admitWork } from "../../spend/admission.js";
 import { githubLoginOf, personNameForText } from "../../developer/requester-text.js";
 import type { ExtraItems, TransactItems } from "../developer-task-actions.js";
-import { releaseFinishedTasksOf, markWorkflowThreadNoteAnswered, workflowTaskAnswerContext } from "../developer-tasks.js";
+import { releaseFinishedTasksOf, markWorkflowThreadNoteAnswered, taskCommentSection } from "../developer-tasks.js";
+import { askContext } from "../../agent-sessions/ask-context.js";
+import { recordSlackAsk, takeSlackAskRates } from "../../agent-sessions/ask.js";
 import { publicWorkspace } from "../../workspaces.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { closeReleasesStorage, issueRepositoryGrant, object, uuid, workspaceItem, workspaceKey, workspaceRuntime } from "./admin-and-helpers.js";
@@ -447,7 +449,7 @@ export async function ensureThreadWorkspace(
     const taskAnswer = input.taskAnswer === undefined ? undefined : SlackTaskAnswerRequestSchema.safeParse(input.taskAnswer);
     if (taskAnswer !== undefined && !taskAnswer.success) throw agentXError("CONFIG_INVALID", "taskAnswer needs the task's ID");
     if (taskAnswer?.data.taskId === identity.sharedTask.taskId && identity.sharedTask.taskAnswer === true) {
-      const answer = await taskAnswerWorkspace(dependencies, requireOrgId(identity.orgId), slack.thread, identity.sharedTask, taskAnswer.data.commentId);
+      const answer = await taskAnswerWorkspace(dependencies, requireOrgId(identity.orgId), slack.thread, identity.sharedTask, slack.requester, taskAnswer.data.commentId);
       if (answer !== undefined) return answer;
     }
     return sharedThreadWorkspace(dependencies, identity, identity.sharedTask, input.includeSharedTask === true, include, includeSettingsRevision);
@@ -870,28 +872,43 @@ function threadChargeItems(
   ];
 }
 
+/** The most characters of context the Slack service takes in a task-mode answer (its schema's bound). */
+const SLACK_TASK_CONTEXT_CHARS = 39_000;
+
 /**
- * Task mode for the chat agent in a Slack-started task's own thread: a read-only view. No repositories, connectors or
- * actions, no operation and no compute (nothing is created, prepared or charged); `taskContext` is the broker's
- * untrusted-data text about the task. Undefined (the thread stays closed) when the task is closed or its context
- * cannot be built.
+ * Task mode for the chat agent in a Slack-started task's own thread: a read-only view. No repositories, connectors or actions, no operation and no compute (nothing is created, prepared or
+ * charged); `taskContext` is the broker's untrusted-data text about the task, built for the Slack audience (`askContext`: file names and counts, never patch text, because the channel may hold
+ * people who are not members). The asker must be a member of the org with "can use" on the task's session, read now. With the Ask switch on the question also spends the Ask rates. Undefined (the
+ * thread stays closed) when the task is closed, the asker may not ask, or its context cannot be built.
  */
 async function taskAnswerWorkspace(
   dependencies: AwsBrokerDependencies,
   orgId: OrgId,
   thread: SlackThread,
   shared: NonNullable<AuthenticatedIdentity["sharedTask"]>,
+  requester: SlackRequester,
   commentId?: string,
 ): Promise<SlackThreadWorkspaceResult | undefined> {
   const workspace = await requireWorkspace(dependencies, shared.workspaceId);
   // A merged (or rejected) task gave back its workspace but is not closed: its thread is still answered, which needs no
   // compute. A closed task's thread stays closed (the context below is undefined for it).
-  if (workspace.status === "CLOSED" && (await getItem<DeveloperTaskRecord>(dependencies, taskKey(shared.taskId)))?.releasedAt === undefined) return undefined;
-  const taskContext = await workflowTaskAnswerContext(
-    { documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: developerTaskActions(dependencies) },
-    { taskId: shared.taskId, workspaceId: shared.workspaceId, thread, ...(commentId === undefined ? {} : { commentId }) },
-  );
-  if (taskContext === undefined) return undefined;
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(shared.taskId));
+  if (workspace.status === "CLOSED" && task?.releasedAt === undefined) return undefined;
+  const slackAsk = dependencies.slackAsk;
+  if (slackAsk === undefined || task === undefined) return undefined;
+  // The asker is the Slack user the thread's request came from, as a member of this org; a person who is not a member has no identity to check "can use" on and gets no answer.
+  const developerId = await linkedRequester(dependencies, orgId, requester);
+  const context = await askContext(slackAsk.context, { audience: "slack", workspaceId: shared.workspaceId, thread, ...(developerId === undefined ? {} : { asker: { developerId } }) }, shared.taskId, slackAsk.readers);
+  if (context === undefined || developerId === undefined) return undefined;
+  if (slackAsk.ask !== undefined) await takeSlackAskRates(slackAsk.ask, task, developerId);
+  let taskContext = context.text;
+  if (commentId !== undefined) {
+    const section = await taskCommentSection({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: developerTaskActions(dependencies) }, shared.taskId, commentId);
+    if (section === undefined) return undefined;
+    // The answer is shown on the task page, not in the thread: the context says so (the audience's limits are the Slack tier's all the same).
+    taskContext = [taskContext.replace(/^This Slack thread is an AgentX task/u, "This is an AgentX task"), ...section].join("\n");
+  }
+  if (taskContext.length > SLACK_TASK_CONTEXT_CHARS) taskContext = Array.from(taskContext).slice(0, SLACK_TASK_CONTEXT_CHARS).join("");
   const settings = await requireLatestProject(dependencies, orgId, workspace.projectName);
   return {
     outcome: "WORKSPACE", mode: "task-answer", workspaceId: workspace.id, status: workspace.status, operationId: null, created: false,
@@ -918,6 +935,13 @@ export async function markThreadNoteAnswered(dependencies: AwsBrokerDependencies
   const outcome = await markWorkflowThreadNoteAnswered({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, { taskId: body.taskId, thread, messageTs: body.messageTs });
   if (outcome === "refused") throw agentXError("FORBIDDEN", "this thread is not that task's own thread");
   if (outcome === "missing") throw agentXError("NOT_FOUND", "that reply was not saved for this task");
+  // Live interaction A3: with the Ask switch on, the question is kept as an Ask (rates were spent when its context was built) and audited. The answer is already in the thread: nothing here can fail it.
+  const slackAsk = dependencies.slackAsk?.ask;
+  if (slackAsk !== undefined && body.ask !== undefined && identity.orgId !== undefined) {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(body.taskId));
+    const askedBy = await linkedRequester(dependencies, identity.orgId, identity.slack.requester);
+    if (task !== undefined) await recordSlackAsk(slackAsk, { task, messageTs: body.messageTs, askedBy, question: body.ask.question, answer: body.ask.answer, contextBytes: body.ask.contextBytes ?? 0 });
+  }
   return { outcome: "ANSWERED" };
 }
 

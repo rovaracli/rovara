@@ -42,7 +42,7 @@ describe("agentx config list and get", () => {
     expect(rows.find((row) => row.key === "autofix.enabled")).toMatchObject({ value: "true", where: "stack parameter AutofixEnabled on agentx-staging-control-plane" });
     expect(rows.find((row) => row.key === "rovaraCode.v2")).toMatchObject({ value: "false", where: "stack parameter RovaraCodeV2Enabled on agentx-staging-control-plane" });
     expect(rows.find((row) => row.key === "liveSteer.enabled")).toMatchObject({ value: "0", where: "stack parameter LiveSteerEnabled on agentx-staging-control-plane" });
-    expect(rows).toHaveLength(21);
+    expect(rows).toHaveLength(22);
   });
 
   it("never shows the alert address itself, only that it is set", async () => {

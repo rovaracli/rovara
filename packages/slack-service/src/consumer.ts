@@ -1,4 +1,4 @@
-import { SlackPageCommentMessageSchema, SlackRequestMessageSchema, type SlackPageCommentMessage, type SlackRequestMessage, type TaskQuestionRoute } from "@agentx/contracts";
+import { AskQueueMessageSchema, SlackPageCommentMessageSchema, SlackRequestMessageSchema, type AskQueueMessage, type SlackPageCommentMessage, type SlackRequestMessage, type TaskQuestionRoute } from "@agentx/contracts";
 import { HANDOFF_MILLISECONDS, TurnHandedOffError } from "./interrupted-turn.js";
 import type { ServiceLog } from "./processor.js";
 
@@ -15,6 +15,8 @@ export interface QueueMessage {
   taskQuestion?: TaskQuestionRoute;
   /** Spec 061 slice 2: a task page comment for AgentX to answer (`SlackPageCommentMessageSchema` body), never a chat request. */
   pageComment?: true;
+  /** Live interaction A3: an Ask about a task (`AskQueueMessageSchema` body), never a chat request. */
+  ask?: true;
 }
 
 export interface QueueClient {
@@ -34,9 +36,12 @@ export interface ConsumerOptions {
   handoffMilliseconds?: number;
   /** Answers a page comment message; without it such a message is discarded. */
   pageComment?: PageCommentHandler;
+  /** Answers an Ask message; without it such a message is discarded. */
+  ask?: AskHandler;
   log?: ServiceLog;
 }
 
+export type AskHandler = (message: AskQueueMessage, context: { handoff?: AbortSignal }) => Promise<void>;
 export type PageCommentHandler = (message: SlackPageCommentMessage, context: { handoff?: AbortSignal }) => Promise<void>;
 
 export type RequestHandler = (message: SlackRequestMessage, context: {
@@ -53,7 +58,7 @@ export type RequestHandler = (message: SlackRequestMessage, context: {
   onHeartbeat?: (listener: () => void) => void;
 }) => Promise<void>;
 
-type GroupOptions = Pick<ConsumerOptions, "maxReceiveCount" | "visibilitySeconds" | "heartbeatMilliseconds" | "pageComment"> & {
+type GroupOptions = Pick<ConsumerOptions, "maxReceiveCount" | "visibilitySeconds" | "heartbeatMilliseconds" | "pageComment" | "ask"> & {
   /** Once aborted, a later message of the group is released rather than started. */
   stop?: AbortSignal;
   handoff?: AbortSignal;
@@ -137,6 +142,14 @@ export async function processGroup(
         const comment = SlackPageCommentMessageSchema.safeParse(parseJson(entry.body));
         if (!comment.success || options.pageComment === undefined) log("message.discarded", { reason: comment.success ? "page_comment_unavailable" : "invalid_message" });
         else await options.pageComment(comment.data, options.handoff === undefined ? {} : { handoff: options.handoff });
+        await queue.delete(entry.receiptHandle);
+        continue;
+      }
+      if (entry.ask === true) {
+        // Its own handler only: an Ask never runs as a chat request, and an unreadable one is dropped.
+        const ask = AskQueueMessageSchema.safeParse(parseJson(entry.body));
+        if (!ask.success || options.ask === undefined) log("message.discarded", { reason: ask.success ? "ask_unavailable" : "invalid_message" });
+        else await options.ask(ask.data, options.handoff === undefined ? {} : { handoff: options.handoff });
         await queue.delete(entry.receiptHandle);
         continue;
       }

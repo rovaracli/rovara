@@ -77,8 +77,10 @@ export async function handleTaskQuestion(message: SlackRequestMessage, route: Ta
       return;
     }
     let reply: string;
+    let answered: string;
     try {
       const answer = await deps.answer(withoutChatPrefix(message.text));
+      answered = answer;
       reply = slackReplyText(answer);
     } catch (error) {
       deps.log("task_question.answer_failed", { ...fields, errorName: errorName(error) });
@@ -100,7 +102,7 @@ export async function handleTaskQuestion(message: SlackRequestMessage, route: Ta
       deps.log("task_question.footer_post_failed", { ...fields, errorName: errorName(error) });
     }
     try {
-      await deps.markAnswered({ taskId: route.taskId, messageTs: route.noteTs, thread: message.thread });
+      await deps.markAnswered({ taskId: route.taskId, messageTs: route.noteTs, thread: message.thread, ask: { question: Array.from(withoutChatPrefix(message.text)).slice(0, 1_000).join(""), answer: Array.from(answered).slice(0, 20_000).join("") } });
     } catch (error) {
       // The answer stands; the note is still read as an instruction by the next step.
       deps.log("task_question.mark_failed", { ...fields, errorName: errorName(error) });

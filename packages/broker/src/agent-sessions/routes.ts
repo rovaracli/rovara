@@ -30,6 +30,7 @@ import { changeAnywayOnSession } from "../rovara-code/change-anyway.js";
 import { pressMerge, registerMergeApprovals } from "../rovara-code/merge.js";
 import { registerCodeSettingsApprovals } from "../rovara-code/code-settings.js";
 import { stopSession } from "./stop.js";
+import { askStatusFor, submitAsk, type AskDependencies } from "./ask.js";
 import { askTakeOver, registerSessionTakeOverApprovals } from "./take-over.js";
 import { linkLinearOnSession, unlinkLinearOnSession } from "../rovara-code/link-linear.js";
 import { readChanges } from "../realtime/changes.js";
@@ -55,6 +56,8 @@ export interface SessionRouteDependencies extends SessionReadDependencies, Pick<
   handoff?: HandoffRuntime | undefined;
   /** Task 16: the project's card (repositories, setup, channels) for a person who already has a role in it. Without it the project page answers `NOT_FOUND`. */
   projectPage?: ProjectPageReader | undefined;
+  /** Live interaction A3 (`ask.ts`): Ask about this task. Absent while the `ak` switch is off, and then `…/ask` and `…/asks/{id}` answer `NOT_FOUND` as if they did not exist. */
+  ask?: AskDependencies | undefined;
 }
 
 /** The caller of a route. */
@@ -68,6 +71,7 @@ const BINDINGS_PATH = /^\/v1\/app\/sessions\/([^/]+)\/bindings(?:\/(linear))?$/;
 const CHANGES_PATH = "/v1/app/changes";
 const LIVE_PATH = "/v1/app/live";
 const PROJECT_OVERVIEW_PATH = /^\/v1\/app\/projects\/([^/]+)\/overview$/;
+const ASK_PATH = /^\/v1\/app\/sessions\/([^/]+)\/(?:ask|asks\/([^/]+))$/;
 const HOME_PATH = "/v1/app/home";
 const HOME_DISMISS_PATH = /^\/v1\/app\/home\/cards\/([^/]*)\/dismiss$/;
 const REALTIME_TOKEN_PATH = "/v1/app/realtime/token";
@@ -168,6 +172,17 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
     const number = url.searchParams.get("number") ?? "", page = url.searchParams.get("page") ?? "1";
     if (!/^[1-9][0-9]{0,9}$/.test(number) || !/^[1-9][0-9]{0,4}$/.test(page)) throw notFound();
     return sessionDiff(deps, caller, diffMatch[1]!, { repository: url.searchParams.get("repository") ?? "", number: Number(number), page: Number(page) });
+  }
+  const askMatch = ASK_PATH.exec(url.pathname);
+  if (askMatch !== null) {
+    // Live interaction A3: `POST …/ask` queues a question (needs "can use"); `GET …/asks/{askId}` reads it back, for the person who asked alone.
+    if (deps.ask === undefined || !SessionIdSchema.safeParse(askMatch[1]).success) throw notFound();
+    if (askMatch[2] === undefined) {
+      if (request.method !== "POST") throw notFound();
+      return submitAsk(deps.ask, caller, askMatch[1]!, jsonBody(request));
+    }
+    if (request.method !== "GET") throw notFound();
+    return askStatusFor(deps.ask, caller, askMatch[1]!, askMatch[2]);
   }
   const approvals = deps.approvals;
   const read: SessionReadDependencies = {

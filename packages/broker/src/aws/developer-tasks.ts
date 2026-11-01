@@ -216,7 +216,7 @@ export {
   sessionNoteItems,
   threadNotesPromptSection,
 } from "./developer-tasks/thread-notes.js";
-export { workflowTaskAnswerContext } from "./developer-tasks/task-answer-context.js";
+export { taskCommentSection } from "./developer-tasks/task-answer-context.js";
 export { type TaskActor, cancelTask, cancelTaskFor, retryTaskWorkflowFor } from "./developer-tasks/cancel.js";
 export {
   type EndTold,

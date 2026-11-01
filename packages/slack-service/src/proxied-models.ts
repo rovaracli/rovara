@@ -23,6 +23,8 @@ export interface ProxiedModelsOptions {
   createClassifier: typeof createHostedClassifier;
   createRouter: typeof createHostedRequestRouter;
   now?: () => number;
+  /** Live interaction A3: where this message's key is asked for, when it is not a Slack turn's (an Ask names its own route and body). */
+  accessRouteFor?: (message: SlackRequestMessage) => { orgId: string; path: string; body: Readonly<Record<string, string>> } | undefined;
 }
 
 export interface ProxiedModels {
@@ -39,8 +41,10 @@ export function createProxiedModels(options: ProxiedModelsOptions): ProxiedModel
   const sourceFor = (message: SlackRequestMessage) => {
     let source = sources.get(message.eventId);
     if (source === undefined) {
+      const access = options.accessRouteFor?.(message);
       source = turnModelAccessSource({
         controlPlaneUrl: options.controlPlaneUrl, signedFetch: options.signedFetchFor(message), turnId: message.eventId,
+        ...(access === undefined ? {} : { orgId: access.orgId, route: { path: access.path, body: access.body } }),
         models: { classifier: options.classifierModel, ...(options.orchestratorModel === undefined ? {} : { orchestrator: options.orchestratorModel }) },
         ...(options.now === undefined ? {} : { now: options.now }),
       });

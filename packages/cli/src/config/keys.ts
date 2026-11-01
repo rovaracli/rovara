@@ -114,6 +114,7 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
   { key: "planSelfCheck.enabled", description: "true: every coding plan is checked before the owner sees it and the planner is asked again once for a fixable problem (also checks the plan against the current app); false: plans go to the owner as written", target: parameter("control-plane", "PlanSelfCheckEnabled"), defaultValue: "true", parse: oneOf("planSelfCheck.enabled", ["true", "false"]) },
   { key: "autofix.enabled", description: "true: Rovara sends blocked checks or reviews back to coding by itself (before any pull request, within its limits); false: only the owner does", target: parameter("control-plane", "AutofixEnabled"), defaultValue: "true", parse: oneOf("autofix.enabled", ["true", "false"]) },
   { key: "liveSteer.enabled", description: "1: a person's message to a running step is given to it live (turn on only after the dispatcher, publisher, broker and worker image that carry live steer are deployed); 0: every message waits as a note for the next step", target: parameter("control-plane", "LiveSteerEnabled"), defaultValue: "0", parse: oneOf("liveSteer.enabled", ["0", "1"]) },
+  { key: "liveAsk.enabled", description: "1: Ask about this task is on (turn on only after the chat service that carries the Ask route is deployed); 0: every Ask route answers not found", target: parameter("control-plane", "LiveAskEnabled"), defaultValue: "0", parse: oneOf("liveAsk.enabled", ["0", "1"]) },
 ];
 
 export function configKey(name: string): ConfigKey {
