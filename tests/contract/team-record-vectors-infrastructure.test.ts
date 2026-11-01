@@ -59,10 +59,11 @@ describe("team record vector buckets", () => {
     expect(actionsOf(safe.brokerStatements()).some((a) => a.startsWith("s3vectors:"))).toBe(false);
   });
 
-  it("I-8: with a broker principal the data rights sit on a role the broker assumes, and the broker role itself gets only AssumeRole", () => {
+  it("I-8: with a broker principal the data rights sit on a role the broker assumes, and the broker role itself gets only AssumeRole and TagSession", () => {
     const stack = new Stack(new App(), "T", { env: { account: "111122223333", region: "us-west-2" } });
     const vectors = new TeamRecordVectors(stack, "V", { bucketNames: ["rovara-record-vectors"], brokerPrincipal: new iam.AccountRootPrincipal() });
-    expect(actionsOf(vectors.brokerStatements())).toEqual(["sts:AssumeRole"]);
+    // Fix round 1, S2: it may also tag the session (the data role names its indexes by the tag).
+    expect(actionsOf(vectors.brokerStatements())).toEqual(["sts:AssumeRole", "sts:TagSession"]);
     expect(actionsOf(vectors.brokerIndexCreationStatements())).toEqual([]);
     const template = Template.fromStack(stack);
     const policies = policiesOf(template);

@@ -125,6 +125,23 @@ describe("the switch on: Public cloud", () => {
     expect(mapping?.Properties).toMatchObject({ FunctionResponseTypes: ["ReportBatchItemFailures"], BatchSize: 10 });
   }, 180_000);
 
+  it("S2: the vector data role names its indexes by the session TAG, never `index/*`, and only lets the broker tag a session with an index name", () => {
+    const role = Object.entries(resources).find(([id, resource]) => resource.Type === "AWS::IAM::Role" && /^TeamRecordVectorsDataRole/.test(id))![1];
+    const trust = JSON.stringify(role.Properties.AssumeRolePolicyDocument);
+    expect(trust).toContain("sts:TagSession");
+    expect(trust).toContain("aws:RequestTag/rovara-index");
+    expect(trust).toContain("ws-*");
+    const policies = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^TeamRecordVectorsDataRole/.test(id));
+    expect(policies).toHaveLength(1);
+    const text = JSON.stringify(policies[0]![1].Properties.PolicyDocument);
+    expect(text).toContain("${aws:PrincipalTag/rovara-index}");
+    expect(text).not.toContain("/index/*");
+    for (const statement of (policies[0]![1].Properties.PolicyDocument as { Statement: Array<{ Action: string | string[]; Resource: unknown }> }).Statement) {
+      if ([statement.Action].flat().some((action) => action.startsWith("s3vectors:"))) expect(JSON.stringify(statement.Resource)).toContain("${aws:PrincipalTag/rovara-index}");
+    }
+    expect(JSON.stringify(on.toJSON())).toMatch(/"sts:AssumeRole","sts:TagSession"/);
+  }, 180_000);
+
   it("gives the broker rights on the table and its indexes only (no scan), and to assume the vector role", () => {
     const text = JSON.stringify(on.toJSON());
     expect(text).toContain("sts:AssumeRole");

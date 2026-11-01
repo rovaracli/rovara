@@ -28,7 +28,7 @@ function fakeAws() {
   const athenaCalls: Array<{ command: string; sql: string }> = [];
   const athena = { down: false };
   const embedBodies: string[] = [];
-  const sessions: Array<{ roleArn: string; policy: string; sessionName: string }> = [];
+  const sessions: Array<{ roleArn: string; policy: string; sessionName: string; tags?: ReadonlyArray<{ Key: string; Value: string }> | undefined }> = [];
   const command = (name: string) => ({ [name]: class { constructor(readonly input: Record<string, unknown>) {} get commandName() { return name; } } });
   const sdk = async (name: string): Promise<Record<string, unknown>> => {
     if (name === "@aws-sdk/client-bedrock-runtime") {
@@ -66,8 +66,8 @@ function fakeAws() {
     throw new SdkUnavailableError();
   };
   const sts = {
-    async assumeRole(request: { roleArn: string; sessionName: string; policy: string; durationSeconds: number }) {
-      sessions.push({ roleArn: request.roleArn, policy: request.policy, sessionName: request.sessionName });
+    async assumeRole(request: { roleArn: string; sessionName: string; policy: string; durationSeconds: number; tags?: ReadonlyArray<{ Key: string; Value: string }> }) {
+      sessions.push({ roleArn: request.roleArn, policy: request.policy, sessionName: request.sessionName, tags: request.tags });
       return { credentials: { accessKeyId: `AKIA-${sessions.length}`, secretAccessKey: "s", sessionToken: "t" }, expiresAtMs: T0 + 3_600_000 };
     },
   };
@@ -190,6 +190,14 @@ describe("vectors are opened per workspace", () => {
     expect(indexArns(first!.policy)).toHaveLength(1);
     expect(indexArns(second!.policy)).toHaveLength(1);
     expect(indexArns(first!.policy)[0]).not.toBe(indexArns(second!.policy)[0]);
+    // Fix round 1, S2: each session is TAGGED with its own workspace's index name (the data role's rights are written in terms of that tag), and the tag is the index the policy names.
+    for (const session of aws.sessions) {
+      expect(session.tags).toHaveLength(1);
+      expect(session.tags![0]!.Key).toBe("rovara-index");
+      expect(session.tags![0]!.Value).toMatch(/^ws-[0-9a-f]{32}$/);
+      expect(session.policy).toContain(session.tags![0]!.Value);
+    }
+    expect(first!.tags![0]!.Value).not.toBe(second!.tags![0]!.Value);
     // The put of org A used session 1 and the put of org B used session 2: no call is signed with the other workspace's session.
     const puts = aws.vectorCalls.filter((call) => call.command === "PutVectorsCommand");
     expect(puts.map((call) => call.accessKeyId)).toStrictEqual(["AKIA-1", "AKIA-2"]);
