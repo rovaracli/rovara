@@ -10,7 +10,8 @@
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHmac } from "node:crypto";
-import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, liveInteractionFlagOn, type OrgId } from "@agentx/contracts";
+import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, liveInteractionFlagOn, type HookRecord, type OrgId } from "@agentx/contracts";
+import { handleLinearComment, type LinearCommentDependencies } from "../../rovara-code/linear-comments.js";
 import { loadTaskPeople } from "../../developer/task-people.js";
 import { chosenOwnerNames } from "../../agent-sessions/owner-names.js";
 import { effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -114,6 +115,7 @@ export function askDependenciesFor(dependencies: AwsBrokerDependencies, access: 
     people: (task, askerId) => peopleOf(dependencies, task, askerId),
     orchestratorInstructions: async (orgId, project) => (await requireLatestProject(dependencies, orgId, project)).definition.orchestratorInstructions,
     defaultModel: DEFAULT_MODEL_LABEL,
+    ...(dependencies.linearReply === undefined ? {} : { linearReply: dependencies.linearReply }),
     log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
   };
 }
@@ -187,4 +189,15 @@ export async function runAskMaintenance(dependencies: AwsBrokerDependencies, now
     console.log(JSON.stringify({ component: "broker", event: "ask.maintenance_failed", error: error instanceof Error ? error.name : "unknown" }));
     return "failed";
   }
+}
+
+/**
+ * The Linear comment intake the hook ingress is offered (`HookIngressDeps.commentIntake`): undefined while the Ask switch is off or Rovara has no way to write in Linear, so nothing a Linear
+ * delivery says is read, spent or answered. `taskPageLink` makes the link a refusal sends a person to.
+ */
+export function linearCommentIntakeOf(dependencies: AwsBrokerDependencies, taskPageLink?: LinearCommentDependencies["taskPageLink"]): ((input: { orgId: OrgId; hook: HookRecord; body: unknown }) => Promise<unknown>) | undefined {
+  const ask = dependencies.slackAsk?.ask;
+  if (ask === undefined || dependencies.linearReply === undefined) return undefined;
+  const deps: LinearCommentDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ask, reply: dependencies.linearReply, taskPageLink, log: ask.log };
+  return (input) => handleLinearComment(deps, input);
 }

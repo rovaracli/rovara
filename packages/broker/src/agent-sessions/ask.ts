@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  ASK_LIMITS, ASK_RATE, ASK_UNAVAILABLE_MESSAGE, AskAnsweredRequestSchema, AskBodySchema, AskQueueMessageSchema, AskStatusSchema, AskTurnRequestSchema, ASK_TURN_RULES, INDEX_EXPIRY_ATTRIBUTE,
+  ASK_ANSWER_LABEL, ASK_LIMITS, ASK_RATE, ASK_UNAVAILABLE_MESSAGE, redactText, AskAnsweredRequestSchema, AskBodySchema, AskQueueMessageSchema, AskStatusSchema, AskTurnRequestSchema, ASK_TURN_RULES, INDEX_EXPIRY_ATTRIBUTE,
   agentXError, askLockKey, askRequestKey, askRouteAttributes, sessionAskKey, sessionRateKey,
   type AskAnsweredRequest, type AskStatus, type AskTurnResult, type OrgId, type SessionLevel,
 } from "@agentx/contracts";
@@ -59,10 +59,18 @@ export interface AskDependencies {
   orchestratorInstructions(orgId: OrgId, project: string): Promise<string>;
   /** The model the service reports when it does not say (a label only). */
   defaultModel: string;
+  /** How a Linear Ask's answer reaches the issue (the only place a Linear answer is shown). Absent: no Linear Ask is taken (`linear-comments.ts`). */
+  linearReply?: LinearAnswerPort | undefined;
   log?: ((entry: Record<string, unknown>) => void) | undefined;
 }
 
 export type AskCaller = SessionCaller;
+
+/** Posts a comment on a Linear issue as Rovara (see `LinearReplyPort`; this is the part an Ask needs). */
+export interface LinearAnswerPort { reply(input: { orgId: OrgId; issueKey: string; text: string }): Promise<void> }
+
+/** An answer for a Linear issue: secrets redacted, and every `@` that starts a word broken so that the answer can never notify someone by mention. */
+export const linearAnswerText = (text: string): string => `${redactText(text).replace(/@(?=[\p{L}\p{N}_])/gu, "@\u200b")}\n\n_${ASK_ANSWER_LABEL}_`;
 
 const getItem = async (deps: Pick<AskDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
   ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;
@@ -289,7 +297,7 @@ export function sessionLevelPort(access: SessionAccessDependencies): (person: { 
   };
 }
 
-interface PendingAsk { request: Item; task: DeveloperTaskRecord; viewer: AskViewer; askerKey: string; askedBy: string | undefined; audience: "web" | "linear" }
+interface PendingAsk { request: Item; task: DeveloperTaskRecord; viewer: AskViewer; askerKey: string; askedBy: string | undefined; audience: "web" | "linear"; issueId: string | undefined }
 
 /** The waiting Ask the service names, with its task and the viewer it is for, or undefined: not made by the broker, not waiting, another org's, or its task is gone. */
 async function pendingAsk(deps: AskDependencies, ref: { orgId: OrgId; sessionId: string; askId: string }): Promise<PendingAsk | undefined> {
@@ -304,7 +312,7 @@ async function pendingAsk(deps: AskDependencies, ref: { orgId: OrgId; sessionId:
   if (audience === "web" && askedBy === undefined) return undefined;
   if (audience === "linear" && typeof issueId !== "string") return undefined;
   const viewer: AskViewer = audience === "web" ? { audience: "web", orgId: ref.orgId, developerId: askedBy! } : { audience: "linear", orgId: ref.orgId, issueId: issueId as string };
-  return { request, task, viewer, askerKey: request["askerKey"], askedBy, audience };
+  return { request, task, viewer, askerKey: request["askerKey"], askedBy, audience, issueId: typeof issueId === "string" ? issueId : undefined };
 }
 
 /**
@@ -340,8 +348,12 @@ export async function completeAsk(deps: AskDependencies, value: unknown): Promis
     throw notFound();
   }
   if (answer.outcome === "ANSWERED" && (answer.text === undefined || answer.text.trim() === "" || answer.question === undefined || answer.question.trim() === "")) throw agentXError("CONFIG_INVALID", "an answer needs the question and its text");
+  const tellLinear = async (text: string): Promise<void> => {
+    if (pending.audience !== "linear" || pending.issueId === undefined || deps.linearReply === undefined) return;
+    try { await deps.linearReply.reply({ orgId: answer.orgId, issueKey: pending.issueId, text }); } catch (error) { deps.log?.({ event: "ask.linear_reply_failed", error: error instanceof Error ? error.name : "unknown" }); }
+  };
   if (answer.outcome === "FAILED") {
-    await settleRequest(deps, answer.orgId, answer.sessionId, answer.askId, pending.askerKey, "failed");
+    if (await settleRequest(deps, answer.orgId, answer.sessionId, answer.askId, pending.askerKey, "failed")) await tellLinear(ASK_UNAVAILABLE_MESSAGE);
     return { outcome: "FAILED" };
   }
   const nowMs = deps.now();
@@ -351,11 +363,12 @@ export async function completeAsk(deps: AskDependencies, value: unknown): Promis
     question: answer.question ?? "", answer: answer.text ?? "", contextBytes, model: answer.model ?? deps.defaultModel, nowMs, people: await deps.people(pending.task, pending.askedBy).catch(() => []),
   });
   if (stored === "erased") {
-    await settleRequest(deps, answer.orgId, answer.sessionId, answer.askId, pending.askerKey, "failed");
+    if (await settleRequest(deps, answer.orgId, answer.sessionId, answer.askId, pending.askerKey, "failed")) await tellLinear(ASK_UNAVAILABLE_MESSAGE);
     return { outcome: "FAILED" };
   }
   const settled = await settleRequest(deps, answer.orgId, answer.sessionId, answer.askId, pending.askerKey, "answered");
   if (settled) {
+    await tellLinear(linearAnswerText(answer.text ?? ""));
     await auditAsk(deps.audit, { edition: deps.edition, orgId: answer.orgId, sessionId: answer.sessionId, askId: answer.askId, audience: pending.audience, contextBytes, model: answer.model ?? deps.defaultModel, askedBy: pending.askedBy, projectName: pending.task.project, nowMs });
   }
   return { outcome: "ANSWERED" };

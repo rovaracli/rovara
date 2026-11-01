@@ -737,6 +737,14 @@ export function askErasedAliasPk(orgId: OrgId): string {
   return orgScoped(orgId, "ASKERASED");
 }
 
+/**
+ * Live interaction L1: the note that a Linear comment was handled (answered, or told the link), so the same delivery again does nothing twice. One item per comment id, ids only, expires on its own. The
+ * partition is the org's.
+ */
+export function askLinearCommentKey(orgId: OrgId, commentId: string): OrgKey {
+  return { pk: orgScoped(orgId, "ASKLINEAR"), sk: keyPart(commentId, "a Linear comment id") };
+}
+
 /** The partition of one day's expiring Asks. */
 export function askExpiryPk(orgId: OrgId, day: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(day)) throw new Error("an expiry day is YYYY-MM-DD");

@@ -1,6 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
-import { handleAskServiceRoute, installSlackAsk, runAskMaintenance } from "./ask-service.js";
+import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
 import { requireStaffRouteAllowed } from "./staff-routes.js";
 import { isSlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { ProcessModelRefusal, processModelRefusalBody } from "../../model-selection/process-refusal.js";
@@ -471,6 +471,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           hooks: new HookStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }),
           secrets: eventHooks.secrets, providers: eventHooks.providers ?? hookProviders(), dispatch, memory: hookMemoryOf(dependencies),
           ...optional("awsAccounts", connectedAwsAccountsOf(dependencies)), ...optional("snsFetch", eventHooks.snsFetch),
+          // Live interaction L1: a Linear comment on a bound issue may be an Ask; none while the Ask switch is off or Rovara cannot write in Linear.
+          ...optional("commentIntake", linearCommentIntakeOf(dependencies)),
         }, { source: hookPath[1]!, hookId: hookPath[2]!, raw, headers: request.headers, sourceIp: event.requestContext?.http?.sourceIp });
         return hookReply(answer);
       }

@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { HookRecord, TriggerEvent } from "@agentx/contracts";
 import { hmacHexEquals, type HookHeaders, type HookProvider, type Normalized } from "./types.js";
 import { headerOf, httpsLinkOn, isoOfMillis, titleOf, valuesOf } from "./shared.js";
+import { parseLinearIssue } from "../../rovara-code/linear-close.js";
 
 const Envelope = z.object({ type: z.string().max(64), action: z.string().max(64), organizationId: z.string().min(1).max(100) }).passthrough();
 const TeamOf = z.object({ data: z.object({ teamId: z.string().min(1).max(100).optional(), team: z.object({ id: z.string().min(1).max(100).optional() }).passthrough().optional() }).passthrough() }).passthrough();
@@ -58,3 +59,50 @@ function normalize(body: unknown, _headers: HookHeaders, hook: HookRecord): Norm
 }
 
 export const linearProvider: HookProvider = { source: "linear", secretOrigin: "vendor", auth: "hmac", verify, normalize };
+
+/** A comment a person wrote on a Linear issue, as a verified delivery carries it (live interaction L1). Nothing in it is believed until `handleLinearComment` has checked the issue is bound. */
+export interface LinearComment {
+  /** Linear's id of the comment: what makes a redelivery the same comment. */
+  commentId: string;
+  /** The comment's Markdown. */
+  text: string;
+  /** The issue's key (`ENG-142`), read from the comment's own link on linear.app (https only), never from free text. */
+  issueKey: string;
+  /** Who wrote it: Linear's user id. A person who is not a Rovara member is an outsider, whatever they say they are. */
+  authorId: string;
+  /** The team the comment's issue is in, when the delivery says. */
+  teamId?: string;
+}
+
+const CommentBody = z.object({
+  type: z.literal("Comment"), action: z.literal("create"), organizationId: z.string().min(1).max(100),
+  url: z.unknown().optional(),
+  actor: z.object({ id: z.string().min(1).max(200), type: z.string().max(40).optional() }).passthrough().nullish(),
+  data: z.object({
+    id: z.string().min(1).max(100), body: z.string().max(100_000), userId: z.string().min(1).max(200).optional(), teamId: z.string().min(1).max(100).optional(),
+    issue: z.object({ team: z.object({ id: z.string().min(1).max(100).optional() }).passthrough().optional(), teamId: z.string().min(1).max(100).optional() }).passthrough().optional(),
+    user: z.object({ id: z.string().min(1).max(200).optional(), type: z.string().max(40).optional() }).passthrough().optional(),
+  }).passthrough(),
+}).passthrough();
+
+/**
+ * The comment a verified Linear delivery carries, or undefined: not a created Comment, another Linear organization, a comment written by an application or integration (Rovara's own replies among
+ * them), no author, or no link to a Linear issue. Only the hook's organization is believed; the team is checked when the delivery names one (the binding and the hook's project decide the rest).
+ */
+export function linearCommentOf(body: unknown, hook: HookRecord): LinearComment | undefined {
+  if (hook.source !== "linear") return undefined;
+  const tenant = hook.tenant as { organizationId: string; teamId: string };
+  const parsed = CommentBody.safeParse(body);
+  if (!parsed.success || !same(parsed.data.organizationId, tenant.organizationId)) return undefined;
+  const { data, actor } = parsed.data;
+  // A comment by an application or an integration (a bot, Rovara's own account) is never an Ask: Rovara must not answer itself.
+  const kind = actor?.type ?? data.user?.type;
+  if (kind !== undefined && kind !== "user") return undefined;
+  const authorId = actor?.id ?? data.userId ?? data.user?.id;
+  const link = httpsLinkOn(parsed.data.url, "linear.app");
+  const issue = link === undefined ? undefined : parseLinearIssue(link);
+  if (authorId === undefined || issue === undefined) return undefined;
+  const teamId = data.teamId ?? data.issue?.teamId ?? data.issue?.team?.id;
+  if (teamId !== undefined && !same(teamId, tenant.teamId)) return undefined;
+  return { commentId: data.id, text: data.body, issueKey: issue.issueId, authorId, ...(teamId === undefined ? {} : { teamId }) };
+}

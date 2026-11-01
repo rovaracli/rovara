@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): limits, the setup capture policy, the record and dependency types, route keys.
 
+import type { LinearReplyPort } from "../../rovara-code/linear-comments.js";
 import type { SlackAskDependencies } from "./ask-service.js";
 import type { AskContextDependencies, AskContextReaders } from "../../agent-sessions/ask-context.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
@@ -206,6 +207,8 @@ export interface AwsBrokerDependencies {
   slackAskLevel?: AskContextDependencies["sessionLevel"];
   /** Live interaction A3: the readers a Slack task question's context is built from, when they are not the broker's own (tests). */
   slackAskReaders?: AskContextReaders;
+  /** Live interaction L1: how Rovara writes a comment on a Linear issue (an Ask's answer, a refusal). No Linear write client exists on this branch, so none is wired: the Linear intake is off until one is. */
+  linearReply?: LinearReplyPort;
   /** What reading the Audit Ledger and starting its exports needs (Task 11); absent on a legacy install. The broker builds no export: its own function does. */
   auditLedger?: AuditExportClientDeps;
   /** What erasing a person's audit details needs (Task 15); absent on a legacy install, where the staff erase route does not exist. */

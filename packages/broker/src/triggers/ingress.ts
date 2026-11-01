@@ -168,6 +168,11 @@ export interface HookIngressDeps {
    * itself what to keep (a Linear or Jira change, comment or deletion that no trigger uses) and never throws. Absent: nothing is offered, as before.
    */
   recordTap?: (input: { orgId: OrgId; hook: HookRecord; body: unknown }) => Promise<unknown>;
+  /**
+   * Live interaction L1: offered a verified Linear delivery's body after the tenant check (`handleLinearComment`): a comment on an issue a session follows may be an Ask. It decides for itself what to do
+   * and never changes what the delivery is answered. Absent: nothing is offered.
+   */
+  commentIntake?: (input: { orgId: OrgId; hook: HookRecord; body: unknown }) => Promise<unknown>;
   /** The AWS accounts an org connected (Task 25): a subscription is confirmed only for a hook whose account is one of them. Absent, none is confirmed. */
   awsAccounts?: ConnectedAwsAccounts;
   /** The fetch under SNS certificate requests and subscription confirmations; defaults to the vendor fetch that reaches public addresses only. */
@@ -506,6 +511,7 @@ async function receive(deps: HookIngressDeps, delivery: HookDelivery): Promise<H
   }
   // Team record (R7): after the tenant check, before events are dispatched; a tap that throws or is slow changes nothing about the answer.
   if (deps.recordTap !== undefined && !("tenantMismatch" in normalized)) await offerToRecord(deps.recordTap, { orgId, hook, body }, () => log("hook.record_tap_failed", { hookId: hook.hookId }));
+  if (deps.commentIntake !== undefined && hook.source === "linear" && !("tenantMismatch" in normalized)) await offerToRecord(deps.commentIntake, { orgId, hook, body }, () => log("hook.comment_intake_failed", { hookId: hook.hookId }));
   return deliverEvents(deps, orgId, hook, normalized, now);
 }
 
