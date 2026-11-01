@@ -774,8 +774,10 @@ describe("P11 a burst of member candidates", () => {
     expect(p.audit.actions()).toContain("lesson.volume_spike");
   });
 
-  // GAP-2 (see report). Design P11 says a burst pauses the auto tier; the owner narrowed the pause to one source.
-  it.fails("auto-apply switched on: 50 candidates spread over 50 members pause the auto tier once the project-wide alert fires (fewer than 30 go live)", async () => {
+  // GAP-2 / OPEN OWNER QUESTION. This pins the SUPERSEDED design rule C10 / P11 ("a burst pauses the auto tier"), not a bug: the owner's "Lesson limits" decision (item 5) pauses only ONE
+  // source that spikes, and the code follows the owner (sources.ts noteProjectVolume only alerts). It stays as the executable form of the proposed project-wide brake (a project-volume
+  // alert sends tier 0 to the one-tap queue for a day, pausing no source), pending the owner's decision. If the owner accepts the brake, build it and flip this to `it`; if not, delete it.
+  it.fails("[open owner question, pins superseded rule C10] auto-apply switched on: 50 candidates spread over 50 members trip a project-wide brake once the volume alert fires (fewer than 30 go live)", async () => {
     openAutoApply();
     const p = pipeline({ settings: { tier0Approval: "auto" } });
     for (let i = 0; i < 50; i += 1) await processDraft(p.processDeps, KEY, uniqueDraft(i, { sources: [`member:m${i}`], inputSources: [`member:m${i}`], authors: [], memberSignal: false, sourceKinds: ["send_back"], measured: true }));
