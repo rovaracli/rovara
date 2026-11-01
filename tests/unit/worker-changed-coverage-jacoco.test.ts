@@ -28,6 +28,28 @@ describe("looksLikeJacocoXml", () => {
     expect(looksLikeJacocoXml('<coverage line-rate="1"><packages/></coverage>')).toBe(false);
     expect(looksLikeJacocoXml('<testsuite name="x"/>')).toBe(false);
   });
+  it("accepts comments before and after the DOCTYPE, a byte-order mark and leading space, and refuses an unclosed comment, a DOCTYPE with an internal subset and a root that is not <report>", () => {
+    expect(looksLikeJacocoXml(`\uFEFF  <?xml version="1.0"?>\n<!-- one -->\n<!-- two -->${DOCTYPE.slice(DOCTYPE.indexOf("<!DOCTYPE"))}<!-- three --> <report name="x"/>`)).toBe(true);
+    expect(looksLikeJacocoXml("<!-- a --><report>")).toBe(true);
+    expect(looksLikeJacocoXml("<!-- never closed <report>")).toBe(false);
+    expect(looksLikeJacocoXml('<!DOCTYPE report [<!ENTITY x "y">]><report>')).toBe(false);
+    expect(looksLikeJacocoXml("<reports/>")).toBe(false);
+    expect(looksLikeJacocoXml("<!-- a --> text <report>")).toBe(false);
+    expect(looksLikeJacocoXml('<?xml version="1.0" <report>')).toBe(false);
+  });
+  it("answers a hostile file of empty comments in linear time (the old pattern took about 30 seconds for 30 comments)", () => {
+    for (const hostile of ["<!---->".repeat(1000) + "x", "<!---->".repeat(30) + "x", "<!-- -->".repeat(1000), `${"<!---->".repeat(500)}<report>`.slice(0, 4096) + "<!--"]) {
+      const started = performance.now();
+      looksLikeJacocoXml(hostile);
+      expect(performance.now() - started).toBeLessThan(50);
+    }
+    expect(looksLikeJacocoXml("<!---->".repeat(1000) + "x")).toBe(false);
+    expect(looksLikeJacocoXml("<!---->".repeat(500) + "<report>")).toBe(true);
+    // The reader that calls it takes the same time: a coverage file made only of comments is "not measured", at once.
+    const started = performance.now();
+    expect(parseLineCoverage("<!---->".repeat(1000) + "x", { javaSourceRoots: ROOTS })).toBeUndefined();
+    expect(performance.now() - started).toBeLessThan(50);
+  });
 });
 
 describe("parseJacocoXml", () => {
@@ -80,6 +102,25 @@ describe("parseJacocoXml", () => {
     expect([...read.files.keys()]).toEqual(["src/main/java/com/acme/A.java"]);
     expect(read.unmappedBlocks).toBe(3);
     expect(parseJacocoXml(report(pkg("../escape", sourcefile("B.java", line(1, 0, 1)))), { sourceRoots: ROOTS })).toBeUndefined();
+  });
+  it("sends package and file names through the data guard: a name with a secret or a control character is never stored or listed, and its file counts as not placed", () => {
+    const token = ["gh", "p_", "a".repeat(36)].join("");
+    const text = report(
+      pkg("com/acme", sourcefile("A.java", line(1, 0, 1)), sourcefile(`${token}.java`, line(1, 0, 1)), sourcefile("Evil&#x202E;gnp.java", line(1, 0, 1)), sourcefile("Tab&#9;Name.java", line(1, 0, 1))),
+      pkg(`com/${token}`, sourcefile("B.java", line(1, 0, 1))),
+      pkg("com/acme", sourcefile("Dup.java", line(1, 0, 1))), pkg("com/acme", sourcefile("Dup.java", line(1, 0, 1))),
+    );
+    const read = parseJacocoXml(text, { sourceRoots: ROOTS })!;
+    expect([...read.files.keys()]).toEqual(["src/main/java/com/acme/A.java"]);
+    expect(read.unmappedBlocks).toBe(4);
+    expect(read.ambiguousFiles).toEqual(["com/acme/Dup.java"]);
+    expect(JSON.stringify([...read.files.keys(), read.ambiguousFiles])).not.toContain(token);
+    // With the repository's file list as well: nothing a report invented is placed, and nothing is listed.
+    const paths = ["src/main/java/com/acme/A.java"];
+    const listed = parseJacocoXml(text, { sourceRoots: ROOTS, repoPaths: paths })!;
+    expect(JSON.stringify(listed.ambiguousFiles)).not.toContain(token);
+    // A name the guard leaves alone is untouched.
+    expect(parseJacocoXml(report(pkg("com/acme/util", sourcefile("Strings$Inner_2.java", line(1, 0, 1)))), { sourceRoots: ROOTS })!.files.has("src/main/java/com/acme/util/Strings$Inner_2.java")).toBe(true);
   });
   it("is not fooled by package or line elements inside comments or CDATA", () => {
     const text = report(pkg("com/acme", sourcefile("A.java", line(1, 0, 1)))).replace("</report>", '<!-- <package name="com/fake"><sourcefile name="F.java"><line nr="1" mi="0" ci="1"/></sourcefile></package> --></report>');

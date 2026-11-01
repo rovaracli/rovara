@@ -8,7 +8,7 @@
 // Fail closed and bounded: a text that is not a complete, well-formed profile (a wrong header, a malformed line, mixed modes, a reversed or enormous range, more than 1,000,000 blocks) is `undefined`, "not measured".
 // Ranges are merged, never expanded line by line, so a block over millions of lines costs nothing.
 import { EVIDENCE_COVERAGE_FILES_MAX, EVIDENCE_UNCOVERED_LINES_MAX } from "@agentx/contracts";
-import { parseAttributes, tagEnd, withoutCommentsAndCdata } from "./test-report.js";
+import { parseAttributes, plainName, tagEnd, withoutCommentsAndCdata } from "./test-report.js";
 
 /** A cover profile larger than this, or with more blocks, is not read. */
 export const GO_COVER_PROFILE_MAX_BYTES = 8 * 1024 * 1024;
@@ -113,10 +113,48 @@ const JAVA_SOURCE_ROOTS_MAX = 100;
 const JAVA_ROOT = /^((?:[A-Za-z0-9_.-]{1,100}\/){0,10}src\/main\/(?:java|kotlin))\/.+\.(?:java|kt)$/u;
 const COUNT_MAX = 1_000_000_000;
 
-/** Whether the text is a JaCoCo XML report: after the XML declaration, comments and a DOCTYPE, the root element is `<report>`. */
+const isSpace = (character: string | undefined): boolean => character !== undefined && /\s/u.test(character);
+const skipSpace = (text: string, from: number): number => {
+  let at = from;
+  while (at < text.length && isSpace(text[at])) at += 1;
+  return at;
+};
+/** Skips any run of comments (each ends at its FIRST `-->`) and spaces from `from`; -1 when a comment is not closed. One forward pass: the position only moves ahead. */
+function skipComments(text: string, from: number): number {
+  let at = skipSpace(text, from);
+  while (text.startsWith("<!--", at)) {
+    const close = text.indexOf("-->", at + 4);
+    if (close === -1) return -1;
+    at = skipSpace(text, close + 3);
+  }
+  return at;
+}
+
+/**
+ * Whether the text is a JaCoCo XML report: after the XML declaration, comments and a DOCTYPE, the root element is `<report>`. A forward scan with no backtracking (the file is written by a command the agent
+ * can influence, and a pattern with nested quantifiers over comments took exponential time on a file made of empty comments).
+ */
 export function looksLikeJacocoXml(text: string): boolean {
   const head = text.slice(0, 4096).replace(/^\uFEFF/u, "");
-  return /^\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*(?:<!DOCTYPE[^>[]*>\s*)?(?:<!--[\s\S]*?-->\s*)*<report[\s>]/u.test(head);
+  let at = skipSpace(head, 0);
+  if (head.startsWith("<?xml", at)) {
+    // `<?xml ... ?>`: the first `>` must be the one that closes the declaration.
+    const close = head.indexOf(">", at);
+    if (close === -1 || head[close - 1] !== "?" || close - 1 < at + 5) return false;
+    at = close + 1;
+  }
+  at = skipComments(head, at);
+  if (at === -1) return false;
+  if (head.startsWith("<!DOCTYPE", at)) {
+    // A DOCTYPE with an internal subset (`[`) is not accepted.
+    const close = head.indexOf(">", at);
+    const subset = head.indexOf("[", at);
+    if (close === -1 || (subset !== -1 && subset < close)) return false;
+    at = close + 1;
+    at = skipComments(head, at);
+    if (at === -1) return false;
+  }
+  return head.startsWith("<report", at) && (isSpace(head[at + 7]) || head[at + 7] === ">");
 }
 
 /**
@@ -151,6 +189,12 @@ const wholeNumber = (value: string | undefined, min: number, max: number): numbe
   const number = Number(value);
   return number >= min && number <= max ? number : undefined;
 };
+
+/**
+ * A package or file name from a report is kept (as part of a path) and may be shown, so it goes through the same guard as a test name (`plainName`: control characters, secrets, length). A name the guard
+ * would change is not a name this reader can trust as a path: the file is counted as not placed, never stored under an altered or redacted name.
+ */
+const plainPath = (value: string): boolean => plainName(value) === value;
 
 type RangeEntry = { all: Array<[number, number]>; ran: Array<[number, number]> };
 
@@ -200,14 +244,14 @@ export function parseJacocoXml(text: string, options: JacocoOptions): LineCovera
     } else if (name === "package") {
       const packageName = selfClosing ? undefined : (attributesOf().get("name") ?? "");
       // "\0" marks a package name that leaves the source root or holds odd characters: its files are counted as not placed.
-      currentPackage = packageName === undefined || packageName === "" || safeName(packageName) ? packageName : "\0";
+      currentPackage = packageName === undefined || packageName === "" || (safeName(packageName) && plainPath(packageName)) ? packageName : "\0";
     } else if (name === "sourcefile") {
       if (!rootSeen || currentPackage === undefined) return undefined;
       const file = attributesOf().get("name");
       current = undefined;
       if (selfClosing) continue;
       if (found.size + repeated.size + unmapped >= JACOCO_MAX_SOURCE_FILES) return undefined;
-      if (currentPackage === "\0" || !safeName(file) || file === "" || file.includes("/")) {
+      if (currentPackage === "\0" || !safeName(file) || file === "" || file.includes("/") || !plainPath(file)) {
         unmapped += 1;
         current = { entry: undefined };
         continue;

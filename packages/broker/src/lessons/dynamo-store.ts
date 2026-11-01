@@ -268,7 +268,7 @@ export class DynamoLessonStore implements LessonStore {
   }
 
   // ---- commit
-  async commit(key: ScopeKey, expectedSetVersion: number, writes: readonly Lesson[], at: number): Promise<CommitResult> {
+  async commit(key: ScopeKey, expectedSetVersion: number, writes: readonly Lesson[], at: number, conditions?: readonly unknown[]): Promise<CommitResult> {
     if (writes.length > MAX_COMMIT_WRITES) throw unavailable("a commit holds too many lessons");
     const parsed: Lesson[] = [];
     for (const raw of writes) {
@@ -297,7 +297,8 @@ export class DynamoLessonStore implements LessonStore {
       for (const { lesson } of staged) members[lesson.id] = lesson.version;
       if (Object.keys(members).length > MAX_SET_MEMBERS) throw unavailable("the lesson set is too large");
       const setVersion = expectedSetVersion + 1;
-      const items: TransactItem[] = [this.fenceCheck(key, fenceVer), this.put_(this.setItem(key, setVersion, members, at, set.rev), this.setCondition(expectedSetVersion, set.rev)), this.put_(this.snapItem(key, setVersion, members, at), { expression: NOT_EXISTS })];
+      // The decision's own conditions (who may approve) commit with the write: a person removed since the read stops it.
+      const items: TransactItem[] = [...(conditions === undefined ? [] : (conditions as TransactItem[])), this.fenceCheck(key, fenceVer), this.put_(this.setItem(key, setVersion, members, at, set.rev), this.setCondition(expectedSetVersion, set.rev)), this.put_(this.snapItem(key, setVersion, members, at), { expression: NOT_EXISTS })];
       for (const { lesson, previous } of staged) {
         // A purge writes the lesson's GONE mark before it removes anything: a commit that read before it cannot write a version or a head after it.
         items.push(this.goneAbsent(key, lesson.id));

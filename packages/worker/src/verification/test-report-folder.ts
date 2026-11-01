@@ -7,11 +7,14 @@
 //     counted and shows as ONE errored entry named for the file, so a lost failure never reads as a pass; `complete` is false and the notes say how many;
 //   - a file that is not JUnit at all (`failsafe-summary.xml`) is ignored; a complete suite with no test case is empty; a cut-off one is malformed;
 //   - too many files or directory entries, too many bytes in total, or too many tests: the report is `undefined` ("not measured"), the counts could not be trusted to be complete;
-//   - every file is opened once with O_NOFOLLOW and its size taken from the open descriptor; the folder is checked with lstat first (a swap between the check and the listing is the same narrow window as the single-file reader's).
+//   - every file is opened once with O_NOFOLLOW and its size taken from the open descriptor, and the bytes read are capped at what is left of the total (a file that grows while it is read, or one that reports size 0, cannot
+//     pass the cap); the byte total is checked BEFORE each file is read, so no file is read once the total would be passed;
+//   - with a workspace root (`readTestReportAt` always gives one), OPEN is followed by a check that the file really lies inside the root: the path is resolved (`realpath`) and the descriptor's file must be the same inode as the
+//     one the resolved path names. O_NOFOLLOW stops only a link in the LAST part, so a parent folder swapped for a link to somewhere else between the lstat walk and the open is caught here, not read.
 // `readTestReportAt` is the entry point for the evidence path: a path relative to the workspace root, no `..`, no link in any component, a file or a folder.
 import { constants } from "node:fs";
-import { lstat, open, opendir } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
+import { join, sep } from "node:path";
 import { counted, parseJunit, parseTestReport, plainName, TEST_REPORT_MAX_BYTES, TEST_REPORT_MAX_TESTS, type ParsedTestReport, type ReportedTest } from "./test-report.js";
 
 /** More report files than this in one folder is not read. */
@@ -53,8 +56,15 @@ function notMeasured(notes: string[], note: string, partial: Partial<ReportFolde
   return { filesRead: 0, filesEmpty: 0, filesIgnored: 0, filesMalformed: 0, filesRefused: 0, ...partial, complete: false, notes: [...notes, note] };
 }
 
-/** The text of the regular file `path` (opened without following a link), or why not. */
-async function readReportFile(path: string): Promise<{ text: string; size: number } | "unreadable" | "too_large" | "not_regular"> {
+/** Whether the resolved path `real` lies inside the resolved workspace root. */
+const within = (real: string, realRoot: string): boolean => real === realRoot || real.startsWith(realRoot.endsWith(sep) ? realRoot : `${realRoot}${sep}`);
+
+type FileRead = { text: string; size: number } | "unreadable" | "too_large" | "not_regular" | "over_budget" | "outside";
+/**
+ * The text of the regular file `path` (opened without following a link), or why not. `remaining` is what is left of the folder's byte total: a file that is larger, or that grows past it while it is read, is
+ * `over_budget` and is not read in full. With `realRoot` (the resolved workspace root) the opened file must be inside it (see the header).
+ */
+async function readReportFile(path: string, limits: { remaining: number; realRoot?: string }): Promise<FileRead> {
   let handle;
   try {
     handle = await open(path, NO_FOLLOW);
@@ -62,11 +72,30 @@ async function readReportFile(path: string): Promise<{ text: string; size: numbe
     return (error as NodeJS.ErrnoException).code === "ELOOP" ? "not_regular" : "unreadable";
   }
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile()) return "not_regular";
-    if (stat.size > TEST_REPORT_MAX_BYTES) return "too_large";
-    const buffer = await handle.readFile();
-    return buffer.length > TEST_REPORT_MAX_BYTES ? "too_large" : { text: buffer.toString("utf8"), size: buffer.length };
+    const opened = await handle.stat();
+    if (!opened.isFile()) return "not_regular";
+    if (limits.realRoot !== undefined) {
+      // The path as it resolves NOW must be inside the workspace and name the very file this descriptor holds: a parent swapped for a link before the open (and put back after) leaves a different inode here.
+      const real = await realpath(path);
+      if (!within(real, limits.realRoot)) return "outside";
+      const named = await stat(real);
+      if (named.ino !== opened.ino || named.dev !== opened.dev) return "outside";
+    }
+    if (opened.size > TEST_REPORT_MAX_BYTES) return "too_large";
+    if (opened.size > limits.remaining) return "over_budget";
+    // Read at most one byte more than the cap allows; the size above is only a first look (a file can report 0 and keep growing).
+    const cap = Math.min(TEST_REPORT_MAX_BYTES, limits.remaining);
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, cap + 1 - total));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      chunks.push(chunk.subarray(0, bytesRead));
+      if (total > cap) return total > TEST_REPORT_MAX_BYTES ? "too_large" : "over_budget";
+    }
+    return { text: Buffer.concat(chunks, total).toString("utf8"), size: total };
   } catch {
     return "unreadable";
   } finally {
@@ -74,16 +103,25 @@ async function readReportFile(path: string): Promise<{ text: string; size: numbe
   }
 }
 
-/** Reads every `.xml` file directly in `directory` as JUnit and merges them. Never throws. */
-export async function readJunitFolder(directory: string): Promise<ReportFolderOutcome> {
+/**
+ * Reads every `.xml` file directly in `directory` as JUnit and merges them. Never throws. With `root` (the workspace), the folder and every file read must lie inside it once links are resolved; the evidence path
+ * (`readTestReportAt`) always passes it.
+ */
+export async function readJunitFolder(directory: string, root?: string): Promise<ReportFolderOutcome> {
   const notes: string[] = [];
   let metadata;
+  let realRoot: string | undefined;
   try {
     metadata = await lstat(directory);
+    realRoot = root === undefined ? undefined : await realpath(root);
   } catch {
     return notMeasured(notes, "The report folder could not be found or read.");
   }
   if (!metadata.isDirectory()) return notMeasured(notes, "The report path is not a folder (a link or another kind of file is not followed).");
+  const outside = "The report folder is not inside the workspace (a link in its path is not followed), so it was not read.";
+  // A folder reached through a linked parent is refused before it is listed; its listing is checked again afterwards (a swap while listing).
+  const insideNow = async (): Promise<boolean> => realRoot === undefined || within(await realpath(directory).catch(() => ""), realRoot);
+  if (!(await insideNow())) return notMeasured(notes, outside);
   const names: Array<{ name: string; refused: boolean }> = [];
   let entries = 0;
   try {
@@ -103,6 +141,7 @@ export async function readJunitFolder(directory: string): Promise<ReportFolderOu
   } catch {
     return notMeasured(notes, "The report folder could not be listed.");
   }
+  if (!(await insideNow())) return notMeasured(notes, outside);
   names.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   const tests: ReportedTest[] = [];
@@ -119,9 +158,10 @@ export async function readJunitFolder(directory: string): Promise<ReportFolderOu
       tests.push(problemTest(name, "not a regular file, not read"));
       continue;
     }
-    const read = await readReportFile(join(directory, name));
+    const read = await readReportFile(join(directory, name), { remaining: REPORT_FOLDER_MAX_TOTAL_BYTES - bytes, ...(realRoot === undefined ? {} : { realRoot }) });
+    if (read === "over_budget") return notMeasured(notes, `The report files hold more than ${String(REPORT_FOLDER_MAX_TOTAL_BYTES)} bytes in total, so they were not read.`, partial());
     if (typeof read === "string") {
-      if (read === "not_regular") {
+      if (read === "not_regular" || read === "outside") {
         filesRefused += 1;
         tests.push(problemTest(name, "not a regular file, not read"));
       } else {
@@ -131,7 +171,6 @@ export async function readJunitFolder(directory: string): Promise<ReportFolderOu
       continue;
     }
     bytes += read.size;
-    if (bytes > REPORT_FOLDER_MAX_TOTAL_BYTES) return notMeasured(notes, `The report files hold more than ${String(REPORT_FOLDER_MAX_TOTAL_BYTES)} bytes in total, so they were not read.`, partial());
     if (!JUNIT_ELEMENT.test(read.text)) {
       // `TEST-*.xml` is where the build writes test classes; any other name that is not JUnit (a summary) is not a report.
       if (name.startsWith("TEST-")) {
@@ -173,8 +212,12 @@ const SAFE_PART = (part: string): boolean => part !== "" && part !== "." && part
  * and no component, the last one included, may be a symbolic link. `format: "json"` never reads a folder (only JUnit is written as one).
  */
 export async function readTestReportAt(root: string, relativePath: string, format: "junit" | "json" | "auto" = "auto"): Promise<TestReportRead> {
-  const parts = relativePath.replace(/\/+$/u, "").split("/");
-  if (relativePath.startsWith("/") || relativePath.length > 500 || parts.length > 40 || !parts.every(SAFE_PART)) return { problem: "refused" };
+  // The length is checked before anything is done with the text (a path of tens of thousands of slashes must cost nothing), and trailing slashes are dropped by a plain scan.
+  if (relativePath.length > 500 || relativePath.startsWith("/")) return { problem: "refused" };
+  let end = relativePath.length;
+  while (end > 0 && relativePath.charCodeAt(end - 1) === 47) end -= 1;
+  const parts = relativePath.slice(0, end).split("/");
+  if (parts.length > 40 || !parts.every(SAFE_PART)) return { problem: "refused" };
   let current = root;
   let last;
   for (const part of parts) {
@@ -189,12 +232,18 @@ export async function readTestReportAt(root: string, relativePath: string, forma
   if (last === undefined) return { problem: "missing" };
   if (last.isDirectory()) {
     if (format === "json") return { problem: "refused" };
-    const folder = await readJunitFolder(current);
+    const folder = await readJunitFolder(current, root);
     return { ...(folder.report === undefined ? {} : { report: folder.report }), folder };
   }
   if (!last.isFile()) return { problem: "refused" };
-  const read = await readReportFile(current);
-  if (typeof read === "string") return { problem: read === "not_regular" ? "refused" : "unreadable" };
+  let realRoot;
+  try {
+    realRoot = await realpath(root);
+  } catch {
+    return { problem: "unreadable" };
+  }
+  const read = await readReportFile(current, { remaining: TEST_REPORT_MAX_BYTES, realRoot });
+  if (typeof read === "string") return { problem: read === "not_regular" || read === "outside" ? "refused" : "unreadable" };
   const report = parseTestReport(read.text, format);
   return report === undefined ? {} : { report };
 }

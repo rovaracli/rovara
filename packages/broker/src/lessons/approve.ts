@@ -47,31 +47,37 @@ async function mayHandle(deps: { directory: ApproverDirectory; access: AccessChe
   } catch { return false; }
 }
 
-/** Makes a lesson live: status active, expiry set, approvals recorded, and the lesson it supersedes retired. One conditional commit per attempt. */
-export async function activateLesson(deps: LessonDeps & { store: LessonStore }, key: ScopeKey, lesson: Lesson, approvals: Lesson["approvals"], expiryDays: number | undefined, action: "lesson.activated" | "lesson.auto_applied"): Promise<Lesson | undefined> {
+/** What a go-live rests on: the exact lesson version the approvals were given for, the set version that was current when the decision was made, and the decision's own commit conditions. */
+export interface ActivationPin { version: number; setVersion: number; fence?: readonly unknown[] }
+
+/**
+ * Makes a lesson live: status active, expiry set, approvals recorded, and the lesson it supersedes retired. ONE conditional commit, pinned: it applies only if the stored lesson is still
+ * exactly `pin.version` and the set is still at `pin.setVersion`. Approvals are given for a version and its text, so a lesson that moved on (an edit, a rollback, another person's
+ * decision) is never made live under them; the caller re-reads and decides again. Returns undefined when it did not go live.
+ */
+export async function activateLesson(deps: LessonDeps & { store: LessonStore }, key: ScopeKey, lesson: Lesson, approvals: Lesson["approvals"], expiryDays: number | undefined, action: "lesson.activated" | "lesson.auto_applied", pin: ActivationPin): Promise<Lesson | undefined> {
   const now = deps.now();
   // A refinement is never applied without a person: the judge that called it a refinement can be steered by the text it read.
   if (action === "lesson.auto_applied" && lesson.supersedes !== undefined) return undefined;
   // Audit first: a go-live that cannot be recorded does not happen.
   if (!(await requireAudit(deps.audit, { action, workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, facts: { tier: lesson.tier, approvals: approvals.length, ...(lesson.supersedes === undefined ? {} : { supersedes: lesson.supersedes }) } }))) throw new AuditUnavailable();
-  for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
-    const fresh = await deps.store.get(key, lesson.id);
-    if (fresh === undefined || (fresh.status !== "pending" && fresh.status !== "candidate")) return undefined;
-    const setVersion = await deps.store.setVersion(key);
-    const next: Lesson = {
-      ...fresh, version: nextVersion(fresh, await deps.store.versions(key, fresh.id)), status: "active", approvals: [...approvals],
-      expiresAt: now + expiryWindowMs(fresh.type, expiryDays), updatedAt: now,
-    };
-    delete (next as { pendingExpiresAt?: number }).pendingExpiresAt;
-    const writes = [next];
-    if (fresh.supersedes !== undefined) {
-      const old = await deps.store.get(key, fresh.supersedes);
-      if (old !== undefined && old.status === "active") writes.push({ ...old, version: nextVersion(old, await deps.store.versions(key, old.id)), status: "retired", updatedAt: now });
-    }
-    const result = await deps.store.commit(key, setVersion, writes, now);
-    if (result.ok) return next;
+  const fresh = await deps.store.get(key, lesson.id);
+  if (fresh === undefined || (fresh.status !== "pending" && fresh.status !== "candidate")) return undefined;
+  // The approvals were collected on `pin.version`: any other version (someone's edit landed since) is not made live under them.
+  if (fresh.version !== pin.version || lesson.version !== pin.version) return undefined;
+  const next: Lesson = {
+    ...fresh, version: nextVersion(fresh, await deps.store.versions(key, fresh.id)), status: "active", approvals: [...approvals],
+    expiresAt: now + expiryWindowMs(fresh.type, expiryDays), updatedAt: now,
+  };
+  delete (next as { pendingExpiresAt?: number }).pendingExpiresAt;
+  const writes = [next];
+  if (fresh.supersedes !== undefined) {
+    const old = await deps.store.get(key, fresh.supersedes);
+    if (old !== undefined && old.status === "active") writes.push({ ...old, version: nextVersion(old, await deps.store.versions(key, old.id)), status: "retired", updatedAt: now });
   }
-  return undefined;
+  // The set version is the one the decision was made on, never one read now: if anything was committed since, this write is refused.
+  const result = await deps.store.commit(key, pin.setVersion, writes, now, pin.fence);
+  return result.ok ? next : undefined;
 }
 
 export interface ApproveInput {
@@ -85,11 +91,16 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
   if (!modeAllows(resolved.mode, "load")) return { ok: false, code: "mode_off" };
 
-  const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
-  if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
-  if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };
-
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
+    // Every attempt reads who may approve afresh, with the commit conditions that pin that answer: a person removed since a lost race cannot decide on a retry, and the writes below
+    // carry the conditions, so a removal between this read and the write stops them.
+    const group = await deps.directory.eligibility(key.workspaceId, key.project, { approverId: input.approverId }).catch(() => undefined);
+    if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
+    if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };
+    // The set version is read BEFORE the lesson and then used for every write of this attempt: anything committed after this point (another person's edit, approval, rollback) moves the
+    // set, so a decision made on the lesson read below can never be written over a newer one. (A set version read at write time would always match, which is how an approval given for an
+    // earlier text once went live on a later one.)
+    const setVersion = await deps.store.setVersion(key);
     const lesson = await deps.store.get(key, input.lessonId);
     if (lesson === undefined) return { ok: false, code: "not_found" };
     if (lesson.status !== "pending") return { ok: false, code: "not_pending" };
@@ -163,21 +174,24 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     if (mode === "sole_owner_exception" && !(await requireAudit(deps.audit, { action: "lesson.sole_owner_exception", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { tier } }))) return { ok: false, code: "audit_unavailable" };
 
     if (complete && inGroup) {
-      // The edited text must be saved with the activation: write the edit first as a version of the pending lesson when there is one.
+      // The edited text must be saved with the activation: write the edit first as a version of the pending lesson when there is one. The go-live is then pinned to THAT version and the
+      // set version the edit produced, so nothing written between the two steps is made live under these approvals.
+      let pin: ActivationPin = { version: lesson.version, setVersion, ...(group.fence === undefined ? {} : { fence: group.fence }) };
       if (input.edit !== undefined) {
-        const setVersion = await deps.store.setVersion(key);
-        const saved = await deps.store.commit(key, setVersion, [{ ...working, approvals: [], version: nextVersion(lesson, await deps.store.versions(key, lesson.id)), updatedAt: now }], now);
+        const version = nextVersion(lesson, await deps.store.versions(key, lesson.id));
+        const saved = await deps.store.commit(key, setVersion, [{ ...working, approvals: [], version, updatedAt: now }], now, group.fence);
         if (!saved.ok) continue;
+        working = { ...working, approvals: [], version, updatedAt: now };
+        pin = { ...pin, version, setVersion: saved.setVersion };
       }
       let active: Lesson | undefined;
-      try { active = await activateLesson(deps, key, working, approvals, resolved.expiryDays, "lesson.activated"); } catch (error) { if (error instanceof AuditUnavailable) return { ok: false, code: "audit_unavailable" }; throw error; }
+      try { active = await activateLesson(deps, key, working, approvals, resolved.expiryDays, "lesson.activated", pin); } catch (error) { if (error instanceof AuditUnavailable) return { ok: false, code: "audit_unavailable" }; throw error; }
       if (active === undefined) continue;
       return { ok: true, status: "active", lesson: active, needs: "nothing" };
     }
-    // Not complete: keep the lesson pending with this approval.
-    const setVersion = await deps.store.setVersion(key);
+    // Not complete: keep the lesson pending with this approval, on the version and set this decision was made on.
     const saved: Lesson = { ...working, version: nextVersion(lesson, await deps.store.versions(key, lesson.id)), approvals, updatedAt: now };
-    const result = await deps.store.commit(key, setVersion, [saved], now);
+    const result = await deps.store.commit(key, setVersion, [saved], now, group.fence);
     if (!result.ok) continue;
     return { ok: true, status: "pending", lesson: saved, needs: complete ? "group_member" : "second_person" };
   }
@@ -246,7 +260,7 @@ export const retireByPerson = (deps: ApproveDeps, input: { workspaceId: string; 
 /** Restores an earlier lesson-set version (design §4.6). Audited `lesson.rolled_back`. */
 export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId: string; project: string; targetSetVersion: number; actorId: string; /** The set version the person saw: the store\'s conditional write enforces it, so a set that moved since is not rolled away. */ expectedSetVersion?: number; /** Runs the normal tier check again on each restored lesson (the caller passes `settleLesson`). */ onRestored?: (lessonId: string) => Promise<unknown> }): Promise<{ ok: true; setVersion: number; restored: string[] } | { ok: false; code: ApprovalFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
-  const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
+  const group = await deps.directory.eligibility(key.workspaceId, key.project, { approverId: input.actorId }).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.actorId)) return { ok: false, code: "not_eligible" };
   const current = input.expectedSetVersion ?? await deps.store.setVersion(key);
@@ -264,37 +278,42 @@ export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId:
  * number of approvers is met, and every required group is represented. Approvals that no longer stand are removed (the lesson stays pending for a person).
  */
 async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, group: Awaited<ReturnType<ApproverDirectory["eligibility"]>>): Promise<void> {
-  const lesson = await deps.store.get(key, id);
+  // The set version is read BEFORE the lesson and carried through every write below (each commit hands back the next one): an approval that lands while this check runs moves the set, and the
+  // go-live at the end is then refused instead of making the newer version live under approvals worked out for the older one.
+  let setVersion = await deps.store.setVersion(key);
+  let lesson = await deps.store.get(key, id);
   if (lesson === undefined || lesson.status !== "pending") return;
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
   const eligible = new Set(group.eligibleIds.map(normId));
   const persons = lesson.approvals.filter((a) => a.mode !== "auto");
   const valid = persons.filter((a) => eligible.has(normId(a.by)));
   if (valid.length !== lesson.approvals.length) {
-    const setVersion = await deps.store.setVersion(key);
-    const kept = await deps.store.commit(key, setVersion, [{ ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: valid, updatedAt: deps.now() }], deps.now());
+    const next: Lesson = { ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: valid, updatedAt: deps.now() };
+    const kept = await deps.store.commit(key, setVersion, [next], deps.now(), group.fence);
     if (!kept.ok) return;
+    lesson = next; setVersion = kept.setVersion;
   }
   const required = Math.max(approversRequired(lesson.tier, resolved.approval), 1);
   // The sole-owner exception stands only while the group is still one person, and still passes the shared rule (cool-off included).
   const sole = group.eligibleIds.length === 1 && valid.some((a) => a.mode === "sole_owner_exception" && trySecondPerson(group, a.by, a.by, deps.now()).ok);
   // The author rule applies to a restored approval as it does to a new one: an author\'s own approval does not count while someone else could give it.
-  const countable = group.eligibleIds.length > 1 ? valid.filter((a) => !idIn(lesson.provenance.authors, a.by) || a.mode === "second_person") : valid;
+  const authors = lesson.provenance.authors;
+  const countable = group.eligibleIds.length > 1 ? valid.filter((a) => !idIn(authors, a.by) || a.mode === "second_person") : valid;
   if (countable.length !== valid.length) {
-    const setVersion = await deps.store.setVersion(key);
-    const kept = await deps.store.commit(key, setVersion, [{ ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: countable, updatedAt: deps.now() }], deps.now());
+    const next: Lesson = { ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: countable, updatedAt: deps.now() };
+    const kept = await deps.store.commit(key, setVersion, [next], deps.now(), group.fence);
     if (!kept.ok) return;
+    lesson = next; setVersion = kept.setVersion;
   }
   // A team of one: the author's own approval (made when a person deciding anyway was accepted under "auto") is the sole-owner exception in all but name, so it needs the same
   // cool-off as a new one. An approval that does not pass the shared rule does not count; it stays on the record, and the lesson waits for a person.
-  const soloAuthored = (a: Lesson["approvals"][number]): boolean => group.eligibleIds.length === 1 && a.mode !== "second_person" && idIn(lesson.provenance.authors, a.by);
+  const soloAuthored = (a: Lesson["approvals"][number]): boolean => group.eligibleIds.length === 1 && a.mode !== "second_person" && idIn(authors, a.by);
   const standing = countable.filter((a) => !soloAuthored(a) || trySecondPerson(group, a.by, a.by, deps.now()).ok);
   const enough = sole || new Set(standing.map((a) => normId(a.by))).size >= required;
   const groupsOk = resolved.requiredGroups.every((name) => standing.some((a) => idIn(group.groups?.[name] ?? [], a.by)));
   if (standing.length === 0 || !enough || !groupsOk) return;
-  const fresh = await deps.store.get(key, id);
-  if (fresh === undefined) return;
-  try { await activateLesson(deps, key, fresh, standing, resolved.expiryDays, "lesson.activated"); } catch (error) { if (!(error instanceof AuditUnavailable)) throw error; }
+  // Pinned to the version these approvals were judged on (the one this function read or wrote last) and the set version that goes with it.
+  try { await activateLesson(deps, key, lesson, standing, resolved.expiryDays, "lesson.activated", { version: lesson.version, setVersion, ...(group.fence === undefined ? {} : { fence: group.fence }) }); } catch (error) { if (!(error instanceof AuditUnavailable)) throw error; }
 }
 
 /**
