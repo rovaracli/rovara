@@ -83,7 +83,7 @@ export class DynamoTier0Settings implements Tier0SettingsStore, Tier0ChangeStore
     if (item?.entityType !== "LESSON_TIER0_CHANGE" || typeof item.id !== "string" || !isLevel(item.from) || !isLevel(item.to)) return undefined;
     if (item.state !== "pending" && item.state !== "applied" && item.state !== "cancelled") return undefined;
     if (typeof item.proposedBy !== "string" || typeof item.at !== "number" || typeof item.expiresAt !== "number") return undefined;
-    return { id: item.id, scope: item.scope as Tier0Scope, from: item.from, to: item.to, proposedBy: item.proposedBy, at: item.at, expiresAt: item.expiresAt, state: item.state };
+    return { id: item.id, scope: item.scope as Tier0Scope, from: item.from, to: item.to, proposedBy: item.proposedBy, at: item.at, expiresAt: item.expiresAt, state: item.state, ...(typeof item.soleEligibleAtProposal === "boolean" ? { soleEligibleAtProposal: item.soleEligibleAtProposal } : {}) };
   }
 
   async get(scope: Tier0Scope, id: string): Promise<Tier0Change | undefined> { return this.parse(await this.item(changeKey(scope, id))); }

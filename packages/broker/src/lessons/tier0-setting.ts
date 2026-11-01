@@ -29,6 +29,11 @@ export type Tier0Scope = { kind: "project"; workspaceId: string; project: string
 export interface Tier0Change {
   id: string; scope: Tier0Scope; from: Tier0Level; to: Tier0Level; proposedBy: string; at: number; expiresAt: number;
   state: "pending" | "applied" | "cancelled";
+  /**
+   * True when the proposer was the ONLY eligible person when they proposed. Only such a proposal can be approved by its proposer through the sole-owner exception: one made while another
+   * eligible person existed is not turned into a self-approval by that person leaving later (the proposer cancels it and proposes again). Absent (an older row) counts as false.
+   */
+  soleEligibleAtProposal?: boolean;
 }
 export const TIER0_CHANGE_TTL_MS = 7 * 86_400_000;
 
@@ -118,7 +123,7 @@ export async function requestTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   if ((await deps.changes.open(scope, at)) !== undefined) return { ok: false, code: "already_open" };
   const id = (deps.newId ?? (() => randomUUID()))();
   if (!(await requireAudit(deps.audit, event("lesson.tier0_setting_proposed", { changeId: id })))) return { ok: false, code: "audit_unavailable" };
-  const created = await deps.changes.create({ id, scope, from: current, to: value, proposedBy: input.requestedBy, at, expiresAt: at + TIER0_CHANGE_TTL_MS, state: "pending" });
+  const created = await deps.changes.create({ id, scope, from: current, to: value, proposedBy: input.requestedBy, at, expiresAt: at + TIER0_CHANGE_TTL_MS, state: "pending", soleEligibleAtProposal: group.eligibleIds.length === 1 });
   return created ? { ok: true, status: "needs_approval", changeId: id } : { ok: false, code: "conflict" };
 }
 
@@ -134,6 +139,8 @@ export async function approveTier0Change(deps: Tier0Deps, input: { scope: Tier0S
   if (change.expiresAt <= at) return { ok: false, code: "expired" };
   // The proposer approves their own change only through the sole-owner exception (below), however the id is spelled.
   const selfApproval = sameId(change.proposedBy, input.approverId);
+  // ...and only for a proposal made while they were the only eligible person (a later departure does not turn an earlier proposal into a self-approval).
+  if (selfApproval && change.soleEligibleAtProposal !== true) return { ok: false, code: "second_person_required" };
   const group = await groupOf(deps, scope, { proposerId: change.proposedBy, approverId: input.approverId });
   if (group === undefined) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };

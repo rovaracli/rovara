@@ -62,6 +62,16 @@ describe("the stored setting and its proposals", () => {
   });
 });
 
+describe("a proposal remembers whether its proposer was the only eligible person", () => {
+  it("the flag round-trips; an older row without it reads as absent", async () => {
+    const { w, store } = setup();
+    await store.create({ id: "c1", scope: company(), from: "two", to: "one", proposedBy: "owner", at: 1, expiresAt: 100, state: "pending", soleEligibleAtProposal: true });
+    expect(await store.get(company(), "c1")).toMatchObject({ soleEligibleAtProposal: true });
+    w.db.set({ pk: teamRecordPk(ORG_A, undefined), sk: "LESSONSET#TIER0CHG#old", entityType: "LESSON_TIER0_CHANGE", id: "old", scope: company(), from: "two", to: "one", proposedBy: "owner", at: 1, expiresAt: 100, state: "pending" });
+    expect((await store.get(company(), "old"))?.soleEligibleAtProposal).toBeUndefined();
+  });
+});
+
 describe("the fenced write", () => {
   const metaCheck = (version: number) => ({ ConditionCheck: { TableName: "TeamRecord", Key: { pk: teamRecordPk(ORG_A, undefined), sk: "FENCE#META" }, ConditionExpression: "approvalMembershipVersion = :v", ExpressionAttributeValues: { ":v": version } } });
   it("commits the setting together with the membership conditions; a changed membership writes nothing", async () => {

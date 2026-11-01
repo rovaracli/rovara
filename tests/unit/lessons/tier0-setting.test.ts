@@ -376,6 +376,26 @@ describe("one-admin companies: the sole-owner exception for loosening", () => {
     expect(w.settings.writes).toEqual([]);
     expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
   });
+  it("a proposal made while another eligible person existed is not turned into a self-approval when they leave; cancel and propose again works", async () => {
+    const w = world({ eligible: ["owner", "ann"], owners: ["owner"] });
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    expect(w.changes.rows.get("chg-1")?.soleEligibleAtProposal).toBe(false);
+    w.group.eligibleIds = ["owner"]; w.group.lastEligibleLossAtMs = w.clock.now();
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    w.clock.advance(DAY);
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(w.settings.writes).toEqual([]);
+    expect(await cancelTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", actorId: "owner" })).toEqual({ ok: true });
+    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" })).toMatchObject({ status: "needs_approval", changeId: "chg-2" });
+    expect(w.changes.rows.get("chg-2")?.soleEligibleAtProposal).toBe(true);
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-2", approverId: "owner" })).toEqual({ ok: true, value: "one" });
+  });
+  it("a row stored before this field existed cannot be self-approved", async () => {
+    const w = solo();
+    w.changes.rows.set("old", { id: "old", scope: PROJECT_SCOPE, from: "one", to: "auto", proposedBy: "owner", at: w.clock.now(), expiresAt: w.clock.now() + 1000, state: "pending" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "old", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+  });
   it("a stricter change by a sole owner still applies directly, without asking the switch", async () => {
     const w = solo({ soleOwner: false });
     expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "two", requestedBy: "owner" })).toEqual({ ok: true, status: "applied", value: "two" });
