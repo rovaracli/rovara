@@ -133,3 +133,6 @@ export * from "./provenance.js";
 export * from "./setup-proposal.js";
 export { CreateProjectFromMetaBodySchema, type CreateProjectFromMetaBody, META_KNOWLEDGE_DEFAULTS } from "./meta-project.js";
 export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseReaderSchema, SetupDraftStartBodySchema, type SetupDraftStartBody, SETUP_DRAFT_STATUSES } from "./rovara-code.js";
+
+// Learning v2 L3b: the Lessons tab, the Sources tab and the task page's lessons list.
+export * from "./app-lessons.js";

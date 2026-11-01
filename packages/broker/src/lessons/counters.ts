@@ -1,7 +1,6 @@
 // Learning v2 L5: helpful and harmful counters, stale handling and auto-retire (design §4.6). Counters come from outcomes (merge, send-backs, reviews,
 // reverts) and from two buttons on the task page ("Helpful", "Wrong here"). Every mark is idempotent per task and lesson. The judge model is tool-less and
 // answers a fixed code; it can only add a harmful mark or withhold a helpful one, never approve or lower a tier.
-import { createHash } from "node:crypto";
 import { resolveLearning, emitAudit, modeAllows, type LearningSettingsReader } from "./policy.js";
 import type { AlertSink, CorrectionJudge, CorrectionKind, LessonDeps } from "./ports.js";
 import { renewLesson } from "./expiry.js";
@@ -131,7 +130,11 @@ export async function recordFeedback(deps: CounterDeps & { access: AccessCheckPo
   // always come from people with access.
   const permitted = await readVisible({ access: deps.access, key, viewer: input.viewer, lessons: [lesson], where: "feedback", log: deps.log }).then((list) => list.length === 1, () => false);
   if (!permitted) return { ok: false, code: "not_permitted" };
-  if (!(await deps.store.markOnce(key, `feedback:${input.kind}:${input.taskId}:${input.lessonId}:${createHash("sha256").update(`${key.workspaceId}\u0001${input.userId}`).digest("hex").slice(0, 24)}`))) return { ok: false, code: "repeat" };
+  // One mark per person per lesson (either kind, any task), made under a random reference that erasure deletes: a person cannot retire a lesson alone by marking it on several tasks, and the
+  // stored key names nobody once they are erased.
+  const ref = await deps.store.markRef(key, input.userId);
+  if (ref === undefined) return { ok: false, code: "not_permitted" };
+  if (!(await deps.store.markOnce(key, `feedback:${input.lessonId}:${ref}`))) return { ok: false, code: "repeat" };
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
   if (input.kind === "helpful") await addHelpful(deps, key, input.lessonId, resolved.expiryDays);
   else await addHarmful(deps, key, input.lessonId, true);

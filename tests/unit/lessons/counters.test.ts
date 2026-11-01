@@ -143,7 +143,7 @@ describe("harmful: judged corrections and the two buttons", () => {
 });
 
 describe("Helpful and Wrong here buttons", () => {
-  it("count once per person and task, only for a lesson loaded into the task; Wrong here opens a retire suggestion", async () => {
+  it("count once per person and lesson, only for a lesson loaded into the task; Wrong here opens a retire suggestion", async () => {
     const { deps, store, audit } = setup();
     await seed(store, lessonRecord());
     await store.putManifest(manifest("task-1", ["les_aaaa1111"]));
@@ -154,12 +154,14 @@ describe("Helpful and Wrong here buttons", () => {
     expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, taskId: "task-2", userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "not_loaded" });
     expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, lessonId: "les_zzzz0000", userId: "ann", kind: "helpful" })).toEqual({ ok: false, code: "not_loaded" });
     expect((await counters(store)).helpful).toBe(2);
-    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, userId: "ann", kind: "wrong_here" })).toEqual({ ok: true });
+    // Ann has marked this lesson: neither kind counts again, and not from another task either.
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, userId: "ann", kind: "wrong_here" })).toEqual({ ok: false, code: "repeat" });
+    expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...base, userId: "carl", kind: "wrong_here" })).toEqual({ ok: true });
     const lesson = (await store.get(KEY, "les_aaaa1111"))!;
     expect(lesson.counters.harmful).toBe(1);
     expect(lesson.retireProposedAt).toBeDefined();
     expect(lesson.status).toBe("active");
-    expect(audit.events.find((e) => e.action === "lesson.wrong_here")).toMatchObject({ actor: "ann", facts: { task: "task-1" } });
+    expect(audit.events.find((e) => e.action === "lesson.wrong_here")).toMatchObject({ actor: "carl", facts: { task: "task-1" } });
   });
 });
 

@@ -30,11 +30,18 @@ const WRITE_ROUTES: ReadonlyArray<[string, string]> = [
   // The audit area itself: only the export start is a POST an Auditor may make.
   ["PUT", "/v1/app/org/audit/exports"], ["DELETE", "/v1/app/org/audit/exports/e1"], ["POST", "/v1/app/org/audit/records"], ["POST", "/v1/app/org/audit/status"], ["POST", "/v1/app/org/audit/exports/e1"],
   ["POST", "/v1/app/org/audit/admin/records"],
+  // Learning v2 L3b: reading lessons is open to the Auditor; deciding, rolling back and marking are not.
+  ["POST", "/v1/app/projects/payments/lessons/les_abc12345/approve"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/reject"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/retire"],
+  ["POST", "/v1/app/projects/payments/lessons/rollback"], ["POST", "/v1/app/projects/payments/lessons"], ["PUT", "/v1/app/projects/payments/lessons"], ["DELETE", "/v1/app/projects/payments/lessons/sources"],
+  ["POST", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons/les_abc12345/feedback"],
 ];
 const READ_ROUTES_NOT_ALLOWED: ReadonlyArray<[string, string]> = [
   ["GET", "/v1/app/nav"], ["GET", "/v1/app/projects"], ["GET", "/v1/dev/projects"], ["GET", "/v1/app/org/members"], ["GET", "/v1/app/org"], ["GET", "/v1/app/org/budget"], ["GET", "/v1/app/org/invites"],
   ["GET", "/v1/dev/tasks/t1"], ["GET", "/v1/app/agents"], ["GET", "/v1/app/sessions"], ["GET", "/v1/app/models"], ["GET", "/v1/app/org/spend"], ["GET", "/v1/app/projects/payments/members"],
   ["GET", "/v1/app/org/audit/unknown"], ["GET", "/v1/app/org/audit"], ["GET", "/v1/app/org/audit/"], ["GET", "/v1/app/org/audit/exports/e1/extra"], ["GET", "/v1/app/org/audit/admin/records"],
+  // L3b: the lessons reads that stay with people who decide, and everything else that only looks like the open two.
+  ["GET", "/v1/app/projects/payments/lessons/digest"], ["GET", "/v1/app/projects/payments/lessons/les_abc12345/history"], ["GET", "/v1/app/projects/payments/lessons/"], ["GET", "/v1/app/projects/payments/lessons/sources/x"],
+  ["GET", "/v1/app/projects/pay/ments/lessons"], ["GET", "/v1/app/projects/payments/Lessons"], ["GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons"], ["GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/loaded-knowledge"],
 ];
 
 describe("the Auditor's route allow-list", () => {
@@ -42,8 +49,9 @@ describe("the Auditor's route allow-list", () => {
     for (const [method, path] of [
       ["GET", "/v1/app/org/audit/records"], ["GET", "/v1/dev/org/audit/records"], ["GET", "/v1/app/org/audit/status"], ["POST", "/v1/app/org/audit/exports"],
       ["POST", "/v1/dev/org/audit/exports"], ["GET", "/v1/app/org/audit/exports/exp_abc-123"], ["GET", "/v1/app/me"], ["GET", "/v1/app/install"],
+      ["GET", "/v1/app/projects/payments/lessons"], ["GET", "/v1/app/projects/payments/lessons/sources"],
     ] as const) expect(refused(method, path), `${method} ${path}`).toBeUndefined();
-    expect(AUDITOR_ALLOWED_ROUTES.length).toBe(6);
+    expect(AUDITOR_ALLOWED_ROUTES.length).toBe(8);
   });
 
   it("refuses every write route of a representative set with a fixed FORBIDDEN sentence", () => {

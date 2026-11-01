@@ -114,7 +114,7 @@ async function recordsFor(deps: LoadedKnowledgeRouteDependencies, caller: Develo
   }
 }
 
-const TASK_PATH = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/loaded-knowledge(?:\/([A-Za-z0-9_-]{1,80})\/([a-z_]{1,20}(?:\.[A-Z]{1,10})?)\/items\/(\d{1,3})\/text)?$/u;
+export const LOADED_KNOWLEDGE_PATH = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/loaded-knowledge(?:\/([A-Za-z0-9_-]{1,80})\/([a-z_]{1,20}(?:\.[A-Z]{1,10})?)\/items\/(\d{1,3})\/text)?$/u;
 
 /**
  * `GET /v1/app/tasks/{taskId}/loaded-knowledge` and `GET /v1/app/tasks/{taskId}/loaded-knowledge/{operationId}/{stage}/items/{n}/text`.
@@ -125,7 +125,7 @@ export async function routeLoadedKnowledge(
   caller: DeveloperCaller,
   request: { method: string; path: string },
 ): Promise<object | undefined> {
-  const match = TASK_PATH.exec(request.path);
+  const match = LOADED_KNOWLEDGE_PATH.exec(request.path);
   if (match === null || request.method !== "GET") return undefined;
   const [, taskId, operationId, stage, index] = match;
   const { task, viaAuditor } = await recordsFor(deps, caller, taskId!);

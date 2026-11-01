@@ -17,7 +17,7 @@ import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
-import { idIn, normId, sameId, type IdentitySet, type Lesson, type Tier } from "./types.js";
+import { distinctIds, idIn, normId, sameId, type IdentitySet, type Lesson, type Tier } from "./types.js";
 
 export interface ApproveDeps extends LessonDeps {
   store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader;
@@ -74,7 +74,11 @@ export async function activateLesson(deps: LessonDeps & { store: LessonStore }, 
   return undefined;
 }
 
-export interface ApproveInput { workspaceId: string; project: string; lessonId: string; approverId: string; edit?: { title: string; description: string; body: string } }
+export interface ApproveInput {
+  workspaceId: string; project: string; lessonId: string; approverId: string; edit?: { title: string; description: string; body: string };
+  /** The version the approver read. When given, an approval of any other version is a conflict: a person approves the text they saw. */
+  expectedVersion?: number;
+}
 
 export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Promise<ApprovalResult> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
@@ -90,6 +94,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     if (lesson === undefined) return { ok: false, code: "not_found" };
     if (lesson.status !== "pending") return { ok: false, code: "not_pending" };
     if (!(await mayHandle(deps, key, lesson, input.approverId))) return { ok: false, code: "not_permitted" };
+    if (input.expectedVersion !== undefined && lesson.version !== input.expectedVersion) return { ok: false, code: "conflict" };
 
     // Edit and approve: the edited text is cleaned and screened, and the tier is worked out again on it.
     let working: Lesson = lesson;
@@ -104,11 +109,19 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       // raise a tier, never lower it, so rewording a tier-2 lesson cannot take it to one person.
       const decision = classifyTier(working, { contradiction: lesson.contradictsWith !== undefined, judgeEscalate: lesson.tierReasons.includes("judge_escalate") }, { tier: lesson.tier, reasons: lesson.tierReasons });
       if (decision.tier === "never") return { ok: false, code: "tier_never" };
-      working = { ...working, tier: decision.tier, tierReasons: decision.reasons };
+      // The editor is recorded as an EDITOR, not an author: the author rule (who may approve alone) is about who wrote the evidence, so a one-tap edit keeps working, but erasure counts
+      // an editor as a writer of the text (a lesson an erased person rewrote is hard-deleted).
+      working = { ...working, tier: decision.tier, tierReasons: decision.reasons, provenance: { ...working.provenance, editors: distinctIds([...(working.provenance.editors ?? []), input.approverId]) } };
       // A person's edit is a new lesson text: approvals given to the old text do not carry over, and a higher tier needs its people again.
       approvals = [];
     }
 
+    // An approval counts only while its giver is still eligible: a first approver who left the project (or was erased) is dropped, audited, and the person deciding now gives the first.
+    const gone = approvals.filter((a) => a.mode !== "auto" && !idIn(group.eligibleIds, a.by));
+    if (gone.length > 0) {
+      approvals = approvals.filter((a) => !gone.includes(a));
+      await emitAudit(deps.audit, { action: "lesson.updated", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { dropped: gone.length, reason: "approver_not_eligible" } });
+    }
     if (approvals.some((a) => sameId(a.by, input.approverId))) return { ok: false, code: "already_approved" };
     const tier: Tier = working.tier;
     // A lesson sent back to a person (review required) needs at least one person even if the policy would let its tier apply by itself.
@@ -153,7 +166,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       // The edited text must be saved with the activation: write the edit first as a version of the pending lesson when there is one.
       if (input.edit !== undefined) {
         const setVersion = await deps.store.setVersion(key);
-        const saved = await deps.store.commit(key, setVersion, [{ ...working, version: nextVersion(lesson, await deps.store.versions(key, lesson.id)), updatedAt: now }], now);
+        const saved = await deps.store.commit(key, setVersion, [{ ...working, approvals: [], version: nextVersion(lesson, await deps.store.versions(key, lesson.id)), updatedAt: now }], now);
         if (!saved.ok) continue;
       }
       let active: Lesson | undefined;
@@ -186,7 +199,7 @@ export function trySecondPerson(group: Awaited<ReturnType<ApproverDirectory["eli
   }
 }
 
-async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; actorId: string; allowed: readonly Lesson["status"][]; to: "rejected" | "retired"; reason: string; action: "lesson.rejected" | "lesson.retired" }): Promise<{ ok: true } | { ok: false; code: ApprovalFailure }> {
+async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; actorId: string; expectedVersion?: number; allowed: readonly Lesson["status"][]; to: "rejected" | "retired"; reason: string; action: "lesson.rejected" | "lesson.retired" }): Promise<{ ok: true } | { ok: false; code: ApprovalFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
@@ -196,10 +209,14 @@ async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; proje
   if (!input.allowed.includes(lesson.status)) return { ok: false, code: "not_pending" };
   // Reading a restricted lesson to reject it needs the same access as approving it. Retire is the kill switch: it shows no text, so it is never blocked.
   if (input.to === "rejected" && !(await mayHandle(deps, key, lesson, input.actorId))) return { ok: false, code: "not_permitted" };
+  // A person rejects the text they read: a lesson that moved on since is not rejected under them.
+  if (input.expectedVersion !== undefined && lesson.version !== input.expectedVersion) return { ok: false, code: "conflict" };
   if (input.to === "retired") return (await retireLesson(deps, key, lesson.id, input.reason, input.actorId, "lesson.retired")) ? { ok: true } : { ok: false, code: "conflict" };
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     const fresh = await deps.store.get(key, lesson.id);
     if (fresh === undefined || fresh.status !== "pending") return { ok: false, code: "not_pending" };
+    // Every attempt: a retry after a lost race re-reads the lesson, and a lesson that moved on is not rejected under the person who read the earlier text.
+    if (input.expectedVersion !== undefined && fresh.version !== input.expectedVersion) return { ok: false, code: "conflict" };
     const setVersion = await deps.store.setVersion(key);
     const result = await deps.store.commit(key, setVersion, [{ ...fresh, version: nextVersion(fresh, await deps.store.versions(key, fresh.id)), status: "rejected", rejectedReason: cleanForLearning(input.reason, 200), updatedAt: deps.now() }], deps.now());
     if (result.ok) {
@@ -211,7 +228,7 @@ async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; proje
 }
 
 /** A maintainer rejects a pending lesson. The reason is kept (cleaned), and a similar lesson is not proposed again. */
-export const rejectLesson = (deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; approverId: string; reason: string }) =>
+export const rejectLesson = (deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; approverId: string; reason: string; expectedVersion?: number }) =>
   decideOnce(deps, { ...input, actorId: input.approverId, allowed: ["pending"], to: "rejected", reason: input.reason, action: "lesson.rejected" });
 
 /** A maintainer retires a lesson (active, stale or pending). Always possible for an eligible person: this is the kill switch (C14). */
@@ -219,12 +236,12 @@ export const retireByPerson = (deps: ApproveDeps, input: { workspaceId: string; 
   decideOnce(deps, { ...input, allowed: ["active", "stale", "pending", "candidate"], to: "retired", action: "lesson.retired" });
 
 /** Restores an earlier lesson-set version (design §4.6). Audited `lesson.rolled_back`. */
-export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId: string; project: string; targetSetVersion: number; actorId: string; /** Runs the normal tier check again on each restored lesson (the caller passes `settleLesson`). */ onRestored?: (lessonId: string) => Promise<unknown> }): Promise<{ ok: true; setVersion: number; restored: string[] } | { ok: false; code: ApprovalFailure }> {
+export async function rollbackLessonSet(deps: ApproveDeps, input: { workspaceId: string; project: string; targetSetVersion: number; actorId: string; /** The set version the person saw: the store\'s conditional write enforces it, so a set that moved since is not rolled away. */ expectedSetVersion?: number; /** Runs the normal tier check again on each restored lesson (the caller passes `settleLesson`). */ onRestored?: (lessonId: string) => Promise<unknown> }): Promise<{ ok: true; setVersion: number; restored: string[] } | { ok: false; code: ApprovalFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.actorId)) return { ok: false, code: "not_eligible" };
-  const current = await deps.store.setVersion(key);
+  const current = input.expectedSetVersion ?? await deps.store.setVersion(key);
   if (!(await requireAudit(deps.audit, { action: "lesson.rolled_back", workspaceId: key.workspaceId, project: key.project, actor: input.actorId, facts: { to: input.targetSetVersion, from: current } }))) return { ok: false, code: "audit_unavailable" };
   const result = await deps.store.rollback(key, input.targetSetVersion, current, deps.now());
   if (!result.ok) return { ok: false, code: "conflict" };

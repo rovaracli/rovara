@@ -1,0 +1,172 @@
+// Learning v2 L3b: what the Lessons tab, the Sources tab and the task page's lessons list read and send (design learning-v2-team-record.md section 1.2, build row L3b).
+// Browser-safe: nothing here imports a Node module. Request bodies are strict. Every answer has a forward reader (`*ReaderSchema`) that keeps unknown fields and reads an enum
+// value it does not know as "unknown".
+//
+// What a lesson shows is decided by the server, per viewer: a lesson from a source the viewer cannot see is not in any list (only counted), a person who was erased is
+// named "a former member", and an outsider's words are never a lesson. Every text here is plain text; the screens show it as text, never as markup.
+import { z } from "zod";
+import { forwardReader } from "./forward-reader.js";
+import { LessonStageSchema, LessonTypeSchema } from "./learned-context.js";
+
+/** The statuses a lesson has in the store (kept equal to the broker's list by a test). */
+export const LESSON_VIEW_STATUSES = ["candidate", "pending", "active", "stale", "retired", "rejected", "expired", "withdrawn"] as const;
+export const LessonViewStatusSchema = z.enum(LESSON_VIEW_STATUSES);
+
+/** The reasons for a tier, as the classifier writes them. A reason this build does not know is shown with no words (never the raw code). */
+export const LESSON_TIER_REASONS = [
+  "reviewer_stage", "review_check", "escalation_words", "command_or_url", "encoded_content", "risky_path", "judge_escalate", "not_a_fact", "citations_not_verified",
+  "not_plain_declarative", "source_not_trusted", "scope_not_one_repo", "stage_not_allowed", "contradiction", "restricted_source", "supersedes_higher_tier", "cited_fact",
+] as const;
+
+export const LESSON_LEARNING_MODES = ["Off", "Collect", "Suggest", "On"] as const;
+export const LessonLearningModeSchema = z.enum(LESSON_LEARNING_MODES);
+
+/** A person as the screens may name them: a display name, or "a former member" for someone who was erased or cannot be read. `you` marks the signed-in person. */
+export const LessonPersonSchema = z.object({ name: z.string().min(1).max(80), you: z.literal(true).optional() }).strict();
+export type LessonPerson = z.infer<typeof LessonPersonSchema>;
+
+export const LessonCitationViewSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("code"), repo: z.string().min(1).max(200), path: z.string().min(1).max(500), startLine: z.number().int().min(1), endLine: z.number().int().min(1),
+    /** Whether the cited code is still where the lesson says: `valid`, `moved` (found elsewhere), `stale` (gone), or `unchecked` (not looked at yet). `checkedAt` is the last look. */
+    check: z.enum(["valid", "moved", "stale", "unchecked"]), checkedAt: z.number().optional(),
+  }).strict(),
+  z.object({ kind: z.literal("pr"), url: z.string().url().max(300) }).strict(),
+  z.object({ kind: z.literal("task"), taskId: z.string().min(1).max(100) }).strict(),
+  z.object({ kind: z.literal("record") }).strict(),
+]);
+
+/** What a lesson waiting for people still needs. */
+export const LessonNeedsSchema = z.object({
+  /** People in all: 1 (a maintainer), or 2 (a second maintainer or admin, for reviewer, check and security lessons). */
+  required: z.union([z.literal(1), z.literal(2)]),
+  have: z.number().int().min(0).max(5),
+  /** Who approved first, and when. */
+  first: LessonPersonSchema.optional(), firstAt: z.number().optional(),
+  /** Named groups that must still be among the approvers (Enterprise). */
+  groups: z.array(z.string().min(1).max(100)).max(10),
+}).strict();
+
+export const LessonViewSchema = z.object({
+  id: z.string().min(1).max(64), version: z.number().int().min(1),
+  type: LessonTypeSchema, stages: z.array(LessonStageSchema).max(5),
+  title: z.string().max(80), description: z.string().max(160), body: z.string().max(600),
+  scope: z.object({ repos: z.array(z.string().max(200)).max(10), paths: z.array(z.string().max(200)).max(20), languages: z.array(z.string().max(40)).max(10) }).strict(),
+  tier: z.union([z.literal(0), z.literal(1), z.literal(2)]), tierReasons: z.array(z.string().max(80)).max(12),
+  status: LessonViewStatusSchema,
+  counters: z.object({ loaded: z.number().int().min(0), helpful: z.number().int().min(0), harmful: z.number().int().min(0) }).strict(),
+  createdAt: z.number(), updatedAt: z.number(), expiresAt: z.number(), lastUsedAt: z.number().optional(),
+  citations: z.array(LessonCitationViewSchema).max(8),
+  /** The people whose words or edits the lesson comes from. */
+  from: z.array(LessonPersonSchema).max(20),
+  /** Whether the evidence includes a measured outcome (a send-back, a revert or a failed check), and how many tasks back it. */
+  measured: z.boolean(), supportTasks: z.number().int().min(0).max(50),
+  needs: LessonNeedsSchema.optional(),
+  approvals: z.array(z.object({ by: LessonPersonSchema, at: z.number(), mode: z.enum(["one", "second_person", "sole_owner_exception", "auto"]) }).strict()).max(10),
+  /** Sent back to a person (for example kept on code alone after its sources were deleted), or the lesson it contradicts, or a retire that waits for a person. */
+  reviewRequired: z.literal(true).optional(), contradicts: z.string().max(64).optional(), retireProposed: z.literal(true).optional(), supersedes: z.string().max(64).optional(),
+  rejectedReason: z.string().max(200).optional(),
+  /** What this viewer may do with it, worked out by the server (the routes check again when asked). */
+  canApprove: z.boolean(), canReject: z.boolean(), canRetire: z.boolean(),
+}).strict();
+export type LessonView = z.infer<typeof LessonViewSchema>;
+
+/** A lesson-set version a maintainer can roll back to. */
+export const LessonSnapshotSchema = z.object({ setVersion: z.number().int().min(0), at: z.number(), lessons: z.number().int().min(0).max(5_000) }).strict();
+
+export const LessonsViewSchema = z.object({
+  project: z.string().min(1).max(100),
+  /** The learning mode in force (the stricter of the project's own choice and the company's lock), and whether the company's lock is the reason. */
+  mode: LessonLearningModeSchema, lockedByCompany: z.boolean(),
+  /** How many people each tier needs before a lesson is used. */
+  approval: z.object({ tier0: z.enum(["auto", "one", "two"]), tier1: z.enum(["one", "two"]), requiredGroups: z.array(z.string().max(100)).max(10) }).strict(),
+  expiryDays: z.number().int().min(14).max(365).optional(),
+  /** Whether this viewer may approve, reject, retire and roll back. A viewer who may not still reads the active lessons. */
+  canDecide: z.boolean(),
+  waiting: z.array(LessonViewSchema).max(100), active: z.array(LessonViewSchema).max(200), removed: z.array(LessonViewSchema).max(50),
+  /** Candidates collected and not yet in front of people. Nothing is dropped. */
+  queued: z.number().int().min(0),
+  /** Lessons left out because this viewer cannot see their source (a count, never a name). */
+  hidden: z.number().int().min(0),
+  truncated: z.array(z.enum(["waiting", "active", "removed"])).max(3),
+  setVersion: z.number().int().min(0), snapshots: z.array(LessonSnapshotSchema).max(20),
+}).strict();
+export type LessonsViewAnswer = z.infer<typeof LessonsViewSchema>;
+export const LessonsViewReaderSchema = forwardReader(LessonsViewSchema);
+
+export const LessonHistorySchema = z.object({
+  versions: z.array(z.object({
+    version: z.number().int().min(1), at: z.number(), status: LessonViewStatusSchema, title: z.string().max(80), body: z.string().max(600),
+    approvedBy: z.array(LessonPersonSchema).max(10),
+  }).strict()).max(50),
+}).strict();
+export const LessonHistoryReaderSchema = forwardReader(LessonHistorySchema);
+
+const DigestItemSchema = z.object({
+  id: z.string().min(1).max(64), title: z.string().max(80), type: LessonTypeSchema, tier: z.union([z.literal(0), z.literal(1), z.literal(2)]),
+  /** Pull request links the lesson came from (https only). */
+  links: z.array(z.string().url().max(300)).max(10),
+}).strict();
+export const LessonsDigestSchema = z.object({
+  since: z.number(),
+  /** The most important lessons first: measured outcomes, then recurrence, then severity. */
+  top: z.array(DigestItemSchema).max(10), needsReview: z.array(DigestItemSchema).max(50), autoApplied: z.array(DigestItemSchema).max(50), waiting: z.array(DigestItemSchema).max(100),
+  retired: z.array(DigestItemSchema).max(100), staleOrRetireProposed: z.array(DigestItemSchema).max(100),
+  queued: z.number().int().min(0),
+  /** Sources paused because they spiked, named only where the viewer can see every lesson that mentions them. */
+  pausedSources: z.array(z.string().max(120)).max(50), pausedSourcesHidden: z.number().int().min(0), hidden: z.number().int().min(0),
+}).strict();
+export const LessonsDigestReaderSchema = forwardReader(LessonsDigestSchema);
+
+// ---- Sources tab
+
+export const LessonSourceRowSchema = z.object({
+  kind: z.string().min(1).max(40),
+  /** The channel, repository or tracker project. Absent when the source is kept for maintainers only and this viewer is not one. */
+  scope: z.string().min(1).max(300).optional(),
+  enabled: z.boolean(), retention: z.string().min(1).max(10), notesOptIn: z.literal(true).optional(),
+  health: z.enum(["unknown", "ok", "failing"]),
+  /** Who may see items from this source when the source gives no list of its own. */
+  audience: z.enum(["maintainers", "project"]),
+  excluded: z.number().int().min(0).max(200).optional(),
+  updatedAt: z.string().max(40),
+  /** Paused by spike detection: its lessons wait until a maintainer resumes it. */
+  paused: z.boolean(),
+}).strict();
+export const LessonSourcesSchema = z.object({
+  sources: z.array(LessonSourceRowSchema).max(200),
+  /** Sources the learning loop paused that match no row above (a person, CI), counted. */
+  otherPaused: z.number().int().min(0),
+}).strict();
+export const LessonSourcesReaderSchema = forwardReader(LessonSourcesSchema);
+
+// ---- the task page: lessons the agent loaded
+
+export const LoadedLessonRowSchema = z.object({
+  stage: z.string().min(1).max(40), round: z.number().int().min(0), lessonId: z.string().min(1).max(64), version: z.number().int().min(1),
+  why: z.enum(["scope", "similar", "path"]),
+  citation: z.enum(["unchecked", "valid", "moved", "stale_dropped", "unchecked_dropped", "none"]),
+  /** False when this viewer cannot see the lesson's source: the row then has no words. */
+  visible: z.boolean(), title: z.string().max(80).optional(), type: LessonTypeSchema.optional(), helpful: z.number().int().min(0).optional(), harmful: z.number().int().min(0).optional(),
+  canMark: z.boolean(),
+}).strict();
+export const LoadedLessonsSchema = z.object({ lessons: z.array(LoadedLessonRowSchema).max(500) }).strict();
+export const LoadedLessonsReaderSchema = forwardReader(LoadedLessonsSchema);
+
+// ---- request bodies
+
+const Reason = z.string().trim().min(1).max(200);
+const Text = z.object({ title: z.string().trim().min(1).max(80), description: z.string().trim().max(160), body: z.string().trim().min(1).max(600) }).strict();
+/** `expectedVersion` is the version the person read: an approval of text that changed since is refused. */
+export const LessonApproveBodySchema = z.object({ expectedVersion: z.number().int().min(1), edit: Text.optional() }).strict();
+export const LessonRejectBodySchema = z.object({ expectedVersion: z.number().int().min(1), reason: Reason }).strict();
+export const LessonRetireBodySchema = z.object({ reason: Reason.optional() }).strict();
+export const LessonRollbackBodySchema = z.object({ targetSetVersion: z.number().int().min(0), expectedSetVersion: z.number().int().min(0) }).strict();
+export const LessonFeedbackBodySchema = z.object({ kind: z.enum(["helpful", "wrong_here"]) }).strict();
+
+export const LessonApproveAnswerSchema = z.object({ status: z.enum(["active", "pending"]), needs: z.enum(["nothing", "second_person", "group_member"]) }).strict();
+export const LessonApproveAnswerReaderSchema = forwardReader(LessonApproveAnswerSchema);
+export const LessonDoneAnswerSchema = z.object({ done: z.literal(true) }).strict();
+export const LessonDoneAnswerReaderSchema = forwardReader(LessonDoneAnswerSchema);
+export const LessonRollbackAnswerSchema = z.object({ setVersion: z.number().int().min(0), restored: z.number().int().min(0) }).strict();
+export const LessonRollbackAnswerReaderSchema = forwardReader(LessonRollbackAnswerSchema);

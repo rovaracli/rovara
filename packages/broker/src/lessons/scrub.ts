@@ -20,7 +20,7 @@ export function scrubLesson(lesson: Lesson, deleted: ReadonlySet<string>, dev?: 
   if (checks.length > 0) out.citationChecks = checks; else delete (out as { citationChecks?: unknown }).citationChecks;
   if (people !== undefined) {
     out.provenance = {
-      ...out.provenance, authors: out.provenance.authors.filter((a) => !gone(a)), sources: out.provenance.sources.filter((s) => !namesGone(s)),
+      ...out.provenance, authors: out.provenance.authors.filter((a) => !gone(a)), ...(out.provenance.editors === undefined ? {} : { editors: out.provenance.editors.filter((a) => !gone(a)) }), sources: out.provenance.sources.filter((s) => !namesGone(s)),
       inputSources: out.provenance.inputSources.filter((s) => !namesGone(s)),
     };
     out.approvals = out.approvals.map((a) => (gone(a.by) ? { ...a, by: ERASED_MARK } : a));
