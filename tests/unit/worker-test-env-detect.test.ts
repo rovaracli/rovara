@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TestEnvDraftSchema, type SetupProposal } from "@agentx/contracts";
-import { detectTestEnvironment, listRepositoryFiles, readRepositoryFile, testEnvDraftResult } from "../../packages/worker/src/test-env-detect.js";
+import { detectTestEnvironment, draftFitsCap, listRepositoryFiles, readRepositoryFile, testEnvDraftResult } from "../../packages/worker/src/test-env-detect.js";
 
 let root: string;
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "te-detect-")); });
@@ -95,11 +95,12 @@ describe("the draft", () => {
     expect(withAgent.environment.repos[0]!.setupCommands.some((command) => command.executable === "make")).toBe(true);
   });
 
-  it("a draft over the size the broker keeps is not reported", async () => {
+  it("a draft over the size the broker keeps does not fit the cap, and the reported one does", async () => {
     await write("svc/pyproject.toml", PYTEST);
-    const commands = Array.from({ length: 30 }, (_, index) => `pytest -q --note=${String(index)}-${"x".repeat(8_100)} --b=${"y".repeat(8_000)}`);
-    const huge = await detectTestEnvironment({ rootPath: root, repositories: [repo("svc")], setupProposal: proposal([], commands) });
-    expect(huge === undefined || Buffer.byteLength(JSON.stringify(huge)) <= 200 * 1_024).toBe(true);
+    const draft = (await detectTestEnvironment({ rootPath: root, repositories: [repo("svc")] }))!;
+    expect(draftFitsCap(draft)).toBe(true);
+    const huge = { ...draft, notes: Array.from({ length: 60 }, () => "n".repeat(400)), valueSources: Array.from({ length: 400 }, (_, index) => ({ field: `repos[0].checks[${String(index)}]`, source: { path: "p".repeat(480), line: 1 } })) };
+    expect(draftFitsCap({ ...huge, environment: { ...huge.environment, repos: [{ ...huge.environment.repos[0]!, setupCommands: Array.from({ length: 20 }, (_, index) => ({ cwd: "svc", executable: "make", args: [`a${String(index)}`, "z".repeat(8_000), "y".repeat(8_000)], timeoutSeconds: 60 })) }] } })).toBe(false);
   });
 
   it("a repository with nothing recognisable gives no draft, and a result helper that never throws", async () => {

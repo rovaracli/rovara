@@ -145,8 +145,11 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     questions: [...new Set(questions)].map(plainLine).filter((line) => line !== "").slice(0, 60),
   });
   // A draft the broker would refuse for its size is not reported (the setup draft's result stays small).
-  return reported.success && Buffer.byteLength(JSON.stringify(reported.data), "utf8") <= TEST_ENV_DRAFT_MAX_BYTES ? reported.data : undefined;
+  return reported.success && draftFitsCap(reported.data) ? reported.data : undefined;
 }
+
+/** Whether a draft weighs no more than the broker keeps. */
+export const draftFitsCap = (draft: TestEnvDraft): boolean => Buffer.byteLength(JSON.stringify(draft), "utf8") <= TEST_ENV_DRAFT_MAX_BYTES;
 
 const plainLine = (text: string): string => text.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 400);
 function dedupe<T>(list: readonly T[], key: (item: T) => string): T[] {
