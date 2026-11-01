@@ -41,6 +41,7 @@ import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditDeps, type TransactItem } from "../audit/outbox.js";
 import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies } from "./second-person-evidence.js";
 import { decideSecondPersonApproval } from "./second-person-approval.js";
+import { DynamoSoleOwnerSwitch } from "../lessons/dynamo-settings.js";
 
 /** What the second-person check answers: the mode the COMPANY'S RECORDS allow, and the conditions that pin both people's live authority so they commit with the approval. */
 export interface SecondPersonCheck { mode: "second_person" | "sole_owner_exception"; membershipVersion: number; conditions: TransactItem[] }
@@ -57,13 +58,28 @@ export interface TestEnvDeps extends AuditDeps {
   secondPerson?: SecondPersonPort;
 }
 
-/** The real second-person check over the company's records (the same evidence and decision every other less-safe approval uses). */
+/**
+ * Whether the company lets its only owner stand in as the second person (the company switch, default ON; owner decision 2026-11-01). A switch that cannot be read, or holds something that is not a boolean, is
+ * OFF: the exception is never assumed.
+ */
+export async function soleOwnerExceptionOn(deps: Pick<SecondPersonEvidenceDependencies, "documentClient" | "tableName">, orgId: OrgId): Promise<boolean> {
+  try { return await new DynamoSoleOwnerSwitch({ documentClient: deps.documentClient, tableName: deps.tableName }).read(orgId); } catch { return false; }
+}
+
+/**
+ * The second-person decision for one scope, over the company's records: both people's live authority, the shared decision, and the company switch for the sole-owner exception (with it OFF, the same person is
+ * never the second person). Throws like the shared decision does when there is no eligible second person.
+ */
+export async function decideFromRecords(deps: SecondPersonEvidenceDependencies, scope: { orgId: OrgId; project: string; proposerId: string; approverId: string }): Promise<SecondPersonCheck> {
+  const { decisionInput, conditions } = await readSecondPersonApprovalEvidence(deps, scope);
+  const decision = decideSecondPersonApproval(decisionInput);
+  if (decision.mode === "sole_owner_exception" && !(await soleOwnerExceptionOn(deps, scope.orgId))) throw agentXError("FORBIDDEN", "a fresh eligible second-person approval is required");
+  return { mode: decision.mode, membershipVersion: decision.membershipVersion, conditions };
+}
+
+/** The real second-person check over the company's records (the same evidence and decision every other less-safe approval uses, and the company's sole-owner switch). */
 export function secondPersonFromRecords(deps: SecondPersonEvidenceDependencies): SecondPersonPort {
-  return async (scope) => {
-    const { decisionInput, conditions } = await readSecondPersonApprovalEvidence(deps, scope);
-    const decision = decideSecondPersonApproval(decisionInput);
-    return { mode: decision.mode, membershipVersion: decision.membershipVersion, conditions };
-  };
+  return (scope) => decideFromRecords(deps, scope);
 }
 
 type Item = Record<string, unknown>;

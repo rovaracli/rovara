@@ -2,7 +2,7 @@
 // less safe than the sandbox (a fresh browser sign-in, and a second person's confirmation card read back from the company's records). With the switch off none of it exists.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { TestEnvironmentStateSchema, projectMetaKey, testEnvDigest } from "../../packages/contracts/src/index.js";
+import { TestEnvironmentStateSchema, projectMetaKey, teamRecordPk, testEnvDigest } from "../../packages/contracts/src/index.js";
 import { confirmationStands } from "../../packages/broker/src/org/test-environment.js";
 import { mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
 import { commandsToApply, runsOf, shownLine } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
@@ -480,5 +480,49 @@ describe("when a second person's confirmation stands", () => {
     expect(confirmationStands(now - 25 * 60 * MIN, now - 24 * 60 * MIN - 1, now)).toBe(false);
     expect(confirmationStands(now - 24 * 60 * MIN - 5 * MIN, now - 24 * 60 * MIN, now)).toBe(true);
     expect(confirmationStands(Number.NaN, now, now)).toBe(false);
+  });
+});
+
+describe("the company's switch for the sole-owner exception", () => {
+  const soleOwnerSwitch = (t: Bench, enabled: unknown) => t.db.set({ pk: teamRecordPk(TEST_ORG), sk: "LESSONSET#COMPANYSOLE", entityType: "LESSON_SOLE_OWNER_SETTING", enabled, updatedAt: 1 });
+  const askAndConfirm = async (t: Bench) => {
+    const digest = await lessSafeProposal(t);
+    await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+    const [card] = t.approvals();
+    t.confirmCard(card!.approvalId, OMAR);
+    return { digest, card: card! };
+  };
+  const rule = (t: Bench, card: unknown) => mayDecideApproval({ documentClient: t.db, tableName: "state", now: () => Date.now(), modelSignInTableName: "signin" } as never, { orgId: TEST_ORG, developerId: OMAR.developerId, orgRole: "owner" } as never, card as never);
+
+  it("with the switch OFF the only owner is not a second person: the card rule says no and the approval is refused", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", async () => {
+      soleOwnerSwitch(t, false);
+      const digest = await lessSafeProposal(t);
+      await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+      const [card] = t.approvals();
+      expect(await rule(t, card)).toBe(false);
+      t.confirmCard(card!.approvalId, OMAR);
+      const refused = await t.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 });
+      expect(refused.status).toBe(403);
+      expect(errorOf(refused).message).toContain("second person");
+      expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toHaveLength(1);
+    });
+  });
+
+  it("an unreadable switch counts as OFF, and ON (set or never set) lets the only owner confirm", async () => {
+    const broken = await setupWizardBench();
+    await withSwitch("1", async () => {
+      soleOwnerSwitch(broken, "yes");
+      const { digest } = await askAndConfirm(broken);
+      expect((await broken.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 })).status).toBe(403);
+    });
+    const on = await setupWizardBench();
+    await withSwitch("1", async () => {
+      soleOwnerSwitch(on, true);
+      const { digest, card } = await askAndConfirm(on);
+      expect(await rule(on, card)).toBe(true);
+      expect((await on.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 })).status).toBe(200);
+    });
   });
 });

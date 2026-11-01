@@ -13,9 +13,7 @@ import { createHash } from "node:crypto";
 import { AuditProofSchema, agentXError, type OrgId } from "@agentx/contracts";
 import { approvalIdFor, createPendingChange, getApproval, registerApprovalSubjectHandler, registerApproverRule, type ApprovalDependencies, type ApprovalRecord } from "../agents/approvals.js";
 import type { ApprovalCaller } from "../agents/approvals.js";
-import { confirmationStands, type LessSafeApproval } from "./test-environment.js";
-import { decideSecondPersonApproval } from "./second-person-approval.js";
-import { readSecondPersonApprovalEvidence } from "./second-person-evidence.js";
+import { confirmationStands, decideFromRecords, type LessSafeApproval } from "./test-environment.js";
 
 export const TEST_ENV_RULE = "test_env";
 /** A confirmation card lives a day: long enough for the second person to get to it, short enough that a forgotten one does not wait for weeks. */
@@ -47,11 +45,10 @@ export function registerTestEnvApprovals(): void {
   registerApproverRule(TEST_ENV_RULE, async (deps, record, caller) => {
     if (!isChange(record) || record.subject.kind !== "test_env" || caller.orgId !== record.orgId || deps.modelSignInTableName === undefined) return false;
     try {
-      const evidence = await readSecondPersonApprovalEvidence(
+      await decideFromRecords(
         { documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.modelSignInTableName, now: deps.now },
         { orgId: record.orgId, project: record.subject.project, proposerId: record.requestedBy, approverId: caller.developerId },
       );
-      decideSecondPersonApproval(evidence.decisionInput);
       return true;
     } catch {
       return false;
