@@ -1,5 +1,10 @@
 import type { CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
 import type { CodeHostRouter } from "../../plugins/registry.js";
+import type { LessonViewDeps } from "../../lessons/view.js";
+import type { ApproveDeps } from "../../lessons/approve.js";
+import type { ProcessDeps } from "../../lessons/process.js";
+import type { CounterDeps } from "../../lessons/counters.js";
+import type { LoadedKnowledgeRouteDependencies } from "../../developer/loaded-knowledge.js";
 import type { MetaProjectCreated } from "../../org/create-from-meta.js";
 import type { MetaConfigDependencies } from "../../meta-repo/config-import.js";
 import type { ServiceStatusDependencies } from "../../org/service-status.js";
@@ -209,6 +214,13 @@ export interface DeveloperRouteDependencies {
   };
   /** Plan 3 Task 12b: the org's connections, which closing the org clears. Independent of `agents`, which only the connection routes need. */
   orgConnections?: OrgConnectionStore;
+  /**
+   * Learning v2 L3b: the lesson library's ports for the Lessons tab, the Sources tab and the task page's lessons list (store, approver directory, settings, access port, names, sources table, audit,
+   * citation and code checks, the models rollback and the marks use). Built where the Team record is wired. Absent (the default): the lessons routes answer as they did before lessons existed.
+   */
+  lessons?: LessonViewDeps & ApproveDeps & ProcessDeps & CounterDeps;
+  /** K1: the two reads the rule text of "What the agent loaded" needs. Absent: the records are listed and no rule text is served. */
+  loadedKnowledge?: Pick<LoadedKnowledgeRouteDependencies, "canReadRepository" | "readRuleFile">;
   /** Plan 3, Task 7: what the agent routes (`/v1/app/agents*` and the other Plan 3 paths) need. Without it they answer NOT_FOUND. */
   agents?: AgentRouteDependencies;
   /**

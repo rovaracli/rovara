@@ -22,6 +22,7 @@ import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { requireWriterCaller } from "../org/auditor.js";
 import { approveLesson, rejectLesson, retireByPerson, type ApprovalFailure, type ApproveDeps } from "./approve.js";
 import { recordFeedback, type CounterDeps } from "./counters.js";
+import { resolveLearning } from "./policy.js";
 import { rollbackLessonSetSettled } from "./rollback.js";
 import type { ProcessDeps } from "./process.js";
 import { buildLessonHistory, buildLessonSources, buildLessonsDigest, buildLessonsView, buildLoadedLessons, SNAPSHOTS_MAX, type LessonViewDeps } from "./view.js";
@@ -37,6 +38,29 @@ export interface LessonRouteDependencies {
   projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }>;
   /** The project of a task the caller may read (the task page's own access check), or a throw. */
   taskFor(caller: DeveloperCaller, taskId: string): Promise<{ project: string }>;
+  /**
+   * One take from a per-person rate row (the existing `takeRateAt` rows): `bucket` names the row, `limit` is what a person may do in `LESSON_RATE_WINDOW_MS`. True when the take was
+   * allowed. A refusal is 429, and a rate row that cannot be read or written refuses the request (fail closed).
+   */
+  rate(caller: DeveloperCaller, bucket: string, limit: number, windowMs: number): Promise<boolean>;
+}
+
+/** What a person may do per minute: any decision (approve, reject, remove), edits (each also counts as a decision), a rollback, and Helpful / Wrong here marks. */
+export const LESSON_RATES = { decision: 30, edit: 10, rollback: 5, mark: 60 } as const;
+export const LESSON_RATE_WINDOW_MS = 60_000;
+export const LESSON_RATE_BUCKETS = { decision: "LESSON_DECISIONS", edit: "LESSON_EDITS", rollback: "LESSON_ROLLBACKS", mark: "LESSON_MARKS" } as const;
+
+async function takeBudget(deps: LessonRouteDependencies, caller: DeveloperCaller, kind: keyof typeof LESSON_RATES): Promise<void> {
+  let allowed: boolean;
+  try { allowed = await deps.rate(caller, LESSON_RATE_BUCKETS[kind], LESSON_RATES[kind], LESSON_RATE_WINDOW_MS); }
+  catch { throw agentXError("RUNTIME_UNAVAILABLE", "The request budget for lessons could not be checked."); }
+  if (!allowed) throw agentXError("TOO_MANY_REQUESTS", "Too many lesson requests. Try again in a minute.");
+}
+
+/** Lessons answer only where learning is on for the project: with the project's mode Off (or no setting that reads), every lesson route answers "not found", as it did before lessons existed. */
+async function requireLearningOn(deps: LessonRouteDependencies, caller: DeveloperCaller, project: string): Promise<void> {
+  const resolved = await resolveLearning(deps.lessons.settings, caller.orgId, project);
+  if (resolved.mode === "Off") throw agentXError("NOT_FOUND", "Lessons are not available for this project.");
 }
 
 function strictBody<T>(schema: ZodType<T>, raw: unknown): T {
@@ -82,18 +106,24 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
   const [, rawProject, id, action] = matched;
   const who = { orgId: caller.orgId, developerId: caller.developerId };
 
+  // The project, and whether learning is on for it, come first for every path: a path that is not a lessons read or write answers `undefined` only after that.
   if (method === "GET") {
-    if (id === undefined) return buildLessonsView(deps.lessons, who, (await deps.projectFor(caller, rawProject!)).name);
-    if (action === undefined && id === "digest") return buildLessonsDigest(deps.lessons, who, (await deps.projectFor(caller, rawProject!)).name);
-    if (action === undefined && id === "sources") return buildLessonSources(deps.lessons, who, (await deps.projectFor(caller, rawProject!)).name);
-    if (action === "history") return buildLessonHistory(deps.lessons, who, (await deps.projectFor(caller, rawProject!)).name, id);
-    return undefined;
+    const known = id === undefined || (action === undefined && (id === "digest" || id === "sources")) || action === "history";
+    if (!known) return undefined;
+    const { name } = await deps.projectFor(caller, rawProject!);
+    await requireLearningOn(deps, caller, name);
+    if (id === undefined) return buildLessonsView(deps.lessons, who, name);
+    if (action === undefined && id === "digest") return buildLessonsDigest(deps.lessons, who, name);
+    if (action === undefined && id === "sources") return buildLessonSources(deps.lessons, who, name);
+    return buildLessonHistory(deps.lessons, who, name, id);
   }
   if (method !== "POST") return undefined;
 
   if (id === "rollback" && action === undefined) {
     requireWrite(caller);
     const { name } = await deps.projectFor(caller, rawProject!);
+    await requireLearningOn(deps, caller, name);
+    await takeBudget(deps, caller, "rollback");
     const input = strictBody(LessonRollbackBodySchema, body());
     const key: ScopeKey = { workspaceId: caller.orgId, project: name };
     // The person saw one version of the set; a set that moved since is not rolled back under them. Only a version the store lists can be the target.
@@ -108,9 +138,12 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
 
   requireWrite(caller);
   const { name } = await deps.projectFor(caller, rawProject!);
+  await requireLearningOn(deps, caller, name);
+  await takeBudget(deps, caller, "decision");
   const common = { workspaceId: caller.orgId, project: name, lessonId: id };
   if (action === "approve") {
     const input = strictBody(LessonApproveBodySchema, body());
+    if (input.edit !== undefined) await takeBudget(deps, caller, "edit");
     const result = await approveLesson(deps.lessons, { ...common, approverId: caller.developerId, expectedVersion: input.expectedVersion, ...(input.edit === undefined ? {} : { edit: input.edit }) });
     if (!result.ok) return refuse(result.code);
     return { status: result.status, needs: result.needs };
@@ -131,11 +164,14 @@ async function routeTaskLessons(deps: LessonRouteDependencies, caller: Developer
   const who = { orgId: caller.orgId, developerId: caller.developerId };
   if (method === "GET" && lessonId === undefined) {
     const { project } = await deps.taskFor(caller, taskId);
+    await requireLearningOn(deps, caller, project);
     return buildLoadedLessons(deps.lessons, who, project, taskId);
   }
   if (method !== "POST" || lessonId === undefined) return undefined;
   requireWrite(caller);
   const { project } = await deps.taskFor(caller, taskId);
+  await requireLearningOn(deps, caller, project);
+  await takeBudget(deps, caller, "mark");
   const input = strictBody(LessonFeedbackBodySchema, body());
   const viewer = await deps.lessons.directory.identity(caller.orgId, caller.developerId);
   const result = await recordFeedback(deps.lessons, { workspaceId: caller.orgId, project, taskId, lessonId, userId: caller.developerId, viewer, kind: input.kind });

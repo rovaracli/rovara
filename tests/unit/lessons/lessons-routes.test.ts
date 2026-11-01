@@ -17,7 +17,7 @@ void (undefined as unknown as _Deps);
 const NAMES: Record<string, string> = { ann: "Ann Archer", bob: "Bob Baker", owner: "Olga Owner", carl: "Carl Cole", mallory: "Mallory Mole" };
 const names = { memberName: async (_org: OrgId, id: string) => NAMES[id], isErased: async (_org: OrgId, id: string) => id === "erased-1" };
 
-const callerOf = (developerId: string, over: Partial<DeveloperCaller> = {}): DeveloperCaller => ({ developerId, sessionId: "s", amr: "browser", name: developerId, orgId: WS as OrgId, orgRole: "member", browserSession: true, ...over }) as unknown as DeveloperCaller;
+const callerOf = (developerId: string, over: { [K in keyof DeveloperCaller]?: DeveloperCaller[K] | undefined } = {}): DeveloperCaller => ({ developerId, sessionId: "s", amr: "browser", name: developerId, orgId: WS as OrgId, orgRole: "member", browserSession: true, ...over }) as unknown as DeveloperCaller;
 const url = (path: string) => new URL("https://rovara.test" + path);
 const base = `/v1/app/projects/${PROJECT}/lessons`;
 
@@ -38,9 +38,11 @@ function setup(over: { eligible?: string[]; access?: AccessCheckPort; value?: Pa
     ...(over.withTable === false ? {} : { sources: { table: w.table } }),
     embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), alerts: new Alerts(), verifier: verifier("valid"), facts: facts(), judge: new Judge(),
   };
-  const deps = { lessons, projectFor: async (_who: unknown, raw: string) => ({ name: decodeURIComponent(raw), role: "maintainer" as const }), taskFor: async () => ({ project: PROJECT }) } as unknown as LessonRouteDependencies;
+  const taken = new Map<string, number>();
+  const rate = { fail: false, async take(who: DeveloperCaller, bucket: string, limit: number) { if (this.fail) throw new Error("rate down"); const key = `${bucket}|${who.developerId}`; const n = (taken.get(key) ?? 0) + 1; taken.set(key, n); return n <= limit; } };
+  const deps = { lessons, rate: (who: DeveloperCaller, bucket: string, limit: number) => rate.take(who, bucket, limit), projectFor: async (_who: unknown, raw: string) => ({ name: decodeURIComponent(raw), role: "maintainer" as const }), taskFor: async () => ({ project: PROJECT }) } as unknown as LessonRouteDependencies;
   const call = (caller: DeveloperCaller, method: string, path: string, body: unknown = {}) => routeLessons(deps, caller, method, url(path), () => body);
-  return { store, audit, clock, deps, call, w, dir };
+  return { store, audit, clock, deps, call, w, dir, rate, taken };
 }
 const refused = async (promise: Promise<unknown>): Promise<AgentXError> => { try { await promise; } catch (error) { if (error instanceof AgentXError) return error; throw error; } throw new Error("expected a refusal"); };
 
@@ -195,10 +197,13 @@ describe("approving", () => {
     expect((await s.store.get(KEY, "les_pend0001"))!.tier).toBe(2);
   });
 
-  it("learning switched off refuses with the fixed code the screens already know", async () => {
+  it("with learning off for the project every route answers not found, and a decision changes nothing", async () => {
     const s = setup({ value: { mode: "Off" } });
     await seed(s.store, pending());
-    expect((await refused(approve(s, "ann"))).code).toBe("LEARNING_SUGGESTIONS_OFF");
+    expect((await refused(approve(s, "ann"))).code).toBe("NOT_FOUND");
+    expect((await refused(s.call(callerOf("ann"), "GET", base))).code).toBe("NOT_FOUND");
+    expect((await refused(s.call(callerOf("ann"), "GET", `${base}/sources`))).code).toBe("NOT_FOUND");
+    expect((await s.store.get(KEY, "les_pend0001"))!.status).toBe("pending");
   });
 
   it("a write needs a live browser session and a writer role: a token and the Auditor are refused and nothing changes", async () => {
@@ -216,6 +221,44 @@ describe("approving", () => {
     const s = setup();
     await seed(s.store, pending());
     expect((await refused(s.call(callerOf("ann"), "POST", `${base}/les_pend0001/approve`, { expectedVersion: 1, tier: 0 }))).code).toBe("CONFIG_INVALID");
+  });
+});
+
+describe("rate limits", () => {
+  it("every write takes from the person's own row first: decisions, edits, rollbacks and marks, each with its limit", async () => {
+    const s = setup();
+    await seed(s.store, pending());
+    await s.call(callerOf("ann"), "POST", `${base}/les_pend0001/approve`, { expectedVersion: 1, edit: { title: "A title", description: "", body: "Use the helper in api." } }).catch(() => undefined);
+    await s.call(callerOf("ann"), "POST", `${base}/les_pend0001/reject`, { expectedVersion: 1, reason: "x" }).catch(() => undefined);
+    await s.call(callerOf("ann"), "POST", `${base}/les_pend0001/retire`, {}).catch(() => undefined);
+    await s.call(callerOf("ann"), "POST", `${base}/rollback`, { targetSetVersion: 0, expectedSetVersion: 0 }).catch(() => undefined);
+    await s.call(callerOf("ann"), "POST", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons/les_pend0001/feedback", { kind: "helpful" }).catch(() => undefined);
+    expect(Object.fromEntries(s.taken)).toEqual({ "LESSON_DECISIONS|ann": 3, "LESSON_EDITS|ann": 1, "LESSON_ROLLBACKS|ann": 1, "LESSON_MARKS|ann": 1 });
+  });
+  it("marks: past the limit the request is refused with 429 and nothing is recorded", async () => {
+    const s = setup();
+    await seed(s.store, lessonRecord({ id: "les_load0001" }));
+    const task = "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons/les_load0001/feedback";
+    for (let i = 0; i < 60; i += 1) await s.call(callerOf("mallory"), "POST", task, { kind: "helpful" }).catch(() => undefined);
+    expect((await refused(s.call(callerOf("mallory"), "POST", task, { kind: "helpful" }))).code).toBe("TOO_MANY_REQUESTS");
+    expect((await s.store.get(KEY, "les_load0001"))!.counters.helpful).toBe(0);
+  });
+  it("a rate row that cannot be read refuses the request, and a person who may not decide cannot spend another person's budget", async () => {
+    const s = setup();
+    await seed(s.store, pending());
+    s.rate.fail = true;
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/les_pend0001/approve`, { expectedVersion: 1 }))).code).toBe("RUNTIME_UNAVAILABLE");
+    expect((await s.store.get(KEY, "les_pend0001"))!.status).toBe("pending");
+    s.rate.fail = false;
+    await s.call(callerOf("mallory"), "POST", `${base}/les_pend0001/approve`, { expectedVersion: 1 }).catch(() => undefined);
+    expect(s.taken.get("LESSON_DECISIONS|ann")).toBeUndefined();
+  });
+  it("an Auditor or a token is refused before any budget is taken", async () => {
+    const s = setup();
+    await seed(s.store, pending());
+    await s.call(callerOf("ann", { orgRole: "auditor" as never }), "POST", `${base}/les_pend0001/approve`, { expectedVersion: 1 }).catch(() => undefined);
+    await s.call(callerOf("ann", { browserSession: undefined }), "POST", `${base}/les_pend0001/approve`, { expectedVersion: 1 }).catch(() => undefined);
+    expect(s.taken.size).toBe(0);
   });
 });
 
@@ -347,6 +390,12 @@ describe("what a browser may reach", () => {
     expect(webRouteAllowed("GET", `/v1/web/tasks/${task}`)).toBe(false);
     expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/lessons/x`)).toBe(false);
     expect(webRouteAllowed("POST", `/v1/web/tasks/${task}/continue-as-task`)).toBe(true);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/loaded-knowledge`)).toBe(true);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/loaded-knowledge/op1/plan/items/3/text`)).toBe(true);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/loaded-knowledge/op1/review.CRITIC/items/0/text`)).toBe(true);
+    expect(webRouteAllowed("POST", `/v1/web/tasks/${task}/loaded-knowledge`)).toBe(false);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/loaded-knowledge/op1/plan/items/3`)).toBe(false);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/loaded-knowledge/../x`)).toBe(false);
   });
 });
 

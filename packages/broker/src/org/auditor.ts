@@ -21,6 +21,10 @@ export const AUDITOR_ALLOWED_ROUTES: readonly AuditorRoute[] = Object.freeze(([
   { method: "GET", path: /^\/v1\/(?:app|dev)\/org\/audit\/exports\/[A-Za-z0-9_-]{1,128}$/, what: "read an audit export" },
   { method: "GET", path: /^\/v1\/app\/me$/, what: "read their own identity" },
   { method: "GET", path: /^\/v1\/app\/install$/, what: "read the install's edition" },
+  // Learning v2 L3b: the Auditor reads a project's active lessons and its sources, read-only. Not the weekly digest, a lesson's history or the queue (the routes give those to people who decide),
+  // and no write: the approve, reject, retire, rollback and mark routes are not here.
+  { method: "GET", path: /^\/v1\/app\/projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/lessons$/, what: "read a project's active lessons" },
+  { method: "GET", path: /^\/v1\/app\/projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}\/lessons\/sources$/, what: "read a project's sources" },
 ] satisfies AuditorRoute[]).map((route) => Object.freeze(route)));
 
 /** The three roles that existed before the Auditor. Anything else is not trusted to pass the gate untouched. */
