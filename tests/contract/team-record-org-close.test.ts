@@ -1,6 +1,6 @@
 // wire-team-record fix round 1, B2: the company's close runs the Team record's erase as a MANDATORY step. A failure stops the close (the company stays closing), and a fresh close finishes it.
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OrgId } from "../../packages/contracts/src/org.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
@@ -10,7 +10,8 @@ import { loadSlackBroker } from "../support/slack-broker.js";
 beforeAll(async () => { await loadSlackBroker(); });
 
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
-const resolver = async (subject: { developerId: string }) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
+type Resolver = NonNullable<NonNullable<Parameters<typeof createDeveloperTaskBroker>[0]>["orgResolver"]>;
+const resolver: Resolver = async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
 const seed = async (h: Awaited<ReturnType<typeof createDeveloperTaskBroker>>) => {
   for (const [who, orgId] of [[MAYA, TEST_ORG], [OMAR, ORG_B]] as const) {
     await h.orgOf(who);
@@ -59,5 +60,29 @@ describe("the record's routes and archive hook reach the real /v1/app routes", (
     const off = await createDeveloperTaskBroker({ register: true, orgResolver: resolver, brokerExtra: { cloud: true, agents: { projectMembers: new FakeProjectMembers() } } });
     await seed(off);
     expect((await off.dev(MAYA, "GET", "/v1/app/projects/payments/record/sources")).status).toBe(404);
+  });
+});
+
+describe("the handler's Slack branch and the durable queue's branch", () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+  const event = { source: "agentx.team-record-slack", payload: { type: "event_callback", team_id: "T0123456789", event: { type: "message", subtype: "message_deleted", channel: "C0123456789", deleted_ts: "1761818400.000100" } } };
+
+  it("THROWS when the record's tap failed, so Lambda runs an asynchronous invoke again; answers normally when it did not", async () => {
+    const failing = { taps: { slack: async () => ({ outcome: "ignored", reason: "failed" }) } };
+    const h = await createDeveloperTaskBroker({ register: false, brokerExtra: { teamRecord: failing } });
+    await expect((h.handler as unknown as (event: unknown) => Promise<unknown>)(event)).rejects.toThrow();
+    const fine = await createDeveloperTaskBroker({ register: false, brokerExtra: { teamRecord: { taps: { slack: async () => ({ outcome: "deleted" }) } } } });
+    await expect((fine.handler as unknown as (event: unknown) => Promise<unknown>)(event)).resolves.toBeDefined();
+  });
+
+  it("answers the queue's batch with the partial-batch shape SQS reads, from the runtime's drain; and fails the whole batch while the record is off", async () => {
+    vi.stubEnv("AGENTX_ENV", "staging");
+    const batch = { Records: [{ eventSource: "aws:sqs", eventSourceARN: "arn:aws:sqs:us-west-2:123456789012:agentx-staging-team-record-ops", messageId: "m1", body: "{}", attributes: { ApproximateReceiveCount: "2" } }] };
+    const seen: unknown[] = [];
+    const on = await createDeveloperTaskBroker({ register: false, brokerExtra: { teamRecord: { drain: async (records: unknown[]) => { seen.push(records); return { batchItemFailures: [{ itemIdentifier: "m1" }] }; } } } });
+    expect(await (on.handler as unknown as (event: unknown) => Promise<unknown>)(batch)).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    expect(seen).toStrictEqual([[{ messageId: "m1", body: "{}", receiveCount: 2 }]]);
+    const off = await createDeveloperTaskBroker({ register: false });
+    expect(await (off.handler as unknown as (event: unknown) => Promise<unknown>)(batch)).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
   });
 });

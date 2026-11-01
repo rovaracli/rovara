@@ -623,6 +623,15 @@ describe("an erase that does not finish is resumed, and a company stays in the d
     expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
   });
 
+  it("a project marker for a project that is NOT archived is stale: it is dropped and the project's rows stay", async () => {
+    const { db, runtime } = await company();
+    db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "x", createdBy: "y" });
+    db.set({ pk: "TEAM_RECORD_ORGS", sk: `ERASE#${ORG_A}#project#web`, entityType: "TEAM_RECORD_ERASE_JOB", orgId: ORG_A, at: "2026-10-30T11:00:00.000Z", job: { kind: "project", project: "web", cause: "project_archived" } });
+    await runtime.jobs.run("hourly");
+    expect(jobs(db)).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+  });
+
   it("a project marker only runs while the project is archived", async () => {
     const { db, runtime } = await company();
     db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "x", createdBy: "y", archivedAt: "z" });
@@ -634,14 +643,17 @@ describe("an erase that does not finish is resumed, and a company stays in the d
 });
 
 describe("fix round 1, S1: a workspace whose vector index cannot be opened is not retried on every write", () => {
-  it("in Public, with the S3 Vectors package missing, five writes make ONE STS session and every row is still stored", async () => {
+  it("in Public, with the S3 Vectors package missing, five writes look up the bucket assignment ONCE and every row is still stored", async () => {
     const db = dbOf();
+    const bucketReads: number[] = [];
+    const counting = { send: async (command: unknown) => { if ((command as { input?: { Key?: { sk?: string } } }).input?.Key?.sk === "VECBUCKET") bucketReads.push(1); return db.send(command as never); } };
     const aws = fakeAws();
     const sdk = async (name: string) => (name === "@aws-sdk/client-s3vectors" ? Promise.reject(new SdkUnavailableError()) : aws.sdk(name));
-    const runtime = build(db, { ...ON, ROVARA_EDITION: "public" }, { sdk, sts: aws.sts });
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "public" }, { sdk, sts: aws.sts, documentClient: counting });
     await addSource(db, "public", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "D" });
     for (const id of ["a", "b", "c", "d", "e"]) expect(await runtime.sink.put(githubDraft({ retention: "D", audience: { kind: "project" }, scope: "github:repo/9", sourceRef: { system: "github.com", id, version: "1" } }))).toMatchObject({ status: "stored" });
     expect(aws.sessions).toHaveLength(1);
+    expect(bucketReads).toHaveLength(1);
     expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(5);
   });
 });
