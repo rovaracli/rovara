@@ -17,7 +17,9 @@ const NOT_PLAIN = /[|;&<>`$\\"'(){}[\]*?!~]|\.\.\./u;
 const BANNED_WORD = /^(?:sh|bash|zsh|csh|ksh|curl|wget|eval|sudo|rm|ssh|scp|nc)$/u;
 const BANNED_ARG = /(?:deploy|publish|promote|push|delete|remove|cleanup|clean|wipe|rollback|merge|submit)/u;
 /** A download source or a package-source override in an argument (`https://...`, `git+https://...`). */
-const REMOTE_ARG = /:\/\/|git\+/u;
+const REMOTE_ARG = /:\/\/|git\+|=\/\//u;
+/** The value-less flags brazil-recursive-cmd may have before `brazil-build`. */
+const RECURSIVE_FLAGS: ReadonlySet<string> = new Set(["--allPackages", "-a"]);
 const NEGATED = /\b(?:never|don'?t|do not|must not|should not|avoid|deprecated|obsolete|instead of)\b/iu;
 const TEST_WORDS = /\b(?:test|tests|testing|unit|integ|integration|coverage|pytest|junit)\b/iu;
 const BUILD_WORDS = /\b(?:build|compile|package)\b/iu;
@@ -53,7 +55,8 @@ function brazilCommand(span: string): { executable: string; args: string[] } | u
   const words = text.split(/\s+/u);
   const [executable, ...args] = words as [string, ...string[]];
   if (words.length > 40) return undefined;
-  if (executable === "brazil-recursive-cmd") { if (args.find((word) => !word.startsWith("-")) !== "brazil-build") return undefined; } else if (executable !== "brazil-build") return undefined;
+  // brazil-recursive-cmd: only value-less flags may come before brazil-build (any other flag could take brazil-build as its value and run something else).
+  if (executable === "brazil-recursive-cmd") { const lead = args.findIndex((word) => !RECURSIVE_FLAGS.has(word)); if (lead === -1 || args[lead] !== "brazil-build") return undefined; } else if (executable !== "brazil-build") return undefined;
   if (!words.every((word) => COMMAND_WORD.test(word) && !BANNED_WORD.test(word) && !REMOTE_ARG.test(word)) || args.some((word) => BANNED_ARG.test(word.toLowerCase()))) return undefined;
   if (remoteCodeReason(formatCommandLine({ cwd: ".", executable, args, timeoutSeconds: 1 })) !== undefined) return undefined;
   return { executable, args };
@@ -64,7 +67,7 @@ const prose = (line: string): string => (/^(?:[$>]\s*)?brazil-/u.test(line.trim(
 
 function scan(path: string, text: string): Candidate[] {
   // HTML comments are not the team's instructions: blanked, keeping every newline so line numbers stay the file's.
-  const lines = text.replace(/<!--[\s\S]*?-->/gu, (match) => match.replace(/[^\n]/gu, " ")).split("\n").slice(0, MAX_LINES);
+  const lines = text.replace(/<!--(?:[\s\S]*?-->|[\s\S]*$)/gu, (match) => match.replace(/[^\n]/gu, " ")).split("\n").slice(0, MAX_LINES);
   const found: Candidate[] = [];
   let fenced = false;
   let fenceNegated = false;
