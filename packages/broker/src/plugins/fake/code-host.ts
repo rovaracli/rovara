@@ -89,11 +89,12 @@ export class FakeCodeHost implements CodeHost {
     return ({ kind: "token", username: "x-access-token", token: `fake-${access}-token-not-a-real-secret`, expiresAt: new Date(Date.parse(this.model.now()) + 50 * 60_000).toISOString() });
   }
 
-  async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { untilLine?: number }): Promise<string | undefined> {
+  async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { untilLine?: number; maxBytes?: number }): Promise<string | undefined> {
     this.checkScope(scope);
     const model = this.registered(repository);
     const content = model.revision(revision).files.get(path);
     if (content === undefined) return (undefined);
+    if (options?.maxBytes !== undefined && Buffer.byteLength(content, "utf8") > options.maxBytes) throw agentXError("CONFIG_INVALID", "file too large");
     return (options?.untilLine === undefined ? content : content.split("\n").slice(0, options.untilLine).join("\n"));
   }
 

@@ -85,7 +85,7 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       return { kind: "basic", username: credential.username, password: credential.password, expiresAt: new Date(stated).toISOString() };
     },
 
-    async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, fileOptions?: { untilLine?: number; timeoutMs?: number }): Promise<string | undefined> {
+    async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, fileOptions?: { untilLine?: number; timeoutMs?: number; maxBytes?: number }): Promise<string | undefined> {
       return provider.getFileAtCommit(repository.url, path, revision, checkedScope(scope), fileOptions);
     },
 

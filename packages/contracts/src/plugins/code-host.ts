@@ -294,7 +294,11 @@ export interface CodeHost {
   issueGitCredential(repository: RepositoryRef, access: GitAccess, scope: HostScope): Promise<GitCredential>;
 
   // read
-  fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { untilLine?: number; timeoutMs?: number }): Promise<string | undefined>;
+  /**
+   * A file at a revision, or undefined when there is none. `maxBytes` (P6) is a size cap the caller sets (a config file): a file over it is REFUSED (CONFIG_INVALID), never cut, so a caller
+   * can record the refusal once and not retry it. `untilLine` reads up to a line; `timeoutMs` bounds the wait.
+   */
+  fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { untilLine?: number; timeoutMs?: number; maxBytes?: number }): Promise<string | undefined>;
   /** The id of the tree a revision holds. */
   tree(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string>;
   branchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string>;

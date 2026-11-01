@@ -37,8 +37,7 @@ import { workflowRunEndedReason } from "../outbox-failure.js";
 import { autofixBlockRows } from "../workflow-autofix-dispatch-exhaust.js";
 import { setupDraftEndItems, setupDraftRepositoriesOf } from "../../rovara-code/setup-draft.js";
 import { githubRepositoryFullName, pullRequestKey, pullRequestMatchesRepository } from "./admin-and-helpers.js";
-import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
-import { canReadBranchAndTree, canReadFeedback, canReadTree, changeRequestRef, hostOfRepository, pullRequestFactsOf, repositoryRefOf, requireGithubHost } from "./repository-hosts.js";
+import { canReadBranchAndTree, canReadFeedback, canReadParents, canReadTree, changeRequestRef, hostOfRepository, pullRequestFactsOf, repositoryRefOf, requireGithubHost } from "./repository-hosts.js";
 import { isSpecOperation, specOperationEndItems } from "../../spec/end-items.js";
 import { specEndEnvironmentOf } from "./spec-wiring.js";
 import { MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES, type AwsBrokerDependencies, type PullRequestRecord } from "./definitions.js";
@@ -185,10 +184,8 @@ async function completedPullRequestUpdateItems(
   }
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === maintenance.repository);
-  // P5d: the pull request is read from the code host the repository's record names (an unknown kind is refused with the router's fixed sentence). Only the commit-parent read, which the port does not
-  // carry yet, stays GitHub's; another host then cannot show a fix's ancestry, and the fix is not taken as landed.
+  // P5d: the pull request is read from the code host the repository's record names (an unknown kind is refused with the router's fixed sentence). P6: so is the commit-parent read.
   const host = repository === undefined ? undefined : hostOfRepository(dependencies, repository);
-  const github = host?.kind === GITHUB_HOST_KIND ? dependencies.githubPullRequests : undefined;
   // The linked-pull-request rows are keyed by GitHub's full name (left for P6): a repository on another host stops here, before anything is read, with a clear sentence. (Acceptance refuses the push
   // first; this is the same rule where the result is handled.)
   if (host !== undefined) requireGithubHost(host);
@@ -232,7 +229,7 @@ async function completedPullRequestUpdateItems(
   const mergeBase = binding.mergeBaseCommit;
   const parentsAreOurs = async (): Promise<boolean> => {
     try {
-      return github?.getCommitParents !== undefined && JSON.stringify(await github.getCommitParents(repository.url, head, scope))
+      return host !== undefined && canReadParents(dependencies, host) && JSON.stringify(await host.commitParents(repositoryRefOf(repository.url), head, scope))
         === JSON.stringify(mergeBase === undefined ? [maintenance.expectedHeadCommit] : [maintenance.expectedHeadCommit, mergeBase]);
     } catch {
       return false;
@@ -344,7 +341,6 @@ export async function completedBranchSyncItems(
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === maintenance.repository);
   const host = repository === undefined ? undefined : hostOfRepository(dependencies, repository);
-  const githubProvider = host?.kind === GITHUB_HOST_KIND ? dependencies.githubPullRequests : undefined;
   // The linked-pull-request rows are keyed by GitHub's full name (left for P6): a repository on another host stops here, before anything is read, with a clear sentence.
   if (host !== undefined) requireGithubHost(host);
   const parsed = terminalStatus === "SUCCEEDED" ? PullRequestLifecycleResultSchema.safeParse(result) : undefined;
@@ -370,7 +366,7 @@ export async function completedBranchSyncItems(
       }
     }
     const sameRequest = current.pullRequest.number === pullRequest.number && current.pullRequest.url === pullRequest.url;
-    const parents = head !== binding.expectedHeadCommit && githubProvider?.getCommitParents !== undefined ? await githubProvider.getCommitParents(repository.url, head, scope).catch(() => undefined) : undefined;
+    const parents = head !== binding.expectedHeadCommit && canReadParents(dependencies, host) ? await host.commitParents(repositoryRefOf(repository.url), head, scope).catch(() => undefined) : undefined;
     if (sameRequest) github = { state: current.pullRequest.state, headBranch: current.pullRequest.headBranch, headCommit: head, headTreeSha: headTree, parents };
   } catch (error) {
     if (options.lost === true || (reported !== undefined && reported.commit !== binding.expectedHeadCommit)) throw error;

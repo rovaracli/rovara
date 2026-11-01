@@ -4,7 +4,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GitBranchNameSchema, agentXError } from "@agentx/contracts";
 import { currentBaseCommitOf } from "../../packages/broker/src/aws/broker/dispatch.js";
-import { GITHUB_ONLY_MESSAGE } from "../../packages/broker/src/plugins/code-host/github-only.js";
 import { NO_HOST_MESSAGE } from "../../packages/broker/src/plugins/registry.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { pullRequestDetails } from "../support/p5-world.js";
@@ -34,9 +33,19 @@ describe("the commit a pull request's base branch is at", () => {
     expect(t.getBranchHead).not.toHaveBeenCalled();
   });
 
-  it("is refused for a repository on another host (fixed sentence) and for an unknown host kind (the router's), before the pull request is read", async () => {
+  // Replaces (P6): "is refused for a repository on another host (GITHUB_ONLY_MESSAGE)". The base branch's head is the port's now (`baseBranchHead`).
+  it.each(["main", "release/2026-11"])("is read from the host a repository on another registered host names (base %s), and GitHub is never asked", async (base) => {
     const t = baseWorld("main");
-    await expect(currentBaseCommitOf(t.dependencies)(t.target, { repositoryId: "api", number: 7 })).rejects.toThrow(refusal(GITHUB_ONLY_MESSAGE));
+    t.model.commit(base, { "base.txt": base });
+    t.model.commit("rovara/x", { "a.txt": "1" });
+    const { cr } = t.model.reconcile({ sourceBranch: "rovara/x", targetBranch: base, title: "t" });
+    await expect(currentBaseCommitOf(t.dependencies)(t.target, { repositoryId: "api", number: Number(cr.id) })).resolves.toBe(t.model.headOf(base));
+    expect(t.getDefaultBranchHead).not.toHaveBeenCalled();
+    expect(t.github.getPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("is refused for an unknown host kind with the router's sentence, before the pull request is read", async () => {
+    const t = baseWorld("main");
     await expect(currentBaseCommitOf(t.dependencies)(t.target, { repositoryId: "mystery", number: 7 })).rejects.toThrow(refusal(NO_HOST_MESSAGE));
     expect(t.getDefaultBranchHead).not.toHaveBeenCalled();
     expect(t.github.getPullRequest).not.toHaveBeenCalled();

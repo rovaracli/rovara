@@ -33,7 +33,7 @@ import { companyAutonomyLimit, ownerCallerOf } from "./feedback-and-codebuild.js
 import { readObjectText } from "./plan-answers.js";
 import { requireWorkspace } from "./records.js";
 import { ec2Sessions } from "./runtime-clients.js";
-import { changeRequestRef, githubProviderOf, hostNameOf, hostOfTaskRepository } from "./repository-hosts.js";
+import { canReadBaseBranchHead, changeRequestRef, hostNameOf, hostOfTaskRepository } from "./repository-hosts.js";
 import { githubScopeOf, webhookRepositoryUrl } from "./scope-helpers.js";
 import { workflowApplicationRouteDependencies } from "./slack-workflow-events.js";
 import { blockWorkflowE2EReadiness, closeUncheckedPlanCheck, companyChoseCriticModel, ensureWorkflowE2EComputeReadiness, recordWorkflowDispatchFailure, returnWorkflowToCorrectE2EPlan, settleLostBranchSync, type AccessPausedWorkflowDispatch } from "./sweeps-and-readiness.js";
@@ -188,8 +188,8 @@ async function waitForMachine(dependencies: AwsBrokerDependencies, item: Workflo
 
 /**
  * The commit a pull request's base branch is at now (Plan 6 Task 17), which is the commit a merge of the base takes. The base is an ordinary branch (`main`, `release/2026-11`): it is read with the
- * default-branch read, not `getBranchHead`, which GitHub's provider answers for Rovara's own `agentx/<uuid>` branches only and refuses any other name. That read has no code host port counterpart
- * yet (left for P6), so it is GitHub's alone: a repository on another host is refused with the fixed sentence, an unknown host kind with the router's.
+ * port's `baseBranchHead` (P6), not `branchHead`, which GitHub's provider answers for Rovara's own `agentx/<uuid>` branches only and refuses any other name. The host is the one the repository's record
+ * names; an unknown host kind is refused with the router's fixed sentence.
  */
 export function currentBaseCommitOf(dependencies: AwsBrokerDependencies): (target: DeveloperTaskRecord, pullRequest: { repositoryId: string; number: number }) => Promise<string> {
   return async (target, pullRequest) => {
@@ -197,10 +197,9 @@ export function currentBaseCommitOf(dependencies: AwsBrokerDependencies): (targe
     if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
     const scope = await githubScopeOf(dependencies, target);
     const host = await hostOfTaskRepository(dependencies, target, { name: pullRequest.repositoryId, url });
-    const github = githubProviderOf(dependencies, host);
     const remote = await host.getChangeRequest(changeRequestRef(url, pullRequest.number), scope);
-    if (github.getDefaultBranchHead === undefined || typeof remote.targetBranch !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub cannot say what the base branch is at");
-    return github.getDefaultBranchHead(url, remote.targetBranch, scope);
+    if (!canReadBaseBranchHead(dependencies, host) || typeof remote.targetBranch !== "string") throw agentXError("RUNTIME_UNAVAILABLE", `${hostNameOf(host)} cannot say what the base branch is at`);
+    return host.baseBranchHead({ url }, remote.targetBranch, scope);
   };
 }
 

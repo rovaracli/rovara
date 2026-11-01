@@ -3,7 +3,7 @@
 import { approvalGrantChange } from "../../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition, metaRepositoryOf } from "@agentx/contracts";
+import { AgentXError, DEVELOPER_TASK_OWNER_ISSUER, SharedTaskRecordSchema, sharedTaskKey, type SharedTaskRecord, SLACK_THREAD_OWNER_ISSUER, SlackChannelBindingSchema, SlackChannelIdSchema, SlackRequesterSchema, SlackTeamIdSchema, WorkspaceInstanceSchema, agentXError, parseSlackThreadSubject, slackThreadSubject, workspaceRecordFields, type SlackChannelBinding, type SlackThread, type WorkerInvocation, type WorkspaceInstance, cleanDisplayName, emailSafeName, DISPLAY_NAME_MAX_ENCODED_LENGTH, OrgIdSchema, type OrgRole, type ProjectRole, projectMemberKey, defaultWorkspaceKey, slackBindingKey, type RunCheckout, type OrgId, auditOperatorId, workerProjectDefinition, metaRepositoryOf, type CodeHost } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { auditPending, tryAuditEvent } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";
@@ -33,22 +33,22 @@ import { ensureInstallOrg } from "./scope-helpers.js";
 import { slackTaskAccess } from "./slack-workflow-events.js";
 import { requesterOf } from "./thread-workspaces.js";
 import { metaPrepareFor, needsMetaCheckout, type MetaHeadReader } from "../../meta-repo/prepare-meta.js";
-import { githubProviderOfRecord } from "./repository-hosts.js";
+import { canReadBaseBranchHead, hostOfRepository } from "./repository-hosts.js";
 import { githubScope } from "./scope-helpers.js";
 
-/** Meta repo lane A: reads a meta repository's default-branch head through the org's GitHub connection. Undefined where GitHub cannot be asked (a project with a meta repo is then refused). */
-export function metaHeadReaderOf(dependencies: AwsBrokerDependencies): MetaHeadReader | undefined {
-  const github = dependencies.githubPullRequests;
-  if (github.getDefaultBranchHead === undefined) return undefined;
-  return { getHead: ({ orgId, repositoryUrl, branch }) => github.getDefaultBranchHead!(repositoryUrl, branch, githubScope(dependencies, orgId)) };
+/** Meta repo lane A: reads a meta repository's default-branch head through the code host the repository's record names (P6: the port's `baseBranchHead`). Undefined where that host cannot be asked (a project with a meta repo is then refused). */
+export function metaHeadReaderOf(dependencies: AwsBrokerDependencies, host: CodeHost): MetaHeadReader | undefined {
+  if (!canReadBaseBranchHead(dependencies, host)) return undefined;
+  return { getHead: ({ orgId, repositoryUrl, branch }) => host.baseBranchHead({ url: repositoryUrl }, branch, githubScope(dependencies, orgId)) };
 }
 
 /** The `meta` request and the commit the broker pinned for it, for a project whose meta repository is a separate one; nothing otherwise. */
 export async function metaPrepareOf(dependencies: AwsBrokerDependencies, project: RegisteredProjectRecord, orgId: OrgId | undefined) {
-  // P5e: the head of the meta repository's default branch has no code host port counterpart yet (the port reads Rovara's own working branches only), so it is GitHub's alone. The record's host
-  // is checked first: an unknown kind is refused with the router's fixed sentence, and a repository on another host with `GITHUB_ONLY_MESSAGE`; neither is turned into "cannot read just now". Left for P6.
-  if (needsMetaCheckout(project.definition)) githubProviderOfRecord(dependencies, metaRepositoryOf(project.definition)!);
-  return metaPrepareFor(project.definition, metaHeadReaderOf(dependencies), orgId);
+  if (!needsMetaCheckout(project.definition)) return metaPrepareFor(project.definition, undefined, orgId);
+  // The head of the meta repository's default branch is read from the code host its RECORD names (P6; P5e had it GitHub's alone). An unknown host kind is refused with the router's fixed sentence,
+  // and is not turned into "cannot read just now".
+  const host = hostOfRepository(dependencies, metaRepositoryOf(project.definition)!);
+  return metaPrepareFor(project.definition, metaHeadReaderOf(dependencies, host), orgId);
 }
 
 /** Attempts to create a workspace around a project membership that another request keeps changing; the registration retry style. */

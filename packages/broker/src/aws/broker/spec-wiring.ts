@@ -21,7 +21,7 @@ import { taskPageUrl } from "../developer-tasks/common.js";
 import { githubScopeOf } from "./scope-helpers.js";
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
 import { approvalReviewsOf } from "../../rovara-code/host-port.js";
-import { changeRequestRef, githubProviderOf, hostOfRepository, hostOfTaskRepository } from "./repository-hosts.js";
+import { changeRequestRef, hostOfRepository, hostOfTaskRepository } from "./repository-hosts.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 
 /** A GitHub client for the task's project's meta repository, with a token the broker minted for itself (the same grant a worker would exchange, issued and exchanged here, never sent anywhere). */
@@ -155,16 +155,14 @@ export function specOperationEndedOf(dependencies: AwsBrokerDependencies): (task
   };
 }
 
-/** One file of a repository at a commit, through the task's own GitHub connection, bounded. Undefined when GitHub cannot say or the file is not there or is too large. */
+/** One file of a repository at a commit, through the code host the repository's record names, bounded. Undefined when the host cannot say or the file is not there or is too large. */
 export function readMetaFileOf(dependencies: AwsBrokerDependencies): (task: DeveloperTaskRecord, repositoryUrl: string, path: string, commit: string, maxBytes: number) => Promise<string | undefined> {
   return async (task, repositoryUrl, path, commit, maxBytes) => {
-    const read = dependencies.githubPullRequests.getFileAtCommit;
-    if (read === undefined) return undefined;
     try {
-      // P5d: the read is bounded by `maxBytes`, which the port's file read cannot carry yet (left for P6), so it is GitHub's alone: a repository on another host reads as "not there", and an
-      // unknown host kind is refused by the router (also "not there"). It is never asked of GitHub.
-      githubProviderOf(dependencies, await hostOfTaskRepository(dependencies, task, { url: repositoryUrl }));
-      return (await read.call(dependencies.githubPullRequests, repositoryUrl, path, commit, await githubScopeOf(dependencies, task), { maxBytes })) ?? undefined;
+      // P6: the size cap is the port's own (`maxBytes`), so the read is the host's, whichever host it is (P5d had it GitHub's alone). An unknown host kind is refused by the router (also "not there").
+      const host = await hostOfTaskRepository(dependencies, task, { url: repositoryUrl });
+      if (host.kind === GITHUB_HOST_KIND && dependencies.githubPullRequests.getFileAtCommit === undefined) return undefined;
+      return (await host.fileAtRevision({ url: repositoryUrl }, path, commit, await githubScopeOf(dependencies, task), { maxBytes })) ?? undefined;
     } catch {
       return undefined;
     }

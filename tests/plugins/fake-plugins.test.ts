@@ -93,6 +93,13 @@ class BaseHeadOnlyForRovarasBranches extends FakeCodeHost {
     return super.baseBranchHead(...args);
   }
 }
+class CutsAFileAtTheCap extends FakeCodeHost {
+  override async fileAtRevision(...args: Parameters<FakeCodeHost["fileAtRevision"]>) {
+    const [repository, path, revision, scope, options] = args;
+    const content = await super.fileAtRevision(repository, path, revision, scope);
+    return options?.maxBytes === undefined ? content : content?.slice(0, options.maxBytes);
+  }
+}
 class NoParents extends FakeCodeHost {
   override commitParents() { return Promise.resolve([]); }
 }
@@ -130,6 +137,7 @@ describe("a broken CodeHost fails the check that guards its behaviour", () => {
     ["posts any reply text", (m) => new RepliesWithAnything(m), "replies only with fixed text, and says 'gone' for a comment that is not in a thread"],
     ["trusts a forged delivery", (m) => new TrustsForgedDelivery(m), "maps a signed delivery to neutral events, and never returns events from one that does not verify"],
     ["reads the head of Rovara's own branches only", (m) => new BaseHeadOnlyForRovarasBranches(m), "reads the head of an ordinary branch and the parents of a revision"],
+    ["cuts a file at the cap instead of refusing it", (m) => new CutsAFileAtTheCap(m), "refuses a file over the caller's size cap, never cutting it, and reads one within it"],
     ["says no revision has a parent", (m) => new NoParents(m), "reads the head of an ordinary branch and the parents of a revision"],
     ["observes a merge without its time", (m) => new ObservesWithoutTime(m), "observes a merge: what it merged as and when, within the read allowance"],
     ["observes a merge without spending the allowance", (m) => new ObservesWithoutSpendingTheAllowance(m), "observes a merge: what it merged as and when, within the read allowance"],

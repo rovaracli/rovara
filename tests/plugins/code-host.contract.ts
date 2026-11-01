@@ -110,6 +110,19 @@ export const codeHostChecks: readonly ContractCheck<CodeHostWorld>[] = [
     },
   },
   {
+    name: "refuses a file over the caller's size cap, never cutting it, and reads one within it",
+    async run({ host, model, repository, scope }) {
+      const body = "x".repeat(200);
+      const revision = model.commit("main", { "config.yml": body });
+      expect(await host.fileAtRevision(repository, "config.yml", revision, scope, { maxBytes: 200 })).toBe(body);
+      expect(await host.fileAtRevision(repository, "config.yml", revision, scope, { maxBytes: 4_096 })).toBe(body);
+      const refused = await rejection(() => host.fileAtRevision(repository, "config.yml", revision, scope, { maxBytes: 199 }));
+      expect(refused?.code).toBe("CONFIG_INVALID");
+      // A file that is not there is still not there, whatever the cap.
+      expect(await host.fileAtRevision(repository, "missing.yml", revision, scope, { maxBytes: 10 })).toBeUndefined();
+    },
+  },
+  {
     name: "reads a branch head and a revision's tree, and the tree follows the content",
     async run({ host, model, repository, scope, branch }) {
       const first = model.commit(branch(1), { "a.txt": "a\n" });

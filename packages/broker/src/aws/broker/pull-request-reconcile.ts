@@ -30,7 +30,7 @@ import { readObjectText } from "./plan-answers.js";
 import { requirePullRequest, requireWorkspace } from "./records.js";
 import { githubScopeOf, githubScopeOfWorkspace, orgOfRecord } from "./scope-helpers.js";
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
-import { requireGithubHost, canReadTree, hostOfRepository, hostOfTaskRepository, hostOfWorkspaceRepository, changeRequestRef, repositoryFullNameOf, repositoryRefOf } from "./repository-hosts.js";
+import { requireGithubHost, canReadParents, canReadTree, hostOfRepository, hostOfTaskRepository, hostOfWorkspaceRepository, changeRequestRef, repositoryFullNameOf, repositoryRefOf } from "./repository-hosts.js";
 import { workspaceStandingFailures } from "./terminal-result.js";
 import { loadWorkflowE2EScenarioResults } from "./workflow-e2e-verification.js";
 
@@ -274,8 +274,8 @@ export async function reconcilePullRequest(
   }
   // A workflow publication opens only on the checked tree. GitHub, not the worker, says what the branch holds: its head
   // must be the reported commit, and that commit's tree the checked one, before the pull request opens from the branch.
-  // P5d: the code host the repository's record names (an unknown kind is refused here, with the fixed sentence). The GitHub provider is kept only for the commit-parent read, which the port does not
-  // carry yet: another host then cannot show the checked commit's ancestry, and a publication that needs it stops (see the lane report, "Left for P6").
+  // P5d: the code host the repository's record names (an unknown kind is refused here, with the fixed sentence). P6: the commit-parent read is the port's too; the GitHub provider is kept
+  // only to see whether a harness built it without the reads this check needs.
   const host = await hostOfWorkspaceRepository(dependencies, operation.workspaceId, { name: expected.repository, url: expected.repositoryUrl });
   const github = host.kind === GITHUB_HOST_KIND ? dependencies.githubPullRequests : undefined;
   // A workflow publication's result is recorded by GitHub-only code (the linked-pull-request rows are GitHub's, left for P6), so on any other host it is refused here, before the pull request is
@@ -291,7 +291,7 @@ export async function reconcilePullRequest(
   // the pinned base, while the worker and GitHub head remain exactly the checked commit.
   const onPinnedBase = async (commit: string) => {
     if (expectedBase === undefined) return true;
-    if (github?.getCommitParents === undefined) return false;
+    if (!canReadParents(dependencies, host)) return false;
     const pending = [commit];
     const seen = new Set<string>();
     while (pending.length > 0 && seen.size < 512) {
@@ -299,7 +299,7 @@ export async function reconcilePullRequest(
       if (current === expectedBase) return true;
       if (seen.has(current)) continue;
       seen.add(current);
-      for (const parent of await github.getCommitParents(expected.repositoryUrl, current, scope)) {
+      for (const parent of await host.commitParents(repositoryRefOf(expected.repositoryUrl), current, scope)) {
         if (!/^[a-f0-9]{40,64}$/u.test(parent)) return false;
         pending.push(parent);
       }
@@ -308,7 +308,7 @@ export async function reconcilePullRequest(
   };
   if (expectedTree !== undefined) {
     if (publicationMode === undefined || (publicationMode === "COMMITTED_HEAD" && expectedCommit === undefined)
-      || (github !== undefined && (github.getCommitTree === undefined || github.getBranchHead === undefined)) || (expectedBase !== undefined && github?.getCommitParents === undefined)) {
+      || (github !== undefined && (github.getCommitTree === undefined || github.getBranchHead === undefined)) || (expectedBase !== undefined && !canReadParents(dependencies, host))) {
       throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the pushed tree");
     }
     if (publicationMode === "COMMITTED_HEAD" && input.commit !== expectedCommit) {
