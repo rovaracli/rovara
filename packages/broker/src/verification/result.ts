@@ -74,6 +74,7 @@ export const RESULT_RULES: Readonly<Record<AutoFixCode, Rule>> = {
   "review-findings": { kind: "review" },
   "deadline-exceeded": env("timed_out"), "executor-failed": env("executor_failed"), "executor-result-mismatch": env("executor_failed"), "mock-unavailable": env("mock_unavailable"),
   "check-runner-failed": env("check_runner_failed"), "check-not-started": env("check_could_not_start"), "provider-outage": env("provider_outage"), "runner-busy": env("runner_busy"),
+  "setup-failed-in-task": env("setup_failed_in_task"), "host-blocked": env("host_blocked"), "build-host-offline": env("build_host_offline"),
   "runtime-renewed": env("test_machine_renewed"),
   "model-channel-unavailable": ASK, "cancelled": ASK, "evidence too large": ASK,
   "review-not-run": { kind: "review" }, "review-run-failed": { kind: "review" },

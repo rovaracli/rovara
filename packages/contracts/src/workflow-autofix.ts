@@ -32,6 +32,8 @@ export const AUTO_FIX_CODES = [
   // Transient: Rovara's side or the environment's, which a retry may fix.
   "deadline-exceeded", "executor-failed", "executor-result-mismatch", "mock-unavailable", "model-channel-unavailable", "cancelled", "evidence too large",
   "check-runner-failed", "check-not-started", "review-not-run", "review-run-failed", "provider-outage", "runner-busy",
+  // Setup and test health (SH16): the test environment, not the code, kept the checks from giving a verdict. Transient: one automatic retry, then the Fix setup card instead of the generic ask.
+  "setup-failed-in-task", "host-blocked", "build-host-offline",
   // AUTOREQUALIFY: the test machine was renewed, which only moves the approved selection to the new rows (one automatic retry approves it again).
   "runtime-renewed",
   // A person must act.
@@ -90,6 +92,12 @@ export interface AutoFixFacts {
   providerOutage?: boolean | undefined;
   /** The runner was busy. */
   runnerBusy?: boolean | undefined;
+  /** Setup and test health (SH16): the environment's setup failed inside this task (the saved environment fell back to a fresh setup and that failed too). */
+  setupFailedInTask?: boolean | undefined;
+  /** Setup and test health (SH16): a command was stopped by a website the project's setup needs that is not allowed. */
+  hostBlocked?: boolean | undefined;
+  /** Setup and test health (SH16): the build host the environment names (a team build runner) is offline. */
+  buildHostOffline?: boolean | undefined;
   /** The owner stopped the checks (a `cancelled` group is then the owner's doing, not an infrastructure fault). */
   ownerCancelled?: boolean | undefined;
   /** DISPATCHEXHAUST: how this block came about when no finished run wrote it. When present it is the whole classification of the block: it can never be read as a fault of the code. */
@@ -227,6 +235,9 @@ function blockSignals(workflow: WorkflowSnapshot, facts: AutoFixFacts): Signal[]
   const signals = facts.blockCause !== undefined ? [facts.blockCause === "owner-stopped" ? person("owner-stopped") : transient(facts.blockCause)] : workflow.stage === "REVIEW" ? reviewSignals(workflow) : workflow.stage === "VERIFY" ? verifySignals(workflow, facts) : [];
   if (facts.providerOutage === true) signals.push(transient("provider-outage"));
   if (facts.runnerBusy === true) signals.push(transient("runner-busy"));
+  if (facts.setupFailedInTask === true) signals.push(transient("setup-failed-in-task"));
+  if (facts.hostBlocked === true) signals.push(transient("host-blocked"));
+  if (facts.buildHostOffline === true) signals.push(transient("build-host-offline"));
   if ((workflow.pullRequests?.length ?? 0) > 0) signals.push(person("pull-request-open"));
   // A blocked workflow with nothing readable is a person's: nothing is ever read as a pass.
   if (signals.length === 0) signals.push(person("unreadable"));
@@ -236,6 +247,48 @@ function blockSignals(workflow: WorkflowSnapshot, facts: AutoFixFacts): Signal[]
 /** The fixed codes and classes of what blocked this workflow, in the order found, from the fields it stores and the caller's facts. The ask card words the same codes. */
 export function classifyBlockedWorkflow(workflow: WorkflowSnapshot, facts: AutoFixFacts = {}): ReadonlyArray<{ class: AutoFixClass; code: AutoFixCode }> {
   return blockSignals(workflow, facts).map((signal) => ({ class: signal.class, code: signal.code }));
+}
+
+/** The class of every code (the signal constructors above are the source; a test drives each code through the real classifier and keeps this table equal to them). A new code is a compile error here until it is placed. */
+export const AUTO_FIX_CODE_CLASS: Readonly<Record<AutoFixCode, AutoFixClass>> = {
+  "build-failed": "code", "app-exited": "code", "app-unhealthy": "code", "seed-failed": "code", "e2e-assertion-failed": "code", "check-failed": "code", "review-findings": "code", "regression-found": "code", "round-refused": "code",
+  "deadline-exceeded": "transient", "executor-failed": "transient", "executor-result-mismatch": "transient", "mock-unavailable": "transient", "model-channel-unavailable": "transient", "cancelled": "transient",
+  "evidence too large": "transient", "check-runner-failed": "transient", "check-not-started": "transient", "review-not-run": "transient", "review-run-failed": "transient", "provider-outage": "transient", "runner-busy": "transient",
+  "setup-failed-in-task": "transient", "host-blocked": "transient", "build-host-offline": "transient", "runtime-renewed": "transient",
+  "runtime-expired": "person", "runtime-environment-drifted": "transient", "model-environment-unsafe": "person", "login-failed": "person", "model-route-changed-reapprove": "person", "agent-route-not-approved": "person",
+  "model-route-not-tested": "person", "runtime-unusable": "person", "selection-changed": "person", "accounts-changed": "person", "plan-not-approvable": "person", "history-rewritten": "person", "cancelled-by-owner": "person",
+  "check-broken": "person", "fails-on-original-code": "person", "review-unusable": "person", "rule-files-unverified": "person", "leftover-processes": "person", "setup-changed-files": "person", "pull-request-open": "person",
+  "unknown-group-code": "person", "unreadable": "person", "dispatch-exhausted": "transient", "run-lost": "transient", "owner-stopped": "person",
+  "e2e-evidence-unknown": "unclear", "check-result-unknown": "unclear", "check-failed-cause-unknown": "unclear",
+};
+
+/**
+ * Setup and test health (SH16, design 4.2): the codes that mean the test ENVIRONMENT, not the code, kept the checks from giving a verdict. When Rovara asks about only these (and nothing a code caused), the ask card
+ * is the Fix setup card (`autoFixAskCard`). `fails-on-original-code` is here because its card offers Fix setup and Mark as known failing. Not here: reviews, the pull request, the AI navigation settings, the
+ * owner's own stops and the unclear faults, which stay today's ask. Replaces: the generic ask card for environment faults. The decision itself, its limits and its order do not change.
+ */
+export const AUTO_FIX_ENVIRONMENT_CODES = [
+  "deadline-exceeded", "executor-failed", "executor-result-mismatch", "mock-unavailable", "check-runner-failed", "check-not-started", "provider-outage", "runner-busy",
+  "setup-failed-in-task", "host-blocked", "build-host-offline", "runtime-renewed", "runtime-environment-drifted", "runtime-expired", "runtime-unusable", "login-failed", "setup-changed-files", "leftover-processes",
+  "check-broken", "fails-on-original-code",
+] as const satisfies readonly AutoFixCode[];
+const ENVIRONMENT_CODES: ReadonlySet<AutoFixCode> = new Set<AutoFixCode>(AUTO_FIX_ENVIRONMENT_CODES);
+/** At a blocked REVIEW the tests already passed: the only environment fault that still reads as one is the workspace that could not be cleaned. */
+const REVIEW_STAGE_ENVIRONMENT_CODES: ReadonlySet<AutoFixCode> = new Set<AutoFixCode>(["leftover-processes"]);
+/** Asks that are about Rovara or the owner, never about the environment, whatever codes they carry. */
+const NOT_SETUP_ASK_REASONS: readonly AutoFixAskReason[] = ["owner-stopped", "unclear-fault", "inputs-missing"];
+
+export type AutoFixAskCard = "ask" | "fix_setup";
+
+/**
+ * Which card an ASK is shown as. Fix setup only when every code is an environment code (a pull request being open does not change that), at least one is, and the ask is not about the owner's stop,
+ * an unclear fault or unreadable inputs. A code a person's change caused (class `code`) or anything else keeps the generic ask: "Code failed" wins, and a mixed ask is not renamed.
+ */
+export function autoFixAskCard(ask: { reason: AutoFixAskReason; codes: readonly AutoFixCode[] }, stage: "VERIFY" | "REVIEW"): AutoFixAskCard {
+  if (NOT_SETUP_ASK_REASONS.includes(ask.reason)) return "ask";
+  const environment = stage === "REVIEW" ? REVIEW_STAGE_ENVIRONMENT_CODES : ENVIRONMENT_CODES;
+  const relevant = ask.codes.filter((entry) => entry !== "pull-request-open");
+  return relevant.length > 0 && relevant.every((entry) => environment.has(entry)) ? "fix_setup" : "ask";
 }
 
 const uniqueCodes = (signals: readonly Signal[]): AutoFixCode[] => [...new Set(signals.map((signal) => signal.code))];

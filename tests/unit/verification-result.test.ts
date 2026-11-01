@@ -1,7 +1,7 @@
 // Setup and test health SH5: the broker's result classifier. Every row of design 4.1 and 4.2; "Code failed" wins; the worker's own words are never trusted.
 import { describe, expect, it } from "vitest";
 import {
-  AUTO_FIX_CODES, AUTO_FIX_PERSON_GROUP_CODES, AUTO_FIX_TRANSIENT_GROUP_CODES, E2E_APPLICATION_SEND_BACK_CODES, EvidencePackSchema, TestingViewSchema, WORKFLOW_AGENTX_ACTOR_ID,
+  AUTO_FIX_CODES, AUTO_FIX_ENVIRONMENT_CODES, AUTO_FIX_PERSON_GROUP_CODES, AUTO_FIX_TRANSIENT_GROUP_CODES, E2E_APPLICATION_SEND_BACK_CODES, EvidencePackSchema, TestingViewSchema, WORKFLOW_AGENTX_ACTOR_ID,
   WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
   WORKFLOW_BLOCK_REASONS, WorkflowDecisionRecordSchema, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, wholeTaskSpendUsd,
   type AutoFixBudget, type AutoFixFacts, type WorkflowDecision, type WorkflowSnapshot,
@@ -211,14 +211,6 @@ describe("Blocked by environment (4.2 transient and person rows)", () => {
     // A provider outage or a busy runner at the review is about the review run, not a test.
     expect(run(blocked("REVIEW", undefined, results([check("unit", "PASS")])), { facts: { providerOutage: true, runnerBusy: true } })).toEqual(decided("verified"));
   });
-
-  it("keeps the new codes as environment codes in the table: setup, host and build host are not code faults", () => {
-    for (const name of ["setup-failed-in-task", "host-blocked", "build-host-offline"] as const) {
-      const rule = (RESULT_RULES as Record<string, { kind: string }>)[name];
-      // Added with SH16; until then the key is not an auto-fix code.
-      if (rule !== undefined) expect(rule.kind).toBe("environment");
-    }
-  });
 });
 
 describe("a test that fails on the original code too (4.2 fails-on-original-code)", () => {
@@ -335,5 +327,21 @@ describe("results fit the Testing view contract", () => {
         expect(TestingViewSchema.safeParse({ schemaVersion: 1, result: outcome.result, reasons: outcome.reasons, rows }).success).toBe(true);
       }
     }
+  });
+});
+
+describe("the new environment codes (SH16) and the card mapping stay in step with this table", () => {
+  it("places the three new codes as environment, with their own reasons", () => {
+    expect(RESULT_RULES["setup-failed-in-task"]).toEqual({ kind: "environment", reason: "setup_failed_in_task" });
+    expect(RESULT_RULES["host-blocked"]).toEqual({ kind: "environment", reason: "host_blocked" });
+    expect(RESULT_RULES["build-host-offline"]).toEqual({ kind: "environment", reason: "build_host_offline" });
+    const make = () => blocked("VERIFY", WORKFLOW_BLOCK_REASONS.checkRunnerFailed);
+    expect(run(make(), { facts: { hostBlocked: true } })).toEqual(waiting("retry_pending"));
+    expect(run(WorkflowSnapshotSchema.parse({ ...make(), decisions: RETRY_USED }), { facts: { hostBlocked: true } })).toMatchObject({ decided: true, result: "blocked_by_environment", reasons: ["check_runner_failed", "host_blocked"] });
+  });
+
+  it("agrees with the codes the Fix setup card is for", () => {
+    const environment = Object.entries(RESULT_RULES).filter(([, rule]) => rule.kind === "environment" || rule.kind === "original_fails").map(([name]) => name).sort();
+    expect(environment).toEqual([...AUTO_FIX_ENVIRONMENT_CODES].sort());
   });
 });
