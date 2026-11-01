@@ -8,6 +8,7 @@
 import { scanText, type DataGuardFindingKind } from "@agentx/verifier";
 import type { EvidencePack, EvidenceRaw, TestEnvProdDeny } from "@agentx/contracts";
 import type { NewArtifact } from "./evidence-pack.js";
+import { fixedToolName } from "./evidence-risk.js";
 
 /** The production deny list when no approved test environment names one: personal data, credentials and card numbers are still refused. */
 export const NO_PROD_DENY: TestEnvProdDeny = { accountIds: [], hosts: [], arnPrefixes: [] };
@@ -36,13 +37,22 @@ export function evidenceFindings(value: unknown, deny: TestEnvProdDeny): DataGua
 export interface GuardCount { parts: number; kinds: DataGuardFindingKind[] }
 const merge = (into: GuardCount, kinds: readonly DataGuardFindingKind[]): void => { into.parts += 1; for (const kind of kinds) if (!into.kinds.includes(kind)) into.kinds.push(kind); };
 
-/** The worker's raw file with each check that holds a finding removed (its test names and output tail with it). */
+/**
+ * A scan's findings with every text taken out and only the numbers kept (the counts by severity, and the high findings that could not be compared). Numbers cannot hold personal data, and they are what the risk rule
+ * reads: a file name the agent chose, or a message that interpolates a card-like number, must not be a way to make the scan's high findings disappear. The tool is a fixed word.
+ */
+export function countsOnly<F extends { tool: string; newCount: number; bySeverity: { critical: number; high: number; medium: number; low: number; info: number }; unverified?: number | undefined }>(findings: F): { tool: string; newCount: number; bySeverity: F["bySeverity"]; items: never[]; unverified?: number } {
+  return { tool: fixedToolName(findings.tool), newCount: findings.newCount, bySeverity: findings.bySeverity, items: [], ...(findings.unverified === undefined ? {} : { unverified: findings.unverified }) };
+}
+
+/** The worker's raw file with each check that holds a finding removed (its test names and output tail with it); a scan's counts survive without their texts. */
 export function guardRaw(raw: EvidenceRaw, deny: TestEnvProdDeny): { raw: EvidenceRaw; dropped: GuardCount } {
   const dropped: GuardCount = { parts: 0, kinds: [] };
-  const checks = raw.checks.filter((check) => {
+  const checks = raw.checks.flatMap((check) => {
     const found = evidenceFindings(check, deny);
     if (found.length > 0) merge(dropped, found);
-    return found.length === 0;
+    if (found.length === 0) return [check];
+    return check.findings === undefined ? [] : [{ checkId: check.checkId, findings: countsOnly(check.findings) }];
   });
   return { raw: { ...raw, checks }, dropped };
 }
@@ -67,7 +77,7 @@ export function guardPack(pack: EvidencePack, newArtifacts: readonly NewArtifact
     if (detailFound.length > 0) {
       merge(dropped, detailFound);
       if (outputTailRef !== undefined) lostTails.add(outputTailRef.sha256);
-      return { ...base, label: labelFound.length > 0 ? `Check ${String(index + 1)}` : label };
+      return { ...base, label: labelFound.length > 0 ? `Check ${String(index + 1)}` : label, ...(findings === undefined ? {} : { findings: countsOnly(findings) }) };
     }
     return { ...base, label: labelFound.length > 0 ? `Check ${String(index + 1)}` : label, ...(tests === undefined ? {} : { tests }), ...(coverage === undefined ? {} : { coverage }), ...(findings === undefined ? {} : { findings }), ...(migrations === undefined ? {} : { migrations }), ...(outputTailRef === undefined ? {} : { outputTailRef }) };
   });

@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EvidenceRawSchema, type CheckEntry, type ProjectCommand } from "../../packages/contracts/src/index.js";
 import { collectEvidenceRaw, saveEvidenceRaw } from "../../packages/worker/src/verification/evidence-raw.js";
-import { SARIF_MAX_RESULTS, SARIF_REPORT_MAX_BYTES, findingsPart, newFindings, parseSarif, plainMessage, repositoryPathOf, sarifPathOf } from "../../packages/worker/src/verification/sarif.js";
+import { SARIF_MAX_RESULTS, SARIF_REPORT_MAX_BYTES, findingsPart, newFindings, parseSarif, plainMessage, readsPrebuiltState, repositoryPathOf, sameFindings, sarifPathOf } from "../../packages/worker/src/verification/sarif.js";
 import { BASELINE_CAP_MS, MIN_BASELINE_BUDGET_MS, runBaselineScans, type BaselineScan } from "../../packages/worker/src/verification/sarif-baseline.js";
 import { AgentFilesRestoreError, type OriginalCode } from "../../packages/worker/src/verification/original-code.js";
 import type { CheckRunners } from "../../packages/worker/src/verification/checks.js";
@@ -34,6 +34,23 @@ const sarif = (results: FakeResult[], tool = "Bandit") => JSON.stringify({
 });
 
 let root: string;
+/** A repository under the workspace with a base commit, a changed app.py and a candidate SARIF in the workspace root. */
+async function world() {
+  const directory = join(root, "api");
+  const git = async (...args: string[]) => (await execGit("git", ["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", ...args], { cwd: directory })).stdout.trim();
+  await mkdir(directory, { recursive: true });
+  await git("init", "-q");
+  await writeFile(join(directory, "app.py"), "1\n");
+  await git("add", "-A");
+  await git("commit", "-q", "-m", "base");
+  const base = await git("rev-parse", "HEAD");
+  await writeFile(join(directory, "app.py"), "2\n");
+  await git("add", "-A");
+  const tree = await git("write-tree");
+  await writeFile(join(root, "bandit.sarif"), sarif([{ ruleId: "B608", message: "new one", uri: "src/db.py", line: 7 }, { ruleId: "B105", level: "note", message: "old", uri: "src/a.py", line: 3 }]));
+  return { directory, base, tree };
+}
+
 beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "sarif-")); });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
@@ -160,12 +177,48 @@ describe("the evidence a CHECKS run saves for a scanner", () => {
     expect(asked).toBe(1);
   });
 
-  it("reports nothing without a baseline: no baseline function, a baseline that did not run, or one that is not SARIF (never a clean scan)", async () => {
-    await writeFile(join(root, "bandit.sarif"), sarif([{ ruleId: "B608" }]));
+  it("calls nothing new without a baseline, but counts the high findings as not compared (never a clean scan, never silent): no baseline function, one that did not run, one that is not SARIF", async () => {
+    await writeFile(join(root, "bandit.sarif"), sarif([{ ruleId: "B608" }, { ruleId: "B105", level: "note" }]));
+    const unverified = { tool: "Bandit", newCount: 0, bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, items: [], unverified: 1 };
+    expect((await collectEvidenceRaw(input()))?.checks[0]?.findings).toEqual(unverified);
+    expect((await collectEvidenceRaw(input({ baselineScans: baseline(undefined) })))?.checks[0]?.findings).toEqual(unverified);
+    expect((await collectEvidenceRaw(input({ baselineScans: baseline("not sarif") })))?.checks[0]?.findings).toEqual(unverified);
+    expect((await collectEvidenceRaw(input({ baselineScans: async () => { throw new Error("boom"); } })))?.checks[0]?.findings).toEqual(unverified);
+    // Nothing high in the scan: nothing is hidden, so nothing is said.
+    await writeFile(join(root, "bandit.sarif"), sarif([{ ruleId: "B105", level: "note" }]));
     expect(await collectEvidenceRaw(input())).toBeUndefined();
-    expect(await collectEvidenceRaw(input({ baselineScans: baseline(undefined) }))).toBeUndefined();
-    expect(await collectEvidenceRaw(input({ baselineScans: baseline("not sarif") }))).toBeUndefined();
-    expect(await collectEvidenceRaw(input({ baselineScans: async () => { throw new Error("boom"); } }))).toBeUndefined();
+  });
+
+  it("does not compare a scan that reads state an earlier step built (CodeQL's database, SpotBugs' classes): no baseline is run for it, and its high findings are not compared", async () => {
+    await writeFile(join(root, "out.sarif"), sarif([{ ruleId: "B608" }], "CodeQL"));
+    let asked = 0;
+    const codeql = command("codeql", ["database", "analyze", "db", "--format=sarif-latest", "--output=out.sarif"]);
+    const raw = await collectEvidenceRaw(input({ commands: [codeql], baselineScans: async (scans: readonly BaselineScan[]) => { asked += scans.length; return new Map<number, string>([[0, sarif([], "CodeQL")]]); } }));
+    expect(asked).toBe(0);
+    expect(raw?.checks[0]?.findings).toMatchObject({ tool: "CodeQL", newCount: 0, unverified: 1 });
+    expect(readsPrebuiltState(codeql)).toBe(true);
+    expect(readsPrebuiltState(command("spotbugs", ["-sarif", "-output", "o.sarif", "classes"]))).toBe(true);
+    expect(readsPrebuiltState(command("bandit", ["-f", "sarif", "-o", "o.sarif"]))).toBe(false);
+  });
+
+  it("does not trust a baseline that equals the candidate's scan, line for line, in files the change touched; it does when the change touched none of them", async () => {
+    const box = await world();
+    const same = sarif([{ ruleId: "B608", message: "same", uri: "app.py", line: 7 }]);
+    await writeFile(join(root, "bandit.sarif"), same);
+    const repositories = [{ repositoryId: "api", directory: box.directory, startCommit: box.base, candidateTreeSha: box.tree }];
+    // app.py changed in this task, and the scan reports on it: the same result on the "original" code is the candidate's own.
+    const touched = await collectEvidenceRaw(input({ repositories, baselineScans: baseline(same) }));
+    expect(touched?.checks[0]?.findings).toMatchObject({ newCount: 0, unverified: 1 });
+    // Unrelated file: a genuine comparison, nothing new.
+    const other = sarif([{ ruleId: "B608", message: "same", uri: "other.py", line: 7 }]);
+    await writeFile(join(root, "bandit.sarif"), other);
+    expect((await collectEvidenceRaw(input({ repositories, baselineScans: baseline(other) })))?.checks[0]?.findings).toMatchObject({ newCount: 0 });
+    expect((await collectEvidenceRaw(input({ repositories, baselineScans: baseline(other) })))?.checks[0]?.findings).not.toHaveProperty("unverified");
+    // The diff cannot be read: it cannot be told, so the identical result is not trusted.
+    await writeFile(join(root, "bandit.sarif"), other);
+    expect((await collectEvidenceRaw(input({ repositories: [], baselineScans: baseline(other) })))?.checks[0]?.findings).toMatchObject({ unverified: 1 });
+    expect(sameFindings(parseSarif(same)!.findings, parseSarif(same)!.findings)).toBe(true);
+    expect(sameFindings(parseSarif(same)!.findings, parseSarif(other)!.findings)).toBe(false);
   });
 
   it("asks the baseline only for scans whose own file was read in this round: a stale, missing, unsafe or oversized file, or a check that did not end, is not asked for", async () => {
@@ -296,21 +349,6 @@ describe("the baseline run on the original code", () => {
 
 describe("saving the evidence with a baseline", () => {
   const scanner = command("bandit", ["-r", ".", "-f", "sarif", "-o", "bandit.sarif"]);
-  async function world() {
-    const directory = join(root, "api");
-    const git = async (...args: string[]) => (await execGit("git", ["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", ...args], { cwd: directory })).stdout.trim();
-    await mkdir(directory, { recursive: true });
-    await git("init", "-q");
-    await writeFile(join(directory, "app.py"), "1\n");
-    await git("add", "-A");
-    await git("commit", "-q", "-m", "base");
-    const base = await git("rev-parse", "HEAD");
-    await writeFile(join(directory, "app.py"), "2\n");
-    await git("add", "-A");
-    const tree = await git("write-tree");
-    await writeFile(join(root, "bandit.sarif"), sarif([{ ruleId: "B608", message: "new one", uri: "src/db.py", line: 7 }, { ruleId: "B105", level: "note", message: "old", uri: "src/a.py", line: 3 }]));
-    return { directory, base, tree };
-  }
   const baselineRunner = (): CheckRunners => ({
     async runProjectCommand() { await writeFile(join(root, "bandit.sarif"), sarif([{ ruleId: "B105", level: "note", message: "old", uri: "src/a.py", line: 30 }])); return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; },
     async runAgentCommand() { throw new Error("not used"); },
@@ -344,9 +382,10 @@ describe("saving the evidence with a baseline", () => {
   it("saves nothing for the scan when no baseline can run (none asked for, no time left, or an original code that cannot be shown)", async () => {
     const box = await world();
     const none = await saveEvidenceRaw({ sink: async () => undefined, rootPath: root, plan: { source: "project", readiness: [scanner] }, entries: [entry(0)], repositories: [{ repositoryId: "api", directory: box.directory, baseCommitSha: box.base }], candidateBefore: [{ repositoryId: "api", commitSha: box.base, treeSha: box.tree, baseCommitSha: box.base }], roundStartedAtMs: Date.now() - 5_000 });
-    expect(none).toBe(false);
-    expect((await save(box, { budgetMs: 1_000, originalCode: original([]) })).done).toBe(false);
-    expect((await save(box, { originalCode: () => ({ async run(): Promise<never> { throw new Error("no"); } }) })).done).toBe(false);
+    expect(none).toBe(true);
+    const notCompared = async (saved: Promise<{ done: boolean; saved: Array<{ content: string }> }>) => (JSON.parse((await saved).saved[0]!.content) as { checks: Array<{ findings: { newCount: number; unverified?: number } }> }).checks[0]?.findings;
+    expect(await notCompared(save(box, { budgetMs: 1_000, originalCode: original([]) }))).toMatchObject({ newCount: 0, unverified: 1 });
+    expect(await notCompared(save(box, { originalCode: () => ({ async run(): Promise<never> { throw new Error("no"); } }) }))).toMatchObject({ newCount: 0, unverified: 1 });
   });
 
   it("does not run the baseline when a repository of the task has no start commit (it would show the original code in only some)", async () => {
@@ -358,7 +397,7 @@ describe("saving the evidence with a baseline", () => {
       candidateBefore: [{ repositoryId: "api", commitSha: box.base, treeSha: box.tree, baseCommitSha: box.base }],
       roundStartedAtMs: Date.now() - 5_000, baseline: { runners: baselineRunner(), signal: new AbortController().signal, budgetMs: 10 * 60_000, originalCode: original(events) },
     });
-    expect(saved).toBe(false);
+    expect(saved).toBe(true);
     expect(events).toEqual([]);
   });
 

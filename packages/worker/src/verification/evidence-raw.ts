@@ -12,7 +12,7 @@ import { coveragePart, readChangedCoverage, type RepositoryChanges } from "./cob
 import { candidateChanges } from "./diff.js";
 import { changedMigrationFiles, migrationDirectionOf, migrationEvidence } from "./migration-check.js";
 import { readContainedReport } from "./report-file.js";
-import { SARIF_REPORT_MAX_BYTES, findingsPart, newFindings, parseSarif, sarifPathOf, type ParsedSarif } from "./sarif.js";
+import { SARIF_REPORT_MAX_BYTES, findingsPart, newFindings, parseSarif, readsPrebuiltState, sameFindings, sarifPathOf, unverifiedPart, type ParsedSarif } from "./sarif.js";
 import { AgentFilesRestoreError } from "./original-code.js";
 import { runBaselineScans, type BaselineRun, type BaselineScan } from "./sarif-baseline.js";
 import { changedTestFiles, readCheckReport, type TestProofRepository } from "./test-proof.js";
@@ -115,22 +115,35 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
       partials.push(partial);
     }
 
-    // P4, findings: new ones are those the scan has now and its run on the original code did not. No baseline, no finding is reported.
+    // P4, findings: new ones are those the scan has now and its run on the original code did not. Without a usable baseline nothing is called new, and the high findings are counted as not compared.
     const findings = new Map<number, NonNullable<EvidenceRaw["checks"][number]["findings"]>>();
     // A scan with no finding at all has none that is new, whatever the baseline says: it costs no working-tree swap, no second scan and none of the test proof's time.
     for (const scan of scans) if (scan.candidate.findings.length === 0) findings.set(scan.index, findingsPart(scan.candidate.tool, []));
-    const asking = scans.filter((scan) => scan.candidate.findings.length > 0);
+    // A scan that reads state an earlier step built (CodeQL's database) would compare the candidate with itself on the original source: no baseline is run for it.
+    const withFindings = scans.filter((scan) => scan.candidate.findings.length > 0);
+    const asking = withFindings.filter((scan) => !readsPrebuiltState(scan.command));
+    let baselines: ReadonlyMap<number, string> = new Map<number, string>();
     if (asking.length > 0 && input.baselineScans !== undefined) {
-      const baselines = await input.baselineScans(asking.map((scan): BaselineScan => ({ index: scan.index, command: scan.command, argument: scan.argument, path: scan.path, candidateBytes: scan.candidateBytes }))).catch((error: unknown) => {
+      baselines = await input.baselineScans(asking.map((scan): BaselineScan => ({ index: scan.index, command: scan.command, argument: scan.argument, path: scan.path, candidateBytes: scan.candidateBytes }))).catch((error: unknown) => {
         // The one fault that must stop the task is not swallowed: the agent's files are not back.
         if (error instanceof AgentFilesRestoreError) throw error;
         return new Map<number, string>();
       });
-      for (const scan of asking) {
-        const text = baselines.get(scan.index);
-        const baseline = text === undefined ? undefined : parseSarif(text, roots);
-        if (baseline !== undefined) findings.set(scan.index, findingsPart(scan.candidate.tool, newFindings(scan.candidate.findings, baseline.findings)));
+    }
+    let changedPaths: Set<string> | undefined;
+    for (const scan of withFindings) {
+      const text = asking.includes(scan) ? baselines.get(scan.index) : undefined;
+      const baseline = text === undefined ? undefined : parseSarif(text, roots);
+      let trusted = baseline !== undefined;
+      // The same findings, lines and messages on the original code as on this one, in files the change touched, is how a scan that read the candidate's own build looks: not a comparison.
+      if (baseline !== undefined && sameFindings(scan.candidate.findings, baseline.findings)) {
+        changedPaths ??= new Set((await diffs() ?? []).flatMap((repository) => repository.changes.filter((change) => change.status !== "DELETED").map((change) => change.path)));
+        const known = (await diffs()) !== undefined;
+        if (!known || scan.candidate.findings.some((finding) => changedPaths!.has(finding.path))) trusted = false;
       }
+      // No baseline (none ran, it could not run, or it cannot be trusted): nothing is called new, and the high findings are counted as not compared.
+      const part = baseline !== undefined && trusted ? findingsPart(scan.candidate.tool, newFindings(scan.candidate.findings, baseline.findings)) : unverifiedPart(scan.candidate.tool, scan.candidate.findings);
+      if (part !== undefined) findings.set(scan.index, part);
     }
 
     // P4, migrations: what the change adds or edits, when the project's own apply command passed; whether its rollback command passed.

@@ -169,6 +169,8 @@ export function assessRisk(input: RiskInput): RiskAssessment {
   if (input.report.notChecked.length > 0 && !input.report.reviewOnly) medium.push(`${plural(input.report.notChecked.length, "check", "checks")} could not be run.`);
   if (input.acceptedFindings.some((finding) => finding.role === "CRITIC")) medium.push("The owner accepted a code review finding.");
   if (input.reviewerRisk === "medium") medium.push("The code review rated this change medium risk.");
+  // A security scan reported high findings that could not be compared with the original code (no baseline ran, or it could not be trusted): at least medium ("needs review"), never silently low.
+  if (input.evidence !== undefined && (input.evidence.unverifiedHighFindings ?? 0) > 0) medium.push(`A security scan reported ${plural(input.evidence.unverifiedHighFindings!, "high or critical finding", "high or critical findings")} that could not be compared with the original code, so it needs review.`);
 
   const level: RiskLevel = high.length > 0 ? "high" : medium.length > 0 ? "medium" : "low";
   const reasons = [...high, ...medium].map((reason) => reason.slice(0, REASON_MAX));

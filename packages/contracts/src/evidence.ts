@@ -262,7 +262,16 @@ export const EvidenceCoverageSchema = z
     unlistedFiles: CountSchema.optional(),
   })
   .strict();
-export const EvidenceFindingsSchema = z.object({ tool: line(60), newCount: CountSchema, bySeverity: SeverityCountsSchema, items: z.array(EvidenceFindingSchema).max(EVIDENCE_FINDINGS_MAX) }).strict();
+export const EvidenceFindingsSchema = z
+  .object({
+    tool: line(60),
+    newCount: CountSchema,
+    bySeverity: SeverityCountsSchema,
+    items: z.array(EvidenceFindingSchema).max(EVIDENCE_FINDINGS_MAX),
+    /** High or critical findings the scan reported on this code that could not be compared with the original code (no baseline, or one that cannot be trusted): they are NOT in the new-findings counts above. Absent = none. */
+    unverified: CountSchema.optional(),
+  })
+  .strict();
 export const EvidenceMigrationsSchema = z.object({ applied: z.array(line(100)).max(50), rolledBack: z.boolean().nullable(), schemaChanges: z.array(line(200)).max(100) }).strict();
 export const EvidenceSelectionSchema = z
   .object({

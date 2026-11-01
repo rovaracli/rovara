@@ -69,6 +69,7 @@ export function testsLine(pack: EvidencePack, proven?: ProvenTestNames): string 
       const findings = check.findings;
       if (check.after !== "passed" && check.after !== "failed") parts.push(`security scan ${OUTCOME_WORDS[check.after]}`);
       else if (findings === undefined) parts.push(`security scan ${OUTCOME_WORDS[check.after]} (findings not read)`);
+      else if ((findings.unverified ?? 0) > 0) parts.push(`security scan ${OUTCOME_WORDS[check.after]}: ${number(findings.unverified!)} high or critical finding${findings.unverified === 1 ? "" : "s"} could not be compared with the original code`);
       else parts.push(`security scan ${OUTCOME_WORDS[check.after]}: ${findings.newCount === 0 ? "0 new findings" : `${number(findings.newCount)} new${findings.bySeverity.critical + findings.bySeverity.high > 0 ? ` (${number(findings.bySeverity.critical + findings.bySeverity.high)} high or critical)` : ""}`}`);
     } else if (check.kind === "migration") {
       const migrations = check.migrations;

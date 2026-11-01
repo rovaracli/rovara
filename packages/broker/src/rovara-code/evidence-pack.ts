@@ -135,7 +135,7 @@ export function buildEvidencePack(input: EvidenceBuildInput): EvidenceBuildResul
     }
     // A scan that failed with "0 new findings" is a scan whose findings were not read: never shown as clean.
     // (A scan that was already failing before the change, and fails for findings that were already there, legitimately has none that are new.)
-    if (findings !== undefined && entry.after === "failed" && findings.newCount === 0 && entry.class !== "already_failing") {
+    if (findings !== undefined && entry.after === "failed" && findings.newCount === 0 && entry.class !== "already_failing" && (findings.unverified ?? 0) === 0) {
       problems.add("findings_disagree_with_check");
       findings = undefined;
     }

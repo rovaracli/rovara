@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { createCandidateManifest, type CheckEntry, type EvidencePack, type EvidenceRaw, type VerificationReport } from "../../packages/contracts/src/index.js";
 import { evidenceLines } from "../../packages/broker/src/rovara-code/evidence-lines.js";
 import { keepEvidence, loadEvidencePack, type KeepEvidenceDeps } from "../../packages/broker/src/rovara-code/evidence-keep.js";
+import { guardPack } from "../../packages/broker/src/rovara-code/evidence-guard.js";
 import { evidenceRiskSignal, kindOfRawCheck } from "../../packages/broker/src/rovara-code/evidence-risk.js";
 import { assessRisk, type RiskInput } from "../../packages/broker/src/rovara-code/risk.js";
 import { recomputeRisk } from "../../packages/broker/src/rovara-code/pull-request-body.js";
@@ -83,10 +84,32 @@ describe("scanner findings and migrations in the pack", () => {
     expect(prLine(unknown!)).toBe("Checks by kind: migrations: 1 applied");
   });
 
-  it("a finding or schema name that holds personal data loses the check's details, not the pack (the data guard)", async () => {
+  it("a finding whose text holds personal data loses its texts but keeps its counts, so the high findings still reach the risk rule (the data guard)", async () => {
     const pack = await keep([{ checkId: "readiness:0", findings: findings("Bandit", { high: 1 }, [{ ruleId: "B1", severity: "high", path: "fixtures/jane.doe@gmail.com.py", line: 1, message: "x" }]) }], [entry("readiness:0", "bandit", { after: "failed", exitCode: 1 })]);
-    expect(pack?.checks[0]?.findings).toBeUndefined();
-    expect(evidenceRiskSignal(pack, DIGEST)).toBeUndefined();
+    expect(pack?.checks[0]?.findings).toEqual({ tool: "bandit", newCount: 1, bySeverity: severities({ high: 1 }), items: [] });
+    expect(pack?.checks[0]?.kind).toBe("security");
+    expect(JSON.stringify(pack)).not.toContain("jane.doe");
+    expect(evidenceRiskSignal(pack, DIGEST)).toEqual({ highNewFindings: 1 });
+    // An unknown tool's name is not kept (it may be what tripped the guard): a fixed word instead, and the check is no longer a known security scan.
+    const unknown = await keep([{ checkId: "readiness:0", findings: findings("jane.doe@gmail.com scanner", { high: 1 }) }], [entry("readiness:0", "x", { after: "failed", exitCode: 1 })], new Map([["readiness:0", "security"]]));
+    expect(unknown?.checks[0]?.findings?.tool).toBe("scanner");
+    expect(evidenceRiskSignal(unknown, DIGEST)).toEqual({ highNewFindings: 1 });
+  });
+
+  it("the pack-level guard keeps a scan's counts too when a text in the built pack trips it", () => {
+    const built = { schemaVersion: 1, candidateDigest: DIGEST, environment: { tier: "sandbox", envRevision: 0, services: [], data: "synthetic", accounts: [] }, selection: { method: "full", selected: 0, total: 0 }, api: [], browser: [], notTested: [],
+      checks: [{ checkId: "readiness:0", kind: "security", label: "bandit", before: "passed", after: "failed", class: "regression", durationMs: 1,
+        findings: { tool: "Bandit", newCount: 1, bySeverity: severities({ critical: 1 }), items: [{ ruleId: "B1", severity: "critical", path: "a@gmail.com.py", line: 1, message: "m" }] } }] } as unknown as EvidencePack;
+    const guarded = guardPack(built, [], { accountIds: [], hosts: [], arnPrefixes: [] });
+    expect(guarded.pack?.checks[0]?.findings).toEqual({ tool: "bandit", newCount: 1, bySeverity: severities({ critical: 1 }), items: [] });
+    expect(guarded.dropped.parts).toBe(1);
+  });
+
+  it("high findings that could not be compared are kept, shown in fixed words, and not dropped as 'a failed scan with none new'", async () => {
+    const pack = await keep([{ checkId: "readiness:0", findings: { ...findings("Bandit", {}), unverified: 2 } }], [entry("readiness:0", "bandit", { after: "failed", class: "regression", exitCode: 1 })]);
+    expect(pack?.checks[0]?.findings).toMatchObject({ newCount: 0, unverified: 2 });
+    expect(prLine(pack!)).toBe("Checks by kind: security scan ✗: 2 high or critical findings could not be compared with the original code");
+    expect(evidenceRiskSignal(pack, DIGEST)).toEqual({ highNewFindings: 0, unverifiedHighFindings: 2 });
   });
 
   it("a migration name that holds personal data loses the check's migration details (the data guard), and the check keeps the broker's own verdict", async () => {
@@ -120,6 +143,17 @@ describe("the risk rule", () => {
     expect(assessRisk(input())).toEqual(assessRisk(input({ evidence: undefined })));
     expect(assessRisk(input({ evidence: { highNewFindings: 0 } }))).toEqual(assessRisk(input()));
     expect(assessRisk(input()).level).toBe("low");
+  });
+
+  it("high findings that could not be compared make the change at least medium, never silently low, and say so in a fixed sentence", () => {
+    const risk = assessRisk(input({ evidence: { highNewFindings: 0, unverifiedHighFindings: 3 } }));
+    expect(risk.level).toBe("medium");
+    expect(risk.reasons).toContain("A security scan reported 3 high or critical findings that could not be compared with the original code, so it needs review.");
+    expect(assessRisk(input({ evidence: { highNewFindings: 0, unverifiedHighFindings: 1 } })).reasons.join(" ")).toContain("1 high or critical finding that could not");
+    // A new high finding still wins; a change that is already high stays high; none unverified changes nothing.
+    expect(assessRisk(input({ evidence: { highNewFindings: 1, unverifiedHighFindings: 2 } })).level).toBe("high");
+    expect(assessRisk(input({ evidence: { highNewFindings: 0, unverifiedHighFindings: 0 } }))).toEqual(assessRisk(input()));
+    expect(evidenceRiskSignal(pack("lint", { high: 1 }), code.digest)).toBeUndefined();
   });
 
   it("only raises: a change that is already high stays high, with the finding added to its reasons", () => {

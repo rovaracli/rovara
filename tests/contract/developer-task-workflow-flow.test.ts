@@ -5946,21 +5946,22 @@ describe("a workflow task's cap window restarts when its owner retries or sends 
 // security scan makes it High risk there too, and with the proof switch off the same pack changes nothing.
 describe("the autonomous publication and the evidence's risk rule", () => {
   afterEach(() => { delete process.env.PROOF_EVIDENCE_ENABLED; });
-  const securityPack = (digest: string) => EvidencePackSchema.parse({
+  const securityPack = (digest: string, unverified = false) => EvidencePackSchema.parse({
     schemaVersion: 1, candidateDigest: digest,
     environment: { tier: "sandbox", envRevision: 0, services: [], data: "synthetic", accounts: [] },
     checks: [{ checkId: "readiness:0", kind: "security", label: "bandit", before: "passed", after: "failed", class: "regression", durationMs: 5,
-      findings: { tool: "Bandit", newCount: 1, bySeverity: { critical: 0, high: 1, medium: 0, low: 0, info: 0 }, items: [{ ruleId: "B608", severity: "high", path: "src/db.py", line: 7, message: "SQL built from input" }] } }],
+      findings: unverified ? { tool: "Bandit", newCount: 0, bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, items: [], unverified: 2 }
+        : { tool: "Bandit", newCount: 1, bySeverity: { critical: 0, high: 1, medium: 0, low: 0, info: 0 }, items: [{ ruleId: "B608", severity: "high", path: "src/db.py", line: 7, message: "SQL built from input" }] } }],
     selection: { method: "full", selected: 0, total: 0 }, api: [], browser: [], notTested: [],
   });
-  async function autoPublished(on: boolean) {
+  async function autoPublished(on: boolean, unverified = false) {
     if (on) process.env.PROOF_EVIDENCE_ENABLED = "1";
     else delete process.env.PROOF_EVIDENCE_ENABLED;
     const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
     const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
     const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { ownerKey: string; workflow: Record<string, unknown> };
     harness.db.set({ ...record, workflow: { ...record.workflow, definitionVersion: "1.1.0" } });
-    harness.s3.objects.set(evidencePackKey({ ownerKey: record.ownerKey, workspaceId, taskId }, candidate.digest), JSON.stringify(securityPack(candidate.digest)));
+    harness.s3.objects.set(evidencePackKey({ ownerKey: record.ownerKey, workspaceId, taskId }, candidate.digest), JSON.stringify(securityPack(candidate.digest, unverified)));
     await finishImplementation();
     await passReviews(harness, workspaceId, candidate);
     const publish = operations(harness, workspaceId).find((item) => item.kind === "publish") as { publication: { body: string } } | undefined;
@@ -5972,6 +5973,13 @@ describe("the autonomous publication and the evidence's risk rule", () => {
     expect(body).toContain("A security scan found 1 new high or critical finding.");
     expect(body).toMatch(/## Risk: High/u);
     expect(taskWorkflow(harness, taskId).risk?.level).toBe("high");
+  });
+
+  it("high findings that could not be compared make the sweep's pull request Medium (needs review), not low", async () => {
+    const { body, harness, taskId } = await autoPublished(true, true);
+    expect(body).toContain("A security scan reported 2 high or critical findings that could not be compared with the original code, so it needs review.");
+    expect(body).toMatch(/## Risk: Medium/u);
+    expect(taskWorkflow(harness, taskId).risk?.level).toBe("medium");
   });
 
   it("with the switch off the same stored pack changes nothing", async () => {

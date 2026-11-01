@@ -168,3 +168,38 @@ export function findingsPart(tool: string, fresh: readonly SarifFinding[]): NonN
     .map((finding) => ({ ruleId: finding.ruleId, severity: finding.severity, path: finding.path, line: finding.line, message: finding.message }));
   return { tool: plainPath(tool, TOOL_MAX), newCount: fresh.length, bySeverity, items };
 }
+
+// ---- when a baseline cannot be trusted
+
+const PREBUILT = [/\bcodeql\b[^\n]*\banalyze\b/iu, /\bspotbugs\b/iu, /\bfindsecbugs\b/iu, /\bjoern\b/iu];
+/**
+ * Whether a SARIF-writing command is known to read state an earlier step built and git ignores (CodeQL's `database analyze` reads the database `database create` built; SpotBugs reads compiled classes). The baseline
+ * run shows the original SOURCE and re-runs only this command, so such a scan would read the candidate's own build and compare the candidate with itself: no baseline is run for it, and it says so.
+ */
+export function readsPrebuiltState(command: ProjectCommand): boolean {
+  const line = [command.executable.split("/").at(-1) ?? command.executable, ...command.args].join(" ").slice(0, 2_000);
+  return PREBUILT.some((pattern) => pattern.test(line));
+}
+
+/** Whether two scans list exactly the same findings, line numbers and messages included. */
+export function sameFindings(left: readonly SarifFinding[], right: readonly SarifFinding[]): boolean {
+  if (left.length !== right.length) return false;
+  const tuple = (finding: SarifFinding) => `${finding.key}\0${String(finding.line)}\0${finding.severity}\0${finding.message}`;
+  const seen = new Map<string, number>();
+  for (const finding of left) seen.set(tuple(finding), (seen.get(tuple(finding)) ?? 0) + 1);
+  for (const finding of right) {
+    const count = seen.get(tuple(finding)) ?? 0;
+    if (count === 0) return false;
+    seen.set(tuple(finding), count - 1);
+  }
+  return true;
+}
+
+/**
+ * What is said of a scan whose findings could not be compared with the original code: no finding is called new, but the high and critical ones it reported on this code are counted as unverified, so the risk
+ * rule can ask for a look instead of reading "no baseline" as "nothing new". Undefined when it reported none (nothing high is hidden).
+ */
+export function unverifiedPart(tool: string, candidate: readonly SarifFinding[]): NonNullable<EvidenceRaw["checks"][number]["findings"]> | undefined {
+  const high = candidate.filter((finding) => finding.severity === "critical" || finding.severity === "high").length;
+  return high === 0 ? undefined : { ...findingsPart(tool, []), unverified: high };
+}
