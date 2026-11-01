@@ -226,7 +226,7 @@ describe("retention B follows the same version rules", () => {
     const distiller = createTransientDistiller({ ingest: w.deps, distill: { model, now: () => new Date(w.clock.ms).toISOString(), newId: () => `5b8e9f4c-2b1a-4c1e-9a53-3f2d3d1a${String(++n).padStart(4, "0")}` } });
     const message = (version: string, versionAt: string, text: string) => ({
       workspaceId: ORG_A, project: "web", source: "slack" as const, kind: "slack.message" as const, occurredAt: T1, sourceRef: { system: "T1", id: "C9/1.1", version, versionAt, url: "https://acme.slack.com/archives/C9/p11" },
-      actor: { sourceId: "U1", developerId: "dev-1", trust: "member" as const }, trust: "member" as const, audience: { kind: "restricted" as const, acl: { source: "slack", scope: "slack:T1/C9", groups: ["T1"], capturedAt: T1, liveCheck: "none" as const } },
+      actor: { sourceId: "U1", developerId: "dev-1", trust: "member" as const }, trust: "member" as const, audience: { kind: "restricted" as const, acl: { source: "slack" as const, scope: "slack:T1/C9", groups: ["T1"], capturedAt: T1, liveCheck: "none" as const } },
       links: ["https://acme.slack.com/archives/C9/p11"], retention: "B" as const, text,
     });
     expect(await distiller.distillTransient(message("m:1", T1, "we will ship friday"))).toEqual({ accepted: true });

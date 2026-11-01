@@ -3,7 +3,7 @@
 // that can't be matched is not taken for a member's act (it waits for Start); an actor the tracker cannot confirm is the same.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId, type WorkspaceInstance } from "@agentx/contracts";
+import { agentXError, intakeItemIdOf, type CodeIntentRequest, type OrgId, type WorkspaceInstance } from "@agentx/contracts";
 import { CatalogCache } from "@agentx/gateway";
 import type { HookRecord } from "@agentx/contracts";
 import { jiraProvider } from "../../packages/broker/src/triggers/providers/jira.js";
@@ -235,7 +235,7 @@ describe("what Rovara's connector writes are noted as", () => {
     registerOwnWriteRecorder((orgId, note) => noteOwnWrite(w.ports.table, orgId, note));
     await recordOwnWriteOfCall({ orgId: ORG, connectorType: "jira", tool: "editJiraIssue", args: { issueIdOrKey: "PAY-12", fields: { labels: ["rovara"] } } });
     expect(await ownWriteVerdictOf(w.ports.table, jiraLabel())).toBe("own");
-    registerOwnWriteRecorder(async () => { throw new AgentXError("RUNTIME_UNAVAILABLE", "no"); });
+    registerOwnWriteRecorder(async () => { throw agentXError("RUNTIME_UNAVAILABLE", "no"); });
     await expect(recordOwnWriteOfCall({ orgId: ORG, connectorType: "jira", tool: "editJiraIssue", args: { issueIdOrKey: "PAY-12", fields: { labels: ["x"] } } })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 
@@ -289,7 +289,7 @@ describe("the connector call path notes a write before it is sent", () => {
 
   it("a note that can't be made stops the call: nothing is sent to the vendor", async () => {
     calls.length = 0;
-    registerOwnWriteRecorder(async () => { throw new AgentXError("RUNTIME_UNAVAILABLE", "the note can't be written"); });
+    registerOwnWriteRecorder(async () => { throw agentXError("RUNTIME_UNAVAILABLE", "the note can't be written"); });
     const catalogs = new CatalogCache<ScopeDiscovery>({ ttlMs: 600_000, maxEntries: 4 });
     await expect(run(catalogs)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(calls).toEqual([]);

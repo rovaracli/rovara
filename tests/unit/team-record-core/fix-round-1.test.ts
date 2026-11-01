@@ -165,7 +165,7 @@ describe("I-4 retention C is safe without the nightly job", () => {
     const listed = (await source.listArchivable({ workspaceId: ORG_A, olderThan: new Date(w.clock.ms - 90 * DAY).toISOString(), limit: 10 })).rows;
     expect(listed).toHaveLength(1);
     expect(listed[0]!.text).toBeUndefined();
-    expect(listed[0]!.textExpiresAt).toBeUndefined();
+    expect((listed[0] as unknown as Record<string, unknown>).textExpiresAt).toBeUndefined();
   });
 });
 

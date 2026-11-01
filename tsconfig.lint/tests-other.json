@@ -9,6 +9,7 @@
     "../tests/linux/**/*.ts",
     "../tests/live/**/*.ts",
     "../tests/plugins/**/*.ts",
+    "../tests/roles/**/*.ts",
     "../tests/*.ts"
   ],
   "references": [

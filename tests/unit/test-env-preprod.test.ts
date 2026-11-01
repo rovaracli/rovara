@@ -11,7 +11,7 @@ const ARN = "arn:aws:sagemaker:us-west-2:222233334444:endpoint/partner-scorer";
 const ROLE = "arn:aws:iam::222233334444:role/rovara-invoke";
 const NOW = 1_800_000_000_000;
 const service = (over: Record<string, unknown> = {}, preprod: Record<string, unknown> = {}) => ({ name: "scorer", kind: "sagemaker_runtime" as const, match: { endpointName: "partner-scorer" }, mode: "preprod" as const, preprod: { endpointArn: ARN, roleArn: ROLE, region: "us-west-2", ...preprod }, ...over });
-const body = (services: unknown[], prodDeny = { accountIds: ["111122223333"], hosts: [], arnPrefixes: [] }): TestEnvironmentBody => TestEnvironmentBodySchema.parse({
+const body = (services: unknown[], prodDeny: { accountIds: string[]; hosts: string[]; arnPrefixes: string[] } = { accountIds: ["111122223333"], hosts: [], arnPrefixes: [] }): TestEnvironmentBody => TestEnvironmentBodySchema.parse({
   tier: "sandbox", repos: [{ repositoryId: "svc", setupCommands: [], checks: [] }], roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, nightly: { enabled: false, cronUtc: "0 6 * * *", branch: "main" },
   services, data: { seeds: [], generator: "faker_seeded", seed: 1 }, accounts: [], prodDeny, capture: { screenshots: "failed", video: false, traces: false },
 });
@@ -22,7 +22,7 @@ function aws(over: Partial<PreprodAws> = {}) {
   const port: PreprodAws = { ownAccountId: "999988887777", assumeRole: (input) => { calls.push({ ...input }); return Promise.resolve(creds()); }, ...over };
   return { port, calls };
 }
-const open = (port: PreprodAws, over: Partial<{ service: ReturnType<typeof svc>; taskId: string; prodDeny: TestEnvironmentBody["prodDeny"] }> = {}) =>
+const open = (port: PreprodAws, over: { service?: ReturnType<typeof svc>; taskId?: string; prodDeny?: TestEnvironmentBody["prodDeny"] | undefined } = {}) =>
   openPreprodSession(port, { orgId: ORG, taskId: "task-1234abcd-9", service: over.service ?? svc(), prodDeny: over.prodDeny ?? { accountIds: ["111122223333"], hosts: [], arnPrefixes: [] }, now: () => NOW });
 
 describe("the session", () => {
@@ -59,16 +59,16 @@ describe("the session", () => {
     }
   });
   it("answers AWS's refusal and an outage in fixed words that hold no ARN, message or credential", async () => {
-    const denied = await open(aws({ assumeRole: () => Promise.reject(Object.assign(new Error(`not authorized for ${ROLE}`), { name: "AccessDenied" })) }).port).catch((caught: unknown) => caught as PreprodAccessError);
+    const denied = await open(aws({ assumeRole: () => Promise.reject(Object.assign(new Error(`not authorized for ${ROLE}`), { name: "AccessDenied" })) }).port).then(() => { throw new Error("expected a refusal"); }, (caught: unknown) => caught as PreprodAccessError);
     expect(denied.code).toBe("refused");
     expect(denied.retryable).toBe(false);
     expect(denied.message).not.toContain("222233334444");
-    const outage = await open(aws({ assumeRole: () => Promise.reject(new Error("socket hang up")) }).port).catch((caught: unknown) => caught as PreprodAccessError);
+    const outage = await open(aws({ assumeRole: () => Promise.reject(new Error("socket hang up")) }).port).then(() => { throw new Error("expected a refusal"); }, (caught: unknown) => caught as PreprodAccessError);
     expect(outage).toMatchObject({ code: "unreachable", retryable: true });
   });
   it("does not use a session that is empty, already over, or longer than asked", async () => {
     for (const bad of [creds({ sessionToken: "" }), creds({ expiration: new Date(NOW - 1) }), creds({ expiration: new Date(NOW + 12 * 3_600_000) }), creds({ expiration: new Date("nope") }), {} as AssumedCredentials]) {
-      const error = await open(aws({ assumeRole: () => Promise.resolve(bad) }).port).catch((caught: unknown) => caught as PreprodAccessError);
+      const error = await open(aws({ assumeRole: () => Promise.resolve(bad) }).port).then(() => { throw new Error("expected a refusal"); }, (caught: unknown) => caught as PreprodAccessError);
       expect(error.code).toBe("bad_session");
     }
   });

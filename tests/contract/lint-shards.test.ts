@@ -45,7 +45,7 @@ describe("the lint shards", () => {
     const rest = JSON.parse(readFileSync("tsconfig.lint-rest.json", "utf8")) as { extends: string; include: string[]; compilerOptions?: unknown };
     expect(rest.extends).toBe("./tsconfig.lint.json");
     expect(rest.compilerOptions).toBeUndefined();
-    expect(rest.include).toEqual(["vitest.config.ts", "vitest.native-p0.config.ts"]);
+    expect(rest.include).toEqual(["vitest.config.ts", "vitest.native-p0.config.ts", "vitest.lessons-dynamo.config.ts"]);
   });
 
   it("run through npm run lint, in CI, with a heap cap below the 4 GB the runner can spare", () => {

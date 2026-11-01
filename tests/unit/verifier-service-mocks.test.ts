@@ -1,5 +1,6 @@
 // Proof and test environment E8: the service mock server (SageMaker Runtime shaped), the recorder, the inferred schema, unmatched modes, fault injection. Real HTTP on loopback.
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { ServiceMockFixtureSetSchema, ServiceMockJsonSchemaSchema, awsEndpointUrlVariable, serviceMockFixtureSetDigest, serviceMockRequestHash, type ServiceMockFixtureSet, type TestEnvProdDeny } from "@agentx/contracts";
 import { ServiceMockAdditionSetSchema, serviceMockAdditionsListing } from "@agentx/contracts";
@@ -326,7 +327,8 @@ describe("a real boto3 client", () => {
     const { set } = await recorded();
     const mock = await serve(set);
     const script = "import boto3,json;c=boto3.client('sagemaker-runtime',region_name='us-west-2');r=c.invoke_endpoint(EndpointName='partner-scorer',ContentType='application/json',Body=json.dumps({'partner':'p1','region':'emea'}));print(r['Body'].read().decode())";
-    const out = execFileSync("python3", ["-I", "-c", script], { env: { PATH: process.env.PATH ?? "", AWS_ACCESS_KEY_ID: "test", AWS_SECRET_ACCESS_KEY: "test", [awsEndpointUrlVariable("SageMaker Runtime")]: mock.url }, encoding: "utf8" });
+    // Asynchronously: the mock server runs in this process, and a blocking call would leave it unable to answer boto3 (the request would time out).
+    const { stdout: out } = await promisify(execFile)("python3", ["-I", "-c", script], { env: { PATH: process.env.PATH ?? "", AWS_ACCESS_KEY_ID: "test", AWS_SECRET_ACCESS_KEY: "test", [awsEndpointUrlVariable("SageMaker Runtime")]: mock.url }, encoding: "utf8" });
     expect(JSON.parse(out)).toMatchObject({ score: 0.9 });
   });
   it("hashes a request the way the server does (a boto3-shaped request with a charset parameter finds the recording)", async () => {

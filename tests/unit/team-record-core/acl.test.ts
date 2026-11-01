@@ -29,8 +29,8 @@ describe("permission filter: the matrix", () => {
 
   it("an unmapped person matches nothing, and an empty snapshot is nobody", async () => {
     expect((await filterVisible([row(acl())], person({ identities: { ids: {}, groups: {} } }))).visible).toHaveLength(0);
-    expect(satisfiesAcl(caller(), (acl({ principals: [] }) as { acl: never }).acl)).toBe(false);
-    expect(satisfiesAcl(caller(), (acl({ principals: undefined, groups: [] }) as { acl: never }).acl)).toBe(false);
+    expect(satisfiesAcl(caller(), (acl({ principals: [] }) as unknown as { acl: never }).acl)).toBe(false);
+    expect(satisfiesAcl(caller(), (acl({ principals: undefined, groups: [] }) as unknown as { acl: never }).acl)).toBe(false);
   });
 
   it("source groups and the maintainers group", async () => {

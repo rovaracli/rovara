@@ -36,7 +36,8 @@ describe("the broker and the sign-in server can read the record in every synth",
       expect(controlPlane).toContain("parameter/agentx/ent/edition");
       expect(controlPlane).toContain("parameter/agentx/ent/edition-backup");
     }
-  });
+    // Two whole-app synths with real Lambda bundling: about 18 s here and over 60 s on the 2 vCPU runner, so it takes the timeout of the other synth tests.
+  }, 240_000);
 });
 
 describe("the guard", () => {

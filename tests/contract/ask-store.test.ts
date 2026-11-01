@@ -429,7 +429,7 @@ describe("names are matched after normalising, and common words are left alone (
     expect(scrub("Vale, Mark approved", [MARK])).toBe(`${personLabel(ERIN)} approved`);
     expect(scrub("ping @mark please, then mark the file", [MARK])).toBe(`ping ${personLabel(ERIN)} please, then mark the file`);
     // A one-word display name that is a dictionary word is replaced only as a mention.
-    const solo = { developerId: SAM, names: ["Mark"] };
+    const solo = { developerId: SAM, names: ["Mark"], handles: [] };
     expect(scrub("mark the file; Mark said hi", [solo])).toBe("mark the file; Mark said hi");
     expect(scrub("thanks @Mark", [solo])).toBe(`thanks ${label}`);
     // Words that merely contain a name are not touched (whole words only).

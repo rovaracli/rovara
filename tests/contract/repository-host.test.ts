@@ -97,7 +97,8 @@ describe("the code host router", () => {
   it("picks the entry whose kind is the host's kind", () => {
     const picked = selectCodeHost({ kind: "gitfarm" }, [github, other]);
     expect(picked).toBe(other);
-    expect(selectCodeHost({ kind: "github", installationId: 1 }, [github, other])).toBe(github);
+    const withInstallation = { kind: "github", installationId: 1 };
+    expect(selectCodeHost(withInstallation, [github, other])).toBe(github);
   });
 
   it("an old record (no host) is routed to github", () => {

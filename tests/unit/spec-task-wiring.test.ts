@@ -140,7 +140,7 @@ describe("the code pull request", () => {
     for (const status of ["CLOSED", "PREPARATION_FAILED"]) {
       const t = await setup();
       await specAfterPlanApproval(t.deps, TASK);
-      const closed = { ...t.deps, actions: { ...t.deps.actions, workspace: async () => ({ status }) } } as DeveloperTaskRouteDependencies;
+      const closed = { ...t.deps, actions: { ...t.deps.actions, workspace: async () => ({ status }) } } as unknown as DeveloperTaskRouteDependencies;
       const gate = await specPublicationGate(closed, t.task, t.task.workflow!);
       expect(gate, status).toMatchObject({ proceed: false, hold: { reason: "failed", ownerActions: ["retry", "continue_without_spec"] } });
       expect(t.startedWrites, status).toHaveLength(0);
@@ -213,7 +213,7 @@ describe("making the waiting step due again when the spec is ready", () => {
   const rowFor = async (stage: string, state: string) => {
     const t = await setup();
     await t.db.send(new PutCommand({ TableName: "t", Item: { ...t.task, workflow: { ...t.task.workflow, stage, state, candidate: { digest: "d".repeat(64) } } } }));
-    return specEndEnvironmentOf({ documentClient: t.db, tableName: "t" } as never, WORKSPACE).republishItem(TASK);
+    return specEndEnvironmentOf({ documentClient: t.db, tableName: "t" } as never).republishItem(TASK);
   };
   it("queues the review for a task waiting at its review, and the code pull request for one ready to publish", async () => {
     expect((await rowFor("REVIEW", "WAITING"))?.Put?.Item).toMatchObject({ taskId: TASK, kind: "REVIEW", candidateDigest: "d".repeat(64), workflowRevision: 4 });

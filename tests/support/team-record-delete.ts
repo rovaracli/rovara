@@ -69,7 +69,7 @@ export async function seedComments(w: World, scope = GITHUB_SCOPE) {
   }
 }
 
-export async function addFact(w: World, id: string, sources: Array<{ system: string; sourceId: string; scope?: string }>, extra: Partial<RecordFact> = {}) {
+export async function addFact(w: World, id: string, sources: Array<{ system: string; sourceId: string; scope?: string; actor?: { developerId?: string; sourceId?: string } }>, extra: Partial<RecordFact> = {}) {
   // A fact of a restricted place reads only if the place has its access record (the rows it was distilled from would have made it).
   if (extra.audience?.kind === "restricted") await observeRowAccess(w.table, ORG_A, extra.audience.acl);
   await putRecordFact(w.table, { id, workspaceId: ORG_A, project: "web", kind: "decision", text: `Fact ${id.slice(-2)} summary.`, links: [], derivedFrom: sources.map((s) => `${s.system}:${s.sourceId}`), trust: "member", audience: { kind: "project" }, createdAt: "2026-10-30T11:00:00.000Z", ...extra });

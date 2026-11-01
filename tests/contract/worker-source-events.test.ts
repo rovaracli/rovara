@@ -210,7 +210,7 @@ describe("the text guard and JSON (ME-17: runs split across newlines inside JSON
     expect(JSON.stringify(guard.scrub(message))).not.toMatch(/bravo|november/u);
     const { guardArtifactSink } = await import("../../packages/worker/src/context-sources/text-guard.js");
     const stored: unknown[] = [];
-    await guardArtifactSink(async (artifact) => { stored.push(artifact); return undefined; }, () => guard)({ name: "intent.json", content: JSON.stringify({ summary: SOURCE }) });
+    await guardArtifactSink(async (artifact) => { stored.push(artifact); return undefined; }, () => guard)({ name: "intent.json", mediaType: "application/json", content: JSON.stringify({ summary: SOURCE }) });
     const content = (stored[0] as { content: string }).content;
     expect(content).toContain(REMOVED);
     expect(() => JSON.parse(content) as unknown).not.toThrow();

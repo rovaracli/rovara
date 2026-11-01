@@ -111,7 +111,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["*.amazonaws.com", "monitoring.amazonaws.com", "amazonaws.com", "amazonaws.com.cn"],
   },
   {
-    category: "aws-endpoint", why: "The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list.", files: ["infra/lib/vpc-endpoints.ts"],
+    category: "aws-endpoint", why: "The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list; and, as the CloudTrail event source an alert rule matches (a pattern, not a call), in the operator-assumption alert.", files: ["infra/lib/vpc-endpoints.ts", "infra/lib/operator-access.ts"],
     hosts: ["sts.amazonaws.com"],
   },
   {

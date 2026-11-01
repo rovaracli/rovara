@@ -183,7 +183,7 @@ describe("the handler's meta repo wiring", () => {
     await queue({ orgId: TEST_ORG, project: PROJECT, commit: "e".repeat(40) });
     expect(getDefaultBranchHead).toHaveBeenCalledWith(META.url, "main", { orgId: TEST_ORG });
     // The files are read at the head GitHub said, not at the event's commit.
-    expect(getFileAtCommit.mock.calls.every((call) => call[2] === "b".repeat(40))).toBe(true);
+    expect(getFileAtCommit.mock.calls.every((call) => (call as unknown[])[2] === "b".repeat(40))).toBe(true);
     expect(getFileAtCommit).toHaveBeenCalled();
   });
   it("reads a config file with the size cap, in the org's scope", async () => {

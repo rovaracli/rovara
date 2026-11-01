@@ -1,7 +1,8 @@
 // Proof and evidence P5: the broker builds the evidence pack from the worker's raw parts and its own check report. The raw file is untrusted: bound to the candidate digest, checked against the broker's
 // check outcomes and the artifact store, redacted again; whatever fails is dropped and named, and a drop never makes a check look better.
 import { describe, expect, it } from "vitest";
-import { EVIDENCE_ARTIFACT_RETENTION, consoleErrorsWords, EvidencePackSchema, EvidenceViewSchema, type ArtifactRef, type CheckEntry, type EvidenceArtifactKind, type EvidenceEnvironment } from "../../packages/contracts/src/evidence.js";
+import { EVIDENCE_ARTIFACT_RETENTION, consoleErrorsWords, EvidencePackSchema, EvidenceViewSchema, type ArtifactRef, type EvidenceArtifactKind, type EvidenceEnvironment } from "../../packages/contracts/src/evidence.js";
+import type { CheckEntry } from "../../packages/contracts/src/checks.js";
 import { buildEvidencePack, evidenceHref, evidenceViewOf, type EvidenceBuildInput, type StoredArtifact } from "../../packages/broker/src/rovara-code/evidence-pack.js";
 
 const sha = (letter: string) => letter.repeat(64);
@@ -244,7 +245,7 @@ describe("artifacts", () => {
     expect(reasons({ ...ALL_OK, gate: { allowed: { video: false, trace: false }, reasons: {} } })).toEqual(["data_not_synthetic", "data_not_synthetic"]);
     expect(reasons({ ...ALL_OK, gate: undefined as never })).toEqual(["data_not_synthetic", "data_not_synthetic"]);
     expect(reasons(undefined)).toEqual(["tier_not_allowed", "tier_not_allowed"]);
-    expect(reasons({ companyAllows: { video: true, trace: true }, revocationConfirmed: false, tierAllowed: false })).toEqual(["tier_not_allowed", "tier_not_allowed"]);
+    expect(reasons({ companyAllows: { video: true, trace: true }, revocationConfirmed: false, tierAllowed: false, gate: undefined as never })).toEqual(["tier_not_allowed", "tier_not_allowed"]);
     // A shared environment with no run-scoped account at all cannot show its accounts were dead.
     expect(reasons(ALL_OK, { tier: "shared", accounts: [] })).toEqual(["account_not_run_scoped", "account_not_run_scoped"]);
     expect(build({ media: { ...ALL_OK, revocationConfirmed: false } }).withheldArtifacts).toEqual([video, trace]);

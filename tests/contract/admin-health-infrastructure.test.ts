@@ -248,6 +248,9 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/team-record/item-head.ts", "packages/broker/src/team-record/retention.ts", "packages/broker/src/team-record/scope-work.ts",
       "packages/broker/src/team-record/query.ts", "packages/broker/src/team-record/ingest.ts", "packages/broker/src/team-record/store.ts",
       "packages/contracts/src/team-record.ts", "infra/lib/team-record-table.ts",
+      // Intake own-write notes (a note that a write was ours, held one window plus an hour); asks (a question kept ASK_RETENTION_DAYS, its mention-index and expiry-index items, and the erase
+      // pass that copies a record without the attribute); lessons (a source event's counter row, SOURCE_EVENT_TTL_DAYS). Each writes rows that are meant to expire, none a durable record.
+      "packages/broker/src/intake/own-writes.ts", "packages/broker/src/agent-sessions/ask-store.ts", "packages/broker/src/agent-sessions/ask-erase.ts", "packages/broker/src/lessons/dynamo-store.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

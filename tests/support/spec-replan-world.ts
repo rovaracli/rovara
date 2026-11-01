@@ -58,7 +58,7 @@ export async function editedSpecTask(options: { fileReads?: "fail" | "edited"; e
   await store.save(state, undefined);
   const press = (who = MAYA) => h.dev(who, "POST", `/v1/app/tasks/${taskId}/spec/replan`);
   const page = async (who: { developerId: string; sessionId: string; provider: "slack" | "oidc"; name: string; slackUserId?: string } = MAYA) => {
-    const input = h.brokerInput as { documentClient: never; tableName: string; developer: never };
+    const input = h.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
     const caller = { developerId: who.developerId, sessionId: who.sessionId, amr: who.provider, name: who.name, orgId: TEST_ORG, orgRole: "member" as const, ...(who.slackUserId === undefined ? {} : { slackUserId: who.slackUserId }) };
     const deps = developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: h.actions }, caller);
     return getTaskDocumentView(deps, caller, taskId);

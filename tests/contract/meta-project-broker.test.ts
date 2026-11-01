@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { AgentXError } from "@agentx/contracts";
+import { agentXError } from "@agentx/contracts";
 import {
   ProjectDefinitionSchema,
   StoredProjectDefinitionSchema,
@@ -517,7 +517,7 @@ describe("applying the pending change", () => {
 
   it("refuses to add a repository the org's connection does not reach, writing nothing", async () => {
     const w = world();
-    w.deps.requireRepositoryConnected = async () => { throw new AgentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach acme/lib"); };
+    w.deps.requireRepositoryConnected = async () => { throw agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach acme/lib"); };
     await push(w, COMMIT_A, "version: 1\nrepositories:\n  - {name: lib, url: 'https://github.com/acme/lib.git'}\n");
     expect(await code(apply(w, COMMIT_A))).toBe("GITHUB_NOT_CONNECTED");
     expect(w.registered).toEqual([]);
@@ -687,7 +687,7 @@ function createWorld(options: { visible?: Record<string, { id: number; branch: s
     defaults: options.defaults === false ? undefined : { runtimeBinding: BINDING as never, githubCredentialRef: "github-app" },
     requireRepositoryConnected: async (_org, owner, name) => {
       const found = visible[`${owner}/${name}`.toLowerCase()];
-      if (found === undefined) throw new AgentXError("GITHUB_NOT_CONNECTED", `Rovara can't reach ${owner}/${name}`);
+      if (found === undefined) throw agentXError("GITHUB_NOT_CONNECTED", `Rovara can't reach ${owner}/${name}`);
       return { installationId: 55, githubRepositoryId: found.id };
     },
     repositoryIdentity: async (url) => {
@@ -698,7 +698,7 @@ function createWorld(options: { visible?: Record<string, { id: number; branch: s
     registerProject: async (actor, input, registerOptions) => {
       const parsed = ProjectDefinitionSchema.parse(input.definition);
       const taken = db.get(orgProjectCatalogKey(actor.orgId, parsed.name));
-      if (taken !== undefined) throw new AgentXError("PROJECT_NAME_TAKEN", "name taken");
+      if (taken !== undefined) throw agentXError("PROJECT_NAME_TAKEN", "name taken");
       await db.send(new TransactWriteCommand({ TransactItems: [
         { Put: { TableName: "state", Item: { ...projectRevisionKey(actor.orgId, parsed.name, 1), entityType: "PROJECT", registeredAt: "2026-10-30T10:00:00.000Z", definition: parsed } } },
         { Put: { TableName: "state", Item: { ...orgProjectCatalogKey(actor.orgId, parsed.name), entityType: "PROJECT_CATALOG", name: parsed.name } } },
@@ -753,7 +753,7 @@ describe("creating a project from a meta repo", () => {
     const body = createBody();
     const registerProject = w.deps.registerProject.bind(w.deps);
     // The winner registers; this attempt then finds the name taken, and answers what the winner made.
-    w.deps.registerProject = async (...args) => { await registerProject(...args); throw new AgentXError("PROJECT_NAME_TAKEN", "name taken"); };
+    w.deps.registerProject = async (...args) => { await registerProject(...args); throw agentXError("PROJECT_NAME_TAKEN", "name taken"); };
     const answer = await createProjectFromMeta(w.deps, OWNER, body);
     expect(answer.duplicate).toBe(true);
     expect(w.registrations).toHaveLength(1);
@@ -791,7 +791,7 @@ describe("creating a project from a meta repo", () => {
 
   it("is an owner's or admin's act on a cloud install, and refuses a body it cannot read", async () => {
     const w = createWorld();
-    const createFromMeta = (caller: MetaConfigCaller, input: never) => createProjectFromMeta(w.deps, caller, input);
+    const createFromMeta: NonNullable<Parameters<typeof createProjectFromMetaRoute>[0]["createFromMeta"]> = (caller, input) => createProjectFromMeta(w.deps, caller, input);
     expect((await createProjectFromMetaRoute({ cloud: true, createFromMeta }, OWNER, createBody())).status).toBe(201);
     // A repeat of the same request is answered 200 with the project it made.
     const body = createBody({ metaRepository: "acme/app", codeRepositories: undefined });

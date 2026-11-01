@@ -30,7 +30,7 @@ async function fails<W>(checks: ReadonlyArray<{ name: string; run: (world: W) =>
 class NonIdempotent extends FakeCodeHost {
   override reconcileChangeRequest(input: Parameters<FakeCodeHost["reconcileChangeRequest"]>[0], scope: Parameters<FakeCodeHost["reconcileChangeRequest"]>[1]) {
     // Always opens a new change request, even for the same branches.
-    const cr = this.model.reconcile({ ...input, sourceBranch: input.sourceBranch });
+    const cr = this.model.reconcile({ ...input, sourceBranch: input.sourceBranch } as Parameters<typeof this.model.reconcile>[0]);
     if (cr.reconciled) {
       this.model.changeRequests.push({ ...cr.cr, id: String(this.model.changeRequests.length + 1) });
       return Promise.resolve({ ref: this.ref(String(this.model.changeRequests.length)), reconciled: false });
@@ -88,7 +88,7 @@ class TrustsForgedDelivery extends FakeCodeHost {
 }
 class DeliversUnadvertisedCredentialKind extends FakeCodeHost {
   override issueGitCredential(...args: Parameters<FakeCodeHost["issueGitCredential"]>) {
-    return super.issueGitCredential(...args).then(() => ({ kind: "ssh-key" as const, privateKey: "k" }));
+    return super.issueGitCredential(...args).then((credential) => ({ kind: "ssh-key" as const, privateKey: "k", expiresAt: credential.expiresAt }));
   }
 }
 

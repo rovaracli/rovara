@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { isMeaningfulAnchor, locateCitation, CodeCitationSchema } from "../../../packages/contracts/src/index.js";
 import { AuditUnavailable, activateLesson, approveLesson, listQueued, listWaiting, rejectLesson, retireByPerson, rollbackLessonSet, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
-import { applyLoadReport, recordFeedback, recordTaskOutcome, settleHelpful, type CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
+import { applyLoadReport, recordFeedback, recordTaskOutcome, settleHelpful } from "../../../packages/broker/src/lessons/counters.js";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
 import { hasCommandOrUrl, touchesRiskyPath } from "../../../packages/broker/src/lessons/guards.js";
 import { loadLessonsForStage } from "../../../packages/broker/src/lessons/load.js";
@@ -15,7 +15,7 @@ import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import { isCorroborated, lessonValue } from "../../../packages/broker/src/lessons/value.js";
 import type { Audience, Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, Judge, KEY, MemoryVectors, PROJECT, Publisher, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings, allowAllAccess } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, Judge, KEY, MemoryVectors, PROJECT, Publisher, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings, allowAllAccess, type FeedbackDeps } from "./lesson-helpers.js";
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 
 const restricted: Audience = { kind: "restricted", acl: { source: "slack", scope: "slack:T/C9", principals: ["U-member"], capturedAt: "x", liveCheck: "none" } };
@@ -325,7 +325,7 @@ describe("I6: only lessons the worker actually loaded get counters", () => {
   function setup() {
     const store = new InMemoryLessonStore();
     const clock = new Clock();
-    const deps: CounterDeps = { access: allowAllAccess, store, judge: new Judge("unrelated"), settings: settings(), audit: new Audit(), alerts: new Alerts(), now: clock.now };
+    const deps: FeedbackDeps = { access: allowAllAccess, store, judge: new Judge("unrelated"), settings: settings(), audit: new Audit(), alerts: new Alerts(), now: clock.now };
     return { store, clock, deps };
   }
 
@@ -412,13 +412,13 @@ describe("P9: tenancy across the whole lane", () => {
     expect(await approveLesson(s.deps, { ...B, lessonId: "les_pend0001", approverId: "ann" })).toEqual({ ok: false, code: "not_found" });
     expect(await rejectLesson(s.deps, { ...B, lessonId: "les_pend0001", approverId: "ann", reason: "x" })).toEqual({ ok: false, code: "not_found" });
     expect(await promoteToRule({ ...s.deps, publisher: new Publisher() }, { ...B, lessonId: "les_live0001", approverId: "ann" })).toEqual({ ok: false, code: "not_found" });
-    const counters: CounterDeps = { access: allowAllAccess, store: s.store, judge: new Judge("caused"), settings: settings(), audit: new Audit(), now: s.clock.now };
+    const counters: FeedbackDeps = { access: allowAllAccess, store: s.store, judge: new Judge("caused"), settings: settings(), audit: new Audit(), now: s.clock.now };
     expect(await recordFeedback(counters, { viewer: { principals: [], groups: [] }, ...B, taskId: "task-1", lessonId: "les_live0001", userId: "ann", kind: "wrong_here" })).toEqual({ ok: false, code: "not_loaded" });
     expect(await recordTaskOutcome(counters, { ...B, taskId: "task-1", outcome: "merged", sendBacks: 0, corrections: [] })).toEqual({ harmful: [], queuedHelpful: [] });
     expect((await s.store.get(KEY, "les_live0001"))!.counters.harmful).toBe(0);
     expect(await listWaiting(s.store, B, inACL, allowAllAccess)).toEqual([]);
     expect((await buildWeeklyDigest(s.store, B, s.clock.now(), inACL, allowAllAccess)).top).toEqual([]);
-    const load = await loadLessonsForStage({ store: s.store, embedder, vectors: new MemoryVectors(), settings: settings(), audit: new Audit(), now: s.clock.now }, { workspaceId: "ws-B", project: PROJECT, taskId: "t", stage: "IMPLEMENT", round: 1, intent: "x", repos: ["api"], files: [], languages: [], taskAudience: { kind: "shared" } });
+    const load = await loadLessonsForStage({ access: allowAllAccess, store: s.store, embedder, vectors: new MemoryVectors(), settings: settings(), audit: new Audit(), now: s.clock.now }, { workspaceId: "ws-B", project: PROJECT, taskId: "t", stage: "IMPLEMENT", round: 1, intent: "x", repos: ["api"], files: [], languages: [], taskAudience: { kind: "shared" } });
     expect(load.context).toBeUndefined();
   });
 });

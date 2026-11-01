@@ -247,9 +247,9 @@ describe("when a read fails", () => {
   it("records an error's code when it has one", async () => {
     const w = world();
     await w.addSource();
-    w.state.search = async () => { throw agentXError("CONNECTION_UNAVAILABLE", "x"); };
+    w.state.search = async () => { throw agentXError("RUNTIME_UNAVAILABLE", "x"); };
     await runIntakePoll(w.deps);
-    expect((await w.record()).lastError).toBe("CONNECTION_UNAVAILABLE");
+    expect((await w.record()).lastError).toBe("RUNTIME_UNAVAILABLE");
   });
 
   it("counts a read that takes too long as a failure", async () => {

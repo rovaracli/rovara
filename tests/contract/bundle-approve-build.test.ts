@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- expect.stringMatching and parsed JSON are untyped */
 // Enterprise foundations, N3b (owner decision 2026-10-31, option A): an Enterprise install's templates are built AT APPROVAL, from the release's own pinned CDK app and the install's
 // recorded settings. Each test names the guard it protects; the lane report lists the mutation that makes each one fail.
+import { realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,8 +101,11 @@ describe("building the install's templates at approval", () => {
       for (const [key, value] of Object.entries(before)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
     const foundation = JSON.parse(built.files.find((f) => f.file === "built/templates/foundation.template.json")!.body.toString("utf8"));
-    // (macOS adds __CF_USER_TEXT_ENCODING to every process it starts.)
-    expect((foundation.Metadata.Inputs.environment as string[]).filter((name) => name !== "__CF_USER_TEXT_ENCODING")).toEqual(["HOME", "LANG", "LC_ALL", "NODE_ENV", "TMPDIR", "TZ"]);
+    // (macOS adds __CF_USER_TEXT_ENCODING to every process it starts. bubblewrap sets PWD itself when it is given --chdir, to that directory, which is the kit's own work directory: it is
+    // allowed only when it names the directory the kit runs in, so it is never the caller's.)
+    const inputs = foundation.Metadata.Inputs as { environment: string[]; pwd: string | null; cwd: string };
+    const ownPwd = inputs.pwd !== null && realpathSync(inputs.pwd) === realpathSync(inputs.cwd);
+    expect(inputs.environment.filter((name) => name !== "__CF_USER_TEXT_ENCODING" && !(name === "PWD" && ownPwd))).toEqual(["HOME", "LANG", "LC_ALL", "NODE_ENV", "TMPDIR", "TZ"]);
     expect(foundation.Metadata.Inputs.context.rovaraEnterpriseEgressCidrs).toBe("10.20.0.0/16");
     expect(foundation.Metadata.Inputs.context.rovaraOperatorAccess).toBeUndefined();
     expect(JSON.stringify(built.files.map((f) => f.body.toString("latin1")))).not.toContain("proxy.invalid");

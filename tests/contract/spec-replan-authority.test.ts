@@ -9,7 +9,7 @@ import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { editedSpecTask } from "../support/spec-replan-world.js";
 
-const stand: { who?: "commenter" | "co-owner" } = {};
+const stand: { who?: "commenter" | "co-owner" | undefined } = {};
 vi.mock("../../packages/broker/src/aws/developer-tasks/access.js", async (original) => {
   const real = await original<typeof RealAccess>();
   return {
@@ -31,7 +31,7 @@ const OMAR_CALLER: DeveloperCaller = { developerId: OMAR.developerId, sessionId:
 
 async function replanAs(who: "commenter" | "co-owner") {
   const t = await editedSpecTask();
-  const input = t.brokerInput as { documentClient: never; tableName: string; developer: never };
+  const input = t.brokerInput as unknown as { documentClient: never; tableName: string; developer: never };
   const deps = developerTaskRouteDependencies({ documentClient: input.documentClient, tableName: input.tableName, developer: input.developer, now: Date.now, tasks: t.actions, ...({ readMetaFile: async (_t: unknown, _u: string, path: string) => t.fileText(path) } as object) }, OMAR_CALLER);
   stand.who = who;
   const { specOwnerChoice } = await import("../../packages/broker/src/aws/developer-tasks/spec-wiring.js");

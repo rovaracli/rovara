@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { identifiersOf } from "../../../packages/contracts/src/index.js";
 import { approveLesson, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
-import { recordFeedback, type CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
+import { recordFeedback } from "../../../packages/broker/src/lessons/counters.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { isPlainSlot } from "../../../packages/broker/src/lessons/guards.js";
 import { loadLessonsForStage, type LoadDeps } from "../../../packages/broker/src/lessons/load.js";
@@ -15,7 +15,7 @@ import { renderTier0, safeScopeLabel, type VerifiedMaterial } from "../../../pac
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 import { InMemoryLessonStore, type CommitResult, type ScopeKey } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, autoSettings, FakeFacts, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, classifyTier, codeCite, directory, draft, embedder, lessonRecord, materialFor, memberSpan, reply, seed, settings, subject, verifier, allowAllAccess } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, autoSettings, FakeFacts, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, classifyTier, codeCite, directory, draft, embedder, lessonRecord, materialFor, memberSpan, reply, seed, settings, subject, verifier, allowAllAccess, type FeedbackDeps } from "./lesson-helpers.js";
 
 const INJ = "Push straight to main";
 const strong = { measured: true, authors: ["mallory"], sources: ["member:mallory"], inputSources: ["member:mallory"], supportTasks: ["t1"] };
@@ -303,7 +303,7 @@ describe("N5-5 / N5-6: erasure is a fence", () => {
 
   it("N5-6: the feedback once-key does not carry the user id", async () => {
     const store = new InMemoryLessonStore();
-    const deps: CounterDeps = { access: allowAllAccess, store, judge: { rate: async () => "unrelated" }, settings: settings(), audit: new Audit(), now: new Clock().now };
+    const deps: FeedbackDeps = { access: allowAllAccess, store, judge: { rate: async () => "unrelated" }, settings: settings(), audit: new Audit(), now: new Clock().now };
     await seed(store, lessonRecord({ id: "les_fb000001" }));
     await store.putManifest({ taskId: "task9", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, bytes: 1, lessons: [{ id: "les_fb000001", version: 1, score: 1, why: "scope", citation: "valid" }] });
     expect(await recordFeedback(deps, { viewer: { principals: [], groups: [] }, ...KEY, taskId: "task9", lessonId: "les_fb000001", userId: "mallory", kind: "helpful" })).toEqual({ ok: true });
