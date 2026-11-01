@@ -10,6 +10,8 @@ import { refreshSpecState, specStateFromFacts, type SpecPullRequestFacts } from 
 import { dynamoSpecStore } from "../../packages/broker/src/spec/store.js";
 import { newSpecState, publishSucceeded, specPullRequestKey, startWriting, writeSucceeded, type SpecState } from "../../packages/broker/src/spec/state.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { TEST_ORG } from "../support/orgs.js";
+import { fullStatus, specProjectItem } from "../support/spec-project.js";
 
 const TASK = randomUUID();
 const PLAN = "a".repeat(64);
@@ -140,8 +142,9 @@ describe("a GitHub delivery about a pull request", () => {
     const state = published({ linkStyle: "spec_first" });
     await dynamoSpecStore({ documentClient: db, tableName: "t" }).save(state, undefined);
     await db.send(new PutCommand({ TableName: "t", Item: { ...specPullRequestKey("acme/service-meta", 12), entityType: "SPEC_PULL_REQUEST", taskId: TASK } }));
-    await db.send(new PutCommand({ TableName: "t", Item: { pk: `DEVTASK#${TASK}`, sk: "META", taskId: TASK, workspaceId, project: "demo", title: "T", workflow: undefined } }));
-    const getPullRequestStatus = vi.fn(async () => { if (status === "throws") throw new Error("502"); return { state: status!.state, headSha: status!.headSha, reviews: status!.reviews.map((review) => ({ state: review.state, commitId: review.commitId, login: review.login ?? "reviewer", githubUserId: review.userId ?? "u1", userType: "User" })) } as never; });
+    await db.send(new PutCommand({ TableName: "t", Item: { pk: `DEVTASK#${TASK}`, sk: "META", taskId: TASK, workspaceId, project: "demo", startingRevision: 1, orgId: TEST_ORG, title: "T", workflow: undefined } }));
+    db.set(specProjectItem(META));
+    const getPullRequestStatus = vi.fn(async () => { if (status === "throws") throw new Error("502"); return fullStatus({ state: status!.state, headSha: status!.headSha, reviews: status!.reviews.map((review) => ({ state: review.state, commitId: review.commitId, login: review.login ?? "reviewer", githubUserId: review.userId ?? "u1", userType: "User" })) }) as never; });
     const getRepositoryPermission = vi.fn(async () => "write" as const);
     const dependencies = { documentClient: db, tableName: "t", githubPullRequests: { getPullRequestStatus, getRepositoryPermission } } as never;
     return { db, dependencies, getPullRequestStatus, store: dynamoSpecStore({ documentClient: db, tableName: "t" }) };

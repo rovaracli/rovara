@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { CandidateManifestSchema, canonicalJson } from "@agentx/contracts";
+import { CandidateManifestSchema, canonicalJson, repositoryHostOf } from "@agentx/contracts";
 import { z } from "zod";
 import type { DeveloperCaller } from "../developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
@@ -36,6 +36,8 @@ export async function e2ePublicationContext(deps: DeveloperTaskRouteDependencies
   if (candidateBase !== subject.baseCommitSha) return unknown("candidate_commit_tree_or_base_mismatch");
   const registeredRepository = project.definition.repositories.find((item) => item.name === candidateRepository.repositoryId);
   if (registeredRepository === undefined || deps.registeredRepositoryIdentity === undefined) return unknown("registered_repository_identity_unavailable");
+  // P5d: the repository's identity is GitHub's (a numeric repository id), asked only of a GitHub repository. Another host, or a kind this install does not know, is UNKNOWN, never asked of GitHub.
+  if (repositoryHostOf(registeredRepository).kind !== "github") return unknown("registered_repository_host_unsupported");
   const identity = await deps.registeredRepositoryIdentity(registeredRepository.url, deps.orgId);
   if (identity === undefined || identity.repositoryId !== subject.repositoryId) return unknown("registered_repository_id_mismatch");
   const url = new URL(registeredRepository.url);

@@ -37,6 +37,8 @@ import { workflowRunEndedReason } from "../outbox-failure.js";
 import { autofixBlockRows } from "../workflow-autofix-dispatch-exhaust.js";
 import { setupDraftEndItems, setupDraftRepositoriesOf } from "../../rovara-code/setup-draft.js";
 import { githubRepositoryFullName, pullRequestKey, pullRequestMatchesRepository } from "./admin-and-helpers.js";
+import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
+import { canReadBranchAndTree, canReadFeedback, canReadTree, changeRequestRef, hostOfRepository, pullRequestFactsOf, repositoryRefOf, requireGithubHost } from "./repository-hosts.js";
 import { isSpecOperation, specOperationEndItems } from "../../spec/end-items.js";
 import { specEndEnvironmentOf } from "./spec-wiring.js";
 import { MAX_WORKFLOW_CANDIDATE_EXPORT_BYTES, type AwsBrokerDependencies, type PullRequestRecord } from "./definitions.js";
@@ -183,9 +185,11 @@ async function completedPullRequestUpdateItems(
   }
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === maintenance.repository);
-  const gateway = dependencies.githubPullRequests;
-  const getFeedback = gateway.getPullRequestFeedback;
-  if (repository === undefined || getFeedback === undefined) {
+  // P5d: the pull request is read from the code host the repository's record names (an unknown kind is refused with the router's fixed sentence). Only the commit-parent read, which the port does not
+  // carry yet, stays GitHub's; another host then cannot show a fix's ancestry, and the fix is not taken as landed.
+  const host = repository === undefined ? undefined : hostOfRepository(dependencies, repository);
+  const github = host?.kind === GITHUB_HOST_KIND ? dependencies.githubPullRequests : undefined;
+  if (repository === undefined || host === undefined || !canReadFeedback(dependencies, host)) {
     if (pushedCommit === undefined) return failed(cause);
     throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the updated pull request against the reviewed fix");
   }
@@ -193,9 +197,9 @@ async function completedPullRequestUpdateItems(
   // GitHub, not the worker, says what the pull request now holds. A failed push may still have landed (a CodeBuild gate
   // after the push, a lost result): then GitHub's head is AgentX's fast-forward of the recorded head, on the reviewed tree.
   const scope = await githubScopeOf(dependencies, task);
-  let current: Awaited<ReturnType<typeof getFeedback>>;
+  let current: ReturnType<typeof pullRequestFactsOf>;
   try {
-    current = await getFeedback.call(gateway, repository.url, maintenance.pullRequestNumber, scope);
+    current = pullRequestFactsOf(await host.feedback(changeRequestRef(repository.url, maintenance.pullRequestNumber), scope));
   } catch (error) {
     if (pushedCommit === undefined) return failed(cause);
     throw error;
@@ -206,11 +210,11 @@ async function completedPullRequestUpdateItems(
   // push: while the open pull request still shows the head before the push, its branch (read from Git itself) says
   // what it holds.
   if (head === maintenance.expectedHeadCommit && current.pullRequest.state === "open"
-    && gateway.getBranchHead !== undefined && gateway.getCommitTree !== undefined) {
+    && canReadBranchAndTree(dependencies, host)) {
     try {
-      const branchHead = await gateway.getBranchHead(repository.url, maintenance.headBranch, scope);
+      const branchHead = await host.branchHead(repositoryRefOf(repository.url), maintenance.headBranch, scope);
       if (branchHead !== head && /^[a-f0-9]{40}$/.test(branchHead)) {
-        headTree = await gateway.getCommitTree(repository.url, branchHead, scope);
+        headTree = await host.tree(repositoryRefOf(repository.url), branchHead, scope);
         head = branchHead;
       }
     } catch {
@@ -225,7 +229,7 @@ async function completedPullRequestUpdateItems(
   const mergeBase = binding.mergeBaseCommit;
   const parentsAreOurs = async (): Promise<boolean> => {
     try {
-      return gateway.getCommitParents !== undefined && JSON.stringify(await gateway.getCommitParents(repository.url, head, scope))
+      return github?.getCommitParents !== undefined && JSON.stringify(await github.getCommitParents(repository.url, head, scope))
         === JSON.stringify(mergeBase === undefined ? [maintenance.expectedHeadCommit] : [maintenance.expectedHeadCommit, mergeBase]);
     } catch {
       return false;
@@ -242,6 +246,8 @@ async function completedPullRequestUpdateItems(
   const next = mergeBase !== undefined && current.pullRequest.state !== "merged"
     ? recordWorkflowBranchSync(updated, { repositoryId: pullRequest.repositoryId, number: pullRequest.number, headSha: head, headTreeSha: binding.treeSha, baseCommitSha: mergeBase, now })
     : updated;
+  // The linked-pull-request rows are keyed by GitHub's full name (left for P6): a repository on another host stops here with a clear sentence.
+  requireGithubHost(host);
   const repositoryFullName = githubRepositoryFullName(repository.url);
   // A pull request this save moves to MERGED counts in the project's month of merges, in the same transaction as the move (the task update is conditioned on the revision read, so a replay
   // counts nothing), as it does when a webhook or the sweep finds the merge. A task whose org is not known is not counted.
@@ -336,24 +342,24 @@ export async function completedBranchSyncItems(
   } });
   const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
   const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === maintenance.repository);
-  const gateway = dependencies.githubPullRequests;
+  const host = repository === undefined ? undefined : hostOfRepository(dependencies, repository);
+  const githubProvider = host?.kind === GITHUB_HOST_KIND ? dependencies.githubPullRequests : undefined;
   const parsed = terminalStatus === "SUCCEEDED" ? PullRequestLifecycleResultSchema.safeParse(result) : undefined;
   const reported = parsed?.success === true && parsed.data.repository === maintenance.repository ? parsed.data : undefined;
   // What GitHub shows now. A merge the worker says it pushed is never judged without it (the result is then recorded by the next attempt); for a merge that failed, an unreadable GitHub shows nothing.
   let github: BranchSyncGithub | undefined;
   try {
-    const getFeedback = gateway.getPullRequestFeedback;
-    if (repository === undefined || getFeedback === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the merged pull request against the merge");
+    if (repository === undefined || host === undefined || !canReadFeedback(dependencies, host)) throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the merged pull request against the merge");
     const scope = await githubScopeOf(dependencies, task);
-    const current = await getFeedback.call(gateway, repository.url, maintenance.pullRequestNumber, scope);
+    const current = pullRequestFactsOf(await host.feedback(changeRequestRef(repository.url, maintenance.pullRequestNumber), scope));
     let head = current.pullRequest.headCommit;
     let headTree = current.pullRequest.headTreeSha;
     // GitHub moves a pull request's head a moment after a push to its branch, and the push's result comes right after it: while the open pull request still shows the head before the push, its branch says what it holds.
-    if (head === binding.expectedHeadCommit && current.pullRequest.state === "open" && gateway.getBranchHead !== undefined && gateway.getCommitTree !== undefined) {
+    if (head === binding.expectedHeadCommit && current.pullRequest.state === "open" && canReadBranchAndTree(dependencies, host)) {
       try {
-        const branchHead = await gateway.getBranchHead(repository.url, maintenance.headBranch, scope);
+        const branchHead = await host.branchHead(repositoryRefOf(repository.url), maintenance.headBranch, scope);
         if (branchHead !== head && /^[a-f0-9]{40}$/.test(branchHead)) {
-          headTree = await gateway.getCommitTree(repository.url, branchHead, scope);
+          headTree = await host.tree(repositoryRefOf(repository.url), branchHead, scope);
           head = branchHead;
         }
       } catch {
@@ -361,7 +367,7 @@ export async function completedBranchSyncItems(
       }
     }
     const sameRequest = current.pullRequest.number === pullRequest.number && current.pullRequest.url === pullRequest.url;
-    const parents = head !== binding.expectedHeadCommit && gateway.getCommitParents !== undefined ? await gateway.getCommitParents(repository.url, head, scope).catch(() => undefined) : undefined;
+    const parents = head !== binding.expectedHeadCommit && githubProvider?.getCommitParents !== undefined ? await githubProvider.getCommitParents(repository.url, head, scope).catch(() => undefined) : undefined;
     if (sameRequest) github = { state: current.pullRequest.state, headBranch: current.pullRequest.headBranch, headCommit: head, headTreeSha: headTree, parents };
   } catch (error) {
     if (options.lost === true || (reported !== undefined && reported.commit !== binding.expectedHeadCommit)) throw error;
@@ -388,6 +394,8 @@ export async function completedBranchSyncItems(
     ];
   }
   // A clean merge, on GitHub: the pull request's record learns its head (the worker's callback usually did already), the link follows the new candidate, and the new head is indexed for check events.
+  // The linked-pull-request rows are keyed by GitHub's full name (left for P6): a repository on another host stops here with a clear sentence.
+  requireGithubHost(host!);
   const repositoryFullName = githubRepositoryFullName(repository!.url);
   const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber));
   return [
@@ -493,6 +501,9 @@ export async function completedWorkflowItems(
     const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
     const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === published.data.repository);
     if (repository === undefined) throw agentXError("CONFIG_INVALID", "published pull request repository is not part of the task's registered project revision");
+    // P5d: the code host the repository's record names (an unknown kind is refused). The linked-pull-request rows are keyed by GitHub's full name (left for P6), so another host stops here.
+    const host = hostOfRepository(dependencies, repository);
+    requireGithubHost(host);
     const repositoryFullName = githubRepositoryFullName(repository.url);
     if (!pullRequestMatchesRepository(published.data.url, repositoryFullName, published.data.number)) {
       throw agentXError("CONFIG_INVALID", "published pull request URL does not match the task's registered repository");
@@ -502,11 +513,10 @@ export async function completedWorkflowItems(
       throw agentXError("STALE_FENCE", "published pull request head does not match the broker-verified publication");
     }
     const candidateRepository = task.workflow.candidate.repositories.find(entry => entry.repositoryId === published.data.repository);
-    const getFeedback = dependencies.githubPullRequests.getPullRequestFeedback;
-    if (candidateRepository === undefined || getFeedback === undefined) {
+    if (candidateRepository === undefined || !canReadFeedback(dependencies, host)) {
       throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the published pull request against the checked candidate");
     }
-    const publishedFeedback = await getFeedback.call(dependencies.githubPullRequests, repository.url, published.data.number, await githubScopeOf(dependencies, task));
+    const publishedFeedback = pullRequestFactsOf(await host.feedback(changeRequestRef(repository.url, published.data.number), await githubScopeOf(dependencies, task)));
     if (publishedFeedback.pullRequest.number !== published.data.number
       || publishedFeedback.pullRequest.url !== published.data.url
       || publishedFeedback.pullRequest.state !== "open"
@@ -833,13 +843,17 @@ export async function completedWorkflowItems(
           verificationFailure = WORKFLOW_BLOCK_REASONS.startChanged;
           throw new Error("candidate base commit differs from the task's base");
         }
-        if (pinnedBase === undefined && dependencies.githubPullRequests.getCommitTree !== undefined) {
+        // P5d: each repository's starting commit is confirmed with the code host its record names (an unknown kind is refused: the confirmation fails).
+        if (pinnedBase === undefined) {
           // Before pinning, confirm GitHub has each starting commit, so the base is real history and not a local commit.
           try {
             for (const repository of candidate.repositories) {
-              const url = project.definition.repositories.find((entry) => entry.name === repository.repositoryId)?.url;
-              if (url === undefined) throw new Error("candidate repository is not registered");
-              await dependencies.githubPullRequests.getCommitTree(url, repository.baseCommitSha as string, await githubScopeOf(dependencies, task));
+              const definition = project.definition.repositories.find((entry) => entry.name === repository.repositoryId);
+              if (definition === undefined) throw new Error("candidate repository is not registered");
+              const host = hostOfRepository(dependencies, definition);
+              // A GitHub provider built without the read (a harness) cannot confirm it: the worker's word stands, as it did before the port.
+              if (!canReadTree(dependencies, host)) continue;
+              await host.tree(repositoryRefOf(definition.url), repository.baseCommitSha as string, await githubScopeOf(dependencies, task));
             }
           } catch (error) {
             verificationFailure = WORKFLOW_BLOCK_REASONS.startUnconfirmed;

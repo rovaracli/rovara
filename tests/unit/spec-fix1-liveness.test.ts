@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SpecTargetSchema, type SpecFile, type SpecTarget } from "@agentx/contracts";
 import { readSpecPullRequestOf } from "../../packages/broker/src/aws/broker/spec-wiring.js";
+import { fullStatus, specTask, withSpecProject } from "../support/spec-project.js";
 import { specKindOf } from "../../packages/broker/src/aws/developer-tasks/spec-wiring.js";
 import { createSpecHooks, specStateItem, type PlanApproval, type SpecStore, type SpecTaskRef, type SpecWorld } from "../../packages/broker/src/spec/hooks.js";
 import { withSpecLink } from "../../packages/broker/src/spec/link.js";
@@ -52,11 +53,11 @@ describe("I1: who may approve a spec_first spec", () => {
     expect(specGate(next).action).toBe("proceed");
   });
   describe("the broker's eligibility check", () => {
-    const status = (reviews: Array<{ login: string; userType: string; state?: string }>) => ({ state: "open", headSha: HEAD, reviews: reviews.map((entry, index) => ({ state: entry.state ?? "APPROVED", commitId: HEAD, login: entry.login, githubUserId: String(index), userType: entry.userType })) });
+    const status = (reviews: Array<{ login: string; userType: string; state?: string }>) => fullStatus({ headSha: HEAD, reviews: reviews.map((entry, index) => ({ state: entry.state ?? "APPROVED", commitId: HEAD, login: entry.login, githubUserId: String(index), userType: entry.userType })) });
     const read = async (reviews: Array<{ login: string; userType: string; state?: string }>, permission: ((login: string) => Promise<string>) | undefined) => {
       const getRepositoryPermission = permission === undefined ? undefined : vi.fn(async (_url: string, login: string) => permission(login));
       const dependencies = { githubPullRequests: { getPullRequestStatus: vi.fn(async () => status(reviews)), ...(getRepositoryPermission === undefined ? {} : { getRepositoryPermission }) } } as never;
-      return { facts: await readSpecPullRequestOf(dependencies)({ orgId: "o" } as never, META, 12), getRepositoryPermission };
+      return { facts: await readSpecPullRequestOf(withSpecProject(dependencies, META))(specTask as never, META, 12), getRepositoryPermission };
     };
     it("marks a person with write or admin access eligible, and a reader, a bot, an app and a person nobody can look up not", async () => {
       const levels: Record<string, string> = { writer: "write", admin: "admin", reader: "read", nobody: "none" };

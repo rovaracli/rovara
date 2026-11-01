@@ -13,6 +13,7 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { seedReview } from "../support/rovara-code-feedback.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { call } from "../support/slack-broker.js";
+import { pullRequestDetails } from "../support/p5-world.js";
 
 const NOW = "2026-10-26T12:00:00.000Z";
 const PROXY_URL = "http://internal-proxy.example.test:4000";
@@ -27,7 +28,7 @@ type Meta = Record<string, unknown> & { taskId: string; workspaceId: string; own
 async function world() {
   const access = fakeModelAccess();
   const heads = { current: "c".repeat(40) };
-  const getPullRequest = vi.fn(async () => ({ headCommit: heads.current }));
+  const getPullRequest = vi.fn(async () => pullRequestDetails(42, { headCommit: heads.current }));
   const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true,
     githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest, updatePullRequest: vi.fn(), verifyWebhookRepository: vi.fn(async () => true) } } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);

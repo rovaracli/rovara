@@ -15,6 +15,7 @@ import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { call } from "../support/slack-broker.js";
+import { pullRequestDetails } from "../support/p5-world.js";
 
 const NOW = "2026-10-25T12:00:00.000Z";
 const PROXY_URL = "http://internal-proxy.example.test:4000";
@@ -28,7 +29,7 @@ async function world() {
   const access = fakeModelAccess();
   // The head GitHub shows for the task's pull request: what the round was made for, unless a test says a person pushed.
   const heads = { current: PR.headSha };
-  const getPullRequest = vi.fn(async () => ({ headCommit: heads.current }));
+  const getPullRequest = vi.fn(async () => pullRequestDetails(42, { headCommit: heads.current }));
   const h = await createDeveloperTaskBroker({ brokerExtra: { agents: {}, modelAccess: { access, proxyUrl: PROXY_URL }, cloud: true,
     githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest, updatePullRequest: vi.fn(), verifyWebhookRepository: vi.fn(async () => true) } } });
   access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
@@ -133,7 +134,7 @@ describe("a person's push before the round's run starts", () => {
     t.getPullRequest.mockResolvedValueOnce({} as never);
     await t.sweep();
     dueAgain();
-    t.getPullRequest.mockResolvedValueOnce({ headCommit: "not a commit" });
+    t.getPullRequest.mockResolvedValueOnce(pullRequestDetails(42, { headCommit: "not a commit" }));
     await t.sweep();
     expect(t.byMode(workspaceId, "IMPLEMENT")).toEqual([]);
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "ci" });

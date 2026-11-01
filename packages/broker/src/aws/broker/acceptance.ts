@@ -24,6 +24,7 @@ import { gatedTaskWorkspace, workspaceTaskOwner } from "./model-access.js";
 import { boundedTurnAdmission } from "../../model-selection/turn-admission.js";
 import { adoptLegacyPullRequest, publicationProject, requireAdministrator, requireOwnedWorkspace, requireProjectAuthority, requireWorkspace } from "./records.js";
 import { creatorCheckOf, githubScopeOf } from "./scope-helpers.js";
+import { changeRequestRef, hostOfRepository, pullRequestDetailsOf } from "./repository-hosts.js";
 import { taskOperationParts } from "./task-operations.js";
 import { latestChecksItem } from "./terminal-result.js";
 import { attributedBody, requesterOf } from "./thread-workspaces.js";
@@ -467,7 +468,10 @@ export async function acceptPullRequestLifecycle(
     throw agentXError("STALE_FENCE", "the pull request's recorded head is not the one the task recorded");
   }
   const scope = await githubScopeOf(dependencies, workspace);
-  const remote = await dependencies.githubPullRequests.getPullRequest(repository.url, request.pullRequestNumber, scope);
+  // P5d: the pull request is read and changed through the code host the repository's record names (an unknown kind is refused with the router's fixed sentence).
+  const host = hostOfRepository(dependencies, repository);
+  const ref = changeRequestRef(repository.url, request.pullRequestNumber);
+  const remote = pullRequestDetailsOf(await host.getChangeRequest(ref, scope));
   const record = existingRecord ?? await adoptLegacyPullRequest(
     dependencies,
     workspaceId,
@@ -495,7 +499,8 @@ export async function acceptPullRequestLifecycle(
     if (request.action === "reopen" && remote.state !== "closed") {
       throw agentXError("CONFIG_INVALID", "only a closed, unmerged pull request can be reopened");
     }
-    const updated = await dependencies.githubPullRequests.updatePullRequest(record.repositoryUrl, record.number, {
+    // The port's update returns nothing, so the pull request is read again: the stored record and the answer carry what the host holds after the change.
+    await host.updateChangeRequest(changeRequestRef(record.repositoryUrl, record.number), {
       ...(request.title === undefined ? {} : { title: request.title }),
       ...(request.body === undefined
         ? {}
@@ -503,6 +508,7 @@ export async function acceptPullRequestLifecycle(
       ...(request.action === "close" ? { state: "closed" as const } : {}),
       ...(request.action === "reopen" ? { state: "open" as const } : {}),
     }, scope);
+    const updated = pullRequestDetailsOf(await host.getChangeRequest(changeRequestRef(record.repositoryUrl, record.number), scope));
     const result: PullRequestLifecycleResult = PullRequestLifecycleResultSchema.parse({
       action: request.action,
       repository: record.repository,

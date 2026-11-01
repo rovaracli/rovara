@@ -33,6 +33,8 @@ import { companyAutonomyLimit, ownerCallerOf } from "./feedback-and-codebuild.js
 import { readObjectText } from "./plan-answers.js";
 import { requireWorkspace } from "./records.js";
 import { ec2Sessions } from "./runtime-clients.js";
+import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
+import { changeRequestRef, hostNameOf, hostOfTaskRepository, repositoryRefOf } from "./repository-hosts.js";
 import { githubScopeOf, webhookRepositoryUrl } from "./scope-helpers.js";
 import { workflowApplicationRouteDependencies } from "./slack-workflow-events.js";
 import { blockWorkflowE2EReadiness, closeUncheckedPlanCheck, companyChoseCriticModel, ensureWorkflowE2EComputeReadiness, recordWorkflowDispatchFailure, returnWorkflowToCorrectE2EPlan, settleLostBranchSync, type AccessPausedWorkflowDispatch } from "./sweeps-and-readiness.js";
@@ -256,8 +258,10 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       currentPullRequestHead: async (target, pullRequest) => {
         const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
         if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
-        const head = (await dependencies.githubPullRequests.getPullRequest(url, pullRequest.number, await githubScopeOf(dependencies, target)) as { headCommit?: unknown } | undefined)?.headCommit;
-        if (typeof head !== "string" || !/^[a-f0-9]{40}$/u.test(head)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub did not say what the pull request's head is");
+        // P5d: the code host the repository's record names (an unknown kind is refused).
+        const host = await hostOfTaskRepository(dependencies, target, { name: pullRequest.repositoryId, url });
+        const head = (await host.getChangeRequest(changeRequestRef(url, pullRequest.number), await githubScopeOf(dependencies, target)) as { headRevision?: unknown } | undefined)?.headRevision;
+        if (typeof head !== "string" || !/^[a-f0-9]{40}$/u.test(head)) throw agentXError("RUNTIME_UNAVAILABLE", `${hostNameOf(host)} did not say what the pull request's head is`);
         return head;
       },
       // Plan 6 Task 17: the commit the pull request's base branch is at now, which is the commit a merge of the base takes.
@@ -265,10 +269,10 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
         const url = await webhookRepositoryUrl(dependencies)(target.project, target.startingRevision, pullRequest.repositoryId, target.orgId);
         if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
         const scope = await githubScopeOf(dependencies, target);
-        const remote = await dependencies.githubPullRequests.getPullRequest(url, pullRequest.number, scope);
-        const getBranchHead = dependencies.githubPullRequests.getBranchHead;
-        if (getBranchHead === undefined || typeof remote.baseBranch !== "string") throw agentXError("RUNTIME_UNAVAILABLE", "GitHub cannot say what the base branch is at");
-        return getBranchHead.call(dependencies.githubPullRequests, url, remote.baseBranch, scope);
+        const host = await hostOfTaskRepository(dependencies, target, { name: pullRequest.repositoryId, url });
+        const remote = await host.getChangeRequest(changeRequestRef(url, pullRequest.number), scope);
+        if ((host.kind === GITHUB_HOST_KIND && dependencies.githubPullRequests.getBranchHead === undefined) || typeof remote.targetBranch !== "string") throw agentXError("RUNTIME_UNAVAILABLE", `${hostNameOf(host)} cannot say what the base branch is at`);
+        return host.branchHead(repositoryRefOf(url), remote.targetBranch, scope);
       },
     }, caller, undefined, null);
     const expected = { workflowRevision: item.workflowRevision, candidateDigest: item.candidateDigest };

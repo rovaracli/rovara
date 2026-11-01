@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SpecDraftSchema, SpecTargetSchema, inertSpecText, specLine, specMarkdown, type SpecFile, type SpecTarget } from "@agentx/contracts";
 import { agentXError } from "@agentx/contracts";
 import { readSpecPullRequestOf } from "../../packages/broker/src/aws/broker/spec-wiring.js";
+import { fullStatus, specTask, withSpecProject } from "../support/spec-project.js";
 import { createSpecHooks, type SpecStore, type SpecWorld } from "../../packages/broker/src/spec/hooks.js";
 import { classifyPublishError } from "../../packages/broker/src/spec/publish.js";
 import { approvingReviewer } from "../../packages/broker/src/spec/refresh.js";
@@ -127,8 +128,8 @@ describe("N2: a failed look-up never lets an objection be ignored", () => {
   it("reports the list incomplete when the objector's permission look-up errors, so the approval does not count", async () => {
     const reviews = [{ state: "APPROVED", login: "alice" }, { state: "CHANGES_REQUESTED", login: "bob" }].map((entry) => ({ ...entry, commitId: HEAD, githubUserId: `u-${entry.login}`, userType: "User" }));
     const getRepositoryPermission = vi.fn(async (_url: string, login: string) => { if (login === "bob") throw new Error("502"); return "write"; });
-    const dependencies = { githubPullRequests: { getPullRequestStatus: async () => ({ state: "open", headSha: HEAD, reviews }), getRepositoryPermission } } as never;
-    const facts = (await readSpecPullRequestOf(dependencies)({ orgId: "o" } as never, META, 12))!;
+    const dependencies = { githubPullRequests: { getPullRequestStatus: async () => fullStatus({ headSha: HEAD, reviews }), getRepositoryPermission } } as never;
+    const facts = (await readSpecPullRequestOf(withSpecProject(dependencies, META))(specTask as never, META, 12))!;
     expect(facts.reviewsIncomplete).toBe(true);
     expect(approvingReviewer(facts.reviews, HEAD)).toBeDefined();
     const { specStateFromFacts } = await import("../../packages/broker/src/spec/refresh.js");
@@ -137,8 +138,8 @@ describe("N2: a failed look-up never lets an objection be ignored", () => {
   });
   it("does not report incomplete for a clean answer of none", async () => {
     const reviews = [{ state: "APPROVED", login: "alice" }, { state: "CHANGES_REQUESTED", login: "bob" }].map((entry) => ({ ...entry, commitId: HEAD, githubUserId: `u-${entry.login}`, userType: "User" }));
-    const dependencies = { githubPullRequests: { getPullRequestStatus: async () => ({ state: "open", headSha: HEAD, reviews }), getRepositoryPermission: async (_u: string, login: string) => (login === "bob" ? "none" : "write") } } as never;
-    expect((await readSpecPullRequestOf(dependencies)({ orgId: "o" } as never, META, 12))!.reviewsIncomplete).toBeUndefined();
+    const dependencies = { githubPullRequests: { getPullRequestStatus: async () => fullStatus({ headSha: HEAD, reviews }), getRepositoryPermission: async (_u: string, login: string) => (login === "bob" ? "none" : "write") } } as never;
+    expect((await readSpecPullRequestOf(withSpecProject(dependencies, META))(specTask as never, META, 12))!.reviewsIncomplete).toBeUndefined();
   });
 });
 

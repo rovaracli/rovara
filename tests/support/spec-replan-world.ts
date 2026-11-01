@@ -37,6 +37,11 @@ export async function editedSpecTask(options: { fileReads?: "fail" | "edited"; e
     brokerExtra: { githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getFileAtCommit } } });
   const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Add password reset", client: "claude-code" });
   const taskId = (started.body.task as { taskId: string }).taskId;
+  // The spec pull request lives in the project's meta repository; the code host of an address is found from the project's own repositories (task P5d), so it must be one of them.
+  for (const project of h.db.find((item) => item.entityType === "PROJECT")) {
+    const definition = project.definition as { repositories: Array<Record<string, unknown>> };
+    h.db.set({ ...project, definition: { ...definition, repositories: [...definition.repositories, { name: "meta", url: META, path: "repo/meta", defaultBranch: "main", credentialRef: "github-app", role: "meta" }] } });
+  }
   const record = () => h.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: Record<string, unknown> & { revision: number; decisions: Array<{ requestId: string }> } };
   // The workspace is free (setup done, nothing running), and the task waits at its review with an approved plan.
   const workspace = h.db.get(`WORKSPACE#${record().workspaceId}`, "META") as Record<string, unknown>;

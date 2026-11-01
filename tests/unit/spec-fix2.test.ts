@@ -4,6 +4,7 @@ import { micromark } from "micromark";
 import { describe, expect, it, vi } from "vitest";
 import { agentXError, SpecTargetSchema, specLine, specMarkdown, type SpecFile, type SpecTarget } from "@agentx/contracts";
 import { readSpecPullRequestOf } from "../../packages/broker/src/aws/broker/spec-wiring.js";
+import { fullStatus, specTask, withSpecProject } from "../support/spec-project.js";
 import { createSpecHooks, type SpecPublishOutcome, type SpecStore, type SpecWorld } from "../../packages/broker/src/spec/hooks.js";
 import { GitHubSpecError } from "../../packages/broker/src/spec/github-git-client.js";
 import { approvingReviewer } from "../../packages/broker/src/spec/refresh.js";
@@ -190,12 +191,12 @@ describe("R2: review eligibility never fails open", () => {
   const dependenciesFor = (reviews: Array<{ state: string; login: string; commitId?: string }>, levels: Record<string, string>) => {
     const getRepositoryPermission = vi.fn(async (_url: string, login: string) => levels[login] ?? "none");
     const rows = reviews.map((entry) => ({ state: entry.state, login: entry.login, commitId: entry.commitId ?? HEAD, githubUserId: `u-${entry.login}`, userType: "User" }));
-    return { getRepositoryPermission, dependencies: { githubPullRequests: { getPullRequestStatus: vi.fn(async () => ({ state: "open", headSha: HEAD, reviews: rows })), getRepositoryPermission } } as never };
+    return { getRepositoryPermission, dependencies: { githubPullRequests: { getPullRequestStatus: vi.fn(async () => fullStatus({ headSha: HEAD, reviews: rows })), getRepositoryPermission } } as never };
   };
   it("looks up nobody who only commented: 40 drive-by comments do not use up anything, and a later objector is still seen", async () => {
     const reviews = [{ state: "APPROVED", login: "alice" }, ...Array.from({ length: 40 }, (_, index) => ({ state: "COMMENTED", login: `drive-by-${String(index)}` })), { state: "CHANGES_REQUESTED", login: "bob" }];
     const { dependencies, getRepositoryPermission } = dependenciesFor(reviews, { alice: "write", bob: "admin" });
-    const facts = (await readSpecPullRequestOf(dependencies)({ orgId: "o" } as never, META, 12))!;
+    const facts = (await readSpecPullRequestOf(withSpecProject(dependencies, META))(specTask as never, META, 12))!;
     expect(getRepositoryPermission.mock.calls.map((call) => call[1]).sort()).toEqual(["alice", "bob"]);
     expect(facts.reviews.find((entry) => entry.login === "bob")!.eligible).toBe(true);
     expect(approvingReviewer(facts.reviews, HEAD)).toBeUndefined();
@@ -203,20 +204,20 @@ describe("R2: review eligibility never fails open", () => {
   it("looks up only each reviewer's latest decisive review at the head, once", async () => {
     const reviews = [{ state: "CHANGES_REQUESTED", login: "alice" }, { state: "APPROVED", login: "alice" }, { state: "APPROVED", login: "carol", commitId: "d".repeat(40) }, { state: "DISMISSED", login: "dave" }];
     const { dependencies, getRepositoryPermission } = dependenciesFor(reviews, { alice: "write", carol: "write", dave: "write" });
-    const facts = (await readSpecPullRequestOf(dependencies)({ orgId: "o" } as never, META, 12))!;
+    const facts = (await readSpecPullRequestOf(withSpecProject(dependencies, META))(specTask as never, META, 12))!;
     expect(getRepositoryPermission.mock.calls.map((call) => call[1])).toEqual(["alice"]);
     expect(approvingReviewer(facts.reviews, HEAD)).toEqual({ login: "alice" });
   });
   it("reports the list as incomplete (no approval can be read) when more reviewers need a look-up than the bound, never marking the rest ineligible", async () => {
     const reviews = Array.from({ length: 80 }, (_, index) => ({ state: "APPROVED", login: `r${String(index)}` }));
     const { dependencies } = dependenciesFor(reviews, Object.fromEntries(reviews.map((entry) => [entry.login, "write"])));
-    const facts = (await readSpecPullRequestOf(dependencies)({ orgId: "o" } as never, META, 12))!;
+    const facts = (await readSpecPullRequestOf(withSpecProject(dependencies, META))(specTask as never, META, 12))!;
     expect(facts.reviewsIncomplete).toBe(true);
   });
   it("a later changes-requested of an eligible reviewer always blocks, and a failed look-up of an approver is no approval", async () => {
     expect(approvingReviewer([{ state: "APPROVED", commitId: HEAD, login: "a", userId: "a", eligible: true }, { state: "CHANGES_REQUESTED", commitId: HEAD, login: "a", userId: "a", eligible: true }], HEAD)).toBeUndefined();
     const { dependencies } = dependenciesFor([{ state: "APPROVED", login: "alice" }], {});
-    const facts = (await readSpecPullRequestOf({ githubPullRequests: { ...(dependencies as { githubPullRequests: object }).githubPullRequests, getRepositoryPermission: async () => { throw new Error("502"); } } } as never)({ orgId: "o" } as never, META, 12))!;
+    const facts = (await readSpecPullRequestOf(withSpecProject({ githubPullRequests: { ...(dependencies as { githubPullRequests: object }).githubPullRequests, getRepositoryPermission: async () => { throw new Error("502"); } } } as never, META))(specTask as never, META, 12))!;
     expect(approvingReviewer(facts.reviews, HEAD)).toBeUndefined();
   });
 });

@@ -24,6 +24,8 @@ import { assertCodeBuildGatesPassed, describeFeedbackFixes } from "./pull-reques
 import { requirePullRequest } from "./records.js";
 import { githubScope, githubScopeOfWorkspace, orgOfRecord, webhookRepositoryUrl } from "./scope-helpers.js";
 import { consumerRepositoryResolver } from "./consumer-hosts.js";
+import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
+import { changeRequestRef, hostNameOf, hostOfTaskRepository, hostOfWorkspaceRepository, repositoryRefOf } from "./repository-hosts.js";
 
 export function projectSetupDomainRecord(item: Record<string, unknown> | undefined, key: { pk: string; sk: string }, entityType: string): Record<string, unknown> {
   if (!item) return {};
@@ -209,6 +211,9 @@ async function verifyTaskFeedbackForWorkerStart(dependencies: AwsBrokerDependenc
   const parsed = linked === undefined ? undefined : /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(linked.url);
   const getFeedback = dependencies.githubPullRequests.getPullRequestFeedback;
   if (!task || !linked || !parsed || getFeedback === undefined) return false;
+  // P5d: this check reads GitHub-shaped feedback and the linked-PR rows are keyed by GitHub's full name, so it is GitHub-only. A repository on another host is refused (false: the worker is not
+  // started on feedback that cannot be proven current), and an unknown host kind is refused with the router's fixed sentence. Left for P6.
+  if ((await hostOfTaskRepository(dependencies, task, { name: linked.repositoryId, url: "" })).kind !== GITHUB_HOST_KIND) return false;
   return verifyTaskPullRequestFeedbackCurrent({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName,
     repositoryFullName: parsed[1]!, number: Number(parsed[2]), loadTask: id => getItem<DeveloperTaskRecord>(dependencies, taskKey(id)),
@@ -569,24 +574,25 @@ export async function reconcilePullRequestUpdate(
     throw agentXError("STALE_FENCE", "pull request record changed before callback reconciliation");
   }
   const scope = await githubScopeOfWorkspace(dependencies, operation.workspaceId);
-  const remote = await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number, scope);
+  // P5d: the code host the repository's record names (an unknown kind is refused with the router's fixed sentence).
+  const host = await hostOfWorkspaceRepository(dependencies, operation.workspaceId, { name: record.repository, url: record.repositoryUrl });
+  const remote = await host.getChangeRequest(changeRequestRef(record.repositoryUrl, record.number), scope);
   // GitHub moves a pull request's head a moment after a push to its branch, and the worker calls back right after its
   // push: a pull request still at the head before the push holds the update when its branch, which GitHub reads from
   // Git itself, already points at the pushed commit.
   const branchHoldsUpdate = async (): Promise<boolean> => {
-    const getBranchHead = dependencies.githubPullRequests.getBranchHead;
-    if (remote.headCommit !== expected.expectedHeadCommit || getBranchHead === undefined) return false;
+    if (remote.headRevision !== expected.expectedHeadCommit || (host.kind === GITHUB_HOST_KIND && dependencies.githubPullRequests.getBranchHead === undefined)) return false;
     try {
-      return await getBranchHead.call(dependencies.githubPullRequests, record.repositoryUrl, record.headBranch, scope) === input.commit;
+      return await host.branchHead(repositoryRefOf(record.repositoryUrl), record.headBranch, scope) === input.commit;
     } catch {
       return false;
     }
   };
   if (
-    remote.state !== "open" || remote.headBranch !== record.headBranch ||
-    remote.baseBranch !== record.baseBranch || (remote.headCommit !== input.commit && !await branchHoldsUpdate())
+    remote.state !== "open" || remote.sourceBranch !== record.headBranch ||
+    remote.targetBranch !== record.baseBranch || (remote.headRevision !== input.commit && !await branchHoldsUpdate())
   ) {
-    throw agentXError("STALE_FENCE", "GitHub pull request state does not match the worker update");
+    throw agentXError("STALE_FENCE", `${hostNameOf(host)} pull request state does not match the worker update`);
   }
   await dependencies.documentClient.send(new UpdateCommand({
     TableName: dependencies.tableName,
@@ -602,5 +608,5 @@ export async function reconcilePullRequestUpdate(
     },
   }));
   if (expected.workflowCandidate !== undefined) await describeFeedbackFixes(dependencies, operation, record, expected.workflowCandidate.candidateDigest);
-  return { url: remote.url, state: remote.state, reconciled: false };
+  return { url: remote.ref.url, state: remote.state, reconciled: false };
 }

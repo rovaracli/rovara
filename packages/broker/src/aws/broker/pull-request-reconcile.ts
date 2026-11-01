@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { CheckReportSchema, LatestChecksSchema, PULL_REQUEST_BODY_MAX_CHARS, checksMakeDraft, checksSection, type StandingFailure, canonicalJson, workflowIsReviewOnly, blockWorkflow, WorkItemProgressV1Schema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, type CheckEntry, type LatestChecks, agentXError, type WorkflowSnapshot, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_FEEDBACK_REVIEW_ANSWER_ARTIFACT, redactText, auditPullRequestId, codeRepositoriesOf } from "@agentx/contracts";
+import { CheckReportSchema, LatestChecksSchema, PULL_REQUEST_BODY_MAX_CHARS, checksMakeDraft, checksSection, type StandingFailure, canonicalJson, workflowIsReviewOnly, blockWorkflow, WorkItemProgressV1Schema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, type CheckEntry, type LatestChecks, agentXError, type WorkflowSnapshot, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_FEEDBACK_REVIEW_ANSWER_ARTIFACT, redactText, auditPullRequestId, codeRepositoriesOf, type CodeHost } from "@agentx/contracts";
 import { auditPending, auditTransact, tryAuditEvent } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPullRequestOpened } from "../../audit/events.js";
@@ -29,6 +29,8 @@ import { developerTaskActions, requireRecordProject } from "./dependency-wiring.
 import { readObjectText } from "./plan-answers.js";
 import { requirePullRequest, requireWorkspace } from "./records.js";
 import { githubScopeOf, githubScopeOfWorkspace, orgOfRecord } from "./scope-helpers.js";
+import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
+import { canReadTree, hostOfRepository, hostOfTaskRepository, hostOfWorkspaceRepository, changeRequestRef, repositoryFullNameOf, repositoryRefOf } from "./repository-hosts.js";
 import { workspaceStandingFailures } from "./terminal-result.js";
 import { loadWorkflowE2EScenarioResults } from "./workflow-e2e-verification.js";
 
@@ -52,17 +54,18 @@ async function freshLinearKey(dependencies: AwsBrokerDependencies, task: Develop
  * commit); without it the binding is read. "failed": GitHub refused, the block is not as Rovara wrote it, the description would be too long, or the time ran out.
  */
 async function settleLinearLine(
-  dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, target: { repositoryUrl: string; number: number }, scope: Awaited<ReturnType<typeof githubScopeOf>>, first: { key: string | undefined } | undefined, deadline: number,
+  dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, target: { repositoryUrl: string; number: number; host: CodeHost }, scope: Awaited<ReturnType<typeof githubScopeOf>>, first: { key: string | undefined } | undefined, deadline: number,
 ): Promise<"updated" | "same" | "failed"> {
   let wanted = first !== undefined ? first.key : await freshLinearKey(dependencies, task, undefined);
   let wrote = false;
   for (let round = 0; round < 4; round += 1) {
     if (Date.now() > deadline) return "failed";
-    const next = withLinearCloseLine((await dependencies.githubPullRequests.getPullRequest(target.repositoryUrl, target.number, scope)).body, wanted);
+    const ref = changeRequestRef(target.repositoryUrl, target.number);
+    const next = withLinearCloseLine((await target.host.getChangeRequest(ref, scope)).body, wanted);
     if (next.kind === "same") return wrote ? "updated" : "same";
     // The fourth look only checks: a third write that was undone again is reported, not repeated.
     if (next.kind === "no_block" || next.body.length > PULL_REQUEST_BODY_MAX_CHARS || round === 3) return "failed";
-    await dependencies.githubPullRequests.updatePullRequest(target.repositoryUrl, target.number, { body: next.body }, scope);
+    await target.host.updateChangeRequest(ref, { body: next.body }, scope);
     wrote = true;
     wanted = await freshLinearKey(dependencies, task, wanted);
   }
@@ -84,7 +87,9 @@ async function settleOpenLinearLines(dependencies: AwsBrokerDependencies, task: 
       scope ??= await githubScopeOf(dependencies, task);
       const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, pullRequest.repositoryId, pullRequest.number));
       if (record === undefined) { result.failed += 1; continue; }
-      const outcome = await settleLinearLine(dependencies, task, { repositoryUrl: record.repositoryUrl, number: pullRequest.number }, scope, first, deadline);
+      // The code host the record's repository names; one this install has not registered is refused here, and counts as failed like any other pull request that could not be read.
+      const host = await hostOfTaskRepository(dependencies, task, { name: pullRequest.repositoryId, url: record.repositoryUrl });
+      const outcome = await settleLinearLine(dependencies, task, { repositoryUrl: record.repositoryUrl, number: pullRequest.number, host }, scope, first, deadline);
       if (outcome === "updated") result.updated += 1;
       else if (outcome === "failed") result.failed += 1;
     } catch (error) {
@@ -153,7 +158,9 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
     if (late()) return;
     // The description as GitHub has it now, read just before the write, so a person's edit since is kept.
     const scope = await githubScopeOf(dependencies, task);
-    const current = (await dependencies.githubPullRequests.getPullRequest(record.repositoryUrl, record.number, scope)).body;
+    const host = await hostOfTaskRepository(dependencies, task, { name: record.repository, url: record.repositoryUrl });
+    const ref = changeRequestRef(record.repositoryUrl, record.number);
+    const current = (await host.getChangeRequest(ref, scope)).body;
     const workflow = task.workflow;
     const pushedChecked = workflow.candidate?.digest === candidateDigest && workflow.verification?.candidateDigest === candidateDigest;
     // Rovara Code version 2 rewrites its whole block (what changed, tests, reviews and risk) for the code now on the pull request; its changed files come from the task's latest workspace diff.
@@ -183,10 +190,10 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
       log("workflow.pull_request_description_abandoned");
       return;
     }
-    await dependencies.githubPullRequests.updatePullRequest(record.repositoryUrl, record.number, { body: next.body }, scope);
+    await host.updateChangeRequest(ref, { body: next.body }, scope);
     // Plan 6 Task 20: this write carries a copy of the description read a moment ago, so a Linear link made meanwhile (and rewritten into the description by the route) could be undone by it: the line is settled again
     // against the binding as it is now. A failure here is logged with the rest of this update's.
-    if (workflow.definitionVersion === "1.1.0" && late() === false) await settleLinearLine(dependencies, task, { repositoryUrl: record.repositoryUrl, number: record.number }, scope, undefined, deadline);
+    if (workflow.definitionVersion === "1.1.0" && late() === false) await settleLinearLine(dependencies, task, { repositoryUrl: record.repositoryUrl, number: record.number, host }, scope, undefined, deadline);
   };
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -267,7 +274,10 @@ export async function reconcilePullRequest(
   }
   // A workflow publication opens only on the checked tree. GitHub, not the worker, says what the branch holds: its head
   // must be the reported commit, and that commit's tree the checked one, before the pull request opens from the branch.
-  const github = dependencies.githubPullRequests;
+  // P5d: the code host the repository's record names (an unknown kind is refused here, with the fixed sentence). The GitHub provider is kept only for the commit-parent read, which the port does not
+  // carry yet: another host then cannot show the checked commit's ancestry, and a publication that needs it stops (see the lane report, "Left for P6").
+  const host = await hostOfWorkspaceRepository(dependencies, operation.workspaceId, { name: expected.repository, url: expected.repositoryUrl });
+  const github = host.kind === GITHUB_HOST_KIND ? dependencies.githubPullRequests : undefined;
   const scope = await githubScopeOfWorkspace(dependencies, operation.workspaceId);
   const expectedTree = expected.expectedTreeSha;
   const expectedCommit = expected.expectedCommitSha;
@@ -278,7 +288,7 @@ export async function reconcilePullRequest(
   // the pinned base, while the worker and GitHub head remain exactly the checked commit.
   const onPinnedBase = async (commit: string) => {
     if (expectedBase === undefined) return true;
-    if (github.getCommitParents === undefined) return false;
+    if (github?.getCommitParents === undefined) return false;
     const pending = [commit];
     const seen = new Set<string>();
     while (pending.length > 0 && seen.size < 512) {
@@ -295,15 +305,15 @@ export async function reconcilePullRequest(
   };
   if (expectedTree !== undefined) {
     if (publicationMode === undefined || (publicationMode === "COMMITTED_HEAD" && expectedCommit === undefined)
-      || github.getCommitTree === undefined || github.getBranchHead === undefined || (expectedBase !== undefined && github.getCommitParents === undefined)) {
+      || (github !== undefined && (github.getCommitTree === undefined || github.getBranchHead === undefined)) || (expectedBase !== undefined && github?.getCommitParents === undefined)) {
       throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the pushed tree");
     }
     if (publicationMode === "COMMITTED_HEAD" && input.commit !== expectedCommit) {
       await blockUncheckedPublication(dependencies, operation);
       throw agentXError("CALLBACK_FORBIDDEN", "the pushed commit is not the checked commit");
     }
-    const head = await github.getBranchHead(expected.repositoryUrl, expected.headBranch, scope);
-    if (head !== input.commit || await github.getCommitTree(expected.repositoryUrl, input.commit, scope) !== expectedTree || !await onPinnedBase(input.commit)) {
+    const head = await host.branchHead(repositoryRefOf(expected.repositoryUrl), expected.headBranch, scope);
+    if (head !== input.commit || await host.tree(repositoryRefOf(expected.repositoryUrl), input.commit, scope) !== expectedTree || !await onPinnedBase(input.commit)) {
       await blockUncheckedPublication(dependencies, operation);
       throw agentXError("CALLBACK_FORBIDDEN", "the pushed commit is not the checked code");
     }
@@ -324,14 +334,15 @@ export async function reconcilePullRequest(
   const body = checked.body;
   // A workflow publication is always a draft: humans merge.
   const draft = expected.expectedTreeSha !== undefined ? true : checked.draft;
-  const pullRequest = await dependencies.githubPullRequests.reconcilePullRequest({
-    repositoryUrl: expected.repositoryUrl,
-    headBranch: expected.headBranch,
-    baseBranch: expected.baseBranch,
+  const reconciled = await host.reconcileChangeRequest({
+    repository: repositoryRefOf(expected.repositoryUrl),
+    sourceBranch: expected.headBranch,
+    targetBranch: expected.baseBranch,
     title: expected.title,
     ...(body === undefined ? {} : { body }),
     ...(draft === undefined ? {} : { draft }),
   }, scope);
+  const pullRequest = { number: Number(reconciled.ref.id), url: reconciled.ref.url, reconciled: reconciled.reconciled, ...(reconciled.draftRefused === true ? { draftRefused: true as const } : {}) };
   if (pullRequest.draftRefused === true) console.log(JSON.stringify({ component: "broker", event: "pull_request.draft_refused", operationId: operation.id, number: pullRequest.number }));
   // The branch could move between the check and the open (a force-push): the opened pull request's own head must still
   // be the checked commit, or it is closed again and nothing is recorded.
@@ -343,8 +354,8 @@ export async function reconcilePullRequest(
     // closed pull request and a second one on retry. A head that still can't be read is closed, as one that differs is.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        headCommit = (await github.getPullRequest(expected.repositoryUrl, pullRequest.number, scope)).headCommit;
-        headTree = headCommit === input.commit ? await github.getCommitTree!(expected.repositoryUrl, headCommit, scope) : undefined;
+        headCommit = (await host.getChangeRequest(changeRequestRef(expected.repositoryUrl, pullRequest.number), scope)).headRevision;
+        headTree = headCommit === input.commit ? await host.tree(repositoryRefOf(expected.repositoryUrl), headCommit, scope) : undefined;
         headOnBase = headCommit === input.commit && await onPinnedBase(headCommit);
         break;
       } catch (error) {
@@ -355,7 +366,7 @@ export async function reconcilePullRequest(
       }
     }
     if (headCommit !== input.commit || headTree !== expectedTree || !headOnBase) {
-      await github.updatePullRequest(expected.repositoryUrl, pullRequest.number, { state: "closed" }, scope).catch((error: unknown) => {
+      await host.updateChangeRequest(changeRequestRef(expected.repositoryUrl, pullRequest.number), { state: "closed" }, scope).catch((error: unknown) => {
         console.log(JSON.stringify({ component: "broker", event: "workflow.unchecked_pull_request_close_failed", operationId: operation.id, number: pullRequest.number, error: error instanceof Error ? error.name : "unknown" }));
       });
       await blockUncheckedPublication(dependencies, operation);
@@ -370,8 +381,9 @@ export async function reconcilePullRequest(
   const opened = await tryAuditEvent(dependencies, async () => {
     const earlier = await getItem<PullRequestRecord>(dependencies, recordKey);
     if (earlier?.createdByOperationId === operation.id) openedAt = earlier.updatedAt;
-    const repository = parseGitHubRepository(expected.repositoryUrl);
-    const repositoryFullName = `${repository.owner}/${repository.name}`;
+    // GitHub's spelling comes from the address as before; another host says it through its identity read. One it cannot name leaves this best-effort audit event out.
+    const repositoryFullName = await repositoryFullNameOf(host, expected.repositoryUrl, scope, (url) => { const repository = parseGitHubRepository(url); return `${repository.owner}/${repository.name}`; });
+    if (repositoryFullName === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the code host did not name the repository");
     const requester = operation.requestedBy;
     return auditPullRequestOpened({
       orgId: await orgOfRecord(dependencies, await getItem<Record<string, unknown>>(dependencies, workspaceKey(operation.workspaceId)) ?? {}),
@@ -412,15 +424,11 @@ export async function reconcilePullRequest(
       expected.repository,
       expected.targetPullRequestNumber,
     );
-    const closed = await dependencies.githubPullRequests.updatePullRequest(
-      original.repositoryUrl,
-      original.number,
-      { state: "closed" },
-      scope,
-    );
+    await host.updateChangeRequest(changeRequestRef(original.repositoryUrl, original.number), { state: "closed" }, scope);
     const linkedOriginal: PullRequestRecord = {
       ...original,
-      state: closed.state,
+      // Asked to be closed and answered without a refusal: it is closed (the port's update returns nothing, so no second read is spent on it).
+      state: "closed",
       replacedBy: pullRequest.number,
       updatedAt: new Date().toISOString(),
     };
@@ -676,13 +684,14 @@ async function validateWorkflowProgressChunk(
   let firstBaseTree = invocation.resumeTreeSha;
   if (firstBaseTree === undefined) {
     const baseCommit = (task.workflow.reviewBase ?? task.preparedBase)?.find((entry) => entry.repositoryId === invocation.graph.items[0]?.repository)?.baseCommitSha;
-    if (baseCommit === undefined || dependencies.githubPullRequests.getCommitTree === undefined) {
-      throw agentXError("CALLBACK_FORBIDDEN", "the approved work breakdown base tree cannot be confirmed");
-    }
+    if (baseCommit === undefined) throw agentXError("CALLBACK_FORBIDDEN", "the approved work breakdown base tree cannot be confirmed");
     const project = await requireRecordProject(dependencies, task, task.project, task.startingRevision);
     const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === invocation.graph.items[0]?.repository);
     if (repository === undefined) throw agentXError("CALLBACK_FORBIDDEN", "the approved work breakdown repository is no longer registered");
-    firstBaseTree = await dependencies.githubPullRequests.getCommitTree(repository.url, baseCommit, await githubScopeOf(dependencies, task));
+    // P5d: the base tree is read from the code host the repository's record names (an unknown kind is refused).
+    const host = hostOfRepository(dependencies, repository);
+    if (!canReadTree(dependencies, host)) throw agentXError("CALLBACK_FORBIDDEN", "the approved work breakdown base tree cannot be confirmed");
+    firstBaseTree = await host.tree(repositoryRefOf(repository.url), baseCommit, await githubScopeOf(dependencies, task));
   }
   let latestSequence = history.at(-1)?.sequence ?? 0;
   if (latestSequence !== (invocation.sequenceStart ?? 0) + history.filter((entry) => entry.operationId === operation.id).length) {

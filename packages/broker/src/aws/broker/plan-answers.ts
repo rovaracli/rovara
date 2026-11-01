@@ -30,6 +30,7 @@ import { githubScopeOf, orgOfRecord, routingOf } from "./scope-helpers.js";
 import { consumerCodeHostRouter } from "./consumer-hosts.js";
 import { operationEventsNewestFirst } from "./terminal-and-github-events.js";
 import { githubLoginOfDeveloper } from "./thread-workspaces.js";
+import { githubProviderOfRecord } from "./repository-hosts.js";
 import type { InlineEvidence } from "./workflow-items.js";
 
 /**
@@ -350,7 +351,7 @@ const CI_READ_TIMEOUT_MS = 10_000;
  * The planner's answer with the checks the task's repositories' CI workflows require added to its proposed checks (Plan 6 plan quality). Read through the org's read-only GitHub reader of each
  * repository's default branch; the answer comes back as it was when there is no reader (a private install), nothing can be read in time, or a workflow can't be understood.
  */
-async function answerWithCiChecks(
+export async function answerWithCiChecks(
   dependencies: AwsBrokerDependencies,
   task: DeveloperTaskRecord,
   project: Awaited<ReturnType<typeof requireRecordProject>>,
@@ -362,6 +363,9 @@ async function answerWithCiChecks(
     const orgId = await orgOfRecord(dependencies, task);
     const reading = Promise.all(project.definition.repositories.slice(0, CI_READ_REPOSITORIES_MAX).map(async (repository) => {
       try {
+        // P5d: the repository's CI is read with the org's GitHub reader (an agent connector the port has no counterpart for, left for P6), so only a GitHub repository is asked. One on another host,
+        // or whose host kind is unknown (the router refuses it), adds no checks: this enrichment never holds a plan up.
+        githubProviderOfRecord(dependencies, repository);
         const reader = await github.agentRepositoryReader!(repository.url, { orgId }, ...(repository.installationId === undefined ? [] : [{ installationId: repository.installationId }]));
         return await readCiChecks(reader, repository.path);
       } catch {

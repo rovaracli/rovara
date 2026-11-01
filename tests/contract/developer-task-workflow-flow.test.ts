@@ -1027,7 +1027,7 @@ describe("native developer task workflow", () => {
 
   it("stores a control-plane-digested plan and only queues implementation after owner approval", async () => {
     const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: { getPullRequestFeedback: async (_url: string, number: number) => ({
-      pullRequest: { number, url: "https://github.com/example/demo/pull/42", state: "open", headCommit: "d".repeat(40), headTreeSha: "b".repeat(40) },
+      pullRequest: { number, url: "https://github.com/example/demo/pull/42", state: "open", headBranch: "x", baseBranch: "main", title: "t", body: "", headCommit: "d".repeat(40), headTreeSha: "b".repeat(40) },
       comments: [], threads: [],
     }) } } });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", {
