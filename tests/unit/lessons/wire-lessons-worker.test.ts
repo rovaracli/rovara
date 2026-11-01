@@ -69,6 +69,22 @@ describe("the lessons block of a stage", () => {
     expect(unknownRepo.report?.lessons[0]?.citation).toBe("unchecked_dropped");
   });
 
+  it("a repository with no base commit is never opened; a source that fails while reading is not checked (not stale); the sources are closed", async () => {
+    const opened: string[] = [];
+    let closed = 0;
+    const failing = async (directory: string, commit: string) => {
+      opened.push(`${directory}@${commit}`);
+      return { readAt: "base" as const, listDirectory: async () => undefined, readFile: async (): Promise<never> => { throw new Error("objects unreadable"); }, close: async () => { closed += 1; } };
+    };
+    const reader = createBaseFileReader([{ repositoryId: "api", directory: "/work/api", baseCommitSha: "a".repeat(40) }, { repositoryId: "web", directory: "/work/web" }], failing);
+    expect(await reader.read("api", "src/a.ts")).toEqual({ lineCount: Number.MAX_SAFE_INTEGER, lines: undefined });
+    expect(await reader.read("web", "src/a.ts")).toEqual({ lineCount: Number.MAX_SAFE_INTEGER, lines: undefined });
+    expect(await reader.read("nope", "src/a.ts")).toEqual({ lineCount: Number.MAX_SAFE_INTEGER, lines: undefined });
+    await reader.close();
+    expect(opened).toEqual([`/work/api@${"a".repeat(40)}`]);
+    expect(closed).toBe(1);
+  });
+
   it("reads files through the verified base objects and closes them", async () => {
     const repo = await repository();
     const reader = createBaseFileReader([{ repositoryId: "api", directory: repo.directory, baseCommitSha: repo.commit }]);

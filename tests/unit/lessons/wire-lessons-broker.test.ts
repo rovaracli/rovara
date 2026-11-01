@@ -219,6 +219,18 @@ describe("afterWorkerEvents", () => {
     expect((await off.w.store.get(KEY, "les_approved1"))!.counters.loaded).toBe(0);
   });
 
+  it("learning turned Off after the load: the report is not applied and nothing of the stage's loaded knowledge is stored", async () => {
+    let mode: "On" | "Off" = "On";
+    const reader = { read: async () => ({ mode }) } as never;
+    const { w, dependencies } = await loaded(reader);
+    mode = "Off";
+    await afterWorkerEvents(dependencies, operation(), events({ [LEARNED_LOAD_REPORT_FIELD]: report("IMPLEMENT") }));
+    expect((await w.store.get(KEY, "les_approved1"))!.counters.loaded).toBe(0);
+    mode = "On";
+    await afterWorkerEvents(dependencies, operation(), events({ [LEARNED_LOAD_REPORT_FIELD]: report("IMPLEMENT") }));
+    expect((await w.store.get(KEY, "les_approved1"))!.counters.loaded).toBe(1);
+  });
+
   it("does nothing, and cannot fail the events, where the install has no lesson ports or the body is not events", async () => {
     await expect(afterWorkerEvents({ documentClient: {}, tableName: "t" } as never, operation(), events({ [LEARNED_LOAD_REPORT_FIELD]: report("IMPLEMENT") }))).resolves.toBeUndefined();
     const { dependencies } = await loaded();
