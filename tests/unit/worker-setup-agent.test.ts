@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { REMOTE_CODE_REASON, SETUP_AGENT_LIMITS_DEFAULT } from "../../packages/contracts/src/index.js";
 import {
-  SETUP_AGENT_TOOLS, SETUP_COMMAND_DEFAULT_TIMEOUT_SECONDS, SETUP_COMMAND_MAX_TIMEOUT_SECONDS, SETUP_COMMAND_REFUSED_TEXT, assertSetupSandboxRunArgs, checkTrackedFiles, commandTail, createSetupSandbox, defaultSetupGit,
+  SETUP_AGENT_TOOLS, SETUP_COMMAND_DEFAULT_TIMEOUT_SECONDS, SETUP_COMMAND_MAX_TIMEOUT_SECONDS, SETUP_COMMAND_REFUSED_TEXT, assertSetupSandboxExecArgs, assertSetupSandboxRunArgs, checkTrackedFiles, commandTail, createSetupSandbox, defaultSetupGit,
   credentialShapedVariables, finishSetupAgent, guardedSetupDocker, setupAgentSessionParts, setupAgentShell, type SetupAgentHooks, type SetupCommandRecord, type SetupGit, type TrackedFilesVerdict,
 } from "../../packages/worker/src/setup-agent.js";
 import { SETUP_AGENT_NEEDS_CODE_CHANGE_MARKER, asksForCodeChange, setupAgentInstructions } from "../../packages/worker/src/setup-agent-prompt.js";
@@ -61,12 +61,16 @@ describe("credential-shaped variables", () => {
 });
 
 describe("the setup sandbox's docker run arguments", () => {
-  const good = () => taskSandboxRunArgs({ name: "agentx-task-x", taskId: "t1", image: IMAGE, rootPath: "/mnt/workspace", maskedPaths: ["/mnt/workspace/.agentx"], hostCpus: 4, hostMemoryBytes: 8 * 1024 ** 3 });
-  const refuses = (mutate: (args: string[]) => string[]) => expect(() => assertSetupSandboxRunArgs(mutate(good()))).toThrow(/container options are not the sandbox's/u);
+  const ROOT = "/mnt/workspace";
+  const good = () => taskSandboxRunArgs({ name: "agentx-task-x-1", taskId: "t1", image: IMAGE, rootPath: ROOT, maskedPaths: ["/mnt/workspace/.agentx"], hostCpus: 4, hostMemoryBytes: 8 * 1024 ** 3 });
+  const assertGood = (args: string[]) => assertSetupSandboxRunArgs(args, { rootPath: ROOT });
+  const refuses = (mutate: (args: string[]) => string[]) => expect(() => assertGood(mutate(good()))).toThrow(/container options are not the sandbox's/u);
   const withFlag = (...flag: string[]) => (args: string[]) => [...args.slice(0, 1), ...flag, ...args.slice(1)];
+  const replace = (from: string, to: string) => (args: string[]) => args.map((arg) => (arg === from ? to : arg));
 
   it("accepts exactly what the R56 task sandbox builds (a positive control for every refusal below)", () => {
-    expect(() => assertSetupSandboxRunArgs(good())).not.toThrow();
+    expect(() => assertGood(good())).not.toThrow();
+    expect(() => assertGood(taskSandboxRunArgs({ name: "agentx-task-x-1", taskId: "t1", image: IMAGE, rootPath: ROOT, maskedPaths: [], hostCpus: 1, hostMemoryBytes: 0 }))).not.toThrow();
   });
   it("refuses an environment variable in any spelling", () => {
     refuses(withFlag("--env", "FOO=1"));
@@ -74,10 +78,36 @@ describe("the setup sandbox's docker run arguments", () => {
     refuses(withFlag("--env-file", "/tmp/e"));
     refuses(withFlag("--env=FOO=1"));
   });
-  it("refuses extra mounts, the Docker socket, privileges, capabilities, devices and host namespaces", () => {
+  it("refuses any mount but the workspace at its own path: the review's /var/run, /, and a home folder (the old check only looked for the socket's name)", () => {
+    for (const volume of ["/var/run:/var/run", "/:/", "/home/ec2-user:/home/ec2-user", "/mnt/workspace:/other", "/mnt:/mnt", "/mnt/workspace/sub:/mnt/workspace/sub", "/mnt/workspace:/mnt/workspace:rw", "/mnt/workspace:/mnt/workspace:ro", "/mnt/workspace/../..:/mnt/workspace"]) {
+      refuses(replace("/mnt/workspace:/mnt/workspace", volume));
+    }
     refuses(withFlag("--volume", "/data:/data"));
     refuses(withFlag("-v", "/var/run/docker.sock:/var/run/docker.sock"));
-    refuses((args) => args.map((arg) => (arg === "/mnt/workspace:/mnt/workspace" ? "/var/run/docker.sock:/var/run/docker.sock" : arg)));
+    refuses(withFlag("--mount", "type=bind,src=/,dst=/h"));
+  });
+  it("refuses a workspace that is not the one the sandbox was made for, and a root of `/`", () => {
+    expect(() => assertSetupSandboxRunArgs(good(), { rootPath: "/mnt/other" })).toThrow();
+    expect(() => assertSetupSandboxRunArgs(good(), { rootPath: "/" })).toThrow();
+    expect(() => assertSetupSandboxRunArgs(good(), { rootPath: "relative" })).toThrow();
+  });
+  it("accepts only `no-new-privileges` as a security option: seccomp and apparmor unconfined are refused", () => {
+    refuses(withFlag("--security-opt", "seccomp=unconfined"));
+    refuses(withFlag("--security-opt", "apparmor=unconfined"));
+    refuses(withFlag("--security-opt", "label=disable"));
+    refuses(replace("no-new-privileges", "seccomp=unconfined"));
+    refuses(replace("no-new-privileges", "no-new-privileges:false"));
+  });
+  it("accepts only the sandbox's own mask options on a tmpfs, under the workspace: no exec, no suid, nothing outside", () => {
+    refuses(withFlag("--tmpfs", "/mnt/workspace/x:exec,suid"));
+    refuses(withFlag("--tmpfs", "/mnt/workspace/x:rw"));
+    refuses(withFlag("--tmpfs", "/mnt/workspace/x:ro,noexec,nosuid,size=4k,exec"));
+    refuses(withFlag("--tmpfs", "/tmp:ro,noexec,nosuid,size=4k"));
+    refuses(withFlag("--tmpfs", "/mnt/workspace/../etc:ro,noexec,nosuid,size=4k"));
+    refuses(withFlag("--tmpfs", "/mnt/workspace"));
+    expect(() => assertGood(withFlag("--tmpfs", "/mnt/workspace/.extra:ro,noexec,nosuid,size=4k")(good()))).not.toThrow();
+  });
+  it("refuses privileges, capabilities, devices, host namespaces and other hosts", () => {
     refuses(withFlag("--privileged"));
     refuses(withFlag("--cap-add", "SYS_ADMIN"));
     refuses(withFlag("--device", "/dev/fuse"));
@@ -85,24 +115,63 @@ describe("the setup sandbox's docker run arguments", () => {
     refuses(withFlag("--ipc", "host"));
     refuses(withFlag("--userns", "host"));
     refuses(withFlag("--add-host", "x:1.2.3.4"));
-    refuses(withFlag("--mount", "type=bind,src=/,dst=/h"));
   });
-  it("refuses another network, another user, and a missing hardening flag", () => {
-    refuses((args) => args.map((arg) => (arg === "agentx-task" ? "host" : arg)));
-    refuses((args) => args.map((arg) => (arg === "1000:1000" ? "0:0" : arg)));
-    refuses((args) => { const at = args.indexOf("--cap-drop"); return [...args.slice(0, at), ...args.slice(at + 2)]; });
-    refuses((args) => { const at = args.indexOf("--security-opt"); return [...args.slice(0, at), ...args.slice(at + 2)]; });
-    refuses((args) => { const at = args.indexOf("--pids-limit"); return [...args.slice(0, at), ...args.slice(at + 2)]; });
-    refuses((args) => { const at = args.indexOf("--volume"); return [...args.slice(0, at), ...args.slice(at + 2)]; });
-    refuses((args) => args.map((arg) => (arg === "/mnt/workspace:/mnt/workspace" ? "/mnt/workspace:/other" : arg)));
+  it("refuses another network, another user, another working folder or entrypoint, and a missing or doubled hardening flag", () => {
+    refuses(replace("agentx-task", "host"));
+    refuses(replace("1000:1000", "0:0"));
+    refuses(replace("/usr/bin/tini", "/bin/sh"));
+    refuses((args) => { const at = args.indexOf("--workdir"); return [...args.slice(0, at + 1), "/", ...args.slice(at + 2)]; });
+    for (const flag of ["--cap-drop", "--security-opt", "--pids-limit", "--volume", "--network", "--user", "--name"]) refuses((args) => { const at = args.indexOf(flag); return [...args.slice(0, at), ...args.slice(at + 2)]; });
+    refuses(withFlag("--cap-drop", "NET_RAW"));
+    refuses(withFlag("--network", "bridge"));
+    refuses((args) => args.map((arg, at) => (args[at - 1] === "--pids-limit" ? "0" : arg)));
+  });
+  it("refuses a different command in the container or extra arguments after it", () => {
+    refuses((args) => [...args.slice(0, -2), "sh"]);
+    refuses((args) => [...args, "--privileged"]);
   });
   it("refuses a call that is not a run, and one with no image", () => {
-    expect(() => assertSetupSandboxRunArgs(["exec", "x"])).toThrow();
-    expect(() => assertSetupSandboxRunArgs(["run", "--detach"])).toThrow();
+    expect(() => assertSetupSandboxRunArgs(["exec", "x"], { rootPath: ROOT })).toThrow();
+    expect(() => assertSetupSandboxRunArgs(["run", "--detach"], { rootPath: ROOT })).toThrow();
   });
   it("does not repeat an argument in its message", () => {
     expect.assertions(1);
-    try { assertSetupSandboxRunArgs(withFlag("--env", `TOKEN=${fakeGithubToken()}`)(good())); } catch (error) { expect(String((error as Error).message)).not.toContain(fakeGithubToken()); }
+    try { assertGood(withFlag("--env", `TOKEN=${fakeGithubToken()}`)(good())); } catch (error) { expect(String((error as Error).message)).not.toContain(fakeGithubToken()); }
+  });
+});
+
+describe("the setup sandbox's docker exec arguments", () => {
+  const BOX = "agentx-task-t1-abcd1234";
+  const refuses = (args: string[], message = /options are not the sandbox's|credential-shaped/u) => expect(() => assertSetupSandboxExecArgs(args), args.join(" ")).toThrow(message);
+  it("accepts the sandbox's own forms: --env NAME=value pairs, the file tools' `-i --user 1000:1000 -e NODE_OPTIONS=`, and a plain command", () => {
+    for (const args of [
+      ["exec", BOX, "ls"], ["exec", "--env", "CI=1", "--env", "PI_SESSION_ID=abc", BOX, "bash", "-c", "x"], ["exec", "-i", "--user", "1000:1000", "-e", "NODE_OPTIONS=", "-e", "NODE_PATH=", BOX, "node", "helper.js"],
+      ["exec", "--env", "EMPTY=", BOX, "ls"],
+    ]) expect(() => assertSetupSandboxExecArgs(args), args.join(" ")).not.toThrow();
+  });
+  it("refuses a bare --env NAME (it would copy the worker's own variable), --env=NAME=value, --env-file, --privileged and --user 0", () => {
+    refuses(["exec", "--env", "AWS_SECRET_ACCESS_KEY", BOX, "sh"]);
+    refuses(["exec", "-e", "HOME", BOX, "sh"]);
+    refuses(["exec", `--env=GITHUB_TOKEN=${fakeGithubToken()}`, BOX, "sh"]);
+    refuses(["exec", "--env-file", "/etc/worker.env", BOX, "sh"]);
+    refuses(["exec", "--privileged", BOX, "sh"]);
+    refuses(["exec", "--user", "0", BOX, "sh"]);
+    refuses(["exec", "--user", "root", BOX, "sh"]);
+    refuses(["exec", "--workdir", "/", BOX, "sh"]);
+    refuses(["exec", "--detach", BOX, "sh"]);
+    refuses(["exec", "--env", "FOO=1"]);
+  });
+  it("refuses a container that is not a task sandbox, and an option with no value", () => {
+    refuses(["exec", "other-container", "sh"]);
+    refuses(["exec", "--env"]);
+    refuses(["exec", "--user"]);
+    refuses(["run", BOX]);
+  });
+  it("refuses a credential-shaped variable by name, and never repeats the value", () => {
+    refuses(["exec", "--env", `PUBLISH_TOKEN=${fakeGithubToken()}`, BOX, "sh"], /credential-shaped variable to the setup sandbox \(PUBLISH_TOKEN\)/u);
+    refuses(["exec", "-e", `FOO=${fakeAwsKey()}`, BOX, "sh"], /credential-shaped/u);
+    expect.assertions(3);
+    try { assertSetupSandboxExecArgs(["exec", "--env", `X_TOKEN=${fakeGithubToken()}`, BOX, "sh"]); } catch (error) { expect(String((error as Error).message)).not.toContain(fakeGithubToken()); }
   });
 });
 
@@ -142,13 +211,25 @@ describe("the setup sandbox through the guarded docker seam", () => {
     expect(fake.verb("exec").length).toBeGreaterThan(before);
     await sandbox.dispose();
   });
-  it("guards a docker seam directly: exec with a clean environment passes through, a `-e` spelling is refused", async () => {
+  it("guards a docker seam directly: exec with a clean environment passes through, a `-e` spelling is refused, the file tools' exec is guarded too", async () => {
     const fake = fakeDocker();
-    const docker = guardedSetupDocker(fake.docker);
-    await docker.run(["exec", "--env", "CI=1", "box", "ls"]);
-    await expect(docker.run(["exec", "-e", `X_TOKEN=1`, "box", "ls"])).rejects.toThrow(/credential-shaped/u);
-    await expect(docker.run(["exec", "--env", `FOO=${fakeAwsKey()}`, "box", "ls"])).rejects.toThrow(/credential-shaped/u);
+    const bytes: string[][] = [];
+    const docker = guardedSetupDocker({ ...fake.docker, execBytes: (args) => { bytes.push([...args]); return Promise.resolve({ exitCode: 0, stdout: Buffer.alloc(0), stderr: "" }); } }, { rootPath: "/mnt/workspace" });
+    await docker.run(["exec", "--env", "CI=1", "agentx-task-box", "ls"]);
+    await expect(docker.run(["exec", "-e", `X_TOKEN=1`, "agentx-task-box", "ls"])).rejects.toThrow(/credential-shaped/u);
+    await expect(docker.run(["exec", "--env", `FOO=${fakeAwsKey()}`, "agentx-task-box", "ls"])).rejects.toThrow(/credential-shaped/u);
+    await expect(docker.run(["exec", "--env", "AWS_SECRET_ACCESS_KEY", "agentx-task-box", "ls"])).rejects.toThrow();
     expect(fake.calls).toHaveLength(1);
+    await docker.execBytes!(["exec", "-i", "--user", "1000:1000", "-e", "NODE_OPTIONS=", "agentx-task-box", "node", "h.js"], { timeoutMs: 1, maxStdoutBytes: 1 });
+    await expect(docker.execBytes!(["exec", "-i", "--user", "0", "agentx-task-box", "node"], { timeoutMs: 1, maxStdoutBytes: 1 })).rejects.toThrow();
+    await expect(docker.execBytes!(["exec", "-i", "--privileged", "agentx-task-box", "node"], { timeoutMs: 1, maxStdoutBytes: 1 })).rejects.toThrow();
+    expect(bytes).toHaveLength(1);
+  });
+  it("refuses a docker run for another workspace than the one it guards", async () => {
+    const fake = fakeDocker();
+    const docker = guardedSetupDocker(fake.docker, { rootPath: "/mnt/workspace" });
+    await expect(docker.run(taskSandboxRunArgs({ name: "agentx-task-x-1", taskId: "t", image: IMAGE, rootPath: "/var/run", maskedPaths: [] }))).rejects.toThrow();
+    expect(fake.calls).toHaveLength(0);
   });
 });
 

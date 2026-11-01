@@ -12,6 +12,7 @@
 //   - a command that downloads code and runs it is marked in the journal record (`flagged`); the proposal reader flags it again and never turns it into an item;
 //   - a command has a time limit even when the model names none;
 //   - the answer is read by the draft's reader (`readSetupProposalAnswer`): bounded, redacted, cited, secrets by name only. Repository text and command output are data.
+import { isAbsolute, resolve } from "node:path";
 import { agentXError, isCredentialKey, redactText, remoteCodeReason, type SetupProposal, type SetupRunEndWord } from "@agentx/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { snapshotTree, withIsolatedGit } from "./isolated-git.js";
@@ -20,7 +21,7 @@ import type { CollectedProcess, CollectedProcessOptions } from "./collected-proc
 import { asksForCodeChange } from "./setup-agent-prompt.js";
 import { SETUP_AGENT_MAX_OUTPUT_TOKENS } from "./setup-agent-journal.js";
 import { readSetupProposalAnswer, type SetupDraftRepository } from "./setup-draft.js";
-import { TASK_SANDBOX_NETWORK, TASK_SANDBOX_USER, TaskSandbox, type TaskSandboxOptions } from "./task-sandbox.js";
+import { MASK_OPTIONS, SANDBOX_INIT, TASK_SANDBOX_NETWORK, TASK_SANDBOX_USER, TaskSandbox, type TaskSandboxOptions } from "./task-sandbox.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 
 /** The agent's tools: read-only file tools and the shell. No write tool, no edit tool. Passed to the session as `agentTools`. */
@@ -63,15 +64,21 @@ const ALLOWED_RUN_FLAGS: ReadonlyMap<string, number> = new Map([
   ["--detach", 0], ["--name", 1], ["--label", 1], ["--network", 1], ["--user", 1], ["--cpus", 1], ["--memory", 1], ["--memory-swap", 1], ["--pids-limit", 1],
   ["--cap-drop", 1], ["--security-opt", 1], ["--volume", 1], ["--tmpfs", 1], ["--workdir", 1], ["--entrypoint", 1],
 ]);
+const REFUSED_RUN = "AgentX refused to start the setup sandbox: its container options are not the sandbox's";
 
 /**
- * Whether `docker run` arguments make the sandbox the R56 shape and nothing more: only the flags the task sandbox uses, the task network, the sandbox user, all capabilities dropped, no new
- * privileges, a process limit, one mount of the workspace at its own path, and nothing that names the Docker socket. An environment variable (`--env`, `-e`, `--env-file`) is a flag this list does
- * not have, so it is refused with every other unknown flag. Throws `RUNTIME_UNAVAILABLE` with a fixed sentence (no argument is repeated, since an argument could be a secret).
+ * Whether `docker run` arguments are exactly the R56 sandbox's shape for the workspace `rootPath` and nothing more, value by value (not only flag by flag):
+ *   - the one mount is `<rootPath>:<rootPath>` (the workspace, at its own path); no other mount, and no `/var/run`, `/`, a home folder or the Docker socket whatever the spelling;
+ *   - `--security-opt` is exactly `no-new-privileges` (so `seccomp=unconfined` and `apparmor=unconfined` are refused), `--cap-drop` exactly `ALL`;
+ *   - every `--tmpfs` is a folder under the workspace with exactly the sandbox's mask options (read-only, noexec, nosuid; no `exec` or `suid`);
+ *   - the task network, the sandbox user, the workspace as the working folder, the sandbox's init as the entrypoint, a process limit;
+ *   - flags the sandbox does not use (an environment variable in any spelling, `--privileged`, `--device`, `--pid`...) are refused as unknown.
+ * Throws `RUNTIME_UNAVAILABLE` with a fixed sentence (no argument is repeated, since an argument could be a secret).
  */
-export function assertSetupSandboxRunArgs(args: readonly string[]): void {
-  const refuse = (): never => { throw agentXError("RUNTIME_UNAVAILABLE", "AgentX refused to start the setup sandbox: its container options are not the sandbox's"); };
-  if (args[0] !== "run") return refuse();
+export function assertSetupSandboxRunArgs(args: readonly string[], options: { rootPath: string }): void {
+  const refuse = (): never => { throw agentXError("RUNTIME_UNAVAILABLE", REFUSED_RUN); };
+  const root = resolve(options.rootPath);
+  if (!isAbsolute(root) || root === "/" || args[0] !== "run") return refuse();
   const seen = new Map<string, string[]>();
   let index = 1;
   for (; index < args.length; index += 1) {
@@ -84,45 +91,84 @@ export function assertSetupSandboxRunArgs(args: readonly string[]): void {
     index += arity;
     seen.set(token, [...(seen.get(token) ?? []), value]);
   }
-  if (index >= args.length) return refuse();
-  if (args.some((argument) => argument.includes("docker.sock"))) return refuse();
-  const one = (flag: string): string | undefined => (seen.get(flag)?.length === 1 ? seen.get(flag)![0] : undefined);
-  if (one("--network") !== TASK_SANDBOX_NETWORK || one("--user") !== TASK_SANDBOX_USER) return refuse();
-  if (!(seen.get("--cap-drop") ?? []).includes("ALL") || !(seen.get("--security-opt") ?? []).includes("no-new-privileges") || one("--pids-limit") === undefined) return refuse();
-  const volumes = seen.get("--volume") ?? [];
-  if (volumes.length !== 1) return refuse();
-  const [source, target, ...extra] = volumes[0]!.split(":");
-  if (extra.length > 0 || source === undefined || source !== target || !source.startsWith("/")) return refuse();
+  // The image, then `-- sleep infinity` and nothing else.
+  if (index >= args.length || args.slice(index + 1).join(" ") !== "-- sleep infinity" || args.some((argument) => argument.includes("docker.sock"))) return refuse();
+  const only = (flag: string): string | undefined => (seen.get(flag)?.length === 1 ? seen.get(flag)![0] : undefined);
+  const exactly = (flag: string, value: string): boolean => only(flag) === value;
+  if (!exactly("--network", TASK_SANDBOX_NETWORK) || !exactly("--user", TASK_SANDBOX_USER) || !exactly("--cap-drop", "ALL") || !exactly("--security-opt", "no-new-privileges")) return refuse();
+  if (!exactly("--workdir", root) || !exactly("--entrypoint", SANDBOX_INIT) || !exactly("--volume", `${root}:${root}`) || !seen.has("--detach")) return refuse();
+  if (!/^[1-9][0-9]{0,6}$/u.test(only("--pids-limit") ?? "")) return refuse();
+  const cpus = seen.get("--cpus");
+  if (cpus !== undefined && !(cpus.length === 1 && /^[1-9][0-9]{0,3}$/u.test(cpus[0]!))) return refuse();
+  const memory = seen.get("--memory");
+  const swap = seen.get("--memory-swap");
+  if ((memory === undefined) !== (swap === undefined) || (memory !== undefined && !(memory.length === 1 && swap!.length === 1 && memory[0] === swap![0] && /^[1-9][0-9]{0,8}m$/u.test(memory[0]!)))) return refuse();
+  if (only("--name") === undefined || !/^agentx-task-[A-Za-z0-9_.-]{1,200}$/u.test(only("--name")!)) return refuse();
+  if ((seen.get("--label") ?? []).some((label) => !/^agentx\.(?:task|workspace)=[A-Za-z0-9_.-]{1,200}$/u.test(label))) return refuse();
+  for (const mask of seen.get("--tmpfs") ?? []) {
+    const cut = mask.lastIndexOf(`:${MASK_OPTIONS}`);
+    const path = cut < 0 || cut + 1 + MASK_OPTIONS.length !== mask.length ? undefined : mask.slice(0, cut);
+    if (path === undefined || !path.startsWith(`${root}/`) || path.split("/").includes("..") || path.includes(",")) return refuse();
+  }
+}
+
+const REFUSED_EXEC = "AgentX refused to run a command in the setup sandbox: its options are not the sandbox's";
+const ENV_PAIR = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/u;
+
+/**
+ * `docker exec` arguments of the setup sandbox: only `--env NAME=value` (or `-e`, as the file tools' environment reset writes it), `-i`, and `--user` equal to the sandbox user, then the sandbox's
+ * container (named `agentx-task-...`) and the command. A bare `--env NAME` (which would copy the worker's own variable), `--env=NAME=value`, `--env-file`, `--privileged`, `--user 0` and every other
+ * flag are refused. A credential-shaped variable is refused by name and the value is never repeated.
+ */
+export function assertSetupSandboxExecArgs(args: readonly string[]): void {
+  const refuse = (message = REFUSED_EXEC): never => { throw agentXError("RUNTIME_UNAVAILABLE", message); };
+  if (args[0] !== "exec") return refuse();
+  const environment: Record<string, string> = {};
+  let index = 1;
+  for (; index < args.length; index += 1) {
+    const token = args[index] ?? "";
+    if (!token.startsWith("-")) break;
+    if (token === "-i") continue;
+    const value = args[index + 1];
+    if (value === undefined) return refuse();
+    if (token === "--user" && value === TASK_SANDBOX_USER) { index += 1; continue; }
+    if (token === "--env" || token === "-e") {
+      const pair = ENV_PAIR.exec(value);
+      if (pair === null) return refuse();
+      environment[pair[1]!] = pair[2]!;
+      index += 1;
+      continue;
+    }
+    return refuse();
+  }
+  if (!/^agentx-task-[A-Za-z0-9_.-]{1,200}$/u.test(args[index] ?? "")) return refuse();
+  const found = credentialShapedVariables(environment);
+  if (found.length > 0) refuse(`AgentX refused to pass ${found.length === 1 ? "a credential-shaped variable" : "credential-shaped variables"} to the setup sandbox (${found.join(", ")})`);
 }
 
 /**
- * The Docker seam of a setup sandbox. `run` must pass `assertSetupSandboxRunArgs`. `exec` must not pass a credential-shaped variable (`--env NAME=value`): it is refused by name, and the value is
- * never repeated. Everything else (inspect, network, rm) passes. Wraps the real Docker, or a fake in a test.
+ * The Docker seam of a setup sandbox for the workspace `rootPath`. `run` must pass `assertSetupSandboxRunArgs`; `exec` (and the file tools' byte-exact exec) must pass `assertSetupSandboxExecArgs`.
+ * Everything else (inspect, network, rm, ps) passes. Wraps the real Docker, or a fake in a test.
  */
-export function guardedSetupDocker(docker: DockerCli = createDockerCli()): DockerCli {
+export function guardedSetupDocker(docker: DockerCli = createDockerCli(), options: { rootPath: string }): DockerCli {
   return {
-    async run(args: readonly string[], options?: CollectedProcessOptions): Promise<CollectedProcess> {
-      if (args[0] === "run") assertSetupSandboxRunArgs(args);
-      if (args[0] === "exec") {
-        const environment: Record<string, string> = {};
-        for (let index = 1; index < args.length - 1; index += 1) {
-          if (args[index] !== "--env" && args[index] !== "-e") continue;
-          const pair = args[index + 1] ?? "";
-          const cut = pair.indexOf("=");
-          if (cut > 0) environment[pair.slice(0, cut)] = pair.slice(cut + 1);
-        }
-        const found = credentialShapedVariables(environment);
-        if (found.length > 0) throw agentXError("RUNTIME_UNAVAILABLE", `AgentX refused to pass ${found.length === 1 ? "a credential-shaped variable" : "credential-shaped variables"} to the setup sandbox (${found.join(", ")})`);
-      }
-      return docker.run(args, options);
+    async run(args: readonly string[], runOptions?: CollectedProcessOptions): Promise<CollectedProcess> {
+      if (args[0] === "run") assertSetupSandboxRunArgs(args, options);
+      if (args[0] === "exec") assertSetupSandboxExecArgs(args);
+      return docker.run(args, runOptions);
     },
-    ...(docker.execBytes === undefined ? {} : { execBytes: docker.execBytes.bind(docker) }),
+    ...(docker.execBytes === undefined ? {} : {
+      async execBytes(args: readonly string[], execOptions: Parameters<NonNullable<DockerCli["execBytes"]>>[1]) {
+        assertSetupSandboxExecArgs(args);
+        return docker.execBytes!(args, execOptions);
+      },
+    }),
   };
 }
 
 /** The setup sandbox: the R56 task sandbox, through the guarded Docker seam. Nothing falls back to the local shell. */
 export function createSetupSandbox(options: Omit<TaskSandboxOptions, "docker"> & { docker?: DockerCli }): TaskSandbox {
-  return new TaskSandbox({ ...options, docker: guardedSetupDocker(options.docker) });
+  return new TaskSandbox({ ...options, docker: guardedSetupDocker(options.docker, { rootPath: options.rootPath }) });
 }
 
 // ---- tracked files are left alone

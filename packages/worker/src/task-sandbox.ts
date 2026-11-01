@@ -88,11 +88,11 @@ export const TASK_SANDBOX_IMAGE_ENVIRONMENT = "AGENTX_SANDBOX_IMAGE";
 /** `local` or `sandbox` (the default): where a project without a devcontainer runs its commands. `local` is for tests and a developer's machine, never EC2. */
 export const TASK_SHELL_ENVIRONMENT = "AGENTX_TASK_SHELL";
 /** The image's init (environments/base/Dockerfile): PID 1 that reaps what a command leaves behind. */
-const SANDBOX_INIT = "/usr/bin/tini";
+export const SANDBOX_INIT = "/usr/bin/tini";
 const SANDBOX_START_TIMEOUT_MS = 5 * 60_000;
 const DOCKER_CALL_TIMEOUT_MS = 60_000;
 /** What hides a folder of the workspace volume that is not the project's. */
-const MASK_OPTIONS = "ro,noexec,nosuid,size=4k";
+export const MASK_OPTIONS = "ro,noexec,nosuid,size=4k";
 
 /**
  * An EC2 worker, by either marker: boot.sh writes AGENTX_RUNTIME=ec2 to the worker's environment, and the worker image sets
