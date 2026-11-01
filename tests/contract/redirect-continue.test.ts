@@ -562,6 +562,61 @@ describe("the sweep", () => {
   });
 });
 
+describe("the sweep does not close a restart that is starting or has started (fix round 1, S5)", () => {
+  /** A task whose redirect (made 20 minutes ago, its stop having taken that long) is being restarted. */
+  async function slowStop() {
+    const t = await setup();
+    const { taskId, sessionId, workspaceId } = await t.runningCoding();
+    const requestId = randomUUID();
+    await t.redirect(MAYA, sessionId, { requestId });
+    const record = t.record(taskId, requestId)!;
+    const minutes = (n: number) => new Date(Date.now() + n * 60_000).toISOString();
+    t.db.set({ ...(t.db.get("REDIRECT_OPEN", taskId) as Item), createdAt: minutes(-20) });
+    t.db.set({ ...record, createdAt: minutes(-20) });
+    return { t, taskId, sessionId, workspaceId, requestId, record, minutes, deps: { documentClient: t.db, tableName: "state", now: Date.now } };
+  }
+
+  it("times a restart from when it was claimed, not from when the redirect was made", async () => {
+    const { t, taskId, requestId, minutes, deps } = await slowStop();
+    t.db.set({ ...(t.db.get(redirectKey(taskId, requestId)) as Item), state: "restarting", claimedAt: minutes(-1) });
+    expect(await sweepStoppingRedirects(deps)).toBe(0);
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "restarting" });
+    expect(t.open(taskId)).toBeDefined();
+    // Claimed a long time ago and the step still stopped: closed, left blocked.
+    t.db.set({ ...(t.db.get(redirectKey(taskId, requestId)) as Item), claimedAt: minutes(-16) });
+    expect(await sweepStoppingRedirects(deps)).toBe(1);
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "left_blocked" });
+  });
+
+  it("does not end `left_blocked` a redirect whose restart already committed: the run is going, so it ends restarted", async () => {
+    const { t, taskId, sessionId, requestId, minutes, deps } = await slowStop();
+    const base = t.task(taskId);
+    const record = t.record(taskId, requestId)!;
+    t.db.set({ ...(t.db.get(redirectKey(taskId, requestId)) as Item), state: "restarting", claimedAt: minutes(-20) });
+    // The restart committed (the workflow moved one revision past the stop and runs) and its worker died before it ended the record.
+    t.db.set({ ...base, workflow: { ...base.workflow, revision: Number(record["blockedRevision"]) + 1, state: "RUNNING" } });
+    expect(await sweepStoppingRedirects(deps)).toBe(1);
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "restarted" });
+    expect(t.sessionEvents(sessionId)).not.toContain(REDIRECT_LEFT_BLOCKED_MESSAGE);
+  });
+
+  it("closes only the phase it read: a restart claimed between the read and the close is left alone", async () => {
+    const { t, taskId, requestId, minutes } = await slowStop();
+    const original = t.db.send.bind(t.db);
+    let raced = false;
+    const client = { send: async (command: Parameters<typeof original>[0]) => {
+      const input = (command as { input?: { TransactItems?: Array<{ Update?: { Key?: { sk?: string }; ExpressionAttributeValues?: Record<string, unknown> } }> } }).input;
+      const closing = input?.TransactItems?.some((item) => item.Update?.Key?.sk?.startsWith("REDIRECT#") === true && item.Update.ExpressionAttributeValues?.[":to"] === "left_blocked") === true;
+      if (!raced && closing) { raced = true; t.db.set({ ...(t.db.get(redirectKey(taskId, requestId)) as Item), state: "restarting", claimedAt: minutes(0) }); }
+      return original(command);
+    } };
+    expect(await sweepStoppingRedirects({ documentClient: client, tableName: "state", now: Date.now })).toBe(0);
+    expect(raced).toBe(true);
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "restarting" });
+    expect(t.open(taskId)).toBeDefined();
+  });
+});
+
 describe("this changes the plan, at coding", () => {
   it("goes to planning with the owner's request for changes recorded, and coding does not restart until the revised plan is approved", async () => {
     const t = await setup();

@@ -91,8 +91,9 @@ export async function claimRedirect(deps: RedirectStateDependencies, record: Pic
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{
       Update: {
-        TableName: deps.tableName, Key: redirectKey(record.taskId, record.requestId), UpdateExpression: "SET #state = :restarting",
-        ConditionExpression: "attribute_exists(pk) AND #state = :stopping", ExpressionAttributeNames: { "#state": "state" }, ExpressionAttributeValues: { ":restarting": "restarting", ":stopping": "stopping" },
+        TableName: deps.tableName, Key: redirectKey(record.taskId, record.requestId), UpdateExpression: "SET #state = :restarting, claimedAt = :now",
+        ConditionExpression: "attribute_exists(pk) AND #state = :stopping", ExpressionAttributeNames: { "#state": "state" },
+        ExpressionAttributeValues: { ":restarting": "restarting", ":stopping": "stopping", ":now": new Date(deps.now()).toISOString() },
       },
     }] }));
     return true;

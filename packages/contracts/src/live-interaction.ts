@@ -154,6 +154,8 @@ export const RedirectRecordSchema = z.object({
   step: z.string().regex(/^[A-Z_]{1,40}$/),
   state: z.enum(REDIRECT_STATES),
   createdAt: z.string().datetime(),
+  /** When a restart claimed the redirect (`restarting`). The sweep times a restart from here, not from `createdAt` (a stop can take a long while to land). */
+  claimedAt: z.string().datetime().optional(),
   /** Epoch seconds. */
   ttl: z.number().int().positive(),
 }).strict();

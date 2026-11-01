@@ -179,13 +179,24 @@ export async function sweepStoppingRedirects(deps: RedirectEndDependencies, carr
     try {
       // The stop may have landed where no hook runs (the Reconciler Lambda blocks a step whose cancel got stuck, and registers no continuation): the sweep, which runs in the broker, carries the redirect on.
       if (carryOn !== undefined) await carryOn(open.taskId);
-      if (Date.parse(open.createdAt) > cutoff) continue;
+      // Read again after carrying on: what is judged is the redirect's phase now.
       const record = await readRedirect(deps, open.taskId, open.requestId);
       if (record === undefined || (record.state !== "stopping" && record.state !== "restarting")) {
         await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: deps.tableName, Key: redirectOpenKey(open.taskId), ConditionExpression: "requestId = :id", ExpressionAttributeValues: { ":id": open.requestId } } }] })).catch(() => undefined);
         continue;
       }
-      if (await finish(deps, record, ["stopping", "restarting"], "left_blocked")) closed += 1;
+      // A redirect waiting for its stop is timed from when it was made; one being restarted from when its restart was claimed (a stop that took long to land must not make a fresh restart look old).
+      const since = record.state === "restarting" ? Date.parse(record.claimedAt ?? record.createdAt) : Date.parse(open.createdAt);
+      if (since > cutoff) continue;
+      let to: "left_blocked" | "restarted" | "failed" = "left_blocked";
+      if (record.state === "restarting") {
+        // A restart that committed and died before it ended the record left the workflow past the stop: that run is going, so it is not "left blocked".
+        const task = (await getItem(deps, taskKey(open.taskId))) as DeveloperTaskRecord | undefined;
+        const workflow = task?.workflow;
+        if (workflow !== undefined && workflow.revision > record.blockedRevision) to = workflow.state === "RUNNING" && workflow.revision === record.blockedRevision + 1 ? "restarted" : "failed";
+      }
+      // Conditional on the phase that was read: a redirect whose restart started or ended meanwhile is left alone.
+      if (await finish(deps, record, [record.state], to)) closed += 1;
     } catch (error) {
       warn(deps, { event: "redirect.sweep_failed", taskId: open.taskId, error: error instanceof Error ? error.name : "unknown" });
     }
