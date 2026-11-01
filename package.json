@@ -31,6 +31,8 @@
     "release:prod": "tsx scripts/release-production.ts",
     "session:e2e": "tsx scripts/session-e2e.ts",
     "release:build": "tsx scripts/release/build.ts",
+    "release:kit": "tsx scripts/release/synth-kit.ts",
+    "release:bundle": "tsx scripts/release/bundle.ts",
     "release:installer": "tsx scripts/release/installer.ts",
     "release:verify": "tsx scripts/release/verify.ts",
     "release:pack-cli": "tsx scripts/release/pack-cli.ts",

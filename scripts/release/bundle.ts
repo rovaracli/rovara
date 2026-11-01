@@ -16,6 +16,7 @@ import {
   BundleManifestSchema,
   BundleSignatureSchema,
   SynthKitManifestSchema,
+  type SynthKitManifest,
   ImageDigest,
   ReleaseManifestSchema,
   parseBundlePublicKey,
@@ -94,7 +95,7 @@ async function copyReleaseFile(releaseDir: string, out: string, file: string, ex
 }
 
 /** The kit's files, relative and "/"-separated: regular files only (a link is refused), kit.json present and valid, the entry it names present. */
-async function listKitFiles(root: string): Promise<string[]> {
+async function listKitFiles(root: string): Promise<{ files: string[]; kit: SynthKitManifest }> {
   const found: string[] = [];
   const walk = async (relative: string, depth: number): Promise<void> => {
     if (depth > 6) throw new Error("the synthesis kit nests deeper than allowed");
@@ -110,7 +111,7 @@ async function listKitFiles(root: string): Promise<string[]> {
   if (!found.includes("kit.json")) throw new Error("the synthesis kit has no kit.json");
   const kit = SynthKitManifestSchema.parse(JSON.parse(await readFile(join(root, "kit.json"), "utf8")));
   if (!found.includes(kit.entry.replace(/^synth-kit\//, ""))) throw new Error("the synthesis kit's entry is not in the kit");
-  return found.sort();
+  return { files: found.sort(), kit };
 }
 
 /** Builds the bundle; on any failure the output directory it claimed is removed, so a half-written bundle is never left to be mistaken for one. */
@@ -161,11 +162,15 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
   const releaseJsonHash = await sha256OfFile(releaseJson);
   files.push({ file: "release.json", kind: "release-manifest", ...releaseJsonHash });
   for (const entry of release.templates) files.push({ file: entry.file, kind: "template", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
-  for (const entry of release.packages) files.push({ file: entry.file, kind: "package", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
+  // Both lists are signed as packages: the second holds the code only an Enterprise install's stacks use, and a build made at approval may use no package the signed manifest does not list.
+  for (const entry of [...release.packages, ...(release.enterprisePackages ?? [])]) files.push({ file: entry.file, kind: "package", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
   for (const entry of release.legalDocuments ?? []) files.push({ file: entry.file, kind: "legal", ...(await copyReleaseFile(releaseDir, out, entry.file, entry.sha256)) });
 
   if (input.synthKitDir !== undefined) {
-    for (const file of await listKitFiles(resolve(input.synthKitDir))) {
+    const { files: kitFiles, kit } = await listKitFiles(resolve(input.synthKitDir));
+    // The kit is bound to one release: the hash of this release.json and its commit. A kit made from another release (or another commit) is never signed into this bundle.
+    if (kit.releaseSha256 !== releaseJsonHash.sha256 || kit.gitCommit !== release.gitCommit) throw new Error("the synthesis kit was made from a different release than the one being bundled; make it again from this release (release:kit)");
+    for (const file of kitFiles) {
       const target = join(out, "synth-kit", ...file.split("/"));
       await mkdir(dirname(target), { recursive: true });
       await copyFile(join(resolve(input.synthKitDir), ...file.split("/")), target);
@@ -234,7 +239,7 @@ export const skopeoImageExporter: ImageExporter = async (sourceRef, destFile) =>
 };
 
 function usage(): string {
-  return "Usage: tsx scripts/release/bundle.ts --release <dir> --out <dir> --kms-key <key id or ARN> --image <name>=<repo@sha256:...> [--image ...] [--notes <file>]\n(The litellm image is required. AWS calls go through the pipeline's own credentials; this script never reads a private key.)\n";
+  return "Usage: tsx scripts/release/bundle.ts --release <dir> --out <dir> --kms-key <key id or ARN> --image <name>=<repo@sha256:...> [--image ...] [--synth-kit <dir>] [--notes <file>]\n(The litellm image is required. --synth-kit takes the folder `release:kit` made from this release: without it the bundle can be approved by a Public install only. AWS calls go through the pipeline's own credentials; this script never reads a private key.)\n";
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -248,6 +253,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const [out] = values("--out");
       const [kmsKey] = values("--kms-key");
       const [notesFile] = values("--notes");
+      const [synthKit] = values("--synth-kit");
       if (!release || !out || !kmsKey) throw new Error("--release, --out and --kms-key are required");
       const images = values("--image").map((value) => {
         const [name, ...rest] = value.split("=");
@@ -257,6 +263,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const signer = await kmsBundleSigner({ client: new KMSClient({}), keyId: kmsKey, commands: { GetPublicKeyCommand, SignCommand } });
       const result = await buildBundle({
         releaseDir: release, out: resolve(out), images, exportImage: skopeoImageExporter, signer,
+        ...(synthKit === undefined ? {} : { synthKitDir: resolve(synthKit) }),
         ...(notesFile === undefined ? {} : { notes: await readFile(notesFile, "utf8") }),
       });
       process.stdout.write(`wrote bundle ${result.manifest.version} id ${result.bundleSha256} to ${resolve(out)}\n`);

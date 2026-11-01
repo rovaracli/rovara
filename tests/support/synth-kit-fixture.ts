@@ -49,11 +49,14 @@ export interface FakeKitOptions {
   /** Declare a package the signed release does not list. */
   unsignedPackage?: boolean;
   nodeMajor?: number;
+  /** The release this kit claims to be made from (kit.json). The bundle fixture passes the real release's. */
+  releaseSha256?: string;
+  gitCommit?: string;
 }
 
 export async function writeFakeKit(dir: string, options: FakeKitOptions = {}): Promise<void> {
   await mkdir(dir, { recursive: true });
-  const manifest = SynthKitManifestSchema.parse({ schemaVersion: 1, format: "rovara-synth-kit", entry: "synth-kit/synth.mjs", nodeMajor: options.nodeMajor ?? Number(process.versions.node.split(".")[0]) });
+  const manifest = SynthKitManifestSchema.parse({ schemaVersion: 1, format: "rovara-synth-kit", entry: "synth-kit/synth.mjs", nodeMajor: options.nodeMajor ?? Number(process.versions.node.split(".")[0]), releaseSha256: options.releaseSha256 ?? "0".repeat(64), gitCommit: options.gitCommit ?? "b".repeat(40) });
   await writeFile(join(dir, "kit.json"), `${JSON.stringify({ ...manifest, ...(options.kitJsonExtra ?? {}) })}\n`);
   const source = `
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";

@@ -179,6 +179,49 @@ describe("the deployer re-verifies the signed bundle", () => {
     expect(changes(world)).toEqual([]);
   });
 
+  /** Rewrites the bundle's release.json with `edit`, then fixes its entry in bundle.json and signs again with the test key: a correctly signed bundle whose release.json differs from what this deployer's schema knows. */
+  async function withReleaseEdited(edit: (release: Record<string, any>) => void) { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const bundle = await build();
+    const { sha256OfBytes } = await import("@agentx/contracts");
+    const release = JSON.parse(await readFile(join(bundle.dir, "release.json"), "utf8")) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    edit(release);
+    const releaseBytes = Buffer.from(`${JSON.stringify(release, null, 2)}\n`);
+    await writeFile(join(bundle.dir, "release.json"), releaseBytes);
+    const manifest = JSON.parse(await readFile(join(bundle.dir, "bundle.json"), "utf8")) as { files: Array<{ file: string; sha256: string; bytes: number }> };
+    const entry = manifest.files.find((file) => file.file === "release.json")!;
+    entry.sha256 = sha256OfBytes(releaseBytes);
+    entry.bytes = releaseBytes.length;
+    const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(bundle.dir, "bundle.json"), bytes);
+    const sig = JSON.parse(await readFile(join(bundle.dir, "bundle.sig.json"), "utf8")) as Record<string, unknown>;
+    await writeFile(join(bundle.dir, "bundle.sig.json"), JSON.stringify({ ...sig, bundleSha256: sha256OfBytes(bytes), signature: (await bundle.key.signer.sign(bytes)).toString("base64") }));
+    bundle.bundleSha256 = sha256OfBytes(bytes);
+    const world = new World();
+    world.seed({ key: bundle.key.publicKeyPem });
+    await world.approve(bundle);
+    return { bundle, world };
+  }
+
+  it("reads a release.json with fields it does not know (a later release may add some), and still checks every field it uses", async () => {
+    const { bundle, world } = await withReleaseEdited((release) => {
+      release.aFutureField = { anything: 1 };
+      for (const t of release.templates) t.aFutureTemplateField = "x";
+      for (const p of release.packages) p.aFuturePackageField = true;
+      release.images.aFutureImage = "ignored";
+    });
+    expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("done");
+    // A field it uses, wrong, is still a refusal; so is another schema version (the way to stop older deployers on purpose).
+    for (const edit of [
+      (release: Record<string, any>) => { release.packages[0].sha256 = "not-a-hash"; }, // eslint-disable-line @typescript-eslint/no-explicit-any
+      (release: Record<string, any>) => { release.schemaVersion = 2; }, // eslint-disable-line @typescript-eslint/no-explicit-any
+      (release: Record<string, any>) => { release.version = "one"; }, // eslint-disable-line @typescript-eslint/no-explicit-any
+      (release: Record<string, any>) => { delete release.templates; }, // eslint-disable-line @typescript-eslint/no-explicit-any
+    ]) {
+      const bad = await withReleaseEdited((release) => { release.aFutureField = 1; edit(release); });
+      expect(await bad.world.run({ bundleId: bad.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/release.json is not valid/) });
+    }
+  });
+
   it("refuses when the approval, the manifest and the release disagree about the version", async () => {
     const { bundle, world } = await ready({ approve: { version: "9.9.9" } });
     expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/disagree about the version/) });

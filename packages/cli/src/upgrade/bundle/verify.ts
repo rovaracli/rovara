@@ -169,7 +169,7 @@ export async function verifyBundle(input: VerifyBundleInput): Promise<VerifiedBu
   const byFile = new Map(manifest.files.map((entry) => [entry.file, entry]));
   const releaseEntries = [
     ...releaseManifest.templates.map((entry) => ({ ...entry, kind: "template" as const })),
-    ...releaseManifest.packages.map((entry) => ({ ...entry, kind: "package" as const })),
+    ...[...releaseManifest.packages, ...(releaseManifest.enterprisePackages ?? [])].map((entry) => ({ ...entry, kind: "package" as const })),
     ...(releaseManifest.legalDocuments ?? []).map((entry) => ({ ...entry, kind: "legal" as const })),
   ];
   for (const entry of releaseEntries) {

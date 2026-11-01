@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- expect.stringMatching and parsed JSON are untyped */
 // Enterprise foundations, N3b (owner decision 2026-10-31, option A): an Enterprise install's templates are built AT APPROVAL, from the release's own pinned CDK app and the install's
 // recorded settings. Each test names the guard it protects; the lane report lists the mutation that makes each one fail.
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -303,9 +303,23 @@ describe("agentx bundle approve, Enterprise", () => {
 describe("the kit is part of the signed bundle", () => {
   it("names its entry as a .mjs file under synth-kit/, nothing else", async () => {
     const { SynthKitManifestSchema } = await import("@agentx/contracts");
-    const kit = { schemaVersion: 1, format: "rovara-synth-kit", nodeMajor: 22 };
+    const kit = { schemaVersion: 1, format: "rovara-synth-kit", nodeMajor: 22, releaseSha256: "a".repeat(64), gitCommit: "b".repeat(40) };
     expect(SynthKitManifestSchema.safeParse({ ...kit, entry: "synth-kit/synth.mjs" }).success).toBe(true);
     for (const entry of ["synth-kit/synth.js", "other/synth.mjs", "synth.mjs", "synth-kit/../x.mjs"]) expect(SynthKitManifestSchema.safeParse({ ...kit, entry }).success, entry).toBe(false);
+  });
+
+  it("is refused at approval when the bundle's release is not the release the kit says it was made from", async () => {
+    const world = await EnterpriseWorld.create(made);
+    const verified = await world.verify();
+    try {
+      await expect(buildAtApproval({ bundle: { ...verified, manifest: { ...verified.manifest, gitCommit: "c".repeat(40) } }, settings: SETTINGS_ENT(), runner: testRunner })).rejects.toThrow(/made from another release/);
+      const files = verified.manifest.files.map((entry) => (entry.file === "release.json" ? { ...entry, sha256: "d".repeat(64) } : entry));
+      await expect(buildAtApproval({ bundle: { ...verified, manifest: { ...verified.manifest, files } }, settings: SETTINGS_ENT(), runner: testRunner })).rejects.toThrow(/made from another release/);
+      // Positive control: the same bundle builds.
+      await buildAtApproval({ bundle: verified, settings: SETTINGS_ENT(), runner: testRunner });
+    } finally {
+      await verified.cleanup();
+    }
   });
 
   it("is listed, hashed and signed with the other files, and a changed kit file is refused like any changed file", async () => {
@@ -342,11 +356,18 @@ describe("the kit is part of the signed bundle", () => {
     await writeRelease(release);
     const attempt = async (name: string, prepare: (dir: string) => Promise<void>) => {
       const dir = join(root, name);
-      await writeFakeKit(dir);
+      await writeFakeKit(dir, { releaseSha256: sha256OfBytes(await readFile(join(release, "release.json"))) });
       await prepare(dir);
       return buildBundle({ releaseDir: release, out: join(root, `out-${name}`), images: IMAGES, exportImage: fakeExporter, signer: newTestKey().signer, synthKitDir: dir });
     };
     await expect(attempt("nokit", async (dir) => { await rm(join(dir, "kit.json")); })).rejects.toThrow(/no kit\.json/);
+    const edited = (change: Record<string, string>) => async (dir: string) => {
+      const kit = JSON.parse(await readFile(join(dir, "kit.json"), "utf8")) as Record<string, unknown>;
+      await writeFile(join(dir, "kit.json"), JSON.stringify({ ...kit, ...change }));
+    };
+    await expect(attempt("otherhash", edited({ releaseSha256: "e".repeat(64) }))).rejects.toThrow(/different release/);
+    await expect(attempt("othercommit", edited({ gitCommit: "e".repeat(40) }))).rejects.toThrow(/different release/);
+    await attempt("rightrelease", async () => undefined);
     await expect(attempt("noentry", async (dir) => { await rm(join(dir, "synth.mjs")); })).rejects.toThrow(/entry is not in the kit/);
     await expect(attempt("link", async (dir) => { await symlink("/etc/hosts", join(dir, "evil.mjs")); })).rejects.toThrow(/link or a special file/);
     await expect(attempt("badjson", async (dir) => { await writeFile(join(dir, "kit.json"), "{}"); })).rejects.toThrow();

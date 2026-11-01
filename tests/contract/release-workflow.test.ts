@@ -66,6 +66,35 @@ describe("release workflow", () => {
     expect(conditionFor(wf.jobs.test?.if, PUBLIC_REPOSITORY)).toBeUndefined();
   });
 
+  it("makes and checks the synthesis kit in the job that signs the bundle: verify, then kit, then bundle with --synth-kit, in a sandbox", async () => {
+    const wf = await workflow();
+    const bundle = wf.jobs.bundle;
+    expect(bundle).toBeDefined();
+    const runs = bundle!.steps.map((step) => step.run ?? "").join("\n");
+    // In this order, in this one job: the release is verified, the kit is made from it (its self-checks run), and only then the bundle is signed, with that kit.
+    const verify = runs.indexOf("npm run release:verify");
+    const kit = runs.indexOf("npm run release:kit");
+    const sign = runs.indexOf("npm run release:bundle");
+    expect(verify).toBeGreaterThanOrEqual(0);
+    expect(kit).toBeGreaterThan(verify);
+    expect(sign).toBeGreaterThan(kit);
+    const signLine = runs.slice(sign).split("\n")[0] ?? "";
+    expect(signLine).toContain('--synth-kit "$RUNNER_TEMP/kit"');
+    const kitLine = runs.slice(kit).split("\n")[0] ?? "";
+    expect(kitLine).toContain('--out "$RUNNER_TEMP/kit"');
+    // The self-checks run in a sandbox, never without one.
+    expect(runs).toContain("bubblewrap");
+    expect(runs).not.toContain("--allow-unsandboxed-check");
+    // The only place a bundle is signed from a workflow.
+    for (const [name, job] of Object.entries(wf.jobs)) {
+      if (name !== "bundle") expect(job.steps.map((step) => step.run ?? "").join("\n"), `${name} signs no bundle`).not.toContain("release:bundle");
+    }
+    // Guarded like the other publishing jobs, and off until the owner enables it.
+    expect(conditionFor(bundle!.if, PUBLIC_REPOSITORY)).toBe("vars.AGENTX_PUBLISH_ENABLED == 'true' && vars.AGENTX_BUNDLE_ENABLED == 'true' && vars.AGENTX_BUNDLE_KMS_KEY != ''");
+    expect(bundle!.if).toContain("github.repository == 'PrepLabsAI/Rovara'");
+    expect(bundle!.needs).toEqual(["images", "release"]);
+  });
+
   it("the test job runs typecheck, lint, build, test and infra:synth", async () => {
     const wf = await workflow();
     const testRun = wf.jobs.test!.steps.map((s) => s.run ?? "").join("\n");
