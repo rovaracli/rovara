@@ -228,9 +228,12 @@ export async function startSwebenchRun(
   if (context.developerId === undefined) throw agentXError("TASK_STOP_CONFIG_MISSING", "The eval requesting principal is missing.");
   const snapshot = await captureTaskStopEvalAdmission({ ...dependencies, now: () => now(dependencies).getTime(), requireScopeAccess: async () => { await context.projectModel(request.model); } },
     { orgId, developerId: context.developerId, project: context.projectName, agentScope: "none_eval", pathLimitMicrousd });
+  // The requester's member record is read before the enrolled branch, so it is judged whether or not spending stops are enabled: a person with no record is an unlinked requester (the
+  // Slack route decided that); one with a record must hold a role this release reads, a record with no role included.
+  const member = await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: orgMemberKey(orgId, context.developerId), ConsistentRead: true }));
+  if (member.Item !== undefined && !OrgRoleSchema.safeParse(member.Item.role).success) throw agentXError("FORBIDDEN", "Your company role could not be read, so it cannot start an eval run.");
   let authority: TransactItem[] = [];
   if (snapshot.kind === "captured") {
-    const member = await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: orgMemberKey(orgId, context.developerId), ConsistentRead: true }));
     const role = OrgRoleSchema.parse(member.Item?.role);
     const actor = { orgId, developerId: context.developerId, role, project: context.projectName };
     authority = [...budgetActorChecks(dependencies.tableName, orgId, actor), ...await taskStartProjectAuthorityChecks(dependencies, actor,
