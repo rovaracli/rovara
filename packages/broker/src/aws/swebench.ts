@@ -14,7 +14,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import {
-  OrgIdSchema, OrgRoleSchema, orgMemberKey, projectMetaKey, calculateTaskStop,
+  OrgIdSchema, OrgRoleSchema, isWriterOrgRole, orgMemberKey, projectMetaKey, calculateTaskStop,
   SWEBENCH_COST_CEILING_DEFAULT_USD,
   SWEBENCH_RUN_TIME_LIMIT_SECONDS,
   SWEBENCH_TERMINAL_STATUSES,
@@ -232,6 +232,8 @@ export async function startSwebenchRun(
   if (snapshot.kind === "captured") {
     const member = await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: orgMemberKey(orgId, context.developerId), ConsistentRead: true }));
     const role = OrgRoleSchema.parse(member.Item?.role);
+    // I2: an eval run spends the company's money like a task does. An Auditor reads and starts nothing, whatever Slack channel or project grant they hold.
+    if (!isWriterOrgRole(role)) throw agentXError("FORBIDDEN", "Your company role is read-only, so it cannot start an eval run.");
     const actor = { orgId, developerId: context.developerId, role, project: context.projectName };
     authority = [...budgetActorChecks(dependencies.tableName, orgId, actor), ...await taskStartProjectAuthorityChecks(dependencies, actor,
       async () => {

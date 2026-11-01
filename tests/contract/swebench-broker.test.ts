@@ -667,6 +667,16 @@ it("M47 actual eval start captures the strict project stop without applying the 
   expect([...h.launches.values()][0]?.run.maxCostUsd).toBe(1.234567);
 });
 
+it("an Auditor cannot start an eval run, whatever project grant it holds (I2)", async () => {
+  const h = await enrolledEvalBroker();
+  h.db.set({ ...orgMemberKey(TEST_ORG, h.developerId), orgId: TEST_ORG, developerId: h.developerId, role: "auditor" });
+  h.db.set({ ...developerOrgKey(h.developerId), orgId: TEST_ORG, role: "auditor" });
+  const reply = await start(h.handler);
+  expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(h.startExecution).not.toHaveBeenCalled();
+  expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")).toHaveLength(0);
+});
+
 for (const loss of ["member", "project"] as const) it(`M47 eval refuses ${loss} loss after acceptance before dispatch`, async () => {
   const h = await enrolledEvalBroker(), send = h.db.send.bind(h.db); let changed = false;
   h.db.send = async command => {
