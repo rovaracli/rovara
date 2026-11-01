@@ -301,6 +301,77 @@ jobs:
           ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
         run: npx vitest run --config vitest.native-p0.config.ts tests/e2e/m1-4-journeys.test.ts
 
+  # Stdio MCP host redesign (T11, design section 14): the runner image on a real Linux host. It builds environments/mcp-runner/Dockerfile and runs it the way ECS runs a runner task
+  # (read-only, every capability dropped, a non-root user, an init process, the bundle volume read-only for the server): the processes' uid, no_new_privs, capabilities and limits
+  # read from the host's /proc, a hostile package that must fail at every step it tries, the real install program against a fixture registry, uid 10003 reading the whole tree,
+  # the bridge, fetch, install and controller refusing to run as root, and a bundle with the wrong bytes refused. Nothing here is mocked except the registry and the controller's
+  # network (this host's loopback). It is small: one image build, one test file, about ten minutes on the ARM runner (the runner image is ARM64 like the Fargate tasks).
+  # A pull request that changes none of the runner's paths passes in under a minute without building anything; a manual run, or a push, always runs the checks.
+  mcp-runner-linux:
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - name: Did anything the runner is made of change?
+        id: paths
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
+          if grep -Eq '^(environments/mcp-runner/|packages/gateway/src/mcp-runner/|packages/gateway/src/mcp-controller\.ts|packages/broker/src/mcp-runner/|packages/broker/src/mcp-host/|tests/linux/mcp-runner/|tests/support/fixture-npm-registry\.ts|\.github/workflows/ci\.yml)' "$RUNNER_TEMP/changed.txt"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No file of the MCP runner changed; the Linux runner checks are skipped."
+          fi
+      - uses: actions/setup-node@v5
+        if: steps.paths.outputs.run == 'true'
+        with:
+          node-version-file: .node-version
+          cache: npm
+      # A failed login only means the mirror is skipped. Only the node image is pulled (exported to the steps below as ROVARA_CI_IMAGE_NODE_BUILD).
+      - name: Log in to the GHCR image mirror (read-only)
+        if: steps.paths.outputs.run == 'true'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || echo "::warning::GHCR login failed; images will come from their upstream registries"
+      - name: Pull the pinned node image (GHCR mirror first)
+        if: steps.paths.outputs.run == 'true'
+        run: node scripts/ci-images.ts pull --github-env node-build
+      # The Dockerfile's FROM lines name the pinned upstream image; the build uses a copy whose FROM lines name the local alias of the very same digest, so it pulls nothing.
+      - name: Build the runner image
+        if: steps.paths.outputs.run == 'true'
+        run: |
+          node scripts/ci-images.ts dockerfile environments/mcp-runner/Dockerfile "$RUNNER_TEMP/mcp-runner.Dockerfile"
+          docker build -f "$RUNNER_TEMP/mcp-runner.Dockerfile" -t rovara-mcp-runner:ci .
+      - name: The image holds what the design promises
+        if: steps.paths.outputs.run == 'true'
+        run: sh environments/mcp-runner/check-image.sh rovara-mcp-runner:ci
+      - run: npm ci
+        if: steps.paths.outputs.run == 'true'
+      # The tests drive the real controller and programs through their built output.
+      - name: Build the packages the runner tests use
+        if: steps.paths.outputs.run == 'true'
+        run: npx tsc -b packages/contracts packages/gateway packages/broker
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+      - name: The runner on Linux (real containers, ECS flags)
+        if: steps.paths.outputs.run == 'true'
+        env:
+          ROVARA_MCP_RUNNER_IMAGE: rovara-mcp-runner:ci
+        run: npx vitest run tests/linux/mcp-runner
+      - name: Remove what a failed run left
+        if: always() && steps.paths.outputs.run == 'true'
+        run: |
+          docker ps -aq --filter label=rovara.mcp-ci | xargs -r docker rm -f
+          docker volume ls -q --filter label=rovara.mcp-ci | xargs -r docker volume rm -f
+
   web-e2e:
     needs: scope
     if: needs.scope.outputs.docs_only != 'true'
@@ -338,7 +409,7 @@ jobs:
 
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:
-    needs: [scope, checks, test, release, linux-runtime, web-e2e]
+    needs: [scope, checks, test, release, linux-runtime, mcp-runner-linux, web-e2e]
     if: >-
       always() && github.event.pull_request.draft != true && (
       (github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name != 'push')
