@@ -313,7 +313,9 @@ export class McpHost extends Construct {
     policy({
       sid: "ResolveServerSecretArns", actions: ["secretsmanager:DescribeSecret"], resources: [`${secretPrefix}*`],
     });
-    // Exactly the calls the bundle store makes (get, put, head), on the `bundles/` prefix; a missing key answers 403 (not 404) without ListBucket, and the store tells the two apart.
+    // Exactly the calls the bundle store makes (get, put, head), on the `bundles/` prefix. With `s3:ListBucket` on the bucket a HEAD of a missing key answers 404 (without it S3 answers 403, which the
+    // store would take for a real refusal): https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html . ListBucket is not given an `s3:prefix` condition because a HEAD carries no prefix, so
+    // the condition would fail it; the bucket holds nothing but bundles.
     policy({ sid: "ReadAndWriteBundles", actions: ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"], resources: [this.bundleBucket.arnForObjects("bundles/*")] });
     policy({ sid: "SeeWhichBundlesExist", actions: ["s3:ListBucket"], resources: [this.bundleBucket.bucketArn] });
     policy({ sid: "UseTheBundleKey", actions: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"], resources: [this.bundleKey.keyArn] });
