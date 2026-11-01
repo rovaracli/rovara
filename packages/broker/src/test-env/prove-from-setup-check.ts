@@ -42,9 +42,10 @@ export function proveReportFromSetupCheck(input: {
   const checksOf = (kind: string) => environment.repos.flatMap((repo) => repo.checks).filter((check) => check.kind === kind);
   const build = checksOf("build"), smoke = checksOf("smoke"), tests = checksOf("test");
   if (smoke.length + tests.length === 0) return { ok: false, refusal: "nothing_to_prove" };
-  const runnable: ProjectCommand[] = [...setupCommands, ...[...build, ...smoke, ...tests].map((check) => check.command)];
-  const ran = (command: ProjectCommand) => covered(command, definition.setup) || covered(command, definition.readiness);
-  if (!runnable.every(ran)) return { ok: false, refusal: "commands_differ" };
+  // A setup command is proved by a setup or readiness command that matches it. A build, smoke or test check is proved ONLY by the readiness command that is exactly it: a command that merely matches a setup
+  // command (a proposal that lists `npm ci` as a test) did not run as a test, and the report must not say the suite passed.
+  const checkCommands = [...build, ...smoke, ...tests].map((check) => check.command);
+  if (!setupCommands.every((command) => covered(command, definition.setup) || covered(command, definition.readiness)) || !checkCommands.every((command) => covered(command, definition.readiness))) return { ok: false, refusal: "commands_differ" };
 
   const step = (name: TestEnvProveReport["steps"][number]["step"], did: boolean) => ({ step: name, status: did ? "passed" as const : "skipped" as const, durationMs: 0 });
   const report = TestEnvProveReportSchema.safeParse({

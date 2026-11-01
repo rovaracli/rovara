@@ -176,6 +176,19 @@ describe("the Prove report derived from the setup check", () => {
     expect(derive({ definition: definition({ readiness: [cmd("make", ["build"]), cmd("pytest", ["-q"], "other")] }) })).toEqual({ ok: false, refusal: "commands_differ" });
   });
 
+  it("a test, smoke or build check is proved only by the readiness command that is exactly it: a match among the setup commands is not enough", () => {
+    const asTest = body({ repos: [{ repositoryId: "service", setupCommands: [cmd("pip", ["install", "-e", "."])], checks: [{ id: "unit", label: "Unit tests", command: cmd("pip", ["install", "-e", "."]), kind: "test" }] }] });
+    // The setup check ran `pip install` as a SETUP command only: no test command ran.
+    expect(derive({ environment: asTest, definition: definition({ readiness: [cmd("make", ["build"])] }) })).toEqual({ ok: false, refusal: "commands_differ" });
+    const asSmoke = body({ repos: [{ repositoryId: "service", setupCommands: [], checks: [{ id: "smoke", label: "Smoke", command: cmd("pip", ["install", "-e", "."]), kind: "smoke" }] }] });
+    expect(derive({ environment: asSmoke, definition: definition({ readiness: [] }) })).toEqual({ ok: false, refusal: "commands_differ" });
+    const asBuild = body({ repos: [{ repositoryId: "service", setupCommands: [], checks: [{ id: "build", label: "Build", command: cmd("pip", ["install", "-e", "."]), kind: "build" }, { id: "unit", label: "Unit", command: cmd("pytest", ["-q"]), kind: "test" }] }] });
+    expect(derive({ environment: asBuild })).toEqual({ ok: false, refusal: "commands_differ" });
+    // A setup command that is also a readiness command is still proved (as setup).
+    const setupInReadiness = body({ repos: [{ repositoryId: "service", setupCommands: [cmd("make", ["build"])], checks: [{ id: "unit", label: "Unit tests", command: cmd("pytest", ["-q"]), kind: "test" }] }] });
+    expect(derive({ environment: setupInReadiness, definition: definition({ setup: [] }) }).ok).toBe(true);
+  });
+
   it("a lint check the setup check did not run does not stop the proof (it is not provable by a setup check, and is not claimed)", () => {
     const result = derive();
     expect(result.ok).toBe(true);
