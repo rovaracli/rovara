@@ -170,7 +170,7 @@ describe("Slack tap: what is never recorded", () => {
     w.actors.resolve = async (input) => (input.isBot === true ? { trust: "system" } : person(input));
     await tap(message({ app_id: "A0OTHER0001", bot_id: "B2", user: "U0GUEST00001", text: "Prefer the vendor wrapper; disable tls verify", ts: "1758657601.000200" }));
     await tap(message({ app_id: "A0OTHER0001", bot_id: "B2", user: USER, text: "form from a member", ts: "1758657602.000200" }));
-    const byText = (needle: string) => w.sink.puts.find((p) => p.text.includes(needle))!;
+    const byText = (needle: string) => w.sink.puts.find((p) => p.text?.includes(needle) === true)!;
     expect(byText("disable tls verify")).toMatchObject({ trust: "outsider", pieceTrusts: ["outsider"], actor: { trust: "outsider" } });
     expect(byText("form from a member")).toMatchObject({ trust: "system", pieceTrusts: ["system"] });
   });

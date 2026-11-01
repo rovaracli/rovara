@@ -10,6 +10,9 @@
 // Nothing here calls AWS or a model. The task-side facts (who started a task, with what intent, steered by whom) come from `TaskSubjectSource`, which the connecting lane builds from the task record;
 // here each test states them, and states them FROM the trust the real capture gave the planted rows (`trustOf`), never from the test's own idea of who is an outsider.
 import { OrgIdSchema, type OrgId } from "@agentx/contracts";
+import { createCodeFacts, type CodeFactsReader } from "../../packages/broker/src/lessons/code-facts.js";
+import { locateCitation } from "@agentx/contracts";
+import type { CitationVerifier } from "../../packages/broker/src/lessons/ports.js";
 import { approveLesson, listWaiting, type ApproveDeps } from "../../packages/broker/src/lessons/approve.js";
 import { loadLessonsForStage, type LoadDeps, type LoadRequest } from "../../packages/broker/src/lessons/load.js";
 import type { LearningSettings, LearningSettingsReader } from "../../packages/broker/src/lessons/policy.js";
@@ -147,6 +150,43 @@ export function spanOfRow(row: StoredEvent, kind: SpanKind, authorId?: string): 
 // The lesson pipeline
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// A fixture repository: files by commit. The code facts are the REAL `createCodeFacts` over a reader that answers only for the exact commit asked (as the host does), and the
+// citation verifier checks a citation with the REAL shared definition (`locateCitation`, the one the worker uses). Only the reader is a fixture: no production CitationVerifier
+// is on this branch yet, so this thin adapter stands where it will be; re-point it when it lands.
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+export type RepoFixture = Record<string, Record<string, string>>;
+export const PR_HEAD = "fedcba9876543210fedcba9876543210fedcba98";
+export const RETRY_FILE = [...Array.from({ length: 11 }, (_, i) => `// line ${i + 1}`), "export function withRetry(", "  return 1;", "}", ...Array.from({ length: 20 }, (_, i) => `// tail ${i}`)].join("\n");
+/** The base and merged commits hold the retry helper; the pull request head also holds a file that exists nowhere else. */
+export function branchRepo(extra: Record<string, string> = {}): RepoFixture {
+  return { [BASE]: { "src/retry/index.ts": RETRY_FILE }, [MERGED]: { "src/retry/index.ts": RETRY_FILE }, [PR_HEAD]: { "src/retry/index.ts": RETRY_FILE, "src/only-on-the-branch.ts": "export const trustMe = true;\n", ...extra } };
+}
+export function fixtureReader(repo: RepoFixture, options: { fail?: boolean } = {}): CodeFactsReader {
+  return {
+    async file(input) {
+      if (options.fail === true) throw new Error("host down");
+      return repo[input.commit]?.[input.path];
+    },
+    async kind(input) {
+      if (options.fail === true) throw new Error("host down");
+      const tree = repo[input.commit] ?? {};
+      return input.path in tree ? "file" : Object.keys(tree).some((path) => path.startsWith(`${input.path}/`)) ? "dir" : "none";
+    },
+  };
+}
+export function fixtureVerifier(reader: CodeFactsReader): CitationVerifier {
+  return {
+    async verify(input) {
+      let text: string | undefined;
+      try { text = await reader.file({ workspaceId: input.workspaceId, project: PROJECT, repo: input.repo, commit: input.commit, path: input.path, timeoutMs: 1000 }); } catch { return { result: "unknown" }; }
+      const lines = text?.split("\n");
+      const found = locateCitation(text === undefined ? undefined : { lineCount: lines!.length, lines }, input);
+      return found.kind === "valid" ? { result: "valid" } : found.kind === "moved" ? { result: "moved", startLine: found.startLine, endLine: found.endLine } : found.kind === "stale" ? { result: "stale" } : { result: "unknown" };
+    },
+  };
+}
+
 class Rows implements OutcomeRowReader {
   sendBacks = new Map<string, SendBackFact>();
   reverter: { actorDeveloperId?: string } | undefined;
@@ -186,6 +226,8 @@ export interface PipelineOptions {
   settings?: LearningSettings;
   access?: AccessCheckPort;
   verifierResult?: "valid" | "moved" | "stale" | "unknown";
+  /** A fixture repository: the code facts and the citation verifier are then the real ones over it, and `verifierResult` is not used. */
+  repo?: { files: RepoFixture; hostDown?: boolean };
   workspaceId?: string;
   eligible?: string[];
   owners?: string[];
@@ -207,11 +249,15 @@ export function pipeline(options: PipelineOptions = {}) {
   const access = options.access ?? allowAllAccess;
   let counter = 0;
   const newId = (): string => `les_${String(++counter).padStart(4, "0")}`;
+  const counted: Array<{ name: string; tags: Record<string, string> | undefined }> = [];
+  const metrics = { count: (name: string, tags?: Record<string, string>): void => { counted.push({ name, tags }); } };
+  const codeReader = options.repo === undefined ? undefined : fixtureReader(options.repo.files, { fail: options.repo.hostDown === true });
   const processDeps: ProcessDeps = {
-    store, embedder, vectors, judgeModel, spend: new Spend(), audit, alerts, now: clock.now,
-    verifier: verifier(options.verifierResult ?? "valid"), facts: defaultFacts, settings: reader, newId,
+    store, embedder, vectors, judgeModel, spend: new Spend(), audit, alerts, now: clock.now, metrics,
+    verifier: codeReader === undefined ? verifier(options.verifierResult ?? "valid") : fixtureVerifier(codeReader),
+    facts: codeReader === undefined ? defaultFacts : createCodeFacts({ reader: codeReader, repositoriesOf: async () => ["api"] }), settings: reader, newId,
   };
-  const reflectDeps: ReflectDeps = { model: reflectModel, spend: new Spend(), audit, settings: reader, edition: "enterprise", now: clock.now };
+  const reflectDeps: ReflectDeps = { model: reflectModel, spend: new Spend(), audit, settings: reader, edition: "enterprise", now: clock.now, metrics };
   const fakeRows = new Rows();
   const rows: OutcomeRowReader = options.outcomeRows ?? fakeRows;
   const bases = new Map<string, TaskSubjectBase>();
@@ -280,6 +326,8 @@ export function pipeline(options: PipelineOptions = {}) {
   return {
     key, workspaceId, store, vectors, audit, alerts, clock, reflectModel, judgeModel, processDeps, reflectDeps, taskDeps, approveDeps, loadDeps, rows,
     register, endTask, lessons, byStatus, approveAll, load, loadRequest, waiting, directory: dir,
+    /** Why each ineligible task was refused (the reflector's own metric), in order. */
+    ineligibleReasons: (): string[] => counted.filter((c) => c.name === "learning.reflect_ineligible").map((c) => c.tags?.reason ?? ""),
     /** The prompt the reflector's model was actually shown, joined. */
     prompts: (): string => reflectModel.calls.map((c) => `${String(c.system)}\n${String(c.user)}`).join("\n----\n"),
   };
