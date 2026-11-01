@@ -128,6 +128,8 @@ export const TestEnvironmentStateSchema = z
         risk: z.enum(["low", "medium", "high"]),
         lessSafe: z.array(z.string().max(60)).max(20),
         summary: TestEnvSummarySchema,
+        /** The whole proposed body, so a maintainer can edit it. */
+        environment: TestEnvironmentBodySchema,
         /** What will run, as the broker formats it (never the browser): each setup command and check, with the arguments that narrow its tests. */
         runs: z.array(TestEnvRunsSchema).max(16).default([]),
         /** Where each value came from: a file and line, a code detector, or the setup agent. */

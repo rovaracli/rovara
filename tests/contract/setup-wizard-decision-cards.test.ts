@@ -3,7 +3,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { DecisionCardsViewSchema, testEnvDigest, type DecisionCard } from "../../packages/contracts/src/index.js";
-import { createDecisionPerformer } from "../../packages/broker/src/decisions/performer.js";
 import { takesTheChange } from "../../packages/broker/src/decisions/test-env-source.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
@@ -102,7 +101,6 @@ describe("approve_test_env", () => {
       const viaToken = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 });
       expect(viaToken.status).toBe(403);
       expect(errorOf(viaToken).message).toContain("browser");
-      expect(createDecisionPerformer({}).approve).toBeTypeOf("function");
       expect(t.db.find((item) => item.entityType === "TEST_ENV_REVISION")).toHaveLength(1);
     }));
   });
@@ -156,6 +154,7 @@ describe("confirm_env_change", () => {
       const second = await approveSecond(t);
       const { cards: list } = await cards(t);
       const card = ofKind(list, "confirm_env_change")[0]!;
+      expect(card.id).toBe(`confirm_env_change:${taskId}`);
       const declined = await t.dev(OMAR, "POST", `/v1/app/decisions/confirm_env_change/${taskId}/reject`, { requestId: randomUUID(), reason: "not_now" });
       expect(declined.status, JSON.stringify(declined.body)).toBe(200);
       expect(pinOf(t, taskId)).toMatchObject({ revision: 1, declined: second });

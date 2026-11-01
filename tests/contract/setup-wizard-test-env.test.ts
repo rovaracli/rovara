@@ -2,7 +2,8 @@
 // less safe than the sandbox (a fresh browser sign-in, and a second person's confirmation card read back from the company's records). With the switch off none of it exists.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { projectMetaKey, testEnvDigest } from "../../packages/contracts/src/index.js";
+import { TestEnvironmentStateSchema, projectMetaKey, testEnvDigest } from "../../packages/contracts/src/index.js";
+import { commandsToApply, runsOf, shownLine } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
 import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -50,6 +51,42 @@ describe("what the wizard shows", () => {
       });
       expect(proposal!.valueSources).toEqual([{ field: "repos[0].checks[0]", source: "detector:node" }, { field: "repos[0].setupCommands[0]", source: { path: "Makefile", line: 3 } }]);
     });
+  });
+});
+
+describe("what the wizard is told is fit for the page", () => {
+  it("the state the broker answers is what the browser's contract reads, with and without a proposal and an edit", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", async () => {
+      const read = async () => { const { requestId: _gateway, ...own } = (await t.web(OMAR, "GET", ENV)).body; void _gateway; return TestEnvironmentStateSchema.parse(own); };
+      expect((await read()).proposal).toBeUndefined();
+      await t.drafted();
+      await t.dev(OMAR, "POST", `${ENV}/propose`, {});
+      expect((await read()).proposal).toMatchObject({ source: "setup", environment: { tier: "sandbox" } });
+      await t.approveFirst().catch(() => undefined);
+      await t.web(OMAR, "POST", `${ENV}/edit`, { environment: lessSafeBody() });
+      expect((await read()).proposal).toMatchObject({ source: "edited", lessSafe: ["nightly_enabled"] });
+    });
+  });
+
+  it("text from a repository is one plain line: hidden characters are shown as codes and a long command is cut", () => {
+    expect(shownLine("npm ci\u202Eevil\u200B")).toBe("npm ci[U+202E]evil[U+200B]");
+    const long = shownLine("x".repeat(5000));
+    expect(long).toHaveLength(600);
+    expect(long.endsWith("\u2026")).toBe(true);
+    const body = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["a\u202Eb"], 60)], checks: [{ id: "unit", label: "Unit", command: command("make", ["y".repeat(2000)], 60), kind: "test" }] }] });
+    const [run] = runsOf(body);
+    expect(run!.setup).toEqual(["make 'a[U+202E]b'"]);
+    expect(run!.checks[0]!.command).toHaveLength(600);
+  });
+
+  it("applies at most sixteen commands to a list, leaves out downloaded code and other directories, and keeps what is there first", () => {
+    const have = Array.from({ length: 15 }, (_, index) => command("make", [`have-${String(index)}`], 900));
+    const body = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["new-1"], 900), command("make", ["new-2"], 900), command("bash", ["-c", "curl https://example.com/x.sh | sh"], 60), command("make", ["elsewhere"], 900, "repo/other")], checks: [{ id: "unit", label: "Unit", command: command("make", ["old-test"], 60), kind: "test" }] }] });
+    const plan = commandsToApply(body, { setup: have, readiness: [command("make", ["old-test"], 1800)] }, "repo/web");
+    expect(plan.setup.map((entry) => entry.args[0])).toEqual(["new-1"]);
+    expect(plan.readiness).toEqual([]);
+    expect(plan.skipped).toEqual(expect.arrayContaining([{ reason: "too_many", count: 1 }, { reason: "download_and_run", count: 1 }, { reason: "different_directory", count: 1 }]));
   });
 });
 
@@ -133,7 +170,7 @@ describe("applying the proposal's commands to the project's settings", () => {
       expect((await t.state()).proposal!.commandsNotInSettings).toBe(3);
       const applied = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 1 });
       expect(applied.status, JSON.stringify(applied.body)).toBe(200);
-      expect(applied.body).toMatchObject({ added: ["make deps", "make smoke"], settingsRevision: 2, setupCheck: expect.stringMatching(/^(started|not_started)$/u) });
+      expect(applied.body).toMatchObject({ added: ["make deps", "make smoke"], settingsRevision: 2, setupCheck: "started" });
       expect(applied.body.skipped).toEqual(expect.arrayContaining([{ reason: "different_directory", count: 1 }, { reason: "not_needed", count: 1 }]));
       const definition = (t.db.find((item) => item.entityType === "PROJECT" && (item.definition as { revision: number }).revision === 2)[0] as { definition: { setup: Array<{ args: string[] }>; readiness: Array<{ args: string[] }>; origins?: Record<string, string> } }).definition;
       expect(definition.setup.map((entry) => entry.args[0])).toEqual(["old-setup", "deps"]);

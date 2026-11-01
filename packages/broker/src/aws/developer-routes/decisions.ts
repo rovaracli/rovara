@@ -51,7 +51,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
     maintainedProjects: async (who: { orgId: string; developerId: string }) => [...(await visibleProjectRoles(deps, who as DeveloperCaller)).entries()].filter(([, role]) => projectAllows(role, "edit_settings")).map(([name]) => name).sort(),
     confirmPathOf: async (who: { orgId: string; developerId: string }, scope: { project: string; digest: string; expectedRevision: number }) => {
       if (deps.agents === undefined) return undefined;
-      const { card } = await liveTestEnvCard(deps.agents, { orgId: who.orgId as never, ...scope, askedBy: who.developerId });
+      const { card } = await liveTestEnvCard(deps.agents, { orgId: who.orgId, ...scope, askedBy: who.developerId });
       return card.state === "pending" && card.record !== undefined && card.approvalId !== undefined && await mayDecideApproval(deps.agents, who as DeveloperCaller, card.record) ? `/v1/app/approve/${card.approvalId}` : undefined;
     },
   };

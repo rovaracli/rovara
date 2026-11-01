@@ -100,7 +100,7 @@ export async function setupWizardBench(options: { agents?: boolean } = {}) {
       rawPath: path.replace("/v1/app/", "/v1/web/"), rawQueryString: "", routeKey: "ANY /v1/web/{proxy+}",
       headers: { cookie: `__Host-agentx_review_session=${id}`, "sec-fetch-site": "same-origin", origin: new URL(DEV_ISSUER).origin, [APP_CSRF_HEADER]: appCsrfTokenFor(id) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), requestContext: { requestId: "r", http: { method } },
-    } as never);
+    });
     return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
   };
   const state = async (who: Developer = OMAR) => (await h.dev(who, "GET", ENV)).body as { approved?: { revision: number; digest: string }; draft: { status: string }; proposal?: { digest: string; source: string; risk: string; lessSafe: string[]; proved: boolean; needs: { freshSignIn: boolean; secondPerson: boolean }; approval: { status: string }; runs: Array<{ setup: string[]; checks: Array<{ command: string; selectArgs?: string[] }> }>; valueSources: Array<{ field: string; source: unknown }>; commandsNotInSettings: number } };

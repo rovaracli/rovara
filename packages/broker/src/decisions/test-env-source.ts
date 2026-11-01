@@ -17,7 +17,6 @@ import { environmentUnusedReason, readTestEnvPin } from "../test-env/usable.js";
 import { testEnvironmentEnabled } from "../test-env/switch.js";
 import type { DecisionItem } from "./project.js";
 
-type Item = Extract<DecisionItem, { kind: "approve_test_env" }>;
 type ChangeItem = Extract<DecisionItem, { kind: "confirm_env_change" }>;
 interface Who { orgId: string; developerId: string }
 
@@ -40,7 +39,7 @@ export interface TestEnvCardPorts {
 /** One `approve_test_env` card per project that has a proved proposal waiting; the caller's projects only. A project that cannot be read is left out (fail closed). */
 export async function approveTestEnvItemsFor(ports: TestEnvCardPorts, caller: Who, env: NodeJS.ProcessEnv = process.env): Promise<DecisionItem[]> {
   if (!testEnvironmentEnabled(env)) return [];
-  const orgId = caller.orgId as OrgId;
+  const orgId = caller.orgId;
   const found: DecisionItem[] = [];
   for (const project of (await ports.maintainedProjects(caller)).slice(0, TEST_ENV_CARD_PROJECTS_MAX)) {
     try {

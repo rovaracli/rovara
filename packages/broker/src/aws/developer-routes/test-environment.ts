@@ -151,7 +151,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
       approval = await testEnvCardStateOf(deps.agents, { orgId: project.orgId, project: project.name, digest: shown.digest, expectedRevision: approved?.revision ?? 0, askedBy: project.developerId }).catch(() => "none" as const);
     }
     proposal = {
-      digest: shown.digest, source: shown.source, risk, lessSafe, summary: testEnvSummaryOf(shown.body), runs: runsOf(shown.body),
+      digest: shown.digest, source: shown.source, risk, lessSafe, summary: testEnvSummaryOf(shown.body), environment: shown.body, runs: runsOf(shown.body),
       valueSources: valueSources.flatMap((entry) => { const parsed = valueSourceOf(entry); return parsed === undefined ? [] : [parsed]; }),
       proved: testEnvIsProved(report, shown.digest), proveSteps: (report?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
       needs: { freshSignIn: lessSafe.length > 0 || risk === "high", secondPerson: lessSafe.length > 0 },
@@ -172,7 +172,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
 function valueSourceOf(entry: { field: string; source: unknown }): { field: string; source: string | { path: string; line: number } } | undefined {
   const { field, source } = entry;
   if (field.length < 1 || field.length > 200 || /[\p{Cc}\p{Cf}]/u.test(field)) return undefined;
-  if (source === "model" || (typeof source === "string" && /^detector:[a-z0-9_-]{1,40}$/u.test(source))) return { field, source: source as string };
+  if (source === "model" || (typeof source === "string" && /^detector:[a-z0-9_-]{1,40}$/u.test(source))) return { field, source };
   if (typeof source === "object" && source !== null) {
     const { path, line } = source as { path?: unknown; line?: unknown };
     if (typeof path === "string" && path.length >= 1 && path.length <= 500 && !/[\p{Cc}\p{Cf}]/u.test(path) && typeof line === "number" && Number.isInteger(line) && line >= 1 && line <= 10_000_000) return { field, source: { path, line } };
