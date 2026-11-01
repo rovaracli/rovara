@@ -2,7 +2,8 @@
 // environment variables it reads at start (packages/broker/src/context-sources/install.ts).
 //
 //   rovaraPrivateMcpCidrs          comma-separated private ranges outside which no private MCP server is tested or called -> ROVARA_PRIVATE_MCP_CIDRS
-//   rovaraStdioMcpServers          package-run servers. OFF: asking for them stops synth until the MCP host is redesigned (register ME-14)
+//   rovaraStdioMcpServers          package-run servers. Stops synth unless the release flag STDIO_MCP_RELEASED is true (it is false); then every setting below is required
+//   rovaraMcpRunnerSubnetCidrs, rovaraMcpRegistryCidrs, rovaraMcpControllerTlsSecretArn, rovaraMcpControllerDnsNamespace, rovaraMcpControllerCa   the runner network, the registry's ranges, the controller's certificate
 //   rovaraMcpHostCertificateArn    the ACM certificate of the MCP host's HTTPS listener (McpHost refuses to be built without one)
 //   rovaraMcpHostName, rovaraMcpHostedZoneId   the DNS name the certificate is for, and the Route 53 zone the alias record goes in
 //
@@ -18,7 +19,23 @@ export const PRIVATE_MCP_CONTEXT_KEYS = {
   hostName: "rovaraMcpHostName",
   hostedZoneId: "rovaraMcpHostedZoneId",
   npmRegistry: "rovaraMcpNpmRegistry",
+  runnerSubnetCidrs: "rovaraMcpRunnerSubnetCidrs",
+  registryCidrs: "rovaraMcpRegistryCidrs",
+  controllerTlsSecretArn: "rovaraMcpControllerTlsSecretArn",
+  controllerDnsNamespace: "rovaraMcpControllerDnsNamespace",
+  controllerCa: "rovaraMcpControllerCa",
 } as const;
+
+/**
+ * THE RELEASE FLAG for package-run MCP servers (stdio MCP host redesign, register ME-14). False: asking for them (`rovaraStdioMcpServers`) stops synth. It is flipped, in one commit, by the
+ * release that contains tasks T1 to T12, after the final review and the staging smoke have passed (the turn-on checklist). Replaces: the unconditional refusal.
+ */
+export const STDIO_MCP_RELEASED = false;
+/**
+ * The build does not yet put the MCP host in a stack of its own (the foundation does not expose the ids it needs). Until it does, a released flag still stops synth with a clear sentence
+ * rather than build a broker that points at a host that does not exist. Removed by the turn-on release together with the wiring.
+ */
+export const STDIO_MCP_HOST_STACK_BUILT = false;
 const KEYS = PRIVATE_MCP_CONTEXT_KEYS;
 
 export interface PrivateMcpInstall {
@@ -26,19 +43,25 @@ export interface PrivateMcpInstall {
   privateCidrs: string[];
   /** The network Rovara itself runs in, given to the broker (`ROVARA_VPC_CIDRS`) so it refuses the same overlap and never tests or calls an address inside it. Set with `privateCidrs`. */
   vpcCidrs?: string[];
-  /** Always false in a result: asking for package-run servers stops synth. Kept in the type so a later release can lift the refusal in one place. */
+  /** False unless the release flag is true AND the install asked for package-run servers. */
   stdioRequested: boolean;
   certificateArn?: string;
   hostName?: string;
   hostedZoneId?: string;
   /** The package registry (normalised, https, no credentials). Only recorded: it reaches the controller when package-run servers are on. */
   npmRegistry?: string;
+  runnerSubnetCidrs?: string[];
+  registryCidrs?: string[];
+  controllerTlsSecretArn?: string;
+  controllerDnsNamespace?: string;
+  controllerCa?: string;
 }
 
 const ACM_CERTIFICATE_ARN = /^arn:aws(?:-[a-z]+)*:acm:[a-z]{2}(?:-[a-z]+)+-\d:\d{12}:certificate\/[0-9A-Za-z-]+$/u;
 const DNS_NAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/u;
 const AWS_OWN_NAME = /(?:^|\.)amazonaws\.com$/u;
 const HOSTED_ZONE_ID = /^Z[0-9A-Z]{1,31}$/u;
+const SECRET_ARN = /^arn:aws(?:-[a-z]+)*:secretsmanager:[a-z]{2}(?:-[a-z]+)+-\d:\d{12}:secret:[A-Za-z0-9/_+=.@-]{1,512}$/u;
 
 const isSet = (value: unknown): boolean => value !== undefined;
 
@@ -59,6 +82,19 @@ function ipv4RangesOverlap(a: string, b: string): boolean {
   return inside(left, right.first) || inside(right, left.first);
 }
 
+/** A comma-separated list of 1 to `count` IPv4 ranges for a setting, each between /16 and /`maxPrefix` (a runner subnet), no repeats. */
+function cidrList(key: string, value: unknown, count: number, maxPrefix: number): string[] {
+  if (typeof value !== "string") throw new Error(`${key} must be a comma-separated string of IPv4 ranges`);
+  const items = [...new Set(value.split(",").map((part) => part.trim()).filter((part) => part !== ""))];
+  if (items.length < 1 || items.length > count) throw new Error(`${key} needs between 1 and ${count} ranges`);
+  for (const item of items) {
+    const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/u.exec(item);
+    const prefix = match === null ? Number.NaN : Number(match[5]);
+    if (match === null || [match[1], match[2], match[3], match[4]].some((octet) => Number(octet) > 255) || !(prefix >= 16 && prefix <= maxPrefix)) throw new Error(`${key} entry ${JSON.stringify(item)} is not an IPv4 range between /16 and /${maxPrefix}`);
+  }
+  return items;
+}
+
 function stdioOf(value: unknown): boolean {
   if (value === undefined || value === false || value === "false" || value === 0 || value === "0" || value === "") return false;
   if (value === true || value === "true" || value === 1 || value === "1") return true;
@@ -69,15 +105,16 @@ function stdioOf(value: unknown): boolean {
  * Reads and checks the settings. Outside an Enterprise install none may be set (Public never carries a private network setting). `get` reads one CDK context key
  * (`(key) => app.node.tryGetContext(key)`).
  */
-export function parsePrivateMcpContext(input: { edition: Edition | undefined; get: (key: string) => unknown; /** The install's network; default the production foundation's. */ vpcCidrs?: readonly string[] }): PrivateMcpInstall {
+export function parsePrivateMcpContext(input: { edition: Edition | undefined; get: (key: string) => unknown; /** The install's network; default the production foundation's. */ vpcCidrs?: readonly string[]; /** The release flag. Default `STDIO_MCP_RELEASED`; a test passes the other value. */ stdioReleased?: boolean }): PrivateMcpInstall {
   const cidrsValue = input.get(KEYS.cidrs);
   const cidrsGiven = isSet(cidrsValue) && cidrsValue !== "";
   const stdioRequested = stdioOf(input.get(KEYS.stdio));
-  const given = [KEYS.certificateArn, KEYS.hostName, KEYS.hostedZoneId, KEYS.npmRegistry].filter((key) => isSet(input.get(key)));
+  const given = [KEYS.certificateArn, KEYS.hostName, KEYS.hostedZoneId, KEYS.npmRegistry, KEYS.runnerSubnetCidrs, KEYS.registryCidrs, KEYS.controllerTlsSecretArn, KEYS.controllerDnsNamespace, KEYS.controllerCa].filter((key) => isSet(input.get(key)));
   if ((cidrsGiven || given.length > 0 || stdioRequested) && input.edition !== "enterprise") {
     throw new Error(`the private MCP settings (${[...(cidrsGiven ? [KEYS.cidrs] : []), ...given, ...(stdioRequested ? [KEYS.stdio] : [])].join(", ")}) apply only to an Enterprise install (rovaraEdition=enterprise)`);
   }
-  if (stdioRequested) {
+  const released = input.stdioReleased ?? STDIO_MCP_RELEASED;
+  if (stdioRequested && !released) {
     throw new Error(`${KEYS.stdio}: servers run from a package are switched off in this release; add a server that has an address instead (the MCP host is redesigned first, register ME-14)`);
   }
 
@@ -96,7 +133,7 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
   for (const cidr of privateCidrs) {
     if (vpcCidrs.some((own) => ipv4RangesOverlap(cidr, own))) throw new Error(`${KEYS.cidrs} entry ${JSON.stringify(cidr)} overlaps the network Rovara itself runs in (${vpcCidrs.join(", ")}); list the customer's own ranges only`);
   }
-  const install: PrivateMcpInstall = { privateCidrs, stdioRequested: false, ...(privateCidrs.length === 0 ? {} : { vpcCidrs }) };
+  const install: PrivateMcpInstall = { privateCidrs, stdioRequested, ...(privateCidrs.length === 0 ? {} : { vpcCidrs }) };
   const certificateArn = input.get(KEYS.certificateArn);
   if (isSet(certificateArn)) {
     if (typeof certificateArn !== "string" || !ACM_CERTIFICATE_ARN.test(certificateArn)) throw new Error(`${KEYS.certificateArn} must be the ARN of an ACM certificate (arn:aws:acm:<region>:<account>:certificate/<id>)`);
@@ -114,6 +151,34 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
   }
   const npmRegistry = input.get(KEYS.npmRegistry);
   if (isSet(npmRegistry)) install.npmRegistry = parseNpmRegistry(npmRegistry);
+  const runnerSubnets = input.get(KEYS.runnerSubnetCidrs);
+  if (isSet(runnerSubnets)) install.runnerSubnetCidrs = cidrList(KEYS.runnerSubnetCidrs, runnerSubnets, 2, 26);
+  const registryCidrs = input.get(KEYS.registryCidrs);
+  if (isSet(registryCidrs)) {
+    try {
+      install.registryCidrs = parseEnterpriseEgressCidrs(registryCidrs);
+    } catch (error) {
+      // The shared parser names its own key; this setting has its own.
+      throw new Error((error instanceof Error ? error.message : "is not valid").split(ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY).join(KEYS.registryCidrs), { cause: error });
+    }
+  }
+  const tlsSecret = input.get(KEYS.controllerTlsSecretArn);
+  if (isSet(tlsSecret)) {
+    if (typeof tlsSecret !== "string" || !SECRET_ARN.test(tlsSecret)) throw new Error(`${KEYS.controllerTlsSecretArn} must be the ARN of a Secrets Manager secret (arn:aws:secretsmanager:<region>:<account>:secret:<name>) holding {"cert": ..., "key": ...}`);
+    install.controllerTlsSecretArn = tlsSecret;
+  }
+  const namespace = input.get(KEYS.controllerDnsNamespace);
+  if (isSet(namespace)) {
+    if (typeof namespace !== "string" || !DNS_NAME.test(namespace) || AWS_OWN_NAME.test(namespace)) throw new Error(`${KEYS.controllerDnsNamespace} must be a private DNS name of your own, such as mcp.rovara.internal`);
+    install.controllerDnsNamespace = namespace;
+  }
+  const ca = input.get(KEYS.controllerCa);
+  if (isSet(ca)) {
+    if (typeof ca !== "string" || !ca.startsWith("-----BEGIN CERTIFICATE-----") || Buffer.byteLength(ca) > 7_000 || /PRIVATE KEY/u.test(ca)) throw new Error(`${KEYS.controllerCa} must be one PEM certificate (the public certificate of your authority), at most 7000 bytes, and never a key`);
+    install.controllerCa = ca;
+  }
+  // Package-run servers (only past the release flag) need every setting the host is built from: a missing one stops synth by name, here, not at deploy.
+  if (stdioRequested) mcpHostPropsFromInstall(install);
   return install;
 }
 
@@ -129,28 +194,50 @@ export function parseNpmRegistry(value: unknown): string {
 
 /** The environment variables the broker reads. Only what was set; package-run servers are never switched on from here. */
 export function privateMcpBrokerEnvironment(install: PrivateMcpInstall): Record<string, string> {
-  return install.privateCidrs.length === 0 ? {} : { ROVARA_PRIVATE_MCP_CIDRS: install.privateCidrs.join(","), ...(install.vpcCidrs === undefined || install.vpcCidrs.length === 0 ? {} : { ROVARA_VPC_CIDRS: install.vpcCidrs.join(",") }) };
+  return {
+    ...(install.privateCidrs.length === 0 ? {} : { ROVARA_PRIVATE_MCP_CIDRS: install.privateCidrs.join(","), ...(install.vpcCidrs === undefined || install.vpcCidrs.length === 0 ? {} : { ROVARA_VPC_CIDRS: install.vpcCidrs.join(",") }) }),
+    // Only past the release flag, and only with a host name to reach it by (the broker refuses an address that is not https).
+    ...(install.stdioRequested && install.hostName !== undefined ? { ROVARA_STDIO_MCP_SERVERS: "1", MCP_HOST_URL: `https://${install.hostName}` } : {}),
+  };
 }
 
 /**
  * The part of `McpHostProps` that comes from the install's configuration. Whoever builds the host (it needs the network and the image) spreads this in. A missing setting stops
  * synth with its name: the host has no plain-HTTP mode.
  */
-export function mcpHostPropsFromInstall(install: PrivateMcpInstall): { certificateArn: string; hostName: string; hostedZoneId: string; npmRegistry: string } {
-  const { certificateArn, hostName, hostedZoneId, npmRegistry } = install;
+export function mcpHostPropsFromInstall(install: PrivateMcpInstall): {
+  certificateArn: string; hostName: string; hostedZoneId: string; npmRegistry: string; runnerSubnetCidrs: string[]; registryEgressCidrs: string[]; controllerTlsSecretArn: string; controllerDnsNamespace: string;
+  controllerCaPem?: string; privateMcpCidrs: string[]; vpcCidrs: string[];
+} {
+  const { certificateArn, hostName, hostedZoneId, npmRegistry, runnerSubnetCidrs, registryCidrs, controllerTlsSecretArn, controllerDnsNamespace, controllerCa } = install;
   if (certificateArn === undefined) throw new Error(`the MCP host needs a certificate for its HTTPS listener: set ${KEYS.certificateArn}`);
   if (hostName === undefined) throw new Error(`the MCP host needs the DNS name its certificate is for: set ${KEYS.hostName}`);
   if (hostedZoneId === undefined) throw new Error(`the MCP host needs the Route 53 zone for its DNS name: set ${KEYS.hostedZoneId}`);
   if (npmRegistry === undefined) throw new Error(`package-run servers need your package registry (the install task has no internet): set ${KEYS.npmRegistry}`);
-  return { certificateArn, hostName, hostedZoneId, npmRegistry };
+  if (runnerSubnetCidrs === undefined) throw new Error(`package-run servers need ranges for their own subnets inside the network: set ${KEYS.runnerSubnetCidrs}`);
+  if (registryCidrs === undefined) throw new Error(`package-run servers need the ranges your package registry is reached at: set ${KEYS.registryCidrs}`);
+  if (controllerTlsSecretArn === undefined) throw new Error(`the MCP controller needs a certificate for the runner tasks to trust: set ${KEYS.controllerTlsSecretArn}`);
+  if (controllerDnsNamespace === undefined) throw new Error(`the MCP controller needs a private DNS name: set ${KEYS.controllerDnsNamespace}`);
+  if (install.privateCidrs.length === 0 || install.vpcCidrs === undefined) throw new Error(`package-run servers need ${KEYS.cidrs}: a server can only be given addresses inside your private ranges`);
+  return {
+    certificateArn, hostName, hostedZoneId, npmRegistry, runnerSubnetCidrs, registryEgressCidrs: registryCidrs, controllerTlsSecretArn, controllerDnsNamespace,
+    ...(controllerCa === undefined ? {} : { controllerCaPem: controllerCa }), privateMcpCidrs: install.privateCidrs, vpcCidrs: install.vpcCidrs,
+  };
+}
+
+/** Stops synth for a released flag whose host stack is not part of the build: a broker must never point at a host that does not exist. */
+export function assertStdioHostStackBuilt(install: PrivateMcpInstall, built: boolean = STDIO_MCP_HOST_STACK_BUILT): void {
+  if (install.stdioRequested && !built) throw new Error(`${KEYS.stdio}: this build does not yet contain the MCP host's stack; the release that turns package-run servers on adds it (turn-on checklist, step 1)`);
 }
 
 /** The only variables an install's settings may add to the broker's environment. Anything else (a reserved variable such as the callback signing key) is refused, never overwritten. */
 export const BROKER_ENVIRONMENT_KEYS = ["ROVARA_PRIVATE_MCP_CIDRS", "ROVARA_VPC_CIDRS"] as const;
+/** The two more a package-run install adds, allowed only past the release flag. */
+export const STDIO_BROKER_ENVIRONMENT_KEYS = ["ROVARA_STDIO_MCP_SERVERS", "MCP_HOST_URL"] as const;
 
-/** `environment`, if every name is on the list above; otherwise the first other name stops synth. */
-export function checkedBrokerEnvironment(environment: Readonly<Record<string, string>> | undefined): Record<string, string> {
-  const allowed: readonly string[] = BROKER_ENVIRONMENT_KEYS;
+/** `environment`, if every name is on the list above (and, past the release flag, the two package-run ones); otherwise the first other name stops synth. */
+export function checkedBrokerEnvironment(environment: Readonly<Record<string, string>> | undefined, stdioReleased: boolean = STDIO_MCP_RELEASED): Record<string, string> {
+  const allowed: readonly string[] = stdioReleased ? [...BROKER_ENVIRONMENT_KEYS, ...STDIO_BROKER_ENVIRONMENT_KEYS] : BROKER_ENVIRONMENT_KEYS;
   for (const name of Object.keys(environment ?? {})) {
     if (!allowed.includes(name)) throw new Error(`the broker's environment variable ${JSON.stringify(name)} is not one an install setting may add (allowed: ${BROKER_ENVIRONMENT_KEYS.join(", ")})`);
   }

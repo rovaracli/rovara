@@ -1,0 +1,9 @@
+{
+  "name": "@rovara-test/selfcheck-mcp",
+  "version": "1.0.0",
+  "description": "Test-only stdio MCP server for the Rovara staging smoke: reports, from inside a runner task, what the task can and cannot reach. Not for any customer install.",
+  "type": "module",
+  "bin": { "selfcheck-mcp": "bin/selfcheck.mjs" },
+  "license": "UNLICENSED",
+  "private": false
+}

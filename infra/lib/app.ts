@@ -14,7 +14,7 @@ import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@a
 import { EditionEnvironment } from "./edition-env.js";
 import { BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
 import { parseOperatorAccessContext } from "./operator-access.js";
-import { parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
+import { assertStdioHostStackBuilt, parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
 import { RetainExceptOnCreate } from "./retention.js";
@@ -157,6 +157,8 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   }
   // The private MCP settings (rovaraPrivateMcpCidrs and the MCP host's certificate): Enterprise only, checked here so a wrong one stops synth, and given to the broker as its environment.
   const privateMcp = parsePrivateMcpContext({ edition: explicitEdition, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], get: (key) => app.node.tryGetContext(key) as unknown });
+  // Past the release flag a build must also contain the host's stack; until it does, asking for package-run servers stops here (see private-mcp.ts).
+  assertStdioHostStackBuilt(privateMcp);
   new ControlPlaneStack(app, "AgentXControlPlane", {
     description: "AgentX authenticated control plane and durable dispatch foundation",
     naming,

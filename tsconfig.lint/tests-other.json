@@ -10,6 +10,7 @@
     "../tests/live/**/*.ts",
     "../tests/plugins/**/*.ts",
     "../tests/roles/**/*.ts",
+    "../tests/staging/**/*.ts",
     "../tests/*.ts"
   ],
   "references": [

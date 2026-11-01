@@ -100,13 +100,17 @@ async function handle(message) {
 }
 
 let buffer = "";
+let pending = 0;
+let ended = false;
+const finish = () => { if (ended && pending === 0) process.exit(0); };
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
   buffer += chunk;
   for (let newline = buffer.indexOf("\n"); newline >= 0; newline = buffer.indexOf("\n")) {
     const line = buffer.slice(0, newline).trim();
     buffer = buffer.slice(newline + 1);
-    if (line !== "") { let parsed; try { parsed = JSON.parse(line); } catch { continue; } void handle(parsed); }
+    if (line !== "") { let parsed; try { parsed = JSON.parse(line); } catch { continue; } pending += 1; void handle(parsed).finally(() => { pending -= 1; finish(); }); }
   }
 });
-process.stdin.on("end", () => process.exit(0));
+// The input ending is the end of the session, but an answer still being worked out is sent first.
+process.stdin.on("end", () => { ended = true; finish(); });
