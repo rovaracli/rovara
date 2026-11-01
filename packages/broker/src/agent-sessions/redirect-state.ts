@@ -130,6 +130,23 @@ export async function endRedirect(deps: RedirectStateDependencies, record: Pick<
   }
 }
 
+/**
+ * A Stop wins over a redirect that is still `stopping` (fix round 1, B1): the person pressed Stop after redirecting, so the step must stay stopped. Called by the task's cancel (the one Stop,
+ * the session's Stop and the task route all run) before it asks for the stop, with the request id of that cancel: the redirect's own cancel has the redirect's request id and does not end itself.
+ * Ends the open redirect `failed` and removes its marker, conditional on it still being `stopping`; a redirect already being restarted (`restarting`) is left to its restart, whose run the Stop then
+ * cancels like any running step. Never throws. Answers whether it ended one.
+ */
+export async function endRedirectForStop(deps: RedirectStateDependencies, taskId: string, cancelRequestId: string): Promise<boolean> {
+  try {
+    const open = await readOpenRedirect(deps, taskId);
+    if (open === undefined || open.requestId === cancelRequestId) return false;
+    return await endRedirect(deps, { taskId, requestId: open.requestId }, ["stopping"], "failed");
+  } catch {
+    // A redirect that could not be ended here is ended by the sweep; the Stop is not failed for it.
+    return false;
+  }
+}
+
 // ---- the rates
 
 export interface CounterStep { room: boolean; count: number; item: TransactItem }

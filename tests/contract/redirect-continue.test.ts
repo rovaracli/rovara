@@ -230,6 +230,45 @@ describe("a co-owner", () => {
   });
 });
 
+describe("a Stop wins over a redirect that is still stopping (fix round 1, B1)", () => {
+  const stopBy = {
+    "the owner's session Stop": (t: Awaited<ReturnType<typeof setup>>, _taskId: string, sessionId: string) => t.dev(MAYA, "POST", `/v1/app/sessions/${sessionId}/stop`, { requestId: randomUUID() }),
+    "an editor's session Stop": async (t: Awaited<ReturnType<typeof setup>>, _taskId: string, sessionId: string) => {
+      grantProject(t.db, OMAR);
+      expect((await t.dev(MAYA, "PUT", `/v1/app/sessions/${sessionId}/shares`, { requestId: randomUUID(), principal: { kind: "member", developerId: OMAR.developerId }, level: "edit" })).status).toBe(200);
+      return t.dev(OMAR, "POST", `/v1/app/sessions/${sessionId}/stop`, { requestId: randomUUID() });
+    },
+    "the task's own cancel route": (t: Awaited<ReturnType<typeof setup>>, taskId: string) => t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/cancel`, { requestId: randomUUID() }),
+  } as const;
+
+  for (const [name, press] of Object.entries(stopBy)) {
+    it(`${name} after a redirect ends the redirect, and the step stays stopped when the run ends`, async () => {
+      const t = await setup();
+      const { taskId, sessionId, workspaceId } = await t.runningCoding();
+      const requestId = randomUUID();
+      await t.redirect(MAYA, sessionId, { requestId });
+      expect(t.record(taskId, requestId)).toMatchObject({ state: "stopping" });
+      const pressed = await press(t, taskId, sessionId);
+      expect(pressed.status, JSON.stringify(pressed.body)).toBe(200);
+      expect(t.record(taskId, requestId)).toMatchObject({ state: "failed" });
+      expect(t.open(taskId)).toBeUndefined();
+      await t.stopLands(workspaceId);
+      expect(t.task(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED" });
+      expect(t.operations(workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
+      expect(t.record(taskId, requestId)).toMatchObject({ state: "failed" });
+    });
+  }
+
+  it("the redirect's own cancel (same request id, asked again by a repeat) does not end the redirect", async () => {
+    const t = await setup();
+    const { taskId, sessionId } = await t.runningCoding();
+    const requestId = randomUUID();
+    await t.redirect(MAYA, sessionId, { requestId });
+    await t.dev(MAYA, "POST", `/v1/app/sessions/${sessionId}/redirect`, { requestId, text: TEXT, mode: "keep_plan" });
+    expect(t.record(taskId, requestId)).toMatchObject({ state: "stopping" });
+  });
+});
+
 describe("restart conditions (R3)", () => {
   it("does not restart a task that moved on after the redirect, and ends the redirect `failed`", async () => {
     const t = await setup();
