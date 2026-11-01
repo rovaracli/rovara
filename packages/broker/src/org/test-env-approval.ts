@@ -23,6 +23,7 @@ export const TEST_ENV_CARD_ATTEMPTS_MAX = 6;
 
 export const TEST_ENV_CARD_WORDS = {
   changes: (project: string, flags: readonly string[]) => `Confirm a less-safe test environment for ${project}: ${flags.length === 0 ? "it is above the sandbox" : flags.join(", ").replace(/_/gu, " ")}. Confirming it records your OK; the maintainer who asked then finishes the approval from the setup page.`,
+  diffTitle: "Exactly what changes (before \u2192 after):",
   tooMany: "This proposal has had too many confirmation cards. Propose the environment again.",
   unavailable: "Confirmation cards are not set up in this deployment.",
   notDecided: "this has not been decided by anyone, so it can't be taken as confirmed",
@@ -110,7 +111,7 @@ export async function liveTestEnvCard(deps: ApprovalDependencies, scope: CardSco
  * the caller builds the confirmation link (it mints a ticket for the asker, and a read never does).
  */
 export async function requestTestEnvCard(
-  deps: ApprovalDependencies, caller: ApprovalCaller, input: { project: string; digest: string; expectedRevision: number; lessSafe: readonly string[] },
+  deps: ApprovalDependencies, caller: ApprovalCaller, input: { project: string; digest: string; expectedRevision: number; lessSafe: readonly string[]; /** Every change from the approved environment to the proposal, as lines (`testEnvChangeLines`): what the second person is shown. */ diff: readonly string[] },
 ): Promise<{ record: ApprovalRecord; state: "pending" | "approved" }> {
   const scope: CardScope = { orgId: caller.orgId, project: input.project, digest: input.digest, expectedRevision: input.expectedRevision, askedBy: caller.developerId };
   const { card, attempt } = await liveTestEnvCard(deps, scope);
@@ -119,7 +120,7 @@ export async function requestTestEnvCard(
   const record = await createPendingChange(deps, {
     orgId: caller.orgId, requestId: testEnvCardRequestId(input.digest, input.expectedRevision, caller.developerId, attempt), requestedBy: caller.developerId,
     subject: { kind: "test_env", project: input.project, digest: input.digest, expectedRevision: input.expectedRevision },
-    changes: [TEST_ENV_CARD_WORDS.changes(input.project, input.lessSafe)],
+    changes: [TEST_ENV_CARD_WORDS.changes(input.project, input.lessSafe), TEST_ENV_CARD_WORDS.diffTitle, ...input.diff],
     approvers: { kind: "rule", rule: TEST_ENV_RULE, candidates: [] },
     expiresAt: new Date(deps.now() + TEST_ENV_CARD_TTL_MS).toISOString(),
   });

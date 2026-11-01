@@ -25,6 +25,7 @@ import {
 import { isFreshSignIn, type SessionRecord } from "../../developer/store.js";
 import type { TestEnvDeps } from "../../org/test-environment.js";
 import { setEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment } from "../../org/test-environment.js";
+import { shownLine } from "../../org/shown-line.js";
 import { derivedRequestId } from "../../rovara-code/setup-draft.js";
 import { refusedCommand } from "../../test-env/draft.js";
 import { PROVED_CHECK_KINDS, selectionFieldsAreSafe } from "../../test-env/prove-from-setup-check.js";
@@ -48,18 +49,14 @@ export const TEST_ENV_EDIT_WORDS = {
 // ---- what will run
 
 const LINE_MAX = 600;
-/** One plain line for a person: control and format characters (bidi overrides, zero-width, escape) are shown as [U+XXXX], never rendered, and a long command is cut. Repository text is never trusted to be a safe line. */
-export function shownLine(text: string, max = LINE_MAX): string {
-  const visible = text.replace(/[\p{Cc}\p{Cf}]/gu, (character) => `[U+${character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}]`);
-  return visible.length > max ? `${visible.slice(0, max - 1)}\u2026` : visible;
-}
+export { shownLine };
 
 /** The commands of an environment as lines a person reads (formatted by the broker, so the page shows what the server would run, not what a browser rebuilt). */
 export function runsOf(body: TestEnvironmentBody): TestEnvRuns[] {
   return body.repos.map((repo) => ({
     repositoryId: shownLine(repo.repositoryId, 200),
-    setup: repo.setupCommands.map((command) => shownLine(formatCommandLine(command))),
-    checks: repo.checks.map((check) => ({ id: check.id, label: shownLine(check.label, 80), kind: check.kind, command: shownLine(formatCommandLine(check.command)), ...(check.selectArgs === undefined ? {} : { selectArgs: [...check.selectArgs] }) })),
+    setup: repo.setupCommands.map((command) => shownLine(formatCommandLine(command), LINE_MAX)),
+    checks: repo.checks.map((check) => ({ id: check.id, label: shownLine(check.label, 80), kind: check.kind, command: shownLine(formatCommandLine(check.command), LINE_MAX), ...(check.selectArgs === undefined ? {} : { selectArgs: [...check.selectArgs] }) })),
   }));
 }
 

@@ -46,6 +46,7 @@ import {
   approveTestEnvironment, clearEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment, readEditedProposal, readProposal, readProposalSources, readTestEnvProveReport, recordTestEnvProveReport,
   secondPersonFromRecords, testEnvRequestId, type TestEnvDeps,
 } from "../../org/test-environment.js";
+import { testEnvChangeLines } from "../../org/test-env-diff.js";
 import { confirmedTestEnvApproval, requestTestEnvCard, testEnvCardStateOf } from "../../org/test-env-approval.js";
 import { setupDraftState } from "../../rovara-code/setup-draft.js";
 import { readTestEnvDraft, readTestEnvDraftNote } from "../../test-env/draft.js";
@@ -271,7 +272,7 @@ export async function routeTestEnvironment(
     if (lessSafe.length === 0) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.secondPersonNotNeeded);
     if (!testEnvIsProved(await readTestEnvProveReport(store, caller.orgId, name, parsed.data.digest), parsed.data.digest)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.provedFirst);
     if (deps.agents === undefined) throw agentXError("RUNTIME_UNAVAILABLE", TEST_ENV_EDIT_WORDS.unavailable);
-    const asked = await requestTestEnvCard(deps.agents, caller, { project: name, digest: parsed.data.digest, expectedRevision: parsed.data.expectedRevision, lessSafe });
+    const asked = await requestTestEnvCard(deps.agents, caller, { project: name, digest: parsed.data.digest, expectedRevision: parsed.data.expectedRevision, lessSafe, diff: testEnvChangeLines(current?.environment, proposal) });
     const confirmUrl = asked.state === "pending" ? (await confirmationReply(deps.agents, caller, { approvalId: asked.record.approvalId, changes: asked.record.changes })).body.confirmUrl : undefined;
     logDeveloperEvent({ event: "developer.test_env_second_person_asked", orgId: caller.orgId, project: name, digest: parsed.data.digest, status: asked.state });
     return new StatusReply(200, { status: asked.state, ...(confirmUrl === undefined ? {} : { confirmUrl }), state: await stateOf(deps, project) });

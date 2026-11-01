@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { TestEnvironmentStateSchema, projectMetaKey, teamRecordPk, testEnvDigest } from "../../packages/contracts/src/index.js";
+import { testEnvChangeLines } from "../../packages/broker/src/org/test-env-diff.js";
 import { confirmationStands } from "../../packages/broker/src/org/test-environment.js";
 import { mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
 import { commandsToApply, runsOf, shownLine } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
@@ -524,5 +525,44 @@ describe("the company's switch for the sole-owner exception", () => {
       expect(await rule(on, card)).toBe(true);
       expect((await on.web(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 1 })).status).toBe(200);
     });
+  });
+});
+
+describe("what the second person is shown", () => {
+  it("the card lists every changed value as before and after, built from the stored proposal and revision, most sensitive first, as plain lines", async () => {
+    const t = await setupWizardBench();
+    await t.person(MAYA, "admin");
+    await withSwitch("1", async () => {
+      await t.approveFirst();
+      const body = draftBody({ nightly: { enabled: true, cronUtc: "*/30 * * * *", branch: "main" }, roundBudgetMin: 90, capture: { screenshots: "failed", video: true, traces: false } });
+      expect((await t.web(OMAR, "POST", `${ENV}/edit`, { environment: body })).status).toBe(200);
+      const digest = testEnvDigest(body);
+      await t.web(OMAR, "POST", `${ENV}/prove`, { digest });
+      await t.web(OMAR, "POST", `${ENV}/request-approval`, { digest, expectedRevision: 1 });
+      const changes = (t.approvals()[0] as unknown as { changes: string[] }).changes;
+      expect(changes[0]).toContain("Confirm a less-safe test environment for web");
+      expect(changes).toEqual(expect.arrayContaining(["nightly.cronUtc: 0 6 * * * \u2192 */30 * * * *", "nightly.enabled: false \u2192 true", "roundBudgetMin: 30 \u2192 90", "capture.video: false \u2192 true"]));
+      expect(changes.indexOf("capture.video: false \u2192 true")).toBeLessThan(changes.length);
+      expect(changes.some((line) => line.startsWith("repos"))).toBe(false); // the commands did not change
+    });
+  });
+
+  it("lists where tests call out to and who they sign in as, a changed command, hidden characters as codes, and counts what does not fit", () => {
+    const before = draftBody();
+    const after = draftBody({
+      services: [{ name: "scorer", kind: "http", match: { host: "scorer.internal" }, mode: "preprod", preprod: { url: "https://preprod.example.com/api", region: "us-west-2" } }],
+      accounts: [{ profileId: "buyer", provisioner: "http_hook", createUrl: "https://hooks.example.com/create", deleteUrl: "https://hooks.example.com/delete", tokenSecretName: "hook-token" }],
+      repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test", "--evil\u202Eflag"], 1800), kind: "test" }] }],
+    });
+    const lines = testEnvChangeLines(before, after);
+    expect(lines.some((line) => line.includes("https://preprod.example.com/api") && line.includes("\u2192"))).toBe(true);
+    expect(lines.some((line) => line.includes("https://hooks.example.com/create"))).toBe(true);
+    expect(lines.findIndex((line) => line.startsWith("services"))).toBeLessThan(lines.findIndex((line) => line.startsWith("repos")));
+    expect(lines.some((line) => line.includes("--evil[U+202E]flag"))).toBe(true);
+    expect(lines.join("")).not.toMatch(/\u202E/u);
+    expect(testEnvChangeLines(before, before)).toEqual([]);
+    const many = testEnvChangeLines(undefined, draftBody({ repos: Array.from({ length: 16 }, (_, index) => ({ repositoryId: `r${String(index)}`, setupCommands: [command("make", [`s${String(index)}`], 60)], checks: [{ id: `unit${String(index)}`, label: "U", command: command("make", [`t${String(index)}`], 60), kind: "test" }] })) }));
+    expect(many.length).toBe(61);
+    expect(many.at(-1)).toMatch(/^and \d+ more changes$/u);
   });
 });
