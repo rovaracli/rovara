@@ -569,6 +569,15 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     }, caller, request.method, url, () => jsonBody(request));
     if (learned !== undefined) return learned;
   }
+  // Team record (wire-team-record): `/v1/app/projects/{project}/record/...`, only where the record's switch is on. The org is the session's; the project role is the one the existing access check finds.
+  const recordRoute = /^\/v1\/app\/projects\/([^/]+)\/record\//.exec(url.pathname);
+  if (recordRoute !== null && deps.teamRecord !== undefined) {
+    let projectName: string;
+    try { projectName = decodeURIComponent(recordRoute[1]!); } catch { throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP); }
+    const found = await projectRoleForRoute(deps, caller, projectName);
+    const reply = await deps.teamRecord.routes({ method: request.method, path: url.pathname, query: Object.fromEntries(url.searchParams), caller: { orgId: caller.orgId, developerId: caller.developerId, projectRole: found.role } });
+    if (reply !== undefined) return reply.status === 200 ? reply.body : new StatusReply(reply.status, reply.body as object);
+  }
   const specChoice = SPEC_CHOICE_ROUTE.exec(url.pathname);
   if (request.method === "POST" && specChoice !== null) return routeSpecChoice(deps, caller, specChoice[1]!, specChoice[2]!);
   const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);

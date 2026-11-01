@@ -75,6 +75,7 @@ import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2ERepla
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
 import { installLearningTaskEnd } from "./learning-wiring.js";
+import { installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
 import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
 import { runWokenTrackingPass, trackingPassDependencies } from "./e2e-rounds.js";
 import { handleProjectSetupCallback, handleProjectSetupEvidenceChunk, handleProjectSetupEvidenceFinalize, handleProjectSetupEvidenceInit, handleProjectSetupExecutionRead } from "./evidence-and-setup.js";
@@ -110,6 +111,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   installChainRunner(dependencies, tasks, agents);
   installOwnWriteRecorder(dependencies);
   installLearningTaskEnd(dependencies);
+  installTeamRecordEmitter(dependencies);
   installSlackAsk(dependencies, tasks, agents?.agentSessions);
   installDiagnosisService(dependencies, agents?.agentSessions);
   // Plan 5, Task 7b: a session follows its task's end and budget pause as Plan 3 tells them, instead of waiting for the stream or the sweep. Only where agents are set up
@@ -232,6 +234,21 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (chainDependencies?.triggerSchedules === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "schedules are not set up in this deployment");
       // The scheduler calls the broker asynchronously, so a throw would never reach its retry policy or the chain queue (review I-1): a fire that fails records itself in the chain queue.
       return json(await fireChainSchedule(chainDependencies, event, Date.now(), dependencies.agents?.scheduleDeadLetters), "chain-schedule");
+    }
+    // Team record (wire-team-record): the scheduler's hourly and nightly jobs, and a Slack event the ingress verified and forwarded. Both answer "off" and do nothing where the record's switch is off.
+    if (isTeamRecordJobEvent(event)) {
+      try { return json(await runTeamRecordJob(dependencies, event), "team-record-job"); }
+      catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "team_record.job_failed", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "job_failed" }, "team-record-job", 500);
+      }
+    }
+    if (isTeamRecordSlackEvent(event)) {
+      try { return json(await recordSlackForward(dependencies, event), "team-record-slack"); }
+      catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "team_record.slack_failed", error: error instanceof Error ? error.name : "unknown" }));
+        return json({ error: "record_failed" }, "team-record-slack", 500);
+      }
     }
     // Meta repo lane F (F2): every minute, the intake sources that are due are read (each by its own interval and hourly cap); a source that fails is backed off and, after an hour, its maintainers are told.
     if (isIntakePollEvent(event)) {
@@ -443,6 +460,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...routeEditionDependencies(dependencies),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
+          ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           ...repositoriesGateRoute(dependencies),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
@@ -479,6 +497,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...optional("awsAccounts", connectedAwsAccountsOf(dependencies)), ...optional("snsFetch", eventHooks.snsFetch),
           // Live interaction L1: a Linear comment on a bound issue may be an Ask; none while the Ask switch is off or Rovara cannot write in Linear.
           ...optional("commentIntake", linearCommentIntakeOf(dependencies)),
+          // Team record: Linear and Jira deliveries reach the record after the hook's own checks (none while the switch is off).
+          ...optional("recordTap", dependencies.teamRecord?.taps.hook),
         }, { source: hookPath[1]!, hookId: hookPath[2]!, raw, headers: request.headers, sourceIp: event.requestContext?.http?.sourceIp });
         return hookReply(answer);
       }
@@ -517,6 +537,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               verifyRepository: (repositoryUrl, webhookScope) => dependencies.githubPullRequests.verifyWebhookRepository(repositoryUrl, webhookScope),
             }),
             process: (workflowEvent, deliveryId) => processGithubWorkflowEvent(dependencies, workflowEvent, deliveryId),
+            // Team record: every verified delivery is offered to the record (none while the switch is off).
+            ...optional("recordTap", dependencies.teamRecord?.taps.github),
             // Plan 4 Task 21: pull request, issue, deployment and workflow events start triggers' work, through the signature check above and Task 20's dispatch.
             ...(triggerDispatch === undefined ? {} : {
               triggerEvents: (trigger: { eventName: string; payload: unknown; installationId: number }) => deliverGithubTriggerEvents({
@@ -597,6 +619,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Plan 3 Task 19: the connector tools an agent step is granted, and one call of them; authorized by the operation's `agent-tools` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/agent-tools") return json(await handleAgentTools(dependencies, agents, request, "list"), request.requestId);
       if (request.method === "POST" && url.pathname === "/v1/internal/agent-tools/call") return json(await handleAgentTools(dependencies, agents, request, "call"), request.requestId);
+      // Team record: the record tools of a step (none while the record's switch is off). Both are POST, so the POST-only internal route covers them and no API route is added.
+      if (request.method === "POST" && url.pathname === "/v1/internal/record-tools/list") return json(await handleAgentTools(dependencies, agents, request, "record-list"), request.requestId);
+      if (request.method === "POST" && url.pathname === "/v1/internal/record-tools/call") return json(await handleAgentTools(dependencies, agents, request, "record-call"), request.requestId);
       // Lane E: the project's MCP context sources, for an Understand, Plan, Plan-check or Review stage; authorized by the operation's `context-tools` capability.
       if (request.method === "GET" && url.pathname === "/v1/internal/context-tools") return json(await handleContextTools(dependencies, request, "list"), request.requestId);
       if (request.method === "POST" && url.pathname === "/v1/internal/context-tools/call") return json(await handleContextTools(dependencies, request, "call"), request.requestId);

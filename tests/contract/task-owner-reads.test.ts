@@ -139,6 +139,8 @@ const ROWS: readonly Row[] = [
   ["mcp-host/aws-adapters.ts", "ecsApiFromSdk>describeTasks", "other-record", ".startedBy"],
   // Learning v2 wiring (WA-2): the audience of a send-back's record row is the owner now (read through `effectiveTaskOwner`); only an owner that cannot be read falls back to the creator, so the row stays private to a person
   ["aws/developer-tasks/learning-events.ts", "announceTaskSendBack", "authority", ".developerId"],
+  // wire-team-record: `resolveDeveloper({ developerId })` of the Team record's actor resolver takes the developer id a Rovara emitter was given (a send-back's actor); it is a parameter, not a task's owner read, and its answer is only a trust class
+  ["team-record/runtime.ts", "createTeamRecordRuntime>resolveDeveloper", "other-record", ".developerId"],
   ["aws/broker/workspace-preparation.ts", "sharedThread", "principal", "taskOwnerKey()"],
   ["aws/broker/workspace-preparation.ts", "verifiedSharedStopBinding", "principal", ".developerId*3", ".ownerKey*4", "taskOwnerKey()"],
   ["aws/broker/workspace-preparation.ts", "sharedStopFences", "principal", ".developerId*2", ".ownerKey*2"],

@@ -336,6 +336,8 @@ import { portCredentialResolver } from "./broker/credential-exchange.js";
 import { ssoStoresFor } from "../developer/sso-sign-in.js";
 import { awsClientConfiguration, documentClient, ec2Sessions, stepFunctions } from "./broker/runtime-clients.js";
 import { learningEraseHook, learningWalkDeps } from "../learning/cleanup.js";
+import { createTeamRecordRuntime } from "../team-record/runtime.js";
+import { recordAuditSinkOf } from "./broker/team-record-wiring.js";
 export { PROJECT_SETUP_CAPTURE_POLICY, WEB_ROUTE_KEY } from "./broker/definitions.js";
 export type { RegisteredProjectRecord, AwsBrokerInput } from "./broker/definitions.js";
 export { swebenchDependencies } from "./broker/admin-and-helpers.js";
@@ -501,6 +503,9 @@ const auditLedger: AuditExportClientDeps | undefined = auditLedgerTable === unde
   presign: exportLinkSigner(s3),
 };
 
+// Team record (wire-team-record): `undefined` unless the install was deployed with the record's switch on (TEAM_RECORD_ENABLED is exactly "1"). With it off nothing below is built or called.
+const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, stateTableName: requiredEnvironment("STATE_TABLE_NAME"), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
+
 // Erasing a person's details (Task 15): the tombstone goes in the keys table with the audit.subject_erased event, in one transaction made
 // with the broker's own client; the export files are deleted by the export function (its role holds that grant), which the broker asks.
 const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undefined : {
@@ -511,8 +516,8 @@ const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undef
   now: Date.now,
   log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
   purgeExports: exportPurger(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
-  // v1.2 learning loop: a person's erase clears their corrections' text and the suggestions that hold their words, in every project of the company.
-  eraseLearning: learningEraseHook(learningWalkDeps({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, audit })),
+  // v1.2 learning loop: a person's erase clears their corrections' text and the suggestions that hold their words, in every project of the company; the Team record (where its switch is on) deletes their rows, facts, lessons and lake rows in the same request.
+  eraseLearning: learningEraseHook(learningWalkDeps({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, audit }), undefined, teamRecord === undefined ? undefined : (orgId, developerId) => teamRecord.erase.person(orgId, developerId)),
 };
 
 const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";
@@ -529,6 +534,7 @@ const ssoStores = ssoStoresFor({ documentClient, tableName: requiredEnvironment(
 
 export const handler = createAwsBrokerHandler({
   documentClient,
+  ...(teamRecord === undefined ? {} : { teamRecord }),
   ...(audit === undefined ? {} : { audit }),
   ...(auditLedger === undefined ? {} : { auditLedger }),
   ...(auditErase === undefined ? {} : { auditErase }),

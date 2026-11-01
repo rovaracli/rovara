@@ -274,14 +274,14 @@ function authorOf(installationId: number, repository: z.infer<typeof Common>["re
 }
 
 /** The org the installation is bound to, when it is bound and active. */
-async function orgOfInstallation(deps: Pick<EventMemoryDeps, "documentClient" | "tableName">, installationId: number): Promise<OrgId | undefined> {
+export async function orgOfInstallation(deps: Pick<EventMemoryDeps, "documentClient" | "tableName">, installationId: number): Promise<OrgId | undefined> {
   const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: githubInstallationKey(installationId), ConsistentRead: true })) as { Item?: { orgId?: unknown; status?: unknown } };
   const orgId = OrgIdSchema.safeParse(found.Item?.orgId);
   return orgId.success && found.Item?.status === "active" ? orgId.data : undefined;
 }
 
 /** The projects of `orgId` the repository's index lists and whose latest revision pins this installation and this repository; each other row is logged and left out. */
-async function projectsOf(deps: Pick<EventMemoryDeps, "documentClient" | "tableName" | "log">, orgId: OrgId, installationId: number, repositoryId: number): Promise<string[]> {
+export async function projectsOf(deps: Pick<EventMemoryDeps, "documentClient" | "tableName" | "log">, orgId: OrgId, installationId: number, repositoryId: number): Promise<string[]> {
   return (await heldProjects(deps, orgId, installationId, repositoryId)).map((held) => held.project);
 }
 

@@ -1,0 +1,95 @@
+// wire-team-record: the Slack ingress's side. It reads the channel's facts with the bot token and hands the verified event to the broker; Public text goes as a request/response invoke
+// (never parked in Lambda's asynchronous queue), everything else asynchronously.
+import { describe, expect, it } from "vitest";
+import { TEAM_RECORD_SLACK_SOURCE, carriesText, createSlackForwarder, readChannelInfo, type SlackForwardEvent } from "../../../packages/broker/src/team-record/slack-forward.js";
+
+type Answer = Record<string, unknown> | undefined;
+const slack = (answers: Record<string, Answer>) => {
+  const urls: string[] = [];
+  const fetch = async (url: string, init: { headers: Record<string, string> }) => {
+    urls.push(url);
+    expect(init.headers.authorization).toBe("Bearer xoxb-test");
+    const method = /api\/([a-z.]+)\?/.exec(url)![1]!;
+    const answer = answers[method];
+    return { ok: answer !== undefined, json: async () => answer ?? { ok: false } };
+  };
+  return { fetch, urls };
+};
+const info = (channel: Record<string, unknown>) => ({ ok: true, channel: { id: "C0123456789", ...channel } });
+const message = (type = "message") => ({ type: "event_callback", team_id: "T0123456789", event: { type, channel: "C0123456789", user: "U0123456789", text: "hi", ts: "1761818400.000100" } });
+
+describe("readChannelInfo", () => {
+  it("reads public, private (with its members), DM and group DM, and Slack Connect", async () => {
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: slack({ "conversations.info": info({ is_channel: true }) }).fetch })).toStrictEqual({ kind: "public", extShared: false });
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: slack({ "conversations.info": info({ is_channel: true, is_ext_shared: true }) }).fetch })).toStrictEqual({ kind: "public", extShared: true });
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: slack({ "conversations.info": info({ is_channel: true, is_pending_ext_shared: true }) }).fetch })).toMatchObject({ extShared: true });
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: slack({ "conversations.info": info({ is_im: true }) }).fetch })).toMatchObject({ kind: "im" });
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: slack({ "conversations.info": info({ is_mpim: true }) }).fetch })).toMatchObject({ kind: "mpim" });
+    const privateChannel = slack({ "conversations.info": info({ is_group: true, is_private: true }), "conversations.members": { ok: true, members: ["U0123456789", "U0123456780"], response_metadata: { next_cursor: "" } } });
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: privateChannel.fetch })).toStrictEqual({ kind: "private", extShared: false, memberIds: ["U0123456789", "U0123456780"] });
+  });
+
+  it("answers nothing for a reply Slack did not send, a different channel id, or an unclassifiable channel; and a member list that cannot be read in full is treated as shared", async () => {
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: slack({}).fetch })).toBeUndefined();
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: slack({ "conversations.info": info({ id: "C0999999999", is_channel: true }) }).fetch })).toBeUndefined();
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: slack({ "conversations.info": info({}) }).fetch })).toBeUndefined();
+    const failing = slack({ "conversations.info": info({ is_group: true }) });
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: failing.fetch })).toStrictEqual({ kind: "private", extShared: true });
+    const endless = slack({ "conversations.info": info({ is_group: true }), "conversations.members": { ok: true, members: ["U0123456789"], response_metadata: { next_cursor: "more" } } });
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch: endless.fetch })).toStrictEqual({ kind: "private", extShared: true });
+  });
+
+  it("never throws when the network does", async () => {
+    const fetch = async () => { throw new Error("secret detail"); };
+    expect(await readChannelInfo({ token: "xoxb-test", channelId: "C0123456789", fetch })).toBeUndefined();
+  });
+});
+
+describe("createSlackForwarder", () => {
+  const run = async (edition: "public" | "enterprise", payload: Record<string, unknown>, answers: Record<string, Answer> = { "conversations.info": info({ is_channel: true }) }) => {
+    const sent: Array<{ event: SlackForwardEvent; wait: boolean }> = [];
+    const api = slack(answers);
+    await createSlackForwarder({ token: async () => "xoxb-test", fetch: api.fetch, edition, async invoke(event, wait) { sent.push({ event, wait }); } })(payload);
+    return { sent, calls: api.urls.length };
+  };
+
+  it("Public sends message text as request/response so it is never parked in Lambda's asynchronous queue; Enterprise and non-text events go asynchronously", async () => {
+    expect(carriesText(message("message"))).toBe(true);
+    expect(carriesText(message("message_changed"))).toBe(true);
+    expect(carriesText(message("member_left_channel"))).toBe(false);
+    expect((await run("public", message("message"))).sent[0]!.wait).toBe(true);
+    expect((await run("public", message("message_changed"))).sent[0]!.wait).toBe(true);
+    expect((await run("public", message("member_joined_channel"))).sent[0]!.wait).toBe(false);
+    expect((await run("enterprise", message("message"))).sent[0]!.wait).toBe(false);
+  });
+
+  it("forwards the verified event with the channel's facts, and with no facts when Slack gave none (the broker then records nothing)", async () => {
+    const { sent } = await run("public", message());
+    expect(sent[0]!.event).toMatchObject({ source: TEAM_RECORD_SLACK_SOURCE, channel: { teamId: "T0123456789", channelId: "C0123456789", info: { kind: "public", extShared: false } } });
+    const none = await run("public", message(), {});
+    expect(none.sent[0]!.event.channel).toBeUndefined();
+  });
+
+  it("reads a channel once for five minutes, except on membership and channel events, and asks nothing for a deleted channel", async () => {
+    const sent: unknown[] = [];
+    let now = 0;
+    const api = slack({ "conversations.info": info({ is_channel: true }) });
+    const forward = createSlackForwarder({ token: async () => "xoxb-test", fetch: api.fetch, edition: "enterprise", now: () => now, async invoke(event) { sent.push(event); } });
+    await forward(message()); await forward(message());
+    expect(api.urls).toHaveLength(1);
+    await forward(message("member_left_channel"));
+    expect(api.urls).toHaveLength(2);
+    now = 400_000;
+    await forward(message());
+    expect(api.urls).toHaveLength(3);
+    await forward(message("channel_deleted"));
+    expect(api.urls).toHaveLength(3);
+    expect(sent).toHaveLength(5);
+  });
+
+  it("sends nothing for a payload that is not an event callback of a real team, and lets an invoke failure reach the ingress's own guard", async () => {
+    expect((await run("public", { type: "url_verification" })).sent).toStrictEqual([]);
+    expect((await run("public", { ...message(), team_id: "nonsense" })).sent).toStrictEqual([]);
+    await expect(createSlackForwarder({ token: async () => "xoxb-test", fetch: slack({ "conversations.info": info({ is_channel: true }) }).fetch, edition: "public", async invoke() { throw new Error("refused"); } })(message())).rejects.toThrow();
+  });
+});

@@ -1,3 +1,4 @@
+import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { CreateProjectFromMetaBody, EditionPolicy } from "@agentx/contracts";
 import type { CodeHostRouter } from "../../plugins/registry.js";
 import type { MetaProjectCreated } from "../../org/create-from-meta.js";
@@ -147,6 +148,8 @@ export interface DeveloperRouteDependencies {
    * What closing an org does besides releasing its GitHub and Slack bindings: archive its projects (Task 20) and clear its egress domains
    * (Task 18). They default to `archiveOrgProjects` and `clearOrgEgress`; `POST /v1/app/org/leave` calls them when the last owner leaves.
    */
+  /** Team record (wire-team-record): the record's runtime, absent while its switch is off. Its routes, and its erase when a project is archived or a company closes. */
+  teamRecord?: TeamRecordRuntime;
   closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void>; clearSessions?: (orgId: OrgId) => Promise<void>; stopWork?: (orgId: OrgId) => Promise<void>; clearLearning?: (orgId: OrgId) => Promise<void> };
   /**
    * Plan 3 Task 11: what follows a project's archive on the agents platform (`onProjectArchived`). Called once the archive has applied, never on a

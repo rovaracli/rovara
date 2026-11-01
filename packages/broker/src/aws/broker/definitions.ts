@@ -5,6 +5,7 @@ import type { SlackAskDependencies } from "./ask-service.js";
 import type { DiagnosisCoreDependencies } from "../../diagnosis/light.js";
 import type { AskContextDependencies, AskContextReaders } from "../../agent-sessions/ask-context.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
+import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { E2EPolicySchema, type CodeBuildCheckResult, type ProjectDefinition, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource, type EditionPolicy } from "@agentx/contracts";
@@ -346,6 +347,8 @@ export interface AwsBrokerDependencies {
   contextSources?: ContextSourcesRuntime;
   /** Learning v2 wiring (WA-2): the terminal-task hook's dependencies. Absent (the pilot default): no hook is registered and learning reads and writes nothing at a task's end. */
   learning?: TaskLearningDeps;
+  /** Team record (wire-team-record): the record's runtime. Absent (the default: the switch is off) means NOTHING of the record reads, writes, schedules or answers. */
+  teamRecord?: TeamRecordRuntime;
   /** Spec 025 C14: the Slack threads table, read for a shared thread's waiting messages; absent in legacy. */
   slackThreadsTableName?: string;
   /** Spec 025 phase 25d: the admin read routes' injected probes and clock; the defaults serve production. */

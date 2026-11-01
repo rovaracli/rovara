@@ -88,11 +88,17 @@ export async function getAppProject(deps: DeveloperRouteDependencies, caller: De
  * and never undoes or fails the archive. It does ONE bounded page inline so the request answers quickly; a project with more leaves an entry in the index of open walks and the broker's scheduled
  * run finishes it (`resumeOpenLearningWalks`). What is left meanwhile is ignored by every read of a project created again.
  */
-export async function clearArchivedProjectLearning(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">, orgId: OrgId, project: string): Promise<void> {
+export async function clearArchivedProjectLearning(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now" | "teamRecord">, orgId: OrgId, project: string): Promise<void> {
   try {
     await clearArchivedProject({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, project);
   } catch (error) {
     logDeveloperEvent({ event: "developer.project_archived_learning_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
+  }
+  // Team record (wire-team-record): the project's record goes with it (where the record's switch is on). Best effort like the line above: an unfinished erase leaves its rows hidden by their tombstones.
+  try {
+    await deps.teamRecord?.erase.project(orgId, project, "project_archived");
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.project_archived_record_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
   }
 }
 
