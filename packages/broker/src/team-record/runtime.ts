@@ -38,6 +38,8 @@ import { tableModeReader, type LearningModeReader } from "./mode.js";
 import { buildRecordCaller, handleRecordRoute, type RecordRouteReply } from "./routes.js";
 import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
 import { createCaptureModePort, createRecordHistoryPort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
+import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
+import type { OpsQueue } from "./ops-queue.js";
 import { createGithubRecordTap, createHookRecordTap, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
 import { runStats, type StatsDeps } from "./stats-templates.js";
 import { expireRawText } from "./text-expiry.js";
@@ -65,6 +67,11 @@ export interface TeamRecordRuntimeInput {
   audit?: RecordAuditSink;
   /** A model for the distiller (retention B / nightly). Absent: no distiller, B text is dropped. */
   distillModel?: DistillModel;
+  /**
+   * The durable queue for removals and edits (`agentx-<env>-team-record-ops`, a dead-letter queue behind it). A tombstone, a member or audience change, or a new version of an item that fails
+   * against the record table is sent here and applied by `drain`, so a delete is never swallowed by a tap. Absent (tests, or an install without the queue): a failure is rethrown to the caller.
+   */
+  opsQueue?: OpsQueue;
   /** Tests: a loader for the AWS SDK packages and an STS port. */
   sdk?: SdkLoader;
   sts?: StsAssumePort;
@@ -78,8 +85,13 @@ export interface TeamRecordJobSummary { orgs: number; skippedOrgs: number; detai
 export interface TeamRecordRuntime {
   readonly edition: TeamRecordEdition;
   readonly table: TeamRecordTable;
-  /** The router sink: one sink per workspace, built on first use. A workspace id that is not an org id is refused. */
+  /**
+   * The sink the taps write to: one sink per workspace, built on first use; a workspace id that is not an org id is refused. A removal or edit that fails is sent to the durable queue
+   * (and rethrown if that fails too), so a tap never swallows a delete.
+   */
   readonly sink: RecordSink;
+  /** Applies a batch of messages from the durable queue (SQS partial-batch answer). A message that fails stays on the queue and is retried, then dead-lettered. */
+  drain(records: ReadonlyArray<QueueRecord>): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }>;
   readonly emitter: RovaraEmitter;
   readonly actors: ActorResolverPort;
   readonly modes: LearningModeReader;
@@ -98,6 +110,8 @@ export interface TeamRecordRuntime {
     hook: ReturnType<typeof createHookRecordTap>;
     /** A Slack event the ingress verified and forwarded, with the channel facts it read with the bot token. */
     slack(forward: { payload: unknown; channel?: { teamId: string; channelId: string; info: SlackChannelInfo } }): ReturnType<ReturnType<typeof createSlackRecordTap>>;
+    /** The queue consumer's Slack path: the same tap, writing directly, so a failure is thrown (and the message retried) and never swallowed. */
+    slackStrict(forward: { payload: unknown; channel?: { teamId: string; channelId: string; info: SlackChannelInfo } }): Promise<void>;
   };
   /** Deletion and erase for the broker's existing erase paths. Each resolves when the step finished; it throws when it did not (the request is then repeated). */
   erase: {
@@ -221,13 +235,56 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     if (vectors !== undefined || vectorPorts === undefined) sinks.set(orgId, made);
     return made;
   }
-  const sink: RecordSink = {
+  const directSink: RecordSink = {
     put: async (draft) => (await sinkFor(draft.workspaceId)).put(draft),
     tombstone: async (call) => (await sinkFor(call.workspaceId)).tombstone(call),
     changePrincipals: async (call) => (await sinkFor(call.workspaceId)).changePrincipals(call),
     replaceScopeAudience: async (call) => (await sinkFor(call.workspaceId)).replaceScopeAudience(call),
     ensureAccessSeed: async (call) => (await sinkFor(call.workspaceId)).ensureAccessSeed(call),
   };
+  // The taps write through this one. A delete or an edit that fails against the table is not swallowed: it goes to the durable queue and the consumer applies it (retried, then dead-lettered).
+  // A workspace that is not an org is refused BEFORE anything is tried or queued. A new version of an item may carry text, so it is queued only where the text may be kept: never a Slack message
+  // (or a row made from one) in the Public edition, whose text must never be parked anywhere.
+  const queue: OpsQueue | undefined = input.opsQueue;
+  const keepsText = (draft: { source: string; origin?: string | undefined }): boolean => !(edition === "public" && (draft.source === "slack" || draft.origin === "slack"));
+  const durableSink: RecordSink = {
+    async put(draft) {
+      OrgIdSchema.parse(draft.workspaceId);
+      try { return await directSink.put(draft); } catch (error) {
+        if (queue === undefined || !keepsText(draft)) throw error;
+        await queue.send({ v: 1, op: "put", draft } as never);
+        log("record.put_queued", {});
+        return { status: "queued" } as never;
+      }
+    },
+    async tombstone(call) {
+      OrgIdSchema.parse(call.workspaceId);
+      try { return await directSink.tombstone(call); } catch (error) {
+        if (queue === undefined) throw error;
+        await queue.send({ v: 1, op: "tombstone", workspaceId: call.workspaceId, system: call.system, ...(call.sourceIds === undefined ? {} : { sourceIds: [...call.sourceIds] }), ...(call.scope === undefined ? {} : { scope: call.scope }), cause: call.cause } as never);
+        log("record.tombstone_queued", {});
+        return { hidden: 0 };
+      }
+    },
+    async changePrincipals(call) {
+      OrgIdSchema.parse(call.workspaceId);
+      try { await directSink.changePrincipals(call); } catch (error) {
+        if (queue === undefined) throw error;
+        await queue.send({ v: 1, op: "principals", workspaceId: call.workspaceId, scope: call.scope, ...(call.add === undefined ? {} : { add: [...call.add] }), ...(call.remove === undefined ? {} : { remove: [...call.remove] }), at: call.at } as never);
+        log("record.principals_queued", {});
+      }
+    },
+    async replaceScopeAudience(call) {
+      OrgIdSchema.parse(call.workspaceId);
+      try { await directSink.replaceScopeAudience(call); } catch (error) {
+        if (queue === undefined) throw error;
+        await queue.send({ v: 1, op: "audience", workspaceId: call.workspaceId, scope: call.scope, audience: call.audience, at: call.at } as never);
+        log("record.audience_queued", {});
+      }
+    },
+    ensureAccessSeed: async (call) => directSink.ensureAccessSeed(call),
+  };
+  const sink = durableSink;
 
   const config = createSourceConfigPort({ table, edition });
   const mode = createCaptureModePort({ modes });
@@ -433,18 +490,42 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     // Only the channel the ingress read facts for is known; any other channel is unknown, and unknown is not recorded.
     async channelInfo(teamId, channelId) { return forward !== undefined && forward.teamId === teamId && forward.channelId === channelId ? forward.info : undefined; },
   });
-  const slack: TeamRecordRuntime["taps"]["slack"] = async (forward) => {
+  const slackTapOver = (over: RecordSink) => async (forward: Parameters<TeamRecordRuntime["taps"]["slack"]>[0]) => {
     const tap = createSlackRecordTap({
-      edition, sink, distiller, actors, mode, config, directory: slackDirectory(forward.channel), log: tapLog,
+      edition, sink: over, distiller, actors, mode, config, directory: slackDirectory(forward.channel), log: tapLog,
       notesOptIn: NOTES_OPT_IN_FROM_SOURCE_ROW,
       // The org this Slack team is bound to; an unbound team is not recorded.
       resolveWorkspace: async (teamId) => {
         try { return { workspaceId: await resolveSlackOrg(new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }), teamId) }; }
-        catch { return undefined; }
+        // Only "this Slack team is not bound" means unbound. A failure to READ the binding is a failure: it is thrown, so a removal is retried rather than dropped as an unknown team.
+        catch (error) { if ((error as { code?: unknown } | null)?.code === "SLACK_TEAM_NOT_BOUND") return undefined; throw error; }
       },
     });
     return tap(forward.payload);
   };
+  const slack = slackTapOver(durableSink);
+  const strictSlack = slackTapOver(directSink);
+  /** The consumer's Slack path: the tap swallows its errors into `ignored("failed")`; here that is thrown, so the message is retried. */
+  const slackStrict: TeamRecordRuntime["taps"]["slackStrict"] = async (forward) => {
+    const outcome = await strictSlack(forward);
+    if (outcome.outcome === "ignored" && outcome.reason === "failed") throw new Error("slack record failed");
+  };
 
-  return { edition, table, sink, emitter, actors, modes, routes, tools, taps: { github, hook, slack }, erase, jobs };
+  // ---- the durable queue's consumer. A message the queue's own consumer cannot apply throws and is retried by SQS (then dead-lettered); a Slack removal goes through the strict tap.
+  const consumer = createOpConsumer({ sink: directSink, distiller, log: tapLog });
+  const drain: TeamRecordRuntime["drain"] = async (records) => {
+    const failures: Array<{ itemIdentifier: string }> = [];
+    const rest: QueueRecord[] = [];
+    for (const record of records) {
+      let parsed: { v?: unknown; op?: unknown; payload?: unknown } | undefined;
+      try { parsed = JSON.parse(record.body) as typeof parsed; } catch { parsed = undefined; }
+      if (parsed?.v === 1 && parsed.op === "slack_removal") {
+        try { await slackStrict({ payload: parsed.payload }); } catch { log("record.op_failed", { op: "slack_removal", receiveCount: record.receiveCount }); failures.push({ itemIdentifier: record.messageId }); }
+      } else rest.push(record);
+    }
+    failures.push(...(await consumer.processBatch(rest)).batchItemFailures);
+    return { batchItemFailures: failures };
+  };
+
+  return { edition, table, sink, drain, emitter, actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs };
 }

@@ -102,11 +102,27 @@ describe("the switch on: Public cloud", () => {
     for (const [, resource] of schedules) expect((resource.Properties.Target as { RetryPolicy: unknown }).RetryPolicy).toStrictEqual({ MaximumRetryAttempts: 0, MaximumEventAgeInSeconds: 600 });
   }, 180_000);
 
-  it("tells the Slack ingress to hand events to the broker, and gives it no table, no queue and no new right", () => {
-    expect(functionVariables(on, /^SlackIngress[0-9A-F]{8}$/)).toMatchObject({ TEAM_RECORD_ENABLED: "1" });
+  it("tells the Slack ingress to hand events to the broker and where the durable queue is, and gives it exactly one new right: to send to that queue (no table, no storage)", () => {
+    expect(functionVariables(on, /^SlackIngress[0-9A-F]{8}$/)).toMatchObject({ TEAM_RECORD_ENABLED: "1", TEAM_RECORD_OPS_QUEUE_URL: expect.anything() as unknown });
     const off = controlPlane(PUBLIC);
-    const rolesOf = (template: Template) => Object.entries(resourcesOf(template)).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^SlackIngress/.test(id)).map(([id, resource]) => [id, JSON.stringify(resource.Properties)]);
-    expect(rolesOf(on)).toStrictEqual(rolesOf(off));
+    type Statement = { Action: string | string[]; Resource: unknown };
+    const statementsOf = (template: Template): string[] => Object.entries(resourcesOf(template)).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^SlackIngress/.test(id))
+      .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Statement[] }).Statement.map((statement) => JSON.stringify(statement)));
+    const before = new Set(statementsOf(off));
+    const added = statementsOf(on).filter((statement) => !before.has(statement));
+    expect(added).toHaveLength(1);
+    const statement = JSON.parse(added[0]!) as Statement;
+    expect([statement.Action].flat().sort()).toStrictEqual(["sqs:GetQueueAttributes", "sqs:GetQueueUrl", "sqs:SendMessage"]);
+    expect(JSON.stringify(statement.Resource)).toMatch(/TeamRecordOps[0-9A-F]{8}/);
+    expect(statementsOf(off).every((existing) => statementsOf(on).includes(existing))).toBe(true);
+  }, 180_000);
+
+  it("creates the durable queue with a dead-letter queue (five tries), a visibility timeout above the broker's, and drains it with partial-batch answers", () => {
+    const queues = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::SQS::Queue" && /^TeamRecordOps/.test(String(Object.keys(resources).find((id) => resources[id] === resource))));
+    const ops = queues.find(([id]) => /^TeamRecordOps[0-9A-F]{8}$/.test(id))![1].Properties;
+    expect(ops).toMatchObject({ QueueName: "agentx-staging-team-record-ops", MessageRetentionPeriod: 345600, VisibilityTimeout: 180, RedrivePolicy: { maxReceiveCount: 5 } });
+    const mapping = Object.values(resources).find((resource) => resource.Type === "AWS::Lambda::EventSourceMapping" && JSON.stringify(resource.Properties).includes("TeamRecordOps"));
+    expect(mapping?.Properties).toMatchObject({ FunctionResponseTypes: ["ReportBatchItemFailures"], BatchSize: 10 });
   }, 180_000);
 
   it("gives the broker rights on the table and its indexes only (no scan), and to assume the vector role", () => {

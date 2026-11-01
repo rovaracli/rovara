@@ -14,9 +14,9 @@
 //   - Athena workgroup: $5 per TB scanned, only when a query runs; the workgroup itself is free.
 //   - EventBridge Scheduler schedules (three): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
 // Model calls (embeddings, the distiller) are NOT created here: they are billed on the org's spend when a feature uses them.
-import { Token, aws_scheduler as scheduler, type Stack, type aws_iam as iam } from "aws-cdk-lib";
+import { Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, type aws_iam as iam } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
-import { teamRecordNamePrefix, teamRecordTableName } from "@agentx/contracts";
+import { teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/contracts";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import type { TeamRecordContext } from "./team-record-edition.js";
 import { TeamRecordStorage } from "./team-record-storage.js";
@@ -102,8 +102,22 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
     BrokerNames.of(broker).add("teamRecordKmsKey", key[3]!);
   }
 
-  // The Slack ingress hands a verified event to the broker (direct invoke, which it is already allowed to do); this only tells it to do so.
+  // The durable queue (fix round 1, B1): a removal or an edit that cannot be applied at once waits here and the broker drains it, retrying; after five tries it lands in the dead-letter queue, which
+  // the health route lists (`team-record`). It holds ids for removals and, for an edit, only text that may be kept (never a Slack message in Public). Encrypted with SQS-managed keys like the other
+  // queues of this stack. The visibility timeout is far above the broker's 30 s timeout, as Lambda requires.
+  const deadLetters = new sqs.Queue(stack, "TeamRecordOpsDeadLetters", { queueName: teamRecordOpsDeadLetterName(props.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(14) });
+  const ops = new sqs.Queue(stack, "TeamRecordOps", {
+    queueName: teamRecordOpsQueueName(props.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(4), visibilityTimeout: Duration.seconds(180),
+    deadLetterQueue: { queue: deadLetters, maxReceiveCount: 5 },
+  });
+  broker.addEventSource(new eventSources.SqsEventSource(ops, { batchSize: 10, reportBatchItemFailures: true }));
+  ops.grantSendMessages(broker);
+  BrokerNames.of(broker).add("teamRecordDeadLetters", deadLetters.queueName);
+
+  // The Slack ingress hands a verified event to the broker (direct invoke, which it is already allowed to do) and sends removals (ids only) to the durable queue: this tells it to, and where.
   props.slackIngress.addEnvironment("TEAM_RECORD_ENABLED", "1");
+  props.slackIngress.addEnvironment("TEAM_RECORD_OPS_QUEUE_URL", ops.queueUrl);
+  ops.grantSendMessages(props.slackIngress);
 
   for (const { id, job, expression } of TEAM_RECORD_JOBS) {
     new scheduler.CfnSchedule(stack, `TeamRecord${id}Schedule`, {

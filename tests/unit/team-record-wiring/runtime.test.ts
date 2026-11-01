@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { githubInstallationKey, githubRepoProjectKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
-import { installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
+import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
@@ -399,3 +399,119 @@ describe("the scheduled jobs reach only the orgs that have written, and finish a
 });
 
 void vi;
+
+// ---- fix round 1, B1: a delete or an edit is never swallowed
+describe("a delete that arrives during a store failure is retried and lands", () => {
+  const SCOPE = "slack:T0123456789/C0123456789";
+  const channel = { teamId: "T0123456789", channelId: "C0123456789", info: { kind: "public" as const, extShared: false } };
+  const post = { type: "event_callback", team_id: "T0123456789", event: { type: "message", channel: "C0123456789", user: "U0123456789", text: `please ${MARKER} always`, ts: "1761818400.000100", channel_type: "channel" } };
+  const removal = { type: "event_callback", team_id: "T0123456789", event: { type: "message", subtype: "message_deleted", channel: "C0123456789", deleted_ts: "1761818400.000100", ts: "1761818500.000100" } };
+
+  /** A client whose WRITES fail while `down.on` is set (reads still answer); the record table is "down for writes". */
+  function flaky(db: FakeDynamoDb) {
+    const down = { on: false, writes: 0 };
+    const client = { send: async (command: unknown) => {
+      const name = (command as { constructor: { name: string } }).constructor.name;
+      if (down.on && /^(Put|Update|Delete|TransactWrite|BatchWrite)/.test(name)) { down.writes += 1; throw Object.assign(new Error("ProvisionedThroughputExceeded secret detail"), { name: "ProvisionedThroughputExceededException" }); }
+      return db.send(command as never);
+    } };
+    return { client, down };
+  }
+  const queueOf = () => { const sent: Array<Record<string, unknown>> = []; return { sent, queue: { send: async (op: Record<string, unknown>) => { sent.push(op); } } }; };
+  const asRecords = (sent: Array<Record<string, unknown>>) => sent.map((op, i) => ({ messageId: `m${i}`, body: JSON.stringify(op), receiveCount: 1 }));
+  const eventRows = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+
+  it("Slack: the tombstone that fails is queued, the queue drains it once the table is back, and the text is gone", async () => {
+    const db = dbOf();
+    db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
+    const { client, down } = flaky(db);
+    const { sent, queue } = queueOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client, opsQueue: queue });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SCOPE, retention: "C" });
+    await runtime.taps.slack({ payload: post, channel });
+    expect(JSON.stringify(eventRows(db))).toContain(MARKER);
+    down.on = true;
+    expect(await runtime.taps.slack({ payload: removal, channel })).toMatchObject({ outcome: "deleted" });
+    expect(down.writes).toBeGreaterThan(0);
+    expect(sent.map((op) => op.op)).toStrictEqual(["tombstone"]);
+    expect(JSON.stringify(eventRows(db))).toContain(MARKER);
+    down.on = false;
+    expect(await runtime.drain(asRecords(sent))).toStrictEqual({ batchItemFailures: [] });
+    expect(everything(db)).not.toContain(MARKER);
+  });
+
+  it("the ingress's queued removal is applied by the strict tap: a failure leaves the message on the queue, the retry lands", async () => {
+    const db = dbOf();
+    db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
+    const { client, down } = flaky(db);
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SCOPE, retention: "C" });
+    await runtime.taps.slack({ payload: post, channel });
+    const record = { messageId: "m1", body: JSON.stringify({ v: 1, op: "slack_removal", payload: removal }), receiveCount: 1 };
+    down.on = true;
+    expect(await runtime.drain([record])).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    down.on = false;
+    expect(await runtime.drain([{ ...record, receiveCount: 2 }])).toStrictEqual({ batchItemFailures: [] });
+    expect(everything(db)).not.toContain(MARKER);
+  });
+
+  it("a failure to READ the Slack team's binding is a failure (retried), not an unknown team (dropped)", async () => {
+    const db = dbOf();
+    const broken = { send: async () => { throw new Error("read failed"); } };
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: broken });
+    await expect(runtime.taps.slackStrict({ payload: removal, channel })).rejects.toThrow();
+  });
+
+  it("GitHub: a deleted comment whose tombstone fails is queued and lands on the drain; an edit (a new version) is queued the same way", async () => {
+    const db = dbOf();
+    const { client, down } = flaky(db);
+    const { sent, queue } = queueOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client, opsQueue: queue });
+    seedRepository(db, ORG_A, { installationId: 55, repositoryId: 101, project: "web" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/101", retention: "C" });
+    expect(await runtime.taps.github(delivery(55, 101, `first ${MARKER}`))).toMatchObject({ written: 1 });
+    const comment = delivery(55, 101, "edited").payload;
+    down.on = true;
+    const deleted = { eventName: "issue_comment", deliveryId: "d-9", payload: { ...comment, action: "deleted" } };
+    await runtime.taps.github(deleted);
+    expect(sent.map((op) => op.op)).toContain("tombstone");
+    down.on = false;
+    expect(await runtime.drain(asRecords(sent))).toStrictEqual({ batchItemFailures: [] });
+    expect(everything(db)).not.toContain(MARKER);
+  });
+
+  it("a failed write with no queue is rethrown to the caller (never swallowed), and a Public Slack message is never queued", async () => {
+    const db = dbOf();
+    const { client, down } = flaky(db);
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    down.on = true;
+    await expect(runtime.sink.tombstone({ workspaceId: ORG_A, system: "github.com", scope: "github:repo/9", cause: "source_deleted" })).rejects.toThrow();
+    const dbP = dbOf();
+    const flakyP = flaky(dbP);
+    const queued = queueOf();
+    const publicRuntime = build(dbP, { ...ON, ROVARA_EDITION: "public" }, { documentClient: flakyP.client, opsQueue: queued.queue });
+    flakyP.down.on = true;
+    await expect(publicRuntime.sink.put(githubDraft({ source: "slack", kind: "slack.message", workspaceId: ORG_A, text: `slack ${MARKER}` }))).rejects.toThrow();
+    await expect(publicRuntime.sink.put(githubDraft({ workspaceId: ORG_A, origin: "slack", text: `from slack ${MARKER}` }))).rejects.toThrow();
+    expect(queued.sent).toStrictEqual([]);
+    expect(JSON.stringify(queued.sent)).not.toContain(MARKER);
+  });
+
+  it("the broker's Slack branch THROWS when the tap failed, so Lambda runs the invoke again", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: { send: async () => { throw new Error("down"); } } });
+    await expect(recordSlackForward({ teamRecord: runtime }, { source: "agentx.team-record-slack", payload: post, channel })).rejects.toThrow();
+  });
+
+  it("the queue's event is recognised only from the record's own queue, and a broker with the record off fails the whole batch", async () => {
+    const arn = "arn:aws:sqs:us-west-2:123456789012:agentx-staging-team-record-ops";
+    const record = (eventSourceARN: string) => ({ eventSource: "aws:sqs", eventSourceARN, messageId: "m1", body: "{}" });
+    const env = { AGENTX_ENV: "staging" };
+    expect(isTeamRecordQueueEvent({ Records: [record(arn)] }, env)).toBe(true);
+    expect(isTeamRecordQueueEvent({ Records: [record("arn:aws:sqs:us-west-2:123456789012:other")] }, env)).toBe(false);
+    expect(isTeamRecordQueueEvent({ Records: [record(arn)], requestContext: {} }, env)).toBe(false);
+    expect(isTeamRecordQueueEvent({ Records: [] }, env)).toBe(false);
+    expect(await drainTeamRecordQueue({ teamRecord: undefined }, { Records: [record(arn)] })).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+  });
+});

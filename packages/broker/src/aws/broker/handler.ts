@@ -75,7 +75,7 @@ import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2ERepla
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
 import { installLearningTaskEnd } from "./learning-wiring.js";
-import { installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
+import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
 import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
 import { runWokenTrackingPass, trackingPassDependencies } from "./e2e-rounds.js";
 import { handleProjectSetupCallback, handleProjectSetupEvidenceChunk, handleProjectSetupEvidenceFinalize, handleProjectSetupEvidenceInit, handleProjectSetupExecutionRead } from "./evidence-and-setup.js";
@@ -247,9 +247,12 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       try { return json(await recordSlackForward(dependencies, event), "team-record-slack"); }
       catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "team_record.slack_failed", error: error instanceof Error ? error.name : "unknown" }));
-        return json({ error: "record_failed" }, "team-record-slack", 500);
+        // THROWN, not answered: a handler that returns is never run again. Lambda retries an asynchronous invoke that errors (twice); the ingress's request/response invoke sees the error.
+        throw error;
       }
     }
+    // The record's durable queue (removals and edits that could not be applied at once): the partial-batch answer SQS reads, so only the messages that failed come back.
+    if (isTeamRecordQueueEvent(event)) return await drainTeamRecordQueue(dependencies, event) as never;
     // Meta repo lane F (F2): every minute, the intake sources that are due are read (each by its own interval and hourly cap); a source that fails is backed off and, after an hour, its maintainers are told.
     if (isIntakePollEvent(event)) {
       try {
