@@ -6,6 +6,7 @@ import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMet
 import { approveLesson, type ApproveDeps } from "../../packages/broker/src/lessons/approve.js";
 import { createApproverDirectory } from "../../packages/broker/src/lessons/directory.js";
 import { DynamoLessonStore } from "../../packages/broker/src/lessons/dynamo-store.js";
+import type { InMemoryLessonStore, LessonStore } from "../../packages/broker/src/lessons/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { Audit, Clock, KEY, WS, allowAllAccess, lessonRecord, seed, settings } from "../unit/lessons/lesson-helpers.js";
 
@@ -28,7 +29,7 @@ function world(options: { counter?: number | undefined } = { counter: 3 }) {
   db.set({ ...projectMemberKey(ORG, maintainer, PROJECT), ownerKey: maintainer, projectName: PROJECT, role: "developer", projectRole: "maintainer", grantId: "g1" });
   const evidence = { documentClient: db, tableName: "state", signInTableName: "signin", now: () => NOW };
   const directory = createApproverDirectory({ evidence, linkedAccounts: async () => [] });
-  const store = new DynamoLessonStore({ documentClient: db, tableName: "TeamRecord" });
+  const store: LessonStore = new DynamoLessonStore({ documentClient: db, tableName: "TeamRecord" });
   const audit = new Audit();
   const clock = new Clock(NOW);
   let n = 0;
@@ -82,7 +83,7 @@ describe("the production directory pins a lesson approval to the approver's stan
 describe("the real lesson approval transaction carries the fence", () => {
   it("the go-live transaction holds the org membership, member, identity and project ConditionChecks", async () => {
     const w = world();
-    await seed(w.store, pending());
+    await seed(w.store as InMemoryLessonStore, pending());
     expect(await approveLesson(w.deps, input(owner))).toMatchObject({ ok: true, status: "pending" });
     expect(await approveLesson(w.deps, input(admin))).toMatchObject({ ok: true, status: "active" });
     const written = checks(w.db);
@@ -97,7 +98,7 @@ describe("the real lesson approval transaction carries the fence", () => {
 
   it("an approver removed between the read and the write (the membership counter moves) cannot complete the approval", async () => {
     const w = world();
-    await seed(w.store, pending());
+    await seed(w.store as InMemoryLessonStore, pending());
     expect(await approveLesson(w.deps, input(owner))).toMatchObject({ ok: true, status: "pending" });
     const real = w.audit.emit.bind(w.audit);
     let fired = false;
@@ -112,7 +113,7 @@ describe("the real lesson approval transaction carries the fence", () => {
 
   it("an approver whose sign-in identity is revoked between the read and the write does not activate the lesson", async () => {
     const w = world();
-    await seed(w.store, pending());
+    await seed(w.store as InMemoryLessonStore, pending());
     await approveLesson(w.deps, input(owner));
     const real = w.audit.emit.bind(w.audit);
     let fired = false;
