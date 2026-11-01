@@ -36,7 +36,7 @@ describe.each(worlds)("lesson approval is fenced on the approver's standing (%s)
   function fenced(world: World): ApproverDirectory {
     const base = directory();
     return {
-      identity: base.identity,
+      identity: (...args) => base.identity(...args),
       eligibility: async (_ws, _project, who) => ({ ...base.value, eligibleIds: base.value.eligibleIds.filter((id) => world.present.has(id)), fence: who === undefined ? [] : [checkOf(who.approverId)] }),
     };
   }
