@@ -26,6 +26,13 @@ interface WriteAction {
 
 /** DynamoDB's item size limit: 400 KB, where a KB is 1,024 bytes. */
 export const DYNAMODB_ITEM_MAX_BYTES = 409_600;
+/**
+ * DynamoDB's TransactWriteItems limits: 100 actions and 4 MB in all. The fake enforces them only for transactions that touch a v1.2 learning partition
+ * (`PROJECT_LEARNING#` or `LEARNING_WALK`): the learning writes are the ones built to stay inside them, and other suites were written without the check.
+ */
+export const DYNAMODB_TRANSACTION_MAX_ITEMS = 100;
+export const DYNAMODB_TRANSACTION_MAX_BYTES = 4 * 1024 * 1024;
+const LEARNING_PARTITION = /#(PROJECT_LEARNING#|LEARNING_WALK$)/;
 
 interface InjectedFault {
   command?: string | undefined;
@@ -225,6 +232,14 @@ export class FakeDynamoDb {
         }
         return { Item: item === undefined ? undefined : this.readClone(item) };
       }
+      case "TransactGetCommand": {
+        const entries = input.TransactItems as Array<{ Get: { TableName: string; Key: { pk: string; sk: string } } }>;
+        if (entries.length === 0 || entries.length > 100) throw Object.assign(new Error("TransactGetItems requires 1 to 100 items"), { name: "ValidationException", $metadata: {} });
+        // One synchronous view after the call's await: no individual eventual
+        // Gets, per-key retry, or await can mix revisions within this snapshot.
+        const snapshot = entries.map(({ Get }) => this.get(Get.Key));
+        return { Responses: snapshot.map(item => item === undefined ? {} : { Item: this.readClone(item) }) };
+      }
       case "BatchGetCommand": {
         // As DynamoDB takes it: at most 100 keys in all, none named twice; items come back in no promised order, and a key with no item is simply absent.
         const request = input.RequestItems as Record<string, { Keys: Array<{ pk: string; sk: string }> }>;
@@ -274,10 +289,18 @@ export class FakeDynamoDb {
         if (new Set(named).size !== named.length) {
           throw Object.assign(new Error("Transaction request cannot include multiple operations on one item"), { name: "ValidationException", $metadata: {} });
         }
+        const learning = entries.some((entry) => {
+          const action = Object.values(entry)[0] as Record<string, unknown>;
+          const key = (action.Key ?? action.Item) as { pk?: unknown };
+          return typeof key.pk === "string" && LEARNING_PARTITION.test(key.pk);
+        });
+        if (learning && entries.length > DYNAMODB_TRANSACTION_MAX_ITEMS) {
+          throw Object.assign(new Error("Member must have length less than or equal to 100 (TransactItems)"), { name: "ValidationException", $metadata: {} });
+        }
         this.commit(entries.map((entry) => {
           const [kind, action] = Object.entries(entry)[0] as [WriteAction["kind"], Record<string, unknown>];
           return toAction(kind, action);
-        }), "TransactionCanceledException");
+        }), "TransactionCanceledException", learning);
         return {};
       }
       default:
@@ -462,7 +485,7 @@ export class FakeDynamoDb {
     return after.map((item) => this.readClone(item));
   }
 
-  private commit(actions: WriteAction[], errorName: string): void {
+  private commit(actions: WriteAction[], errorName: string, enforceTransactionSize = false): void {
     // Evaluate every action's condition against the current (pre-write) snapshot before applying
     // anything, as DynamoDB does for a transaction: it is the full set of pass/fail results, not
     // just the first failure, that a real TransactWriteItems reports back.
@@ -483,6 +506,9 @@ export class FakeDynamoDb {
     const nexts = actions.map((action) => action.kind === "ConditionCheck" ? undefined : action.apply(this.items.get(action.key)));
     if (nexts.some((next) => next !== undefined && Buffer.byteLength(JSON.stringify(next), "utf8") > DYNAMODB_ITEM_MAX_BYTES)) {
       throw Object.assign(new Error("Item size has exceeded the maximum allowed size"), { name: "ValidationException" });
+    }
+    if (enforceTransactionSize && nexts.reduce((total, next) => total + (next === undefined ? 0 : Buffer.byteLength(JSON.stringify(next), "utf8")), 0) > DYNAMODB_TRANSACTION_MAX_BYTES) {
+      throw Object.assign(new Error("Transaction request is too large: the aggregate size of the items in the transaction cannot exceed 4MB"), { name: "ValidationException" });
     }
     for (const [index, action] of actions.entries()) {
       if (action.kind === "ConditionCheck") continue;

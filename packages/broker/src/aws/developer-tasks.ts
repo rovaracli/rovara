@@ -2,7 +2,17 @@
 // through the existing handlers (DeveloperTaskActions) with the task's owner key. Nothing here
 // reads the deployment mode (FR-024).
 // The code now lives in ./developer-tasks/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
+import "../agents/roster.js";
+import "../org/task-stop-window.js";
+import "../org/task-start-agent-authority.js";
+import "../org/task-start-project-authority.js";
+import "../org/task-stop-admission.js";
+import "../org/budget-amount.js";
+import "../agents/budget-authority.js";
+import "../agents/access.js";
+import "../agents/table-writes.js";
 // The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
+import "../org/task-stop-funding.js";
 import "../developer/requester-text.js";
 import "../developer/workflow-actions.js";
 import "@agentx/contracts";
@@ -25,6 +35,7 @@ import "../developer/plan-artifacts.js";
 import "./stuck-setup.js";
 import "./operation-events.js";
 import "../rovara-code/setup-status.js";
+import "../rovara-code/early-risk-signal.js";
 import "./cancellation.js";
 import "./task-dispatch-access.js";
 import "../developer/notifications.js";
@@ -34,6 +45,8 @@ import "./task-plan-document.js";
 import "./plan-page/comments.js";
 import "../developer/plan-self-check.js";
 import "../developer/task-access.js";
+import "../learning/capture-decision.js";
+import "../learning/comment-flags.js";
 import "../developer/task-people.js";
 import "../developer/task-people-effects.js";
 import "../developer/prompt-text.js";
@@ -71,6 +84,7 @@ import "../rovara-code/pull-request-body.js";
 import "../rovara-code/proof-inputs.js";
 import "../rovara-code/proof-view.js";
 import "../rovara-code/linear-close.js";
+import "../rovara-code/outcome-hooks.js";
 import "../developer/test-proof-lines.js";
 import {
   agentXError,
@@ -136,7 +150,7 @@ export { candidateChangedFiles, monthSlots, taskView } from "./developer-tasks/t
 export { ADMISSION_REFUSALS, startAlreadyMade, startTask } from "./developer-tasks/start.js";
 export { ownerIndexRowOf, syncIndex } from "./developer-tasks/task-index.js";
 export { RESUMED_WITH_ORIGINAL_INSTRUCTIONS } from "./developer-tasks/task-window.js";
-export { type SpendResumeInput, continueAsTask, resumeTaskAfterSpendApproval } from "./developer-tasks/continue.js";
+export { type SpendResumeInput, continueAsTask, prepareTaskApprovalAdmission, resumeTaskAfterSpendApproval } from "./developer-tasks/continue.js";
 export { decideTaskWorkflow } from "./developer-tasks/decide.js";
 export { startTaskWorkflowPlanRevisionFromSystem } from "./developer-tasks/workflow-retry.js";
 export { planUnreadablePrompt, publicWorkflowDecision } from "./developer-tasks/workflow-inputs.js";

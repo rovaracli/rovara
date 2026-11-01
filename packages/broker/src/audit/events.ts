@@ -623,6 +623,58 @@ export function auditDiagnosisBundlePrepared(input: AuditBuilderBase & { diagnos
   return build("diagnosis.bundle_prepared", input, { kind: "diagnosis", id: input.diagnosisId }, { errorKind: input.errorKind });
 }
 
+// v1.2 learning loop ----------------------------------------------------------------------------------------------------
+// The project is a name-keyed target (pseudonymized by the appender). Facts are ids, counts, flags and fixed words: no builder takes a correction's, a rule's or a note's text.
+
+/** `occurrence`: the suggestion id (a suggestion opens once). `sourceKinds` is a comma-joined list of fixed words. */
+export function auditRuleSuggested(input: AuditBuilderBase & { projectName: string; suggestionId: string; stage: string; sourceCount: number; sourceKinds: string; lessSafe: boolean; fromOnePerson: boolean }): AuditEventInput {
+  return build("rule.suggested", input, { kind: "project", name: input.projectName }, { suggestionId: input.suggestionId, stage: input.stage, sourceCount: input.sourceCount, sourceKinds: input.sourceKinds, lessSafe: input.lessSafe, fromOnePerson: input.fromOnePerson });
+}
+
+/** `occurrence`: the rule id. Also part of the id: the outcome, so a rule that waited for a person and was then applied has an event for each. `processVersion` is present when published. */
+export function auditRuleAccepted(input: AuditBuilderBase & { projectName: string; suggestionId: string; ruleId: string; stage: string; processAgentId: string; outcome: "published" | "awaiting_approval"; processVersion?: number; approvalId?: string; edited: boolean; lessSafe: boolean }): AuditEventInput {
+  return build("rule.accepted", input, { kind: "project", name: input.projectName }, {
+    suggestionId: input.suggestionId, ruleId: input.ruleId, stage: input.stage, processAgentId: input.processAgentId, outcome: input.outcome, processVersion: input.processVersion, approvalId: input.approvalId, edited: input.edited, lessSafe: input.lessSafe,
+  }, [input.outcome]);
+}
+
+/** `occurrence`: the rule id. `approvalOutcome` is `declined`, `expired` or `failed`. */
+export function auditRuleNotApplied(input: AuditBuilderBase & { projectName: string; suggestionId: string; ruleId: string; approvalOutcome: "declined" | "expired" | "failed" }): AuditEventInput {
+  return build("rule.not_applied", input, { kind: "project", name: input.projectName }, { suggestionId: input.suggestionId, ruleId: input.ruleId, approvalOutcome: input.approvalOutcome });
+}
+
+/** `occurrence`: the suggestion id. The note a person gave is never a fact. */
+export function auditRuleDismissed(input: AuditBuilderBase & { projectName: string; suggestionId: string; stage: string; dismissKind: string }): AuditEventInput {
+  return build("rule.dismissed", input, { kind: "project", name: input.projectName }, { suggestionId: input.suggestionId, stage: input.stage, dismissKind: input.dismissKind });
+}
+
+/** `occurrence`: the suggestion id. Rovara withdrew a suggestion whose sources went away (the actor is the system). `cause` is a fixed word: `forgotten`, `sources_gone`, `pr_capture_off` or `erased`. */
+export function auditRuleWithdrawn(input: AuditBuilderBase & { projectName: string; suggestionId: string; stage: string; cause: "forgotten" | "sources_gone" | "pr_capture_off" | "erased" }): AuditEventInput {
+  return build("rule.withdrawn", input, { kind: "project", name: input.projectName }, { suggestionId: input.suggestionId, stage: input.stage, cause: input.cause });
+}
+
+/** `occurrence`: the id of the published version that took the rule out. */
+export function auditRuleRolledBack(input: AuditBuilderBase & { projectName: string; ruleId: string; processAgentId: string; processVersion: number }): AuditEventInput {
+  return build("rule.rolled_back", input, { kind: "project", name: input.projectName }, { ruleId: input.ruleId, processAgentId: input.processAgentId, processVersion: input.processVersion });
+}
+
+/** `occurrence`: the request id of the Remember or Forget. Also part of the id: the op, so a forgotten correction has its own event. */
+export function auditRuleCorrectionRemembered(input: AuditBuilderBase & { projectName: string; correctionId: string; stage: string; standing: string; op: "remember" | "forget" }): AuditEventInput {
+  return build("rule.correction_remembered", input, { kind: "project", name: input.projectName }, { correctionId: input.correctionId, stage: input.stage, standing: input.standing, op: input.op }, [input.op]);
+}
+
+/** `occurrence`: `auditOccurrence(project, settings revision)`. `enabled` says whether PR-comment learning is on after the change. */
+export function auditProjectLearningChanged(input: AuditBuilderBase & { projectName: string; revision: number; enabled: boolean; selfConfirmedSoleOwner: boolean }): AuditEventInput {
+  return build("project.learning_changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, enabled: input.enabled, selfConfirmedSoleOwner: input.selfConfirmedSoleOwner });
+}
+
+/** One system bootstrap/upgrade occurrence, preserving numeric policies already set by an admin. */
+export function auditTaskStopPolicySeeded(input: AuditBuilderBase & { source: "bootstrap" | "upgrade"; mode: "rovara_estimate"; revision: number; ceilingMicrousd: number }): AuditEventInput {
+  return build("spending.policy_seeded", input, { kind: "spend_policy", id: "task_stop" }, {
+    mode: input.mode, source: input.source, revision: input.revision, ceilingMicrousd: input.ceilingMicrousd,
+  });
+}
+
 // G3 registrations/builders only. Writers must pair each event with the actual state change atomically.
 export function auditModelFallbackUsed(input:AuditBuilderBase&{projectName:string;stage:StageId;used:ModelIdentifier;wanted?:ModelIdentifier;reasonCode:ModelFallback["reasonCode"];companyRevision:number}):AuditEventInput {
  const digest=(model:ModelIdentifier)=>createHash("sha256").update(JSON.stringify([model.provider,model.modelId])).digest("hex");
@@ -637,6 +689,14 @@ function modelPolicyEvent(action:"model_policy.changed"|"model_policy.lock_set"|
 export const auditModelPolicyChanged=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.changed",input);
 export const auditModelPolicyLockSet=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.lock_set",input);
 export const auditModelPolicyLockRemoved=(input:ModelPolicyAuditInput)=>modelPolicyEvent("model_policy.lock_removed",input);
+/**
+ * `occurrence`: `auditOccurrence(org, settings revision)`. The company's master "suggestions" switch changed; `setting` and `previous` are `on` or `off`, `source` is `company`, and
+ * `previousSource` says where the previous value came from (`company` or `install_default`). The target is the company itself.
+ */
+export function auditRuleSuggestionsSet(input: AuditBuilderBase & { setting: "on" | "off"; previous: "on" | "off"; source: "company"; previousSource?: "company" | "install_default" }): AuditEventInput {
+  return build("rule.suggestions_set", input, { kind: "org", id: input.orgId }, { setting: input.setting, previous: input.previous, source: input.source, ...(input.previousSource === undefined ? {} : { previousSource: input.previousSource }) });
+}
+
 /** A pending approval is an observation and request, never an applied binding. */
 export function auditSlackChannelProposed(input: AuditBuilderBase & { projectName: string; teamId: string; channelId: string; requestId: string }): AuditEventInput {
  return build("slack_channel.proposed", { ...input, related: [input.teamId, input.channelId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { requestId: input.requestId, proposalId: input.requestId });
@@ -679,4 +739,26 @@ export function auditSsoGroupMappingChanged(input: AuditBuilderBase & { fromVers
 /** `occurrence`: `auditOccurrence(String(toVersion))`. The owners' ids are in details. */
 export function auditSsoBreakGlassChanged(input: AuditBuilderBase & { toVersion: number; owners: number; ownerIds: readonly string[] }): AuditEventInput {
   return build("sso.break_glass_changed", { ...input, details: [...(input.details ?? []), ...(input.ownerIds.length === 0 ? [] : [{ subject: "org", fields: { ownerIds: input.ownerIds.join(",").slice(0, 480) } }])] }, { kind: "org", id: input.orgId }, { owners: input.owners });
+}
+
+/** Exact original/proposed policy facts; estimate/inherit has no invented amount. */
+export function auditTaskStopPolicyChange(input: AuditBuilderBase & {
+ action: "spending.policy_changed" | "spending.policy_change_requested" | "spending.policy_change_decided";
+ scopeKind: "company" | "project"; project?: string; revision: number; requestId: string; proposalId?: string;
+ before: { kind: string; stopMicrousd?: number }; after: { kind: string; stopMicrousd?: number }; decision?: string; reason?: "tightening_applied";
+}): AuditEventInput {
+ return build(input.action, input, input.project === undefined ? { kind: "spend_policy", id: "task_stop" } : { kind: "project", name: input.project }, {
+  scopeKind: input.scopeKind, revision: input.revision, requestId: input.requestId, beforeKind: input.before.kind, afterKind: input.after.kind,
+  ...(input.reason === undefined ? {} : { outcomeCode: input.reason }), ...(input.proposalId === undefined ? {} : { proposalId: input.proposalId }), ...(input.decision === undefined ? {} : { decision: input.decision }),
+  ...(input.before.stopMicrousd === undefined ? {} : { beforeMicrousd: input.before.stopMicrousd }), ...(input.after.stopMicrousd === undefined ? {} : { afterMicrousd: input.after.stopMicrousd }),
+ });
+}
+
+/** Required decision audit, committed by the caller beside the native admission or pause. */
+export function auditTaskStopDecision(input: AuditBuilderBase & {
+ action: "spending.stop_admitted" | "spending.stop_reached";
+ taskId: string; effectiveStopMicrousd: number; approvalCapMicrousd: number; policyDigest: string; admissionId: string;
+}): AuditEventInput {
+ return build(input.action, input, { kind: "task", id: input.taskId }, { effectiveStopMicrousd: input.effectiveStopMicrousd, approvalCapMicrousd: input.approvalCapMicrousd,
+  policyDigest: input.policyDigest, workKind: "task-window", admissionId: input.admissionId });
 }

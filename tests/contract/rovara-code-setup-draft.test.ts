@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { agentXError } from "@agentx/contracts"; // the package the broker itself imports: an error from the relative path would not be an instance of its AgentXError
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  orgSettingsKey, orgScoped, projectAiKey, builtinSettingsKey, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS,
   AGENT_WORKER_OUTDATED, DEFAULT_PLANNING_LIMIT_USD, SetupApplyResponseSchema, SetupDraftResponseReaderSchema, SetupDraftResponseSchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema,
   egressDomainsKey, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, redactText,
   setupDraftKey, setupItemsOf, type GithubInstallationRecord, type SetupProposal,
@@ -1408,3 +1409,31 @@ describe("round trip: the setup-draft answers, as the broker sends them", () => 
 });
 
 afterEach(() => { vi.restoreAllMocks(); });
+for (const amount of [1234567, 0]) it(`M47 setup-draft pull request starts a fresh spending window at ${amount} micros`, async () => {
+  const t = await setup(); await t.drafted();
+  const policy = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), catalog = orgProjectCatalogKey(TEST_ORG, NAME), project = projectAiKey(TEST_ORG, NAME), agent = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);
+  t.db.set({ ...policy, entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: amount } }, enrollment: { version: 1, state: "enabled" } });
+  t.db.set({ pk: orgScoped(TEST_ORG, "TASK_STOP_SEED"), sk: "V1#bootstrap", entityType: "TASK_STOP_SEED", orgId: TEST_ORG, source: "bootstrap", version: 1, outcome: "created", policyRevision: 1 });
+  t.db.set({ ...agentGuardrailsKey(TEST_ORG), entityType: "AGENT_GUARDRAILS", orgId: TEST_ORG, revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 1 } });
+  t.db.set({ ...t.db.get(catalog), ...catalog, entityType: "PROJECT_CATALOG", orgId: TEST_ORG, name: NAME, latestRevision: 1 });
+  t.db.set({ ...t.db.get(project), ...project, entityType: "PROJECT_AI", orgId: TEST_ORG, project: NAME, revision: 1, projectPays: false, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+  t.db.set({ ...t.db.get(agent), ...agent, entityType: "BUILTIN_AGENT_SETTINGS", orgId: TEST_ORG, agentId: ROVARA_CODE_AGENT_ID, revision: 1, stopKind: "inherit" });
+  const before = t.db.find(row => row.entityType === "DEVELOPER_TASK").length;
+  const asked = await t.apply([{ id: "devcontainer" }]);
+  expect(outcomeOf(asked, "devcontainer")?.outcome, JSON.stringify(asked.body)).toBe("approval_needed");
+  t.approve(outcomeOf(asked, "devcontainer")!.approval!.approvalId);
+  const reply = await t.apply([{ id: "devcontainer" }]);
+  expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  const result = outcomeOf(reply, "devcontainer")!;
+  if (amount === 0) {
+    expect(result).toMatchObject({ outcome: "failed" });
+    // The person is told only that the item was not applied (the reason is kept out of the answer); the pull request's claim is given back so they can ask again, and no task exists.
+    expect(result.message).toContain("couldn't apply this item");
+    expect(t.pointer()!.pullRequestClaim).toBeUndefined();
+    expect(t.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(before);
+  } else {
+    expect(result.outcome, JSON.stringify(reply.body)).toBe("applied");
+    const started = (result as unknown as { pullRequest: { taskId: string } }).pullRequest;
+    expect(t.db.get(`DEVTASK#${started.taskId}`, "META")).toMatchObject({ budgetUsd: 1.234567, spendingStop: { effectiveStopMicrousd: amount } });
+  }
+});

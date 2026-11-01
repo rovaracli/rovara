@@ -50,6 +50,10 @@ import { readApprovedSetupSource } from "./task-operations.js";
 import { retryWorkspacePreparation } from "./thread-workspaces.js";
 import { MEMBERSHIP_PREPARATION_ATTEMPTS, membershipMovedSince, newWorkspacePreparation } from "./workspace-preparation.js";
 import { connectorTypeContext } from "./workspace-routes.js";
+import { AuditEventInputSchema, orgSettingsKey, projectAiKey } from "@agentx/contracts";
+import { nativeSnapshotConditions } from "../../org/native-snapshot-conditions.js";
+import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
+import { taskStopProjectCreationItems } from "../../org/task-stop-bootstrap.js";
 
 /** The registration request's parse, shared by registerProject and a change plan (spec 025 C4). */
 export function parseRegistrationInput(value: unknown): { definition: ProjectDefinition; runtimeBinding: ReturnType<typeof parseRuntimeBinding>; wantsPreflight: boolean; setupApproval?: { proposalRef: string; proposalSha256: string; decision: "approve" | "decline" }; takeover?: { reason: string } } {
@@ -140,6 +144,9 @@ export async function registerProjectFor(
   value: unknown,
   options: { creatorMembership: "administrator" | "developer" | "none"; requireNewName?: boolean; description?: string; extraItems?: Array<Record<string, unknown>>; expectedBaseRevision?: number; appliedDomainProposal?: AppliedDomainProposalProof; checked?: { preflight?: PreflightOutcome }; credentialsChecked?: readonly string[] },
 ): Promise<RegistrationResult> {
+  // Even the minimal registration needs its own action. Reject a provably
+  // oversized trusted extension before bootstrap or any other write.
+  if ((options.extraItems?.length ?? 0) >= 100) throw agentXError("CONFIG_INVALID", "This project change cannot fit one transaction.");
   const checked = options.checked;
   const orgId = actor.orgId;
   const { definition, runtimeBinding, wantsPreflight, setupApproval, takeover } = parseRegistrationInput(value);
@@ -315,7 +322,7 @@ export async function registerProjectFor(
   };
   const membershipKey = membership === undefined ? undefined : { pk: membership.pk, sk: membership.sk };
   const setupAdmissionRows = setupRuntimeAdmission && setupApprovalBinding?.decision === "approve" && definition.e2e !== undefined
-    ? await createProjectSetupAdmissionRows(dependencies, actor, record, setupApprovalBinding, setupRuntimeAdmission)
+    ? await createProjectSetupAdmissionRows(dependencies, { ...actor, auditActor: actor.auditActor ?? auditActorOf(actor.ownerKey) }, record, setupApprovalBinding, setupRuntimeAdmission)
     : undefined;
   setupExecutionCreated = setupAdmissionRows !== undefined;
   await ensureInstallOrg(dependencies, orgId);
@@ -396,6 +403,19 @@ export async function registerProjectFor(
       if (check.ExpressionAttributeValues !== undefined) update.ExpressionAttributeValues = { ...update.ExpressionAttributeValues, ...check.ExpressionAttributeValues };
       return false;
     }) ?? [];
+    const projectSpendingItems: TransactItems = [];
+    if (snapshot.catalog === undefined && snapshot.newestRevision === 0) {
+      const policyKey = orgSettingsKey(orgId, "TASK_STOP_POLICY");
+      const policy = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: policyKey, ConsistentRead: true }))).Item;
+      // An unenrolled company keeps the existing registration and settings shape.
+      // Explicit upgrade inventories prepare inheritance before enrollment.
+      const enrollment = z.object({ version: z.literal(1), state: z.literal("enabled") }).safeParse(policy?.enrollment);
+      if (policy?.entityType === "ORG_TASK_STOP_POLICY" && policy.orgId === orgId && enrollment.success) {
+        const key = projectAiKey(orgId, definition.name);
+        const existing = (await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: key, ConsistentRead: true }))).Item;
+        projectSpendingItems.push(...nativeSnapshotConditions(dependencies.tableName, [policyKey], [policy], ["enrollment"]), ...(existing === undefined ? taskStopProjectCreationItems(dependencies.tableName, orgId, definition.name, Date.parse(now)) : nativeSnapshotConditions(dependencies.tableName, [key], [existing], ["taskStopPolicy"])));
+      }
+    }
     const registrationItems: TransactItems = [
       { Put: { TableName: dependencies.tableName, Item: record, ConditionExpression: "attribute_not_exists(pk)" } },
       // The operator's first registration and a takeover write the registrant's administrator membership; an administrator's own is left as it is (its grant is not reissued)
@@ -422,12 +442,12 @@ export async function registerProjectFor(
       ...(updateCatalog ? [{ Update: {
         TableName: dependencies.tableName,
         Key: orgProjectCatalogKey(orgId, definition.name),
-        UpdateExpression: "SET entityType = :entity, #name = :name, latestRevision = :revision, firstRegisteredAt = if_not_exists(firstRegisteredAt, :now)",
+        UpdateExpression: "SET entityType = :entity, #name = :name, latestRevision = :revision, firstRegisteredAt = if_not_exists(firstRegisteredAt, :now), orgId = if_not_exists(orgId, :spendingOrg)",
         ConditionExpression: snapshot.catalog === undefined ? "attribute_not_exists(pk)"
           : snapshot.catalog.latestRevision === undefined ? "attribute_not_exists(latestRevision)"
             : "latestRevision = :observed AND latestRevision < :revision",
         ExpressionAttributeNames: { "#name": "name" },
-        ExpressionAttributeValues: { ":entity": "PROJECT_CATALOG", ":name": definition.name, ":revision": latestRevision, ":now": now,
+        ExpressionAttributeValues: { ":entity": "PROJECT_CATALOG", ":name": definition.name, ":revision": latestRevision, ":now": now, ":spendingOrg": orgId,
           ...(snapshot.catalog?.latestRevision === undefined ? {} : { ":observed": snapshot.catalog.latestRevision }) },
       } }] : []),
       // A late older revision does not update the catalog, but must still observe its same pointer.
@@ -439,6 +459,7 @@ export async function registerProjectFor(
       ...(setupAdmissionRows?.transactionItems ?? []),
       ...accounts.items,
       ...repositoryIndex,
+      ...projectSpendingItems,
       // The caller's own writes that must land with the project (Task 16: the creation request's record), after every item above.
       ...(options.extraItems ?? []),
       ...membershipGeneration,
@@ -448,7 +469,7 @@ export async function registerProjectFor(
       ];
       if (registrationItems.length > 100) throw agentXError("CONFIG_INVALID", "This project change cannot fit one transaction.");
       await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: registrationItems }));
-      await flushAuditEvents(dependencies, [...audit.events, ...(initialDomainPlan === undefined ? [] : [initialDomainPlan.event]), ...(commonDomainPlan === undefined ? [] : [commonDomainPlan.event])]);
+      await flushAuditEvents(dependencies, [...audit.events, ...projectSpendingItems.flatMap(item => item.Put?.Item?.event === undefined ? [] : [AuditEventInputSchema.parse(item.Put.Item.event)]), ...(initialDomainPlan === undefined ? [] : [initialDomainPlan.event]), ...(commonDomainPlan === undefined ? [] : [commonDomainPlan.event])]);
       if (authority === "takeover") {
         ownershipTakenOver = true;
         console.log(JSON.stringify({ component: "broker", event: "project.ownership_taken_over", project: definition.name, revision: definition.revision, takenBy: actor.ownerKey }));
@@ -723,13 +744,14 @@ export async function ensureProjectCatalogPointer(dependencies: AwsBrokerDepende
 
 async function createProjectSetupAdmissionRows(
   dependencies: AwsBrokerDependencies,
-  identity: Pick<AuthenticatedIdentity, "ownerKey" | "orgId">,
+  identity: Pick<AuthenticatedIdentity, "ownerKey" | "orgId"> & { auditActor: AuditActor },
   project: RegisteredProjectRecord,
   setupApproval: NonNullable<RegisteredProjectRecord["setupApproval"]>,
   runtime: NonNullable<ReturnType<typeof admitProjectSetupRuntime>>,
   retry?: { attemptId: string; retryOfExecutionId: string },
 ): Promise<{ transactionItems: Array<Record<string, unknown>> } | undefined> {
   if (!dependencies.projectSetupRuntimeCatalogId || project.runtimeBinding.deploymentMode !== "ec2-ebs") return undefined;
+  await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: identity.auditActor, workKind: "admin-setup-execution" });
   const endpoint = new URL(runtime.endpoint);
   if (endpoint.protocol !== "http:" || !z.ipv4().safeParse(endpoint.hostname).success) return undefined;
   const approval = await getItem<Record<string, unknown>>(dependencies, projectSetupApprovalKey(requireOrgId(identity.orgId), project.definition.name, setupApproval.proposalSha256));
@@ -909,6 +931,7 @@ export async function retryProjectSetupAsAdministrator(
     && priorOperation.data.fence === parked.data.fence && priorOperation.data.transportCorrelationId === parked.data.transportCorrelationId;
   if (!parkedRetry && !expiredDispatchRetry) throw agentXError("STALE_FENCE", "only an owned parked setup execution or an expired matching dispatch can be retried");
   if (identity.ownerKey !== parked.data.ownerKey) throw agentXError("FORBIDDEN", "setup retry actor must be the original project creator");
+  await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-setup-retry" });
   const project = await requireRecordProject(dependencies, parked.data, parked.data.projectName, parked.data.projectRevision);
   await requireAdministrator(dependencies, identity, parked.data.projectName);
   if (project.runtimeBinding.deploymentMode !== "ec2-ebs") throw agentXError("RUNTIME_UNAVAILABLE", "the approved setup runtime profile is unavailable");
@@ -951,7 +974,7 @@ export async function retryProjectSetupAsAdministrator(
     return { setupExecutionId: prior.setupExecutionId, operationId: prior.operationId, status: "QUEUED", duplicate: true };
   }
   const setupApproval = project.setupApproval;
-  const rows = await createProjectSetupAdmissionRows(dependencies, identity, project, setupApproval, admittedRuntime,
+  const rows = await createProjectSetupAdmissionRows(dependencies, { ...identity, auditActor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) } }, project, setupApproval, admittedRuntime,
     { attemptId: input.requestId, retryOfExecutionId: setupExecutionId });
   if (!rows) throw agentXError("RUNTIME_UNAVAILABLE", "the approved source-interface setup run cannot be admitted");
   const executionPut = rows.transactionItems.find((item) => "Put" in item && (item as { Put: { Item?: { entityType?: unknown } } }).Put.Item?.entityType === "PROJECT_SETUP_EXECUTION") as { Put: { Item: Record<string, unknown> } } | undefined;
@@ -1033,6 +1056,7 @@ export async function prepareWorkspace(
     const workspace = await requireWorkspace(dependencies, idempotency.workspaceId);
     return { operationId: idempotency.operationId, workspace: publicWorkspace(workspace), alreadyReady: workspace.status === "READY", duplicate: true };
   }
+  await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-workspace-prepare" });
   const project = await requireProject(dependencies, requireOrgId(identity.orgId), projectName, projectRevision);
   const existing = await getDefaultWorkspace(dependencies, requireOrgId(identity.orgId), targetOwnerKey, projectName);
   if (existing) {

@@ -46,6 +46,7 @@ import { actionableWorkspace, busyOrClosing, extraItemsCancelled } from "./task-
 import { specPublicationGate } from "./spec-wiring.js";
 import { withSpecLink } from "../../spec/link.js";
 import { type WorkflowPublicationAuthority, approvedPlanForPullRequest, proofContextOfTask, workflowPullRequestBody } from "./pull-request-body.js";
+import { recordPublishedCandidateOutcomes } from "./decide.js";
 
 type LoadedPublicationProject = NonNullable<Awaited<ReturnType<DeveloperTaskActions["latestProject"]>>>;
 
@@ -312,6 +313,7 @@ export async function startTaskWorkflowPublicationFromSystem(
       if (!isConditional(error)) throw error;
     }
   }
+  await recordPublishedCandidateOutcomes(deps, task, judged, receivedAt);
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
@@ -401,6 +403,7 @@ async function startTaskWorkflowPullRequestUpdate(
     }
     throw error;
   }
+  await recordPublishedCandidateOutcomes(deps, task, judged, receivedAt, pullRequest.candidateDigest);
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 

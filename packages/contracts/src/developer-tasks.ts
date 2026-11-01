@@ -13,6 +13,7 @@ import { PlanOneScreenSchema } from "./plan-one-screen.js";
 import { MergeTrackingItemSchema, MergeViewSchema, ProofTableViewSchema, VerificationReportSchema } from "./rovara-code.js";
 import { readsAsUnknown } from "./forward-reader-unknown.js";
 import { ErrorRefSchema } from "./live-interaction.js";
+import { EarlyRiskSignalReadSchema } from "./how-we-work-track-record.js";
 
 export const DEVELOPER_TASK_SUMMARY_MAX = 4_000;
 
@@ -182,6 +183,11 @@ export const DeveloperTaskViewSchema = z.object({
    * tracking last read. Advisory: the press re-reads GitHub.
    */
   merge: MergeViewSchema.optional(),
+  /**
+   * v1.2 track record (version 2 only, full reads only, like `mergeTracking`): how the pull requests this project rated low risk went in the last 30 days, for the task's own owner and only when this task's
+   * pull request was published with risk low. Private: it is left out for every other viewer, and it is never on the shared card, in a Slack thread or on the pull request.
+   */
+  earlyRiskSignal: EarlyRiskSignalReadSchema.optional(),
 });
 
 /**

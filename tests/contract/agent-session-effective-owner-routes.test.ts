@@ -68,6 +68,7 @@ describe("a task Ben took over from Maya, through the routes", () => {
 describe("a budget pause on a task Ben took over from Maya", () => {
   async function pausedAfterTakeOver(t: World, options: { takeOver: boolean }) {
     const agentId = await t.agentOf(CODING);
+    if (options.takeOver) await t.shareWith(agentId, BEN);
     const run = await t.runOf(agentId);
     await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
     if (options.takeOver) await t.set(run.taskId, "SET currentOwner = :owner", { ":owner": { developerId: BEN.developerId, name: BEN.name, provider: BEN.provider, since: SINCE } });
@@ -119,6 +120,7 @@ describe("a taken-over task's list rows and test-run continuation", () => {
   it("is the taker's to continue as a normal task once the test run hit its cap, and not the creator's", async () => {
     const t = await setup();
     const agentId = await t.agentOf(TRIAGE, { publish: false });
+    expect((await t.api(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [{ principal: { kind: "member", developerId: BEN.developerId }, level: "edit" }] })).status).toBe(200);
     const run = await t.runOf(agentId, { version: "draft" });
     await t.pauseAndEnd(run, { kind: "test", taskId: run.taskId });
     await t.set(run.taskId, "SET currentOwner = :owner", { ":owner": { developerId: BEN.developerId, name: BEN.name, provider: BEN.provider, since: SINCE } });
@@ -131,6 +133,7 @@ describe("a taken-over task's list rows and test-run continuation", () => {
   it("shows a spend request to the person who owns the task now, and no longer to the creator who may not decide it", async () => {
     const t = await setup();
     const agentId = await t.agentOf(CODING);
+    await t.shareWith(agentId, CARL);
     const run = await t.runOf(agentId);
     await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 14 });
     await t.set(run.taskId, "SET currentOwner = :owner", { ":owner": { developerId: CARL.developerId, name: CARL.name, provider: CARL.provider, since: SINCE } });

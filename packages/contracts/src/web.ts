@@ -37,7 +37,7 @@ export { SessionAnchorRefSchema } from "./agent-sessions.js";
 export { DIFF_FILES_PAGE_MAX, DIFF_PATCH_MAX_BYTES, SessionDiffSchema, SessionDiffReaderSchema, type SessionDiff } from "./session-views.js";
 
 export { HomeCardSchema, type HomeCard, HomeCardReaderSchema, HomeResponseSchema, type HomeResponse, HomeResponseReaderSchema, HomeButtonSchema, HomeCardIdSchema, HomeDismissResponseSchema, HomeDismissResponseReaderSchema, HOME_NOT_DISMISSIBLE } from "./home.js";
-export { LiveFilterSchema, LiveTileSchema, LiveTileReaderSchema, LiveResponseSchema, LiveResponseReaderSchema, SessionWhereViewSchema, ProjectOverviewProjectSchema, ProjectOverviewYouSchema, ProjectOverviewAgentSchema, ProjectOverviewBudgetSchema } from "./session-views.js";
+export { LiveFilterSchema, LiveTileSchema, LiveTileReaderSchema, LiveResponseSchema, LiveResponseReaderSchema, SessionWhereViewSchema, ProjectOverviewProjectSchema, ProjectOverviewYouSchema, ProjectOverviewAgentSchema, ProjectOverviewBudgetSchema, ProjectOverviewLearningSchema, type ProjectOverviewLearning } from "./session-views.js";
 export { LIVE_FILTERS, LIVE_VIEWING_MAX, SESSION_STATUS_WORDS } from "./agent-sessions.js";
 
 export * from "./agent-web-views.js";
@@ -63,7 +63,7 @@ export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInvi
 export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
 
 // Lane A G1: pure finite stop calculation and exact display; no runtime admission.
-export { calculateTaskStop, TaskStopCalculationInputSchema, TaskStopMicrousdSchema, type TaskStopCalculation, type TaskStopBindingScope } from "./task-stop.js";
+export { calculateTaskStop, TaskStopAdmissionInputSchema, type TaskStopAdmissionInput, TaskStopCalculationInputSchema, TaskStopMicrousdSchema, type TaskStopCalculation, type TaskStopBindingScope } from "./task-stop.js";
 export { formatUsdMicrodollars } from "./money-format.js";
 
 // Lane A G1: current company ceiling read alias; other policy scopes are not loaded.
@@ -92,6 +92,10 @@ export { isPlaceholderDisplayName, isReservedDisplayName } from "./display-name.
 // "How we work": the project playbook and its effective view (the How we work tab).
 export * from "./project-playbook.js";
 export * from "./how-we-work.js";
+export * from "./how-we-work-track-record.js";
+
+// v1.2 learning loop: the schemas of a project's learning (stored shapes and the API the screens use).
+export * from "./project-learning.js";
 
 // Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
 export * from "./org-slack-workspace-evidence.js";
@@ -107,6 +111,7 @@ export * from "./app-allowed-websites.js";
 export * from "./stage-model-publish-refusal.js";
 export * from "./app-project-slack.js";
 
+export { TaskStopEditablePolicySchema, type TaskStopEditablePolicy, TaskStopPendingChangeSchema, TaskStopEditingContextSchema, TaskStopEditBodySchema, TaskStopDecisionBodySchema, TaskStopEditResultSchema, taskStopEditKind } from "./task-stop-editing.js";
 export * from "./app-service-status.js";
 
 // Proof and evidence (W4/W5): browser-safe schemas for the evidence view, decision cards and the test environment.

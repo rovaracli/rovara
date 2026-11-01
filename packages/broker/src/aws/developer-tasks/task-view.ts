@@ -63,6 +63,7 @@ import { blockedOnRunLimit, estimateDependencies, get, inertTaskTitle, iso, log,
 import { publicWorkflowDecision } from "./workflow-inputs.js";
 import { approvedPlanForPullRequest, proofContextOfTask } from "./pull-request-body.js";
 import { taskViewErrorRef } from "./error-ref.js";
+import { readEarlyRiskSignal } from "../../rovara-code/early-risk-signal.js";
 
 const DIFF_READ_BYTES = 1_000_000;
 const ARTIFACT_NAME_MAX = 200;
@@ -323,6 +324,9 @@ export async function taskView(
   const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
   const modelLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
+  // v1.2 track record: the early "PR risk low" score is the task owner's alone. It is read only for a view built for the owner (an explicit `actor: "owner"`; no named actor and a viewer never get it), on a
+  // full read, and only when this task's pull request was published with risk low.
+  const earlyRiskSignal = rovaraCodeV2 && options.details && options.actor === "owner" ? await readEarlyRiskSignal(deps, task) : undefined;
   const updatedAt = derived.failedPrepare?.updatedAt !== undefined && derived.failedPrepare.updatedAt > task.updatedAt ? derived.failedPrepare.updatedAt : derived.current?.createdAt ?? task.updatedAt;
   // Live interaction F1: what "Fix with agent" is about when this view shows an error (fixed codes and ids only).
   const errorRef = taskViewErrorRef({ taskId: task.taskId, status: derived.status, workflow, failure: derived.failure, operationId: derived.failedPrepare?.id ?? derived.current?.id, creatorRemoved: removedReason !== undefined, at: updatedAt });
@@ -339,6 +343,7 @@ export async function taskView(
     ...(reviewRound === undefined ? {} : { reviewRound }),
     ...(tracked.length === 0 ? {} : { mergeTracking: tracked.map(publicTrackingItem) }),
     ...(merge === undefined ? {} : { merge }),
+    ...(earlyRiskSignal === undefined ? {} : { earlyRiskSignal }),
     ...(e2ePresentation === undefined ? {} : { e2ePresentation }),
     ...(derived.failure === undefined ? {} : { failure: derived.failure }),
     ...(errorRef === undefined ? {} : { errorRef }),

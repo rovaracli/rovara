@@ -6,7 +6,7 @@
 // member's role on the run's project), plus the member's LIVE org membership. The candidates stored on the record are never consulted (R68).
 // `decide` is `decideApproval` as that member, with the session's proof, under a request id derived from the session so a retry replays.
 import { createHash } from "node:crypto";
-import { ApprovalIdSchema, LEVEL_WORDS, agentXError, isBuiltinAgentId, type AuditProof, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, isBuiltinAgentId, stepOfLessSafeReason, trackRecordLines, type AuditProof, type OrgId } from "@agentx/contracts";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import { takeOverFacts } from "../agent-sessions/take-over.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
@@ -14,6 +14,8 @@ import { orgRoleOf, type AgentCaller } from "./access.js";
 import { approverRefusalFor } from "./approvals-store.js";
 import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
+import { resolveRecipe } from "./changes.js";
+import { TRACK_RECORD_DEADLINE_MS, readTrackRecordsByKind } from "../playbook/track-record.js";
 
 const NAME_MAX = 80;
 const OPEN_AGAIN = "Open the approval again from Rovara.";
@@ -116,6 +118,54 @@ async function agentChangeFacts(deps: ApprovalDependencies, orgId: OrgId, subjec
   return facts;
 }
 
+/**
+ * v1.2 track record, read-only: the changes a person is asked to confirm, each followed by the record of the stage it is about (the plan check, or code and security review), as paragraphs right after
+ * the change. Only a change about who reviews or checks at a stage, or about removing or weakening it, has one. A stage is found by its id and kind (never by its name alone), each kind of stage is read
+ * once under one deadline, and a record that cannot be read leaves the changes as they were. It decides nothing.
+ */
+async function changesWithRecords(deps: ApprovalDependencies, record: Extract<AnyApprovalRecord, { kind: "change" }>): Promise<string[]> {
+  // Everything that is read for the records (the agent, the recipes, the outcomes) is under one deadline: at it, the page shows the changes without record lines.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<string[]>((resolve) => { timer = setTimeout(() => resolve(record.changes), deps.trackRecordDeadlineMs ?? TRACK_RECORD_DEADLINE_MS); });
+  try {
+    return await Promise.race([withRecords(deps, record), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function withRecords(deps: ApprovalDependencies, record: Extract<AnyApprovalRecord, { kind: "change" }>): Promise<string[]> {
+  try {
+    const subject = record.subject;
+    let project: string | undefined;
+    let layerId: string | undefined;
+    if (subject.kind === "playbook_default_process") project = subject.project;
+    else if (subject.kind === "agent_publish" || subject.kind === "agent_rollback") {
+      const live = isBuiltinAgentId(subject.agentId) ? undefined : await deps.store.get(record.orgId, subject.agentId);
+      if (live?.owner.kind === "project") { project = live.owner.project; layerId = live.agentId; }
+    }
+    if (project === undefined || record.changes.length === 0) return record.changes;
+    // The steps the changes can name: Rovara Code's, and the project's process layer's own when it has one. Each is known by its id and kind.
+    const steps = new Map<string, { id: string; name: string; kind: string }>();
+    const builtin = deps.store.builtinRecipe(ROVARA_CODE_AGENT_ID, await deps.store.pinnedBuiltinVersion(record.orgId, ROVARA_CODE_AGENT_ID));
+    for (const step of builtin.steps) steps.set(`${step.id}|${step.kind}`, step);
+    if (layerId !== undefined) {
+      const own = await resolveRecipe(deps, record.orgId, layerId as never, "current").catch(() => undefined);
+      for (const step of own?.steps ?? []) steps.set(`${step.id}|${step.kind}`, step);
+    }
+    const stages = [...steps.values()];
+    const kindOf = record.changes.map((change) => stepOfLessSafeReason(change, stages)?.kind);
+    const read = await readTrackRecordsByKind(deps, record.orgId, project, kindOf.filter((kind): kind is string => kind !== undefined));
+    return record.changes.flatMap((change, index) => {
+      const kind = kindOf[index];
+      const lines = (kind === undefined ? [] : read.get(kind) ?? []).map((entry) => trackRecordLines(entry));
+      return [change, ...lines.map((entry) => `Record so far, ${entry.title}: ${entry.rate}.${entry.limits === undefined ? "" : ` ${entry.limits}.`}`)];
+    });
+  } catch {
+    return record.changes;
+  }
+}
+
 /** What the page shows for an open record: the people and project it concerns, the words of what it does, and for a write the exact call. */
 async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Promise<ConfirmView> {
   const expires = fact("Expires", record.expiresAt);
@@ -171,7 +221,7 @@ async function viewOf(deps: ApprovalDependencies, record: AnyApprovalRecord): Pr
   if (subject.kind === "setup_item") facts.push(fact("Project", subject.project), fact("Suggestion", subject.itemKind.replace("_", " ")), fact("Suggestion id", subject.itemId));
   if (subject.kind === "playbook_default_process") facts.push(fact("Project", subject.project), fact("Process layer version it replaces", String(subject.layerVersion)), fact("Playbook revision it applies to", String(subject.expectedRevision)));
   facts.push(expires);
-  return { title: changeTitleOf(subject.kind), facts, paragraphs: record.changes };
+  return { title: changeTitleOf(subject.kind), facts, paragraphs: await changesWithRecords(deps, record) };
 }
 
 async function callerOf(deps: ApprovalDependencies, target: DecideTarget, proof?: AuditProof): Promise<AgentCaller | undefined> {

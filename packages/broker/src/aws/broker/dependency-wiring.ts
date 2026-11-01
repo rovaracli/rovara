@@ -81,6 +81,8 @@ import { codeMergeHostOf, operationEventsNewestFirst } from "./terminal-and-gith
 import { deleteWorkspaceCompute, requesterOf, startTaskClose } from "./thread-workspaces.js";
 import { deleteSlackBinding, heldPreparationDispatch, newWorkspacePreparation, spendRequestHostOf } from "./workspace-preparation.js";
 import { connectorTypeContext } from "./workspace-routes.js";
+import { learningSettler } from "../../learning/settle.js";
+import { setLearningHomeSettler } from "../../learning/home-source.js";
 
 export function agentRouteDependencies(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions): AgentRouteDependencies | undefined {
   const { agents, developer } = dependencies;
@@ -234,6 +236,8 @@ export function agentRouteDependencies(dependencies: AwsBrokerDependencies, task
   // Plan 3, merge of Tasks 32 and 34: a plan approved at a run limit above the approver's tier makes a `run_limit` spend request, and that request's approval starts coding
   // (`resumeAfterRunLimitApproval`, through the host above). Without this a member's Full task would block with no request and no way to run.
   routeDependencies.requestRunLimit ??= runLimitRequester(routeDependencies);
+  // v1.2 learning loop: Home hands the approvals of waiting suggested rules to the settler (learning/settle.ts); without it Home reads none.
+  setLearningHomeSettler(learningSettler({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, approvals: routeDependencies, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }));
   // Owner decision 2026-10-22: an owner's approval of an older, less safe version starts the run that asked for it, once, as the person who asked, through the same
   // start as any run (its request id makes a repeat answer the first start), with only the version check waived.
   routeDependencies.startApprovedRun = async (approved) => {

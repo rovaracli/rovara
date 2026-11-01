@@ -67,6 +67,12 @@ import { getDefaultWorkspace, requireLatestProject, requireMembership, requireOw
 import { creatorCheckOf, githubScope, githubScopeOf, modelSourceStoreOf, orgOfRecord, routingOf } from "./scope-helpers.js";
 import { githubLoginOfDeveloper } from "./thread-workspaces.js";
 import { connectorTypeContext } from "./workspace-routes.js";
+import { AuditEventInputSchema, auditEventId } from "@agentx/contracts";
+import { TaskFundingProofSchema } from "../../org/task-stop-funding.js";
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { auditPendingItem } from "../../audit/outbox.js";
+import { failedIndexes } from "../../agents/table-writes.js";
+import { readStageModelEvidence } from "../../model-selection/evidence.js";
 
 export async function resolveWorkspace(
   dependencies: AwsBrokerDependencies,
@@ -404,6 +410,7 @@ export async function taskOperationParts(
   if(turnPolicy!==undefined){operation.modelPolicy=turnPolicy.binding;operation.modelTurnPin=turnPolicy.frozen;delete operation.modelTaskId;}
   const turnAudit=turnPolicy?.decision.fallback===undefined?undefined:prepareTurnModelFallback({...dependencies,now:Date.now},{orgId,taskId:operationId,project:workspace.projectName,operationId,occurredAt:now,companyRevision:turnPolicy.binding.companyRevision,decision:turnPolicy.decision});
   if(turnAudit!==undefined)Object.assign(operation,turnAudit.fields);
+  if (task?.fundingProof !== undefined && applied?.modelDecision !== undefined) operation.fundingSourceId = applied.modelDecision.sourceId === "personal-chatgpt" && routed?.route != null ? routed.route.sourceId : applied.modelDecision.sourceId;
   if (routed !== undefined) {
     operation.modelRoute = routed.route?.alias === undefined ? null : { sourceId: routed.route.sourceId, alias: routed.route.alias, model: routed.requested };
   }
@@ -821,6 +828,19 @@ async function codingPlanFeatureE2EContext(dependencies: AwsBrokerDependencies, 
 export async function chatGptTaskToken(dependencies: AwsBrokerDependencies, operation: OperationRecord): Promise<{ accessToken: string; expiresAt: string }> {
   if (operation.kind !== "task" || operation.chatgptDeveloperId === undefined || dependencies.chatgpt === undefined) {
     throw agentXError("CALLBACK_FORBIDDEN", "this operation does not run on a ChatGPT plan");
+  }
+  const pointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(operation.workspaceId));
+  const task = pointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
+  const pinnedFunding = task?.orgId === undefined || task.agent === undefined ? undefined : (await readTaskRecipe(dependencies, task.taskId, task.orgId))?.fundingProof;
+  if (task !== undefined && (task.fundingProof !== undefined || pinnedFunding !== undefined)) {
+    const proof = TaskFundingProofSchema.parse(task.fundingProof ?? pinnedFunding), source = proof.sources.find(source => source.sourceId === "personal-chatgpt");
+    const routing = routingOf(dependencies, true);
+    const evidence = routing === undefined || operation.model === undefined ? undefined : await readStageModelEvidence({ ...dependencies, routing, chatgpt: dependencies.chatgpt, now: () => dependencies.now?.() ?? Date.now() }, { orgId: proof.orgId, project: proof.project, models: [operation.model], payerDeveloperId: operation.chatgptDeveloperId });
+    if (task.fundingProof === undefined || pinnedFunding === undefined || canonicalJson(task.fundingProof) !== canonicalJson(pinnedFunding) || operation.fundingSourceId === undefined || operation.modelPolicy === undefined || source === undefined || evidence === undefined || source.payerDeveloperId !== operation.chatgptDeveloperId || evidence.connectionRevision !== source.connectionRevision || evidence.sourcesRevision !== proof.sourcesRevision || !evidence.candidates.some(candidate => candidate.sourceId === "personal-chatgpt")) {
+      const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_refused", `${operation.id}:chatgpt-funding`), orgId: task.orgId, action: "spending.stop_refused", actor: { kind: "system", id: "rovara" }, target: { kind: "task", id: task.taskId }, occurredAt: new Date(dependencies.now?.() ?? Date.now()).toISOString(), facts: { outcomeCode: "TASK_STOP_CONFIG_MISSING", workKind: "chatgpt-funding-changed", admissionId: operation.id, ...(source === undefined ? {} : { sourceId: source.sourceId, sourceKind: source.kind, sourcesRevision: evidence?.sourcesRevision ?? proof.sourcesRevision }) } });
+      try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, dependencies.now?.() ?? Date.now()), ConditionExpression: "attribute_not_exists(pk)" } }] })); } catch (error) { if (!failedIndexes(error)?.size) throw error; }
+      throw agentXError("TASK_STOP_CONFIG_MISSING", "The admitted ChatGPT funding connection changed. Start again with the current connection.");
+    }
   }
   const token = await dependencies.chatgpt.accessToken(operation.chatgptDeveloperId);
   return { accessToken: token.access, expiresAt: new Date(token.expiresAt).toISOString() };

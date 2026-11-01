@@ -1,3 +1,4 @@
+import { afterProjectBootstrap } from "../support/transaction-audit.js";
 // The existing owner-cap approval boundary, across agent and chain money/ownership changes.
 import { fixtureActor } from "../support/money-authority.js";
 import { randomUUID } from "node:crypto";
@@ -60,10 +61,10 @@ for (const kind of ["agent", "chain"] as const) for (const op of ["budget", "own
     expect(demoted).toBe(true); expect(error?.code).toBe("FORBIDDEN");
     expect(f.t.db.get(f.s.key)).toEqual(before); expect([f.t.ownerTotal(MAYA), f.t.ownerTotal(OMAR), f.t.ownerTotal(BEN)]).toEqual(totals);
     expect(f.t.db.get(spendRequestKey(TEST_ORG, f.requestId))?.status).toBe("PENDING");
-    expect(f.capture.recorded()).toHaveLength(0); expect(f.capture.pending()).toHaveLength(0);
+    expect(afterProjectBootstrap(f.capture.recorded())).toHaveLength(0); expect(afterProjectBootstrap(f.capture.pending())).toHaveLength(0);
     seedMembership(f.t.db, DEB.developerId, { orgId: TEST_ORG, role: "admin" });
     await f.decide(); expect(f.t.db.get(spendRequestKey(TEST_ORG, f.requestId))?.status).toBe("APPROVED");
-    expect(f.capture.recorded().length).toBeGreaterThan(0);
+    expect(afterProjectBootstrap(f.capture.recorded()).length).toBeGreaterThan(0);
   });
 }
 it("refuses a direct chain budget write when actor demotion wins the commit race", async () => {
@@ -92,10 +93,10 @@ for (const kind of ["agent", "chain"] as const) it(`preserves a competing commit
     return send(command);
   };
   const error = await f.decide().then(() => undefined, (failure: { code?: string }) => failure);
-  expect(raced).toBe(true); expect(error?.code).toBe(kind === "agent" ? "AGENT_REVISION_CONFLICT" : "CHAIN_REVISION_CONFLICT");
+  expect(raced).toBe(true); expect(error?.code).toBe("SPENDING_APPROVAL_STALE");
   expect(f.t.db.get(f.s.key)?.monthlyBudgetUsd).toBe(25); expect(f.t.db.get(f.s.key)?.owner).toEqual({ kind: "member", developerId: MAYA.developerId });
-  expect(f.t.db.get(spendRequestKey(TEST_ORG, f.requestId))?.status).toBe("PENDING");
-  expect(f.capture.recorded()).toHaveLength(1); expect(f.capture.pending()).toHaveLength(0);
+  expect(f.t.db.get(spendRequestKey(TEST_ORG, f.requestId))).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+  expect(afterProjectBootstrap(f.capture.recorded())).toHaveLength(2); expect(afterProjectBootstrap(f.capture.pending())).toHaveLength(0);
 });
 
 it("fences the deciding actor when an owner-cap request is denied", async () => {
@@ -111,10 +112,10 @@ it("fences the deciding actor when an owner-cap request is denied", async () => 
   const error = await f.decide("DENY").then(() => undefined, (failure: { code?: string }) => failure);
   expect(removed).toBe(true); expect(error?.code).toBe("FORBIDDEN");
   expect(f.t.db.get(f.s.key)).toEqual(before); expect(f.t.db.get(spendRequestKey(TEST_ORG, f.requestId))?.status).toBe("PENDING");
-  expect(f.capture.recorded()).toHaveLength(0);
+  expect(afterProjectBootstrap(f.capture.recorded())).toHaveLength(0);
   seedMembership(f.t.db, DEB.developerId, { orgId: TEST_ORG, role: "admin" });
   await f.decide("DENY"); expect(f.t.db.get(spendRequestKey(TEST_ORG, f.requestId))?.status).toBe("DENIED");
-  expect(f.t.db.get(f.s.key)).toEqual(before); expect(f.capture.recorded().length).toBeGreaterThan(0);
+  expect(f.t.db.get(f.s.key)).toEqual(before); expect(afterProjectBootstrap(f.capture.recorded()).length).toBeGreaterThan(0);
 });
 
 it("refuses direct chain money after ownership moves between manage access and the store read", async () => {

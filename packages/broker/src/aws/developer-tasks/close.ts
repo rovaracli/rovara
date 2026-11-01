@@ -34,6 +34,7 @@ import { type AuthorizedTask, accessFence, authorizeLegacyTaskAction, authorizeT
 import { type WorkspaceReads, taskView, unpublishedOf, workspaceReads } from "./task-view.js";
 import { ownerIndexRowOf, syncIndex } from "./task-index.js";
 import { actionableWorkspace, busy, busyOrClosing } from "./task-window.js";
+import { outcomeDepsOf, settleTaskOutcomes } from "../../rovara-code/outcome-hooks.js";
 
 /**
  * R22. A repeated requestId returns the same operation, except once the task is closed: the closed
@@ -191,6 +192,7 @@ export async function finishTaskClose(
       await deps.actions.transact([...(release ? releaseItems(deps.tableName, task.charge, task.taskId) : []), ...closing(current)]);
       await endAgentRunOfClosedTask(deps, task);
       await tellClosedTaskEnd(deps, task);
+      await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
       return;
     } catch (error) {
       if (!isConditional(error)) throw error;
@@ -200,6 +202,7 @@ export async function finishTaskClose(
       if (fresh?.closedAt !== undefined) {
         await endAgentRunOfClosedTask(deps, task);
         await tellClosedTaskEnd(deps, task);
+        await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
         return;
       }
       // Ruling F4: the notifier changed the share (it recorded the thread) meanwhile: close that one.

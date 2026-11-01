@@ -18,7 +18,8 @@ import { developerTaskIdentity } from "../../packages/broker/src/developer/task-
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { githubWorkflowPullRequestKey } from "../../packages/broker/src/developer/task-records.js";
-import { captureWorkflowFeedbackNote, decideTaskWorkflow, getTaskDocumentView, inertTaskTitle, promptTagId, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, taskPageUrl, threadNotesPromptSection, workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
+import { outcomeDepsOf, recordPublicationOutcomes } from "../../packages/broker/src/rovara-code/outcome-hooks.js";
+import { captureWorkflowFeedbackNote, decideTaskWorkflow, releaseFinishedTaskQuietly, releasePendingFinishedTasks, getTaskDocumentView, inertTaskTitle, promptTagId, startTaskWorkflowFeedbackReviewFromWebhook, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem, taskPageUrl, threadNotesPromptSection, workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
 import { GATED_TASK_TURN_REFUSAL, PLAN_PHASE_LIMITS, WORKFLOW_PREAMBLE, planChecksInstructions, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { guardTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
@@ -4992,7 +4993,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
   const github = () => {
     // `branch`, when set, is the branch's head while GitHub's pull request still shows `head`: GitHub moves a pull
     // request's head a moment after a push to its branch.
-    const state = { head: "d".repeat(40), tree: "b".repeat(40), pr: "open" as "open" | "closed" | "merged", parent: undefined as string | undefined, branch: undefined as string | undefined };
+    const state = { head: "d".repeat(40), tree: "b".repeat(40), pr: "open" as "open" | "closed" | "merged", parent: undefined as string | undefined, branch: undefined as string | undefined, statusFails: false, statusHangs: false };
     const branch = { name: "x" };
     const details = (number: number) => ({ number, url: PR_URL, state: state.pr, headBranch: branch.name, baseBranch: "main", headCommit: state.head, title: "t", body: "" });
     const gateway = {
@@ -5003,6 +5004,17 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       getCommitParents: vi.fn(async (_url: string, commit: string) => [(commit === state.head || commit === state.branch) && state.parent !== undefined ? state.parent : "e".repeat(40)]),
       getBranchHead: vi.fn(async () => state.branch ?? state.head),
       getCommitTree: vi.fn(async (_url: string, commit: string) => commit === state.head ? state.tree : commit === PUSHED ? FIX_TREE : "b".repeat(40)),
+      // The status read the track record scores a merge from (only a version 2 task reads it).
+      // What a merge observation reads (the recovery sweep's event).
+      getPullRequestMergeObservation: vi.fn(async (_url: string, number: number, budget?: { beforeRequest(): void }) => { budget?.beforeRequest(); return { ...details(number), headTreeSha: state.tree }; }),
+      getPullRequestStatus: vi.fn(async (_url: string, number: number, _scope?: unknown, budget?: { beforeRequest(): void }) => {
+        budget?.beforeRequest();
+        if (state.statusHangs) return new Promise<never>(() => undefined);
+        if (state.statusFails) throw new Error("GitHub is down");
+        return { number, state: state.pr, draft: false, headSha: state.head, baseBranch: "main", mergeableState: "clean" as const, checks: [{ name: "test", status: "completed" as const, conclusion: "success" as const, required: false, url: "" }],
+          requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [] };
+      }),
+      getRepositoryPermission: vi.fn(async () => "write" as const),
     };
     return { state, gateway, branch };
   };
@@ -5422,6 +5434,227 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       await failOutboxOperation(harness.db as never, "state", outbox as never, `RUNTIME_UNAVAILABLE: worker dispatch failed after 5 attempts: RUNTIME_UNAVAILABLE: ${workflowContracts.WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED}`);
       expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", pullRequestUpdateFailure: { numbers: [42], cause: "WORKER_OUTDATED" } });
     }
+  });
+
+  /** A version 2 task whose first pull request's candidate has pending track record samples. */
+  const withSamples = async () => {
+    const t = await fixPassed();
+    const record = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown> & { workflow: WorkflowSnapshot; project: string };
+    t.harness.db.set({ ...record, workflow: { ...record.workflow, definitionVersion: "1.1.0" } });
+    const review = (role: string) => ({ operationId: randomUUID(), candidateDigest: t.first.digest, role, provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: new Date().toISOString() });
+    await recordPublicationOutcomes(outcomeDepsOf({ documentClient: t.harness.db, tableName: "state" }), { taskId: t.taskId, orgId: TEST_ORG, project: record.project }, {
+      workflow: { candidate: { digest: t.first.digest }, reviews: [review("CRITIC"), review("SECURITY")] } as unknown as WorkflowSnapshot, proof: { verdicts: ["proves_change"], candidateDigest: t.first.digest }, now: new Date().toISOString(),
+    });
+    const samples = () => t.harness.db.find((item) => item.entityType === "OUTCOME_SAMPLE");
+    expect(samples().every((item) => item.state === "pending")).toBe(true);
+    return { ...t, samples };
+  };
+
+  it("a fix that replaces the candidate settles the old candidate's open samples and records the new one's", async () => {
+    const t = await withSamples();
+    await t.pass();
+    const pending = t.samples().filter((item) => item.state === "pending");
+    const old = t.samples().filter((item) => item.round === t.first.digest.slice(0, 16));
+    expect(old.length).toBeGreaterThan(0);
+    expect(old.every((item) => item.state === "no_outcome" && item.reason === "superseded")).toBe(true);
+    expect(pending.length).toBeGreaterThan(0);
+    expect(pending.every((item) => item.round === t.fix.digest.slice(0, 16))).toBe(true);
+  });
+
+  /** Nothing runs in the task's workspace any more, so its release can go through. */
+  const idleWorkspace = (t: { harness: Harness; workspaceId: string }) => {
+    const workspace = t.harness.db.get(`WORKSPACE#${t.workspaceId}`, "META") as Record<string, unknown>;
+    t.harness.db.set({ ...Object.fromEntries(Object.entries(workspace).filter(([name]) => name !== "activeOperationId")), status: "READY" });
+  };
+  const sampleStates = (t: { samples: () => Array<Record<string, unknown>> }) => t.samples().map((item) => `${String(item.claim)}:${String(item.state)}:${String(item.reason)}`).sort();
+
+  it("the release completes first, even when GitHub never answers the settle's reads: the settle comes after it, in one bounded wait", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    t.gh.state.statusFails = true;
+    await pullRequestEvent(t.harness, "closed");
+    expect(t.samples().every((item) => item.state === "pending")).toBe(true);
+    idleWorkspace(t);
+    const hanging = () => () => new Promise<never>(() => undefined);
+    const started = Date.now();
+    const outcome = await releaseFinishedTaskQuietly({ tableName: "state", actions: t.harness.actions, documentClient: t.harness.db, outcomeReader: hanging, outcomeSettleBudgetMs: 150 }, t.taskId);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(outcome).toBe("released");
+    const releasedAt = String((t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { releasedAt?: string }).releasedAt);
+    expect(releasedAt).toEqual(expect.any(String));
+    expect(t.samples().every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
+    // The order: the release was written, and only then were the samples settled.
+    expect(t.samples().every((item) => String(item.scoredAt) >= releasedAt)).toBe(true);
+  });
+
+  it("the recovery sweep's release settles a merged candidate from a fresh read", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    t.gh.state.statusFails = true;
+    await pullRequestEvent(t.harness, "closed");
+    expect(t.samples().every((item) => item.state === "pending")).toBe(true);
+    idleWorkspace(t);
+    t.gh.state.statusFails = false;
+    const mark = t.harness.db.find((item) => item.pk === "FINISHED_RELEASE")[0]!;
+    t.harness.db.set({ ...mark, nextAttemptAt: new Date(Date.now() - 1_000).toISOString() });
+    await sweep(t.harness);
+    expect((t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { releasedAt?: string }).releasedAt).toEqual(expect.any(String));
+    expect(sampleStates(t)).toEqual(["proves_change:held:ci_passing", "review_pass:CRITIC:held:merged_without_person_review", "review_pass:SECURITY:held:merged_without_person_review"]);
+  });
+
+  /** The recovery sweep's observation of a pull request: it reads against the sweep's request budget and leaves the release to its own pass. */
+  const queued = (t: { harness: Harness }, beforeRequest: () => void) => import("../../packages/broker/src/aws/broker.js").then(({ processGithubWorkflowEvent }) => processGithubWorkflowEvent(t.harness.brokerInput as never,
+    { kind: "PULL_REQUEST", action: "closed", installationId: 0, repositoryId: 0, fullName: "example/demo", number: 42 }, randomUUID(), { observationMode: "merge", budget: { signal: new AbortController().signal, beforeRequest }, release: "queue" }));
+
+  it("in the sweep's queue mode a merged candidate is scored after the observation, and its reads count against the sweep's request budget", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    let requests = 0;
+    await queued(t, () => { requests += 1; });
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
+    expect((t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as { releasedAt?: string }).releasedAt).toBeUndefined();
+    expect(sampleStates(t)).toEqual(["proves_change:held:ci_passing", "review_pass:CRITIC:held:merged_without_person_review", "review_pass:SECURITY:held:merged_without_person_review"]);
+    expect(requests).toBeGreaterThan(0);
+  });
+
+  it("with the sweep's request budget spent the samples stay pending for a later pass, which settles them", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    let used = 0;
+    await queued(t, () => { used += 1; if (used > 1) throw new Error("the sweep's GitHub request budget is spent"); });
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
+    expect(t.samples().every((item) => item.state === "pending")).toBe(true);
+    idleWorkspace(t);
+    await pullRequestEvent(t.harness, "closed");
+    expect(sampleStates(t)).toEqual(["proves_change:held:ci_passing", "review_pass:CRITIC:held:merged_without_person_review", "review_pass:SECURITY:held:merged_without_person_review"]);
+  });
+
+  it("in the sweep's queue mode the reads stop with the sweep: a GitHub that never answers cannot hold it past its signal", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    t.gh.state.statusHangs = true;
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 150);
+    const started = Date.now();
+    const { processGithubWorkflowEvent } = await import("../../packages/broker/src/aws/broker.js");
+    await processGithubWorkflowEvent(t.harness.brokerInput as never, { kind: "PULL_REQUEST", action: "closed", installationId: 0, repositoryId: 0, fullName: "example/demo", number: 42 }, randomUUID(),
+      { observationMode: "merge", budget: { signal: controller.signal, beforeRequest: () => undefined }, release: "queue" });
+    expect(Date.now() - started).toBeLessThan(2_500);
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
+    expect(t.samples().every((item) => item.state === "pending")).toBe(true);
+  });
+
+  /** `count` finished tasks, each a copy of the merged task with its own samples and its release mark, waiting in the sweep. */
+  const finishedBatch = async (count: number) => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    t.gh.state.statusFails = true;
+    await pullRequestEvent(t.harness, "closed");
+    const task = t.harness.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown> & { project: string };
+    const workspace = t.harness.db.get(`WORKSPACE#${t.workspaceId}`, "META") as Record<string, unknown>;
+    const ids: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const taskId = randomUUID();
+      const workspaceId = randomUUID();
+      t.harness.db.set({ ...Object.fromEntries(Object.entries(task).filter(([name]) => name !== "releasedAt" && name !== "releaseClaimedAt")), pk: `DEVTASK#${taskId}`, taskId, workspaceId });
+      t.harness.db.set({ ...Object.fromEntries(Object.entries(workspace).filter(([name]) => name !== "activeOperationId")), pk: `WORKSPACE#${workspaceId}`, status: "READY" });
+      await recordPublicationOutcomes(outcomeDepsOf({ documentClient: t.harness.db, tableName: "state" }), { taskId, orgId: TEST_ORG, project: task.project }, {
+        workflow: { candidate: { digest: t.first.digest }, reviews: [{ operationId: randomUUID(), candidateDigest: t.first.digest, role: "CRITIC", provider: "t", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: new Date().toISOString() }] } as unknown as WorkflowSnapshot,
+        proof: { unavailable: "not_found" }, now: new Date().toISOString(),
+      });
+      t.harness.db.set({ pk: "FINISHED_RELEASE", sk: `TASK#${taskId}`, entityType: "FINISHED_RELEASE", taskId, markedAt: new Date().toISOString() });
+      ids.push(taskId);
+    }
+    const pending = (taskId: string) => t.harness.db.find((item) => item.entityType === "OUTCOME_SAMPLE" && item.taskId === taskId && item.state === "pending");
+    const released = (taskId: string) => (t.harness.db.get(`DEVTASK#${taskId}`, "META") as { releasedAt?: string }).releasedAt !== undefined;
+    return { ...t, ids, pending, released, mark: (taskId: string) => t.harness.db.get("FINISHED_RELEASE", `TASK#${taskId}`) };
+  };
+
+  it("a sweep's whole pass of releases shares one settle deadline: every task is released within the budget, the rest settle in later passes", async () => {
+    const b = await finishedBatch(10);
+    const hanging = () => () => new Promise<never>(() => undefined);
+    const started = Date.now();
+    const result = await releasePendingFinishedTasks({ tableName: "state", actions: b.harness.actions, documentClient: b.harness.db, outcomeReader: hanging, outcomeSettleBudgetMs: 120, outcomeSettleUntil: Date.now() + 2_150 });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result.attempted).toBe(10);
+    expect(b.ids.every((id) => b.released(id))).toBe(true);
+    const left = b.ids.filter((id) => b.pending(id).length > 0);
+    expect(left.length).toBeGreaterThan(0);
+    expect(left.length).toBeLessThan(10);
+    // What was not settled keeps its mark, due at once; what was settled lost it.
+    expect(left.every((id) => b.mark(id) !== undefined)).toBe(true);
+    // Skipped marks go to the back of the queue (due from now), so they do not starve the marks already waiting.
+    expect(left.every((id) => String((b.mark(id) as { nextAttemptAt?: string }).nextAttemptAt) >= new Date(started).toISOString())).toBe(true);
+    // Later passes (with a reader that answers) settle the rest.
+    const answering = () => async () => ({ status: { number: 42, state: "merged", draft: false, headSha: "d".repeat(40), baseBranch: "main", mergeableState: "clean", checks: [], requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [] } as never, permission: async () => "write" as const });
+    for (let pass = 0; pass < 3 && b.ids.some((id) => b.pending(id).length > 0); pass += 1) {
+      for (const id of b.ids) { const mark = b.mark(id); if (mark !== undefined) b.harness.db.set({ ...mark, nextAttemptAt: new Date(Date.now() - 1_000).toISOString() }); }
+      await releasePendingFinishedTasks({ tableName: "state", actions: b.harness.actions, documentClient: b.harness.db, outcomeReader: answering, outcomeSettleBudgetMs: 2_000, outcomeSettleUntil: Date.now() + 5_000 });
+    }
+    expect(b.ids.every((id) => b.pending(id).length === 0)).toBe(true);
+    expect(b.ids.every((id) => b.mark(id) === undefined)).toBe(true);
+  });
+
+  it("a settle that keeps failing is given up after five tries of its own (busy retries before do not count): every open sample is scored github_unavailable by writes alone, and the mark goes", async () => {
+    const b = await finishedBatch(1);
+    const [id] = b.ids;
+    const reader = () => async () => ({ status: { number: 42, state: "merged", draft: false, headSha: "d".repeat(40), baseBranch: "main", mergeableState: "clean", checks: [], requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [] } as never, permission: async () => "write" as const });
+    const release = async () => {
+      b.harness.db.set({ ...b.mark(id!)!, nextAttemptAt: new Date(Date.now() - 1_000).toISOString() });
+      await releasePendingFinishedTasks({ tableName: "state", actions: b.harness.actions, documentClient: b.harness.db, outcomeReader: reader });
+    };
+    // Earlier busy retries are on the mark already; the settle's own count starts at none.
+    b.harness.db.set({ ...b.mark(id!)!, attempts: 4 });
+    let failing = 1;
+    b.harness.db.injectFault({ command: "TransactWriteCommand", match: (input) => failing > 0 && JSON.stringify(input).includes("OUTCOME_SAMPLE") && (failing -= 1) >= 0, error: { name: "ProvisionedThroughputExceededException" }, times: 1_000 });
+    await release();
+    expect(b.mark(id!)).toMatchObject({ settleAttempts: 1 });
+    expect(b.pending(id!).length).toBeGreaterThan(0);
+    // The fourth failed settle is not yet the end; the fifth is.
+    b.harness.db.set({ ...b.mark(id!)!, settleAttempts: 4 });
+    failing = 1;
+    await release();
+    expect(b.pending(id!)).toEqual([]);
+    expect(b.mark(id!)).toBeUndefined();
+    expect(b.harness.db.find((item) => item.entityType === "OUTCOME_SAMPLE" && item.taskId === id).every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
+  });
+
+  it("a settle that did not finish after the release is tried again by the next sweep (the release mark stays until it completes)", async () => {
+    const b = await finishedBatch(1);
+    const [id] = b.ids;
+    // The settle's writes fail (as a crash during it would leave them): the task is released, and the samples are still open.
+    let failing = true;
+    b.harness.db.injectFault({ command: "TransactWriteCommand", match: (input) => failing && JSON.stringify(input).includes("OUTCOME_SAMPLE"), error: { name: "ProvisionedThroughputExceededException" }, times: 1_000 });
+    const reader = () => async () => ({ status: { number: 42, state: "merged", draft: false, headSha: "d".repeat(40), baseBranch: "main", mergeableState: "clean", checks: [], requiredChecks: [], baseHasRequiredChecks: false, headHasWorkflowFiles: true, requestedReviewers: 0, reviews: [] } as never, permission: async () => "write" as const });
+    await releasePendingFinishedTasks({ tableName: "state", actions: b.harness.actions, documentClient: b.harness.db, outcomeReader: reader });
+    expect(b.released(id!)).toBe(true);
+    expect(b.pending(id!).length).toBeGreaterThan(0);
+    expect(b.mark(id!)).toBeDefined();
+    failing = false;
+    b.harness.db.set({ ...b.mark(id!)!, nextAttemptAt: new Date(Date.now() - 1_000).toISOString() });
+    await releasePendingFinishedTasks({ tableName: "state", actions: b.harness.actions, documentClient: b.harness.db, outcomeReader: reader });
+    expect(b.pending(id!)).toEqual([]);
+    expect(b.mark(id!)).toBeUndefined();
+  });
+
+  it("a merged webhook scores the candidate's track record samples from a fresh read of GitHub", async () => {
+    const t = await withSamples();
+    t.gh.state.pr = "merged";
+    await pullRequestEvent(t.harness, "closed");
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
+    expect(t.samples().map((item) => `${String(item.claim)}:${String(item.state)}:${String(item.reason)}`).sort()).toEqual([
+      "proves_change:held:ci_passing", "review_pass:CRITIC:held:merged_without_person_review", "review_pass:SECURITY:held:merged_without_person_review"]);
+  });
+
+  it("a GitHub read that fails neither stops the event nor leaves samples pending: the release still ran and settled them", async () => {
+    const t = await withSamples();
+    idleWorkspace(t);
+    t.gh.state.pr = "merged";
+    t.gh.state.statusFails = true;
+    await pullRequestEvent(t.harness, "closed");
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
+    expect(t.samples().filter((item) => item.state === "pending")).toEqual([]);
+    expect(t.samples().every((item) => item.state === "no_outcome" && item.reason === "github_unavailable")).toBe(true);
   });
 
   it("drops a pending update after the PR was merged", async () => {

@@ -1,4 +1,4 @@
-// Read-only company default foundation; other scopes and enforcement remain unconnected.
+// Read-only typed company default; scope preview and paid admission remain separate.
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, agentXError, orgSettingsKey, TaskStopCompanyPolicySchema, TaskStopCompanyReadSchema, type TaskStopCompanyRead } from "@agentx/contracts";
@@ -24,10 +24,14 @@ export async function getTaskStopCompany(deps: Dependencies, caller: DeveloperCa
     // bounded drift detection, not an atomic policy lease; start must revalidate its inputs.
     const after = await getTaskStopCeiling(deps, caller);
     if (after.ceilingDigest !== before.ceilingDigest) throw unavailable();
-    const policyDigest = createHash("sha256").update(JSON.stringify([caller.orgId, raw.revision, policy.data.defaultStopMicrousd, after.ceilingDigest])).digest("hex");
+    const policyDigest = createHash("sha256").update(JSON.stringify([caller.orgId, raw.revision, policy.data, after.ceilingDigest])).digest("hex");
+    const provenance = raw.seedProvenance;
+    if (provenance !== undefined && !isRecord(provenance)) throw unavailable();
+    const seedReview = provenance === undefined ? undefined : { source: provenance.source, reviewRequired: provenance.reviewRequired, seededAt: provenance.seededAt };
     return TaskStopCompanyReadSchema.parse({
       orgId: caller.orgId, checkedAt: after.checkedAt,
-      defaultStopMicrousd: policy.data.defaultStopMicrousd, revision: raw.revision, defaultSource: "configured",
+      ...(policy.data.schemaVersion === 1 ? { defaultStopMicrousd: policy.data.defaultStopMicrousd } : { defaultPolicy: policy.data.defaultPolicy }),
+      ...(seedReview === undefined ? {} : { seedReview }), revision: raw.revision, defaultSource: "configured",
       ceilingMicrousd: after.ceilingMicrousd, ceilingRevision: after.revision, ceilingSource: after.source,
       policyDigest, coverage: "company_default_and_ceiling", projectOverride: "not_loaded", agentOverride: "not_loaded",
       locks: "not_loaded", calculation: "unavailable", enforcement: "not_connected",
@@ -37,3 +41,5 @@ export async function getTaskStopCompany(deps: Dependencies, caller: DeveloperCa
     throw unavailable();
   }
 }
+
+export { captureTaskStopAdmission, previewTaskStopCutover, type TaskStopCaptureDependencies, type TaskStopCaptureRequest, type CapturedTaskStop } from "./task-stop-admission.js";

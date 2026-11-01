@@ -81,6 +81,10 @@ import {
 import { fedThroughUpdate, promptTagId, withCurrentThreadNotes } from "./thread-notes.js";
 import { finishedReleaseMarkItem, releaseFinishedTaskQuietly } from "./release.js";
 import { specAfterPlanApproval } from "./spec-wiring.js";
+import { captureSendBackQuietly } from "../../learning/capture-decision.js";
+import { outcomeDepsOf, recordPlanOutcome, recordPublicationOutcomes, settleSuperseded } from "../../rovara-code/outcome-hooks.js";
+import { readTestProofForCandidate } from "../../developer/test-proof-lines.js";
+import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 
 /**
  * The task a caller may decide, through the one access rule (resolveTaskAccess and the role table). Anyone whose role may
@@ -110,6 +114,37 @@ async function decidableTask(deps: DeveloperTaskRouteDependencies, caller: Devel
   }
   if (!can(access.role, "decide")) throw notYours();
   return access as AuthorizedTask;
+}
+
+/** Track record: the hooks' own table access and logger. */
+const outcomeDeps = (deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "log">) =>
+  outcomeDepsOf(deps, (event, fields) => deps.log?.({ event, ...fields }));
+
+/**
+ * Track record: the plan check's claim, written once the person's decision has committed (never for a stale or failed decision, or a repeat). `workflow` is the snapshot read before the decision, which still holds
+ * the plan check (a request for changes drops it); `committed` is the snapshot the decision produced. Best effort: it never throws.
+ */
+async function recordPlanDecisionOutcome(
+  deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, committed: WorkflowSnapshot, documentType: string | undefined,
+): Promise<void> {
+  const decision = committed.decisions.at(-1);
+  if (documentType !== "plan" || decision === undefined || decision.closedAs !== undefined) return;
+  await recordPlanOutcome(outcomeDeps(deps), task, { critique: workflow.critique, revision: workflow.revision, decision: decision.decision, at: decision.at });
+}
+
+/**
+ * Track record: the claims about a candidate the pull request is published with. When it replaces an earlier candidate on the pull request (`replaces`), what is still open about that one is settled
+ * first, by what was seen of it. Best effort: it never throws, and a proof that cannot be read is recorded as such.
+ */
+export async function recordPublishedCandidateOutcomes(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, now: string, replaces?: string): Promise<void> {
+  try {
+    if (workflow.definitionVersion !== "1.1.0") return;
+    if (replaces !== undefined && replaces !== workflow.candidate?.digest) await settleSuperseded(outcomeDeps(deps), { ...task, workflow }, { candidateDigest: replaces, now });
+    const proof = await readTestProofForCandidate(deps.actions, task, workflow.candidate?.digest);
+    await recordPublicationOutcomes(outcomeDeps(deps), task, { workflow, proof, now });
+  } catch (error) {
+    deps.log?.({ event: "outcomes.publication_failed", error: error instanceof Error ? error.name : "unknown" });
+  }
 }
 
 /**
@@ -253,6 +288,9 @@ export async function decideTaskWorkflow(
   const decisionRequest: WorkflowDecisionRequest = included.length === 0 && request.includedCommentIds === undefined
     ? boundDecisionRequest : { ...boundDecisionRequest, includedCommentIds: included.map((comment) => comment.commentId) };
   let next = transition(decisionRequest, decisions, workBreakdownDigest);
+  // A change request restarts planning; approval/rejection continue the existing workflow.
+  // Contributor leaves the role check with decidableTask/authorizeTaskAction, as for other restarts.
+  if (request.decision === "REQUEST_CHANGES") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   if (request.decision === "APPROVE" && documentType === "plan" && !(loaded?.format === "structured" && loaded.plan.e2e !== undefined)) {
     const pinnedProject = await deps.actions.projectRevision(deps.orgId, task.project, task.startingRevision);
     if (pinnedProject === undefined) throw agentXError("CONFIG_INVALID", WORKFLOW_ACTIONABLE_REFUSALS.pinnedProjectUnavailable);
@@ -304,6 +342,7 @@ export async function decideTaskWorkflow(
       ExpressionAttributeNames: { "#state": "state" },
       ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":waiting": "WAITING" },
     } }, accessFence(deps, access), ...answeredItems]);
+    await recordPlanDecisionOutcome(deps, task, workflow, next, documentType);
     // A rejected plan ends the task: it gives back its slot and its workspace now.
     await releaseFinishedTaskQuietly(deps, taskId);
     const fresh = (await authorizeTaskActor(deps, caller, taskId, "decide")).task;
@@ -409,6 +448,7 @@ export async function decideTaskWorkflow(
       }
       return busyOrClosing(deps, task, error);
     }
+    await recordPlanDecisionOutcome(deps, task, workflow, decidedNext, documentType);
     const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
     const view = await taskView(deps, fresh, { events: 0, details: false });
     await syncIndex(deps, fresh, view.status, view.updatedAt);
@@ -461,6 +501,7 @@ export async function decideTaskWorkflow(
     }
     return busyOrClosing(deps, task, error);
   }
+  await recordPlanDecisionOutcome(deps, task, workflow, decidedNext, documentType);
   const fresh = (await authorizeTaskAction(deps, caller, taskId, "decide")).task;
   // M1.3 Task 3.7 (owner decision D2): the approved application plan asks for its informational baseline round. Best effort and after the approval is committed: whatever
   // happens to the baseline, the approval and the checks stand exactly as they are.
@@ -469,6 +510,12 @@ export async function decideTaskWorkflow(
   if (request.decision === "APPROVE" && mode === "IMPLEMENT") await deps.startWorkflowE2EBaseline?.({ task: fresh }).catch((error: unknown) => log(deps, { event: "developer.e2e_baseline_not_started", taskId, errorName: error instanceof Error ? error.name : "unknown" }));
   const view = await taskView(deps, fresh, { events: 0, details: false });
   await syncIndex(deps, fresh, view.status, view.updatedAt);
+  // v1.2 learning loop (B4): a plan send-back's reason becomes a correction. The one hook for every surface (page, developer API, Slack, MCP). It runs last, after the decision, its
+  // detail, the comment locks and the index sync, and within its own small time budget: a slow or failing capture can neither leave the index unsynced nor fail a decision that
+  // committed. The decider's own standing is read inside; a failure is logged. (A crash between the commit and this point loses that one correction: replay never captures. Accepted.)
+  if (request.decision === "REQUEST_CHANGES" && documentType !== undefined) {
+    await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: options.note ?? request.reason, included });
+  }
   return { task: view };
 }
 

@@ -1388,10 +1388,13 @@ it("does not apply a held per-run value over a newer committed per-run value", a
   expect((await t.f.call(MAYA, "PUT", `/v1/app/agents/${t.id}/budget`, { maxPerRunUsd: 3 })).status).toBe(200);
   const audited = t.capture.recorded().length;
   const error = await t.decide(request).then(() => undefined, (failure: { code?: string }) => failure);
-  expect(error?.code).toBe("AGENT_REVISION_CONFLICT");
+  expect(error?.code).toBe("SPENDING_APPROVAL_STALE");
   expect(t.f.db.get(agentKey(TEST_ORG, t.id, "META"))?.maxPerRunUsd).toBe(3);
-  expect(t.f.db.get(spendRequestKey(TEST_ORG, request.spendRequestId))?.status).toBe("PENDING");
-  expect(t.capture.recorded().length).toBe(audited);
+  const endedKey = spendRequestKey(TEST_ORG, request.spendRequestId);
+  expect(t.f.db.get(endedKey)).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+  expect(t.f.db.get({ ...endedKey, sk: "EXPIRY" })).toMatchObject({ entityType: "SPEND_REQUEST_EXPIRY", kind: "owner_cap", reason: "figures_changed" });
+  expect(t.capture.recorded().length).toBe(audited + 1);
+  expect(t.capture.recorded().at(-1)?.action).toBe("spend_request.expired");
 });
 it("refuses a deciding admin demoted immediately before the owner-cap budget transaction", async () => {
   const t = await budgetDecisionFixture(), request = await t.ask(500, 2), key = agentKey(TEST_ORG, t.id, "META");

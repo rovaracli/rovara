@@ -27,6 +27,9 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 import { PROJECT_NOT_FOUND_IN_APP, bodyError, signInStoreOf } from "./common.js";
 import { appProjectSummary, latestProjectRecord, repositoryFullName, setupCheckDepsOf, visibleProjectRoles } from "./project-list.js";
 import { projectRoleForRoute } from "./project-members.js";
+import { type OrgId } from "@agentx/contracts";
+import { clearArchivedProjectLearning as clearArchivedProject } from "../../learning/cleanup.js";
+import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
 
 const ArchiveBodySchema = z.object({ requestId: z.string().uuid() }).strict();
 
@@ -81,6 +84,19 @@ export async function getAppProject(deps: DeveloperRouteDependencies, caller: De
 }
 
 /**
+ * v1.2 learning loop: an archived project's learning data (people's words) is deleted with it. Best effort, bounded, and run after the archive has applied: a failure logs the error's name only
+ * and never undoes or fails the archive. It does ONE bounded page inline so the request answers quickly; a project with more leaves an entry in the index of open walks and the broker's scheduled
+ * run finishes it (`resumeOpenLearningWalks`). What is left meanwhile is ignored by every read of a project created again.
+ */
+export async function clearArchivedProjectLearning(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "now">, orgId: OrgId, project: string): Promise<void> {
+  try {
+    await clearArchivedProject({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, project);
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.project_archived_learning_failed", orgId, project, error: error instanceof Error ? error.name : "unknown" });
+  }
+}
+
+/**
  * `POST /v1/app/projects/{name}/archive` and `.../restore` (Plan 2, Task 20): a maintainer of the project (an org owner or admin, or the
  * project's own maintainer) archives it or brings it back, and the answer is the project as the app now shows it. No access is a 404 and a
  * role without `archive` a 403. Repeating either call on a project already in that state answers 200 and changes nothing (it does run the
@@ -106,6 +122,7 @@ export async function changeProjectArchive(deps: DeveloperRouteDependencies, cal
       logDeveloperEvent({ event: "developer.project_archived_hook_failed", orgId: caller.orgId, project: name, error: error instanceof Error ? error.name : "unknown" });
     }
   }
+  if (!replayed && change === "archive") await clearArchivedProjectLearning(deps, caller.orgId, name);
   return { project: await getAppProject(deps, caller, name), warnings };
 }
 
@@ -170,6 +187,7 @@ export async function startProjectSetupCheck(deps: DeveloperRouteDependencies, c
     // The replay comes before every admission: an id that was used answers what it started, whatever has changed since.
     if (await setupCheckReplay(checks, caller.orgId, name, requestId, caller.developerId) !== undefined) return new StatusReply(200, { project: await getAppProject(deps, caller, name) });
     await requireNewWorkAllowed(deps, caller.orgId, name, role, "setup_check");
+    await requirePricedTaskStopAdmission(deps, { orgId: caller.orgId, actor: { kind: "member", id: caller.developerId }, workKind: "project-setup-check" });
     const project = await tasks.latestProject(caller.orgId, name);
     if (project === undefined) throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
     const meta = await readProjectMeta(deps, caller.orgId, name);

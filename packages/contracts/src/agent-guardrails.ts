@@ -65,8 +65,16 @@ export const AgentGuardrailsSchema = z.object({
   extraCommandWords: uniqueList(CommandWordSchema, MAX_EXTRA_COMMAND_WORDS),
   /** Hosts an agent's report may link to, besides the cell's own. */
   reportLinkDomains: uniqueList(ReportDomainSchema, MAX_REPORT_LINK_DOMAINS),
+  /**
+   * v1.2 learning loop (design §2.5): "locked_off" stops projects learning from PR review comments; absent means "allowed". READER ONLY until B8: this schema is strict and
+   * the readers throw on an unknown field, so the field ships to every reader first, and the writers (`AgentGuardrailsWriteSchema`) accept it only once B1 is live in staging.
+   */
+  prCommentLearning: z.enum(["allowed", "locked_off"]).optional(),
 }).strict();
 export type AgentGuardrails = z.infer<typeof AgentGuardrailsSchema>;
+
+/** What a request to change the guardrails may hold: the reader's document without `prCommentLearning`, which has no writer before B8. */
+export const AgentGuardrailsWriteSchema = AgentGuardrailsSchema.refine((value) => value.prCommentLearning === undefined, { path: ["prCommentLearning"], message: "can't be set yet" });
 
 /** What an org has until its owners and admins change it. `maxStepBudgetUsd` is left unset. */
 export const DEFAULT_AGENT_GUARDRAILS: AgentGuardrails = {

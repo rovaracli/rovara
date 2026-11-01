@@ -1,3 +1,7 @@
+import { transactionAuditEvent } from "../support/transaction-audit.js";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgSettingsKey, orgScoped, orgMemberKey, developerOrgKey, orgProjectCatalogKey, projectAiKey, projectMemberKey, projectMetaKey } from "@agentx/contracts";
+import { TEST_ORG } from "../support/orgs.js";
+import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -542,7 +546,7 @@ describe("eval batches on the broker's run path (spec 052)", () => {
     });
     const model = { provider: "amazon-bedrock", modelId: "us.vendor.batch-v1" };
     const batch = await createBatch(dependencies, {
-      thread: slackThread, requester: { teamId: SLACK_TEAM, userId: member }, projectName: "payments", projectModel: async () => model,
+      orgId: TEST_ORG, developerId: developerIdForSlackUser(member), thread: slackThread, requester: { teamId: SLACK_TEAM, userId: member }, projectName: "payments", projectModel: async () => model,
     }, { benchmark: "verified", tasks: ["django__django-11099", "django__django-11100"], models: [{ ...model, thinkingLevel: "low" }], costCapUsd: 100 });
     await topUpBatches(dependencies);
     const first = evalBatchRunId(batch.batchId, 0, 1);
@@ -629,4 +633,104 @@ describe("reading the eval settings from SSM (spec 043 FR-016)", () => {
       expect((error as Error).message).not.toContain("not json");
     }
   });
+});
+
+it("M47 single eval records the authenticated org, project and requesting developer", async () => {
+  const h = await evalBroker(); await enable(h.handler);
+  const reply = await start(h.handler); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  const rows = h.db.find(row => row.entityType === "SWEBENCH_RUN");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ orgId: TEST_ORG, projectName: "payments", developerId: developerIdForSlackUser(member) });
+});
+
+async function enrolledEvalBroker() {
+  const h = await evalBroker(); await enable(h.handler, { maxCostUsd: 10 });
+  const developerId = developerIdForSlackUser(member);
+  h.db.set({ ...orgMemberKey(TEST_ORG, developerId), orgId: TEST_ORG, developerId, role: "member" });
+  h.db.set({ ...developerOrgKey(developerId), orgId: TEST_ORG, role: "member" });
+  h.db.set({ ...projectMemberKey(TEST_ORG, developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "payments", role: "developer", projectRole: "contributor", grantId: "eval-grant" });
+  h.db.set({ ...orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1,
+    policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } }, enrollment: { version: 1, state: "enabled" } });
+  h.db.set({ pk: orgScoped(TEST_ORG, "TASK_STOP_SEED"), sk: "V1#bootstrap", entityType: "TASK_STOP_SEED", orgId: TEST_ORG, source: "bootstrap", version: 1, outcome: "created", policyRevision: 1 });
+  h.db.set({ ...agentGuardrailsKey(TEST_ORG), orgId: TEST_ORG, entityType: "AGENT_GUARDRAILS", revision: 1, guardrails: { ...DEFAULT_AGENT_GUARDRAILS, maxPerRunCeilingUsd: 1 } });
+  const catalog = orgProjectCatalogKey(TEST_ORG, "payments"), project = projectAiKey(TEST_ORG, "payments");
+  h.db.set({ ...h.db.get(catalog), ...catalog, orgId: TEST_ORG, entityType: "PROJECT_CATALOG", name: "payments", latestRevision: 1 });
+  h.db.set({ ...h.db.get(project), ...project, orgId: TEST_ORG, entityType: "PROJECT_AI", project: "payments", revision: 1, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 1234567 } });
+  return { ...h, developerId };
+}
+
+it("M47 actual eval start captures the strict project stop without applying the approval ceiling as an ordinary cap", async () => {
+  const h = await enrolledEvalBroker();
+  const reply = await start(h.handler); expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")[0]).toMatchObject({ maxCostUsd: 1.234567,
+    spendingStop: { agentScope: "none_eval", effectiveStopMicrousd: 1234567, approvalCapMicrousd: 1000000 } });
+  expect([...h.launches.values()][0]?.run.maxCostUsd).toBe(1.234567);
+});
+
+for (const loss of ["member", "project"] as const) it(`M47 eval refuses ${loss} loss after acceptance before dispatch`, async () => {
+  const h = await enrolledEvalBroker(), send = h.db.send.bind(h.db); let changed = false;
+  h.db.send = async command => {
+    const result = await send(command);
+    if (!changed && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Put?.Item?.entityType === "SWEBENCH_RUN")) {
+      changed = true;
+      if (loss === "member") h.db.delete(orgMemberKey(TEST_ORG, h.developerId));
+      else h.db.delete(projectMemberKey(TEST_ORG, h.developerId, "payments"));
+    }
+    return result;
+  };
+  const reply = await start(h.handler);
+  expect(changed).toBe(true); expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(h.startExecution).not.toHaveBeenCalled();
+  expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")[0]).toMatchObject({ status: "FAILED" });
+});
+
+it("M47 eval exact replay keeps its captured stop and a fresh request sees project tightening", async () => {
+  const h = await enrolledEvalBroker(), requestId = randomUUID();
+  const first = await start(h.handler, { requestId }); expect(first.status).toBe(200);
+  const key = projectAiKey(TEST_ORG, "payments");
+  h.db.set({ ...h.db.get(key)!, revision: 2, taskStopPolicy: { schemaVersion: 1, stopMicrousd: 0 } });
+  const replay = await start(h.handler, { requestId }); expect(replay.status).toBe(200);
+  expect(replay.body.run).toEqual(first.body.run); expect(h.startExecution).toHaveBeenCalledTimes(1);
+  const fresh = await start(h.handler); expect(fresh.status, JSON.stringify(fresh.body)).toBe(409);
+  expect(fresh.body.error).toMatchObject({ code: "TASK_STOP_ZERO" });
+  expect(h.startExecution).toHaveBeenCalledTimes(1);
+});
+
+for (const corrupt of ["digest", "cap"] as const) it(`M47 eval replay refuses a corrupted captured ${corrupt}`, async () => {
+  const h = await enrolledEvalBroker(), requestId = randomUUID();
+  const first = await start(h.handler, { requestId }); expect(first.status).toBe(200);
+  const row = h.db.find(item => item.entityType === "SWEBENCH_RUN")[0]!;
+  if (corrupt === "digest") row.spendingStop = { ...(row.spendingStop as Record<string, unknown>), policyDigest: "f".repeat(64) };
+  else row.maxCostUsd = 2;
+  h.db.set(row);
+  const replay = await start(h.handler, { requestId });
+  expect(replay.status, JSON.stringify(replay.body)).toBe(409);
+  expect(replay.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_INVALID" });
+  expect(h.startExecution).toHaveBeenCalledTimes(1);
+});
+
+for (const status of ["archived", "active"] as const) it(`M47 project ${status} with an archive marker cannot start a new enrolled eval`, async () => {
+  const h = await enrolledEvalBroker(), key = projectMetaKey(TEST_ORG, "payments");
+  h.db.set({ ...h.db.get(key), ...key, entityType: "PROJECT_META", orgId: TEST_ORG, name: "payments", status, archivedAt: new Date().toISOString() });
+  const reply = await start(h.handler);
+  expect(reply.status, JSON.stringify(reply.body)).toBe(403);
+  expect(h.startExecution).not.toHaveBeenCalled();
+  expect(h.db.find(row => row.entityType === "SWEBENCH_RUN")).toHaveLength(0);
+});
+
+it("M47 eval admission requires an audit in the run and slot transaction", async () => {
+ const h = await enrolledEvalBroker();expect((await start(h.handler)).status).toBe(200);
+ const transaction = h.db.transactions().find(items => items.some(item => (item.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "SWEBENCH_RUN"));
+ expect(transactionAuditEvent(transaction, "spending.stop_admitted")).toMatchObject({ facts: { workKind: "eval", effectiveStopMicrousd: 1234567 } });
+});
+
+it("M47 reported eval cost ceiling commits its reached audit with terminal state and slot release", async () => {
+ const h = await enrolledEvalBroker(), reply = await start(h.handler), runId = (reply.body.run as { runId: string }).runId;
+ const capability = h.launches.get(`evals/${runId}/launch.json`)!.run.capability;
+ const body = { outcome: "GRADED", resolved: false, stopReason: "cost_ceiling", patchBytes: 0, agentSeconds: 1, imageDigest: "swebench/x@sha256:abc", artifactsPrefix: `evals/${runId}/`,
+ usage: { schemaVersion: 1, outcome: "SUCCEEDED", provider: "amazon-bedrock", modelId: "m", cacheRetention: "long", tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, cacheReadRatio: 0, costUsd: 1.234567 } };
+ expect((await call(h.handler, { method: "POST", path: `/v1/internal/evals/${runId}/result`, headers: { "x-agentx-callback-capability": capability }, body })).status).toBe(200);
+ const transaction = h.db.transactions().find(items => items.some(item => (item.Put as { Item?: { event?: { action?: string } } } | undefined)?.Item?.event?.action === "spending.stop_reached"));
+ expect(transaction?.map(item => (item.Update as { Key?: unknown } | undefined)?.Key)).toContainEqual({ pk: `SWEBENCH_RUN#${runId}`, sk: "META" });
+ expect(transaction?.map(item => (item.Delete as { Key?: unknown } | undefined)?.Key)).toContainEqual({ pk: "SWEBENCH#SLOT", sk: `RUN#${runId}` });
 });

@@ -26,7 +26,7 @@ const hex = () => randomUUID().replaceAll("-", "").slice(0, 17);
 
 type Start = (input: { stateMachineArn: string; name: string; input: string }) => Promise<string>;
 
-type SetupOptions = { instances?: InstanceView[]; volumes?: VolumeView[]; executions?: Record<string, ExecutionStatus>; ping?: ReconcilerDependencies["ping"]; sweepStuckSetups?: ReconcilerDependencies["sweepStuckSetups"]; sweepStuckCancels?: ReconcilerDependencies["sweepStuckCancels"]; expireIndexDays?: ReconcilerDependencies["expireIndexDays"]; sweepUnwaitedTasks?: ReconcilerDependencies["sweepUnwaitedTasks"]; qualifiedWorkerAmi?: ReconcilerDependencies["qualifiedWorkerAmi"]; log?: ReconcilerDependencies["log"] };
+type SetupOptions = { instances?: InstanceView[]; volumes?: VolumeView[]; executions?: Record<string, ExecutionStatus>; ping?: ReconcilerDependencies["ping"]; sweepStuckSetups?: ReconcilerDependencies["sweepStuckSetups"]; sweepStuckCancels?: ReconcilerDependencies["sweepStuckCancels"]; expireIndexDays?: ReconcilerDependencies["expireIndexDays"]; expireLearningItems?: ReconcilerDependencies["expireLearningItems"]; sweepUnwaitedTasks?: ReconcilerDependencies["sweepUnwaitedTasks"]; qualifiedWorkerAmi?: ReconcilerDependencies["qualifiedWorkerAmi"]; log?: ReconcilerDependencies["log"] };
 
 function setup(options: SetupOptions = {}) {
   const db = new FakeDynamoDb();
@@ -60,6 +60,7 @@ function setup(options: SetupOptions = {}) {
     ...(options.sweepStuckSetups === undefined ? {} : { sweepStuckSetups: options.sweepStuckSetups }),
     ...(options.sweepStuckCancels === undefined ? {} : { sweepStuckCancels: options.sweepStuckCancels }),
     ...(options.expireIndexDays === undefined ? {} : { expireIndexDays: options.expireIndexDays }),
+    ...(options.expireLearningItems === undefined ? {} : { expireLearningItems: options.expireLearningItems }),
     ...(options.sweepUnwaitedTasks === undefined ? {} : { sweepUnwaitedTasks: options.sweepUnwaitedTasks }),
     ...(options.qualifiedWorkerAmi === undefined ? {} : { qualifiedWorkerAmi: options.qualifiedWorkerAmi }),
   });
@@ -443,6 +444,20 @@ describe("reconciler: stuck setups (spec 025 FR-055)", () => {
     await expect(reconcile()).rejects.toBe(failure);
     expect(expireIndexDays).toHaveBeenCalledExactlyOnceWith(NOW);
     expect(emit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ReconcilerStuckSetupErrors: 1 }));
+  });
+
+  it("runs the learning sweep beside the index expiry, even when the index expiry fails, and a failed learning sweep is logged by name only and does not fail the run (v1.2 B1)", async () => {
+    const logs: Array<Record<string, unknown>> = [];
+    const expireIndexDays = vi.fn(async () => { throw Object.assign(new Error("PLANTED-EXPIRY-MESSAGE"), { name: "ThrottlingException" }); });
+    const expireLearningItems = vi.fn(async () => { throw Object.assign(new Error("PLANTED-LEARNING-TEXT"), { name: "ProvisionedThroughputExceededException" }); });
+    const { reconcile, emit } = setup({ expireIndexDays, expireLearningItems, log: (entry) => { logs.push(entry); } });
+    await expect(reconcile()).resolves.toBeDefined();
+    expect(expireLearningItems).toHaveBeenCalledExactlyOnceWith(NOW);
+    expect(logs).toContainEqual({ event: "reconciler.learning_expiry_failed", errorName: "ProvisionedThroughputExceededException" });
+    expect(JSON.stringify(logs)).not.toContain("PLANTED-LEARNING-TEXT");
+    const baseline = setup();
+    await baseline.reconcile();
+    expect(Object.keys(emit.mock.calls[0]![0])).toEqual(Object.keys(baseline.emit.mock.calls[0]![0]));
   });
 
   it("runs the index expiry, and a failed expiry is logged and does not fail the run (A6)", async () => {

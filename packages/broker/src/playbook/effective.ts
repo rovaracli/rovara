@@ -41,6 +41,7 @@ import { latestRevision } from "../org/project-settings.js";
 import { readCodeSettings } from "../rovara-code/code-settings.js";
 import { existingLayer } from "./process-layer.js";
 import { processUpdate } from "./process-update.js";
+import { readTrackRecordsByKind } from "./track-record.js";
 import { isReviewingStage, wholeAgentLayers } from "./process-reviewers.js";
 import { readProjectPlaybook } from "./project-playbook-store.js";
 import { requireProcessLayer } from "./project-process.js";
@@ -49,6 +50,8 @@ import type { ProjectPlaybookDependencies } from "./routes.js";
 /** What the view reads: the playbook routes' dependencies, with the whole agent store (the recipe is resolved, never written). */
 export interface HowWeWorkDependencies extends Omit<ProjectPlaybookDependencies, "store"> {
   store: AgentStore | undefined;
+  /** How long the page waits for the track records before it shows without them (default 1.5 seconds). */
+  trackRecordDeadlineMs?: number | undefined;
 }
 
 type Lock = "company" | "rovara";
@@ -204,11 +207,19 @@ export async function computeHowWeWork(deps: HowWeWorkDependencies, orgId: OrgId
   const [guardrails, revision, codeSettings] = await Promise.all([readGuardrails(deps, orgId), latestRevision(deps, orgId, name), readCodeSettings(deps, orgId, name)]);
   if (running.recipe.steps.length === 0) throw agentXError("CONFIG_INVALID", "this project's process has no stages");
   const inputs: Inputs = { running, guardrails, definition: revision?.definition, codeSettings };
+  // v1.2 track record: what each checking stage has earned, each kind of stage read once, all together, under one deadline. A read that fails or runs late leaves the field out (no record, never a
+  // zero) and the rest of the view is shown; the resolver's model fields are not repeated here.
+  const records = await readTrackRecordsByKind(deps, orgId, name, running.recipe.steps.map((step) => step.kind), deps.trackRecordDeadlineMs);
+  const stages = running.recipe.steps.map((step) => {
+    const stage = stageOf(step, inputs);
+    const trackRecord = records.get(step.kind);
+    return trackRecord === undefined ? stage : { ...stage, trackRecord };
+  });
   return {
     project: name,
     playbookRevision: playbook.revision,
     process: running.process,
-    stages: running.recipe.steps.map((step) => stageOf(step, inputs)),
+    stages,
     rules: layerRows(running.recipe, running.recipe.instructions),
     modelsEditable: false,
   };

@@ -383,6 +383,7 @@ export function workflowApplicationRouteDependencies(dependencies: AwsBrokerDepe
 /** The route dependencies of a Slack workflow press: the same application wiring as the HTTP routes. */
 function slackWorkflowRouteDependencies(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, developer: NonNullable<AwsBrokerDependencies["developer"]>, caller: DeveloperCaller) {
   return developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks,
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     ...workflowApplicationRouteDependencies(dependencies) }, caller);
 }
 

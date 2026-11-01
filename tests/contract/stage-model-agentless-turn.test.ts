@@ -126,13 +126,13 @@ for(const projectRole of ["maintainer","contributor","viewer","none"] as const)i
  expect(f.audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(projectRole==="viewer"?0:1);
 });
 it("rolls back the agentless fallback model, history and audit when identity is withdrawn at commit",async()=>{
- const f=await runtimeTurnFixture();const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const {orgMemberKey}=await import("@agentx/contracts");
+ const f=await runtimeTurnFixture(), beforeAudit=f.audit.pending();const {TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb");const {orgMemberKey}=await import("@agentx/contracts");
  const send=f.db.send.bind(f.db);f.db.send=async command=>{if(command instanceof TransactWriteCommand)f.db.delete(orgMemberKey(TEST_ORG,f.actor));return send(command);};
  const response=await call(f.handler,{method:"POST",path:f.path,headers:{"x-agentx-callback-capability":f.invocation.callbackCapability},body:f.body});
  expect(response).toMatchObject({status:400,body:{error:{code:"CONFIG_INVALID"}}});
  expect(f.db.get(`WORKSPACE#${f.workspaceId}`,`OPERATION#${f.operationId}`)?.model).toEqual(f.invocation.payload.model);
  expect(f.db.get(`WORKSPACE#${f.workspaceId}`,`OPERATION#${f.operationId}`)?.modelFallbacks).toBeUndefined();
- expect(f.audit.pending()).toHaveLength(0);
+ expect(f.audit.pending()).toEqual(beforeAudit);
  expect(f.audit.flushed().filter(event=>event.action==="model.fallback_used")).toHaveLength(0);
 });
 

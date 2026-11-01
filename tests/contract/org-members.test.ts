@@ -825,9 +825,9 @@ describe("every task launch checks that the creator is still a member (ruling R6
   const functions = source.split(/^(?=(?:export )?(?:async )?function )/m);
   // Only reached from startTaskWorkflowPublicationFromSystem, which checks first.
   // startAutomaticFeedbackRound (Plan 6 Task 16) is reached only from startTaskWorkflowImplementationFromSystem, which runs creatorGuard before it.
-  const CHECKED_BY_CALLER = ["startTaskWorkflowPullRequestUpdate", "startAutomaticFeedbackRound"];
+  const CHECKED_BY_CALLER = ["startTaskWorkflowPullRequestUpdate", "startAutomaticFeedbackRound", "taskStopGuardedPaidDispatch"];
 
-  it("finds the twenty-three acceptTask call sites and the pull request call sites, and every one is checked first", () => {
+  it("finds the twenty-four acceptTask call sites and the pull request call sites, and every one is checked first", () => {
     const launching = functions.filter((chunk) => /deps\.actions\.(acceptTask|acceptPullRequest|acceptPullRequestUpdate)\(/.test(chunk));
     expect(launching.length).toBeGreaterThanOrEqual(9);
     // The eleventh is Plan 3 Task 32's system Continue after a spend approval (`resumeTaskAfterSpendApproval`); the twelfth is Task 34's start of a plan whose run
@@ -837,7 +837,11 @@ describe("every task launch checks that the creator is still a member (ruling R6
     // Mainline #408 adds two, both checked first: the grounding of the plan against the current app (`startTaskWorkflowE2EGroundingFromSystem`) and the planner's one revision after the plan self-check (`startTaskWorkflowPlanRevisionFromSystem`).
     // Meta repo lane D adds one: the spec write (`startWrite` in spec-wiring.ts), reached from the publication and review gates and from an owner's choice on a held spec. It checks the creator at the launch itself.
     // Wiring D adds one: Re-plan after a spec change (`replanForSpecChange` in spec-replan.ts), checked through withCurrentThreadNotes before its launch.
-    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(23);
+    const recovery = functions.find(chunk => /function resumeTaskAfterSpendApproval\(/.test(chunk))!;
+    expect(recovery.indexOf("creatorGuard(")).toBeGreaterThanOrEqual(0);
+    expect(recovery.indexOf("creatorGuard(")).toBeLessThan(recovery.indexOf("taskStopGuardedPaidDispatch("));
+    // M47 adds one forwarding seam that merges admitted source guards; its workflow callers retain creatorGuard.
+    expect(source.match(/deps\.actions\.acceptTask\(/g)).toHaveLength(24);
     for (const chunk of launching) {
       const name = /function (\w+)/.exec(chunk)?.[1] ?? "?";
       if (CHECKED_BY_CALLER.includes(name)) continue;

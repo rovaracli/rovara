@@ -344,11 +344,13 @@ describe("deciding and commenting on the task page, end to end", () => {
     // The CSRF cookie expired (it lasts 15 minutes); the page still holds the old token.
     tab.jar.csrf = undefined;
     expect(codingRuns(e2e)).toEqual([]);
+    // v1.2 learning: the page is served without the learning flags, so it reads the comments once on load; let that land first.
+    await tab.settle();
     await tab.comment("claim:1", "Still here after lunch.");
     expect(tab.requests.map((request) => `${request.method} ${request.path.replace(/^.*\/api\//, "")} ${request.status}`)).toEqual([
-      "POST comments 403", "GET state 200", "POST comments 201",
+      "GET comments 200", "POST comments 403", "GET state 200", "POST comments 201",
     ]);
-    const [refused, , retried] = tab.requests;
+    const [, refused, , retried] = tab.requests;
     expect((retried!.body as { requestId: string }).requestId).toBe((refused!.body as { requestId: string }).requestId);
     expect(readable(tab.document.querySelector('[data-comments="claim:1"]')!)).toContain("Still here after lunch.");
     expect(commentsStored(e2e)).toHaveLength(1);

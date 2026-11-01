@@ -816,7 +816,9 @@ it("B33 refuses an atomic registration above 100 actions before sending any tran
   creatorMembership: "none", expectedBaseRevision: 1,
   extraItems: Array.from({ length: 100 }, (_, i) => ({ Put: { TableName: "state", Item: { pk: `B33_BOUND#${i}`, sk: "EXTRA" } } })),
  })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
- expect(h.db.transactions()).toHaveLength(count);expect(h.revision(2)).toBeUndefined();
+ const later = h.db.transactions().slice(count);
+ expect(later).toHaveLength(0);
+ expect(later.every(items => !JSON.stringify(items).includes("B33_BOUND#"))).toBe(true);expect(h.revision(2)).toBeUndefined();
 });
 
 it("B33 new Cloud project websites commit with one initial audit and pending staff decisions", async () => {

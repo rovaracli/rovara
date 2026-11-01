@@ -1,3 +1,4 @@
+import type { RunCheckout } from "./agent-run-node.js";
 // Budget and approval placeholder constants for agents. Other tasks read these before the budget engine that
 // owns them exists, so they live here from the start; the budget tasks add keys, types and functions beside them.
 import { z } from "zod";
@@ -338,6 +339,17 @@ export interface SpendRequestRecord {
   resume?: "continue" | "implement" | "plan";
   /** The change an `owner_cap` request applies once approved. */
   change?: OwnerCapChange;
+  /** Original task approval terms. Owner-budget requests use their own source proof. */
+  approvalTerms?: {
+    version: 1; sourcePresence: true; sourceKey: { pk: string; sk: string }; sourceRevision: string | null; sourceDigest: string;
+    firstDispatch: { operationId: string; checkout?: RunCheckout[] | undefined; readOnly?: true | undefined } | null;
+    originalFields: Record<string, unknown>; askedFiguresMicrousd: { budget: number; runLimit: number; amount: number; maxPerRun: number | null; baseline: number }; proposedFiguresMicrousd: { budget: number; runLimit: number; maxPerRun: number | null; window: "keep" | "reset" };
+    countedOwner: string | null; totalsRevision: null; policyDigest: string; admissionId: string; operation: "run_limit" | "max_per_run" | "planning";
+  };
+  /** Original counted owner figures for a newly captured owner-cap request. */
+  ownerFinancialTerms?: { version: 1; basis?: "base" | "effective"; owner: string; month: string; totalUsd: number; counterUsd: number; counterVersion: number; capUsd: number; policyRevision: number; carriedUsd: number; wouldBeUsd: number; carriedSource?: { key: { pk: string; sk: string }; exists: boolean; fields: Record<string, unknown> } };
+  /** Original native money-source state; absence is meaningful. */
+  approvalSource?: { version: 1; key: { pk: string; sk: string }; exists: boolean; fields: Record<string, unknown> };
   /** The agent an `owner_cap` request is about. */
   agentId?: AgentId;
   /** The chain an `owner_cap` request is about (Plan 4): the person's agent and chain budgets are one total. */
@@ -349,7 +361,7 @@ export interface SpendRequestRecord {
   /** When the settlement run next looks at it (`openSpendRequestDueKey`): an unanswered owner's escalation, else its expiry. */
   dueAt?: string;
   /** Why an EXPIRED request ended before its time: the task went on without it, the task closed, the person its change names left, the agent came to count for another owner than the one the change was summed for, or everyone who could decide it left. */
-  endedBecause?: "continued" | "task_closed" | "target_left" | "owner_moved" | "approver_left";
+  endedBecause?: "continued" | "task_closed" | "target_left" | "owner_moved" | "approver_left" | "figures_changed" | "spending_rules_changed";
 }
 
 /** What a paused run asks for by default: half its limit again, rounded up to whole dollars, and never less than $5. */

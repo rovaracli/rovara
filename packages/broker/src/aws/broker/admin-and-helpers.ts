@@ -31,6 +31,9 @@ import { creatorCheckOf, githubScopeOfWorkspace, orgConnectionStoreOf, orgOfReco
 import { refreshTaskFeedbackForOwnerDecision } from "./terminal-and-github-events.js";
 import { workflowE2EPresentation, workflowE2EPublicationChecks } from "./workflow-e2e-verification.js";
 import { getSlackBinding } from "./workspace-preparation.js";
+import { auditOperatorId } from "@agentx/contracts";
+import { developerIdForSlackUser } from "../admin-actions.js";
+import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
 
 /** Spec 043: the SWE-bench module's dependencies, from the broker's; spec 052 wires its batches into them. */
 export function swebenchDependencies(dependencies: AwsBrokerDependencies): EvalBatchDependencies {
@@ -50,7 +53,7 @@ export function swebenchDependencies(dependencies: AwsBrokerDependencies): EvalB
 export function swebenchSlackContext(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): SwebenchSlackContext {
   const slack = identity.slack;
   if (!slack) throw agentXError("FORBIDDEN", "Slack thread context is required");
-  return { thread: slack.thread, requester: slack.requester, ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), slack.binding.projectName) };
+  return { orgId: requireOrgId(identity.orgId), developerId: developerIdForSlackUser(slack.requester.userId), thread: slack.thread, requester: slack.requester, ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), slack.binding.projectName) };
 }
 
 /** The project and its approved models, for a run or batch whose thread and requester the caller supplies. */
@@ -78,7 +81,7 @@ export async function routeStartEvalBatch(dependencies: AwsBrokerDependencies, i
   const binding = await getSlackBinding(dependencies, requireOrgId(identity.orgId), body.teamId, body.channelId);
   if (!binding) throw agentXError("NOT_FOUND", "Slack channel binding not found; bind the channel to a project first");
   await requireAdministrator(dependencies, identity, binding.projectName);
-  return startBatch(swebenchDependencies(dependencies), swebenchProjectContext(dependencies, requireOrgId(identity.orgId), binding.projectName), body);
+  return startBatch(swebenchDependencies(dependencies), { ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), binding.projectName), orgId: requireOrgId(identity.orgId), developerId: identity.ownerKey }, body);
 }
 
 /** Spec 052 FR-009, FR-010: show, stop or read the results of a batch, for an administrator of its channel's project. */
@@ -200,6 +203,7 @@ export async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, id
     const records = await listWorkflowE2EReplayRecords(store, taskId, roundId.data);
     return { sourceRoundId: roundId.data, replays: records.map(replayRecordView) };
   }
+  await requirePricedTaskStopAdmission(dependencies, { orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-e2e-replay" });
   const { roundId } = z.object({ roundId: z.string().uuid() }).strict().parse(value);
   // A replay runs a runner for the task's org, so on a cloud install it is admitted like any other launch: a locked trial, or a month of machine time used up, refuses it before anything is created.
   if (dependencies.cloud === true) {

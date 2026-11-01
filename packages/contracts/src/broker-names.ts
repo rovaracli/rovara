@@ -152,6 +152,8 @@ export const BROKER_SETTINGS = {
   autofix: { code: "fx", variable: "AUTOFIX_ENABLED" },
   // Live steer kill switch (stack parameter LiveSteerEnabled, "0" by default): the broker reads it as LIVE_STEER_ENABLED, and live steer is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   liveSteer: { code: "ls", variable: "LIVE_STEER_ENABLED" },
+  // v1.2 learning loop: the install-wide default of the company's master "suggestions" switch (stack parameter LearningSuggestionsDefault, off by default): learning/suggestions-switch.ts reads it.
+  learningSuggestionsDefault: { code: "lg", variable: "LEARNING_SUGGESTIONS_DEFAULT" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

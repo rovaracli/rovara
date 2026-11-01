@@ -4,6 +4,7 @@ import { Card } from "../../design/Card.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { cardTitle } from "../../api/stage-cards.js";
 import { HowWeWorkMarker } from "./HowWeWorkMarker.js";
+import { StageRecord, wordedRecords } from "./StageRecord.js";
 import { EDITABLE_KINDS, stageRows, visibleRows, type Filter, type RowId, type StageRead, type ViewRead } from "./how-we-work-rows.js";
 export const stageDomId = (id: string) => "hww-stage-" + id.replace(/[^A-Za-z0-9_-]/g, "_");
 /** Shown where the stage models would be when the resolver's read is not there: the page names no model it did not get from it. */
@@ -24,5 +25,6 @@ export function HowWeWorkCard({ stage, view, filter, showUnchanged, editor, acti
     {row.id === "knows" && editor}
    </dd>
   </div>)}</dl>}
+  <StageRecord records={wordedRecords(stage)} />
  </Card>;
 }

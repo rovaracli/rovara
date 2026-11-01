@@ -123,7 +123,7 @@ describe("the event catalog", () => {
   it("lists the actions exactly, in order", () => {
     expect([...AUDIT_ACTIONS]).toEqual([
       "approval.decided", "approval.expired", "approval.requested", "approval.rerouted", "write.executed", "spend_request.created", "spend_request.decided",
-      "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "pull_request.opened",
+      "spend_request.expired", "spend_request.escalated", "spend_request.rerouted", "spend_request.resume_dropped", "budget.changed", "spend_policy.changed", "spending.stop_admitted", "spending.stop_refused", "spending.stop_reached", "spending.stop_exempted", "spending.policy_seeded", "spending.policy_changed", "spending.policy_change_requested", "spending.policy_change_decided", "pull_request.opened",
   "pull_request.merged",
   "pull_request.merge_requested",
   "member.joined",
@@ -187,6 +187,10 @@ describe("the event catalog", () => {
       // Live interaction part 2
       "session.redirected", "task.asked", "diagnosis.started", "diagnosis.proposed", "diagnosis.proposal_raised", "diagnosis.support_escalated", "diagnosis.bundle_prepared",
       "sso.sign_in", "sso.sign_in_refused", "sso.break_glass_used", "sso.group_mapping_changed", "sso.break_glass_changed",
+      // v1.2 learning loop (B7)
+      "rule.suggested", "rule.accepted", "rule.not_applied", "rule.dismissed", "rule.withdrawn", "rule.rolled_back", "rule.correction_remembered", "project.learning_changed",
+      // the company's master suggestions switch
+      "rule.suggestions_set",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -224,7 +228,31 @@ describe("the event catalog", () => {
     "company.change_applied_to_project": { target: { kind: "project", name: "web" }, keys: ["changeRevision", "settingCount"], sample: { changeRevision: 5, settingCount: 2 } },
     "project.test_env_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "tier", "lessSafeCount"], sample: { revision: 2, tier: "sandbox", lessSafeCount: 0 } },
     "evidence.downloaded": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["artifactKind", "retentionClass"], sample: { artifactKind: "webm", retentionClass: "evidence-short" } },
+    // v1.2 learning loop (B7, design 8): ids, counts, flags and fixed words; never a correction's or a rule's text.
+    "rule.suggested": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "stage", "sourceCount", "sourceKinds", "lessSafe", "fromOnePerson"], sample: { suggestionId: "sug_1", stage: "build", sourceCount: 2, sourceKinds: "comment,send_back", lessSafe: false, fromOnePerson: false } },
+    "rule.accepted": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "ruleId", "stage", "processAgentId", "outcome", "processVersion", "approvalId", "edited", "lessSafe"], sample: { suggestionId: "sug_1", ruleId: "rul_1", stage: "build", processAgentId: "agt_1", outcome: "published", processVersion: 4, edited: true, lessSafe: false } },
+    "rule.not_applied": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "ruleId", "approvalOutcome"], sample: { suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "declined" } },
+    "rule.dismissed": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "stage", "dismissKind"], sample: { suggestionId: "sug_1", stage: "build", dismissKind: "wrong" } },
+    "rule.withdrawn": { target: { kind: "project", name: "web" }, keys: ["suggestionId", "stage", "cause"], sample: { suggestionId: "sug_1", stage: "build", cause: "forgotten" } },
+    "rule.rolled_back": { target: { kind: "project", name: "web" }, keys: ["ruleId", "processAgentId", "processVersion"], sample: { ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 } },
+    "rule.correction_remembered": { target: { kind: "project", name: "web" }, keys: ["correctionId", "stage", "standing", "op"], sample: { correctionId: "cor_1", stage: "build", standing: "member", op: "remember" } },
+    "project.learning_changed": { target: { kind: "project", name: "web" }, keys: ["revision", "enabled", "selfConfirmedSoleOwner"], sample: { revision: 2, enabled: true, selfConfirmedSoleOwner: false } },
+    "rule.suggestions_set": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["setting", "previous", "source", "previousSource"], sample: { setting: "on", previous: "off", source: "company", previousSource: "install_default" } },
   } as const;
+
+  // I10: the learning events hold no text.
+  it("I10: no rule.* or project.learning_changed fact can hold text, and a text-like fact is refused", () => {
+    const learning = AUDIT_ACTIONS.filter((action) => action.startsWith("rule.") || action === "project.learning_changed");
+    expect(learning).toHaveLength(9);
+    const textLike = /text|note|body|wording|comment|message|content|title|label/i;
+    for (const action of learning) {
+      for (const key of AUDIT_FACT_KEYS[action]) expect(key, `${action}.${key}`).not.toMatch(textLike);
+      for (const key of ["text", "proposedText", "dismissNote", "note", "comment"]) {
+        const spec = PLAYBOOK_FACTS[action as keyof typeof PLAYBOOK_FACTS];
+        expect(AuditEventInputSchema.safeParse(event({ action, target: spec.target, facts: { ...spec.sample, [key]: "Use the shared retry helper." } })).success, `${action}.${key}`).toBe(false);
+      }
+    }
+  });
 
   for (const [action, spec] of Object.entries(PLAYBOOK_FACTS)) {
     it(`${action} has exactly its fixed fact keys, takes them, and refuses an unknown one`, () => {

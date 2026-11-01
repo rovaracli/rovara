@@ -165,3 +165,12 @@ it("preserves an explicit zero stop during an ordinary edit instead of turning i
   expect(f.db.get(projectAiKey(A, "web"))?.taskStopPolicy).toEqual({ schemaVersion: 1, stopMicrousd: 0 });
   expect(result.settings).toMatchObject({ taskStopPolicy: { schemaVersion: 1, stopMicrousd: 0 } });
 });
+
+it("an old monthly writer preserves explicit migrated project inheritance", async () => {
+  const f = fixture(), key = projectAiKey(A, "web"), inherited = { schemaVersion: 2, kind: "inherit" };
+  f.db.set({ ...f.db.get(key)!, taskStopPolicy: inherited });
+  const result = await writeProjectAi(f.deps, A, "web", oldClient(), fixtureActor(f.deps, A, who).developerId, { expectedRevision: 1, actor: fixtureActor(f.deps, A, who) });
+  expect(result).toMatchObject({ revision: 2, settings: { monthlyBudgetUsd: 300, taskStopPolicy: inherited } });
+  expect(f.db.get(key)?.taskStopPolicy).toEqual(inherited);
+  expect(f.capture.recorded().map(event => event.action)).toEqual(["budget.changed"]);
+});

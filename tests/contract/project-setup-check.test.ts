@@ -2,6 +2,8 @@
 // caller's at the project's latest revision (the setup commands, then the test commands), and the project's setup status follows that workspace:
 // unchecked, checking, ready, failed (with the failing step) or outdated (a newer revision exists). It passes the admissions a task start passes
 // except the model budget, and it is replayable by request id in the same transaction that starts it.
+import { fakeModelAccess } from "../support/fake-model-access.js";
+import { orgSettingsKey } from "@agentx/contracts";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { AppProjectDetailSchema, machineTimeMonthKey, orgMetaKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type OrgRole, type ProjectRole } from "../../packages/contracts/src/index.js";
@@ -672,4 +674,13 @@ describe("the setup check's workspace and slot (final review I3)", () => {
     expect(stillOpen[0]).toMatchObject({ ownerKey: expect.any(String) as string });
     expect(h.deleteEc2Session!.mock.calls.map(([id]) => id).sort()).toEqual([first.workspaceId, second.workspaceId].sort());
   });
+});
+
+it("M47 setup-check refuses enrolled work without a trusted dollar admission basis", async () => {
+  const access = fakeModelAccess(), h = await harness({ brokerExtra: { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" } } });
+  h.db.set({ ...orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1,
+    policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 0 } }, enrollment: { version: 1, state: "enabled" } });
+  expect(rejection(await check(h, OMAR))).toMatchObject({ status: 409, code: "TASK_STOP_CONFIG_MISSING" });
+  expect(h.db.find(row => row.entityType === "WORKSPACE" || row.entityType === "OPERATION" || row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  expect(access.mintedKeys()).toHaveLength(0);
 });

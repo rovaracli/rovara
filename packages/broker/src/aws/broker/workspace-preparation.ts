@@ -21,7 +21,7 @@ import type { SpendRequestHost } from "../../spend/requests.js";
 import type { AgentRouteDependencies } from "../../agents/routes.js";
 import { developerTaskRouteDependencies, type DeveloperCaller } from "../developer-routes.js";
 import type { DeveloperTaskActions, ExtraItems, TransactItems } from "../developer-task-actions.js";
-import { continueAsTask, resumeTaskAfterSpendApproval } from "../developer-tasks.js";
+import { continueAsTask, prepareTaskApprovalAdmission, resumeTaskAfterSpendApproval } from "../developer-tasks.js";
 import { isAssumedRoleOf, ownerKeyForSubject, type AdaptedHttpRequest } from "../lambda.js";
 import type { TaskAccess } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
@@ -205,6 +205,12 @@ export function spendRequestHostOf(dependencies: AwsBrokerDependencies, tasks: D
     return { deps, caller };
   };
   return {
+    prepareApprovalAdmission: async (input) => {
+      const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(input.taskId));
+      if (task === undefined || task.orgId !== input.orgId) throw agentXError("TASK_NOT_FOUND", "The task is no longer available.");
+      const { deps, caller } = await asOwner(input.orgId, effectiveTaskOwner(task).developerId);
+      return prepareTaskApprovalAdmission(deps, caller, input);
+    },
     resumeTask: async (input) => {
       const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(input.taskId));
       if (task === undefined || task.orgId !== input.orgId) return;

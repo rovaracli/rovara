@@ -2,6 +2,12 @@
 // split-modules: definitions, scope-helpers, dependency-wiring, handler, workspace-routes, project-registration, workspace-preparation, thread-workspaces, task-operations, model-access, acceptance, slack-workflow-events, callbacks, evidence-and-setup, workflow-e2e-verification, feedback-and-codebuild, pull-request-reconcile, terminal-and-github-events, sweeps-and-readiness, dispatch, e2e-rounds, workflow-items, plan-answers, terminal-result, records, admin-and-helpers, runtime-clients
 
 // The file's own imports, first and in their old order, so every dependency loads exactly as it did before the split.
+import "../model-selection/evidence.js";
+import "../agents/table-writes.js";
+import "../org/task-stop-funding.js";
+import "../org/task-stop-unpriced.js";
+import "../org/task-stop-bootstrap.js";
+import "../org/native-snapshot-conditions.js";
 import "./service-status-runtime.js";
 import "../model-selection/turn-authority.js";
 import "../model-selection/turn-fallback.js";
@@ -24,6 +30,7 @@ import "../org/approval-membership.js";
 // First, so that it runs before anything below reads the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 import "./broker-environment-init.js";
+import "../org/task-stop-window.js";
 import "../org/project-working-branch-provider.js";
 import "./task-web.js";
 import "../developer/confirm-page.js";
@@ -58,6 +65,9 @@ import "zod";
 import "./health-probes.js";
 import "../audit/drain.js";
 import "../audit/export-wiring.js";
+import "../learning/cleanup.js";
+import "../learning/home-source.js";
+import "../learning/settle.js";
 import "../audit/admin-routes.js";
 import "../audit/view-page.js";
 import "../audit/keyring.js";
@@ -104,6 +114,7 @@ import "../rovara-code/explicit-path.js";
 import "../rovara-code/question-answers.js";
 import "../rovara-code/merged.js";
 import "../rovara-code/merged-state.js";
+import "../rovara-code/outcome-hooks.js";
 import "../rovara-code/linear-close.js";
 import "../rovara-code/proof-inputs.js";
 import "../rovara-code/proof-keep.js";
@@ -322,6 +333,7 @@ import { createBrokerPlugins } from "./broker/plugin-wiring.js";
 import { portCredentialResolver } from "./broker/credential-exchange.js";
 import { ssoStoresFor } from "../developer/sso-sign-in.js";
 import { awsClientConfiguration, documentClient, ec2Sessions, stepFunctions } from "./broker/runtime-clients.js";
+import { learningEraseHook, learningWalkDeps } from "../learning/cleanup.js";
 export { PROJECT_SETUP_CAPTURE_POLICY, WEB_ROUTE_KEY } from "./broker/definitions.js";
 export type { RegisteredProjectRecord, AwsBrokerInput } from "./broker/definitions.js";
 export { createDeveloperTaskActions, createAgentRouteDependencies, createAgentRunStarter, createCodeIntentDependencies, createCodeIntentStarter, uninstallChainRunner, createPlanDependencies } from "./broker/dependency-wiring.js";
@@ -496,6 +508,8 @@ const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undef
   now: Date.now,
   log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
   purgeExports: exportPurger(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
+  // v1.2 learning loop: a person's erase clears their corrections' text and the suggestions that hold their words, in every project of the company.
+  eraseLearning: learningEraseHook(learningWalkDeps({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, audit })),
 };
 
 const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";

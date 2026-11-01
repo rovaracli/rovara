@@ -67,16 +67,43 @@ export async function loadTestProofLines(
 ): Promise<string[]> {
   if (candidateDigest === undefined) return [];
   try {
-    const newest = (await actions.operations(task.workspaceId)).filter((operation) => operation.kind === "task").sort(byCreated).reverse().slice(0, OPERATIONS_READ);
-    for (const operation of newest) {
-      const artifact = (await actions.artifacts(task.workspaceId, operation.id)).find((entry) => entry.name === TEST_PROOF_ARTIFACT);
-      const prefix = `private/${task.ownerKey}/${task.workspaceId}/${operation.id}/`;
-      if (artifact === undefined || !artifact.objectKey.startsWith(prefix)) continue;
-      const parsed = JSON.parse(await actions.readArtifact(artifact.objectKey, PROOF_READ_BYTES)) as unknown;
-      if (boundProof(parsed, candidateDigest) !== undefined) return testProofPullRequestLines(parsed, candidateDigest, inert);
-    }
+    const found = await newestBoundProof(actions, task, candidateDigest);
+    if (found !== undefined) return testProofPullRequestLines(found, candidateDigest, inert);
   } catch {
     // The proof is a courtesy to the reader: a storage or parse fault only leaves it out.
   }
   return [];
+}
+
+/** The newest test-proof.json bound to `candidateDigest` among the task's latest operations, or nothing. Any fault throws. */
+async function newestBoundProof(actions: TestProofActions, task: { ownerKey: string; workspaceId: string }, candidateDigest: string): Promise<unknown> {
+  const newest = (await actions.operations(task.workspaceId)).filter((operation) => operation.kind === "task").sort(byCreated).reverse().slice(0, OPERATIONS_READ);
+  for (const operation of newest) {
+    const artifact = (await actions.artifacts(task.workspaceId, operation.id)).find((entry) => entry.name === TEST_PROOF_ARTIFACT);
+    const prefix = `private/${task.ownerKey}/${task.workspaceId}/${operation.id}/`;
+    if (artifact === undefined || !artifact.objectKey.startsWith(prefix)) continue;
+    const parsed = JSON.parse(await actions.readArtifact(artifact.objectKey, PROOF_READ_BYTES)) as unknown;
+    if (boundProof(parsed, candidateDigest) !== undefined) return parsed;
+  }
+  return undefined;
+}
+
+export type TestProofRead = { verdicts: Array<TestProof["items"][number]["verdict"]>; candidateDigest: string } | { unavailable: "not_found" | "read_failed" };
+
+/**
+ * Track record: the item verdicts of the proof bound to `candidateDigest`, as data. A storage or parse fault is `read_failed` and no bound proof is
+ * `not_found`; neither is ever an empty list of verdicts, so the caller can tell "nothing proved" from "could not read". Never throws.
+ */
+export async function readTestProofForCandidate(
+  actions: TestProofActions,
+  task: { ownerKey: string; workspaceId: string },
+  candidateDigest: string | undefined,
+): Promise<TestProofRead> {
+  if (candidateDigest === undefined) return { unavailable: "not_found" };
+  try {
+    const found = boundProof(await newestBoundProof(actions, task, candidateDigest), candidateDigest);
+    return found === undefined ? { unavailable: "not_found" } : { verdicts: found.items.map((entry) => entry.verdict), candidateDigest: found.candidateDigest };
+  } catch {
+    return { unavailable: "read_failed" };
+  }
 }

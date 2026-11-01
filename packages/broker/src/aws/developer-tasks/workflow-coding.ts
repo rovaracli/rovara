@@ -75,6 +75,9 @@ import { startTaskWorkflowImplementationFromSystem, startTaskWorkflowReviewFromS
 import { startTaskWorkflowPlanCritiqueFromSystem } from "./workflow-starts.js";
 import { startTaskWorkflowPublicationFromSystem } from "./publication.js";
 import { fedThroughUpdate, promptTagId, sendBackProblemsPromptSection, withCurrentThreadNotes } from "./thread-notes.js";
+import { checkedTaskStopSnapshot } from "../../org/task-stop-window.js";
+import { requireNewWorkAllowed } from "../../developer/project-roles.js";
+import { usdToWholeMicrodollars } from "../../org/budget-amount.js";
 
 /**
  * Accept a coding run for the task: the workflow moves from its exact current revision, stage and state to `next`
@@ -91,6 +94,9 @@ export async function queueWorkflowCoding(
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const { workflow } = task;
+  // Send-back and coding retries start a new run; archiving must refuse before any task writes.
+  // Contributor intentionally checks only archive here; authorizeTaskAction owns the live role check.
+  await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   // The same authority this restart asks for once it has committed (below), asked before anything commits: a person who is refused it must not have started a run first.
   await authorizeTaskAction(deps, caller, task.taskId, "work");
   // A human's retry or send-back (rulings R38 and R39) starts a new window of the task's cap, unless that skips an approval they may not decide.
@@ -167,7 +173,10 @@ export async function resumeAfterRunLimitApproval(
   if (workflowDependencies !== undefined && !workflowDependenciesAllowed(deps, workflow)) {
     throw agentXError("CONFIG_INVALID", "the approved ordered work plan is retained, but this broker is not enabled to start it");
   }
-  const baselineUsd = await capWindowBaseline(deps, task) ?? 0;
+  const admitted = task.spendingStop === undefined ? undefined : checkedTaskStopSnapshot(task.spendingStop);
+  if (admitted !== undefined && (admitted.calculationInput.approvedRunLimitMicrousd !== usdToWholeMicrodollars(input.runLimitUsd) || usdToWholeMicrodollars(task.budgetBaselineUsd) === undefined)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The implementation window does not match its approved admission.");
+  const admittedBudgetUsd = admitted === undefined ? input.runLimitUsd : admitted.effectiveStopMicrousd / 1_000_000;
+  const baselineUsd = admitted === undefined ? await capWindowBaseline(deps, task) ?? 0 : task.budgetBaselineUsd;
   const receivedAt = iso(deps);
   const { blockReason: _blockReason, ...unblocked } = workflow;
   void _blockReason;
@@ -181,7 +190,7 @@ export async function resumeAfterRunLimitApproval(
       ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :blocked AND attribute_not_exists(closedAt)${task.budgetUsd === undefined ? " AND attribute_not_exists(budgetUsd)" : " AND budgetUsd = :seenBudget"}`,
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
       ExpressionAttributeValues: { ":workflow": workflowWithCurrentGraphOperation(next, workflowDependencies === undefined ? undefined : operation.id, workflowDependencies), ":now": receivedAt,
-        ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":runLimit": input.runLimitUsd, ":baseline": baselineUsd,
+        ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":runLimit": admittedBudgetUsd, ":baseline": baselineUsd,
         ...(task.budgetUsd === undefined ? {} : { ":seenBudget": task.budgetUsd }) },
     } },
     putNew(turnTable(deps), aiToolTurn({
@@ -456,6 +465,8 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
     : next.stage === "REVIEW" && next.state === "WAITING" && next.candidate !== undefined ? "REVIEW"
     : next.stage === "IMPLEMENT" && next.state === "READY" ? "IMPLEMENT"
     : undefined;
+  // Accepting findings may make a custom sequence's new agent run due, rather than publication.
+  if (due === "IMPLEMENT" || due === "REVIEW") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   const dueDigest = next.candidate?.digest ?? WORKFLOW_NO_CANDIDATE_DIGEST;
   try {
     await deps.actions.transact([{ Update: {

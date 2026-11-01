@@ -90,6 +90,11 @@ import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
 import { isWorkflowDispatchRecoveryEvent, retryDueWorkflowDispatches, startDuePlanEvidenceJobs } from "./workflow-items.js";
 import { connectSlackTeam, deleteSlackBinding, disconnectSlackTeam, getTeamSlackBinding, putSlackBinding, requireSlackRequesterMayWork, requireSlackServiceRole, slackServiceIdentity } from "./workspace-preparation.js";
 import { SLACK_APPROVAL_OUT_OF_DATE, SLACK_BUTTON_OUT_OF_DATE, answerSlackWorkflowEvent, replyNotSavedAnswer, routeWorkspaceRequest, unexpectedErrorAnswer } from "./workspace-routes.js";
+import { OUTCOME_SETTLE_PASS_MS, releaseDependenciesOf } from "./terminal-and-github-events.js";
+import { auditOperatorId } from "@agentx/contracts";
+import { learningFirstTick } from "../../spend/settlement-job.js";
+import { learningWalkDeps, resumeOpenLearningWalks } from "../../learning/cleanup.js";
+import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
 
 export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const dependencies = brokerDependencies(input);
@@ -181,8 +186,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // or what remains of the deadline if that is less; the spend sweep, a resumable cursor, takes what is left after the audit's share, so a long sweep can't
       // starve the others and a late job can't push the later ones past the deadline. A job with no time left is skipped and reported so.
       const startedAt = Date.now();
+      // Every third tick the learning job takes the key audit's share (a busy tick would otherwise never leave it a slice); spend settlement's budget is the same on every tick.
+      const learningPriority = learningFirstTick(startedAt) ? { learningFirst: true } : {};
       const timed = (name: string, pick: keyof ReturnType<typeof settlementBudgets>, run: (budgetMs: number) => Promise<unknown>): SettlementJob =>
-        timedSettlementJob({ name, pick, startedAt, now: Date.now, run });
+        timedSettlementJob({ name, pick, startedAt, now: Date.now, run, ...learningPriority });
       const sources = modelSourceSweepOf(dependencies);
       // Task 26: a backstop for the checks at the mint, where the install routes models at all.
       const keyAudit = routingOf(dependencies) === undefined ? undefined : dependencies.modelAccess?.access;
@@ -198,6 +205,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         ...(ledger === undefined ? [] : [timed("sweep-spend", "spend", (budgetMs) => runSpendSweep(ledger, { budgetMs }))]),
         // Last: it reads the proxy's keys over several calls and must not take time the sweeps need (Task 26).
         ...(keyAudit === undefined ? [] : [timed("audit-model-keys", "audit", (budgetMs) => auditModelKeys(keyAudit, budgetMs))]),
+        // v1.2 learning loop: finishes the cleanup walks of closed companies and erased people. After every settlement job (spend settlement is a money job and is never delayed or starved by
+        // it); it has its own 3 s slice and is skipped, with a log line, unless that and a safety margin are left. On every third tick it takes the key audit's share (`learningFirstTick`).
+        timedSettlementJob({
+          name: "resume-learning-walks", pick: "learning", startedAt, now: Date.now, ...learningPriority,
+          onSkip: (name) => console.log(JSON.stringify({ component: "broker", event: "learning.settlement_job_skipped", job: name, reason: "not enough time left" })),
+          run: (budgetMs) => resumeOpenLearningWalks(learningWalkDeps({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }), { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))),
+        }),
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
       return json({ jobs: await runSettlementJobs(jobs, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))) }, "spend-settlement");
@@ -293,7 +307,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           return { attempted: 0 };
         });
         // Finished tasks whose release found the workspace busy, failed or never ran: their slot and workspace are given back.
-        const releases = await releasePendingFinishedTasks({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) })
+        const releases = await releasePendingFinishedTasks(releaseDependenciesOf(dependencies, Date.now() + OUTCOME_SETTLE_PASS_MS))
           .catch((error: unknown) => {
             console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_sweep_failed", error: error instanceof Error ? error.name : "unknown" }));
             return { attempted: 0, released: 0 };
@@ -780,6 +794,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
 
       if (request.method === "POST" && url.pathname === "/v1/admin/projects/setup-proposals") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+        await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-setup-proposals" });
         if (!dependencies.projectSetupSource) throw agentXError("RUNTIME_UNAVAILABLE", "trusted project source capture is not configured");
         const requestBody = z.object({ repositoryUrl: z.string().url().max(500), ref: z.string().min(1).max(255) }).strict().parse(body);
         const urlParts = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i.exec(requestBody.repositoryUrl);
@@ -840,6 +855,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
 
       if (request.method === "POST" && url.pathname === "/v1/admin/projects/setup-approvals") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+        if ((body as { decision?: unknown } | null)?.decision !== "decline") await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-setup-approvals" });
         const approvalInput = z.object({ projectName: z.string().regex(/^[a-z][a-z0-9-]{0,62}$/), proposalRef: z.string().min(1).max(512), proposalSha256: z.string().regex(/^[a-f0-9]{64}$/), decision: z.enum(["approve", "decline"]) }).strict().parse(body);
         const expectedPrefix = `project-setup-proposals/${identity.ownerKey}/`;
         if (!approvalInput.proposalRef.startsWith(expectedPrefix) || approvalInput.proposalRef !== `${expectedPrefix}${approvalInput.proposalSha256}.json`) throw agentXError("FORBIDDEN", "setup proposal reference is outside the authenticated administrator scope");
@@ -949,6 +965,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       const modelCheck = /^\/v1\/admin\/e2e\/model-checks(?:\/([0-9a-f-]{36}))?$/.exec(url.pathname);
       if (modelCheck !== null && ((request.method === "POST" && modelCheck[1] === undefined) || (request.method === "GET" && modelCheck[1] !== undefined) || (request.method === "GET" && url.pathname.endsWith("/model-checks")))) {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
+        if (request.method === "POST") await requirePricedTaskStopAdmission(dependencies, { orgId: identity.orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-model-check" });
         return await adminModelChecks(dependencies, request.method, modelCheck[1], body, request.requestId);
       }
       // #343: Sign in with ChatGPT, for rovara doctor.

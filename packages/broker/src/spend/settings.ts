@@ -1,3 +1,5 @@
+import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
+import type { OwnerFinancialTerms } from "./owner-approval-terms.js";
 // Plan 3 Task 28: the budget settings the spend engine reads. A scope's limit is its base (the org's, a member's, a project's, an agent's
 // own) plus the month's top-up, held to the guardrails; `effectiveLimits` answers it for any list of scopes. This file also holds the
 // project AI settings, the org's spend policy and the one monthly total each person's agent budgets count against. Task 31's `admitWork`
@@ -10,6 +12,7 @@ import {
   DEFAULT_PLANNING_LIMIT_USD,
   ProjectAiSettingsSchema,
   TaskStopProjectPolicySchema,
+  TaskStopPendingChangeSchema,
   sameJsonContent,
   SpendPolicySchema,
   TRIAL_LIMITS_R49,
@@ -151,7 +154,9 @@ export async function writeProjectAi(
 ): Promise<StoredProjectAi> {
   const checks = settingsActorChecks(deps, orgId, by, options);
   // A supplied audit "before" is not authority to discard newer money intent.
-  const current = await readProjectAiWithRevision(deps, orgId, project);
+  const original = await getItem(deps, projectAiKey(orgId, project));
+  const current = parseProjectAiWithRevision(original, project);
+  if (original?.pendingTaskStopChange !== undefined && !TaskStopPendingChangeSchema.safeParse(original.pendingTaskStopChange).success) throw agentXError("CONFIG_INVALID", "The pending Spending change is unreadable.");
   if (options.actor.role !== "owner" && options.actor.role !== "admin") {
     const unchangedFields = (value: ProjectAiSettings) => {
       const copy = { ...value }; delete copy.memberAcceptRunLimitUpToUsd; delete copy.taskStopPolicy; return copy;
@@ -186,7 +191,18 @@ export async function writeProjectAi(
     orgId, actor: auditActorOf(by), occurredAt: updatedAt, project, revision: expected + 1, after: preserved,
     before: options.before ?? current.settings,
   }));
-  const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...preserved, updatedBy: by, updatedAt }, expected);
+  const metadata = Object.fromEntries(["orgId", "project", "pendingTaskStopChange", "lastTaskStopChange", "seedProvenance"].filter(field => original?.[field] !== undefined).map(field => [field, original![field]]));
+  const item = putRevised(deps, projectAiKey(orgId, project), "PROJECT_AI", { ...preserved, ...metadata, updatedBy: by, updatedAt }, expected);
+  if (item.Put !== undefined) {
+    const source = nativeSnapshotConditions(deps.tableName, [projectAiKey(orgId, project)], [original], ["taskStopPolicy", "pendingTaskStopChange", "orgId", "project", "seedProvenance"])[0]!.ConditionCheck!;
+    // Upgrade seeds and pending proposals do not advance the financial revision.
+    // Fence their exact presence and the original settings with this monthly write.
+    item.Put.ConditionExpression = `(${item.Put.ConditionExpression}) AND (${source.ConditionExpression})`;
+    const names = { ...item.Put.ExpressionAttributeNames, ...source.ExpressionAttributeNames };
+    const values = { ...item.Put.ExpressionAttributeValues, ...source.ExpressionAttributeValues };
+    if (Object.keys(names).length > 0) item.Put.ExpressionAttributeNames = names;
+    if (Object.keys(values).length > 0) item.Put.ExpressionAttributeValues = values;
+  }
   const items = [item, ...events.flatMap((event) => auditPending(deps, event))];
   const actorStart = items.length;
   await commit(deps, [...items, ...checks, ...lifecycle], (failed) => [...failed].some(index => index >= actorStart && index < actorStart + checks.length) ? budgetActorRefused() : [...failed].some(index => index >= actorStart + checks.length && index < actorStart + checks.length + lifecycle.length) ? coded("PROJECT_REVISION_MISMATCH", "The project registration or status changed. Reload and review your settings again.") : changedUnderYou(`${project}'s AI settings`), options.request, { settings: preserved, revision: expected + 1 });
@@ -251,9 +267,13 @@ const POLICY_FIELDS = ["leadApprovalThresholdUsd", "adminApprovalThresholdUsd", 
 /** The org's spend policy and its revision: the defaults while it has never been written. */
 export async function readSpendPolicyWithRevision(deps: SpendSettingsDependencies, orgId: OrgId): Promise<StoredSpendPolicy> {
   const item = await getItem(deps, orgSettingsKey(orgId, "SPEND_POLICY"));
+  return decodeSpendPolicySnapshot(item, item === undefined ? (await deps.orgs?.getOrg(orgId))?.plan : undefined);
+}
+
+/** Decode the same canonical policy from an existing atomic snapshot. */
+export function decodeSpendPolicySnapshot(item: Record<string, unknown> | undefined, plan: unknown): StoredSpendPolicy {
   if (item === undefined) {
-    // R49 (the Task 28 ruling): a trial org's owner cap is the member analogue until an admin writes a policy; that read refuses as the policy's does.
-    const trial = (await deps.orgs?.getOrg(orgId))?.plan === "trial";
+    const trial = plan === "trial";
     const policy = defaultSpendPolicy();
     return { policy: trial ? { ...policy, ownerAgentBudgetCapUsd: Math.min(policy.ownerAgentBudgetCapUsd, TRIAL_LIMITS_R49.ownerAgentBudgetCapUsd) } : policy, revision: 0 };
   }
@@ -374,6 +394,8 @@ export async function readOwnerTotal(deps: SpendSettingsDependencies, orgId: Org
 }
 
 export interface OwnerBudgetCheck {
+  /** Original native base-counter version; absent for an unreadable/missing source. */
+  counterVersion?: number;
   /** The total now, the total with the change and the cap, in US dollars. */
   totalUsd: number;
   wouldBeUsd: number;
@@ -392,10 +414,13 @@ export interface OwnerBudgetCheck {
  * budget change is held to the effective total, top-ups included (`ownerBudgetRefusal` with `effective`, Task 33 fix round 1, I-1).
  */
 export async function checkOwnerBudget(deps: SpendSettingsDependencies, input: { orgId: OrgId; owner: string; deltaUsd: number }): Promise<OwnerBudgetCheck> {
-  const [totalUsd, { policy, revision }] = await Promise.all([readOwnerTotal(deps, input.orgId, input.owner), readSpendPolicyWithRevision(deps, input.orgId)]);
+  const [counter, { policy, revision }] = await Promise.all([getItem(deps, ownerBudgetKey(input.orgId, input.owner)), readSpendPolicyWithRevision(deps, input.orgId)]);
+  const totalUsd = typeof counter?.totalUsd === "number" && Number.isFinite(counter.totalUsd) ? counter.totalUsd : 0;
+  const version = counter?.version === undefined ? 0 : counter.version;
+  const counterVersion = counter !== undefined && Number.isInteger(version) && typeof version === "number" && version >= 0 && totalUsd >= 0 ? version : undefined;
   const capUsd = policy.ownerAgentBudgetCapUsd;
   const wouldBeUsd = cleanUsd(totalUsd + input.deltaUsd);
-  return { totalUsd, wouldBeUsd, capUsd, policyRevision: revision, ok: input.deltaUsd <= 0 || wouldBeUsd <= capUsd };
+  return { totalUsd, wouldBeUsd, capUsd, policyRevision: revision, ...(counterVersion === undefined ? {} : { counterVersion }), ok: input.deltaUsd <= 0 || wouldBeUsd <= capUsd };
 }
 
 /**
@@ -419,9 +444,9 @@ export async function ownerBudgetRefusal(
   orgId: OrgId,
   before: OwnerShare | undefined,
   after: OwnerShare | undefined,
-  effective?: (owner: string) => Promise<{ totalUsd: number; counterUsd: number; version: number }>,
+  effective?: (owner: string) => Promise<{ totalUsd: number; counterUsd: number; version: number; month?: string }>,
   carriedUsd = 0,
-): Promise<{ over: { owner: string; wouldBeUsd: number; capUsd: number } } | { ownerCap: OwnerCap }> {
+): Promise<{ over: { owner: string; wouldBeUsd: number; capUsd: number; ownerFinancialTerms?: OwnerFinancialTerms } } | { ownerCap: OwnerCap }> {
   const joins = after !== undefined && before?.owner !== after.owner;
   const carried = joins ? carriedUsd : 0;
   const deltaUsd = after === undefined ? 0 : joins ? cleanUsd(after.usd + carried) : cleanUsd(after.usd - before!.usd);
@@ -435,7 +460,7 @@ export async function ownerBudgetRefusal(
     const read = await effective(owner);
     const capUsd = policy.ownerAgentBudgetCapUsd;
     const wouldBeUsd = cleanUsd(read.totalUsd + deltaUsd);
-    if (deltaUsd > 0 && wouldBeUsd > capUsd) return { over: { owner, wouldBeUsd, capUsd } };
+    if (deltaUsd > 0 && wouldBeUsd > capUsd) return { over: { owner, wouldBeUsd, capUsd, ownerFinancialTerms: { version: 1, owner, month: read.month ?? new Date().toISOString().slice(0, 7), totalUsd: read.totalUsd, counterUsd: read.counterUsd, counterVersion: read.version, capUsd, policyRevision: revision, carriedUsd: carried, wouldBeUsd } } };
     return { ownerCap: { usd: capUsd, policyRevision: revision, seen: { owner, version: read.version, extraUsd: cleanUsd(read.totalUsd - read.counterUsd + carried) } } };
   }
   const check = await checkOwnerBudget(deps, { orgId, owner, deltaUsd });
