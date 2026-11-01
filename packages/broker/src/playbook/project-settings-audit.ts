@@ -6,6 +6,7 @@ import { canonicalJson, type AuditActor, type AuditEventInput } from "@agentx/co
 import { auditPending, tryAuditEvents, type AuditDeps, type TransactItem } from "../audit/outbox.js";
 import {
   auditOccurrence,
+  auditProjectLearningChanged,
   auditProjectChecksChanged,
   auditProjectE2ePolicyChanged,
   auditProjectModelSelectionChanged,
@@ -86,4 +87,9 @@ export function modelSelectionAuditEvent(input: EventBase & { project: string; s
     orgId: input.orgId, actor: input.actor, occurredAt: input.occurredAt, occurrence: auditOccurrence(input.project, input.surface, input.requestId),
     projectName: input.project, surface: input.surface, cleared: input.cleared,
   });
+}
+
+/** B8: the project setting and this one summary event commit together. */
+export function learningSettingsAuditEvent(input: EventBase & { project: string; revision: number; enabled: boolean; selfConfirmedSoleOwner: boolean }): AuditEventInput {
+  return auditProjectLearningChanged({ ...input, projectName: input.project, occurrence: auditOccurrence(input.project, String(input.revision)) });
 }

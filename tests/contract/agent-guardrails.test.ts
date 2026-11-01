@@ -1047,3 +1047,11 @@ describe("required ceiling authority-boundary regressions", () => {
     expect(capture.pending().length).toBe(0);
   });
 });
+
+describe("B8 company PR learning lock through the existing writer",()=>{
+ it("locks immediately at PUT and waits for an org admin before allowing again",async()=>{
+  const {put,current,approvals}=await setup();const locked=guardrails({prCommentLearning:"locked_off"});expect((await put(DANA,locked)).status).toBe(200);expect((await current()).guardrails.prCommentLearning).toBe("locked_off");
+  const requested=await put(DANA,guardrails({prCommentLearning:"allowed"}));expect(requested.status).toBe(202);expect((await current()).guardrails.prCommentLearning).toBe("locked_off");
+  expect(approvals().at(-1)).toMatchObject({subject:{kind:"guardrails",next:{prCommentLearning:"allowed"}},approvers:{kind:"rule",rule:"org_admin"}});
+ });
+});

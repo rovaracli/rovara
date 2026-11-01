@@ -242,6 +242,8 @@ describe("the health route's grants (A13)", () => {
       "packages/contracts/src/project-learning.ts", "packages/broker/src/learning/retention.ts", "packages/broker/src/learning/store.ts", "packages/broker/src/learning/sweep.ts",
       // B6: a dismissed pattern carries the same 180-day expiry when Dismiss writes it.
       "packages/broker/src/learning/decide.ts",
+      // B8: pending PR-learning proposals use the approved authority window plus cleanup TTL.
+      "packages/broker/src/learning/settings.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

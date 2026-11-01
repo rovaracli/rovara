@@ -98,10 +98,12 @@ describe("guardrails: prCommentLearning ships reader-first (§2.5)", () => {
     expect(AgentGuardrailsSchema.safeParse({ ...stored, prCommentLearning: "maybe" }).success).toBe(false);
     expect(AgentGuardrailsSchema.safeParse({ ...stored, somethingElse: 1 }).success).toBe(false);
   });
-  it("has no writer yet: a write that names the field is refused until B8", async () => {
-    expect(AgentGuardrailsWriteSchema.safeParse(stored).success).toBe(false);
+  it("B8 enables the reader-first writer without changing its strict field validation", async () => {
+    expect(AgentGuardrailsWriteSchema.safeParse(stored).success).toBe(true);
     expect(AgentGuardrailsWriteSchema.safeParse(DEFAULT_AGENT_GUARDRAILS).success).toBe(true);
-    const deps = { documentClient: new FakeDynamoDb(), tableName: "t", store: { putGuardrails: async () => { throw new Error("must not be reached"); } } };
-    await expect(writeGuardrails(deps as never, TEST_ORG, stored as never, "d1", { actor: {} as never, expectedRevision: 0 })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    let writes = 0;
+    const deps = { documentClient: new FakeDynamoDb(), tableName: "t", store: { putGuardrails: async () => { writes++;return { guardrails: AgentGuardrailsSchema.parse(stored), revision: 1 }; } } };
+    const result = await writeGuardrails(deps, TEST_ORG, AgentGuardrailsSchema.parse(stored), "a".repeat(64), { actor: { developerId: "a".repeat(64), role: "owner" }, expectedRevision: 0 });
+    expect(result.guardrails.prCommentLearning).toBe("locked_off");expect(writes).toBe(1);
   });
 });
