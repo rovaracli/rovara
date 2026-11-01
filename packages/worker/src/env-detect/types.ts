@@ -16,6 +16,9 @@ export interface DetectedCheck {
   reportPath?: string;
   coveragePath?: string;
   sarifPath?: string;
+  /** Where the report path and the coverage path came from (a file and line, or the detector's own default); the proposal cites them beside the check. */
+  reportSource?: DetectedSource;
+  coverageSource?: DetectedSource;
   selectArgs?: string[];
 }
 
