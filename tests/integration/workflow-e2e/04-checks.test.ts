@@ -6,6 +6,8 @@ import { projectMetaKey } from "@agentx/contracts";
 import { bearerFor } from "../../support/developer-task-broker.js";
 import { SLACK_MAYA } from "../../support/workflow-e2e.js";
 import { TEST_ORG } from "../../support/orgs.js";
+import { SLACK_CHANNEL, SLACK_TEAM } from "../../support/slack-broker.js";
+import { SLACK_PROJECT_ARCHIVED } from "../../../packages/broker/src/aws/slack-refusals.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -37,6 +39,23 @@ describe("Suite 4: checks", () => {
         artifactDigest: workflow.artifacts.filter(artifact => artifact.type === "plan").at(-1)!.sha256, reason: "Revise the plan." }), isBase64Encoded: false });
     expect(response.statusCode).toBe(409);
     expect(JSON.parse(response.body) as unknown).toMatchObject({ error: { code: "PROJECT_ARCHIVED" } });
+    expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")).toEqual(before);
+    expect(e2e.invocations).toHaveLength(count);
+  }, 120_000);
+
+  it("tells a Slack presser that an archived project takes no new work, privately, and starts nothing", async () => {
+    const e2e = await createWorkflowE2E({ model: { plan: PLAN, edits: EDITS } });
+    await atPlanReview(e2e);
+    const workflow = e2e.workflow();
+    const key = projectMetaKey(TEST_ORG, "payments");
+    e2e.db.set({ ...e2e.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
+    const before = structuredClone(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META"));
+    const count = e2e.invocations.length;
+    const answer = await e2e.handler({ source: "agentx.slack-ingress", action: "workflow-decision", taskId: e2e.taskId(), userId: SLACK_MAYA.slackUserId,
+      thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: e2e.slack.posts[0]!.threadTs }, requestId: randomUUID(), expectedRevision: workflow.revision,
+      artifactDigest: workflow.artifacts.filter(artifact => artifact.type === "plan").at(-1)!.sha256, decision: "REQUEST_CHANGES", reason: "Revise the plan.", selectedOptionalCheckIds: [] });
+    expect(answer.statusCode).toBe(200);
+    expect(JSON.parse(answer.body) as unknown).toMatchObject({ refused: true, message: SLACK_PROJECT_ARCHIVED });
     expect(e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")).toEqual(before);
     expect(e2e.invocations).toHaveLength(count);
   }, 120_000);

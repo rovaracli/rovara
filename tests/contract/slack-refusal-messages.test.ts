@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { slackRefusalMessage } from "../../packages/broker/src/aws/slack-refusals.js";
+import { SLACK_PROJECT_ARCHIVED, slackRefusalMessage } from "../../packages/broker/src/aws/slack-refusals.js";
 
 const OUT_OF_DATE = "That approval is out of date. Use the latest message in this thread.";
 
@@ -21,6 +21,10 @@ describe("what a Slack press hears when the broker refuses it", () => {
     expect(said!.charAt(0)).toBe(said!.charAt(0).toUpperCase());
     expect(said).toMatch(/[.!?]$/u);
     expect(said!.toLowerCase()).toContain(reason.slice(0, 40).toLowerCase());
+  });
+
+  it("says an archived project plainly, whatever the broker's own sentence is (it names the project)", () => {
+    expect(slackRefusalMessage("PROJECT_ARCHIVED", OUT_OF_DATE, "Project `payments` is archived. Ask a project maintainer to restore it.")).toBe(SLACK_PROJECT_ARCHIVED);
   });
 
   it("still answers a reason it does not know with the out-of-date words, and never says data it was not written for", () => {

@@ -53,6 +53,7 @@ import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { orgMemberKey, orgRemovedKey, projectMetaKey } from "../../packages/contracts/src/index.js";
+import { SLACK_PROJECT_ARCHIVED } from "../../packages/broker/src/aws/slack-refusals.js";
 import { reviseTaskPlan, type RevisePlanHost } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";
 import { REVISE_PLAN_REFUSALS } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
@@ -398,8 +399,9 @@ describe("Revise the plan, as every other planning start behaves", () => {
     const before = structuredClone(taskRow(s.harness, s.taskId));
     const event = { source: "agentx.slack-ingress", action: "workflow-revise-plan", taskId: s.taskId, thread: s.thread, userId: MAYA.slackUserId, requestId: randomUUID(), expectedRevision: workflowOf(s.harness, s.taskId).revision };
     const reply = await s.harness.handler(event);
-    expect(reply.statusCode).toBeGreaterThanOrEqual(400);
-    expect(JSON.parse(reply.body)).toMatchObject({ error: { code: "PROJECT_ARCHIVED" } });
+    // Told to the presser privately, as every expected refusal is: 200 `refused`, never a failed save.
+    expect(reply.statusCode).toBe(200);
+    expect(JSON.parse(reply.body)).toMatchObject({ refused: true, message: SLACK_PROJECT_ARCHIVED });
     expect(taskRow(s.harness, s.taskId)).toEqual(before);
     expect(operations(s.harness, s.workspaceId).find((item) => item.requestId === event.requestId)).toBeUndefined();
     expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
