@@ -110,11 +110,15 @@ function workflowReviewLines(workflow: WorkflowSnapshot, listed: number): string
 
 /** Playbook P1/P3: the Proof inputs of a task (the approved plan, the browser/API rows, the test proof): the pull request's description and the task page's proof table read them through this one call. */
 export async function proofContextOfTask(
-  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "workflowE2EScenarioResults">, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, approvedPlan: LoadedDocument | undefined, actor: "owner" | "viewer",
+  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "workflowE2EScenarioResults"> & Partial<Pick<DeveloperTaskRouteDependencies, "evidence">>, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, approvedPlan: LoadedDocument | undefined, actor: "owner" | "viewer",
   /** The task's operations when the caller has already read them (the task view has), so they are not read again. */
   operations?: readonly OperationFacts[],
 ): ReturnType<typeof loadProofContext> {
-  return loadProofContext({ actions: deps.actions, scenarioResults: async () => deps.workflowE2EScenarioResults?.({ task, operations: operations ?? await deps.actions.operations(task.workspaceId), actor }) }, task, workflow, approvedPlan, operations);
+  const evidence = deps.evidence;
+  return loadProofContext({
+    actions: deps.actions, scenarioResults: async () => deps.workflowE2EScenarioResults?.({ task, operations: operations ?? await deps.actions.operations(task.workspaceId), actor }),
+    ...(evidence === undefined ? {} : { evidence: (digest: string) => evidence.context(task, digest) }),
+  }, task, workflow, approvedPlan, operations);
 }
 
 /**

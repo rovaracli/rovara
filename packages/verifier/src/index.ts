@@ -13,6 +13,9 @@ export { runIsolatedE2E } from "./runtime.js";
 // Proof and evidence B4: the trace scrub (node:zlib only), so the broker can re-scrub a worker's trace before it keeps one.
 export { scrubTrace, scrubTraceZip, scrubTraceLines } from "./executor/trace-scrub.js";
 export type { ScrubStats, ScrubOptions } from "./executor/trace-scrub.js";
+// Proof and evidence (wire-proof): the synthetic data guard, so the broker can scan the evidence it is about to store or post.
+export { scanText, DataGuardInputTooLarge, DATA_GUARD_MAX_BYTES } from "./data-guard.js";
+export type { DataGuardFindingKind } from "./data-guard.js";
 export type { E2EIndependentAssertionReceipt } from "./runtime-assertions.js";
 export { evaluateE2EAssertions } from "./runtime-assertions.js";
 export { E2E_RUNTIME_ASSET_VERSION, createE2ERuntimeAssets, createE2ERuntimeLaunchId, parseE2EFirstPartyCapture } from "./runtime-assets.js";

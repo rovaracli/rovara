@@ -6,12 +6,15 @@ import type { OperationFacts } from "../developer/task-records.js";
 import type { TestProofActions } from "../developer/test-proof-lines.js";
 import type { LoadedDocument } from "../developer/plan-artifacts.js";
 import type { ProofContext } from "./proof-section.js";
+import type { ProofEvidenceContext } from "./evidence-lines.js";
 import { loadTestProof } from "./test-proof-reader.js";
 
 export interface ProofInputsDeps {
   actions: TestProofActions;
   /** The task's browser and API rows; read only when the workflow requires that round. */
   scenarioResults?: (() => Promise<E2EScenarioResults | undefined>) | undefined;
+  /** Proof and evidence (wire-proof): the evidence kept for this code and how the pull request shows it. Present only while the proof switch is on; absent, the section is built exactly as it was. */
+  evidence?: ((candidateDigest: string) => Promise<ProofEvidenceContext | undefined>) | undefined;
 }
 
 /**
@@ -30,6 +33,11 @@ export async function loadProofContext(
     if (workflow.e2e?.required !== true || deps.scenarioResults === undefined) return undefined;
     try { return (await deps.scenarioResults())?.scenarios; } catch { return undefined; }
   };
-  const [testProof, scenarioRows] = await Promise.all([checked ? loadTestProof(deps.actions, task, digest, operations) : Promise.resolve(undefined), scenarios()]);
-  return { plan, ...(scenarioRows === undefined ? {} : { scenarioRows }), ...(testProof === undefined ? {} : { testProof }) };
+  // Evidence is read only for code whose checks were recorded; a fault leaves it out like any other input.
+  const evidenceOf = async (): Promise<ProofEvidenceContext | undefined> => {
+    if (!checked || digest === undefined || deps.evidence === undefined) return undefined;
+    try { return await deps.evidence(digest); } catch { return undefined; }
+  };
+  const [testProof, scenarioRows, evidence] = await Promise.all([checked ? loadTestProof(deps.actions, task, digest, operations) : Promise.resolve(undefined), scenarios(), evidenceOf()]);
+  return { plan, ...(scenarioRows === undefined ? {} : { scenarioRows }), ...(testProof === undefined ? {} : { testProof }), ...(evidence === undefined ? {} : { evidence }) };
 }

@@ -10,6 +10,7 @@ import { auditPullRequestOpened } from "../../audit/events.js";
 import { parseGitHubRepository, pullRequestBodyWithDraftNote } from "../../github-app.js";
 import { linearIssueKeyOf, linearIssueKeyOfTask } from "../../rovara-code/linear-close.js";
 import { loadProofContext } from "../../rovara-code/proof-inputs.js";
+import { evidenceRouteDependencies } from "./evidence-wiring.js";
 import { hadProofSection, proofReadLimitMs, withinTime } from "../../rovara-code/proof-keep.js";
 import { withLinearCloseLine } from "../../rovara-code/pull-request-body.js";
 import { sessionBindingsOf } from "../../rovara-code/session-bindings.js";
@@ -125,7 +126,8 @@ const DESCRIPTION_UPDATE_MAX_MS = 5_000;
 async function proofContextForRewrite(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot): Promise<Awaited<ReturnType<typeof loadProofContext>>> {
   const actions = developerTaskActions(dependencies);
   const [operations, approvedPlan] = await Promise.all([actions.operations(task.workspaceId), approvedPlanForPullRequest({ actions }, workflow).catch(() => undefined)]);
-  return loadProofContext({ actions, scenarioResults: () => loadWorkflowE2EScenarioResults(dependencies, task, operations, "owner") }, task, workflow, approvedPlan, operations);
+  const evidence = evidenceRouteDependencies(dependencies).evidence;
+  return loadProofContext({ actions, scenarioResults: () => loadWorkflowE2EScenarioResults(dependencies, task, operations, "owner"), ...(evidence === undefined ? {} : { evidence: (digest: string) => evidence.context(task, digest) }) }, task, workflow, approvedPlan, operations);
 }
 
 /**

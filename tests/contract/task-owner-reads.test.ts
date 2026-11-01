@@ -71,6 +71,12 @@ const ROWS: readonly Row[] = [
   // the test proof is read from the task's own object prefix (`private/<ownerKey>/<workspace>/<operation>/`): the task's principal, never changes
   ["developer/test-proof-lines.ts", "newestBoundProof", "principal", ".ownerKey"],
   ["rovara-code/test-proof-reader.ts", "loadTestProof", "principal", ".ownerKey"],
+  // Proof and evidence (wire-proof): the task's principal (`ownerKey`) names the object prefixes the evidence is read and kept under (the worker's raw file under its operation, the pack and the stored output tails under the task); it decides nothing about who owns the task. Who may READ it is `resolveTaskAccess`, in the download route.
+  ["aws/broker/evidence-wiring.ts", "keepEvidenceAfterChecks", "principal", ".ownerKey"],
+  ["aws/task-evidence-download.ts", "routeEvidenceDownload>authorize", "principal", ".ownerKey"],
+  ["rovara-code/evidence-keep.ts", "evidencePackKey", "principal", ".ownerKey"],
+  ["rovara-code/evidence-keep.ts", "keepEvidence", "principal", ".ownerKey"],
+  ["rovara-code/evidence-keep.ts", "readRaw", "principal", ".ownerKey"],
   // Plan 6 Task 13: the object prefix of the task's own diff artifact (`ownArtifactKey`): the task's principal, never changes
   ["aws/developer-tasks/task-view.ts", "candidateChangedFiles", "principal", ".ownerKey"],
   ["aws/developer-tasks/feedback-review.ts", "submitWorkflowFeedbackDecision", "principal", ".ownerKey"],

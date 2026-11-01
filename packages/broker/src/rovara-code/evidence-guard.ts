@@ -1,0 +1,72 @@
+// Proof and evidence (wire-proof): the data guard on what is about to be kept or posted. Evidence never carries secrets or production data, so before anything is stored, shown on the task page or put on a pull
+// request, every text a person or a repository wrote in it (test names, output tails, labels, paths) is scanned with the synthetic data guard (`scanText`: personal data, card numbers, credentials, hosts, ARNs and
+// accounts on the company's production deny list). A part that holds a finding is DROPPED, whole, and counted; the matched text is never kept, logged or returned (only a fixed kind). The guard fails closed: a text
+// too large to scan, or a scan that throws, is a finding.
+//
+// Digests (64 hex characters) and timestamps are skipped: a run of digits inside a hash is not a card number, and scanning them would block about one pack in a hundred for nothing.
+import { scanText, type DataGuardFindingKind } from "@agentx/verifier";
+import type { EvidencePack, EvidenceRaw, TestEnvProdDeny } from "@agentx/contracts";
+import type { NewArtifact } from "./evidence-pack.js";
+
+/** The production deny list when no approved test environment names one: personal data, credentials and card numbers are still refused. */
+export const NO_PROD_DENY: TestEnvProdDeny = { accountIds: [], hosts: [], arnPrefixes: [] };
+
+const DIGEST = /^[a-f0-9]{64}$/u;
+const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/u;
+const SCAN_LIMIT = 4 * 1024 * 1024;
+
+/** Every string a person or a repository wrote in a value, one per line, without digests and timestamps; keys are fixed words and are not scanned. */
+export function evidenceTexts(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") { if (!DIGEST.test(value) && !TIMESTAMP.test(value)) out.push(value); }
+  else if (Array.isArray(value)) for (const item of value) evidenceTexts(item, out);
+  else if (value !== null && typeof value === "object") for (const item of Object.values(value)) evidenceTexts(item, out);
+  return out;
+}
+
+/** The fixed kinds of finding in a value's texts; `[]` means clean. A text too large to scan, or a scan that fails, is reported as `secret` (it is not kept). */
+export function evidenceFindings(value: unknown, deny: TestEnvProdDeny): DataGuardFindingKind[] {
+  const text = evidenceTexts(value).join("\n");
+  if (Buffer.byteLength(text, "utf8") > SCAN_LIMIT) return ["secret"];
+  try { return scanText(text, deny); } catch { return ["secret"]; }
+}
+
+export interface GuardCount { parts: number; kinds: DataGuardFindingKind[] }
+const merge = (into: GuardCount, kinds: readonly DataGuardFindingKind[]): void => { into.parts += 1; for (const kind of kinds) if (!into.kinds.includes(kind)) into.kinds.push(kind); };
+
+/** The worker's raw file with each check that holds a finding removed (its test names and output tail with it). */
+export function guardRaw(raw: EvidenceRaw, deny: TestEnvProdDeny): { raw: EvidenceRaw; dropped: GuardCount } {
+  const dropped: GuardCount = { parts: 0, kinds: [] };
+  const checks = raw.checks.filter((check) => {
+    const found = evidenceFindings(check, deny);
+    if (found.length > 0) merge(dropped, found);
+    return found.length === 0;
+  });
+  return { raw: { ...raw, checks }, dropped };
+}
+
+/**
+ * The built pack, checked again (defence in depth: the builder adds labels and paths of its own). A check's details that hold a finding lose the details (tests, coverage, findings, migrations, output tail and the
+ * stored tail), keeping the broker's own verdict; a label that holds one becomes "Check <n>". Anything in the rest of the pack (environment, selection, not-tested items, scenarios) that holds a finding withholds the
+ * whole pack, which is then not kept at all.
+ */
+export function guardPack(pack: EvidencePack, newArtifacts: readonly NewArtifact[], deny: TestEnvProdDeny): { pack: EvidencePack | undefined; newArtifacts: NewArtifact[]; dropped: GuardCount } {
+  const dropped: GuardCount = { parts: 0, kinds: [] };
+  const { checks, ...rest } = pack;
+  const restFound = evidenceFindings(rest, deny);
+  if (restFound.length > 0) { merge(dropped, restFound); return { pack: undefined, newArtifacts: [], dropped }; }
+  const lostTails = new Set<string>();
+  const kept = checks.map((check, index) => {
+    const { label, tests, coverage, findings, migrations, outputTailRef, ...base } = check;
+    const labelFound = evidenceFindings(label, deny);
+    if (labelFound.length > 0) merge(dropped, labelFound);
+    const tail = outputTailRef === undefined ? undefined : newArtifacts.find((artifact) => artifact.ref.sha256 === outputTailRef.sha256);
+    const detailFound = evidenceFindings({ tests, coverage, findings, migrations, tail: tail?.text }, deny);
+    if (detailFound.length > 0) {
+      merge(dropped, detailFound);
+      if (outputTailRef !== undefined) lostTails.add(outputTailRef.sha256);
+      return { ...base, label: labelFound.length > 0 ? `Check ${String(index + 1)}` : label };
+    }
+    return { ...base, label: labelFound.length > 0 ? `Check ${String(index + 1)}` : label, ...(tests === undefined ? {} : { tests }), ...(coverage === undefined ? {} : { coverage }), ...(findings === undefined ? {} : { findings }), ...(migrations === undefined ? {} : { migrations }), ...(outputTailRef === undefined ? {} : { outputTailRef }) };
+  });
+  return { pack: { ...rest, checks: kept }, newArtifacts: newArtifacts.filter((artifact) => !lostTails.has(artifact.ref.sha256)), dropped };
+}

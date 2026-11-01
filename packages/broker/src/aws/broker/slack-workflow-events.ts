@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): Slack workflow, people and note events.
 
+import { evidenceRouteDependencies } from "./evidence-wiring.js";
 import { liveWriterRole } from "../../org/live-role.js";
 import type { SlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { createHash } from "node:crypto";
@@ -377,6 +378,8 @@ export function workflowApplicationRouteDependencies(dependencies: AwsBrokerDepe
     refreshTaskFeedback: (taskId: string) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
     // Wire lane D (MD-1): the spec seams, so a publication or a review that needs the spec works on this path too.
     ...specSeamsOf(dependencies),
+    // Proof and evidence (wire-proof): the evidence port, only while the proof switch is on (nothing is added otherwise).
+    ...evidenceRouteDependencies(dependencies),
   };
 }
 
