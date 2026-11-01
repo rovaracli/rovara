@@ -37,10 +37,11 @@ export type Dind = Readonly<{
  * has its own network namespace, iptables and image store.
  */
 export async function startDind(image: string, shared: { path: string; readOnly?: boolean }[]): Promise<Dind> {
-  const name = `rovara-dind-${process.pid}-${Date.now().toString(36)}`;
+  let name = `rovara-dind-${process.pid}-${Date.now().toString(36)}`;
   const scratch = await realpath(await mkdtemp(join(tmpdir(), "rovara-dind-cli-")));
   const mounts = shared.flatMap(({ path, readOnly }) => ["-v", `${path}:${path}${readOnly ? ":ro" : ""}`]);
-  await execFileAsync("docker", ["run", "-d", "--privileged", "--name", name, "-e", "DOCKER_TLS_CERTDIR=", ...mounts, image]);
+  const run = async () => { await execFileAsync("docker", ["run", "-d", "--privileged", "--name", name, "-e", "DOCKER_TLS_CERTDIR=", ...mounts, image]); };
+  await run();
   const inner = async (...args: string[]) => (await execFileAsync("docker", ["exec", name, "docker", ...args], { maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
   const stop = async () => {
     await execFileAsync("docker", ["rm", "-f", "-v", name]).catch(() => undefined);
@@ -48,15 +49,22 @@ export async function startDind(image: string, shared: { path: string; readOnly?
   };
   try {
     let version = "";
-    // A cold dind daemon on a shared CI runner has taken longer than a minute to answer (2 of 4 linux-runtime runs on 2026-10-31); allow two.
-    for (let attempt = 0; attempt < 240 && version === ""; attempt += 1) {
-      version = await inner("version", "--format", "{{.Server.Version}}").catch(() => "");
-      if (version === "") await sleep(500);
+    const failures: string[] = [];
+    // A cold dind daemon on a shared CI runner has taken longer than a minute to answer (2 of 4 linux-runtime runs on 2026-10-31); allow two. Its entrypoint's
+    // iptables probe has also failed outright on some arm runner kernels with the modules loaded (cloud/next run 41287738555), so a second, fresh container is tried once.
+    for (let start = 0; start < 2 && version === ""; start += 1) {
+      if (start > 0) {
+        await execFileAsync("docker", ["rm", "-f", "-v", name]).catch(() => undefined);
+        name = `rovara-dind-${process.pid}-${Date.now().toString(36)}-retry`;
+        await run();
+      }
+      for (let attempt = 0; attempt < 240 && version === ""; attempt += 1) {
+        version = await inner("version", "--format", "{{.Server.Version}}").catch(() => "");
+        if (version === "") await sleep(500);
+      }
+      if (version === "") failures.push(await execFileAsync("docker", ["logs", "--tail", "60", name]).then((out) => `${out.stdout}${out.stderr}`.trim(), () => "(no container logs)"));
     }
-    if (version === "") {
-      const logs = await execFileAsync("docker", ["logs", "--tail", "60", name]).then((out) => `${out.stdout}${out.stderr}`.trim(), () => "(no container logs)");
-      throw new Error(`the Docker daemon inside the dind container did not start; its last log lines:\n${logs}`);
-    }
+    if (version === "") throw new Error(`the Docker daemon inside the dind container did not start (two fresh containers); their last log lines:\n${failures.join("\n--- second container ---\n")}`);
     // The production host spawns one binary with the docker arguments; this one runs them in the dind container.
     const binary = join(scratch, "docker");
     await writeFile(binary, `#!/bin/sh\nexec docker exec ${name} docker "$@"\n`);
