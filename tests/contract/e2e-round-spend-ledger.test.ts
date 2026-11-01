@@ -36,7 +36,10 @@ function setup(memberSpentUsd = 0) {
     keepEarlierKeys: true,
     // The task-stop guard of the wiring (handleModelAccess builds the real one from the task); this test task has no stop, so it passes the items through.
     guardRecord: (items: readonly TransactItem[]) => [...items],
+    // The record the key is noted on (a task's recipe item in the real wiring); the guard runs in that write.
+    recordOn: [{ key: { pk: "TASK#task-1", sk: "RECORD" } }],
   };
+  db.set({ pk: "TASK#task-1", sk: "RECORD" });
   const committed = (scope: BudgetScope) => (db.get(spendCounterKey(TEST_ORG, MONTH, scopeKey(scope))) as { committedUsd?: number } | undefined)?.committedUsd ?? 0;
   const ports = (withLedger = true) => ({
     admit: () => admitWork(deps, { orgId: TEST_ORG, payer, project: "web", agentId: "rovara-code", agentName: "Rovara Code", path: "FULL" }),

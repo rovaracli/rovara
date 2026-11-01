@@ -162,6 +162,8 @@ export function mintRoundKeyPort(input: {
   // Fail closed until the M47 task-stop guard is wired here: handleModelAccess records every task key through `guardRecord` (the operation's admitted source, the task's spending stop and, for own-source
   // funding, the funding checks). A round key minted without it would reserve money outside a task's stop, so the port cannot be built without the caller's guard.
   if (input.base.guardRecord === undefined) throw new RangeError("a round key must be recorded through the task-stop guard (guardRecord)");
+  // `mintOperationKey` runs `guardRecord` only when there is a record to write the key on (`recordOn`): with none, the key is recorded nowhere and the guard never runs.
+  if (input.base.recordOn === undefined || input.base.recordOn.length === 0) throw new RangeError("a round key must be recorded on the task's records (recordOn), where the task-stop guard runs");
   return async ({ routeAlias, ttlSeconds, capUsd }) => {
     const minted = await input.mintOperationKey(input.deps, {
       ...input.base, ttlSeconds, route: { alias: routeAlias }, runLimitUsd: capUsd, stopAtUsd: capUsd, stepBudgetUsd: capUsd, keepEarlierKeys: input.base.keepEarlierKeys,
