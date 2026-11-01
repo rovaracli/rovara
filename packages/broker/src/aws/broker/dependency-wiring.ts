@@ -9,7 +9,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type OrgRole, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
-import { liveStoredRole, personWalk, survivorRole } from "../../org/live-role.js";
+import { liveStoredRole, personWalk, survivorStanding } from "../../org/live-role.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
 import type { TransactItem } from "../../agents/table-writes.js";
 import { adminReader, queryAllItems, type AdminReadDependencies } from "../admin-reads.js";
@@ -473,7 +473,7 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
     const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
     if (survivorOrg === undefined ? options.allowUnlinked !== true || resolved !== undefined : survivorOrg !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   }
-  const role = await survivorRole(live, orgId, ids, options.allowReadOnly === true);
+  const seen = await survivorStanding(live, orgId, ids, options.allowReadOnly === true);
   const refuse = () => agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
   const has = async (key: { pk: string; sk: string }) => await getItem(dependencies, key) !== undefined;
   // A Slack identity that was unlinked from a developer (the unlink also drops the merge) is judged by that developer's removal too: removal marks the survivor only, so a removed or banned
@@ -491,7 +491,7 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
     if (await has(orgRemovedKey(orgId, id))) throw refuse();
     standing.absent.push(orgRemovedKey(orgId, id));
   }
-  if (role !== undefined) return { role, ids, standing: { ...standing, present: [orgMemberKey(orgId, survivor)] } };
+  if (seen !== undefined) return { role: seen.role, ids, standing: { ...standing, present: [{ key: orgMemberKey(orgId, survivor), role: seen.role, joinedAt: seen.joinedAt }] } };
   // No member record for the survivor: a removed person is refused before anything else, an Enterprise install (one company whose people all sign in) does not let a Slack identity with
   // no record in as an implicit member, and anyone else is the implicit member of a single-org install.
   for (const id of ids) {
@@ -508,7 +508,8 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
 export interface RequesterStanding {
   orgId: OrgId;
   absent: Array<{ pk: string; sk: string }>;
-  present: Array<{ pk: string; sk: string }>;
+  /** The member record as it was read: its role and which membership it was (`joinedAt`), so a role change or a removal and re-invite in the window is not the record the check saw. */
+  present: Array<{ key: { pk: string; sk: string }; role: string; joinedAt: unknown }>;
 }
 
 /**
@@ -519,7 +520,12 @@ export function requesterStandingGuard(tableName: string, standing: RequesterSta
   return {
     checks: [
       ...standing.absent.map((Key): TransactItem => ({ ConditionCheck: { TableName: tableName, Key, ConditionExpression: "attribute_not_exists(pk)" } })),
-      ...standing.present.map((Key): TransactItem => ({ ConditionCheck: { TableName: tableName, Key, ConditionExpression: "attribute_exists(pk)" } })),
+      ...standing.present.map(({ key, role, joinedAt }): TransactItem => ({ ConditionCheck: {
+        TableName: tableName, Key: key,
+        ConditionExpression: `attribute_exists(pk) AND #role = :seenRole AND ${typeof joinedAt === "string" ? "joinedAt = :seenJoined" : "attribute_not_exists(joinedAt)"}`,
+        ExpressionAttributeNames: { "#role": "role" },
+        ExpressionAttributeValues: { ":seenRole": role, ...(typeof joinedAt === "string" ? { ":seenJoined": joinedAt } : {}) },
+      } })),
     ],
     refusal: () => agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE),
   };

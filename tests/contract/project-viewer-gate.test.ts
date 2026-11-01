@@ -744,6 +744,24 @@ describe("SY-7: a removal or ban written between the requester check and the key
     expect(keyRecords(h)).toHaveLength(0);
   });
 
+  // Fix round 1 (S1): the member record is asserted as it was read, not only as present.
+  it("a member changed to auditor in place, or removed and invited again, after the check gets no key", async () => {
+    const changes: Array<[string, (h: Harness) => void]> = [
+      ["auditor", (h) => h.db.set({ ...h.db.get(orgMemberKey(TEST_ORG, whoId).pk, orgMemberKey(TEST_ORG, whoId).sk)!, role: "auditor" })],
+      ["re-invited", (h) => h.db.set({ ...h.db.get(orgMemberKey(TEST_ORG, whoId).pk, orgMemberKey(TEST_ORG, whoId).sk)!, joinedAt: "2030-01-01T00:00:00.000Z" })],
+    ];
+    for (const [how, change] of changes) {
+      for (const agents of [true, false]) {
+        const h = await install(change, { agents });
+        const refused = await ask(h);
+        expect(refused.status, `${how} agents=${String(agents)} ${JSON.stringify(refused.body)}`).toBe(403);
+        expect(refused.body.error, how).toMatchObject({ code: "REMOVED_FROM_ORG" });
+        expect(keyRecords(h), how).toHaveLength(0);
+        expect(h.revokeKey, how).toHaveBeenCalledTimes(1);
+      }
+    }
+  });
+
   it("an install that records no key (no agents) still refuses a removal that lands before the key is handed out", async () => {
     const h = await install(removal, { agents: false });
     const refused = await ask(h);

@@ -7,9 +7,9 @@ import { OrgRoleSchema, agentXError, isWriterOrgRole, orgMemberKey, type OrgId, 
 type DocumentClient = { send(command: unknown): Promise<unknown> };
 
 /** The person's role on record: `undefined` when there is no member record, else the stored value as it is (not parsed), so an unreadable role is not mistaken for none. */
-export async function liveStoredRole(deps: { documentClient: DocumentClient; tableName: string }, orgId: OrgId, developerId: string): Promise<{ present: false } | { present: true; role: unknown }> {
+export async function liveStoredRole(deps: { documentClient: DocumentClient; tableName: string }, orgId: OrgId, developerId: string): Promise<{ present: false } | { present: true; role: unknown; joinedAt: unknown }> {
   const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgMemberKey(orgId, developerId), ConsistentRead: true })) as { Item?: Record<string, unknown> };
-  return response.Item === undefined ? { present: false } : { present: true, role: response.Item["role"] };
+  return response.Item === undefined ? { present: false } : { present: true, role: response.Item["role"], joinedAt: response.Item["joinedAt"] };
 }
 
 export const NOT_A_WRITER_MESSAGE = "Your company role can read the audit log and nothing else.";
@@ -54,17 +54,22 @@ export async function personWalk(deps: { documentClient: DocumentClient; signInT
  * `readOnly`, a writer's: a record that is not (the Auditor, an unknown role, no role field) is refused whichever id holds it.
  */
 export async function survivorRole(deps: { documentClient: DocumentClient; tableName: string }, orgId: OrgId, ids: readonly string[], readOnly: boolean): Promise<OrgRole | undefined> {
-  let found: OrgRole | undefined;
+  return (await survivorStanding(deps, orgId, ids, readOnly))?.role;
+}
+
+/** `survivorRole`, with the `joinedAt` of the same record read, so a caller that asserts the record later (SY-7) asserts exactly what this read saw: the role and which membership it was. */
+export async function survivorStanding(deps: { documentClient: DocumentClient; tableName: string }, orgId: OrgId, ids: readonly string[], readOnly: boolean): Promise<{ role: OrgRole; joinedAt: unknown } | undefined> {
+  let found: { role: OrgRole; joinedAt: unknown } | undefined;
   for (const [index, id] of ids.entries()) {
     const stored = await liveStoredRole(deps, orgId, id);
     if (!stored.present) continue;
     if (readOnly) {
       const role = OrgRoleSchema.safeParse(stored.role);
       if (!role.success) throw agentXError("FORBIDDEN", "your company role could not be read");
-      if (index === ids.length - 1) found = role.data;
+      if (index === ids.length - 1) found = { role: role.data, joinedAt: stored.joinedAt };
     } else {
       if (!isWriterOrgRole(stored.role)) throw agentXError("FORBIDDEN", NOT_A_WRITER_MESSAGE);
-      if (index === ids.length - 1) found = stored.role;
+      if (index === ids.length - 1) found = { role: stored.role, joinedAt: stored.joinedAt };
     }
   }
   return found;
