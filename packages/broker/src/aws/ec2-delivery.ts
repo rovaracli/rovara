@@ -390,10 +390,6 @@ async function forWorkerFeatures(
   if (invocation.kind === "task" && invocation.payload.diagnosis !== undefined && !features.includes(DIAGNOSIS_WORKER_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
-  // Test environment: a setup draft that is asked to run the environment detectors is never sent to a worker that does not list it (an older worker's strict parse would refuse the field), and the field is never dropped.
-  if (invocation.kind === "task" && invocation.payload.testEnvDetect === true && !features.includes(TEST_ENV_DETECT_FEATURE)) {
-    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
-  }
   // Test environment: a verification run that carries the environment's plan is never sent to a worker that does not list it (it would run the whole suite under another budget and say nothing of it), and the field is never dropped.
   if (invocation.kind === "task" && invocation.payload.testEnvironment !== undefined && !features.includes(TEST_ENV_PLAN_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
@@ -540,7 +536,13 @@ async function forWorkerFeatures(
   if (evidenceUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.evidence_capture_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId, evidence: "not_captured" }));
   }
-  const withAttribution = withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported);
+  // Test environment (wire-testenv fix round 1): the request to run the environment detectors only ADDS a draft to the setup draft's result, so a worker that does not list it is sent no field and drafts the
+  // setup as before; no environment draft is made for that run (the setup route then says there is no draft), and this line records that detection did not run. Replaces: refusing the setup draft.
+  const detectUnsupported = invocation.kind === "task" && invocation.payload.testEnvDetect === true && !features.includes(TEST_ENV_DETECT_FEATURE);
+  if (detectUnsupported) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.test_env_detect_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId, detection: "not_run" }));
+  }
+  const withAttribution = withoutTestEnvDetect(withoutEvidenceCapture(attributionUnsupported ? withoutAttribution(invocation) : invocation, evidenceUnsupported), detectUnsupported);
   if (attributionUnsupported) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.attribution_omitted", reason: workerFeatures === undefined ? "no-probe" : "worker-lacks-feature", operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
@@ -930,6 +932,14 @@ function withoutEvidenceCapture(invocation: WorkerInvocation, drop: boolean): Wo
   if (!drop || invocation.kind !== "task") return invocation;
   const payload = { ...invocation.payload };
   delete payload.evidenceCapture;
+  return { ...invocation, payload };
+}
+
+/** The invocation without the request to detect the test environment when `drop` (and the very object back otherwise). */
+function withoutTestEnvDetect(invocation: WorkerInvocation, drop: boolean): WorkerInvocation {
+  if (!drop || invocation.kind !== "task") return invocation;
+  const payload = { ...invocation.payload };
+  delete payload.testEnvDetect;
   return { ...invocation, payload };
 }
 

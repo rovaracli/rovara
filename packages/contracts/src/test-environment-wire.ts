@@ -39,6 +39,9 @@ export const TestEnvDraftSchema = z
   .strict();
 export type TestEnvDraft = z.infer<typeof TestEnvDraftSchema>;
 
+/** The most a draft may weigh once serialized (worker and broker both hold to it): well under DynamoDB's 400 KB item limit, which would cancel the setup draft's own result write. */
+export const TEST_ENV_DRAFT_MAX_BYTES = 200 * 1_024;
+
 /** The key under which a draft rides in a SETUP_DRAFT run's result. */
 export const TEST_ENV_DRAFT_RESULT_KEY = "testEnvironmentDraft";
 
@@ -77,7 +80,8 @@ export const TEST_ENV_REFUSALS = [
 ] as const;
 export type TestEnvRefusal = (typeof TEST_ENV_REFUSALS)[number];
 
-const CheckRow = z.object({ id: Id, label: line(80), kind: CheckKindSchema }).strict();
+/** A check as the approval card shows it, with the arguments that narrow its tests (shown, because they decide which tests run once a map exists). */
+const CheckRow = z.object({ id: Id, label: line(80), kind: CheckKindSchema, selectArgs: z.array(z.string().min(1).max(256)).max(8).optional() }).strict();
 export const TestEnvSummarySchema = z
   .object({
     tier: z.enum(["sandbox", "preview", "shared"]),
@@ -93,7 +97,7 @@ export type TestEnvSummary = z.infer<typeof TestEnvSummarySchema>;
 export function testEnvSummaryOf(body: TestEnvironmentBody): TestEnvSummary {
   return {
     tier: body.tier,
-    repositories: body.repos.map((repo) => ({ repositoryId: repo.repositoryId, setupCommands: repo.setupCommands.length, checks: repo.checks.map((check) => ({ id: check.id, label: check.label, kind: check.kind })) })),
+    repositories: body.repos.map((repo) => ({ repositoryId: repo.repositoryId, setupCommands: repo.setupCommands.length, checks: repo.checks.map((check) => ({ id: check.id, label: check.label, kind: check.kind, ...(check.selectArgs === undefined ? {} : { selectArgs: check.selectArgs }) })) })),
     selectionMethod: body.selection.method,
     roundBudgetMin: body.roundBudgetMin,
     nightly: { enabled: body.nightly.enabled, cronUtc: body.nightly.cronUtc, branch: body.nightly.branch },

@@ -196,9 +196,9 @@ function graphMentions(graph: ImportGraph, path: string): boolean {
   return false;
 }
 
-/** A test id passed on a command line: plain visible text that cannot read as an option, no control characters, no whitespace. */
+/** A test id passed on a command line: plain visible text that cannot read as an option or an argument file (`-x`, `@file`), no control characters, no whitespace. */
 function safeTestId(id: string): boolean {
-  return id.length > 0 && id.length <= 500 && !id.startsWith("-") && !/[\s\p{Cc}\p{Cf}]/u.test(id);
+  return id.length > 0 && id.length <= 500 && !id.startsWith("-") && !id.startsWith("@") && !/[\s\p{Cc}\p{Cf}]/u.test(id);
 }
 
 /**

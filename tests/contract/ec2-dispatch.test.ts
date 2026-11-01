@@ -492,12 +492,21 @@ describe("ec2-ebs delivery", () => {
       log.mockRestore();
     });
 
-    it("never sends a setup draft that asks to detect the test environment to a worker that does not list task.testEnvDetect.v1: it is refused, and the field is not dropped (wire-testenv)", async () => {
+    it("sends a setup draft that asks to detect the test environment to a worker that does not list task.testEnvDetect.v1 WITHOUT the field, and logs that detection did not run (wire-testenv fix round 1)", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const record = taskRecord({ workflowMode: "SETUP_DRAFT", testEnvDetect: true });
       const base = ["task.workflowMode", "task.setupDraft", "task.setupProposal.v2"];
       const older = delivery({ workerFeatures: async () => base });
-      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
-      expect(older.post).not.toHaveBeenCalled();
+      expect(await older.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(older.post)).not.toHaveProperty("testEnvDetect");
+      expect(postedPayload(older.post)).toMatchObject({ workflowMode: "SETUP_DRAFT" });
+      expect(log.mock.calls.map((call) => String(call[0])).some((line) => line.includes("dispatch.test_env_detect_omitted") && line.includes("\"detection\":\"not_run\""))).toBe(true);
+      log.mockRestore();
+      // The plan is not like that: running the checks without it would be misleading, so a worker without the feature is refused.
+      const plan = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }], testEnvironment: { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }] } });
+      const noPlan = delivery({ workerFeatures: async () => ["task.workflowMode", "task.workflowChecks", "task.readiness"] });
+      await expect(noPlan.deliver(plan, plan.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(noPlan.post).not.toHaveBeenCalled();
       const capable = delivery({ workerFeatures: async () => [...base, "task.testEnvDetect.v1"] });
       expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
       expect(postedPayload(capable.post).testEnvDetect).toBe(true);

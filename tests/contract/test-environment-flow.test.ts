@@ -151,9 +151,13 @@ describe("with the switch on", () => {
       // And an unproved proposal cannot be approved.
       const unproved = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
       expect(unproved.status).toBe(400);
-      expect(errorOf(unproved).message).toContain("prove");
-
+      expect(errorOf(unproved).message).toContain("setup check");
+      // With a passing setup check but no recorded proof, the store itself still refuses.
       t.setupCheckPassed();
+      const notRecorded = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+      expect(notRecorded.status).toBe(400);
+      expect(errorOf(notRecorded).message).toContain("prove");
+
       const proved = await t.dev(OMAR, "POST", `${ENV}/prove`, { digest });
       expect(proved.status, JSON.stringify(proved.body)).toBe(200);
       expect(proved.body).toMatchObject({ proposal: { digest, proved: true } });
@@ -180,6 +184,40 @@ describe("with the switch on", () => {
       const proposed = await t.dev(OMAR, "POST", `${ENV}/propose`, {});
       expect(proposed.status).toBe(409);
       expect(errorOf(proposed).message).toContain("draft");
+    });
+  });
+
+  it("approves only what is proved NOW: a setup check that failed since the proof stops the approval, and a replay of an approval already made still answers", async () => {
+    const t = await setup();
+    await withSwitch("1", async () => {
+      await t.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draftOf() });
+      await t.dev(OMAR, "POST", `${ENV}/propose`, {});
+      const digest = testEnvDigest(draftBody());
+      t.setupCheckPassed();
+      expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
+      t.db.set({ pk: "WORKSPACE#ws-check", sk: "META", status: "PREPARATION_FAILED" });
+      const stopped = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+      expect(stopped.status).toBe(400);
+      expect(errorOf(stopped).message).toContain("setup check");
+      expect(t.db.find((item) => String(item.sk).startsWith("TESTENV#REV#"))).toEqual([]);
+      t.setupCheckPassed();
+      const requestId = randomUUID();
+      expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0, requestId })).status).toBe(200);
+      t.db.set({ pk: "WORKSPACE#ws-check", sk: "META", status: "PREPARATION_FAILED" });
+      expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0, requestId })).body).toMatchObject({ revision: 1, replayed: true });
+    });
+  });
+
+  it("keeps no draft too large to store, tells the maintainer so, and the setup draft itself still finishes", async () => {
+    const t = await setup();
+    await withSwitch("1", async () => {
+      const huge = draftOf(draftBody({ repos: [{ repositoryId: "web", setupCommands: [], checks: Array.from({ length: 16 }, (_, index) => ({ id: `c${String(index)}`, label: `Check ${String(index)}`, command: command("make", ["t", `--note=${String(index)}-${"x".repeat(8_100)}`, `--b=${"y".repeat(8_100)}`], 600), kind: "test" })) }] }));
+      await t.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: huge });
+      expect(drafts(t)).toEqual([]);
+      const setupDraft = await t.dev(OMAR, "GET", `/v1/app/projects/${NAME}/setup-draft`);
+      expect(setupDraft.body).toMatchObject({ status: "ready" });
+      const read = await t.dev(OMAR, "GET", ENV);
+      expect(read.body).toMatchObject({ draft: { status: "none", notes: ["The environment Rovara found was too large to keep, so none is proposed."] } });
     });
   });
 
