@@ -3,7 +3,7 @@
 // note the next agent step could read as an instruction. With the switch OFF the old behaviour is pinned by the unchanged fixtures of developer-task-workflow-flow.test.ts and page-comment-answers.test.ts.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ASK_RATE, orgBanKey, orgRemovedKey, sessionRateKey } from "../../packages/contracts/src/index.js";
+import { ASK_RATE, orgBanKey, orgRemovedKey, sessionRateKey, slackTeamOrgKey } from "../../packages/contracts/src/index.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { SLACK_ASK_NOT_ALLOWED_WORDS, slackAskRefusalContext } from "../../packages/broker/src/aws/broker/thread-workspaces.js";
 import { taskOwnsThread } from "../../packages/broker/src/aws/developer-tasks/task-answer-context.js";
@@ -22,10 +22,11 @@ describe("a question in a task's thread with the Ask switch on", () => {
   const TASK_REQUEST = { includeIntegrations: true, includeSettingsRevision: true, includeConnectors: true, includeAllConnectorTypes: true, includeRecoverableOperations: true, lazyPreparation: true, includeActionPolicy: true, includeSharedTask: true };
   const MARKDOWN = "# Plan\n\nAdd greet.\n\nUse a horizontal rule between the two sections.\n";
 
-  async function planWaiting(threadTs: string, extra: Record<string, unknown> = {}, member = true) {
+  async function planWaiting(threadTs: string, extra: Record<string, unknown> = {}, member = true, beforeStart?: (harness: Harness) => void) {
     const harness = await createSingleAnswerPlanBroker({ brokerExtra: { slackAskOn: true, slackAskLevel: async () => "use", ...extra } });
     // (the first membership also creates the org record the task start needs)
     seedMembership(harness.db, developerIdForSlackUser(member ? "U0TEAMMATE1" : "U0SEEDONLY1"));
+    beforeStart?.(harness);
     const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs };
     const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA_SLACK, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
     const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -76,6 +77,26 @@ describe("a question in a task's thread with the Ask switch on", () => {
       expect(JSON.parse(note.body)).toEqual({ outcome: "refused" });
     }
     // (An other-org requester is refused on every service route by project-viewer-gate.test.ts; the same identity step runs before this route.)
+  });
+
+  it("a person of another org is refused at the identity (403) with no answer, and their reply is not saved as a note (the task-answer route, switch on)", async () => {
+    const guestId = developerIdForSlackUser("U0GUEST0001");
+    const other = "org_zzzzzzzzzzzzzzzzzzzz";
+    const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === guestId ? other : TEST_ORG) as never;
+    const threadTs = "1695500000.000171";
+    const t = await planWaiting(threadTs, { orgResolver }, true, (harness) => {
+      seedMembership(harness.db, developerIdForSlackUser(MAYA_SLACK), { orgId: TEST_ORG, role: "member" });
+      seedMembership(harness.db, guestId, { orgId: other, role: "member" });
+      harness.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+    });
+    const refusedAnswer = await t.ensure("U0GUEST0001");
+    expect(refusedAnswer.status).toBe(403);
+    expect(refusedAnswer.body).not.toHaveProperty("taskContext");
+    const note = await t.harness.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId: t.taskId, thread: { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs }, userId: "U0GUEST0001", messageTs: "1695500002.000009", eventId: "Ev1695500002.000009", text: "what is left?" });
+    expect(JSON.parse(note.body)).toEqual({ outcome: "refused" });
+    expect(t.harness.db.find((item) => String(item.sk).startsWith("NOTE#"))).toEqual([]);
+    // The task's own org is answered.
+    expect(await contextOf(t)).toContain("Add a greeting");
   });
 
   it("a task with no session cannot be rated, so it is answered in fixed words, not left as a note", async () => {
