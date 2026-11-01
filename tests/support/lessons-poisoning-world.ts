@@ -99,12 +99,12 @@ export class Capture {
     await addSource(this.record, { source, scope, project, retention: "D", audienceDefault: "project" });
   }
 
-  async slackMessage(user: string, text: string, over: { channel?: string; attachments?: Array<Record<string, unknown>> } = {}): Promise<unknown> {
+  async slackMessage(user: string, text: string, over: { channel?: string; attachments?: Array<Record<string, unknown>>; bot?: boolean } = {}): Promise<unknown> {
     this.ts += 1;
     const ts = `${this.ts}.000100`;
     return this.slack({
       type: "event_callback", team_id: SLACK_TEAM, api_app_id: "A0ROVARA001", event_id: `Ev${this.ts}`,
-      event: { type: "message", channel: over.channel ?? SLACK_PUBLIC, user, text, ts, ...(over.attachments === undefined ? {} : { attachments: over.attachments }) },
+      event: { type: "message", channel: over.channel ?? SLACK_PUBLIC, user, text, ts, ...(over.attachments === undefined ? {} : { attachments: over.attachments }), ...(over.bot === true ? { bot_id: "B0FEEDBOT01" } : {}) },
     });
   }
 
