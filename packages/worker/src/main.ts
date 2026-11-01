@@ -24,6 +24,7 @@ import { postProjectSetupTerminalResult } from "./project-setup-callback.js";
 import { postWorkerTerminalResult } from "./terminal-callback.js";
 import { executeWorkerCancelInvocation } from "./cancel-invocation.js";
 import { handleSteerInvocation } from "./steer-invocation.js";
+import { handlePeekInvocation } from "./peek-invocation.js";
 import { removeLeftoverMaskVolumes } from "./devcontainer.js";
 import { removeLeftoverTaskSandboxes, taskShellSelection } from "./task-sandbox.js";
 import { createApplicationChecksFeatureMonitor, createWorkflowE2EApplicationRuntime } from "./workflow-e2e-application-runtime.js";
@@ -75,6 +76,7 @@ const state = createWorkerServerState(
     // Application CHECKS are listed on /ping only while this worker can run them, from the last background check (never a Docker call per ping).
     ...applicationChecks.executor,
     steer: (invocation) => handleSteerInvocation(invocation, cancellationController, journal),
+    peek: (invocation) => handlePeekInvocation(invocation, rootPath),
     async execute(invocation: WorkerInvocation): Promise<unknown> {
       if (invocation.kind === "project-setup-smoke") {
         return projectSetupRuntime.execute(invocation);

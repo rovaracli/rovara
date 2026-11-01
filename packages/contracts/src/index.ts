@@ -55,6 +55,7 @@ export * from "./protocol.js";
 export * from "./live-steer.js";
 export * from "./live-interaction.js";
 export * from "./live-interaction-errors.js";
+export * from "./live-peek.js";
 export * from "./redaction.js";
 export * from "./review-output.js";
 export * from "./release.js";

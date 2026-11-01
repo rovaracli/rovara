@@ -48,6 +48,8 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.workflowReviewSpec.v1",
   // Live interaction, Stop & redirect: the owner's instruction that stopped a coding step is taken from the owner and framed in the restarted step's prompt (steer-invocation.ts).
   "task.ownerRedirect.v1",
+  // Live interaction A2: a read-only look at the working tree for an Ask (peek-invocation.ts).
+  "task.peek.v1",
   // Enterprise foundations I3: the commit a publication makes carries a random attribution reference, and the description names who asked and who approved (publish.ts).
   "publish.attribution",
 ] as const satisfies readonly WorkerInvocationFeature[];

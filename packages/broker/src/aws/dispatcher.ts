@@ -5,7 +5,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { GetCommand, QueryCommand, DynamoDBDocumentClient, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
-import { Ec2RuntimeBindingSchema, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, SlackTeamIdSchema, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, agentXError, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, workspaceSessionKey, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, memberGrantsPk, orgMemberKey, projectMemberKey, projectPk, projectRevisionKey, projectSetupApprovalKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, type SlackChannelBinding, type WorkerInvocation } from "@agentx/contracts";
+import { Ec2RuntimeBindingSchema, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, SlackTeamIdSchema, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, agentXError, isDispatcherPeekEvent, type DispatcherPeekEvent, type DispatcherPeekReply, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, workspaceSessionKey, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, memberGrantsPk, orgMemberKey, projectMemberKey, projectPk, projectRevisionKey, projectSetupApprovalKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, type SlackChannelBinding, type WorkerInvocation } from "@agentx/contracts";
 import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 import { requiredEnvironment, type DurableOutboxRecord, type Ec2OutboxRecord } from "./lambda.js";
 import type { Ec2Delivery } from "./ec2-delivery.js";
@@ -20,6 +20,7 @@ import { createTaskAuthorityAdmission } from "./task-authority-admission.js";
 import { createTaskPersonRuntime, stateAuthorityWitnessForDispatch, type TaskPersonDeveloperRecordProjection, type TaskPersonRuntimePorts } from "./task-person-runtime.js";
 import { taskPersonProofThroughLambda } from "./task-person-proof-transport.js";
 import { createLiveSteerDispatch } from "../agent-sessions/live-steer-dispatch.js";
+import { createPeekDispatch } from "../agent-sessions/peek-dispatch.js";
 
 const DEFAULT_MAX_DISPATCH_ATTEMPTS = 5;
 
@@ -225,10 +226,12 @@ export function createDispatcherHandler(dependencies: {
   deliverEc2?: (record: Ec2OutboxRecord, invocation: WorkerInvocation, context?: { remainingTimeMs: () => number }) => Promise<Ec2Delivery>;
   /** Live steer (agent-sessions/live-steer-dispatch.ts): a `steer` item has its own delivery and its own end, and never an operation record or compute. */
   liveSteer?: ReturnType<typeof createLiveSteerDispatch>;
+  /** Live interaction A2 (agent-sessions/peek-dispatch.ts): answers a direct `task-peek` invoke from the broker, on the same request. Absent: such an event is answered `unavailable`. */
+  peek?: ReturnType<typeof createPeekDispatch>;
   maxAttempts?: number;
   log?: (entry: DispatchLogEntry) => void;
 }) {
-  return async (event: SqsEvent, context?: DispatcherLambdaContext): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> => {
+  const handleBatch = async (event: SqsEvent, context?: DispatcherLambdaContext): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> => {
     const batchItemFailures: Array<{ itemIdentifier: string }> = [];
     const records = event.Records ?? [];
     const remainingTimeMs = () => context?.getRemainingTimeInMillis() ?? 60_000;
@@ -331,6 +334,16 @@ export function createDispatcherHandler(dependencies: {
     }
     return { batchItemFailures };
   };
+  // Live interaction A2: the broker invokes this Lambda directly (not through the queue) to peek at a running task's working tree; everything else is the queue's batch.
+  const dispatch = (async (event: SqsEvent | DispatcherPeekEvent, context?: DispatcherLambdaContext) =>
+    isDispatcherPeekEvent(event) ? (dependencies.peek === undefined ? { outcome: "unavailable" } : await dependencies.peek(event)) : handleBatch(event, context)) as DispatcherHandler;
+  return dispatch;
+}
+
+/** The dispatcher Lambda's entry: the queue's batch, or a direct `task-peek` event from the broker. */
+export interface DispatcherHandler {
+  (event: SqsEvent, context?: DispatcherLambdaContext): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }>;
+  (event: DispatcherPeekEvent, context?: DispatcherLambdaContext): Promise<DispatcherPeekReply>;
 }
 
 const tableName = process.env.STATE_TABLE_NAME;
@@ -725,6 +738,7 @@ export const handler = createDispatcherHandler({
     documentClient, tableName: tableName ?? "", now: Date.now, sign: signInvocation, post: postToWorker, workerFeatures: (url) => workerPingFeatures(url),
     log: (entry) => process.stderr.write(`${JSON.stringify(entry)}\n`),
   }),
+  peek: createPeekDispatch({ documentClient, tableName: tableName ?? "", now: Date.now, sign: signInvocation, post: postToWorker, workerFeatures: (url) => workerPingFeatures(url) }),
   maxAttempts: parseMaximumAttempts(process.env.MAX_DISPATCH_ATTEMPTS),
   async markDispatching(record) {
     try {

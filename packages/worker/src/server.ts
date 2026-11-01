@@ -17,6 +17,8 @@ export interface WorkerExecutor {
   execute(invocation: WorkerInvocation): Promise<unknown>;
   /** Live steer (steer-invocation.ts): answers a `steer` invocation on the same request. Absent: the invocation is refused (the worker does not list the feature). */
   steer?(invocation: Extract<WorkerInvocation, { kind: "steer" }>): Promise<Record<string, unknown>>;
+  /** Live interaction A2: answers a `peek` invocation (a read-only look at the working tree) on the same request. Absent: refused. */
+  peek?(invocation: Extract<WorkerInvocation, { kind: "peek" }>): Promise<Record<string, unknown>>;
   /** Explicitly implemented invocation extensions; never inferred from parser acceptance alone. */
   invocationFeatures?: readonly WorkerInvocationFeature[];
   /** Feature-specific optional runtime gates are reported independently of ordinary worker health. */
@@ -126,6 +128,11 @@ export async function handleWorkerRequest(request: Request, state: WorkerServerS
       if (invocation.kind === "steer") {
         if (state.executor.steer === undefined) return response(400, { error: "live steer is not supported by this worker" });
         return response(200, await state.executor.steer(invocation));
+      }
+      // A peek is answered on this request and is not an operation: no journal record, no background run, no terminal callback.
+      if (invocation.kind === "peek") {
+        if (state.executor.peek === undefined) return response(400, { error: "peek is not supported by this worker" });
+        return response(200, await state.executor.peek(invocation));
       }
       const accepted = await state.journal.accept(invocation);
       if (!accepted.duplicate) {

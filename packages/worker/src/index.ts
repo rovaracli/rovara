@@ -4,6 +4,7 @@ export * from "./artifacts.js";
 export * from "./callback-client.js";
 export * from "./cancel.js";
 export * from "./steer-invocation.js";
+export * from "./peek-invocation.js";
 export * from "./close-workspace.js";
 export * from "./codebuild.js";
 export * from "./conversations.js";
