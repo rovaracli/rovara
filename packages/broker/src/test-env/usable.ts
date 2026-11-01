@@ -27,7 +27,8 @@ export const UNUSED_WORDS: Record<UnusedReason, string> = {
   tier_not_connected: "The approved test environment is not a sandbox, which tasks do not use yet",
 };
 
-export type UsableEnvironment = { ok: true; environment: TestEnvironment } | { ok: false; reason: UnusedReason };
+/** `judged` is the environment the refusal is about, so a pin names the revision that was judged and not one approved a moment later. */
+export type UsableEnvironment = { ok: true; environment: TestEnvironment } | { ok: false; reason: UnusedReason; judged?: TestEnvironment };
 
 /** Whether an approved environment may be carried out by a task now, and if not, why not. Pure. */
 export function environmentUnusedReason(environment: TestEnvironment): UnusedReason | undefined {
@@ -54,7 +55,7 @@ export async function usableTestEnvironment(deps: TestEnvDeps, orgId: OrgId, pro
   }
   if (approved === undefined) return { ok: false, reason: "none" };
   const reason = environmentUnusedReason(approved);
-  return reason === undefined ? { ok: true, environment: approved } : { ok: false, reason };
+  return reason === undefined ? { ok: true, environment: approved } : { ok: false, reason, judged: approved };
 }
 
 // ---- the pin
@@ -99,9 +100,8 @@ export async function testEnvironmentForStart(deps: TestEnvDeps, input: { orgId:
   const found = await usableTestEnvironment(deps, input.orgId, input.project, undefined, env);
   if (found.ok) return { used: found.environment, pin: testEnvPinItem(deps.tableName, { ...input, nowMs: deps.now(), used: found.environment })! };
   if (found.reason === "none" || found.reason === "unreadable") return {};
-  // An environment exists but is not applied: say which, from the newest revision, so the evidence names it.
-  let approved: TestEnvironment | undefined;
-  try { approved = await readApprovedTestEnvironment(deps, input.orgId, input.project); } catch { approved = undefined; }
+  // An environment exists but is not applied: say which, from the revision that was judged, so the evidence names it.
+  const approved = found.judged;
   const pin = approved === undefined ? undefined : testEnvPinItem(deps.tableName, { ...input, nowMs: deps.now(), unused: { revision: approved.revision, digest: testEnvDigest(approved.environment), reason: found.reason } });
   return pin === undefined ? {} : { pin };
 }
