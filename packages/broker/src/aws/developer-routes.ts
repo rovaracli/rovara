@@ -2232,6 +2232,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     const projectFor = (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName);
     const learned = await routeLearning({
       task: developerTaskRouteDependencies(deps, caller), projectFor, audit: deps.agents?.audit,
+      settings: { documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...(deps.agents?.audit === undefined ? {} : { audit: deps.agents.audit }) },
       ...(deps.agents === undefined ? {} : { decide: { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents.store, audit: deps.agents.audit, approvals: deps.agents, projectFor } }),
     }, caller, request.method, url, () => jsonBody(request));
     if (learned !== undefined) return learned;

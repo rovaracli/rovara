@@ -1,3 +1,5 @@
+import { readGuardrails } from "../agents/guardrails.js";
+import { visibleOpenCount } from "./pr-visibility.js";
 // v1.2 learning loop, B7: the Home card (design 6.3). One card per project that has suggested rules to review, shown only to people who maintain the project now (`edit_settings`, read live
 // through the project members). It reads STATE of at most 25 of the caller's projects in one bounded batch, and the project META beside it (for `createdAt`: a STATE of an earlier project
 // of the same name is not this project's). Nothing is written for notifications, so there is no stream filter and no notifier change. The card holds a count, never a correction's or a rule's
@@ -78,7 +80,7 @@ export const learningHomeSource: HomeCardSource = {
 
     // The company's master switch rides in the same batch (one more key). While it is off no card is made, but waiting rules are still settled below.
     const switchKey = orgLearningSettingsKey(orgId);
-    const keys = [switchKey, ...maintained.flatMap((project) => [projectLearningKey(orgId, project, "STATE"), projectMetaKey(orgId, project)])];
+    const keys = [switchKey, ...maintained.flatMap((project) => [projectLearningKey(orgId, project, "STATE"), projectMetaKey(orgId, project), projectLearningKey(orgId, project, "SETTINGS")])];
     const read = await batchGetItems(deps, keys);
     const switchedOff = effectiveFromItem(read.get(keyText(switchKey))).suggestions === "off";
     const found: Found[] = [];
@@ -91,8 +93,15 @@ export const learningHomeSource: HomeCardSource = {
       found.push({ project, state });
     }
 
+    const companyLocked = (await readGuardrails(deps, orgId)).prCommentLearning === "locked_off";
+    const visible = await Promise.all(found.map(async entry => {
+      const own = read.get(keyText(projectLearningKey(orgId, entry.project, "SETTINGS")));
+      if (entry.state.openSuggestions === 0 || (!companyLocked && own?.["prComments"] === "on")) return entry;
+      const n = await visibleOpenCount({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, { orgId, project: entry.project, projectCreatedAt: entry.state.projectCreatedAt }, entry.state.openSuggestions);
+      return { ...entry, state: { ...entry.state, openSuggestions: n } };
+    }));
     const origin = deps.origin.replace(/\/+$/u, "");
-    const cards: HomeSourceCard[] = found.filter(({ state }) => !switchedOff && state.openSuggestions > 0).map(({ project, state }) => {
+    const cards: HomeSourceCard[] = visible.filter(({ state }) => !switchedOff && state.openSuggestions > 0).map(({ project, state }) => {
       const n = state.openSuggestions;
       return {
         cardId: `rule_suggestion:${hashOf(orgId, project)}`, kind: "rule_suggestion", title: `Suggested rules for ${quoted(project)}`,

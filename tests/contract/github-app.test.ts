@@ -1229,7 +1229,7 @@ describe("current PR feedback API reads", () => {
     let reads = 0;
     const requests: string[] = [];
     const page = (nodes: unknown[], hasNextPage = false, endCursor: string | null = null) => ({ nodes, pageInfo: { hasNextPage, endCursor } });
-    const comment = (id: number, anchor: string) => ({ id, body: `comment ${id}`, html_url: `${root}#${anchor}${id}`, user: { login: "reviewer" }, updated_at: "2026-10-05T12:00:00Z", submitted_at: "2026-10-05T12:00:00Z", path: "src/file.ts", line: 3, pull_request_url: `${api}/pulls/42`, issue_url: `${api}/issues/42` });
+    const comment = (id: number, anchor: string) => ({ id, body: `comment ${id}`, html_url: `${root}#${anchor}${id}`, user: { login: "reviewer", id: 12345, type: "User" }, updated_at: "2026-10-05T12:00:00Z", submitted_at: "2026-10-05T12:00:00Z", path: "src/file.ts", line: 3, pull_request_url: `${api}/pulls/42`, issue_url: `${api}/issues/42` });
     // GitHub serializes GraphQL fullDatabaseId (a BigInt) as a string. Numbers stay supported.
     const gid = (id: number): string | number => options.numericIds ? id : String(id);
     const provider = appProvider({ credentialRef: "github-app", appId: "123", getPrivateKey: async () => privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
@@ -1264,6 +1264,11 @@ describe("current PR feedback API reads", () => {
       } });
     return { provider, requests };
   }
+  it("B8 retains authoritative numeric author identity in memory only", async () => {
+    const { provider } = fixture();
+    const result = await provider.getPullRequestFeedback("https://github.com/ps06756/personal-website-test.git", 42, { system: "private-install" });
+    expect(result.comments[0]).toMatchObject({ authorId: "12345", authorType: "User" });
+  });
   it("collects paginated discussion, review bodies and inline comment IDs with current thread state", async () => {
     const { provider, requests } = fixture({ nested: true });
     expect(typeof provider.getPullRequestFeedback).toBe("function");

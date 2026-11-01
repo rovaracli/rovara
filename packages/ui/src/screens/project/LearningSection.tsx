@@ -15,6 +15,7 @@ import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { stageDomId } from "./HowWeWorkCard.js";
 import { LearningCollecting } from "./LearningCollecting.js";
+import { LearningSettings } from "./LearningSettings.js";
 import { SENT_FOR_CONFIRMATION } from "./PendingConfirmation.js";
 import { cleanRuleText } from "./rule-text.js";
 import { SUGGESTED_RULES_ID, useSuggestedRulesLink } from "./use-suggested-rules-link.js";
@@ -164,6 +165,7 @@ export function LearningSection({ project }: { project: string }) {
  const shared: Shared = { project, stages, names, canDecide: data.canDecide, collecting: collecting !== undefined, confirmations, onConfirm: (id, confirmation) => setConfirmations(current => { const rest = { ...current };delete rest[id];return confirmation === undefined ? rest : { ...rest, [id]: confirmation }; }), onDone: done };
  const toggle = (key: "dismissed" | "rules", label: string) => <Button className="rv-learning-toggle" aria-expanded={show[key]} onClick={() => setShow(current => ({ ...current, [key]: !current[key] }))}>{label}</Button>;
  return <section className="rv-learning" aria-label="Suggested rules">
+  <LearningSettings project={project} settings={data.settings} canDecide={data.canDecide} skippedUnlinked={data.skippedUnlinked} />
   <div className="rv-learning-head"><h2 id={SUGGESTED_RULES_ID} tabIndex={-1}>{headerText(open.length)}</h2><div className="rv-learning-links">{toggle("dismissed", dismissedToggle(data.dismissed.length))}{toggle("rules", addedToggle(data.rules.length))}</div></div>
   {notice !== undefined && <p role="status">{notice}</p>}
   {open.length === 0 ? collecting === undefined ? <p className="rv-muted">{T.EMPTY}</p> : <LearningCollecting corrections={collecting.corrections} /> : <ul className="rv-learning-cards" aria-label="Open suggestions">{open.map(item => <li key={item.id}><SuggestionCard suggestion={item} shared={shared} /></li>)}</ul>}
