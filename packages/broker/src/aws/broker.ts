@@ -4562,7 +4562,8 @@ async function requireSlackRequesterRule(dependencies: AwsBrokerDependencies, or
     }
     const parsed = OrgRoleSchema.safeParse(record.role);
     if (!parsed.success) throw agentXError("FORBIDDEN", "your company role could not be read");
-    role ??= parsed.data;
+    // Each id is followed to the person it was merged into, so a later record is the more current one: the survivor's role wins over a stale merged-away record's.
+    role = parsed.data;
   }
   return role ?? "member";
 }
