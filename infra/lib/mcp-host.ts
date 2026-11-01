@@ -277,8 +277,14 @@ export class McpHost extends Construct {
     const ecsArn = (resource: string, name: string): string => `arn:${Aws.PARTITION}:ecs:${region}:${stack.account}:${resource}/${name}`;
     const families = ecsArn("task-definition", `${MCP_FAMILY_PREFIX}*:*`);
     const clusterOnly = { ArnEquals: { "ecs:cluster": cluster.clusterArn } };
+    // RunTask also may not turn on ECS Exec. `ecs:enable-execute-command` is a RunTask condition key (Service Authorization Reference, Amazon ECS: https://docs.aws.amazon.com/service-authorization/latest/reference/list_ecs.md ;
+    // the key is described at https://docs.aws.amazon.com/AmazonECS/latest/developerguide/security_iam_service-with-iam.html). `IfExists`: a request that does not name it means the default, false.
+    // NOT possible for RunTask, by the same reference: `ecs:subnet` and `ecs:auto-assign-public-ip` (only CreateService and UpdateService take them), so the runner subnets and the absence of a public
+    // address are held by the code (ecs-runner.ts: subnets only from its settings, assignPublicIp DISABLED), by the runner route table (no internet-gateway route, no public IP on launch) and by
+    // each server's own security group. A condition on those keys here would deny every RunTask.
+    const runTaskOnly = { ...clusterOnly, StringEqualsIfExists: { "ecs:enable-execute-command": "false" } };
     const policy = (statement: iam.PolicyStatementProps) => this.controllerTaskRole.addToPolicy(new iam.PolicyStatement(statement));
-    policy({ sid: "RunMcpTasks", actions: ["ecs:RunTask"], resources: [families], conditions: clusterOnly });
+    policy({ sid: "RunMcpTasks", actions: ["ecs:RunTask"], resources: [families], conditions: runTaskOnly });
     policy({ sid: "StopAndDescribeMcpTasks", actions: ["ecs:StopTask", "ecs:DescribeTasks"], resources: [ecsArn("task", `${cluster.clusterName}/*`)], conditions: clusterOnly });
     policy({ sid: "ListTasksInTheCluster", actions: ["ecs:ListTasks"], resources: ["*"], conditions: clusterOnly });
     // RegisterTaskDefinition takes the task-definition resource (the family's ARN) and the request's tags (AWS Service Authorization Reference, Amazon ECS): only `rovara-mcp-*` families, only tagged as managed.

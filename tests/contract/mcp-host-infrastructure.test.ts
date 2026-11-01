@@ -246,6 +246,9 @@ describe("the controller's task role is scoped to what the controller makes", ()
     expect(actionsOf(run)).toEqual(["ecs:RunTask"]);
     expect(JSON.stringify(run.Resource)).toContain("task-definition/rovara-mcp-*:*");
     expect(JSON.stringify(at(run, "Condition", "ArnEquals", "ecs:cluster"))).toContain("Cluster");
+    // RunTask may not turn on ECS Exec. It takes no ecs:subnet or ecs:auto-assign-public-ip condition (those are CreateService and UpdateService keys: a condition on them would deny every RunTask).
+    expect(at(run, "Condition", "StringEqualsIfExists", "ecs:enable-execute-command")).toBe("false");
+    expect(JSON.stringify(run.Condition)).not.toMatch(/ecs:subnet|ecs:auto-assign-public-ip/u);
     const stop = find(statements, "StopAndDescribeMcpTasks");
     expect(actionsOf(stop)).toEqual(["ecs:StopTask", "ecs:DescribeTasks"]);
     expect(JSON.stringify(at(stop, "Condition", "ArnEquals", "ecs:cluster"))).toContain("Cluster");
