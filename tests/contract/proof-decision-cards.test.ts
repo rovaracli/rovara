@@ -280,7 +280,8 @@ describe("a card button pressed in Slack", () => {
       expect((out as { text: string }).text).toContain("couldn't tell who you are");
     }
     expect(routed).toEqual([]);
-    await run(lookups());
+    // A person who first signed in another way and linked Slack: the caller is still a Slack sign-in, not their first method.
+    await run(lookups({ row: { ...person(), provider: "github" } }));
     expect(routed).toHaveLength(1);
     expect(routed[0]).toMatchObject({ developerId: "dev-1", amr: "slack" });
   });
