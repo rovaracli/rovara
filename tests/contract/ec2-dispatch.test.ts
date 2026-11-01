@@ -471,18 +471,25 @@ describe("ec2-ebs delivery", () => {
       expect(await plain.deliver(draft, draft.invocation)).toBe("DELIVERED");
     });
 
-    it("never sends a verification run that asks for evidence to a worker that does not list task.evidenceCapture.v1: it is refused, and the field is not dropped (wire-proof)", async () => {
+    it("sends a verification run that asks for evidence to a worker that lists task.evidenceCapture.v1 with the request, and to an older worker without it: the run goes on, no evidence is captured and the omission is recorded (wire-proof fix round 1)", async () => {
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const record = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }], evidenceCapture: true });
       const base = ["task.workflowMode", "task.workflowChecks", "task.readiness"];
       const older = delivery({ workerFeatures: async () => base });
-      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
-      expect(older.post).not.toHaveBeenCalled();
+      expect(await older.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(older.post)).not.toHaveProperty("evidenceCapture");
+      expect(postedPayload(older.post).readiness).toHaveLength(1);
+      expect(log.mock.calls.map((call) => String(call[0])).some((line) => line.includes("dispatch.evidence_capture_omitted") && line.includes("not_captured"))).toBe(true);
+      // The same invocation, built while the switch was on, retried on the old worker again and then on a capable one: never failed, and the capable one gets the request.
+      const again = delivery({ workerFeatures: async () => base });
+      expect(await again.deliver(record, record.invocation)).toBe("DELIVERED");
       const capable = delivery({ workerFeatures: async () => [...base, "task.evidenceCapture.v1"] });
       expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
       expect(postedPayload(capable.post).evidenceCapture).toBe(true);
       // A verification run that does not ask is delivered to either, as before.
       const plain = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }] });
       expect(await delivery({ workerFeatures: async () => base }).deliver(plain, plain.invocation)).toBe("DELIVERED");
+      log.mockRestore();
     });
 
     it("asks for the code review's risk level only on a worker that lists it; an older worker reviews as before (Plan 6 Task 13)", async () => {

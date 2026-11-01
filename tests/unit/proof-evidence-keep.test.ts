@@ -77,7 +77,10 @@ describe("assembling the evidence of a run", () => {
   it("keeps nothing for a raw file of other code, none at all, an unreadable one, or one outside the operation's own prefix", async () => {
     const good = JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }]));
     expect(await keepEvidence(world(JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }], OTHER))).deps, input())).toEqual({ kept: false, reason: "not_bound" });
-    expect(await keepEvidence(world(undefined).deps, input())).toEqual({ kept: false, reason: "no_raw" });
+    // No raw file (an older worker was sent no request): recorded as not captured, and no pack is kept.
+    const logged: string[] = [];
+    expect(await keepEvidence({ ...world(undefined).deps, log: (event) => { logged.push(event); } }, input())).toEqual({ kept: false, reason: "no_raw" });
+    expect(logged).toEqual(["evidence.not_captured"]);
     expect(await keepEvidence(world(good, { key: `private/another-owner/${TASK.workspaceId}/${OP}/evidence-raw.json` }).deps, input())).toEqual({ kept: false, reason: "no_raw" });
     // Unreadable: the pack still holds what the broker knows itself, and says the details could not be read.
     const unreadable = world("{ not json");

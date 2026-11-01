@@ -69,7 +69,11 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
     const deny = input.deny ?? NO_PROD_DENY;
     let rawText = await readRaw(deps, input);
     let guarded = 0;
-    if (rawText === undefined) return { kept: false, reason: "no_raw" };
+    if (rawText === undefined) {
+      // Recorded, not claimed: no evidence was captured for this run (an older worker was sent no request, or the checks named no report), so no pack is kept and nothing is said about its tests.
+      deps.log?.("evidence.not_captured", { reason: "no_raw_file" });
+      return { kept: false, reason: "no_raw" };
+    }
     // The guard works on a raw file that parses (a file that does not is refused whole by the builder: it would never have been used).
     let parsedRaw: EvidenceRaw | undefined;
     try { const parsed = EvidenceRawSchema.safeParse(JSON.parse(rawText)); parsedRaw = parsed.success ? parsed.data : undefined; } catch { parsedRaw = undefined; }
