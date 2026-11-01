@@ -4,7 +4,7 @@ import { auditEventId } from "@agentx/contracts";
 import { TaskFundingProofSchema, actualCompanyFunding, fundingRevisionCheck, fundingAuditItems } from "../org/task-stop-funding.js";
 import { requirePricedTaskStopAdmission } from "../org/task-stop-unpriced.js";
 import { AuditEventInputSchema } from "@agentx/contracts";
-import { orgSettingsKey, projectAiKey } from "@agentx/contracts";
+import { orgSettingsKey, projectAiKey, orgBanKey, orgRemovedKey } from "@agentx/contracts";
 import { taskStopProjectCreationItems } from "../org/task-stop-bootstrap.js";
 import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
 import {readCompanyStagePolicy} from "../model-selection/policy-store.js";
@@ -471,7 +471,7 @@ import { ROVARA_STATUS_START, approvedFeedbackFixes, withFeedbackFixes, withStat
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../org/store.js";
-import { requireNotRemoved } from "../org/member-removal/guards.js";
+import { REMOVED_FROM_ORG_MESSAGE } from "../org/sign-in.js";
 import { listTeamChannels, readSlackBinding, slackBindingItem } from "../org/slack-binding.js";
 import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { runEgressDomainsSync, syncCellAllowList } from "./egress-domains-sync.js";
@@ -1551,11 +1551,9 @@ async function slackTeamOrg(dependencies: AwsBrokerDependencies, teamId: string)
  * bound to. A person of another org, or of none, cannot act through this team's channels.
  */
 async function slackCallerFor(dependencies: AwsBrokerDependencies, userId: string, teamId: string): Promise<DeveloperCaller> {
-  const developerId = developerIdForSlackUser(userId);
   const teamOrg = await slackTeamOrg(dependencies, teamId);
-  const orgId = requireOrgId(await orgResolverOf(dependencies)({ developerId }));
-  if (orgId !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
-  return slackWorkflowCaller(userId, orgId);
+  await requireSlackRequesterRule(dependencies, teamOrg, userId);
+  return slackWorkflowCaller(userId, teamOrg);
 }
 
 /** requireLatestProject for a record (a workspace) that belongs to a project. */
@@ -4488,12 +4486,14 @@ async function heldPreparationDispatch(
 async function slackRequesterRole(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): Promise<ProjectRole> {
   const slack = identity.slack;
   if (slack === undefined) return "contributor";
-  const orgId = requireOrgId(identity.orgId);
-  const developerId = developerIdForSlackUser(slack.requester.userId);
-  return effectiveProjectRole(
-    { developerId, orgRole: (await readOrgMember(dependencies, orgId, developerId))?.role ?? "member" },
-    await getMembership(dependencies, orgId, developerId, slack.binding.projectName), true,
-  ) ?? "contributor";
+  return slackRequesterProjectRole(dependencies, requireOrgId(identity.orgId), slack.requester.userId, slack.binding.projectName);
+}
+
+/** The Slack person's project role in the team's org, by the one requester rule (see requireSlackRequesterRule). */
+async function slackRequesterProjectRole(dependencies: AwsBrokerDependencies, orgId: OrgId, userId: string, projectName: string): Promise<ProjectRole> {
+  const developerId = developerIdForSlackUser(userId);
+  const orgRole = await requireSlackRequesterRule(dependencies, orgId, userId, { allowUnlinked: true });
+  return effectiveProjectRole({ developerId, orgRole }, await getMembership(dependencies, orgId, developerId, projectName), true) ?? "contributor";
 }
 
 /**
@@ -4514,13 +4514,42 @@ function requireSlackServiceRole(dependencies: AwsBrokerDependencies, request: A
   }
 }
 
-/** The member behind a Slack user (a merged duplicate counts as the member it was merged into) must not have been removed from the org. */
-async function requireSlackRequesterNotRemoved(dependencies: AwsBrokerDependencies, orgId: OrgId, slackUserId: string): Promise<void> {
-  const native = developerIdForSlackUser(slackUserId);
-  const merges = dependencies.developer === undefined ? undefined : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
-  const survivor = merges === undefined ? native : await followMerges(merges, native);
-  await requireNotRemoved(dependencies, orgId, native);
-  if (survivor !== native) await requireNotRemoved(dependencies, orgId, survivor);
+/**
+ * Slack requester role: ONE rule for who a Slack requester is in the org their team is bound to, shared by the ingress callers (slackCallerFor) and the service routes
+ * (slackServiceIdentity, slackRequesterRole, model access). Their own org must be the team's. Their member record is read under every id they answer to (a duplicate merged into
+ * another person counts as that person); a record whose role is missing or not one this release knows is refused, and an id with no record that has a removal or ban row is a
+ * removed person, refused everywhere (member removal). With no record at all, a person with no org (when `allowUnlinked`, the service routes) or an implicit member of a single-org
+ * install is served as before; the ingress callers need a real caller identity, so for them an unlinked person is refused as before.
+ */
+async function requireSlackRequesterRule(dependencies: AwsBrokerDependencies, orgIdOfTeam: OrgId, slackUserId: string, options: { allowUnlinked?: boolean } = {}): Promise<OrgRole> {
+  const developerId = developerIdForSlackUser(slackUserId);
+  // The single-org resolver answers the install's org for everyone, which says nothing about this person; only a tenant-resolving install (an orgResolver) can say they are of another org.
+  const resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? orgIdOfTeam : await orgResolverOf(dependencies)({ developerId });
+  const orgId = resolved === undefined && options.allowUnlinked === true ? orgIdOfTeam : requireOrgId(resolved);
+  if (orgId !== orgIdOfTeam) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+  const ids = [developerId];
+  if (dependencies.developer !== undefined) {
+    const merges = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+    for (let hop = 0; hop < 5; hop += 1) {
+      const next = (await merges.getDeveloper(ids[ids.length - 1]!))?.mergedInto;
+      if (typeof next !== "string" || next === "" || ids.includes(next)) break;
+      ids.push(next);
+    }
+  }
+  let role: OrgRole | undefined;
+  for (const id of ids) {
+    const record = await getItem<{ role?: unknown }>(dependencies, orgMemberKey(orgId, id));
+    if (record === undefined) {
+      for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
+        if (await getItem(dependencies, key) !== undefined) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
+      }
+      continue;
+    }
+    const parsed = OrgRoleSchema.safeParse(record.role);
+    if (!parsed.success) throw agentXError("FORBIDDEN", "your company role could not be read");
+    role ??= parsed.data;
+  }
+  return role ?? "member";
 }
 
 async function slackServiceIdentity(
@@ -4533,9 +4562,9 @@ async function slackServiceIdentity(
   const orgId = await slackTeamOrg(dependencies, context.thread.teamId);
   const binding = await getSlackBinding(dependencies, orgId, context.thread.teamId, context.thread.channelId);
   if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
-  // A person removed from the company is refused here, for every Slack service route (member removal): the identity link, the single-org resolver and the role fallback of
-  // `slackRequesterRole` (which reads a missing member as "member") all stand behind this. A person who never joined has no tombstone and is served as before.
-  await requireSlackRequesterNotRemoved(dependencies, orgId, context.requester.userId);
+  // A person removed from the company is refused here, for every Slack service route (member removal), by the one requester rule: the identity link, the single-org resolver and the role fallback of
+  // `slackRequesterRole` (which reads a missing member as "member") all stand behind it. A person who never joined has no tombstone and is served as before.
+  await requireSlackRequesterRule(dependencies, orgId, context.requester.userId, { allowUnlinked: true });
   const subject = slackThreadSubject(context.thread);
   const threadOwnerKey = ownerKeyForSubject(SLACK_THREAD_OWNER_ISSUER, subject);
   const own: AuthenticatedIdentity = {
@@ -7579,6 +7608,8 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
   if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
+  // The requester is checked here too, before anything is routed, admitted or minted: this route does not rely on a workspace having been made (and so checked) first.
+  if (await slackRequesterProjectRole(dependencies, teamOrg, requester.userId, binding.projectName) === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(binding.projectName));
   // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
   // known) and tagged so; without them it is minted as it always was.
   try {
@@ -18702,9 +18733,12 @@ export async function requireProjectAuthority(
   options: { taskCreator?: () => Promise<string | undefined> } = {},
 ): Promise<{ kind: "grant"; membership: MembershipRecord } | { kind: "org-role"; role: "owner" | "admin" }> {
   const membership = await getMembership(dependencies, orgId, ownerKey, projectName);
+  const creator = await options.taskCreator?.();
+  // A member record whose role is missing or not one this release knows is unreadable, so it is refused, not waved through by its grant; only a missing record is left to the branches below.
+  const record = await getItem<{ role?: unknown }>(dependencies, orgMemberKey(orgId, creator ?? ownerKey));
+  if (record !== undefined && !OrgRoleSchema.safeParse(record.role).success) throw agentXError("TASK_ACCESS_DENIED", "your company role could not be read");
   // A viewer's row is no authority to work on a project's task paths (Plan 2, Task 21): it falls through to the org role, then NOT_FOUND.
   if (membership && grantRoleOf(membership) !== "viewer") return { kind: "grant", membership };
-  const creator = await options.taskCreator?.();
   const member = await readOrgMember(dependencies, orgId, creator ?? ownerKey);
   if (member?.role === "owner" || member?.role === "admin") return { kind: "org-role", role: member.role };
   // R60 has already ended the task at its call sites; this only keeps the words right when the creator's record is gone.
@@ -18737,7 +18771,7 @@ async function requireAdministrator(
 }
 
 /** Spec 043: the SWE-bench module's dependencies, from the broker's; spec 052 wires its batches into them. */
-function swebenchDependencies(dependencies: AwsBrokerDependencies): EvalBatchDependencies {
+export function swebenchDependencies(dependencies: AwsBrokerDependencies): EvalBatchDependencies {
   const swebench = dependencies.swebench;
   if (swebench === undefined) throw agentXError("NOT_FOUND", "SWE-bench runs are not available in this deployment");
   return withEvalBatches({

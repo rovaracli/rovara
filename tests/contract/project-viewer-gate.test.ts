@@ -3,7 +3,7 @@
 // dispatch for a viewer's task starts, tasks without a People sidecar included. People with no grant keep the share design.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { projectMemberKey, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { pageAccess, requireProjectWorkRole } from "../../packages/broker/src/developer/task-access.js";
@@ -12,11 +12,102 @@ import type { createDeveloperTaskBroker} from "../support/developer-task-broker.
 import { createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
-import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, serviceCall } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, loadSlackBroker, serviceCall } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 const KIT: Developer = { developerId: "4".repeat(64), name: "Kit Alvarez", provider: "oidc", sessionId: "s-kit" };
+describe("Slack requester role: one shared rule for ingress and service routes", () => {
+  const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000801`;
+  const MAYA = "U0MAYA001";
+  const GUEST = "U0GUESTSL01";
+  const guestId = developerIdForSlackUser(GUEST);
+  const OTHER_ORG = "org_cccccccccccccccccccc";
+  const survivor = "9".repeat(64);
+
+  /** Every route that starts work or changes the project, for the workspace Maya made: the requester must be refused on each. */
+  async function refusedOnEveryRoute(h: Harness, who: string) {
+    const created = await ensureWorkspace(h.handler, thread, MAYA);
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const workspaceId = String(created.body.workspaceId);
+    const calls: Array<[string, string, string, unknown]> = [
+      ["POST", "/v1/service/threads/workspace/prepare", "prepare", { requestId: randomUUID() }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/pull-requests`, "pull request", { requestId: randomUUID(), repository: "demo", title: "Fix" }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/connectors/github/call`, "connector call", { tool: "x", arguments: {} }],
+      ["PUT", "/v1/service/project/model", "project model", { provider: "openai", modelId: "gpt-5" }],
+    ];
+    const ensure = await ensureWorkspace(h.handler, `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000802`, who);
+    expect(ensure.status, `ensure ${JSON.stringify(ensure.body)}`).toBe(403);
+    for (const [method, path, label, body] of calls) {
+      const refused = await serviceCall(h.handler, thread, who, method, path, body);
+      expect(refused.status, `${label} ${JSON.stringify(refused.body)}`).toBe(403);
+    }
+  }
+  /** The harness records a signed-in developer as a member; a merge deletes the duplicate's member record, so the Slack id is left with none. */
+  const mergedAway = (h: Harness) => {
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor });
+    h.db.delete(orgMemberKey(TEST_ORG, guestId));
+  };
+
+  it("a removed member and a banned member are refused", async () => {
+    for (const row of [orgRemovedKey(TEST_ORG, guestId), orgBanKey(TEST_ORG, guestId)]) {
+      const h = await withKit();
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: guestId });
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("a removal or ban row under the merge survivor's id alone refuses the merged-away Slack id", async () => {
+    for (const row of [orgRemovedKey(TEST_ORG, survivor), orgBanKey(TEST_ORG, survivor)]) {
+      const h = await withKit();
+      mergedAway(h);
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: survivor });
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("a member record with no role field, or a role this release does not know, is unreadable and refused, also under the merge survivor", async () => {
+    for (const arrange of [
+      (h: Harness) => { h.db.set({ pk: orgMemberKey(TEST_ORG, guestId).pk, sk: orgMemberKey(TEST_ORG, guestId).sk, orgId: TEST_ORG, developerId: guestId }); },
+      (h: Harness) => { h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "future-role" }); },
+      (h: Harness) => { mergedAway(h); h.db.set({ ...orgMemberKey(TEST_ORG, survivor), orgId: TEST_ORG, developerId: survivor }); },
+    ]) {
+      const h = await withKit();
+      arrange(h);
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("a requester of another org (a Slack Connect guest, a stale link) is refused", async () => {
+    const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === guestId ? OTHER_ORG : TEST_ORG) as never;
+    const h = await withKit({ brokerExtra: { orgResolver } });
+    seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, guestId, { orgId: OTHER_ORG, role: "member" });
+    h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("control: a single-org install still serves a person with no record (an unlinked requester)", async () => {
+    const h = await withKit();
+    const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("FORBIDDEN");
+    expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("REMOVED_FROM_ORG");
+  });
+});
+
+describe("the task paths read a member record that has no role as unreadable", () => {
+  it("refuses it, whatever grant the person still holds, and does not for a member with the same grant", async () => {
+    const h = await withKit();
+    const who = "6".repeat(64);
+    const { requireProjectAuthority } = await loadSlackBroker() as unknown as { requireProjectAuthority: (...args: unknown[]) => Promise<unknown> };
+    h.db.set({ ...projectMemberKey(TEST_ORG, who, "payments"), entityType: "MEMBERSHIP", ownerKey: who, projectName: "payments", role: "developer", projectRole: "maintainer", grantId: "g2" });
+    seedMembership(h.db, who, { orgId: TEST_ORG, role: "member" });
+    await expect(requireProjectAuthority(h.brokerInput, TEST_ORG, who, "payments")).resolves.toMatchObject({ kind: "grant" });
+    h.db.set({ ...orgMemberKey(TEST_ORG, who), orgId: TEST_ORG, developerId: who });
+    await expect(requireProjectAuthority(h.brokerInput, TEST_ORG, who, "payments")).rejects.toMatchObject({ code: "TASK_ACCESS_DENIED" });
+  });
+});
+
 const RESUMED_ORIGINAL = "This task was paused while you could only view the project. It has resumed with its original instructions; the instructions you just sent were not used, so send them again once it finishes.";
 const VIEWER_MESSAGE = "You can view `payments` but not start tasks in it. Ask a maintainer to make you a contributor.";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -26,8 +117,8 @@ function setGrant(db: FakeDynamoDb, who: Developer, role: ProjectRole): void {
     role: role === "viewer" ? "viewer" : "developer", projectRole: role });
 }
 
-async function withKit(): Promise<Harness> {
-  const h = await createSingleAnswerPlanBroker();
+async function withKit(options: Parameters<typeof createSingleAnswerPlanBroker>[0] = {}): Promise<Harness> {
+  const h = await createSingleAnswerPlanBroker(options);
   await h.orgOf(KIT);
   h.db.set({ pk: `SESSION#${KIT.sessionId}`, sk: "META", sessionId: KIT.sessionId, developerId: KIT.developerId, amr: KIT.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
   h.db.set({ pk: `DEVELOPER#${KIT.developerId}`, sk: "META", developerId: KIT.developerId, provider: "oidc", displayName: KIT.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
