@@ -73,7 +73,7 @@ function unescapeXml(text: string): string {
  * Removes comments and CDATA sections in one pass, so text inside them can never look like a test case. A comment or CDATA section that is never closed makes the file unreadable (`undefined`):
  * the rest could be anything.
  */
-function withoutCommentsAndCdata(text: string): string | undefined {
+export function withoutCommentsAndCdata(text: string): string | undefined {
   const pieces: string[] = [];
   let position = 0;
   for (;;) {
@@ -92,7 +92,7 @@ function withoutCommentsAndCdata(text: string): string | undefined {
 }
 
 /** The end of the tag that starts at `from` (the index of its `>`), reading quotes so a `>` inside an attribute value does not end it. -1 when it never ends. */
-function tagEnd(text: string, from: number): number {
+export function tagEnd(text: string, from: number): number {
   let quote = "";
   for (let index = from; index < text.length; index += 1) {
     const char = text[index]!;
@@ -110,7 +110,7 @@ const NAME_CHAR = /[\w:.-]/;
 const SPACE = /\s/;
 
 /** `name="value"` and `name='value'` pairs in one forward pass (no regular expression, no backtracking): each character is looked at once. A malformed pair is skipped, never retried. */
-function parseAttributes(text: string): Map<string, string> {
+export function parseAttributes(text: string): Map<string, string> {
   const attributes = new Map<string, string>();
   let index = 0;
   while (index < text.length) {
