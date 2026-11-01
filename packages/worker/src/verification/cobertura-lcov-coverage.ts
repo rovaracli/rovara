@@ -7,7 +7,7 @@
 //
 // The report is untrusted text (the repository's tests wrote it, and so may the agent): every read is bounded (bytes, files, lines), the scan is one forward pass with no backtracking, a malformed file is
 // refused whole, and a file name inside it only ever selects among the paths the diff already names, so it can never make AgentX read any other file.
-import { isAbsolute, normalize, relative, resolve, sep } from "node:path";
+import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { realpath } from "node:fs/promises";
 import { EVIDENCE_COVERAGE_FILES_MAX, EVIDENCE_UNCOVERED_LINES_MAX, isTestCommandHead, type EvidenceRaw, type ProjectCommand } from "@agentx/contracts";
 import type { CandidateChange } from "./diff.js";
@@ -24,6 +24,9 @@ export const COVERAGE_CHANGED_LINES_MAX = 2_000_000;
 export interface CoverageLimits { files: number; lines: number }
 export const COVERAGE_LIMITS: CoverageLimits = { files: COVERAGE_REPORT_MAX_FILES, lines: COVERAGE_REPORT_MAX_LINES };
 const NAME_MAX = 1_024;
+/** The most changed files that may share a name's last two path segments for a suffix match, and the most `<source>` directories tried for one: bounds the work a report can ask for. */
+const SUFFIX_CANDIDATES_MAX = 8;
+const SUFFIX_SOURCES_MAX = 8;
 const LCOV_LINE_MAX = 4_096;
 
 export type CoverageFormat = "cobertura" | "lcov";
@@ -263,9 +266,12 @@ export interface ChangedCoverage {
 }
 
 const posix = (path: string) => path.split(sep).join("/");
+/** The path below `directory` (POSIX separators), or undefined when it is not strictly inside it. Both are absolute and already normalised, so a prefix test is the whole check (and costs no path arithmetic). */
 const withinDirectory = (path: string, directory: string): string | undefined => {
-  const fromDirectory = relative(directory, path);
-  return fromDirectory === "" || fromDirectory === ".." || fromDirectory.startsWith(`..${sep}`) || isAbsolute(fromDirectory) ? undefined : posix(fromDirectory);
+  const prefix = directory.endsWith(sep) ? directory : `${directory}${sep}`;
+  if (!path.startsWith(prefix) || path.length === prefix.length) return undefined;
+  const rest = path.slice(prefix.length);
+  return rest.split(sep).includes("..") ? undefined : posix(rest);
 };
 
 interface Target { repositoryId: string; path: string; lines: Set<number> }
@@ -310,7 +316,15 @@ export async function intersectCoverage(parsed: ParsedCoverage, context: Interse
     roots.push({ repositoryId: repository.repositoryId, directories: [...new Set([resolve(repository.directory), ...(real === undefined ? [] : [real])])] });
   }
   const bases = [...new Set(context.bases.map((base) => resolve(base)))];
-  const suffixes = [...targets.values()].filter((target) => target.path.split("/").length >= 2).sort((left, right) => right.path.length - left.path.length);
+  // Targets with at least two path segments, by their last TWO segments, longest first: a suffix match looks only at the few targets that end the same way as the report's name, not at every changed file.
+  const lastTwo = (path: string): string => path.split("/").slice(-2).join("/");
+  const suffixes = new Map<string, Target[]>();
+  for (const target of [...targets.values()].filter((candidate) => candidate.path.split("/").length >= 2).sort((left, right) => right.path.length - left.path.length)) {
+    const key = lastTwo(target.path);
+    const listed = suffixes.get(key);
+    if (listed === undefined) suffixes.set(key, [target]);
+    else listed.push(target);
+  }
   const byTarget = new Map<Target, ReportLines>();
   const matchExact = (absolute: string): Target | undefined => {
     for (const root of roots) {
@@ -323,14 +337,17 @@ export async function intersectCoverage(parsed: ParsedCoverage, context: Interse
     return undefined;
   };
   const matchSuffix = (absolute: string): Target | undefined => {
-    const matches = suffixes.filter((target) => absolute.endsWith(`/${target.path}`));
+    const listed = suffixes.get(lastTwo(absolute)) ?? [];
+    // Many changed files that end the same way cannot be told apart by a suffix anyway: not guessed, and not scanned (a hostile report would make it a scan per name).
+    if (listed.length > SUFFIX_CANDIDATES_MAX) return undefined;
+    const matches = listed.filter((target) => absolute.endsWith(`/${target.path}`));
     const best = matches[0];
     // Two different files that fit equally well are not told apart.
     return best === undefined || matches.some((other) => other !== best && other.path.length === best.path.length) ? undefined : best;
   };
   for (const [name, lines] of parsed.files) {
     // Names the report itself makes absolute (an absolute file name, or a name under an absolute `<source>`) may be paths on another machine; names made absolute by this machine's own directories are exact or nothing.
-    const foreign = isAbsolute(name) ? [normalize(name)] : parsed.sources.filter((source) => isAbsolute(source)).map((source) => resolve(source, name));
+    const foreign = isAbsolute(name) ? [normalize(name)] : parsed.sources.filter((source) => isAbsolute(source)).slice(0, SUFFIX_SOURCES_MAX).map((source) => resolve(source, name));
     const local = isAbsolute(name) ? [] : [...parsed.sources.filter((source) => !isAbsolute(source)).flatMap((source) => bases.map((base) => resolve(base, source, name))), ...bases.map((base) => resolve(base, name))];
     let target: Target | undefined;
     for (const absolute of [...foreign, ...local]) {

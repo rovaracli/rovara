@@ -228,6 +228,36 @@ describe("the intersection of a report with the diff", () => {
   });
 });
 
+describe("hostile reports cost a bounded time", () => {
+  const timed = async <T>(work: () => Promise<T> | T): Promise<{ value: T; ms: number }> => { const start = performance.now(); const value = await work(); return { value, ms: performance.now() - start }; };
+
+  it("matches thousands of report names against thousands of changed files that end the same way, with many foreign sources, in well under 100 ms", async () => {
+    const changed = (count: number): RepositoryChanges[] => [{ repositoryId: "api", directory: join(root, "api"), changes: Array.from({ length: count }, (_, index) => ({ path: `p${String(index)}/src/index.ts`, status: "MODIFIED" as const, hunks: [[1, 3] as const] })) }];
+    const sources = Array.from({ length: 64 }, (_, index) => `<source>/ci/build${String(index)}</source>`).join("");
+    const classes = Array.from({ length: 5_000 }, (_, index) => `<class filename="m${String(index)}/src/index.ts"><lines><line number="1" hits="1"/></lines></class>`).join("");
+    const parsed = parseCobertura(`<coverage><sources>${sources}</sources><packages><package><classes>${classes}</classes></package></packages></coverage>`)!;
+    const hostile = await timed(() => intersectCoverage(parsed, { repositories: changed(2_000), bases: [root] }));
+    expect(hostile.value?.files).toEqual([]);
+    expect(hostile.ms).toBeLessThan(100);
+    // Few candidates: the suffix match still works for a name that is not on this machine.
+    const one = parseLcov(lcov([{ file: "/ci/build/p7/src/index.ts", lines: [[1, 1]] }]))!;
+    expect((await intersectCoverage(one, { repositories: changed(2_000), bases: [root] }))?.files).toHaveLength(0);
+    const single: RepositoryChanges[] = [{ repositoryId: "api", directory: join(root, "api"), changes: [{ path: "pkg/mod.ts", status: "MODIFIED" as const, hunks: [[1, 3] as const] }] }];
+    expect((await intersectCoverage(parseLcov(lcov([{ file: "/ci/build/pkg/mod.ts", lines: [[1, 1]] }]))!, { repositories: single, bases: [root] }))?.files).toHaveLength(1);
+  });
+
+  it("reads a SARIF file with tens of thousands of rules and results, each result naming its rule by id, in well under 100 ms", async () => {
+    const rules = Array.from({ length: 20_000 }, (_, index) => ({ id: `R${String(index)}`, properties: { "security-severity": "8.0" } }));
+    const results = Array.from({ length: 20_000 }, (_, index) => ({ ruleId: `R${String(19_999 - index)}`, message: { text: "m" }, locations: [{ physicalLocation: { artifactLocation: { uri: "a.py" }, region: { startLine: 1 } } }] }));
+    const text = JSON.stringify({ version: "2.1.0", runs: [{ tool: { driver: { name: "T", rules } }, results }] });
+    const { parseSarif } = await import("../../packages/worker/src/verification/sarif.js");
+    const run = await timed(() => parseSarif(text));
+    expect(run.value?.findings).toHaveLength(20_000);
+    expect(run.value?.findings.every((finding) => finding.severity === "high")).toBe(true);
+    expect(run.ms).toBeLessThan(100);
+  });
+});
+
 describe("reading the report file", () => {
   const NOW = () => Date.now() - 5_000;
 

@@ -113,6 +113,9 @@ export function parseSarif(source: string, roots: readonly string[] = [], maxRes
     const toolName = plainPath(text(driver.name) ?? "scanner", TOOL_MAX);
     if (tool === "") tool = toolName;
     const rules = Array.isArray(driver.rules) ? driver.rules.map(object) : [];
+    // One lookup table per run: a rule is found by id in constant time, however many rules and results the file lists (a scan per result was quadratic).
+    const ruleById = new Map<string, Record<string, unknown>>();
+    for (const candidate of rules) { const id = text(candidate?.id); if (candidate !== undefined && id !== undefined && !ruleById.has(id)) ruleById.set(id, candidate); }
     const results = Array.isArray(run.results) ? run.results : [];
     for (const rawResult of results) {
       if (findings.length >= maxResults) return undefined;
@@ -120,7 +123,7 @@ export function parseSarif(source: string, roots: readonly string[] = [], maxRes
       if (result === undefined) continue;
       const index = typeof result.ruleIndex === "number" ? result.ruleIndex : typeof object(result.rule)?.index === "number" ? (object(result.rule)!.index as number) : undefined;
       const ruleKey = text(result.ruleId) ?? text(object(result.rule)?.id);
-      const rule = (index === undefined ? undefined : rules[index]) ?? rules.find((candidate) => candidate !== undefined && text(candidate.id) === ruleKey);
+      const rule = (index === undefined ? undefined : rules[index]) ?? (ruleKey === undefined ? undefined : ruleById.get(ruleKey));
       const ruleId = plainPath(ruleKey ?? text(rule?.id) ?? "rule", RULE_MAX);
       const location = object(object(Array.isArray(result.locations) ? result.locations[0] : undefined)?.physicalLocation);
       const uri = text(object(location?.artifactLocation)?.uri);
