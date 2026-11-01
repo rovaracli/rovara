@@ -259,3 +259,6 @@ export * from "./e2e-model-spend.js";
 export * from "./team-record.js";
 export * from "./lessons.js";
 export * from "./spec-target.js";
+
+// Setup and test health: saved environments (SH3).
+export * from "./saved-env.js";
