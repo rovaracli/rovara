@@ -164,9 +164,13 @@ describe.runIf(process.platform === "linux" && IMAGE !== undefined)("the MCP run
     expect(limits["Max processes"]).toEqual({ soft: "256", hard: "256" });
     expect(limits["Max file size"]).toEqual({ soft: "536870912", hard: "536870912" });
     expect(limits["Max core file size"]).toEqual({ soft: "0", hard: "0" });
-    // the bridge itself is not root either
-    const bridge = parseStatus(await readFile(`/proc/${init}/status`, "utf8"));
-    void bridge;
+    // the bridge itself (the process that started the package) is not root either, and holds no capability; no_new_privs is set on the package it starts, not on the bridge
+    const bridgeProcess = (await Promise.all(below.map(async (item) => ({ pid: item, cmd: await readFile(`/proc/${item}/cmdline`, "utf8").catch(() => "") })))).find((item) => item.cmd.includes("serve.mjs"));
+    expect(bridgeProcess, `no process below ${init} runs serve.mjs`).toBeDefined();
+    const bridge = parseStatus(await readFile(`/proc/${bridgeProcess!.pid}/status`, "utf8"));
+    expect(bridge.uid).toEqual([10003, 10003, 10003, 10003]);
+    expect(bridge.gid).toEqual([10003, 10003, 10003, 10003]);
+    for (const name of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"] as const) expect(bridge.caps[name], `bridge ${name}`).toBe("0000000000000000");
     expect((await readlink(`/proc/${pid}/exe`)).endsWith("/node")).toBe(true);
   }, 120_000);
 
@@ -197,14 +201,28 @@ describe.runIf(process.platform === "linux" && IMAGE !== undefined)("the MCP run
 
   it("refuses to run as root: the bridge, fetch and install programs", async () => {
     const env = ["-e", `MCP_RUNNER_TOKEN=${"t".repeat(43)}`, "-e", `MCP_BUNDLE_HASH=${"a".repeat(64)}`, "-e", "MCP_CONTROLLER_URL=http://127.0.0.1:9", "-e", "MCP_PACKAGE_NAME=@acme/adversary", "-e", "MCP_MEMORY_MIB=512"];
+    // Each program says WHY it stopped. A catch-all line (a missing setting, an unreachable controller, an empty volume) would be printed in this run too, so the checks read the root code, and a
+    // control run as the right user must stop for another reason and NOT print it: remove the root check from a program and its test below fails.
     const serve = await run("0:0", [NODE, "/opt/mcp-runner/serve.mjs"], env);
     expect(serve.code).not.toBe(0);
-    expect(serve.stdout).toContain("bridge.start_failed");
+    expect(serve.stdout).toContain('"event":"bridge.start_failed"');
+    expect(serve.stdout).toContain('"code":"root"');
+    const serveControl = await run("10003:10003", [NODE, "/opt/mcp-runner/serve.mjs"], env);
+    expect(serveControl.code).not.toBe(0);
+    expect(serveControl.stdout).toContain('"event":"bridge.start_failed"');
+    expect(serveControl.stdout).not.toContain('"code":"root"');
     const fetched = await run("0:0", [NODE, "/opt/mcp-runner/fetch.mjs"], env);
     expect(fetched.code).not.toBe(0);
     expect(fetched.stdout).toContain('"code":"root"');
     const installed = await run("0:0", [NODE, "/opt/mcp-runner/install.mjs"], env);
     expect(installed.code).not.toBe(0);
+    expect(installed.stdout).toContain('{"component":"mcp-install","ok":false,"code":"root"}');
+    const installControl = await run("10002:10002", [NODE, "/opt/mcp-runner/install.mjs"], env);
+    expect(installControl.code).not.toBe(0);
+    expect(installControl.stdout).not.toContain('"code":"root"');
+    const groupInstall = await run("10002:0", [NODE, "/opt/mcp-runner/install.mjs"], env);
+    expect(groupInstall.code).not.toBe(0);
+    expect(groupInstall.stdout).toContain('"code":"root"');
     // and as a half-way root (uid 10003 with group 0)
     const group = await run("10003:0", [NODE, "/opt/mcp-runner/fetch.mjs"], env);
     expect(group.code).not.toBe(0);
@@ -215,6 +233,8 @@ describe.runIf(process.platform === "linux" && IMAGE !== undefined)("the MCP run
     const out = await execFileAsync("docker", ["run", "--rm", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--network", "none", "-v", `${resolve(".")}:/repo:ro`, NODE_IMAGE!, "node", "/repo/packages/broker/dist/mcp-host/main.js"], { timeout: 120_000 })
       .then(() => ({ code: 0, stderr: "" }), (error: { code?: number; stderr?: string }) => ({ code: error.code ?? 1, stderr: error.stderr ?? "" }));
     expect(out.code).not.toBe(0);
+    expect(out.stderr).toContain('"event":"start_failed"');
+    expect(out.stderr).toContain('"code":"root"');
     expect(out.stderr).toContain("must not run as root");
   }, 150_000);
 

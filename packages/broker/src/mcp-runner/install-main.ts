@@ -21,7 +21,7 @@ import { request as httpsRequest } from "node:https";
 import { dirname, isAbsolute, join } from "node:path";
 import { McpStdioProposalSchema, type McpStdioProposal } from "@agentx/contracts";
 import {
-  BUNDLE_LIMITS, BundleError, INSTALL_STEPS_SENTENCE, bootstrapEnvironment, LOCKFILE_LIMITS, runnerTokenWellFormed, runsAsRoot, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
+  BUNDLE_LIMITS, BundleError, INSTALL_STEPS_SENTENCE, bootstrapEnvironment, LOCKFILE_LIMITS, runnerTokenWellFormed, runsAsRoot, RootRefusedError, NpmTarballError, binOf, checkLockfile, extractNpmTarball, lockfileHash, normalizeTree, writeBundle,
   type LockfileRule, type LockfileVerdict,
 } from "@agentx/gateway";
 
@@ -446,7 +446,7 @@ export interface MainDependencies {
 export async function main(dependencies: MainDependencies): Promise<number> {
   const env = dependencies.env;
   const write = dependencies.write ?? ((line: string) => { process.stdout.write(`${line}\n`); });
-  if (runsAsRoot({ getuid: dependencies.getuid, getgid: dependencies.getgid })) throw new Error("the install task must not run as root");
+  if (runsAsRoot({ getuid: dependencies.getuid, getgid: dependencies.getgid })) throw new RootRefusedError("the install task");
   // The task's token and request are not in its environment: the one-time nonce is redeemed at the controller first. If that fails there is nothing to report to.
   try { await bootstrapEnvironment(env, dependencies.bootstrap); } catch {
     write(`${RESULT_PREFIX}${JSON.stringify({ ok: false, code: "invalid_request", sentence: INSTALL_FAILURES.invalid_request })}`);
@@ -497,6 +497,11 @@ export async function main(dependencies: MainDependencies): Promise<number> {
   return await finish({ ok: true, ...result.report }) ? 0 : 1;
 }
 
+/** The one line the install program prints when it was started as root and refused (the Linux job reads it); undefined for any other failure. */
+export function rootRefusalLine(error: unknown): string | undefined {
+  return error instanceof RootRefusedError ? JSON.stringify({ component: "mcp-install", ok: false, code: error.code }) : undefined;
+}
+
 /** Whether this file is the program being run (and not just imported). The real path is compared: a program started through a link would otherwise never start. */
 function isMainModule(): boolean {
   if (process.argv[1] === undefined) return false;
@@ -504,5 +509,10 @@ function isMainModule(): boolean {
 }
 
 if (isMainModule()) {
-  void main({ env: process.env }).then((code) => { process.exitCode = code; }, () => { process.exitCode = 1; });
+  void main({ env: process.env }).then((code) => { process.exitCode = code; }, (error: unknown) => {
+    // One fixed line saying why, for a root refusal (the Linux job reads it); any other failure here is silent, as before.
+    const line = rootRefusalLine(error);
+    if (line !== undefined) process.stdout.write(`${line}\n`);
+    process.exitCode = 1;
+  });
 }

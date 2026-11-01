@@ -23,7 +23,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, CallToolResultSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { McpStdioProposalSchema, mcpSecretEnvNameProblem } from "@agentx/contracts";
 import { binOf } from "./bin.js";
-import { runsAsRoot } from "./identity.js";
+import { RootRefusedError, runsAsRoot } from "./identity.js";
 import { runnerTokenWellFormed } from "./token-scope.js";
 import { StdioChildTransport, type ChildProcessSpec } from "./stdio-transport.js";
 
@@ -97,7 +97,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 type Tools = Awaited<ReturnType<Client["listTools"]>>["tools"];
 
 export function createBridge(options: BridgeOptions): Bridge {
-  if (runsAsRoot({ getuid: options.getuid, getgid: options.getgid, geteuid: options.geteuid, getegid: options.getegid })) throw new Error("the bridge must not run as root");
+  if (runsAsRoot({ getuid: options.getuid, getgid: options.getgid, geteuid: options.geteuid, getegid: options.getegid })) throw new RootRefusedError("the bridge");
   if (!runnerTokenWellFormed(options.token)) throw new Error("the bridge's token is not a 256-bit token");
   if (!/^[0-9a-f]{64}$/u.test(options.bundleHash)) throw new Error("the bundle hash is not a sha256");
   // The name, arguments and secret names are validated by the same rules the approval used.

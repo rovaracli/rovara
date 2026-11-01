@@ -11,7 +11,7 @@ import { OrgIdSchema, stdioSpecIfComplete } from "@agentx/contracts";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { createMcpController, ecsServerResources, ecsTaskRunner, objectBundleStore, runsAsRoot, type ApprovedServer, type ControllerRegistry, type McpController } from "@agentx/gateway";
+import { createMcpController, ecsServerResources, ecsTaskRunner, objectBundleStore, RootRefusedError, runsAsRoot, type ApprovedServer, type ControllerRegistry, type McpController } from "@agentx/gateway";
 import { orgMcpServerSecretName } from "../connections/org-secrets.js";
 import { cidrBlockListOf, parseInstallCidrs } from "../connections/private-endpoints.js";
 import { installEnvironmentName } from "../org/resolve.js";
@@ -132,7 +132,7 @@ export interface StartDependencies {
 export async function start(dependencies: StartDependencies = {}): Promise<void> {
   const identity = dependencies.identity ?? { getuid: () => process.getuid?.(), getgid: () => process.getgid?.(), geteuid: () => process.geteuid?.(), getegid: () => process.getegid?.() };
   // Not root, and not group root: the controller runs no customer code and needs no privilege. It refuses before it reads a secret or opens a port.
-  if (runsAsRoot(identity)) throw new Error("the MCP controller must not run as root");
+  if (runsAsRoot(identity)) throw new RootRefusedError("the MCP controller");
   const env = dependencies.env ?? process.env;
   const config = controllerConfigFromEnv(env);
   const token = env.MCP_HOST_TOKEN;
@@ -173,5 +173,5 @@ export async function start(dependencies: StartDependencies = {}): Promise<void>
 }
 
 if (process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  start().catch((error: unknown) => { console.error(JSON.stringify({ component: "mcp-controller", event: "start_failed", error: error instanceof Error ? error.message : "unknown" })); process.exit(1); });
+  start().catch((error: unknown) => { console.error(JSON.stringify({ component: "mcp-controller", event: "start_failed", ...(error instanceof RootRefusedError ? { code: error.code } : {}), error: error instanceof Error ? error.message : "unknown" })); process.exit(1); });
 }
