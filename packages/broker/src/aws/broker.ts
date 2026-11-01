@@ -4493,7 +4493,14 @@ async function slackRequesterRole(dependencies: AwsBrokerDependencies, identity:
 async function slackRequesterProjectRole(dependencies: AwsBrokerDependencies, orgId: OrgId, userId: string, projectName: string): Promise<ProjectRole> {
   const developerId = developerIdForSlackUser(userId);
   const orgRole = await requireSlackRequesterRule(dependencies, orgId, userId, { allowUnlinked: true });
-  return effectiveProjectRole({ developerId, orgRole }, await getMembership(dependencies, orgId, developerId, projectName), true) ?? "contributor";
+  // The explicit grant is read under the id whose role wins, as the role is: the survivor's grant first, then back along the merge and link chain to the Slack id's own. An explicit grant
+  // (a viewer's included) is applied before channel access, so linking or merging a Slack identity into a developer with a restrictive grant does not hand it the channel's contributor role.
+  let grant: MembershipRecord | undefined;
+  for (const id of [...(await slackRequesterIds(dependencies, developerId)).ids].reverse()) {
+    grant = await getMembership(dependencies, orgId, id, projectName);
+    if (grant !== undefined) break;
+  }
+  return effectiveProjectRole({ developerId, orgRole }, grant, true) ?? "contributor";
 }
 
 /**

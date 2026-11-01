@@ -263,6 +263,37 @@ describe("Slack requester role: one shared rule for ingress and service routes",
     await refusedOnEveryRoute(other, GUEST);
   });
 
+  /** Slack identity S reaches developer `survivor` by a merge, by an active link with its merge, or by a relink that did not restore the merge. */
+  const reaching: Array<[string, (h: Harness) => void]> = [
+    ["merged", (h) => mergedAway(h)],
+    ["linked", (h) => { mergedAway(h); h.db.set({ pk: `SIGNIN_IDENTITY#${guestId}`, sk: "META", identityKey: guestId, developerId: survivor, provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" }); }],
+    ["relinked", (h) => relinkedTo(h, survivor)],
+  ];
+
+  it("a viewer grant of the developer a Slack identity reaches binds it, so the project's channel does not make it a contributor", async () => {
+    for (const [how, reach] of reaching) {
+      const h = await withKit();
+      seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+      setGrant(h.db, { ...KIT, developerId: survivor }, "viewer");
+      reach(h);
+      await refusedOnEveryRoute(h, GUEST);
+      const refused = await prepared(h);
+      expect(refused?.code, how).toBe("PROJECT_ACCESS_DENIED");
+    }
+  });
+
+  it("a contributor grant of the developer a Slack identity reaches gives it contributor (control), and the survivor's grant wins over a stale one under the Slack id", async () => {
+    for (const [how, reach] of reaching) {
+      const h = await withKit();
+      seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+      setGrant(h.db, { ...KIT, developerId: survivor }, "contributor");
+      reach(h);
+      expect((await prepared(h))?.code, how).not.toBe("PROJECT_ACCESS_DENIED");
+      setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
+      expect((await prepared(h))?.code, `${how} with a stale viewer grant under the Slack id`).not.toBe("PROJECT_ACCESS_DENIED");
+    }
+  });
+
   it("control: a single-org install still serves a person with no record (an unlinked requester)", async () => {
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
@@ -322,6 +353,33 @@ describe("Slack model access for a project viewer", () => {
       const refused = await ask(h);
       expect(refused.status, JSON.stringify(extra)).toBe(403);
       expect(h.mintKey).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a viewer grant of the developer the identity reaches binds it for a key too, except the read-only task answer; a contributor grant gives a key (control)", async () => {
+    const other = "9".repeat(64);
+    const reaches: Array<[string, (h: Awaited<ReturnType<typeof modelAccessInstall>>) => void]> = [
+      ["merged", (h) => h.db.set({ pk: `DEVELOPER#${viewerId}`, sk: "META", developerId: viewerId, mergedInto: other })],
+      ["relinked", (h) => h.db.set({ pk: `SIGNIN_IDENTITY#${viewerId}`, sk: "META", identityKey: viewerId, developerId: other, provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" })],
+    ];
+    for (const [how, reach] of reaches) {
+      for (const grant of ["viewer", "contributor"] as const) {
+        const h = await modelAccessInstall();
+        h.db.delete(orgMemberKey(TEST_ORG, viewerId));
+        h.db.delete(projectMemberKey(TEST_ORG, viewerId, "payments"));
+        seedMembership(h.db, other, { orgId: TEST_ORG, role: "member" });
+        setGrant(h.db, { ...KIT, developerId: other }, grant);
+        reach(h);
+        h.db.delete(orgMemberKey(TEST_ORG, viewerId));
+        const ordinary = await ask(h);
+        expect(ordinary.status, `${how} ${grant}`).toBe(grant === "viewer" ? 403 : 200);
+        expect(h.mintKey).toHaveBeenCalledTimes(grant === "viewer" ? 0 : 1);
+        if (grant === "viewer") {
+          sharedTask(h);
+          expect((await ask(h)).status, `${how} task answer`).toBe(200);
+          expect(h.mintKey).toHaveBeenCalledTimes(1);
+        }
+      }
     }
   });
 
