@@ -20,3 +20,10 @@
 ## Status: ALL THREE TASKS DONE. Commits: 6be9916e3 + c670da0ea (suite), 951a19edd (metric), 1fae8e043 (memory arm).
 - Gaps found: GAP-1 reflect-input.ts:79 (steeringTrust absent fails open); GAP-2 sources.ts:60-76 + process.ts:104-110 (a burst spread over many sources never pauses auto-apply). Both are `it.fails` in learning-poisoning.test.ts.
 - report.md could not be written (the Write tool refused report files for this subagent); the full report went to the controller in the final hand-back message.
+
+## Fix round 1 (Opus review) -- DONE; merged private/cloud/next first (74c2cd3f2)
+1. GAP-1 fixed (e6dc7a22e): `reflect-input.ts` returns `unknown_steering` when `steeringTrust` is undefined; explicit `[]` stays eligible; it.fails flipped to a passing test.
+2. Bot trust (a4b71739b): `sources/slack.ts` takes the lower of `system` and the user's own trust for a bot message (the resolver answers system for any bot, so the user is asked as a person too). Tests in team-record-ingest-slack.test.ts and the suite; mutant killed.
+3. Stronger tests (7145dd0be): P1 variants carry a member span and assert the specific reason; P5 uses the real createCodeFacts + shared locateCitation over a fixture repo (only the file reader is a fixture; no production CitationVerifier on this branch yet, re-point `fixtureVerifier` when it lands). Mutants killed: F1-F8 (each eligibility rule, unknown_steering, stale/unknown citation as valid, PR head accepted, pathExists true).
+4. GAP-2 renamed "[open owner question, pins superseded rule C10]" with a comment (ec9dc6a6e); still it.fails.
+- Not touched: lessons/approve.ts (another lane). Mutated files restored byte for byte (git diff clean after each run).
