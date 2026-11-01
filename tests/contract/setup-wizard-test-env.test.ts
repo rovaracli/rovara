@@ -6,7 +6,7 @@ import { TestEnvironmentStateSchema, projectMetaKey, teamRecordPk, testEnvDigest
 import { testEnvChangeLines } from "../../packages/broker/src/org/test-env-diff.js";
 import { confirmationStands } from "../../packages/broker/src/org/test-environment.js";
 import { mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
-import { commandsToApply, runsOf, shownLine } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
+import { originOfSave, commandsToApply, runsOf, shownLine } from "../../packages/broker/src/aws/developer-routes/test-environment-wizard.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
 import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -164,7 +164,7 @@ describe("applying the proposal's commands to the project's settings", () => {
     ] }],
   }));
 
-  it("adds what the setup check has not run after the commands already there, marks them as Rovara's, starts the setup check, and a second press adds nothing", async () => {
+  it("adds what the setup check has not run after the commands already there, keeps a person's commands marked as the person's, starts the setup check, and a second press adds nothing", async () => {
     const t = await setupWizardBench();
     await withSwitch("1", async () => {
       await t.drafted(withNewCommands());
@@ -178,7 +178,8 @@ describe("applying the proposal's commands to the project's settings", () => {
       const definition = (t.db.find((item) => item.entityType === "PROJECT" && (item.definition as { revision: number }).revision === 2)[0] as { definition: { setup: Array<{ args: string[] }>; readiness: Array<{ args: string[] }>; origins?: Record<string, string> } }).definition;
       expect(definition.setup.map((entry) => entry.args[0])).toEqual(["old-setup", "deps"]);
       expect(definition.readiness.map((entry) => entry.args[0])).toEqual(["old-test", "smoke"]);
-      expect(definition.origins).toMatchObject({ setup: "agent", readiness: "agent" });
+      // The lists held commands a person set, so they stay a person's: a later suggestion that would replace them is flagged as a conflict.
+      expect(definition.origins).toBeUndefined();
       const again = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest, requestId: randomUUID(), expectedRevision: 2 });
       expect(again.status, JSON.stringify(again.body)).toBe(200);
       expect(again.body).toMatchObject({ added: [], settingsRevision: 2, setupCheck: "not_needed" });
@@ -564,5 +565,32 @@ describe("what the second person is shown", () => {
     const many = testEnvChangeLines(undefined, draftBody({ repos: Array.from({ length: 16 }, (_, index) => ({ repositoryId: `r${String(index)}`, setupCommands: [command("make", [`s${String(index)}`], 60)], checks: [{ id: `unit${String(index)}`, label: "U", command: command("make", [`t${String(index)}`], 60), kind: "test" }] })) }));
     expect(many.length).toBe(61);
     expect(many.at(-1)).toMatch(/^and \d+ more changes$/u);
+  });
+});
+
+describe("who the applied commands are credited to", () => {
+  const cmd = (name: string) => command("make", [name], 60);
+  const plan = { setup: [cmd("a")], readiness: [] };
+  it("a person's commands, or a maintainer's own edit, keep the person's mark; only Rovara's own drafts added to Rovara's own lists are marked as Rovara's", () => {
+    expect(originOfSave({ setup: [cmd("typed")], readiness: [] }, plan, false)).toBe("person"); // the list holds what a person set
+    expect(originOfSave({ setup: [cmd("typed")], readiness: [], origins: { setup: "agent" } }, plan, false)).toBe("agent");
+    expect(originOfSave({ setup: [cmd("typed")], readiness: [], origins: { setup: "agent" } }, plan, true)).toBe("person"); // the maintainer wrote the proposal
+    expect(originOfSave({ setup: [], readiness: [] }, plan, false)).toBe("agent"); // nothing of a person's to protect
+    expect(originOfSave({ setup: [cmd("typed")], readiness: [cmd("kept")], origins: { setup: "agent" } }, { setup: [cmd("a")], readiness: [cmd("b")] }, false)).toBe("person"); // one list is a person's
+    expect(originOfSave({ setup: [cmd("typed")], readiness: [cmd("kept")] }, { setup: [], readiness: [] }, false)).toBe("agent"); // nothing is changed
+  });
+  it("through the route: an edited proposal's commands are the person's even where Rovara had set the list", async () => {
+    const t = await setupWizardBench();
+    await withSwitch("1", async () => {
+      await t.approveFirst();
+      const revision = t.db.find((item) => item.entityType === "PROJECT")[0] as { definition: Record<string, unknown> } & Record<string, unknown>;
+      t.db.set({ ...revision, definition: { ...revision.definition, origins: { setup: "agent", readiness: "agent" } } });
+      const body = draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [{ id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" }, { id: "smoke", label: "Smoke", command: command("make", ["smoke"], 600), kind: "smoke" }] }] });
+      await t.web(OMAR, "POST", `${ENV}/edit`, { environment: body });
+      const applied = await t.dev(OMAR, "POST", `${ENV}/apply-commands`, { digest: testEnvDigest(body), requestId: randomUUID(), expectedRevision: 1 });
+      expect(applied.status, JSON.stringify(applied.body)).toBe(200);
+      const saved = t.db.find((item) => item.entityType === "PROJECT" && (item.definition as { revision: number }).revision === 2)[0] as { definition: { origins?: Record<string, string> } };
+      expect(saved.definition.origins?.readiness).toBeUndefined();
+    });
   });
 });

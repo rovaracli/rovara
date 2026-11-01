@@ -242,7 +242,7 @@ export async function routeTestEnvironment(
     const proposal = await readProposal(store, caller.orgId, name, parsed.data.digest);
     if (proposal === undefined) throw refuse("no_proposal");
     const latest = await latestOf(deps, caller.orgId, name);
-    const applied = await applyProposalCommands(deps, caller, { name, role, body: proposal, requestId: parsed.data.requestId, expectedRevision: parsed.data.expectedRevision, definition: latest.definition });
+    const applied = await applyProposalCommands(deps, caller, { name, role, body: proposal, requestId: parsed.data.requestId, expectedRevision: parsed.data.expectedRevision, edited: (await readEditedProposal(store, caller.orgId, name))?.digest === parsed.data.digest, definition: latest.definition });
     logDeveloperEvent({ event: "developer.test_env_commands_applied", orgId: caller.orgId, project: name, digest: parsed.data.digest, added: String(applied.added.length) });
     return new StatusReply(200, { ...applied, state: await stateOf(deps, project) });
   }

@@ -14,6 +14,8 @@ import {
   agentXError,
   formatCommandLine,
   projectAllows,
+  settingOriginOf,
+  type ProjectOrigins,
   testEnvDigest,
   type OrgId,
   type ProjectCommand,
@@ -149,13 +151,23 @@ export function commandsToApply(
 }
 
 /**
+ * Who the save is credited to. The mark is what protects a person's value: a later suggestion or meta-repo plan that would replace a value a person set is flagged as a conflict. So the commands stay a person's when
+ * the maintainer wrote the proposal (an edit), or when the list already held commands a person set; only commands Rovara drafted, added to lists that hold nothing of a person's, are marked as Rovara's.
+ */
+export function originOfSave(definition: { setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[]; origins?: ProjectOrigins | undefined }, plan: { setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }, edited: boolean): "person" | "agent" {
+  if (edited) return "person";
+  const personHolds = (field: "setup" | "readiness") => plan[field].length > 0 && definition[field].length > 0 && settingOriginOf(definition, field) === "person";
+  return personHolds("setup") || personHolds("readiness") ? "person" : "agent";
+}
+
+/**
  * Puts the proposal's commands into the project's settings, after the commands already there (a command a person typed is never replaced), through the settings save every other change uses: the maintainer's
  * role, the revision they looked at, the command rules and the meta repo's ownership of a setting all apply, and what it changes is marked as set by Rovara. Then the setup check starts, so it can run them.
  * Nothing is saved when there is nothing to add.
  */
 export async function applyProposalCommands(
   deps: DeveloperRouteDependencies, caller: DeveloperCaller,
-  input: { name: string; role: ProjectRole | undefined; body: TestEnvironmentBody; requestId: string; expectedRevision: number; definition: { revision: number; repositories: ReadonlyArray<{ path: string }>; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] } },
+  input: { name: string; role: ProjectRole | undefined; body: TestEnvironmentBody; requestId: string; expectedRevision: number; /** The proposal is a maintainer's own edit, so its commands are theirs. */ edited: boolean; definition: { revision: number; repositories: ReadonlyArray<{ path: string }>; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[]; origins?: ProjectOrigins | undefined } },
 ): Promise<Omit<TestEnvApplyAnswer, "state">> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change the project's settings");
   const { definition } = input;
@@ -171,7 +183,7 @@ export async function applyProposalCommands(
     requestId: input.requestId, expectedRevision: input.expectedRevision,
     ...(plan.setup.length === 0 ? {} : { setupCommands: [...definition.setup, ...plan.setup].map(formatCommandLine) }),
     ...(plan.readiness.length === 0 ? {} : { testCommands: [...definition.readiness, ...plan.readiness].map(formatCommandLine) }),
-  }, { origin: "agent" });
+  }, { origin: originOfSave(input.definition, plan, input.edited) });
   let setupCheck: TestEnvApplyAnswer["setupCheck"] = "started";
   try { await startProjectSetupCheck(deps, caller, encodeURIComponent(input.name), { requestId: derivedRequestId(input.requestId, "test-env-setup-check") }); } catch { setupCheck = "not_started"; }
   return { added: added.map(formatCommandLine), skipped: plan.skipped, settingsRevision: saved.project.latestRevision, setupCheck };
