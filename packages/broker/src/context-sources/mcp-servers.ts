@@ -61,6 +61,11 @@ export interface McpServerStore {
   /** Moves an entry from one status to another only if it still has `from` (and, for an approval, the tools hash that was shown). */
   decide(input: { orgId: OrgId; serverId: string; from: McpServerEntry["status"]; to: McpServerEntry["status"]; by: string; at: string; toolsHash?: string }): Promise<"ok" | "stale">;
   remove(orgId: OrgId, serverId: string): Promise<boolean>;
+  /**
+   * Fix round 1, S3: puts a paused entry (`changed_needs_review`) back to `approved` with the tools the admin was shown, only if it is still paused and still carries the tools hash it was paused with.
+   * The approved install (the integrity, the lockfile and bundle hashes, the destinations, the secret names) is not touched: only the tools, and who decided.
+   */
+  reapprove(input: { orgId: OrgId; serverId: string; pausedToolsHash: string; probe: McpServerProbe; by: string; at: string }): Promise<"ok" | "stale">;
 }
 
 const partition = (orgId: OrgId): string => orgScoped(orgId, "MCPSRV");
@@ -123,6 +128,20 @@ export function dynamoMcpServerStore(deps: { documentClient: DocumentClient; tab
           ConditionExpression: legacy ? "(#status = :from OR #status = :legacyApproved OR #status = :legacyWaiting)" : toolsHash === undefined ? "#status = :from" : "#status = :from AND #probe.toolsHash = :hash",
           ExpressionAttributeNames: { "#status": "status", ...(toolsHash === undefined ? {} : { "#probe": "probe" }) },
           ExpressionAttributeValues: { ":from": from, ":to": to, ":by": by, ":at": at, ...(legacy ? { ":legacyApproved": "approved", ":legacyWaiting": "awaiting_approval" } : {}), ...(toolsHash === undefined || legacy ? {} : { ":hash": toolsHash }) },
+        } }] }));
+        return "ok";
+      } catch (error) {
+        if (cancelled(error)) return "stale";
+        throw error;
+      }
+    },
+    async reapprove({ orgId, serverId, pausedToolsHash, probe, by, at }) {
+      try {
+        await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: {
+          TableName: deps.tableName, Key: key(orgId, serverId), UpdateExpression: "SET #status = :approved, #probe = :probe, decidedBy = :by, decidedAt = :at",
+          ConditionExpression: "#status = :paused AND #probe.toolsHash = :old",
+          ExpressionAttributeNames: { "#status": "status", "#probe": "probe" },
+          ExpressionAttributeValues: { ":approved": "approved", ":paused": "changed_needs_review", ":probe": probe, ":old": pausedToolsHash, ":by": by, ":at": at },
         } }] }));
         return "ok";
       } catch (error) {
@@ -383,7 +402,7 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
   guard(deps, actor);
   const entry = await deps.store.get(actor.orgId, serverId);
   if (entry?.status === "needs_reapproval") throw agentXError("CHANGE_STALE", "This server was added before approvals pinned the install. Add the package again to look at it now.");
-  if (entry?.status === "changed_needs_review") throw agentXError("CHANGE_STALE", "This server's tools changed after you allowed it, so it is paused. Add the package again to look at what it offers now, then turn the old one off.");
+  if (entry?.status === "changed_needs_review") throw agentXError("CHANGE_STALE", "This server's tools changed after you allowed it, so it is paused. Review what it offers now, then re-approve it.");
   if (entry === undefined || entry.status !== "awaiting_approval") throw agentXError("NOT_FOUND", "no MCP server is waiting for approval with that id");
   if (deps.secondAdminToApprove === true && entry.requestedBy === actor.developerId) throw agentXError("FORBIDDEN", "A second admin must approve this server.");
   if (entry.transport.kind === "stdio" && !stdioAvailable(deps)) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
@@ -414,6 +433,84 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
     } }),
   });
   return { ...entry, status: "approved", decidedBy: actor.developerId, decidedAt: at };
+}
+
+/** What changed between the tools an admin approved and the tools the paused server offers now. Names only decide the kind; the description is shown inert. */
+export interface McpToolsDiff {
+  added: Array<{ name: string; description: string; annotation: McpServerProbe["tools"][number]["annotation"] }>;
+  removed: Array<{ name: string }>;
+  changed: Array<{ name: string; description: string; annotation: McpServerProbe["tools"][number]["annotation"]; what: Array<"definition" | "read_only_claim"> }>;
+}
+
+export function diffTools(before: McpServerProbe["tools"], after: McpServerProbe["tools"]): McpToolsDiff {
+  const old = new Map(before.map((tool) => [tool.name, tool]));
+  const now = new Map(after.map((tool) => [tool.name, tool]));
+  const diff: McpToolsDiff = { added: [], removed: [], changed: [] };
+  for (const tool of after) {
+    const was = old.get(tool.name);
+    if (was === undefined) { diff.added.push({ name: tool.name, description: tool.description, annotation: tool.annotation }); continue; }
+    // The schema hash covers the tool's whole definition, its read-only claim included, so a changed claim is reported as the claim (its definition may have changed with it); the same claim with a
+    // different hash is a changed definition (its inputs, its description of itself).
+    const what: Array<"definition" | "read_only_claim"> = [];
+    if (was.annotation !== tool.annotation) what.push("read_only_claim");
+    else if (was.schemaHash !== tool.schemaHash) what.push("definition");
+    if (what.length > 0) diff.changed.push({ name: tool.name, description: tool.description, annotation: tool.annotation, what });
+  }
+  for (const tool of before) if (!now.has(tool.name)) diff.removed.push({ name: tool.name });
+  return diff;
+}
+
+/** The paused server's entry, with the checks every step of a re-approval makes: an admin, package-run servers on, a paused package-run entry whose install is pinned. */
+async function pausedEntry(deps: McpServerDependencies, actor: McpServerActor, serverId: string): Promise<{ entry: McpServerEntry; pinned: NonNullable<ReturnType<typeof stdioSpecIfComplete>> }> {
+  guard(deps, actor);
+  if (!stdioAvailable(deps)) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
+  const entry = await deps.store.get(actor.orgId, serverId);
+  if (entry === undefined || entry.status !== "changed_needs_review" || entry.transport.kind !== "stdio") throw agentXError("NOT_FOUND", "no MCP server is paused with that id");
+  // The pause kept the approved install; it is read as an approved entry would be.
+  const pinned = stdioSpecIfComplete({ ...entry, status: "approved" });
+  if (pinned === undefined) throw agentXError("CHANGE_STALE", "This server's install is not pinned. Add the package again to look at it now.");
+  return { entry, pinned };
+}
+
+/** Tests the pinned bundle again (nothing is installed) and returns the probe, after checking it is the bundle that was approved. */
+async function retest(deps: McpServerDependencies, actor: McpServerActor, entry: McpServerEntry, pinned: NonNullable<ReturnType<typeof stdioSpecIfComplete>>): Promise<Awaited<ReturnType<typeof probe>>> {
+  const again = await probe(deps, actor.orgId, { ...entry.transport, kind: "stdio", spec: pinned }, undefined, entry.hasSecret === true ? entry.serverId : undefined);
+  if (again.integrity !== pinned.integrity || again.lockfileHash !== pinned.lockfileHash || again.bundleHash !== pinned.bundleHash) throw agentXError("CHANGE_STALE", "The package is not the one you approved. Add it again to look at it now.");
+  return again;
+}
+
+/**
+ * Fix round 1, S3 (owner decision 2026-10-31: auto-pause after an upgrade that changes tools, one-click re-approve). What a paused server offers now, against what was approved: the pinned bundle is
+ * tested again (nothing is installed), and the admin gets the tools added, removed and changed, and the hash of what they were shown. Changes nothing.
+ */
+export async function reviewPausedMcpServer(deps: McpServerDependencies, actor: McpServerActor, serverId: string): Promise<{ server: McpServerEntry; offers: McpServerProbe; toolsHash: string; diff: McpToolsDiff }> {
+  const { entry, pinned } = await pausedEntry(deps, actor, serverId);
+  const again = await retest(deps, actor, entry, pinned);
+  return { server: entry, offers: again.probe, toolsHash: again.probe.toolsHash, diff: diffTools(entry.probe.tools, again.probe.tools) };
+}
+
+/**
+ * One click: approves the new tools of a paused server. The admin names the hash of the tools they were shown; the pinned bundle is tested again and must offer exactly those tools (otherwise
+ * nothing is approved and they look again). The install stays the one that was approved. The second-admin setting applies as it does to a first approval. The decision only lands on an entry that
+ * is still paused with the hash it was paused with.
+ */
+export async function reapprovePausedMcpServer(deps: McpServerDependencies, actor: McpServerActor, serverId: string, shownToolsHash: unknown): Promise<McpServerEntry> {
+  if (typeof shownToolsHash !== "string" || !/^[0-9a-f]{64}$/u.test(shownToolsHash)) throw agentXError("CONFIG_INVALID", "toolsHash: name the tools you were shown");
+  const { entry, pinned } = await pausedEntry(deps, actor, serverId);
+  if (deps.secondAdminToApprove === true && entry.requestedBy === actor.developerId) throw agentXError("FORBIDDEN", "A second admin must approve this server.");
+  const again = await retest(deps, actor, entry, pinned);
+  if (again.probe.toolsHash !== shownToolsHash) throw agentXError("CHANGE_STALE", "The server's tools are not the ones you were shown. Review what it offers now.");
+  const at = new Date(deps.now()).toISOString();
+  if (await deps.store.reapprove({ orgId: actor.orgId, serverId, pausedToolsHash: entry.probe.toolsHash, probe: again.probe, by: actor.developerId, at }) === "stale") throw agentXError("CHANGE_STALE", "That server was already decided. Reload the list.");
+  await told(deps, { action: "mcp_server.probed", actor, serverId, purpose: "approval", toolsHash: again.probe.toolsHash, bundleHash: pinned.bundleHash, toolCount: again.probe.tools.length });
+  await told(deps, {
+    action: "mcp_server.approved", actor, serverId, label: entry.label, transport: "stdio", hasToken: entry.hasSecret === true,
+    pin: {
+      integrity: pinned.integrity, lockfileHash: pinned.lockfileHash, bundleHash: pinned.bundleHash, toolsHash: again.probe.toolsHash, destinationCount: pinned.destinations.length, secretCount: pinned.secretEnv.length, secretVersion: entry.secretVersion,
+      destinations: pinned.destinations.map((item) => `${item.host}:${item.port}`).join(", "), secretNames: pinned.secretEnv.join(", "),
+    },
+  });
+  return { ...entry, status: "approved", probe: again.probe, decidedBy: actor.developerId, decidedAt: at };
 }
 
 /** Takes an approved server out of the allow-list (or turns down one that waits). Any admin may, at once. */

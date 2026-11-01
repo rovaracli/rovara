@@ -353,16 +353,74 @@ it("sends the server's token with the address, once, and offers package-run serv
    await screen.findByText("Wiki");
    expect(screen.queryByText(/Recent starts/)).toBeNull();
   });
-  it("says a paused server's tools changed, offers to look again with the same version, and can turn it off", async () => {
-   const f = mount([{ ...wiki, status: "changed_needs_review" }]);
+  const reviewBody = (toolsHash: string) => ({
+    server: { ...wiki, status: "changed_needs_review" }, toolsHash, offers: { tools: [{ name: "lookup_page", description: "Look up a page", annotation: "unannotated" }, { name: "get_ticket", description: "Read one", annotation: "read_only" }] },
+    diff: { added: [{ name: "lookup_page", description: "Look up a page", annotation: "unannotated" }], removed: [{ name: "close_ticket" }], changed: [{ name: "get_ticket", description: "Read one", annotation: "read_only", what: ["definition"] }] },
+  });
+  const mountHost = (f: { host: Parameters<typeof AppHostProvider>[0]["host"] }) => renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(McpServers) }) }));
+  function pausedHost(over: { reviewStatus?: number; reapproveStatus?: number } = {}) {
+   const calls: ApiRequest[] = [];
+   let list: unknown[] = [{ ...wiki, status: "changed_needs_review" }];
+   const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => {
+    if (input.method === "GET") return { status: 200, body: { servers: list, stdioAvailable: true } };
+    calls.push(input);
+    if (input.path.endsWith("/review")) return over.reviewStatus === undefined ? { status: 200, body: reviewBody(hash("e")) } : { status: over.reviewStatus, body: { error: { code: "FORBIDDEN", message: "Only an org owner or admin can add or approve an MCP server." } } };
+    if (input.path.endsWith("/reapprove")) { if ((over.reapproveStatus ?? 200) !== 200) return { status: over.reapproveStatus!, body: { error: { code: "CHANGE_STALE", message: "The server's tools are not the ones you were shown. Review what it offers now." } } }; list = [{ ...wiki, status: "approved" }]; return { status: 200, body: { server: { ...wiki, status: "approved" } } }; }
+    return { status: 200, body: {} };
+   });
+   return { ...f, calls };
+  }
+  it("says a paused server's tools changed, shows exactly what changed, and re-approves the tools it showed with one click", async () => {
+   const f = pausedHost();
+   mountHost(f);
    await screen.findByText(/Paused: its tools changed/);
    expect(screen.getByText(/Its tools are not the ones you allowed/)).toBeTruthy();
-   expect(screen.queryByRole("button", { name: "Review" })).toBeNull();
-   fireEvent.click(screen.getByRole("button", { name: "Look at it again" }));
-   expect((await screen.findByLabelText<HTMLInputElement>("Exact version")).value).toBe("2.0.1");
-   expect(screen.getByLabelText<HTMLInputElement>("Package").value).toBe("@acme/wiki-mcp");
-   fireEvent.click(screen.getByRole("button", { name: "Turn off" }));
+   fireEvent.click(screen.getByRole("button", { name: "Review what changed" }));
+   const card = await screen.findByRole("group", { name: "Paused server" });
+   const changes = card.querySelector("ul[aria-label='What changed']")!.textContent;
+   expect(changes).toContain("Added: lookup_page");
+   expect(changes).toContain("Removed: close_ticket");
+   expect(changes).toContain("Changed: get_ticket, its inputs or definition changed");
+   expect(f.calls.map(request => request.path)).toEqual(["/v1/app/org/mcp-servers/mcpwiki000001/review"]);
+   fireEvent.click(screen.getByRole("button", { name: "Re-approve" }));
+   await screen.findByText(/Allowed/);
+   const reapprove = f.calls.find(request => request.path.endsWith("/reapprove"))!;
+   expect(reapprove.body).toEqual({ toolsHash: hash("e") });
+   expect(screen.queryByRole("group", { name: "Paused server" })).toBeNull();
+   expect(screen.queryByRole("button", { name: "Review what changed" })).toBeNull();
+  });
+  it("Keep paused closes the card and sends nothing: the server stays paused", async () => {
+   const f = pausedHost();
+   mountHost(f);
+   fireEvent.click(await screen.findByRole("button", { name: "Review what changed" }));
+   await screen.findByRole("group", { name: "Paused server" });
+   fireEvent.click(screen.getByRole("button", { name: "Keep paused" }));
+   expect(screen.queryByRole("group", { name: "Paused server" })).toBeNull();
+   expect(f.calls.map(request => request.path.split("/").pop())).toEqual(["review"]);
+   expect(screen.getByText(/Paused: its tools changed/)).toBeTruthy();
+  });
+  it("shows the broker's refusal and no card to someone who may not re-approve, and keeps the card with its message when the tools moved again", async () => {
+   const refused = pausedHost({ reviewStatus: 403 });
+   mountHost(refused);
+   fireEvent.click(await screen.findByRole("button", { name: "Review what changed" }));
+   expect((await screen.findByRole("alert")).textContent).toBe("Only an org owner or admin can add or approve an MCP server.");
+   expect(screen.queryByRole("button", { name: "Re-approve" })).toBeNull();
+   expect(refused.calls.some(request => request.path.endsWith("/reapprove"))).toBe(false);
+  });
+  it("keeps the review card open with the broker's sentence when the tools moved again after the review", async () => {
+   const f = pausedHost({ reapproveStatus: 409 });
+   mountHost(f);
+   fireEvent.click(await screen.findByRole("button", { name: "Review what changed" }));
+   await screen.findByRole("group", { name: "Paused server" });
+   fireEvent.click(screen.getByRole("button", { name: "Re-approve" }));
+   expect((await screen.findByRole("alert")).textContent).toBe("The server's tools are not the ones you were shown. Review what it offers now.");
+   expect(screen.getByRole("group", { name: "Paused server" })).toBeTruthy();
+  });
+  it("can still turn a paused server off", async () => {
+   const f = mount([{ ...wiki, status: "changed_needs_review" }]);
+   fireEvent.click(await screen.findByRole("button", { name: "Turn off" }));
    await waitFor(() => expect(f.request.mock.calls.some(([request]) => (request).path.endsWith("/disable"))).toBe(true));
+   expect(screen.queryByRole("button", { name: "Look at it again" })).toBeNull();
   });
  });
 });

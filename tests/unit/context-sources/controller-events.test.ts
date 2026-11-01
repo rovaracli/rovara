@@ -204,7 +204,7 @@ describe("T10: pausing a server whose tools changed", () => {
     const recorded = w.capture.recordedBy("mcp_server.changed_needs_review")[0]!;
     expect(recorded.facts).toEqual({ approvedToolsHash: w.entry.probe.toolsHash, observedToolsHash: HASH_B });
     // a paused entry cannot be approved as it is, and says what to do
-    await expect(approveMcpServer(w.deps, admin, w.entry.serverId)).rejects.toThrow(/paused. Add the package again/u);
+    await expect(approveMcpServer(w.deps, admin, w.entry.serverId)).rejects.toThrow(/paused. Review what it offers now, then re-approve/u);
   });
   it("changes nothing when the entry no longer carries the approved hash (the admin already looked again) or is not approved any more", async () => {
     const w = await approvedServer();

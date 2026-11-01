@@ -5,7 +5,7 @@ import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { useAppHost } from "../../../host.js";
 import { ApiError } from "../../../api/errors.js";
-import { createContextSourcesApi, type McpActivityView, type McpServerView } from "../../../api/context-sources.js";
+import { createContextSourcesApi, type McpActivityView, type McpReviewView, type McpServerView } from "../../../api/context-sources.js";
 import type { PackageDraft } from "./McpPackageServer.js";
 
 // The form and the card of a server Rovara runs from a package are their own chunk: they are not in the startup JavaScript (the web bundle budget), and a Public install never loads them.
@@ -25,6 +25,19 @@ export function Activity({ activity }: { activity: McpActivityView }) {
  return <p>{activity.keepsStopping ? <strong>This server keeps stopping. Rovara has paused starting it for a while. </strong> : null}Recent starts: {activity.starts24h === 0 ? "none in the last day" : `${activity.starts24h} in the last day`}{activity.lastStartAt === undefined ? "" : `, the last at ${new Date(activity.lastStartAt).toLocaleString()}`}.{activity.lastStop === undefined ? "" : ` It ${stopWords[activity.lastStop.reason]}.`}</p>;
 }
 
+const changeWords = { definition: "its inputs or definition changed", read_only_claim: "what it says about only reading changed" } as const;
+
+/** Exactly which tools were added, removed or changed, in plain words. Names and descriptions come from the server and are shown inert. */
+function ToolChanges({ review }: { review: McpReviewView }) {
+ const { added, removed, changed } = review.diff;
+ if (added.length + removed.length + changed.length === 0) return <p>No tool was added, removed or changed. Its tools list differs from the approved one only in how Rovara hashes it.</p>;
+ return <ul aria-label="What changed">
+  {added.map(tool => <li key={`a-${tool.name}`}>Added: <code><VisibleText text={tool.name} /></code>, {annotationWords[tool.annotation]}. <VisibleText text={tool.description} /></li>)}
+  {removed.map(tool => <li key={`r-${tool.name}`}>Removed: <code><VisibleText text={tool.name} /></code>.</li>)}
+  {changed.map(tool => <li key={`c-${tool.name}`}>Changed: <code><VisibleText text={tool.name} /></code>, {tool.what.map(item => changeWords[item]).join(" and ")}; now {annotationWords[tool.annotation]}. <VisibleText text={tool.description} /></li>)}
+ </ul>;
+}
+
 function Offers({ server }: { server: McpServerView }) {
  return <details><summary>What it offers ({server.probe.tools.length} tools)</summary><ul>{server.probe.tools.map(tool => <li key={tool.name}><code><VisibleText text={tool.name} /></code>: {annotationWords[tool.annotation]}. <VisibleText text={tool.description} /></li>)}</ul></details>;
 }
@@ -37,7 +50,7 @@ export function McpServers() {
  const host = useAppHost(), api = useMemo(() => createContextSourcesApi(host), [host]);
  const client = useQueryClient(), [error, setError] = useState<string>(), [busy, setBusy] = useState(false);
  const [secret, setSecret] = useState(""), [kind, setKind] = useState<"http" | "stdio">("http"), [label, setLabel] = useState(""), [address, setAddress] = useState(""), [draft, setDraft] = useState<PackageDraft>(emptyDraft), [draftKey, setDraftKey] = useState(0);
- const [waiting, setWaiting] = useState<McpServerView>();
+ const [waiting, setWaiting] = useState<McpServerView>(), [reviewing, setReviewing] = useState<McpReviewView>();
  const read = useQuery({ queryKey: ["mcp-servers"], retry: false, gcTime: 0, refetchOnWindowFocus: false, queryFn: async () => api.servers() });
  const hidden = read.error instanceof ApiError && (read.error.status === 403 || read.error.status === 404);
  const servers = read.data?.servers, activity = read.data?.activity ?? {}, stdioAvailable = read.data?.stdioAvailable === true, loadError = read.isError && !hidden ? (read.error instanceof ApiError ? read.error.message : "Couldn't load MCP servers.") : undefined;
@@ -47,7 +60,14 @@ export function McpServers() {
   <h2 id="mcp-servers-title">MCP servers on your network</h2>
   <p>Add a server your team already runs, such as an issue tracker or a wiki. Rovara tests it, shows what it offers, and asks you before it uses it. Projects can then read from it in Understand, Plan, Plan check and Review, never in Build.</p>
   {(error ?? loadError) && <p role="alert">{error ?? loadError}</p>}
-  {waiting ? <div role="group" aria-label="Tested server">
+  {reviewing ? <div role="group" aria-label="Paused server">
+   <h3><VisibleText text={reviewing.server.label} />: its tools changed</h3>
+   <p>After an upgrade, this server offers different tools from the ones you allowed, so Rovara stopped using it. Here is exactly what changed. Re-approve it to use the tools below; the package, its files, its addresses and its secrets stay as you approved them.</p>
+   <ToolChanges review={reviewing} />
+   <Offers server={{ ...reviewing.server, probe: reviewing.offers }} />
+   <Button variant="primary" busy={busy} onClick={() => { void run(async () => { await api.reapproveServer(reviewing.server.serverId, reviewing.toolsHash);setReviewing(undefined); }); }}>Re-approve</Button>
+   <Button busy={busy} onClick={() => setReviewing(undefined)}>Keep paused</Button>
+  </div> : waiting ? <div role="group" aria-label="Tested server">
    <h3>Rovara tested <VisibleText text={waiting.label} /></h3>
    <p>It answered, and it offers these tools. Allow it only if this is the server you meant.</p>
    {waiting.transport.kind === "stdio" && <Suspense fallback={<p role="status">Loading the details.</p>}><PackageCard server={waiting as Parameters<typeof PackageCard>[0]["server"]} /></Suspense>}
@@ -73,10 +93,11 @@ export function McpServers() {
   {servers === undefined ? <p role="status">Loading MCP servers.</p> : servers.length === 0 ? <p>No MCP servers added yet.</p> : <ul>{servers.map(server => <li key={server.serverId}>
    <strong><VisibleText text={server.label} /></strong> · {statusWords[server.status]}{server.hasSecret === true ? " · has its own token" : ""} · {server.transport.kind === "http" ? <VisibleText text={server.transport.address} /> : <VisibleText text={`${server.transport.spec.name}@${server.transport.spec.version}`} />}
    {server.transport.kind === "stdio" && activity[server.serverId] !== undefined && <Activity activity={activity[server.serverId]!} />}
-   {server.status === "changed_needs_review" && <p role="note">Its tools are not the ones you allowed, so Rovara stopped using it. Add the package again to see what it offers now, then turn this one off.</p>}
+   {server.status === "changed_needs_review" && <p role="note">Its tools are not the ones you allowed, so Rovara stopped using it. Review what changed, then re-approve it or keep it paused.</p>}
    <Offers server={server} />
    {server.status === "awaiting_approval" && <Button disabled={busy} onClick={() => setWaiting(server)}>Review</Button>}
-   {server.transport.kind === "stdio" && stdioAvailable && server.status !== "needs_reapproval" && <Button disabled={busy} onClick={() => { if (server.transport.kind !== "stdio") return;setKind("stdio");setLabel(server.label);setDraft(server.status === "changed_needs_review" ? { ...draftFrom(server.transport.spec), version: server.transport.spec.version } : draftFrom(server.transport.spec));setDraftKey(key => key + 1); }}>{server.status === "changed_needs_review" ? "Look at it again" : "Add a newer version"}</Button>}
+   {server.status === "changed_needs_review" && <Button variant="primary" disabled={busy} onClick={() => { void run(async () => { setReviewing(await api.reviewServer(server.serverId)); }); }}>Review what changed</Button>}
+   {server.transport.kind === "stdio" && stdioAvailable && server.status !== "needs_reapproval" && server.status !== "changed_needs_review" && <Button disabled={busy} onClick={() => { if (server.transport.kind !== "stdio") return;setKind("stdio");setLabel(server.label);setDraft(draftFrom(server.transport.spec));setDraftKey(key => key + 1); }}>Add a newer version</Button>}
    {(server.status === "approved" || server.status === "changed_needs_review") && <Button disabled={busy} onClick={() => { void run(async () => { await api.disableServer(server.serverId); }); }}>Turn off</Button>}
    {server.status !== "approved" && <Button disabled={busy} onClick={() => { void run(async () => { await api.removeServer(server.serverId); }); }}>Remove</Button>}
   </li>)}</ul>}

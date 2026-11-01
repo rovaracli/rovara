@@ -35,6 +35,17 @@ const STOP_REASONS = ["idle", "lifetime", "disabled", "secret_replaced", "crash"
 /** How a package-run server has been doing, from the controller's own events (T10). */
 const McpActivityReader = z.object({ starts24h: z.number().int().min(0).max(100_000), lastStartAt: z.string().max(40).optional(), lastStop: z.object({ at: z.string().max(40), reason: z.enum(STOP_REASONS) }).optional(), keepsStopping: z.boolean() });
 export type McpActivityView = z.infer<typeof McpActivityReader>;
+const Annotation = z.enum(["read_only", "unannotated", "unsafe"]);
+/** What a paused server offers now against what was approved (fix round 1, S3). */
+const McpReviewReader = z.object({
+  server: McpServerReader, toolsHash: z.string().length(64), offers: z.object({ tools: z.array(ProbeTool).max(100) }),
+  diff: z.object({
+    added: z.array(z.object({ name: z.string().max(64), description: z.string().max(300), annotation: Annotation })).max(100),
+    removed: z.array(z.object({ name: z.string().max(64) })).max(100),
+    changed: z.array(z.object({ name: z.string().max(64), description: z.string().max(300), annotation: Annotation, what: z.array(z.enum(["definition", "read_only_claim"])).max(2) })).max(100),
+  }),
+});
+export type McpReviewView = z.infer<typeof McpReviewReader>;
 
 const TIMEOUT_MS = 120_000;
 
@@ -60,6 +71,8 @@ export function createContextSourcesApi(host: AppHost) {
     servers: () => call({ method: "GET", path: serversPath }, z.object({ servers: z.array(McpServerReader).max(200), stdioAvailable: z.boolean().optional(), activity: z.record(z.string().max(40), McpActivityReader).optional() })),
     addServer: (body: { label: string; transport: unknown; secret?: string; secrets?: Record<string, string> }) => call({ method: "POST", path: serversPath, body }, z.object({ server: McpServerReader }), [202]),
     approveServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/approve` }, z.object({ server: McpServerReader })),
+    reviewServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/review`, body: {} }, McpReviewReader),
+    reapproveServer: (serverId: string, toolsHash: string) => call({ method: "POST", path: `${serversPath}/${serverId}/reapprove`, body: { toolsHash } }, z.object({ server: McpServerReader })),
     disableServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/disable` }, z.object({}).passthrough()),
     removeServer: (serverId: string) => call({ method: "DELETE", path: `${serversPath}/${serverId}` }, z.object({}).passthrough()),
     connections: () => call({ method: "GET", path: "/v1/app/connections" }, z.object({ connections: z.array(z.object({ connectionId: z.string().max(60), label: z.string().max(200), type: z.string().max(64) })).max(1000) })),
