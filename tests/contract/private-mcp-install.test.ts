@@ -108,7 +108,8 @@ describe("the app, built as `rovara deploy` builds it", () => {
     expect(plain).not.toHaveProperty("ROVARA_PRIVATE_MCP_CIDRS");
     expect(plain).not.toHaveProperty("ROVARA_STDIO_MCP_SERVERS");
     expect(plain).not.toHaveProperty("MCP_HOST_URL");
-  });
+    // Two whole-app synths with real Lambda bundling: about 20 s here and over 60 s on the 2 vCPU runner, so it takes the timeout of the other synth tests.
+  }, 240_000);
   it("stops synth for a wrong setting, for package-run servers, and for any setting outside Enterprise", () => {
     expect(() => buildAgentXApp({ ...ENTERPRISE, [KEYS.cidrs]: "8.8.8.0/24" })).toThrow(new RegExp(KEYS.cidrs, "u"));
     expect(() => buildAgentXApp({ ...ENTERPRISE, [KEYS.cidrs]: "10.42.0.0/24" })).toThrow(/overlaps the network Rovara/u);
