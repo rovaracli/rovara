@@ -3,7 +3,7 @@
 // dispatch for a viewer's task starts, tasks without a People sidecar included. People with no grant keep the share design.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, sharedTaskKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { editionPolicy, orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, sharedTaskKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
@@ -200,6 +200,54 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     const read = await serviceCall(h.handler, thread, GUEST, "GET", "/v1/service/project/models");
     expect(read.status, JSON.stringify(read.body)).not.toBe(403);
     await refusedOnEveryRoute(h, GUEST);
+  });
+
+  describe("removal rows and the walk: a ban under any id refuses, a removal row only a person the survivor has no record for", () => {
+    const survivorId = "8".repeat(64);
+    const code = async (h: Harness) => (await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() })).body.error as { code?: string } | undefined;
+    /** The Slack id reaches `survivorId` by a merge, or by a relink (an active link with no merge); the Slack id keeps no member record of its own. */
+    const reach: Array<[string, (h: Harness) => void]> = [
+      ["merged", (h) => { h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivorId }); h.db.delete(orgMemberKey(TEST_ORG, guestId)); }],
+      ["relinked", (h) => {
+        h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId });
+        h.db.delete(orgMemberKey(TEST_ORG, guestId));
+        h.db.set({ pk: `SIGNIN_IDENTITY#${guestId}`, sk: "META", identityKey: guestId, developerId: survivorId, provider: "slack", linkedAt: "2026-10-21T00:00:00.000Z", lastSignInAt: "2026-10-21T00:00:00.000Z" });
+      }],
+    ];
+
+    it("a ban row under the merged-away or relinked Slack id refuses it, though the survivor is a member", async () => {
+      for (const [how, arrange] of reach) {
+        const h = await withKit();
+        seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "member" });
+        arrange(h);
+        h.db.set({ ...orgBanKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId });
+        expect(await code(h), how).toMatchObject({ code: "REMOVED_FROM_ORG" });
+      }
+    });
+
+    it("a removal row under the merged-away or relinked Slack id does not refuse it when the survivor is a member", async () => {
+      for (const [how, arrange] of reach) {
+        const h = await withKit();
+        seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "member" });
+        arrange(h);
+        h.db.set({ ...orgRemovedKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId });
+        const answered = await code(h);
+        expect(answered?.code, how).not.toBe("REMOVED_FROM_ORG");
+        expect(answered?.code, how).not.toBe("FORBIDDEN");
+      }
+    });
+
+    it("a removed or banned person on an install with the Auditor role is told they were removed, not to sign in once", async () => {
+      const enterprise = { ...editionPolicy("enterprise"), features: { ...editionPolicy("enterprise").features, sso: false } };
+      for (const row of [orgRemovedKey(TEST_ORG, guestId), orgBanKey(TEST_ORG, guestId)]) {
+        const h = await withKit({ brokerExtra: { editionPolicy: enterprise } });
+        h.db.set({ ...row, orgId: TEST_ORG, developerId: guestId });
+        expect(await code(h)).toMatchObject({ code: "REMOVED_FROM_ORG" });
+      }
+      // The control: with no tombstone the Enterprise install still asks the person to sign in once.
+      const never = await withKit({ brokerExtra: { editionPolicy: enterprise } });
+      expect(await code(never)).toMatchObject({ code: "FORBIDDEN" });
+    });
   });
 
   it("a member record with no role field is unreadable and refused, not defaulted to member", async () => {

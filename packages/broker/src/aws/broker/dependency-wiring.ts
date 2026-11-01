@@ -456,8 +456,8 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
     if (survivorOrg === undefined ? options.allowUnlinked !== true || resolved !== undefined : survivorOrg !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   }
   const role = options.allowReadOnly === true ? await liveReadRole(live, orgId, developerId) : await liveWriterRole(live, orgId, developerId);
-  const refuseIfRemoved = async (id: string): Promise<void> => {
-    for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
+  const refuseIfRemoved = async (id: string, only?: "ban"): Promise<void> => {
+    for (const key of only === "ban" ? [orgBanKey(orgId, id)] : [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
       if (await getItem(dependencies, key) !== undefined) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
     }
   };
@@ -468,12 +468,16 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
   if (former !== undefined && former !== developerId) {
     for (const id of await personIds(live, former)) if ((await liveStoredRole(live, orgId, id)).present === false) await refuseIfRemoved(id);
   }
+  // A ban row under ANY id the person answers to refuses, even when the survivor has a member record: an invite clears a ban, so one still there is live. A removal row is never cleared, so
+  // it refuses only a person with no member record (one invited again under the survivor works).
+  const walked = await personIds(live, developerId);
+  for (const id of walked) await refuseIfRemoved(id, "ban");
   if (role !== undefined) return role;
-  // An Enterprise install has one company whose people all sign in; a Slack identity with no member record is nobody's, so it is not let in as an implicit member there.
+  // A removed person is told so before anything else; then an Enterprise install, which has one company whose people all sign in, does not let a Slack identity with no member record in as an implicit member.
+  for (const id of walked) await refuseIfRemoved(id);
   if (dependencies.editionPolicy !== undefined && featureEnabled(dependencies.editionPolicy, "auditorRole")) {
     throw agentXError("FORBIDDEN", "this Slack member has not signed in to Rovara; sign in once, then try again");
   }
-  for (const id of await personIds(live, developerId)) await refuseIfRemoved(id);
   return "member";
 }
 
