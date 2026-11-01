@@ -233,7 +233,8 @@ describe("code send-back capture: the stage", () => {
 });
 
 describe("code send-back capture: an outsider decider (the same as B4's plan send-back)", () => {
-  const OUTSIDERS: Array<[string, GrantKind]> = [["a project viewer", "viewer"], ["a person with no grant (a commenter)", "none"]];
+  // A project viewer who took the task over may not send it back at all (viewers only view), so the outsider case is a person with no grant.
+  const OUTSIDERS: Array<[string, GrantKind]> = [["a person with no grant (a commenter)", "none"]];
   for (const [label, grant] of OUTSIDERS) {
     it(`an owner who took the task over as ${label} is stored as outsider (stored for a maintainer to see, never grouped)`, async () => {
       const t = await blockedTask({ program: true });
@@ -247,6 +248,14 @@ describe("code send-back capture: an outsider decider (the same as B4's plan sen
       expect(corrections(t.harness)[0]!.suggestionId).toBeUndefined();
     });
   }
+
+  it("an owner who took the task over as a project viewer is refused, so nothing is captured", async () => {
+    const t = await blockedTask({ program: true });
+    seedPerson(t.harness.db, OMAR_CALLER, "viewer");
+    t.takeOver(OMAR_CALLER);
+    await expect(t.send(OMAR_CALLER, NOTE)).rejects.toMatchObject({ code: "MODEL_NOT_ALLOWED" });
+    expect(learningItems(t.harness.db)).toEqual([]);
+  });
 
   it("a viewer is refused on the developer API, so nothing reaches capture", async () => {
     const t = await blockedTask({ program: true });
