@@ -1,10 +1,12 @@
-// Stdio MCP host redesign (T8), design sections 2, 3, 6, 7, 8 and 16. The infrastructure of the MCP CONTROLLER and of the runner tasks it starts. Nothing is deployed by this file and
+// Stdio MCP host redesign (T8, fix round 1 S1), design sections 2, 3, 6, 7, 8 and 16. The infrastructure of the MCP CONTROLLER and of the runner tasks it starts. Nothing is deployed by this file and
 // nothing instantiates it yet: package-run servers are off (register ME-14) until the turn-on checklist is done.
 //
 //   - the CONTROLLER: one Fargate service, uid 10001, every capability dropped, read-only root, behind an internal HTTPS load balancer for the broker, and reached DIRECTLY by the
 //     runner tasks on a TLS port (Cloud Map name, no load balancer: the bootstrap checks the task's own address);
-//   - the RUNNER NETWORK: dedicated private subnets with their own route table. The table holds no route at all but the VPC's own and the S3 gateway endpoint: no NAT, no internet
-//     gateway, no IPv6. The security groups of the individual servers are made by the controller at approval (infra holds only the install task's);
+//   - the RUNNER NETWORK: dedicated private subnets with their own route table: the VPC's own route, the S3 gateway endpoint, ONE default route to a NAT gateway (fix round 1, S1: an approved
+//     destination and the registry are outside the VPC, and a route table with no way out reaches neither), and optional routes to the customer's own networks (transit gateway or peering) for
+//     their private ranges. No internet-gateway route and no IPv6 in this table. What a task may reach is decided by security groups, not by routes: each server's own group (made by the
+//     controller at approval) holds only its approved destinations as /32, and the install task's group only the registry ranges; nothing in this file or the controller is 0.0.0.0/0;
 //   - the INSTALL task definition `rovara-mcp-install` (static, no task role); serve and probe definitions are registered by the controller from `buildRunnerTaskDefinition`;
 //   - two roles of consequence: the runner EXECUTION role (image pull, logs, and the `mcp*` secrets of this org only) and the controller's TASK role (ECS limited to `rovara-mcp-*`
 //     families and the cluster, PassRole of that one execution role, security groups by tag, the bundle bucket, and three partitions of the state table);
@@ -38,6 +40,13 @@ export interface McpHostProps {
   subnetIds: string[];
   /** One range per runner subnet (one per availability zone, in the order of `availabilityZones`), for example 10.42.160.0/22. Size them for 16 serve tasks plus probes (one address each). */
   runnerSubnetCidrs: string[];
+  /**
+   * A PUBLIC subnet of the VPC (one with a route to the internet gateway) to put the runner network's NAT gateway in. One gateway serves both runner subnets; it is in one availability zone, so
+   * that zone's loss takes the runners' way out with it (a second gateway per zone would cost the same again). Cost: see the report (about $36 a month, plus $0.045 per GB).
+   */
+  natSubnetId: string;
+  /** Routes from the runner subnets to the customer's own networks (a destination or a registry inside a private range of theirs): a private range and one target each. Optional, at most 8. */
+  runnerRoutes?: ReadonlyArray<{ cidr: string; transitGatewayId?: string; vpcPeeringConnectionId?: string }>;
   region: string;
   /** The image that holds the broker build (`node packages/broker/dist/mcp-host/main.js`), run as uid 10001 with a `VOLUME ["/tmp"]` owned by that uid. */
   image: ecs.ContainerImage;
@@ -78,6 +87,7 @@ const DNS_NAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]
 const ECR_IMAGE_BY_DIGEST = /^(\d{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com\/([a-z0-9][a-z0-9._/-]{0,255})@sha256:[0-9a-f]{64}$/u;
 const ENV_NAME = /^[a-z][a-z0-9-]{0,30}$/u;
 const ORG_ID = /^org_[A-Za-z0-9]{20}$/u;
+const PRIVATE_BLOCKS: ReadonlyArray<readonly [number, number]> = [[0x0a000000, 8], [0xac100000, 12], [0xc0a80000, 16], [0x64400000, 10]];
 const IPV4_CIDR = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/u;
 
 function parseCidr(cidr: string): { first: number; last: number } | undefined {
@@ -125,6 +135,7 @@ export class McpHost extends Construct {
   readonly bundleKey: kms.Key;
   readonly runnerSubnets: readonly ec2.CfnSubnet[];
   readonly runnerRouteTable: ec2.CfnRouteTable;
+  readonly natGateway: ec2.CfnNatGateway;
   readonly installTaskDefinition: ecs.CfnTaskDefinition;
 
   constructor(scope: Construct, id: string, props: McpHostProps) {
@@ -149,6 +160,20 @@ export class McpHost extends Construct {
     const vpcRange = parseCidr(props.vpcCidr);
     if (vpcRange === undefined) throw new Error("the VPC range is not an IPv4 range");
     if (props.runnerSubnetCidrs.length < 1 || props.runnerSubnetCidrs.length > props.availabilityZones.length) throw new Error("the runner network needs one subnet range per availability zone it uses");
+    if (!/^subnet-[0-9a-f]{8,17}$/u.test(props.natSubnetId ?? "")) throw new Error("the NAT gateway needs a public subnet of the VPC (natSubnetId)");
+    if (props.natSubnetId !== undefined && props.subnetIds.includes(props.natSubnetId)) throw new Error("the NAT gateway's subnet must be a public subnet, not one the controller runs in");
+    const runnerRoutes = props.runnerRoutes ?? [];
+    if (runnerRoutes.length > 8) throw new Error("at most 8 routes to the customer's networks");
+    for (const route of runnerRoutes) {
+      const range = parseCidr(route.cidr);
+      const prefix = Number(route.cidr.split("/")[1]);
+      const inPrivate = range !== undefined && PRIVATE_BLOCKS.some(([base, bits]) => prefix >= bits && range.first >= base && range.last <= base + 2 ** (32 - bits) - 1);
+      if (range === undefined || !inPrivate) throw new Error(`runner route ${JSON.stringify(route.cidr)} is not a private range (10/8, 172.16/12, 192.168/16, 100.64/10); the way to the internet is the NAT route`);
+      if (range.first <= vpcRange.last && vpcRange.first <= range.last) throw new Error(`runner route ${JSON.stringify(route.cidr)} overlaps the VPC's own range`);
+      const targets = [route.transitGatewayId, route.vpcPeeringConnectionId].filter((target) => target !== undefined);
+      const target = targets[0];
+      if (targets.length !== 1 || !(/^tgw-[0-9a-f]{8,17}$/u.test(target ?? "") || /^pcx-[0-9a-f]{8,17}$/u.test(target ?? ""))) throw new Error(`runner route ${JSON.stringify(route.cidr)} needs exactly one transit gateway (tgw-...) or peering connection (pcx-...)`);
+    }
     props.runnerSubnetCidrs.forEach((cidr, index) => {
       const range = parseCidr(cidr);
       const prefix = Number(cidr.split("/")[1]);
@@ -173,9 +198,19 @@ export class McpHost extends Construct {
     this.runnerSubnets = props.runnerSubnetCidrs.map((cidrBlock, index) => new ec2.CfnSubnet(this, `RunnerSubnet${index}`, {
       vpcId: props.vpcId, cidrBlock, availabilityZone: props.availabilityZones[index]!, mapPublicIpOnLaunch: false, tags: nameTag(`rovara-mcp-runner-${index + 1}`),
     }));
-    // A route table with NO routes of its own: the VPC's local route is implicit, and the S3 gateway endpoint below adds the S3 prefix list. No NAT, no internet gateway, no IPv6.
+    // The VPC's local route is implicit, and the S3 gateway endpoint below adds the S3 prefix list. The routes out are added below: one NAT default route and the customer's private ranges.
     this.runnerRouteTable = new ec2.CfnRouteTable(this, "RunnerRouteTable", { vpcId: props.vpcId, tags: nameTag("rovara-mcp-runner") });
     this.runnerSubnets.forEach((subnet, index) => new ec2.CfnSubnetRouteTableAssociation(this, `RunnerAssociation${index}`, { routeTableId: this.runnerRouteTable.ref, subnetId: subnet.ref }));
+    // The way out (fix round 1, S1): a NAT gateway in the public subnet, and ONE default route to it. There is no route to the internet gateway in this table, and no IPv6 route.
+    this.natGateway = new ec2.CfnNatGateway(this, "RunnerNat", {
+      subnetId: props.natSubnetId, allocationId: new ec2.CfnEIP(this, "RunnerNatAddress", { domain: "vpc", tags: nameTag("rovara-mcp-runner-nat") }).attrAllocationId, connectivityType: "public", tags: nameTag("rovara-mcp-runner-nat"),
+    });
+    new ec2.CfnRoute(this, "RunnerDefaultRoute", { routeTableId: this.runnerRouteTable.ref, destinationCidrBlock: "0.0.0.0/0", natGatewayId: this.natGateway.ref });
+    // Routes to the customer's own private ranges (transit gateway or peering), when they gave any: a destination or a registry inside their network is not reached through the internet.
+    runnerRoutes.forEach((route, index) => new ec2.CfnRoute(this, `RunnerRoute${index}`, {
+      routeTableId: this.runnerRouteTable.ref, destinationCidrBlock: route.cidr,
+      ...(route.transitGatewayId === undefined ? {} : { transitGatewayId: route.transitGatewayId }), ...(route.vpcPeeringConnectionId === undefined ? {} : { vpcPeeringConnectionId: route.vpcPeeringConnectionId }),
+    }));
     // Image layers come from S3 (ECR keeps them there), so Fargate in these subnets needs the S3 gateway endpoint (AWS docs: Amazon ECR interface VPC endpoints). The policy is the install's own.
     new ec2.CfnVPCEndpoint(this, "RunnerS3Endpoint", {
       serviceName: `com.amazonaws.${region}.s3`, vpcEndpointType: "Gateway", vpcId: props.vpcId, routeTableIds: [this.runnerRouteTable.ref], policyDocument: endpointPolicyDocument("s3", region),

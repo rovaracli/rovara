@@ -109,10 +109,20 @@ describe("the MCP host's settings", () => {
     // outside Enterprise none of them is accepted
     for (const key of [KEYS.runnerSubnetCidrs, KEYS.registryCidrs, KEYS.controllerTlsSecretArn, KEYS.controllerDnsNamespace, KEYS.controllerCa]) expect(() => parsePrivateMcpContext({ edition: "public", get: context({ [key]: full[key] ?? "x" }) }), key).toThrow(/Enterprise/u);
   });
+  it("fix round 1 S1: take the routes to the customer's networks as <range>=<tgw or pcx id>, at most 8, and no other shape", () => {
+    const ok = parsePrivateMcpContext({ edition: "enterprise", get: context({ ...full, [KEYS.runnerRoutes]: "10.60.0.0/16=tgw-0123456789abcdef0, 192.168.8.0/24=pcx-0123456789abcdef0" }) });
+    expect(ok.runnerRoutes).toEqual([{ cidr: "10.60.0.0/16", transitGatewayId: "tgw-0123456789abcdef0" }, { cidr: "192.168.8.0/24", vpcPeeringConnectionId: "pcx-0123456789abcdef0" }]);
+    expect(mcpHostPropsFromInstall(ok).runnerRoutes).toEqual(ok.runnerRoutes);
+    expect(mcpHostPropsFromInstall(parsePrivateMcpContext({ edition: "enterprise", get: context(full) }))).not.toHaveProperty("runnerRoutes");
+    for (const bad of ["", "10.60.0.0/16", "10.60.0.0/16=igw-0123456789abcdef0", "0.0.0.0/0=tgw-0123456789abcdef0", "10.60.0.0/16=tgw-xyz", 5, Array.from({ length: 9 }, (_, i) => `10.${60 + i}.0.0/16=tgw-0123456789abcdef0`).join(",")]) {
+      expect(() => parsePrivateMcpContext({ edition: "enterprise", get: context({ [KEYS.runnerRoutes]: bad }) }), String(bad)).toThrow(new RegExp(KEYS.runnerRoutes, "u"));
+    }
+    expect(() => parsePrivateMcpContext({ edition: "public", get: context({ [KEYS.runnerRoutes]: "10.60.0.0/16=tgw-0123456789abcdef0" }) })).toThrow(/Enterprise/u);
+  });
   it("are what McpHost is built from, and McpHost itself refuses a certificate that is not an ACM one", () => {
     const props = toHost(full);
     const build = (certificateArn: string) => new McpHost(new Stack(new App(), "S", { env: { account: "111111111111", region: "us-east-1" } }), "H", {
-      vpcId: "vpc-0123456789abcdef0", vpcCidr: "10.42.0.0/16", availabilityZones: ["us-east-1a", "us-east-1b"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"], region: "us-east-1",
+      vpcId: "vpc-0123456789abcdef0", vpcCidr: "10.42.0.0/16", availabilityZones: ["us-east-1a", "us-east-1b"], subnetIds: ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"], natSubnetId: "subnet-0cccccccccccccccc", region: "us-east-1",
       image: ecs.ContainerImage.fromRegistry("x"), runnerImage: `111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara/mcp-runner@sha256:${"a".repeat(64)}`, clientSecurityGroupIds: [],
       endpointSecurityGroupId: "sg-0endpoints000000000", stateTableArn: "arn:aws:dynamodb:us-east-1:111111111111:table/s", stateTableName: "s", orgId: "org_aaaaaaaaaaaaaaaaaaaa", agentxEnv: "ent", ...props, certificateArn,
     });

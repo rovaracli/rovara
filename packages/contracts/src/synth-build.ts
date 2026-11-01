@@ -46,6 +46,7 @@ export const SYNTH_CONTEXT_KEYS = [
   "rovaraMcpHostedZoneId",
   "rovaraMcpNpmRegistry",
   "rovaraMcpRunnerSubnetCidrs",
+  "rovaraMcpRunnerRoutes",
   "rovaraMcpRegistryCidrs",
   "rovaraMcpControllerTlsSecretArn",
   "rovaraMcpControllerDnsNamespace",

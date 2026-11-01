@@ -3,6 +3,7 @@
 //
 //   rovaraPrivateMcpCidrs          comma-separated private ranges outside which no private MCP server is tested or called -> ROVARA_PRIVATE_MCP_CIDRS
 //   rovaraStdioMcpServers          package-run servers. Stops synth unless the release flag STDIO_MCP_RELEASED is true (it is false); then every setting below is required
+//   rovaraMcpRunnerRoutes          optional: routes from the runner subnets to the customer's own private ranges, `<cidr>=<tgw-...|pcx-...>`, comma-separated, at most 8
 //   rovaraMcpRunnerSubnetCidrs, rovaraMcpRegistryCidrs, rovaraMcpControllerTlsSecretArn, rovaraMcpControllerDnsNamespace, rovaraMcpControllerCa   the runner network, the registry's ranges, the controller's certificate
 //   rovaraMcpHostCertificateArn    the ACM certificate of the MCP host's HTTPS listener (McpHost refuses to be built without one)
 //   rovaraMcpHostName, rovaraMcpHostedZoneId   the DNS name the certificate is for, and the Route 53 zone the alias record goes in
@@ -20,6 +21,7 @@ export const PRIVATE_MCP_CONTEXT_KEYS = {
   hostedZoneId: "rovaraMcpHostedZoneId",
   npmRegistry: "rovaraMcpNpmRegistry",
   runnerSubnetCidrs: "rovaraMcpRunnerSubnetCidrs",
+  runnerRoutes: "rovaraMcpRunnerRoutes",
   registryCidrs: "rovaraMcpRegistryCidrs",
   controllerTlsSecretArn: "rovaraMcpControllerTlsSecretArn",
   controllerDnsNamespace: "rovaraMcpControllerDnsNamespace",
@@ -51,6 +53,7 @@ export interface PrivateMcpInstall {
   /** The package registry (normalised, https, no credentials). Only recorded: it reaches the controller when package-run servers are on. */
   npmRegistry?: string;
   runnerSubnetCidrs?: string[];
+  runnerRoutes?: Array<{ cidr: string; transitGatewayId?: string; vpcPeeringConnectionId?: string }>;
   registryCidrs?: string[];
   controllerTlsSecretArn?: string;
   controllerDnsNamespace?: string;
@@ -82,6 +85,19 @@ function ipv4RangesOverlap(a: string, b: string): boolean {
   return inside(left, right.first) || inside(right, left.first);
 }
 
+/** `10.60.0.0/16=tgw-0123456789abcdef0, 10.70.0.0/16=pcx-0123456789abcdef0`: a private range and the transit gateway or peering connection that reaches it. At most 8. Whether the range is private is checked where the route is made. */
+function parseRunnerRoutes(value: unknown): Array<{ cidr: string; transitGatewayId?: string; vpcPeeringConnectionId?: string }> {
+  const fail = (): never => { throw new Error(`${KEYS.runnerRoutes} must be a comma-separated list of <range>=<tgw-id or pcx-id>, at most 8, such as 10.60.0.0/16=tgw-0123456789abcdef0`); };
+  if (typeof value !== "string") return fail();
+  const items = value.split(",").map((part) => part.trim()).filter((part) => part !== "");
+  if (items.length < 1 || items.length > 8) return fail();
+  return items.map((item) => {
+    const match = /^(\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2})=(tgw|pcx)-([0-9a-f]{8,17})$/u.exec(item);
+    if (match === null || (match[1]!.endsWith("/0"))) return fail();
+    return match[2] === "tgw" ? { cidr: match[1]!, transitGatewayId: `tgw-${match[3]!}` } : { cidr: match[1]!, vpcPeeringConnectionId: `pcx-${match[3]!}` };
+  });
+}
+
 /** A comma-separated list of 1 to `count` IPv4 ranges for a setting, each between /16 and /`maxPrefix` (a runner subnet), no repeats. */
 function cidrList(key: string, value: unknown, count: number, maxPrefix: number): string[] {
   if (typeof value !== "string") throw new Error(`${key} must be a comma-separated string of IPv4 ranges`);
@@ -109,7 +125,7 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
   const cidrsValue = input.get(KEYS.cidrs);
   const cidrsGiven = isSet(cidrsValue) && cidrsValue !== "";
   const stdioRequested = stdioOf(input.get(KEYS.stdio));
-  const given = [KEYS.certificateArn, KEYS.hostName, KEYS.hostedZoneId, KEYS.npmRegistry, KEYS.runnerSubnetCidrs, KEYS.registryCidrs, KEYS.controllerTlsSecretArn, KEYS.controllerDnsNamespace, KEYS.controllerCa].filter((key) => isSet(input.get(key)));
+  const given = [KEYS.certificateArn, KEYS.hostName, KEYS.hostedZoneId, KEYS.npmRegistry, KEYS.runnerSubnetCidrs, KEYS.runnerRoutes, KEYS.registryCidrs, KEYS.controllerTlsSecretArn, KEYS.controllerDnsNamespace, KEYS.controllerCa].filter((key) => isSet(input.get(key)));
   if ((cidrsGiven || given.length > 0 || stdioRequested) && input.edition !== "enterprise") {
     throw new Error(`the private MCP settings (${[...(cidrsGiven ? [KEYS.cidrs] : []), ...given, ...(stdioRequested ? [KEYS.stdio] : [])].join(", ")}) apply only to an Enterprise install (rovaraEdition=enterprise)`);
   }
@@ -153,6 +169,8 @@ export function parsePrivateMcpContext(input: { edition: Edition | undefined; ge
   if (isSet(npmRegistry)) install.npmRegistry = parseNpmRegistry(npmRegistry);
   const runnerSubnets = input.get(KEYS.runnerSubnetCidrs);
   if (isSet(runnerSubnets)) install.runnerSubnetCidrs = cidrList(KEYS.runnerSubnetCidrs, runnerSubnets, 2, 26);
+  const runnerRoutes = input.get(KEYS.runnerRoutes);
+  if (isSet(runnerRoutes)) install.runnerRoutes = parseRunnerRoutes(runnerRoutes);
   const registryCidrs = input.get(KEYS.registryCidrs);
   if (isSet(registryCidrs)) {
     try {
@@ -207,7 +225,7 @@ export function privateMcpBrokerEnvironment(install: PrivateMcpInstall): Record<
  */
 export function mcpHostPropsFromInstall(install: PrivateMcpInstall): {
   certificateArn: string; hostName: string; hostedZoneId: string; npmRegistry: string; runnerSubnetCidrs: string[]; registryEgressCidrs: string[]; controllerTlsSecretArn: string; controllerDnsNamespace: string;
-  controllerCaPem?: string; privateMcpCidrs: string[]; vpcCidrs: string[];
+  controllerCaPem?: string; privateMcpCidrs: string[]; vpcCidrs: string[]; runnerRoutes?: Array<{ cidr: string; transitGatewayId?: string; vpcPeeringConnectionId?: string }>;
 } {
   const { certificateArn, hostName, hostedZoneId, npmRegistry, runnerSubnetCidrs, registryCidrs, controllerTlsSecretArn, controllerDnsNamespace, controllerCa } = install;
   if (certificateArn === undefined) throw new Error(`the MCP host needs a certificate for its HTTPS listener: set ${KEYS.certificateArn}`);
@@ -221,7 +239,7 @@ export function mcpHostPropsFromInstall(install: PrivateMcpInstall): {
   if (install.privateCidrs.length === 0 || install.vpcCidrs === undefined) throw new Error(`package-run servers need ${KEYS.cidrs}: a server can only be given addresses inside your private ranges`);
   return {
     certificateArn, hostName, hostedZoneId, npmRegistry, runnerSubnetCidrs, registryEgressCidrs: registryCidrs, controllerTlsSecretArn, controllerDnsNamespace,
-    ...(controllerCa === undefined ? {} : { controllerCaPem: controllerCa }), privateMcpCidrs: install.privateCidrs, vpcCidrs: install.vpcCidrs,
+    ...(controllerCa === undefined ? {} : { controllerCaPem: controllerCa }), ...(install.runnerRoutes === undefined ? {} : { runnerRoutes: install.runnerRoutes }), privateMcpCidrs: install.privateCidrs, vpcCidrs: install.vpcCidrs,
   };
 }
 
