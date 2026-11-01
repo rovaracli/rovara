@@ -177,6 +177,18 @@ describe("a Slack requester who is not a current writer of the team's org is ref
   });
 
   // The implicit member is the existing behaviour for an unlinked requester on a single-org install (the budget ruling R31 only says such a requester answers to the org alone).
+  it("a merge survivor of another org refuses the Slack id, though the Slack id itself resolves to the team's org", async () => {
+    const SURVIVOR = "9".repeat(64);
+    const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === SURVIVOR ? OTHER_ORG : TEST_ORG) as never;
+    const h = await withKit({ brokerExtra: { orgResolver } });
+    seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, guestId, { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, SURVIVOR, { orgId: OTHER_ORG, role: "member" });
+    h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: SURVIVOR });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
   it("control: a single-org install still treats a person with no record as the implicit member", async () => {
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });

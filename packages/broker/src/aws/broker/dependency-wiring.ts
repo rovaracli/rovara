@@ -438,6 +438,12 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
   // I1 (Slack allowed by the company sign-in) first, then I2: the Slack caller carries the person's real company role, not a stand-in "member".
   await requireSlackAllowedByEdition(dependencies, userId, orgId);
   const live = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName: dependencies.developer?.signInTableName };
+  // The person the id was finally merged into must belong to the team's org too, not only the Slack-derived id.
+  const survivor = (await personIds(live, developerId)).at(-1)!;
+  if (survivor !== developerId && dependencies.orgResolver !== undefined) {
+    const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
+    if (survivorOrg === undefined ? options.allowUnlinked !== true : survivorOrg !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+  }
   const role = await liveWriterRole(live, orgId, developerId);
   if (role !== undefined) return role;
   // An Enterprise install has one company whose people all sign in; a Slack identity with no member record is nobody's, so it is not let in as an implicit member there.
