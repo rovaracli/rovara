@@ -32,6 +32,7 @@
   "packages/contracts/src/how-we-work-track-record.ts",
   "packages/contracts/src/how-we-work.ts",
   "packages/contracts/src/invite-creation.ts",
+  "packages/contracts/src/member-removal-web.ts",
   "packages/contracts/src/models.ts",
   "packages/contracts/src/money-format.ts",
   "packages/contracts/src/names.ts",

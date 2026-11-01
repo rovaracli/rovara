@@ -454,7 +454,7 @@ describe("dispatch of a task with no People list", () => {
 describe("dispatch of a task whose taker is on Slack and holds the project through its channel", () => {
   const MAX_NATIVE = developerIdForSlackUser(S_MAX);
   /** The production wiring end to end: the runtime's own identity check (Max has a task person record), the witness the dispatcher composes, and no grant for Max at all. */
-  function slackWorld(options: { proof: boolean }) {
+  function slackWorld(options: { proof: boolean | "ineligible"; grant?: boolean }) {
     const h = people({ taken: false });
     const task: DeveloperTaskRecord = { ...h.task(), currentOwner: { developerId: MAX_NATIVE, name: "Max", provider: "slack", slackUserId: S_MAX, since: SINCE } };
     h.db.set(task as never);
@@ -476,6 +476,9 @@ describe("dispatch of a task whose taker is on Slack and holds the project throu
     const binding = { ...slackBindingKey(TEST_ORG, TEAM, CHANNEL), teamId: TEAM, channelId: CHANNEL, projectName: "payments", updatedAt: "2026-10-01T00:00:00.000Z" };
     h.db.set(revision);
     h.db.set(binding);
+    // The taker's own project grant, in the table and in the runtime's reads alike.
+    const grant = options.grant === true ? { ...projectMemberKey(TEST_ORG, MAX_NATIVE, "payments"), projectName: "payments", role: "developer" } : undefined;
+    if (grant !== undefined) h.db.set(grant);
     const admission = createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 });
     const readOrgRecord = vi.fn(async ({ key }: { key: { pk: string; sk: string } }) => h.db.get(key.pk, key.sk));
     const ports = {
@@ -484,12 +487,13 @@ describe("dispatch of a task whose taker is on Slack and holds the project throu
       readOrgRecord,
       projectAuthorityReader: {
         latestRevision: vi.fn(async () => ({ revision: { ...revision, revision: 7 }, complete: true })),
-        memberships: vi.fn(async () => ({ items: [], complete: true })),
+        memberships: vi.fn(async () => ({ items: grant === undefined ? [] : [grant] as never, complete: true })),
         bindings: vi.fn(async () => ({ items: [binding] as never, complete: true })),
         orgMember: vi.fn(async () => ({ complete: true })),
       },
       taskPersonProof: vi.fn(async () => {
         if (!options.proof) throw new Error("Slack is unavailable");
+        if (options.proof === "ineligible") return { result: { ok: false as const, error: "ineligible" as const }, slackCallsUsed: 1 };
         return { result: { ok: true as const, user: { id: S_MAX, teamId: TEAM, name: "Max" }, memberOf: [CHANNEL] }, slackCallsUsed: 1 };
       }),
     } as unknown as TaskPersonRuntimePorts;
@@ -514,6 +518,25 @@ describe("dispatch of a task whose taker is on Slack and holds the project throu
     await expect(w.guard()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(w.db.get(`OUTBOX#${w.outbox.id}`, "OUTBOX")?.status).toBe("QUEUED");
     expect(w.readOrgRecord).toHaveBeenCalledWith(expect.objectContaining({ key: orgRemovedKey(TEST_ORG, MAX_NATIVE) }));
+  });
+
+  it("takes no org record answered under another key: the removal check fails closed", async () => {
+    const w = slackWorld({ proof: true });
+    w.readOrgRecord.mockImplementation(async () => ({ pk: "ORG#elsewhere#MEMBER", sk: "someone" }));
+    // The proof is unavailable, so the task parks for proof; it is never ALLOWED.
+    await expect(w.guard()).resolves.toBe("PARKED");
+  });
+
+  it("falls to the taker's own project grant when Slack refuses to vouch for them: ALLOWED", async () => {
+    const w = slackWorld({ proof: "ineligible", grant: true });
+    await expect(w.guard()).resolves.toBe("ALLOWED");
+  });
+
+  it("refuses a removed taker whose project grant is still there (the removal's access step has not run yet)", async () => {
+    const w = slackWorld({ proof: "ineligible", grant: true });
+    w.db.set({ ...orgRemovedKey(TEST_ORG, MAX_NATIVE), removedAt: "2026-10-30T10:00:00.000Z" });
+    await expect(w.guard()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.db.get(`OUTBOX#${w.outbox.id}`, "OUTBOX")?.status).toBe("QUEUED");
   });
 
   it("with Slack unable to vouch for the taker, falls to their project authority, which a channel alone never gives: it fails closed", async () => {

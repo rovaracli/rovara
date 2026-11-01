@@ -15,6 +15,7 @@ import {
   type TaskPersonIdentityDependencies,
 } from "../developer/task-person-identity.js";
 import type { ProjectAuthorityReader, ProjectAuthorityWitness } from "../developer/task-project-access.js";
+import { isRemovedFromOrg } from "../org/member-removal/guards.js";
 import { orgOf } from "../org/resolve.js";
 import { readProjectAuthority } from "../developer/task-project-access.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
@@ -95,6 +96,7 @@ function identityDocumentClient(input: {
         const abortSignal = input.admission.admitStateRead();
         const item = await input.ports.readOrgRecord({ key: orgRecord, abortSignal });
         input.admission.assertOpen();
+        if (item !== undefined && (item.pk !== orgRecord.pk || item.sk !== orgRecord.sk)) throw unavailable();
         return item === undefined ? {} : { Item: item };
       }
       if (key?.pk !== `DEVTASK#${input.taskId}` || typeof key.sk !== "string") throw unavailable();
@@ -250,8 +252,13 @@ export function createTaskPersonRuntime(input: {
   const projectAuthorityWitnessForOwner = async (task: DeveloperTaskRecord): Promise<TaskPersonStateAuthorityWitness | undefined> => {
     const { developerId } = effectiveTaskOwner(task);
     if (!SlackTeamIdSchema.safeParse(input.slackTeamId).success) throw refused();
+    // A taker removed from the company has no project authority, though their grants live on until the removal's access step deletes them (member removal). Read first,
+    // through the same two-key reads the Slack check makes, before any grant is looked at.
+    const orgId = taskOrg(input.orgId, task);
+    const orgReads = { documentClient: identityDocumentClient({ orgId, taskId: task.taskId, developerId, stateTableName: input.stateTableName, admission: input.admission, ports: input.ports }), tableName: input.stateTableName };
+    if (await isRemovedFromOrg(orgReads, orgId, developerId)) return undefined;
     const result = await readProjectAuthority(input.ports.projectAuthorityReader, {
-      orgId: taskOrg(input.orgId, task), project: task.project, developerId, teamId: input.slackTeamId, admission: input.admission,
+      orgId, project: task.project, developerId, teamId: input.slackTeamId, admission: input.admission,
     });
     input.admission.assertOpen();
     if (result.kind === "unavailable") throw unavailable();
