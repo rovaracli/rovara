@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SAVED_ENV_MAX_KEY_FILES } from "@agentx/contracts";
 import { boundedReader, runDetectors } from "../../packages/worker/src/env-detect/index.js";
 import {
-  environmentKeyFromRepositories, hashWorkspaceFile, keyFilePaths, type KeyRepository,
+  environmentKeyFromRepositories, hashWorkspaceFile, keyFilePaths, stripJsonComments, type KeyRepository,
 } from "../../packages/worker/src/saved-env/key.js";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
@@ -16,6 +16,7 @@ type Files = Record<string, string>;
 const repo = (repositoryId: string, files: Files, unreadable: readonly string[] = []): KeyRepository => ({
   repositoryId,
   paths: Object.keys(files),
+  readText: (file) => Promise.resolve(unreadable.includes(file) ? undefined : files[file]),
   hashFile: (file) => Promise.resolve(unreadable.includes(file) || files[file] === undefined ? undefined : sha(files[file])),
 });
 async function keyOf(files: Files, options: { globs?: readonly string[]; secretNames?: string[]; revision?: number; unreadable?: string[] } = {}) {
@@ -55,6 +56,62 @@ describe("which files are key files", () => {
 
   it("drops an over-long glob instead of matching with it", () => {
     expect(keyFilePaths(["a.txt"], ["a".repeat(300)])).toEqual([]);
+  });
+});
+
+describe("fix round 1: more key files, anchored exclusions, dev container references", () => {
+  it("counts requirements directories, Yarn releases, patches and the pnpm file", () => {
+    const paths = ["requirements/base.txt", "requirements/dev/extra.txt", ".yarn/releases/yarn-4.1.0.cjs", "patches/left-pad+1.0.0.patch", ".pnpmfile.cjs", "src/main.py", "docs/requirements-notes.md"];
+    expect(keyFilePaths(paths, [])).toEqual([".pnpmfile.cjs", ".yarn/releases/yarn-4.1.0.cjs", "patches/left-pad+1.0.0.patch", "requirements/base.txt", "requirements/dev/extra.txt"]);
+  });
+
+  it("excludes target and vendor only beside the build file that makes them", () => {
+    // Counted: no build file beside the directory.
+    expect(keyFilePaths(["vendor/left-pad/package.json", "services/target/pom.xml", "target/package.json"], [])).toEqual(["services/target/pom.xml", "target/package.json", "vendor/left-pad/package.json"]);
+    // Excluded: beside a pom.xml / Cargo.toml / go.mod / composer.json / Gemfile.
+    expect(keyFilePaths(["pom.xml", "target/classes/pom.xml", "svc/Cargo.toml", "svc/target/debug/package.json", "go.mod", "vendor/x/package.json", "ruby/Gemfile", "ruby/vendor/bundle/Gemfile"], [])).toEqual(["go.mod", "pom.xml", "ruby/Gemfile", "svc/Cargo.toml"]);
+  });
+
+  it("changes the key when a vendored package manifest or a nested target pom changes", async () => {
+    const files: Files = { "package.json": "{}", "vendor/left-pad/package.json": '{"v":1}', "services/target/pom.xml": "<a/>" };
+    const before = await keyString(files);
+    expect(await keyString({ ...files, "vendor/left-pad/package.json": '{"v":2}' })).not.toBe(before);
+    expect(await keyString({ ...files, "services/target/pom.xml": "<b/>" })).not.toBe(before);
+    // With a go.mod beside vendor, the vendored copy is output and no longer keyed.
+    const withGo: Files = { ...files, "go.mod": "module x", "vendor/left-pad/package.json": '{"v":1}' };
+    expect(await keyString({ ...withGo, "vendor/left-pad/package.json": '{"v":3}' })).toBe(await keyString(withGo));
+  });
+
+  const DEVCONTAINER = '// the dev container\n{\n  "name": "svc", /* the image */\n  "build": { "dockerfile": "../Dockerfile", "context": ".." },\n}\n';
+
+  it("keys the Dockerfile a dev container file references, even outside .devcontainer/", async () => {
+    const files: Files = { ".devcontainer/devcontainer.json": DEVCONTAINER, Dockerfile: "FROM python:3.12\n", "src/app.py": "x" };
+    expect(keyFilePaths(Object.keys(files), [])).not.toContain("Dockerfile");
+    const before = await keyString(files);
+    expect(await keyString({ ...files, Dockerfile: "FROM python:3.13\n" })).not.toBe(before);
+    expect(await keyString({ ...files, "src/app.py": "y" })).toBe(before);
+  });
+
+  it("keys the older dockerFile property and compose files, relative to the dev container file", async () => {
+    const files: Files = {
+      "tools/.devcontainer.json": '{ "dockerFile": "images/Dockerfile.dev", "dockerComposeFile": ["../compose.yaml", "compose.override.yaml"] }',
+      "tools/images/Dockerfile.dev": "FROM a", "compose.yaml": "services: {}", "tools/compose.override.yaml": "services: {}",
+    };
+    const before = await keyString(files);
+    for (const name of ["tools/images/Dockerfile.dev", "compose.yaml", "tools/compose.override.yaml"]) expect(await keyString({ ...files, [name]: "changed" }), name).not.toBe(before);
+  });
+
+  it("gives no key when the dev container file cannot be read or parsed, or names a file that is missing, absolute or outside the repository", async () => {
+    const base = (json: string): Files => ({ ".devcontainer/devcontainer.json": json, Dockerfile: "FROM a" });
+    expect(await keyOf(base(DEVCONTAINER), { unreadable: [".devcontainer/devcontainer.json"] })).toEqual({ ok: false, reason: "key_file_unreadable" });
+    for (const json of ["{ not json", "[]", '{"build":{"dockerfile":"../Missing"}}', '{"build":{"dockerfile":"/etc/passwd"}}', '{"build":{"dockerfile":"../../Dockerfile"}}', '{"dockerFile":7}']) {
+      expect(await keyOf(base(json)), json).toEqual({ ok: false, reason: "key_file_unreadable" });
+    }
+    expect((await keyOf(base('{"image":"mcr.microsoft.com/devcontainers/python:3.12"}'))).ok).toBe(true);
+  });
+
+  it("strips comments and trailing commas outside strings only", () => {
+    expect(JSON.parse(stripJsonComments('{ "a": "http://x // not a comment", /* c */ "b": [1, 2,], // end\n}'))).toEqual({ a: "http://x // not a comment", b: [1, 2] });
   });
 });
 
@@ -104,7 +161,7 @@ describe("the environment key from files", () => {
   });
 
   it("gives no key when a hasher throws", async () => {
-    const throwing: KeyRepository = { repositoryId: "svc", paths: ["package.json"], hashFile: () => Promise.reject(new Error("disk")) };
+    const throwing: KeyRepository = { repositoryId: "svc", paths: ["package.json"], readText: () => Promise.resolve(undefined), hashFile: () => Promise.reject(new Error("disk")) };
     expect(await environmentKeyFromRepositories({ repositories: [throwing], detectorGlobs: [], testEnvRevision: 1, secretNames: [], baseImageDigest: DIGEST })).toEqual({ ok: false, reason: "key_file_unreadable" });
   });
 
