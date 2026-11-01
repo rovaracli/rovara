@@ -11,7 +11,7 @@ import { BUILT_PARTS, BuiltManifestSchema, BundleManifestSchema, ENVIRONMENT_PLA
 import { buildBundle } from "../../scripts/release/bundle.js";
 import { RELEASE_SYNTH_ROOT, buildRelease, synthReleaseProfile } from "../../scripts/release/build.js";
 import { ReleaseManifestSchema, type ReleaseManifest } from "../../scripts/release/manifest.js";
-import { buildSynthKit, firstTreeDifference, selfCheck } from "../../scripts/release/synth-kit.js";
+import { buildSynthKit, firstTreeDifference, mergeFunctionCode, selfCheck } from "../../scripts/release/synth-kit.js";
 import { assertNoLookups, checkedContext } from "../../scripts/release/synth-kit/kit-checks.js";
 import { verifyBundle } from "../../packages/cli/src/upgrade/bundle/verify.js";
 import { buildAtApproval } from "../../packages/cli/src/upgrade/bundle/build-at-approval.js";
@@ -299,6 +299,34 @@ describe("the release's determinism self-check", () => {
     await writeFile(join(a, "templates", "x.json"), "other");
     await copyFile(join(a, "templates", "x.json"), join(a, "extra.json"));
     expect(await firstTreeDifference(a, b)).toMatch(/different files/);
+  });
+});
+
+describe("the kit step's refusals", () => {
+  it("refuses a release whose package lists miss code an Enterprise stack uses, and writes nothing", async () => {
+    const lacking = join(root, "release-lacking");
+    await cp(releaseDir, lacking, { recursive: true });
+    const manifest = JSON.parse(await readFile(join(lacking, "release.json"), "utf8")) as { enterprisePackages?: unknown };
+    delete manifest.enterprisePackages;
+    await writeFile(join(lacking, "release.json"), JSON.stringify(manifest));
+    const out = join(root, "kit-lacking");
+    await expect(buildSynthKit({ releaseDir: lacking, out })).rejects.toThrow(/does not list/);
+    expect(existsSync(out)).toBe(false);
+  }, 600_000);
+
+  it("refuses an output folder that is not empty", async () => {
+    await expect(buildSynthKit({ releaseDir, out: kitDir })).rejects.toThrow(/not empty/);
+  }, 600_000);
+});
+
+describe("the code map", () => {
+  it("refuses a function that runs different code in two profiles, and accepts the same code twice", () => {
+    const found = new Map<string, string>();
+    const a = "a".repeat(64);
+    mergeFunctionCode(found, [{ path: "S/F", assetId: a }], "one");
+    mergeFunctionCode(found, [{ path: "S/F", assetId: a }, { path: "S/G", assetId: "b".repeat(64) }], "two");
+    expect([...found.keys()]).toEqual(["S/F", "S/G"]);
+    expect(() => mergeFunctionCode(found, [{ path: "S/F", assetId: "c".repeat(64) }], "three")).toThrow(/different code in profile three/);
   });
 });
 

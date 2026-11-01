@@ -79,6 +79,15 @@ export async function bundleKitEntry(outfile: string): Promise<{ bytes: number }
   return { bytes: Object.values(result.metafile.outputs).reduce((sum, output) => sum + output.bytes, 0) };
 }
 
+/** Adds one profile's functions to the map; a function that runs different code in two profiles stops the step (Lambda code must not depend on the edition or the settings). */
+export function mergeFunctionCode(found: Map<string, string>, functions: readonly FunctionCode[], profileName: string): void {
+  for (const fn of functions) {
+    const earlier = found.get(fn.path);
+    if (earlier !== undefined && earlier !== fn.assetId) throw new Error(`the function ${fn.path} runs different code in profile ${profileName} than in another; Lambda code must not depend on the edition or the settings`);
+    found.set(fn.path, fn.assetId);
+  }
+}
+
 /** The code map of a release: every Lambda function of the placeholder (Public) app and of each Enterprise profile, with the package it runs. A function two builds disagree about stops the step. */
 export async function collectCodeMap(): Promise<FunctionCode[]> {
   const [region] = SUPPORTED_REGIONS;
@@ -92,11 +101,7 @@ export async function collectCodeMap(): Promise<FunctionCode[]> {
       const outdir = await mkdtemp(join(RELEASE_SYNTH_ROOT, "run-"));
       synthDirs.push(outdir);
       const { functions } = synthReleaseProfile({ context: { ...profile.context, agentxEnv: ENVIRONMENT_PLACEHOLDER, agentxRegion: region }, outdir });
-      for (const fn of functions) {
-        const earlier = found.get(fn.path);
-        if (earlier !== undefined && earlier !== fn.assetId) throw new Error(`the function ${fn.path} runs different code in profile ${profile.name} than in another; Lambda code must not depend on the edition or the settings`);
-        found.set(fn.path, fn.assetId);
-      }
+      mergeFunctionCode(found, functions, profile.name);
     }
   } finally {
     await Promise.all(synthDirs.map((dir) => rm(dir, { recursive: true, force: true })));

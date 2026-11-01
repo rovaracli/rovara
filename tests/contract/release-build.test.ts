@@ -63,7 +63,8 @@ describe("release builder", () => {
       }
     }
     expect([...declared].filter((n) => !used.has(n))).toEqual([]);
-    expect((await readdir(join(out, "packages"))).sort()).toEqual(manifest.packages.map((p) => `${p.assetId}.zip`).sort());
+    // (The Enterprise-only packages sit beside them; no Public template asks for those, and the Public lists above stay exactly as the templates use them.)
+    expect((await readdir(join(out, "packages"))).sort()).toEqual([...manifest.packages, ...(manifest.enterprisePackages ?? [])].map((p) => `${p.assetId}.zip`).sort());
   }, 600_000);
 
   it("refuses a non-empty output directory and a malformed image reference", async () => {
