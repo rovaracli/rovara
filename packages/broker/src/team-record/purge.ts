@@ -33,6 +33,11 @@ export interface RedistilPort {
 
 export interface PurgeDependencies {
   table: TeamRecordTable;
+  /**
+   * The key the erased person's aliases (names, emails, Slack ids) are hashed with before they are kept for 30 days for the Asks (`ask-erased-aliases.ts`); the install derives it from its signing key
+   * (`askAliasHashKey`). Without it only the person's label tag is kept, never a raw alias.
+   */
+  askAliasKey?: string | undefined;
   /** Without it a row with a vector cannot be deleted: it stays tombstoned and counted as blocked. */
   vectors?: RecordVectorPort | undefined;
   lakeQueue?: LakeDeleteQueue | undefined;

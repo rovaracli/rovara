@@ -14,7 +14,7 @@ import {
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import {
   SLACK_CHAT_ATTRIBUTE, SLACK_NOTE_TS_ATTRIBUTE, SLACK_QUEUED_BEHIND_ATTRIBUTE, SLACK_ROUTE_ATTRIBUTE, SLACK_TASK_ID_ATTRIBUTE, confirmationBlocks,
-  isPageCommentRoute, queuedBehindOf, routeOf, sharedNoticeClaim, taskQuestionOf, type SlackRequestMessage,
+  SlackRequestMessageSchema, isAskRoute, isPageCommentRoute, queuedBehindOf, routeOf, sharedNoticeClaim, taskQuestionOf, type AskRef, type SlackRequestMessage,
 } from "@agentx/contracts";
 import { ControlPlaneApi } from "@agentx/orchestrator/control-plane-api";
 import { runOrchestratorTurn } from "@agentx/orchestrator/orchestrator";
@@ -25,7 +25,8 @@ import { processSlackRequest, type ServiceLog, type ThreadServiceApi, type Threa
 import { createProxiedModels } from "./proxied-models.js";
 import { createSignedServiceFetch } from "./signing-fetch.js";
 import { createSlackUserNames } from "./user-names.js";
-import { createEvalBatchWatchApi, createThreadApi } from "./thread-api.js";
+import { createAskApi, createEvalBatchWatchApi, createThreadApi } from "./thread-api.js";
+import { handleAsk } from "./ask-question.js";
 import { SlackApiError, runEvalBatchWatcher } from "./eval-batch-watcher.js";
 import { HANDOFF_MILLISECONDS, activeTurnFromItem, turnNoteFromItem } from "./interrupted-turn.js";
 import { classifierTimeoutMs, createHostedClassifier, createHostedRequestRouter, createHostedSlackRuntime, gateDecisionLogFields, runHostedTurn } from "./runtime.js";
@@ -33,6 +34,7 @@ import { createChoiceOffer, routeSlackRequest } from "./request-routing.js";
 import { DynamoTurnRecordWriter } from "./turn-records.js";
 import { handlePageComment } from "./page-comment.js";
 import { handleTaskQuestion, runTaskAnswer } from "./task-question.js";
+import { deterministicUuid, requestIdSequence } from "./ids.js";
 
 const MAX_RECEIVE_COUNT = 5;
 const VISIBILITY_SECONDS = 15 * 60;
@@ -173,6 +175,21 @@ const proxiedModels = modelProxyEnabled ? createProxiedModels({
   createClassifier: createHostedClassifier, createRouter: createHostedRequestRouter,
 }) : undefined;
 
+// Live interaction A3: an Ask about a task has no Slack thread or member. Its turn is keyed by the queue event's id; the Ask it belongs to is remembered here while the turn runs, so the model key is asked
+// for on the Ask's own broker route (which names the Ask and checks the asker still "can use" the session) and never on a Slack thread's.
+const askTurns = new Map<string, AskRef>();
+const askProxiedModels = modelProxyEnabled ? createProxiedModels({
+  controlPlaneUrl,
+  signedFetchFor: () => createSignedServiceFetch({ region, credentials }),
+  classifierModel, orchestratorModel: model, classifierTimeoutMs: gateClassifierTimeoutMs, log,
+  createClassifier: createHostedClassifier, createRouter: createHostedRequestRouter,
+  accessRouteFor: (message) => {
+    const ref = askTurns.get(message.eventId);
+    if (ref === undefined) throw new Error("no ask is running for this turn");
+    return { orgId: ref.orgId, path: "/v1/asks/model-access", body: { sessionId: ref.sessionId, askId: ref.askId } };
+  },
+}) : undefined;
+
 function routeOption(message: SlackRequestMessage): { route?: NonNullable<typeof requestRouter> } {
   const route = proxiedModels === undefined ? requestRouter : proxiedModels.routerFor(message);
   return route === undefined ? {} : { route };
@@ -281,7 +298,7 @@ async function loadSession(subject: string): Promise<Uint8Array | undefined> {
   }
 }
 
-async function runTurn(input: TurnInput): Promise<string> {
+async function runTurn(input: TurnInput, ask?: AskRef): Promise<string> {
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(join(stateDirectory, "thread-"));
   try {
@@ -291,10 +308,11 @@ async function runTurn(input: TurnInput): Promise<string> {
     const saved = input.answerOnly === true ? undefined : await loadSession(input.subject);
     const sessionFile = saved === undefined ? undefined : join(sessions, "thread.jsonl");
     if (sessionFile !== undefined && saved !== undefined) await writeFile(sessionFile, saved, { mode: 0o600 });
-    const userName = await slackUserName(input.message.userId);
-    const signedFetch = createSignedServiceFetch({ region, credentials, thread: input.message.thread, userId: input.message.userId, ...(userName === undefined ? {} : { userName }) });
+    // An Ask names no Slack thread or member (no thread headers, no name lookup); a Slack turn acts for its thread and member.
+    const userName = ask === undefined ? await slackUserName(input.message.userId) : undefined;
+    const signedFetch = createSignedServiceFetch({ region, credentials, ...(ask === undefined ? { thread: input.message.thread, userId: input.message.userId, ...(userName === undefined ? {} : { userName }) } : {}) });
     // One proxy and key for the whole message: the orchestrator's model and the gate's classifier share it (and the router's).
-    const turn = await proxiedModels?.turnModels(input.message);
+    const turn = await (ask === undefined ? proxiedModels : askProxiedModels)?.turnModels(input.message);
     const proxy = turn?.proxy;
     const turnClassifier = turn === undefined ? classifier : turn.classifier;
     // MODEL3: the model that ran in place of a missing-key one is said under the reply.
@@ -367,6 +385,7 @@ const queue: QueueClient = {
       const route = routeOf(message.MessageAttributes);
       const taskQuestion = taskQuestionOf(message.MessageAttributes);
       const pageComment = isPageCommentRoute(message.MessageAttributes);
+      const askRoute = isAskRoute(message.MessageAttributes);
       return {
         body: message.Body ?? "",
         receiptHandle: message.ReceiptHandle ?? "",
@@ -376,6 +395,7 @@ const queue: QueueClient = {
         ...(route === undefined ? {} : { route }),
         ...(taskQuestion === undefined ? {} : { taskQuestion }),
         ...(pageComment ? { pageComment: true as const } : {}),
+        ...(askRoute ? { ask: true as const } : {}),
       };
     });
   },
@@ -453,6 +473,28 @@ await runConsumer(queue, (message, { route, taskQuestion, ...context }) => taskQ
       markAnswered: async (input) => {
         if (api.markCommentAnswered === undefined) throw new Error("comment answers are unavailable in this deployment");
         await api.markCommentAnswered(input);
+      },
+      log,
+    });
+  },
+  // Live interaction A3: an Ask about a task (the web's or Linear's): the same read-only turn, with the context the broker built for the Ask's audience; nothing is posted in Slack.
+  ask: (message, { handoff }) => {
+    const askApi = createAskApi({ controlPlaneUrl, signedFetch: createSignedServiceFetch({ region, credentials }) });
+    return handleAsk(message, {
+      api: askApi,
+      runTurn: async ({ ref, question, eventId, turn }) => {
+        // The turn needs a message-shaped record for its models and logs; its ids are placeholders, used nowhere that reaches Slack or the broker.
+        const placeholder = SlackRequestMessageSchema.parse({ version: 1, eventId, thread: { teamId: "T0000000000", channelId: "C0000000000", threadTs: "1700000000.000000" }, userId: "U0000000000", text: question, receivedAt: new Date().toISOString() });
+        askTurns.set(eventId, ref);
+        try {
+          return await runTurn({
+            message: placeholder, subject: `ask:${ref.askId}`, workspaceId: turn.workspaceId, conversationId: deterministicUuid(`${ref.askId}:ask-conversation`),
+            orchestratorInstructions: turn.orchestratorInstructions, requestId: requestIdSequence(eventId), turnNote: turn.taskContext, answerOnly: true,
+            ...(handoff === undefined ? {} : { signal: handoff }),
+          }, ref);
+        } finally {
+          askTurns.delete(eventId);
+        }
       },
       log,
     });

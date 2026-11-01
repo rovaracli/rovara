@@ -44,7 +44,7 @@ function harness(options: {
   pendingChoice?: Record<string, string>;
   shared?: { threads: Record<string, { mode: "view" | "continue"; closed?: boolean; taskId?: string; workflowThread?: true }>; lookupThrows?: boolean; claimThrows?: boolean };
   feedbackCapture?: { captured?: boolean; throws?: boolean };
-  threadNote?: { outcome?: "captured" | "duplicate" | "refused"; throws?: boolean };
+  threadNote?: { outcome?: "captured" | "duplicate" | "refused"; throws?: boolean; askOnly?: true };
   /** Task 21: plain top-level requests are queued for the Slack service to route; `fail` routes throw first. */
   routing?: { fail?: number };
   /** Task 21: the requester's typed `answer` sends the waiting request to the chat agent. */
@@ -204,7 +204,7 @@ function harness(options: {
       recordThreadNote: async (input: { taskId: string; thread: unknown; userId: string; messageTs: string; eventId: string; text: string }) => {
         threadNotes.push(input);
         if (options.threadNote?.throws) throw new Error("private note body must not appear in this error");
-        return { outcome: options.threadNote?.outcome ?? "captured" };
+        return { outcome: options.threadNote?.outcome ?? "captured", ...(options.threadNote?.askOnly === true ? { askOnly: true as const } : {}) };
       },
     }),
     ...(options.turnsPerMinute === undefined ? {} : {
@@ -419,6 +419,15 @@ describe("Slack mention ingress", () => {
       await send(h.handler, reply("EvTq0002", "1695500002.000008", `<@${bot}> CHAT: what changed?`));
       await send(h.handler, reply("EvTq0003", "1695500002.000009", `<@${bot}> please chat: no`));
       expect(h.routed.map((entry) => [entry.message.eventId, entry.taskQuestion?.chat])).toEqual([["EvTq0002", true], ["EvTq0003", false]]);
+    });
+
+    it("sends a project viewer's saved message as a question only (askOnly), whatever its words; any other message keeps the words' own reading", async () => {
+      const h = harness({ shared: { threads }, threadNote: { askOnly: true }, routing: {} });
+      await send(h.handler, reply("EvTq0007", "1695500002.000011", `<@${bot}> please change the retry limit to 9`));
+      const plain = harness({ shared: { threads }, threadNote: {}, routing: {} });
+      await send(plain.handler, reply("EvTq0008", "1695500002.000012", `<@${bot}> please change the retry limit to 9`));
+      expect(h.routed.map((entry) => entry.taskQuestion?.chat)).toEqual([true]);
+      expect(plain.routed.map((entry) => entry.taskQuestion?.chat)).toEqual([false]);
     });
 
     it("carries the route and its attributes outside the body, and an old reader sees no route", () => {
@@ -1383,6 +1392,8 @@ describe("the broker adapters for thread replies (no 500 for an expected refusal
 
   it("answers the broker's outcome, a refusal for any 4xx, and throws for a broker failure", async () => {
     expect(await recordThreadNoteThroughBroker(answering(200, { outcome: "duplicate" }), input)).toEqual({ outcome: "duplicate" });
+    expect(await recordThreadNoteThroughBroker(answering(200, { outcome: "captured", askOnly: true }), input)).toEqual({ outcome: "captured", askOnly: true });
+    expect(await recordThreadNoteThroughBroker(answering(200, { outcome: "captured", askOnly: "yes" }), input)).toEqual({ outcome: "captured" });
     expect(await recordThreadNoteThroughBroker(answering(403, { error: { code: "FORBIDDEN" } }), input)).toEqual({ outcome: "refused" });
     expect(await recordThreadNoteThroughBroker(answering(400, { error: { code: "CONFIG_INVALID" } }), input)).toEqual({ outcome: "refused" });
     await expect(recordThreadNoteThroughBroker(answering(500, { error: "x" }), input)).rejects.toThrow(/thread note failed/);

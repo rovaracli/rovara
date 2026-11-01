@@ -1254,6 +1254,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("liveSteer", signInParameters.liveSteerEnabled.valueAsString);
       // Stop & redirect kill switch, a packed setting like live steer's. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("liveRedirect", signInParameters.liveRedirectEnabled.valueAsString);
+      // Live interaction A3: the Ask switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
+      brokerSettings.add("liveAsk", signInParameters.liveAskEnabled.valueAsString);
       // v1.2 learning loop: the install default of the company's master suggestions switch, a packed setting. Off unless the operator sets the parameter.
       brokerSettings.add("learningSuggestionsDefault", signInParameters.learningSuggestionsDefault.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A

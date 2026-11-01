@@ -28,16 +28,26 @@ describe("the words about work kept on a stopped coding run (R3)", () => {
 });
 
 describe("switches", () => {
-  it("has three distinct two-letter codes; the ones not wired yet collide with no broker setting (fx is the autofix switch), and the redirect switch is wired under its own code", () => {
+  it("has three distinct two-letter codes that collide with no other broker setting (fx is the autofix switch); `rd` and `ak` are registered under their own codes, and `fd` is not yet", () => {
     const codes = Object.values(LIVE_INTERACTION_FLAGS).map((spec) => spec.code);
     expect(new Set(codes).size).toBe(3);
-    // `rd` is in BROKER_SETTINGS since Stop & redirect (R2/LI-1); `ak` and `fd` wait for their own lanes and the hard deploy gate.
+    // Stop & redirect (R2/LI-1) registered `liveRedirect` and Ask (A3) registered `liveAsk`, each with its flag's code and variable; diagnosis (`fd`) waits for its own lane.
     expect(BROKER_SETTINGS.liveRedirect).toEqual({ code: LIVE_INTERACTION_FLAGS.redirect.code, variable: LIVE_INTERACTION_FLAGS.redirect.variable });
-    const others = Object.entries(BROKER_SETTINGS).filter(([key]) => key !== "liveRedirect").map(([, spec]) => spec);
+    expect(BROKER_SETTINGS.liveAsk).toEqual(LIVE_INTERACTION_FLAGS.ask);
+    const others = Object.entries(BROKER_SETTINGS).filter(([name]) => name !== "liveRedirect" && name !== "liveAsk").map(([, spec]) => spec);
     const taken = new Set<string>(others.map((spec) => spec.code));
     for (const code of codes) expect(taken.has(code), code).toBe(false);
     const variables = new Set<string>(others.map((spec) => spec.variable));
     for (const spec of Object.values(LIVE_INTERACTION_FLAGS)) expect(variables.has(spec.variable), spec.variable).toBe(false);
+    const registered = Object.values(BROKER_SETTINGS).map((spec) => spec.code);
+    expect(registered.includes(LIVE_INTERACTION_FLAGS.fix.code), "fix").toBe(false);
+  });
+
+  it("the Ask switch is off unless set (the stack parameter default 0 is pinned in live-ask-switch.test.ts): only exactly 1 turns it on", () => {
+    expect(LIVE_INTERACTION_FLAGS.ask).toEqual({ code: "ak", variable: "LIVE_ASK_ENABLED" });
+    expect(liveInteractionFlagOn(undefined)).toBe(false);
+    expect(liveInteractionFlagOn("0")).toBe(false);
+    expect(liveInteractionFlagOn("1")).toBe(true);
   });
 
   it("is on only for exactly 1", () => {

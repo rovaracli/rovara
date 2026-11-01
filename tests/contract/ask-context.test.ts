@@ -294,18 +294,17 @@ describe("loading the context of a real task", () => {
     expect(await askContext(t.deps, web, t.taskId)).toBeDefined();
   });
 
-  it("slack: the asker must be a resolved member with 'can use' on this task; no identity, a stranger or a view-only member is refused, though they are in the task's own thread (I5)", async () => {
+  it("slack: anyone in the task's own thread gets the Slack tier (owner decision 2026-11-01): no 'can use' is read, a person with no member link or only 'view' is answered, another thread gets nothing", async () => {
     const t = await planWaiting();
     const base = { audience: "slack" as const, workspaceId: t.workspaceId, thread: t.thread };
-    expect(await askContext(t.deps, base, t.taskId)).toBeUndefined();
-    expect(t.sessionLevel).not.toHaveBeenCalled();
-    expect(await askContext(t.deps, { ...base, asker: { developerId: STRANGER } }, t.taskId)).toBeUndefined();
+    // No identity, a stranger and a view-only member are all answered, and no level is read for any of them.
+    expect((await askContext(t.deps, base, t.taskId))?.text).toContain("LOADED-PLAN-MARKER");
     t.levels.set(`${STRANGER}|${t.sessionId}`, "view");
-    expect(await askContext(t.deps, { ...base, asker: { developerId: STRANGER } }, t.taskId)).toBeUndefined();
-    t.levels.set(`${STRANGER}|${t.sessionId}`, "use");
     expect((await askContext(t.deps, { ...base, asker: { developerId: STRANGER } }, t.taskId))?.text).toContain("LOADED-PLAN-MARKER");
-    // A member with 'use' who asks from another thread still gets nothing.
-    expect(await askContext(t.deps, { ...base, thread: { ...t.thread, threadTs: "1695500000.000999" }, asker: { developerId: ASKER } }, t.taskId)).toBeUndefined();
+    expect(t.sessionLevel).not.toHaveBeenCalled();
+    // Another thread, workspace or task gets nothing.
+    expect(await askContext(t.deps, { ...base, thread: { ...t.thread, threadTs: "1695500000.000999" } }, t.taskId)).toBeUndefined();
+    expect(await askContext(t.deps, { ...base, workspaceId: "11111111-1111-4111-8111-111111111111" }, t.taskId)).toBeUndefined();
   });
 
   it("linear: only an issue the task's session is bound to gets a context, and it holds no plan text", async () => {

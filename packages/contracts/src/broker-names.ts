@@ -152,6 +152,9 @@ export const BROKER_SETTINGS = {
   autofix: { code: "fx", variable: "AUTOFIX_ENABLED" },
   // Live steer kill switch (stack parameter LiveSteerEnabled, "0" by default): the broker reads it as LIVE_STEER_ENABLED, and live steer is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   liveSteer: { code: "ls", variable: "LIVE_STEER_ENABLED" },
+  // Live interaction A3: Ask about this task (stack parameter LiveAskEnabled, "0" by default): the broker reads it as LIVE_ASK_ENABLED, and Ask is on only when it is exactly "1". Hard-gated (live-interaction.ts
+  // LIVE_INTERACTION_DEPLOY_GATES): the person-erasure Asks step and the daily upkeep that deletes Asks past their 30 days must exist. Packed setting, not a Lambda variable (ENV-ROOM).
+  liveAsk: { code: "ak", variable: "LIVE_ASK_ENABLED" },
   // v1.2 learning loop: the install-wide default of the company's master "suggestions" switch (stack parameter LearningSuggestionsDefault, off by default): learning/suggestions-switch.ts reads it.
   learningSuggestionsDefault: { code: "lg", variable: "LEARNING_SUGGESTIONS_DEFAULT" },
   // Stop & redirect kill switch (live-interaction design, switch `rd`; stack parameter LiveRedirectEnabled, "0" by default): the broker reads it as LIVE_REDIRECT_ENABLED, and the redirect route exists only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).

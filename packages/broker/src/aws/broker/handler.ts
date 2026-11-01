@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
 import { requireStaffRouteAllowed } from "./staff-routes.js";
 import { isSlackWorkflowRevisePlanEvent } from "../../agent-sessions/live-steer-revise.js";
 import { ProcessModelRefusal, processModelRefusalBody } from "../../model-selection/process-refusal.js";
@@ -108,6 +109,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   installChainRunner(dependencies, tasks, agents);
   installOwnWriteRecorder(dependencies);
   installLearningTaskEnd(dependencies);
+  installSlackAsk(dependencies, tasks, agents?.agentSessions);
   // Plan 5, Task 7b: a session follows its task's end and budget pause as Plan 3 tells them, instead of waiting for the stream or the sweep. Only where agents are set up
   // (sessions begin there); a broker without them registers nothing, so Plan 3's "nobody listens" behaviour is unchanged. Plan 4's chain and Task 18's device reads are given
   // here when those land (the sweep's event passes them the same way).
@@ -181,6 +183,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Stop & redirect: a redirect nobody finished is closed (nothing is read while the rd switch is off).
       try { outcome.redirects = await sweepRedirects(dependencies); }
       catch (error) { console.log(JSON.stringify({ component: "broker", event: "redirect.sweep_failed", error: error instanceof Error ? error.name : "unknown" })); outcome.redirects = "failed"; }
+      outcome.asks = await runAskMaintenance(dependencies, Date.now());
       return json(outcome, "session-sweep");
     }
     // Plan 3, Task 30: every 5 minutes, the spend settlement jobs (the sweep of open model keys today; PF13 adds the others to this list).
@@ -472,6 +475,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           hooks: new HookStore({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }),
           secrets: eventHooks.secrets, providers: eventHooks.providers ?? hookProviders(), dispatch, memory: hookMemoryOf(dependencies),
           ...optional("awsAccounts", connectedAwsAccountsOf(dependencies)), ...optional("snsFetch", eventHooks.snsFetch),
+          // Live interaction L1: a Linear comment on a bound issue may be an Ask; none while the Ask switch is off or Rovara cannot write in Linear.
+          ...optional("commentIntake", linearCommentIntakeOf(dependencies)),
         }, { source: hookPath[1]!, hookId: hookPath[2]!, raw, headers: request.headers, sourceIp: event.requestContext?.http?.sourceIp });
         return hookReply(answer);
       }
@@ -629,6 +634,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         if (request.method === "POST" && serviceUrl.pathname === "/v1/model-access") {
           return await handleSlackModelAccess(dependencies, request);
         }
+        // Live interaction A3: the Ask routes name the Ask itself (no Slack thread), so they are answered before the thread's identity is read.
+        const askAnswer = await handleAskServiceRoute(dependencies, dependencies.slackAsk?.ask, request, serviceUrl.pathname);
+        if (askAnswer !== undefined) return askAnswer;
         const identity = await slackServiceIdentity(dependencies, request);
         if (request.method === "POST" && serviceUrl.pathname === "/v1/threads/workspace") {
           return json(await ensureThreadWorkspace(dependencies, identity, parseBody(request.body)), request.requestId);

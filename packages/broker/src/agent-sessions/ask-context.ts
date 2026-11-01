@@ -264,7 +264,8 @@ export function buildAskContext(audience: AskAudience, data: AskContextData, non
  * Who is asking. The viewer never carries a level: the level is read live, by `AskContextDependencies.sessionLevel`, for THIS viewer on THE SESSION OF THIS TASK (the id comes from the task row, not
  * from the caller), so a level held on some other session, or one that was true a minute ago, cannot open this task.
  *  - `web`: a member of the org.
- *  - `slack`: the task's own thread, asked by a member the thread's Slack user was resolved to. A Slack user who is not a member (`asker` absent) is refused: there is no identity to check "can use" on.
+ *  - `slack`: the task's own thread, asked by anyone in it (owner decision 2026-11-01: the thread keeps its people rule; the Slack routes already refuse removed, banned and other-org people). `asker`, when
+ *    the Slack user is a member, is informational only: no level is read. What they see is the Slack tier's alone.
  *  - `linear`: an issue that the task's session is bound to (anyone on the issue, owner Q7).
  */
 export type AskViewer =
@@ -309,7 +310,9 @@ async function viewerMayAsk(deps: AskContextDependencies, task: DeveloperTaskRec
   if (viewer.audience === "slack") {
     const thread = SlackThreadSchema.safeParse(viewer.thread);
     const inThread = thread.success && task.workspaceId === viewer.workspaceId && task.share?.teamId === thread.data.teamId && task.share.channelId === thread.data.channelId && task.share.threadTs === thread.data.threadTs;
-    return inThread && viewer.asker !== undefined && await canUse(viewer.asker.developerId);
+    // Owner decision 2026-11-01: a Slack thread keeps its people rule (anyone in the task's own thread; the Slack routes already refuse removed, banned and other-org people), with or without a member
+    // link. What they see is the Slack tier's alone (`ASK_AUDIENCE_POLICY.slack`), whoever asks.
+    return inThread;
   }
   return viewer.audience === "linear" && task.orgId === viewer.orgId;
 }

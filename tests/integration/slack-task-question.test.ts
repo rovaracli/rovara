@@ -74,7 +74,8 @@ describe("a task-thread mention the router calls a question", () => {
     ]);
     expect(TASK_ANSWER_FOOTER).toBe("_This was answered as a question, so it won't be passed to the next step. To give an instruction instead, reply without @mentioning AgentX._");
     expect(t.slack.ephemerals).toEqual([]);
-    expect(t.marked).toEqual([{ taskId, messageTs: noteTs, thread }]);
+    // The question and its answer ride with the "answered" call, so the broker can keep the Ask (per edition) and audit it.
+    expect(t.marked).toEqual([{ taskId, messageTs: noteTs, thread, ask: { question: message.text, answer: "The plan covers the greeting change." } }]);
     expect(t.finished).toEqual([t.subject]);
     // The log says how it was sorted, never the text.
     expect(t.logs.find((entry) => entry.event === "task_question.classified")?.fields).toEqual({ eventId: message.eventId, taskId, kind: "question", outcome: "ok", latencyMs: expect.any(Number) as number });
@@ -104,7 +105,8 @@ describe("a task-thread mention the router calls a question", () => {
     expect(calls).toBe(2);
     expect(t.slack.posts).toHaveLength(1);
     expect(t.slack.ephemerals).toEqual([]);
-    expect(t.marked).toEqual([{ taskId, messageTs: noteTs, thread }]);
+    // The question and its answer ride with the "answered" call, so the broker can keep the Ask (per edition) and audit it.
+    expect(t.marked).toEqual([{ taskId, messageTs: noteTs, thread, ask: { question: message.text, answer: "The plan covers the greeting change." } }]);
     expect(t.logs.some((entry) => entry.event === "task_question.footer_post_failed")).toBe(true);
   });
 

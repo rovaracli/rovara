@@ -493,26 +493,40 @@ export async function handleSlackModelAccess(dependencies: AwsBrokerDependencies
   const taskAnswerThread = shared !== undefined && !sharedThreadOpen(shared, binding) && shared.workflowThread === true && shared.closedAt === undefined && binding.projectName === shared.project;
   if (taskAnswerThread) await requireSlackRequesterWriterRole(dependencies, requester.userId, teamOrg, { allowUnlinked: true, allowReadOnly: true });
   else if (await slackRequesterProjectRole(dependencies, teamOrg, requester.userId, binding.projectName) === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(binding.projectName));
+  return json(await mintChatTurnKey(dependencies, teamOrg, binding.projectName, requester, body.data), request.requestId);
+}
+
+/**
+ * The key for one chat turn of `project`, paid as a Slack turn is (`slackWorkPayment`: the project, or the linked member who asks), admitted like any chat work, routed to the org's assistant model,
+ * and registered with the ledger. Shared by a Slack turn (`handleSlackModelAccess`) and an Ask about a task (`asks/model-access`), so both have one payer rule and one allow-list. The proxy's failures
+ * all answer MODEL_PROXY_UNAVAILABLE without detail; the key is never logged.
+ */
+export async function mintChatTurnKey(
+  dependencies: AwsBrokerDependencies, orgId: OrgId, project: string, requester: OperationRequester | undefined,
+  body: { turnId: string; model?: ModelIdentifier | undefined; classifierModel?: ModelIdentifier | undefined },
+): Promise<{ baseUrl: string; apiKey: string; expiresAt: number | string; route?: unknown }> {
+  const modelAccess = dependencies.modelAccess;
+  if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
   // known) and tagged so; without them it is minted as it always was.
   try {
     // Task 26: the turn's model is routed before anything is admitted or charged; a refusal here costs nothing.
     const routing = routingOf(dependencies);
-    const routed = routing === undefined ? undefined : await routeTurn(routing, teamOrg, binding.projectName, body.data);
-    const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, teamOrg, binding.projectName, requester);
-    const developerId = slack === undefined ? await linkedRequester(dependencies, teamOrg, requester) : keyMember(slack.payer);
+    const routed = routing === undefined ? undefined : await routeTurn(routing, orgId, project, body);
+    const slack = dependencies.agents === undefined ? undefined : await slackWorkPayment(dependencies, orgId, project, requester);
+    const developerId = slack === undefined ? await linkedRequester(dependencies, orgId, requester) : keyMember(slack.payer);
     // Ruling R50: a turn is admitted like any chat work (which also syncs the proxy, the lazy half of syncBudgets), and its key is
     // capped at what every budget it counts against has left, never above one turn's allowance. Nothing left is a 402, before any key.
     const admitted = await admitWork(
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
-      { orgId: teamOrg, payer: slack?.payer ?? (developerId === undefined ? { kind: "project", project: binding.projectName } : { kind: "member", developerId }),
-        project: binding.projectName, agentId: ROVARA_CODE_AGENT_ID, agentName: ROVARA_CODE_NAME, path: "CHAT" },
+      { orgId: orgId, payer: slack?.payer ?? (developerId === undefined ? { kind: "project", project: project } : { kind: "member", developerId }),
+        project: project, agentId: ROVARA_CODE_AGENT_ID, agentName: ROVARA_CODE_NAME, path: "CHAT" },
     );
     const maxBudgetUsd = Math.min(PER_TURN_BUDGET_USD, admitted.maxBudgetUsd);
     const tags = slack === undefined ? undefined : routed === undefined ? mintTagsFor({ ...slack, origin: "slack" }) : { ...mintTagsFor({ ...slack, origin: "slack" }), source: routed.route.sourceId };
     const minted = await mintKeyHealing(
       { documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true },
-      { orgId: teamOrg, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.data.turnId, maxBudgetUsd, ttlSeconds: TURN_KEY_TTL_SECONDS,
+      { orgId: orgId, ...(developerId === undefined ? {} : { developerId }), purpose: "turn", refId: body.turnId, maxBudgetUsd, ttlSeconds: TURN_KEY_TTL_SECONDS,
         ...(routed === undefined ? {} : { models: routed.models }), ...(tags === undefined ? {} : { tags }) },
     );
     // Task 30: a turn's key reserves nothing (R50) and settles into the counters; one that can't be recorded is given back.
@@ -520,16 +534,16 @@ export async function handleSlackModelAccess(dependencies: AwsBrokerDependencies
     if (ledger !== undefined && tags !== undefined && slack !== undefined) {
       try {
         await registerKey(ledger, {
-          orgId: teamOrg, month: monthOf(Date.now()), keyId: keyIdOf(minted.key), capUsd: maxBudgetUsd, tags, expiresAt: minted.expiresAt,
+          orgId: orgId, month: monthOf(Date.now()), keyId: keyIdOf(minted.key), capUsd: maxBudgetUsd, tags, expiresAt: minted.expiresAt,
           scopes: budgetScopesFor(slack.payer, slack.place, { agentId: slack.agentId }).map((key) => ({ key })),
         });
       } catch (error) {
         await modelAccess.access.revokeKey(minted.key).catch(() => undefined);
-        await forgetKey(ledger, teamOrg, keyIdOf(minted.key)).catch(() => undefined);
+        await forgetKey(ledger, orgId, keyIdOf(minted.key)).catch(() => undefined);
         throw error;
       }
     }
-    return json({ baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt, ...(routed?.wire === undefined ? {} : { route: routed.wire }) }, request.requestId);
+    return { baseUrl: modelAccess.proxyUrl, apiKey: minted.key, expiresAt: minted.expiresAt, ...(routed?.wire === undefined ? {} : { route: routed.wire }) };
   } catch (error) {
     // A spent budget (or a locked trial) is the member's to know about; every other failure is the proxy's, and says nothing of it.
     if (error instanceof AgentXError && (ADMISSION_REFUSALS.has(error.code) || error.code === "MODEL_NOT_ALLOWED")) throw error;

@@ -3,6 +3,7 @@
 // with Plan 3's ticketed link, and confirming runs `onSessionOwnerConfirmed`. That moves, in ONE transaction conditional on the session's revision and on the task's owner,
 // the session's owner, the task's current owner and payer, the taker's task-list row and the task's People owners; the previous owner keeps "can edit"; and the take-over is
 // audited. Everything the approval rests on is read live each time it is looked at: the asker's access, their role on the project and their room to pay.
+import type { AskDependencies } from "./ask.js";
 import { DeleteCommand, GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import type { RedirectConfig } from "./redirect.js";
@@ -76,6 +77,8 @@ export interface SessionTakeOverDependencies extends SessionShareDependencies {
   liveSteer?: { callbackSigningKey: string } | undefined;
   /** Carried to the session routes for Stop & redirect (`redirect.ts`): present only while the `rd` switch is on. */
   redirect?: RedirectConfig | undefined;
+  /** Carried to the session routes for Ask about this task (`ask.ts`); absent while the `ak` switch is off. */
+  ask?: AskDependencies | undefined;
   log?: ((entry: Record<string, unknown>) => void) | undefined;
 }
 

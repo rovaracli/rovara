@@ -138,3 +138,21 @@ async function commentAnswerSection(deps: Pick<DeveloperTaskRouteDependencies, "
     ...(items.length === 0 ? [] : ["The thread so far, oldest first:", ...items]),
   ];
 }
+
+/**
+ * The page-comment part of an Ask's answer context (live interaction A3, switch on): where the comment was asked and the thread so far, as untrusted data in tags only this broker can derive. The
+ * audience's own context comes from `askContext`; this is only the comment's place. Undefined when the task is gone or the comment is not a person's.
+ */
+export async function taskCommentSection(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions">, taskId: string, commentId: string): Promise<string[] | undefined> {
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  if (task === undefined || task.workflow === undefined || task.closedAt !== undefined) return undefined;
+  return commentAnswerSection(deps, task, commentId);
+}
+
+/** Whether `thread` is this open task's own thread on `workspaceId` (the structural checks `workflowTaskAnswerContext` makes, without building any context). */
+export async function taskOwnsThread(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">, input: { taskId: string; workspaceId: string; thread: SlackThread }): Promise<boolean> {
+  const thread = SlackThreadSchema.safeParse(input.thread);
+  const task = await get<DeveloperTaskRecord>(deps, taskKey(input.taskId));
+  return thread.success && task?.workflow !== undefined && task.closedAt === undefined && task.workspaceId === input.workspaceId
+    && task.share?.teamId === thread.data.teamId && task.share.channelId === thread.data.channelId && task.share.threadTs === thread.data.threadTs;
+}

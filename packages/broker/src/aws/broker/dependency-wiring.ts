@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): builds the dependency objects handed to the agent, chain, admin, plan and developer-task routes.
 
+import { askDependenciesFor } from "./ask-service.js";
 import { liveSteerFromEnvironment } from "../../agent-sessions/live-steer.js";
 import { redirectFromEnvironment } from "./redirect-runtime.js";
 import { readServiceStatusEvidence } from "../service-status-runtime.js";
@@ -233,6 +234,8 @@ export function agentRouteDependencies(dependencies: AwsBrokerDependencies, task
     // Stop & redirect (switch `rd`, off by default): the route and its worker check exist only when it is on.
     redirect: redirectFromEnvironment(dependencies),
   };
+  // Live interaction A3: Ask about this task, on the session routes' own level dependencies; none while the `ak` switch is off.
+  if (routeDependencies.agentSessions !== undefined) routeDependencies.agentSessions.ask = askDependenciesFor(dependencies, routeDependencies.agentSessions, tasks);
   // Plan 6, Task 19: what pressing Merge and its confirmation need (GitHub's reads and the merge, the task and its repositories), on the same dependencies.
   const codeMerge = codeMergeHostOf(dependencies);
   if (codeMerge !== undefined) routeDependencies.codeMerge = codeMerge;

@@ -91,6 +91,13 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks/feedback-capture.ts", "feedbackReviewWorkspaceReady", "principal", "taskOwnerKey()", ".developerId"],
   // Live interaction A1: the ask context reads the task's latest document from its own object prefix (the task's principal, never changes), as the Slack-only task answer context does
   ["agent-sessions/ask-context.ts", "readDocument", "principal", ".ownerKey"],
+  // Live interaction A3: the people an Ask's stored words may name (the creator, the effective owner, the asker and the task's people), so their names are replaced by labels before anything is kept; it
+  // decides nothing about who owns the task (it asks `effectiveTaskOwner` for the current owner beside the creator).
+  ["aws/broker/ask-service.ts", "peopleOf", "attribution", ".developerId*3", ".developerName", ".slackUserId*2"],
+  // the model key of an Ask is paid by the project's rule for the member who asked; the sign-in method the requester record names is the task creator's (it decides nothing about who owns the task)
+  ["aws/broker/ask-service.ts", "handleAskServiceRoute", "history", ".provider"],
+  // a note a person sent from a session, as the Ask context lists it: the note's own sender (not the task's creator)
+  ["agent-sessions/ask-readers.ts", "createAskReaders>notes", "other-record", ".developerId"],
   ["aws/developer-tasks/task-answer-context.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-answer-context.ts", "commentAnswerSection", "principal", ".ownerKey"],
   ["aws/developer-tasks/close.ts", "finishTaskClose>closing", "index", ".developerId"],

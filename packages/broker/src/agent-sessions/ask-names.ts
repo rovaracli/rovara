@@ -9,6 +9,8 @@
 // ("@mark") or inside the full name; the surname alone is treated the same. A handle, login, email or id (`handles`) is a specific identifier and is replaced wherever it stands as a whole word.
 export interface NamedPerson {
   developerId: string;
+  /** An erased person known only by their label tag (`p_xxxxxx`): their developer id is gone, so the tag is what their label is scrubbed by. */
+  tag?: string | undefined;
   /** Display names ("Sam Okafor"). Matched in full, in either order, with or without separators; a single word of one is replaced only as an `@mention`. */
   names: readonly string[];
   /** Logins, emails, Slack and Linear ids: specific identifiers, replaced as whole words wherever they stand. */
@@ -31,7 +33,7 @@ export function normaliseWords(text: string): string {
 }
 
 /** One lower-case, accent-free, look-alike-free code point for each code point of `normalised`. */
-function skeletonOf(normalised: string): string {
+export function skeletonOf(normalised: string): string {
   return Array.from(normalised, (character) => {
     const lower = Array.from(character.toLowerCase())[0] ?? character;
     const base = Array.from(lower.normalize("NFD").replace(/\p{M}/gu, ""))[0] ?? lower;

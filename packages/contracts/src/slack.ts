@@ -57,6 +57,11 @@ export const SlackThreadNoteAnsweredRequestSchema = z.object({
   taskId: z.string().uuid(),
   messageTs: SlackMessageTimestampSchema,
   thread: SlackThreadSchema,
+  /**
+   * Live interaction A3: the question and its answer, so the broker can keep the Ask's record (per edition: Public keeps a hash and sizes for a Slack Ask, never the words) and audit it. Optional: a
+   * service built before Ask sends none, and then the note is marked answered and nothing else is written.
+   */
+  ask: z.object({ question: z.string().min(1).max(1_000), answer: z.string().min(1).max(20_000), contextBytes: z.number().int().min(0).max(70_000).optional() }).strict().optional(),
 }).strict();
 export type SlackThreadNoteAnsweredRequest = z.infer<typeof SlackThreadNoteAnsweredRequestSchema>;
 

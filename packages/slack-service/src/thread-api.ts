@@ -1,4 +1,7 @@
 import {
+  AskAnsweredRequestSchema,
+  AskTurnRequestSchema,
+  AskTurnResultSchema,
   EvalBatchSlackStartRequestSchema,
   EvalBatchSlackStartResultSchema,
   EvalBatchThreadResultSchema,
@@ -27,6 +30,7 @@ import { pollOperation } from "@agentx/orchestrator/event-client";
 import type { ThreadServiceApi } from "./processor.js";
 import type { EvalBatchWatchApi } from "./eval-batch-watcher.js";
 import { threadWorkspaceRequest } from "./thread-workspace-request.js";
+import type { AskServiceApi } from "./ask-question.js";
 
 /** The Slack service's thread-level control-plane client, moved out of main.ts so tests can drive it. */
 /** One request to a /v1/service route; an error answer throws with its code and message. */
@@ -42,6 +46,19 @@ async function serviceRequestWith(signedFetch: typeof fetch, url: string, method
   }
   delete parsed.requestId;
   return parsed;
+}
+
+/** The broker's Ask routes (`/v1/service/asks/turn` and `…/answered`), signed as the orchestrator role with no Slack thread or member: the Ask names itself. */
+export function createAskApi(options: { controlPlaneUrl: string; signedFetch: typeof fetch }): AskServiceApi {
+  const post = (path: string, body: unknown, failure: string) => serviceRequestWith(options.signedFetch, `${options.controlPlaneUrl}${path}`, "POST", body, failure);
+  return {
+    async turn(ref) {
+      return AskTurnResultSchema.parse(await post("/v1/asks/turn", AskTurnRequestSchema.parse(ref), "ask context request failed"));
+    },
+    async answered(request) {
+      await post("/v1/asks/answered", AskAnsweredRequestSchema.parse(request), "writing the ask answer failed");
+    },
+  };
 }
 
 export function createThreadApi(options: { controlPlaneUrl: string; signedFetch: typeof fetch; pollIntervalMilliseconds?: number }): ThreadServiceApi {
@@ -70,7 +87,15 @@ export function createThreadApi(options: { controlPlaneUrl: string; signedFetch:
     },
     async markThreadNoteAnswered(input) {
       const body = SlackThreadNoteAnsweredRequestSchema.parse(input);
-      SlackThreadNoteAnsweredResultSchema.parse(await servicePost("/v1/tasks/thread-notes/answered", body, "marking the thread note answered failed"));
+      try {
+        SlackThreadNoteAnsweredResultSchema.parse(await servicePost("/v1/tasks/thread-notes/answered", body, "marking the thread note answered failed"));
+      } catch (error) {
+        // A broker built before Ask refuses the `ask` field (its body schema is strict): the note must still be marked answered, so the call is made again without it (the Ask is simply not recorded there).
+        if (body.ask === undefined || !(error instanceof Error) || !error.message.includes("CONFIG_INVALID")) throw error;
+        const { ask: _ask, ...plain } = body;
+        void _ask;
+        SlackThreadNoteAnsweredResultSchema.parse(await servicePost("/v1/tasks/thread-notes/answered", plain, "marking the thread note answered failed"));
+      }
     },
     async prepareWorkspace(requestId) {
       return SlackThreadPrepareResultSchema.parse(await servicePost("/v1/threads/workspace/prepare", { requestId, includeOpenTaskCount: true, includeSharedTask: true }, "thread workspace preparation failed"));

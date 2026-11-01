@@ -1,5 +1,8 @@
 // Part of the broker (split out of ../broker.ts): limits, the setup capture policy, the record and dependency types, route keys.
 
+import type { LinearReplyPort } from "../../rovara-code/linear-comments.js";
+import type { SlackAskDependencies } from "./ask-service.js";
+import type { AskContextDependencies, AskContextReaders } from "../../agent-sessions/ask-context.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { S3Client } from "@aws-sdk/client-s3";
@@ -198,6 +201,16 @@ export interface AwsBrokerDependencies {
   documentClient: DynamoDBDocumentClient;
   /** The Audit Ledger's outbox (named environments only); absent on a legacy install, where every audit function does nothing. */
   audit?: AuditRuntime;
+  /** Live interaction A3: what the Slack task-thread question answers from (installed by `installSlackAsk`; absent where agents are not set up). */
+  slackAsk?: SlackAskDependencies;
+  /** Live interaction A3: where a person's level on a session comes from for a Slack task question, when it is not the session routes' own (tests; an install with another source). */
+  slackAskLevel?: AskContextDependencies["sessionLevel"];
+  /** Live interaction A3: the readers a Slack task question's context is built from, when they are not the broker's own (tests). */
+  slackAskReaders?: AskContextReaders;
+  /** Live interaction A3 (tests only): builds the Ask dependencies for the Slack question as if the `ak` switch were on, on an install with no agents (the level comes from `slackAskLevel`). */
+  slackAskOn?: true;
+  /** Live interaction L1: how Rovara writes a comment on a Linear issue (an Ask's answer, a refusal). No Linear write client exists on this branch, so none is wired: the Linear intake is off until one is. */
+  linearReply?: LinearReplyPort;
   /** What reading the Audit Ledger and starting its exports needs (Task 11); absent on a legacy install. The broker builds no export: its own function does. */
   auditLedger?: AuditExportClientDeps;
   /** What erasing a person's audit details needs (Task 15); absent on a legacy install, where the staff erase route does not exist. */

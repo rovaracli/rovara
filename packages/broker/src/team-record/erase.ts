@@ -13,6 +13,8 @@ import { identitySystem, markPersonErased } from "./erased.js";
 import { changeScopePrincipals } from "./scope-work.js";
 import { REQUIRED_ERASE_STEPS, type EraseStep } from "./person-fields.js";
 import { eraseAskPerson } from "../agent-sessions/ask-erase.js";
+import { rememberErasedAliases } from "../agent-sessions/ask-erased-aliases.js";
+import { readChosenName } from "../developer/chosen-name.js";
 import type { ScopeCursor } from "./store.js";
 import { scrubConfigDeveloper, scrubTier0Developer, bySource, byActor, byActorSource, deleteItem, listSourceConfigs, queryPrefix, removeFromExclude, tombstoneItem } from "./store.js";
 
@@ -48,6 +50,11 @@ export interface ErasedPerson {
   scopes?: readonly string[];
   /** Projects whose source rows may name them in an exclusion list. */
   projects?: readonly string[];
+  /**
+   * The names the person was known by (display names). Kept for at most 30 days, with their source ids, ONLY as keyed hashes (`PurgeDependencies.askAliasKey`), so that an Ask still being answered does not write
+   * them (`ask-erased-aliases.ts`, register LI-2); then deleted. The name they chose themselves is read here too. Not used anywhere else.
+   */
+  names?: readonly string[];
 }
 
 /**
@@ -115,11 +122,14 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
   // the pass above; so the erase schedules its OWN second pass, delayed, which the delete worker runs (`runErasureSweeps`) with no wiring of its own.
   if (result.complete && options.sweep !== true) {
     const dueAt = now() + ERASE_SWEEP_DELAY_MS;
-    await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { pk: teamRecordPk(orgId), sk: `${ERASE_SWEEP_PREFIX}${occurrence}`, entityType: "TEAM_RECORD_ERASE_SWEEP", occurrence, who, dueAt } }));
+    await deps.table.documentClient.send(new PutCommand({ TableName: deps.table.tableName, Item: { pk: teamRecordPk(orgId), sk: `${ERASE_SWEEP_PREFIX}${occurrence}`, entityType: "TEAM_RECORD_ERASE_SWEEP", occurrence, who: withoutNames(who), dueAt } }));
     return { ...result, final: false, sweepDueAt: new Date(dueAt).toISOString() };
   }
   return { ...result, final: options.sweep === true && result.complete };
 }
+
+/** The person as the second pass keeps them: ids only. The names (kept 30 days at most, apart, for the Asks) never ride in the sweep item. */
+const withoutNames = ({ names: _names, ...rest }: ErasedPerson): ErasedPerson => { void _names; return rest; };
 
 /** How long after a complete erase its second pass runs. */
 export const ERASE_SWEEP_DELAY_MS = 15 * 60_000;
@@ -215,6 +225,10 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
   // table as the team record, so no port is needed. Bounded passes, called again until nothing is left or the run's budget is spent; not done means the next run resumes it.
   async asks(context) {
     if (context.who.developerId === undefined) return true;
+    // Their aliases are remembered first (30 days at most), so an answer in flight cannot write them while their Asks are being removed.
+    // Their names come from the caller and from the name they chose themselves (the State table); everything is hashed with the install's key before it is kept, and none of it is kept raw.
+    const chosen = await readChosenName(context.deps.table.documentClient, context.deps.table.tableName, context.who.developerId).catch(() => undefined);
+    await rememberErasedAliases(context.deps.table, context.orgId, { developerId: context.who.developerId, names: [...(context.who.names ?? []), ...(chosen === undefined ? [] : [chosen])], handles: context.ids }, Date.parse(context.at) || Date.now(), context.deps.askAliasKey);
     for (let pass = 0; pass < ASK_ERASE_PASSES_PER_RUN; pass += 1) {
       const result = await eraseAskPerson(context.deps.table, context.orgId, context.who.developerId, { maxItems: Math.min(context.budget.maxItems, 200) }, context.ids);
       if (result.complete) return true;
