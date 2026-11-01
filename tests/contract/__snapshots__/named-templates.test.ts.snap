@@ -2884,6 +2884,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "Complete Secrets Manager ARN containing the GitHub App private key PEM",
       "Type": "String",
     },
+    "LearnedLessonsEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: approved lessons are loaded into an agent's prompt (only after the worker image that carries task.learnedContext.v1 is deployed; needs the Team record); 0: no lesson is loaded or sent to an agent, even where the Team record is on (agentx config set learnedLessons.enabled 1)",
+      "Type": "String",
+    },
     "LearningSuggestionsDefault": {
       "AllowedValues": [
         "on",
@@ -3484,6 +3493,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",lg=",
                   {
                     "Ref": "LearningSuggestionsDefault",
+                  },
+                  ",ll=",
+                  {
+                    "Ref": "LearnedLessonsEnabled",
                   },
                   ",ls=",
                   {

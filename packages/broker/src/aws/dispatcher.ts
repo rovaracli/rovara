@@ -10,6 +10,7 @@ import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
 import { requiredEnvironment, type DurableOutboxRecord, type Ec2OutboxRecord } from "./lambda.js";
 import type { Ec2Delivery } from "./ec2-delivery.js";
 import { failOutboxOperation } from "./outbox-failure.js";
+import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
 import { createEc2Delivery } from "./ec2-delivery.js";
 import { createWorkflowE2EAdmissionAgentStepsReader, createWorkflowE2EAdmissionModelChoiceReader, createWorkflowE2EAdmissionNeedsModelFreeLimitsReader, createWorkflowE2EAdmissionSchemaReader } from "./workflow-e2e-admission-schema.js";
 import { appendOperationEvent } from "./operation-events.js";
@@ -761,7 +762,8 @@ export const handler = createDispatcherHandler({
     }
   },
   async markDelivered(id) {
-    await documentClient.send(markDeliveredCommand(tableName ?? requiredEnvironment("STATE_TABLE_NAME"), id, new Date().toISOString()));
+    // An item that no longer exists (for example an org purge between dispatch and the mark) is already done: it is not made again, and a retry would only loop.
+    try { await documentClient.send(markDeliveredCommand(tableName ?? requiredEnvironment("STATE_TABLE_NAME"), id, new Date().toISOString())); } catch (error) { if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error; }
   },
   async markFailed(record, error) {
     await failOutboxOperation(documentClient, tableName ?? requiredEnvironment("STATE_TABLE_NAME"), record, error);
@@ -778,7 +780,9 @@ export function markDeliveredCommand(tableName: string, id: string, deliveredAt:
   return new UpdateCommand({
     TableName: tableName,
     Key: { pk: `OUTBOX#${id}`, sk: "OUTBOX" },
-    UpdateExpression: "SET #status = :delivered, deliveredAt = :now REMOVE invocation.payload.learnedContext",
+    UpdateExpression: `SET #status = :delivered, deliveredAt = :now ${REMOVE_STORED_LESSONS}`,
+    // The item must exist: the REMOVE path is invalid on a missing item (DynamoDB refuses it), which would turn a delivered stage into a retry loop.
+    ConditionExpression: "attribute_exists(pk)",
     ExpressionAttributeNames: { "#status": "status" },
     ExpressionAttributeValues: { ":delivered": "DELIVERED", ":now": deliveredAt },
   });

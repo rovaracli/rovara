@@ -202,7 +202,18 @@ export const SEND_BACK_CAPTURE_BUDGET_MS = 1500;
  */
 export async function captureSendBackQuietly(deps: CaptureDeps, input: SendBackInput): Promise<void> {
   // The lessons side is fed from this one entry point (LS-1): one send-back, one announcement, one capture. A failure here is the lessons side's own and changes nothing else.
-  if (input.alsoRecord !== undefined) await input.alsoRecord().catch(() => undefined);
+  // It has the same time limit as the capture: a lessons write that hangs is left to finish on its own and the send-back goes on (a failure or a timeout here changes nothing else).
+  if (input.alsoRecord !== undefined) {
+    let alsoTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => input.alsoRecord!()).catch(() => undefined),
+        new Promise<void>((resolve) => { alsoTimer = setTimeout(resolve, SEND_BACK_CAPTURE_BUDGET_MS); }),
+      ]);
+    } finally {
+      if (alsoTimer !== undefined) clearTimeout(alsoTimer);
+    }
+  }
   // Once the budget runs out the abandoned capture's late result is ignored: its writes are atomic and conditional, and only the timeout line is logged.
   let abandoned = false;
   const log = (line: Record<string, unknown>): void => { if (!abandoned) (deps.log ?? ((entry) => console.log(JSON.stringify({ component: "broker", ...entry }))))(line); };

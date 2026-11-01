@@ -178,6 +178,8 @@ export const BROKER_SETTINGS = {
   decisionCards: { code: "dk", variable: "DECISION_CARDS_ENABLED" },
   // Test environment (wire-testenv): the project's approved test setup (the setup routes, the task's checks, the nightly run, the evidence's environment line). Stack parameter TestEnvironmentEnabled, "0" by default: the broker reads it as TEST_ENVIRONMENT_ENABLED, and it is on only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   testEnvironment: { code: "ev", variable: "TEST_ENVIRONMENT_ENABLED" },
+  // Lessons reach the agent (follow-up S3 of the wire-lessons review): approved lessons are loaded into an agent's prompt only when this install switch is exactly "1". Stack parameter LearnedLessonsEnabled, "0" by default, SEPARATE from the Team record flag (`tn`): turning the record on to collect and show things does not, by itself, send a lesson to an agent. The broker reads it as LEARNED_LESSONS_ENABLED. Packed setting, not a Lambda variable (ENV-ROOM).
+  learnedLessons: { code: "ll", variable: "LEARNED_LESSONS_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

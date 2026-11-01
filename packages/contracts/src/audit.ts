@@ -217,6 +217,11 @@ export const AUDIT_ACTIONS = [
   "lesson.promoted",
   "lesson.rolled_back",
   "lesson.snapshot_created",
+  // The tier-0 approval setting and the company sole-owner switch: loosening is a proposal for a second person (or the audited sole-owner exception); the ledger records both.
+  "lesson.tier0_setting_proposed",
+  "lesson.tier0_setting_changed",
+  "lesson.sole_owner_switch_proposed",
+  "lesson.sole_owner_switch_changed",
   // Lane E (private MCP servers and project Sources): ids, fixed words and flags only. A server's label, address and token, and a source's id, never go in a fact.
   "mcp_server.added",
   "mcp_server.approved",
@@ -444,6 +449,11 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "lesson.promoted": ["tier"],
   "lesson.rolled_back": ["fromSetVersion", "toSetVersion"],
   "lesson.snapshot_created": ["lessonSetVersion", "lessonCount"],
+  // `scope` is `project` or `company`; levels are `auto`, `one` or `two`; `mode` is `direct`, `second_person` or `sole_owner_exception`.
+  "lesson.tier0_setting_proposed": ["scope", "fromLevel", "toLevel"],
+  "lesson.tier0_setting_changed": ["scope", "fromLevel", "toLevel", "mode"],
+  "lesson.sole_owner_switch_proposed": ["fromEnabled", "toEnabled"],
+  "lesson.sole_owner_switch_changed": ["fromEnabled", "toEnabled", "mode"],
   "mcp_server.added": ["transport", "hasCredential"],
   // approved also pins a package-run server's install: the tarball's integrity, the lockfile and bundle hashes, the tools hash the admin saw, how many addresses and secret names it was given, and the secret's version.
   "mcp_server.approved": ["transport", "hasCredential", "integrity", "lockfileHash", "bundleHash", "toolsHash", "destinationCount", "credentialCount", "credentialVersion"],

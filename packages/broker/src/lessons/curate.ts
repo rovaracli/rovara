@@ -165,7 +165,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
         return [mergeInto(fresh, draft, nextVersion(fresh, await deps.store.versions(key, fresh.id)), deps.now(), new Set(Object.keys((await deps.store.flags(key)).pausedSources ?? {}).map(normSource)))];
       });
       if (merged === undefined) return drop("conflict");
-      await emitAudit(deps.audit, { action: "lesson.merged", workspaceId: key.workspaceId, project: key.project, lessonId: other.id, facts: { score: Math.round(score * 100) / 100 } });
+      await emitAudit(deps.audit, { action: "lesson.merged", workspaceId: key.workspaceId, project: key.project, lessonId: other.id, facts: { score: Math.round(score * 100) / 100, tier: other.tier } });
       return { outcome: "merged", lesson: merged[0]! };
     }
     if (verdict === "contradicts") {

@@ -1,6 +1,7 @@
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, OrgRoleSchema, agentXError, orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, isWriterOrgRole } from "@agentx/contracts";
 import type { DurableOutboxRecord } from "./lambda.js";
+import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
 import { taskOpen } from "../developer/task-access.js";
 import { effectiveProjectRole } from "../developer/project-roles.js";
 import { resolveTaskDispatchPeople, type CheckTaskPerson } from "../developer/task-people.js";
@@ -87,7 +88,8 @@ async function park(
   } as const;
   const items: TransactItem[] = [
     { Update: {
-      TableName: deps.tableName, Key: outboxKey(record.id), UpdateExpression: "SET #status = :waiting, taskAccessPausedAt = :now",
+      TableName: deps.tableName, Key: outboxKey(record.id), // A parked stage keeps no lessons: the copy waits an unknown time (an author may be erased, a lesson retired, access lost), so the stage is released without them (outbox-lessons.ts).
+      UpdateExpression: `SET #status = :waiting, taskAccessPausedAt = :now ${REMOVE_STORED_LESSONS}`,
       ConditionExpression: "operationId = :operationId AND workspaceId = :workspaceId AND (#status = :queued OR #status = :pending)",
       ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: { ":waiting": "WAITING_FOR_TASK_ACCESS", ":queued": "QUEUED", ":pending": "PENDING", ":operationId": record.operationId, ":workspaceId": record.workspaceId, ":now": createdAt },
