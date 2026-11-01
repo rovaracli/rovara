@@ -1,10 +1,13 @@
-import { useState } from "react";
+import { Suspense, lazy, useState } from "react";
 import type { LoadedKnowledgeItem } from "@agentx/contracts/web";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { useLoadedKnowledge, useLoadedKnowledgeText } from "../../api/loaded-knowledge.js";
 import { ApiError } from "../../api/errors.js";
 import { SKILL_SKIP, STAGE_TITLES, budgetWords, itemWords, kilobytes, modeWords, textRefusal } from "./loaded-knowledge-text.js";
+
+// The lessons list is its own chunk: it is read only when the panel is opened.
+const LoadedLessons = lazy(async () => ({ default: (await import("./LoadedLessons.js")).LoadedLessons }));
 
 /** "What the agent loaded": one closed section on the Pipeline tab. It reads nothing until it is opened, and shows references; rule text is fetched per file on request. */
 export function LoadedKnowledgePanel({ taskId }: { taskId: string }) {
@@ -13,6 +16,10 @@ export function LoadedKnowledgePanel({ taskId }: { taskId: string }) {
 }
 
 function LoadedKnowledgeBody({ taskId }: { taskId: string }) {
+ return <><RulesBody taskId={taskId} /><Suspense fallback={null}><LoadedLessons taskId={taskId} /></Suspense></>;
+}
+
+function RulesBody({ taskId }: { taskId: string }) {
  const query = useLoadedKnowledge(taskId, true);
  const [target, setTarget] = useState<{ operationId: string; stage: string; index: number } | undefined>();
  if (query.isPending) return <p className="rv-muted" role="status">Loading</p>;

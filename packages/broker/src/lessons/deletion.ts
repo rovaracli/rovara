@@ -78,7 +78,8 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
     const allGone = everSources.size > 0 && [...everSources].every((id) => deleted.has(id));
     if (dev === undefined) return allGone;
     const people = new Set(h.all.flatMap(peopleOf));
-    const wrote = h.all.some((l) => idIn(l.provenance.authors, dev));
+    // A writer of the evidence, or of the text (an editor): either way the lesson came from them and is hard-deleted.
+    const wrote = h.all.some((l) => idIn(l.provenance.authors, dev) || idIn(l.provenance.editors ?? [], dev));
     return wrote || allGone || (people.size > 0 && [...people].every((p) => sameId(p, dev)));
   }
 
@@ -223,6 +224,8 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
         scrubbed.push(h.head.id);
       }
       await deps.store.forgetSource(k, `member:${erased.developerId}`);
+      // The link from the person to the reference their Helpful / Wrong here marks were made with: the marks stay as counts and name nobody.
+      await deps.store.forgetMarkRef(k, erased.developerId);
       return { purged, scrubbed };
     },
   };

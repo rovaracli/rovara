@@ -108,6 +108,11 @@ export const LessonProvenanceSchema = z.object({
   sourceEvents: z.array(z.string().max(100)).max(50), sourceKinds: z.array(z.enum(SPAN_KINDS)).max(20),
   /** Developer ids of the members whose words or edits the lesson comes from. */
   authors: z.array(z.string().max(100)).max(20),
+  /**
+   * People who rewrote the text with "Edit and approve". Not authors: the author rule (who may approve alone) is about the evidence, so a one-tap edit keeps working. Erasure counts an editor as a writer
+   * of the lesson (it is hard-deleted). Absent on a lesson edited before this field: read as none.
+   */
+  editors: z.array(z.string().max(100)).max(20).optional(),
   /** Independent tasks that support the lesson (one id per task). */
   supportTasks: z.array(z.string().max(100)).max(50),
   /** Where the evidence came from, for per-source spike detection: `member:<id>`, `slack:<channel>`, `ci`, or a span kind. */
@@ -188,7 +193,7 @@ export type LessonAuditAction = (typeof LESSON_AUDIT_ACTIONS)[number];
 export const ERASED_MARK = "erased";
 /** Every person a version names: its authors, `member:` source keys, and anyone who approved or asked to promote it. System and erased marks are not people. */
 export const peopleOf = (l: Pick<Lesson, "provenance" | "approvals" | "promotionApprovals">): string[] => [
-  ...l.provenance.authors, ...[...l.provenance.sources, ...l.provenance.inputSources].flatMap((s) => { const member = memberOfSource(s); return member === undefined ? [] : [member]; }),
+  ...l.provenance.authors, ...(l.provenance.editors ?? []), ...[...l.provenance.sources, ...l.provenance.inputSources].flatMap((s) => { const member = memberOfSource(s); return member === undefined ? [] : [member]; }),
   ...l.approvals.map((a) => a.by), ...(l.promotionApprovals ?? []).map((a) => a.by),
 ].filter((p) => p !== ERASED_MARK && !p.startsWith("system:"));
 /** Every record row a version rests on: its source events and the record citations. */

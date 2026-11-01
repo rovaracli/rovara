@@ -258,4 +258,5 @@ export * from "./e2e-model-spend.js";
 // Learning v2: the Team record and lessons (R1).
 export * from "./team-record.js";
 export * from "./lessons.js";
+export * from "./app-lessons.js";
 export * from "./spec-target.js";
