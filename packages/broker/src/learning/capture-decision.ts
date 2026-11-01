@@ -45,6 +45,12 @@ export interface SendBackInput {
   included: readonly TaskComment[];
   /** The step the correction is for. Absent: the plan (a plan send-back). A code send-back names the coding step the work goes back to (`codeSendBackStage`). */
   stage?: LearningStage;
+  /**
+   * Team lessons (LS-1): what to tell the lessons side once for THIS send-back. `captureSendBackQuietly` is the one place a send-back is captured, and it is the only caller of this: the
+   * send-back's call sites no longer announce beside it. Only the code send-back passes one (a plan send-back never told the record, and still does not). It runs once per call, before the
+   * capture, and never fails or holds up the send-back.
+   */
+  alsoRecord?: () => Promise<void>;
 }
 export interface SendBackOutcome {
   /** Ids of the corrections created by this call (empty on a repeat). */
@@ -195,6 +201,8 @@ export const SEND_BACK_CAPTURE_BUDGET_MS = 1500;
  * (no text, no ids but the task's). A capture that runs past `SEND_BACK_CAPTURE_BUDGET_MS` is left to finish on its own (its writes are idempotent per request) and logged as `timeout`.
  */
 export async function captureSendBackQuietly(deps: CaptureDeps, input: SendBackInput): Promise<void> {
+  // The lessons side is fed from this one entry point (LS-1): one send-back, one announcement, one capture. A failure here is the lessons side's own and changes nothing else.
+  if (input.alsoRecord !== undefined) await input.alsoRecord().catch(() => undefined);
   // Once the budget runs out the abandoned capture's late result is ignored: its writes are atomic and conditional, and only the timeout line is logged.
   let abandoned = false;
   const log = (line: Record<string, unknown>): void => { if (!abandoned) (deps.log ?? ((entry) => console.log(JSON.stringify({ component: "broker", ...entry }))))(line); };

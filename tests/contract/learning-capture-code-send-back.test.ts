@@ -7,6 +7,8 @@ import { resolveTaskWorkflowFindings, sendTaskWorkflowBackToCoding, type Develop
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
 import { viewerCannotStartTasksMessage } from "../../packages/broker/src/developer/project-roles.js";
+import { readFileSync } from "node:fs";
+import { registerHumanSendBackListener, sendBackToRecord, type HumanSendBackEvent } from "../../packages/broker/src/lessons/send-back-events.js";
 import { captureSendBack, captureSendBackQuietly, sendBackSourceKey } from "../../packages/broker/src/learning/capture-decision.js";
 import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
@@ -622,5 +624,80 @@ describe("code send-back needs the project access starting a task needs (0.4.27)
       await t.fixWith(denied, t.who, "ACCEPT").catch((error: unknown) => { expect(error).not.toMatchObject({ code: "PROJECT_ACCESS_DENIED" }); });
       expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs);
     });
+  });
+});
+
+describe("LS-1: one entry point for a send-back, and the lessons side is fed from it", () => {
+  /** What the lessons side hears: every announcement, and the rows a Team record emitter would write from them. */
+  function lessonsSide() {
+    const events: HumanSendBackEvent[] = [];
+    const rows: Array<{ sendBackId: string; taskId: string; actorDeveloperId?: string }> = [];
+    const emitter = { sendBack: async (row: { sendBackId: string; taskId: string; actorDeveloperId?: string }) => { rows.push(row); } };
+    const stopEvents = registerHumanSendBackListener(async (event) => { events.push(event); });
+    const stopRows = registerHumanSendBackListener(sendBackToRecord(emitter));
+    return { events, rows, stop: () => { stopEvents(); stopRows(); } };
+  }
+
+  it("one send-back produces exactly one capture and one record row (the lesson candidate's input), and a replay produces none", async () => {
+    const side = lessonsSide();
+    try {
+      const t = await blockedTask({ program: true });
+      seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+      const requestId = randomUUID();
+      const body = { requestId, expectedRevision: workflowOf(t.harness, t.taskId).revision, instructions: NOTE };
+      await sendTaskWorkflowBackToCoding(routeDeps(t.harness), MAYA_CALLER, t.taskId, body);
+      expect(corrections(t.harness)).toHaveLength(1);
+      expect(side.events.map((event) => [event.requestId, event.taskId, event.round, event.actorDeveloperId])).toEqual([[requestId, t.taskId, 1, MAYA.developerId]]);
+      expect(side.rows.map((row) => [row.sendBackId, row.taskId])).toEqual([[requestId, t.taskId]]);
+      await sendTaskWorkflowBackToCoding(routeDeps(t.harness), MAYA_CALLER, t.taskId, body);
+      expect(corrections(t.harness)).toHaveLength(1);
+      expect(side.events).toHaveLength(1);
+      expect(side.rows).toHaveLength(1);
+    } finally { side.stop(); }
+  });
+
+  it("is fed even when the capture itself records nothing (a person with no standing), once, and a failing lessons side does not fail the send-back", async () => {
+    const side = lessonsSide();
+    const stopBroken = registerHumanSendBackListener(async () => { throw new Error("the record is down"); });
+    try {
+      const t = await blockedTask({ program: true });
+      await t.send(MAYA_CALLER, NOTE);
+      expect(side.events).toHaveLength(1);
+      expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(2);
+    } finally { stopBroken(); side.stop(); }
+  });
+
+  it("the Slack button's fixed note is not a reason: the row is announced with none", async () => {
+    const side = lessonsSide();
+    try {
+      const t = await blockedTask({ program: true, slack: true });
+      seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+      expect((await t.slack(MAYA.slackUserId!)).statusCode).toBe(200);
+      expect(side.events.map((event) => event.instructions)).toEqual([""]);
+    } finally { side.stop(); }
+  });
+
+  it("captureSendBackQuietly runs a lessons callback once, before the capture, and never lets it fail or hold the capture", async () => {
+    const t = await blockedTask();
+    seedPerson(t.harness.db, MAYA_CALLER, "contributor");
+    const order: string[] = [];
+    let calls = 0;
+    await captureSendBackQuietly(routeDeps(t.harness), { caller: MAYA_CALLER, taskId: t.taskId, project: PROJECT, requestId: randomUUID(), reason: NOTE, included: [], stage: "code", alsoRecord: async () => { calls += 1; order.push(corrections(t.harness).length === 0 ? "before" : "after"); } });
+    expect(calls).toBe(1);
+    expect(order).toEqual(["before"]);
+    expect(corrections(t.harness)).toHaveLength(1);
+    await captureSendBackQuietly(routeDeps(t.harness), { caller: MAYA_CALLER, taskId: t.taskId, project: PROJECT, requestId: randomUUID(), reason: NOTE, included: [], stage: "code", alsoRecord: async () => { throw new Error("down"); } });
+    expect(corrections(t.harness)).toHaveLength(2);
+  });
+
+  it("no call site announces beside the capture: the announcement is only ever passed to captureSendBackQuietly, and the plan send-back has none", () => {
+    const read = (path: string) => readFileSync(new URL(`../../packages/broker/src/aws/developer-tasks/${path}`, import.meta.url), "utf8");
+    const coding = read("workflow-coding.ts");
+    const calls = [...coding.matchAll(/announceTaskSendBack\(/gu)];
+    expect(calls).toHaveLength(1);
+    expect(coding.slice(Math.max(0, calls[0]!.index - 40), calls[0]!.index)).toContain("alsoRecord: () => ");
+    expect(coding.match(/captureSendBackQuietly\(/gu)).toHaveLength(1);
+    expect(read("decide.ts")).not.toMatch(/announce(Task|Human)SendBack/u);
+    expect(coding).not.toMatch(/announceHumanSendBack/u);
   });
 });
