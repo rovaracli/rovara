@@ -1,7 +1,6 @@
 // Wiring lane wire-lessons, erasure: a person's lesson that was loaded into a task leaves no text behind once the person is erased. The record of what a task loaded (the manifest) holds ids
 // and scores, never lesson text, and the erasure removes the lesson from it; the stage's stored delivery copy loses the lessons as soon as it is delivered.
 import { describe, expect, it } from "vitest";
-import type { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { markDeliveredCommand } from "../../../packages/broker/src/aws/dispatcher.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { loadLessonsForStage, type LoadDeps } from "../../../packages/broker/src/lessons/load.js";
