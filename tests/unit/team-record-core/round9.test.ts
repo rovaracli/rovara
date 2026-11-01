@@ -300,7 +300,8 @@ describe("R8-1 learning v2 asks the access records at read time", () => {
   const WS = ORG_A;
   const restrictedAudience = (scope: string) => ({ kind: "restricted" as const, acl: { source: "slack" as const, scope, principals: ["U-member"], capturedAt: T1, liveCheck: "none" as const } });
   const lessonFor = (over: Record<string, unknown> = {}) => {
-    const base = lessonRecord({ id: "les_slack001", type: "convention", tier: 1, workspaceId: WS } as never);
+    // Only approved lessons load: a person has approved this one.
+    const base = lessonRecord({ id: "les_slack001", type: "convention", tier: 1, workspaceId: WS, approvals: [{ approvalId: "ap-ann", by: "ann", at: 1, mode: "one" }] } as never);
     return { ...base, ...over, provenance: { ...base.provenance, audience: restrictedAudience(SC), sourceScopes: [SC], ...((over.provenance as object | undefined) ?? {}) } } as never;
   };
   async function setup() {

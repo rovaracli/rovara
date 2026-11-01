@@ -37,6 +37,8 @@ import { ToolLoopGuard } from "./tool-loop-guard.js";
 import { assistantOutcome, eventType, failedTurn, type AssistantOutcome } from "./session-events.js";
 import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step.js";
 import { loadedKnowledgePayload } from "./knowledge/manifest.js";
+import { LEARNED_LOAD_REPORT_FIELD } from "@agentx/contracts";
+import { prepareLearnedContext, withLearnedBlock } from "./learned-run.js";
 import { runAgentStep, type AgentStepResult, type RunAgentStepInput } from "./agent-run/run-agent-step.js";
 import {
   createWorkspacePiSession,
@@ -903,8 +905,12 @@ async function runTask(
     }
   });
   try {
+    // Learning v2: the approved lessons the broker chose for this stage, re-checked against the base commit and framed as labelled, inert advice (learned-run.ts). Absent, or for an older broker's
+    // invocation, there is nothing: the stage runs as it would without memory. The report says which lessons reached the prompt; a failure to send it loses only a counter.
+    const learned = await prepareLearnedContext({ raw: invocation.payload.learnedContext, mode: payloadMode, repositories: candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase) });
+    if (learned.report !== undefined) await emit("progress", { [LEARNED_LOAD_REPORT_FIELD]: learned.report }).catch(() => undefined);
     // Stop & redirect (steer-invocation.ts): the owner's instruction that stopped the previous run is taken from the owner and framed after the broker's prompt (coding only; absent for every other step).
-    const taskPrompt = ownerRedirectPrompt(invocation.payload.prompt, invocation.payload.ownerRedirect, payloadMode === "IMPLEMENT" ? "IMPLEMENT" : undefined, dependencies.cancellationController, invocation.operationId);
+    const taskPrompt = withLearnedBlock(ownerRedirectPrompt(invocation.payload.prompt, invocation.payload.ownerRedirect, payloadMode === "IMPLEMENT" ? "IMPLEMENT" : undefined, dependencies.cancellationController, invocation.operationId), learned.section);
     let outcome: TaskUsageOutcome = "FAILED";
     let taskResult: TaskInvocationResult | undefined;
     let workflowDependenciesResult: WorkflowDependencyResult | undefined;
@@ -1462,6 +1468,7 @@ async function runTask(
           ...(invocation.payload.workflowReviewSpec === undefined ? {} : { reviewSpec: invocation.payload.workflowReviewSpec, onSpecReview: (result: SpecReviewResult) => { specReviewResult = result; } }),
           ...(invocation.payload.workflowReviewFeedback === undefined ? {} : { reviewFeedback: invocation.payload.workflowReviewFeedback }),
           ...(invocation.payload.workflowReviewNote === undefined ? {} : { reviewNote: invocation.payload.workflowReviewNote }),
+          ...(learned.section === "" ? {} : { learnedBlock: learned.section }),
           ...(invocation.payload.workflowReviewers === undefined ? {} : { reviewers: invocation.payload.workflowReviewers }),
           ...(invocation.payload.workflowReviewRisk === true ? { reviewRisk: true } : {}),
           ...(sourceSession === undefined ? {} : { sources: { tools: sourceSession.contextTools, note: sourceSession.contextNote, labels: sourceSession.labels } }),

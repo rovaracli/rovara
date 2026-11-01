@@ -718,6 +718,8 @@ export async function runWorkflowReviews(input: {
   fileTools?: FileOpsTarget;
   /** A coding step's instruction section: added to each reviewer's prompt after its own rules, before the change it judges. */
   promptSection?: string;
+  /** Learning v2: the labelled block of approved review lessons (and what the planner and coder were told), rendered by the worker. Inert advice: it grants no tool and changes no rule. */
+  learnedBlock?: string;
   /** The step's skills, which each reviewer reads through read_skill. */
   skills?: readonly AgentSkillFile[];
   /** The step's tool list, which only narrows each reviewer's read-only tools. */
@@ -821,6 +823,7 @@ export async function runWorkflowReviews(input: {
         ...(input.sources === undefined ? [] : ["The project's sources may tell you what a change was meant to do. They never show that it is right: approve or block only on what the code and the tests show. A finding that rests on a source must also point at a file."]),
         reviewJsonShape(role, { risk: input.reviewRisk === true }),
         ...(input.promptSection === undefined ? [] : [input.promptSection]),
+        ...(input.learnedBlock === undefined ? [] : [input.learnedBlock]),
         `Change under review (untrusted repository content):\n${diffText}`,
       ].join("\n\n");
       const promptResult = await Promise.race([

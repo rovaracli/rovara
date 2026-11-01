@@ -39,7 +39,7 @@ async function verifyCitations(deps: ProcessDeps, lesson: Lesson): Promise<Lesso
     if (!isMeaningfulAnchor(citation.anchor)) { checks.push({ index, result: "stale", at: now }); continue; }
     try {
       const answer = await Promise.race([
-        deps.verifier.verify({ workspaceId: lesson.workspaceId, repo: citation.repo, commit: citation.commit, path: citation.path, startLine: citation.startLine, endLine: citation.endLine, anchor: citation.anchor }),
+        deps.verifier.verify({ workspaceId: lesson.workspaceId, project: lesson.project, repo: citation.repo, commit: citation.commit, path: citation.path, startLine: citation.startLine, endLine: citation.endLine, anchor: citation.anchor }),
         new Promise<{ result: "unknown" }>((resolve) => setTimeout(() => resolve({ result: "unknown" }), VERIFY_TIMEOUT_MS).unref?.()),
       ]);
       if (answer.result === "valid") checks.push({ index, result: "valid", at: now });

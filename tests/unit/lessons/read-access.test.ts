@@ -119,7 +119,7 @@ describe("place-scoped tracker lessons are denied (F6), with a log line, never l
     const deps: LoadDeps = { access, store, embedder, vectors, settings: settings(), audit: new Audit(), now: clock.now };
     const base = lessonRecord({ workspaceId: WS });
     const legacy = { kind: "restricted" as const, acl: { source: "jira" as never, scope: "jira:project/KEY", principals: ["J-member"], capturedAt: T1, liveCheck: "none" as const } };
-    await seed(store, { ...base, id: "les_jira0001", type: "convention", tier: 1, provenance: { ...base.provenance, audience: legacy } } as never);
+    await seed(store, { ...base, id: "les_jira0001", type: "convention", tier: 1, approvals: [{ approvalId: "ap-ann", by: "ann", at: 1, mode: "one" as const }], provenance: { ...base.provenance, audience: legacy } } as never);
     await vectors.upsert(WS, PROJECT, "les_jira0001", await embedder.embed("x"), { status: "active" });
     const request = (principals: string[]) => ({ workspaceId: WS, project: PROJECT, taskId: "t1", stage: "IMPLEMENT" as const, round: 1, intent: "Retry failed HTTP calls", repos: ["api"], files: ["src/retry/client.ts"], languages: [], taskAudience: { kind: "private" as const, identity: { principals, groups: [] } } });
     expect(((await loadLessonsForStage(deps, request(["J-member"]))).context?.lessons ?? []).map((l) => l.id)).not.toContain("les_jira0001");

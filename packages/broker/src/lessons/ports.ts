@@ -42,7 +42,7 @@ export interface Metrics { count(name: string, tags?: Record<string, string>): v
 
 /** The broker's check of a code citation against a base commit's objects (never a working tree). `unknown`: it could not tell, so the lesson is not trusted as verified. */
 export interface CitationVerifier {
-  verify(input: { workspaceId: string; repo: string; commit: string; path: string; startLine: number; endLine: number; anchor: string }): Promise<{ result: "valid" | "moved" | "stale" | "unknown"; startLine?: number; endLine?: number }>;
+  verify(input: { workspaceId: string; /** The lesson's project: the repository must be one of ITS repositories. */ project?: string; repo: string; commit: string; path: string; startLine: number; endLine: number; anchor: string }): Promise<{ result: "valid" | "moved" | "stale" | "unknown"; startLine?: number; endLine?: number }>;
 }
 
 /** Who may approve lessons for a project (project maintainers, How-we-work editors, company admins). `complete: false` means the answer is not trustworthy. */

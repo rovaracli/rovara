@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): agent steps, the task operation parts, application selection, agent skills and tools.
 
+import { learnedContextForOperation } from "./lessons-dispatch.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
 import { readTurnActorChecks } from "../../model-selection/turn-authority.js";
 import { turnStagesForMode, prepareTurnModelPolicy } from "../../model-selection/turn-policy.js";
@@ -369,6 +370,8 @@ export async function taskOperationParts(
   const payloadModel: ModelSelection | undefined = applied?.model ?? resolvedModel.model ?? (routed?.route == null ? undefined : routed.requested);
   const leftThePlan = chatgpt !== undefined && routed?.keepChatgpt === false;
   if (leftThePlan) chatgpt = undefined;
+  // Learning v2: the approved lessons for this stage, only where the install has lesson ports and the project's learning mode allows (lessons-dispatch.ts). Delivery drops the field for an older worker.
+  const { load: learnedLoad, ...learned } = await learnedContextForOperation(dependencies, { orgId, task, workflowMode: input.workflowMode, legacyTask: input.legacyTask, agentRun: input.agentRun, definition: settings.definition });
   const operationId = input.operationId ?? randomUUID();
   const fence = workspace.fence + 1;
   const operation = operationRecord({
@@ -401,6 +404,8 @@ export async function taskOperationParts(
   });
   operation.settingsRevision = settings.definition.revision;
   // Plan 6 Task 8: the project allows only one model, so the same model that wrote the plan checks it; the plan view says so.
+  // Learning v2: which stage's manifest the worker's load report belongs to.
+  if (learnedLoad !== undefined) operation.learnedLoad = learnedLoad;
   if (applied?.criticSameModel === true) operation.criticSameModel = true;
   // Trust fix A2: only the build's own model was usable for the reviews; their reports say so.
   if (applied?.reviewSameModel === true) operation.reviewSameModel = true;
@@ -552,6 +557,8 @@ export async function taskOperationParts(
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
       ...(routed?.wire === undefined ? {} : { modelRoute: routed.wire }),
       ...(applied?.agentStep === undefined ? {} : { agentStep: applied.agentStep }),
+      // Learning v2: advice from the team's approved lessons; a worker without "task.learnedContext.v1" has it removed at delivery (it is never refused for it).
+      ...learned,
       // Spec 051 (P-1): the checks the worker reruns when the agent finishes. The latest revision's readiness, as
       // publicationProject merges it, since that is what publication gates on. None when the project has none.
       ...(input.agentRun !== undefined || input.workflowMode === "SETUP_DRAFT" || input.workflowMode === "SPEC_WRITE" || (input.readiness ?? settings.definition.readiness).length === 0 ? {} : { readiness: input.readiness ?? settings.definition.readiness }),

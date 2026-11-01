@@ -873,7 +873,14 @@ function applyUpdate(item: Item, expression: string, names: Names, values: Value
         if (value instanceof Set) item[path] = new Set([...((current as Set<unknown> | undefined) ?? []), ...value]);
         else item[path] = ((current as number | undefined) ?? 0) + (value as number);
       } else if (keyword === "REMOVE") {
-        delete item[path];
+        // A path into maps (`invocation.payload.learnedContext`): the attribute goes from inside the map; every map on the way must exist, as DynamoDB requires. A missing last member is no change.
+        if (item[path] === undefined && path.includes(".") && !path.includes("[")) {
+          const parts = path.split(".");
+          let parent: unknown = item;
+          for (const part of parts.slice(0, -1)) parent = plainMap(parent) ? (parent)[part] : undefined;
+          if (!plainMap(parent)) throw Object.assign(new Error("The document path provided in the update expression is invalid for update"), { name: "ValidationException", $metadata: {} });
+          delete (parent)[parts[parts.length - 1]!];
+        } else delete item[path];
       } else if (keyword === "DELETE") {
         // Removes values from a set; DynamoDB drops a set attribute that becomes empty.
         const value = parser.operand(item) as Set<unknown>;

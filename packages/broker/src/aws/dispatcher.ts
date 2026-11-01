@@ -761,13 +761,7 @@ export const handler = createDispatcherHandler({
     }
   },
   async markDelivered(id) {
-    await documentClient.send(new UpdateCommand({
-      TableName: tableName ?? requiredEnvironment("STATE_TABLE_NAME"),
-      Key: { pk: `OUTBOX#${id}`, sk: "OUTBOX" },
-      UpdateExpression: "SET #status = :delivered, deliveredAt = :now",
-      ExpressionAttributeNames: { "#status": "status" },
-      ExpressionAttributeValues: { ":delivered": "DELIVERED", ":now": new Date().toISOString() },
-    }));
+    await documentClient.send(markDeliveredCommand(tableName ?? requiredEnvironment("STATE_TABLE_NAME"), id, new Date().toISOString()));
   },
   async markFailed(record, error) {
     await failOutboxOperation(documentClient, tableName ?? requiredEnvironment("STATE_TABLE_NAME"), record, error);
@@ -775,6 +769,20 @@ export const handler = createDispatcherHandler({
   completeWorkflowE2EReadiness: createWorkflowE2EReadinessCompleter({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
 });
 
+
+/**
+ * The update that marks an outbox item delivered. It also drops the lessons the stage carried (`invocation.payload.learnedContext`): once the worker has them, the stored copy is not needed
+ * (nothing is delivered twice), and a lesson's text must not outlive the lesson in a record nobody sweeps. Lesson erasure then has nothing to find here. A no-op for an item without them.
+ */
+export function markDeliveredCommand(tableName: string, id: string, deliveredAt: string): UpdateCommand {
+  return new UpdateCommand({
+    TableName: tableName,
+    Key: { pk: `OUTBOX#${id}`, sk: "OUTBOX" },
+    UpdateExpression: "SET #status = :delivered, deliveredAt = :now REMOVE invocation.payload.learnedContext",
+    ExpressionAttributeNames: { "#status": "status" },
+    ExpressionAttributeValues: { ":delivered": "DELIVERED", ":now": deliveredAt },
+  });
+}
 
 export function createWorkflowE2EReadinessCompleter(input: { documentClient: DynamoDBDocumentClient; tableName?: string }) {
   return async (record: DurableOutboxRecord, generation: number): Promise<void> => {

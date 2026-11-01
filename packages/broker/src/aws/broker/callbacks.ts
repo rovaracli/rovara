@@ -30,6 +30,7 @@ import { authorizeWorkflowFeedbackApproval, handleCodeBuild, logCallbackRefusal,
 import { appendEvents, putArtifact, reconcilePullRequest } from "./pull-request-reconcile.js";
 import { creatorCheckOf, orgOfRecord, routingOf } from "./scope-helpers.js";
 import { chatGptTaskToken, recordChatGptFallback } from "./task-operations.js";
+import { afterWorkerEvents } from "./lessons-report.js";
 import { recordTerminalResult } from "./terminal-result.js";
 import { readStoredCandidateSourceExport } from "./workflow-items.js";
 
@@ -81,6 +82,8 @@ export async function handleCallback(
   const body = parseBody(request.body);
   if (action === "events") {
     const accepted = await appendEvents(dependencies, operation, body);
+    // Learning v2: the worker's load report and loaded-knowledge record, where lessons are on (lessons-report.ts; never fails the events).
+    await afterWorkerEvents(dependencies, operation, body);
     return json({ accepted }, request.requestId);
   }
   if (action === "artifacts") {

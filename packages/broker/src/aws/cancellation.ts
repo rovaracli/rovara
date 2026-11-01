@@ -105,6 +105,8 @@ export interface OperationRecord extends Operation {
   planQualityContext?: PlanQualityContext;
   /** A planning run whose prompt asked the planner for the plan quality members (absent: it was not, or delivery dropped the guidance for an older worker). */
   planQualityAsked?: true;
+  /** Learning v2: the stage manifest the lessons chosen for this operation were recorded under; the worker's load report is applied to that manifest only. */
+  learnedLoad?: { taskId: string; project: string; stage: "UNDERSTAND" | "PLAN" | "IMPLEMENT" | "PLAN_CRITIQUE" | "REVIEW"; round: number };
   publication?: {
     repository: string;
     repositoryUrl: string;
