@@ -16,6 +16,15 @@ function sampleSigningKeys(): string {
   return JSON.stringify([publicKey.export({ type: "spki", format: "pem" }).toString()]);
 }
 
+/**
+ * A certificate-shaped sample for the controller's authority setting: it only has to start as a PEM certificate and be public text (the setting is recorded, not parsed, until package-run
+ * servers are released). The body is made when asked for, so no certificate or key-shaped text is kept in the repository.
+ */
+function sampleControllerCa(): string {
+  const body = Buffer.from("release profile sample authority: not a real certificate").toString("base64");
+  return `-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----\n`;
+}
+
 /** Every setting the recorded settings can hold, set to a valid value: the widest Enterprise stack set. */
 function everythingOn(): Record<string, string> {
   return {
@@ -41,6 +50,16 @@ function everythingOn(): Record<string, string> {
     rovaraMcpHostCertificateArn: "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000",
     rovaraMcpHostName: "mcp.example.internal",
     rovaraMcpHostedZoneId: "Z0123456789ABCDEFGHIJ",
+    // Package-run servers: the customer's own registry mirror (https), reached at its own private range, and the runner network inside the install's VPC (10.42.0.0/16). Public npm is the
+    // other way to install and excludes the registry ranges, so the profile records it as off; the NAT gateway it would add is a host-stack input, not a recorded setting.
+    rovaraMcpNpmRegistry: "https://registry.example.internal/npm/",
+    rovaraMcpPublicNpm: "false",
+    rovaraMcpRunnerSubnetCidrs: "10.42.240.0/26,10.42.240.64/26",
+    rovaraMcpRunnerRoutes: "192.168.0.0/16=tgw-0123456789abcdef0",
+    rovaraMcpRegistryCidrs: "192.168.40.0/24",
+    rovaraMcpControllerTlsSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:example/mcp-controller-tls-AbCdEf",
+    rovaraMcpControllerDnsNamespace: "runners.example.internal",
+    rovaraMcpControllerCa: sampleControllerCa(),
     agentxReservedConcurrency: "true",
     agentxRovaraOrgId: "o-abcdef1234",
     // (Text, as every recorded setting is; the infrastructure parses it as JSON.)
