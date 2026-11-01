@@ -243,6 +243,10 @@ jobs:
       # The EC2 worker runs Docker 25 (the only version Amazon Linux 2023 ships), which does not forward an internal-only container's DNS queries to a --dns server; this runner's
       # Docker is newer and does, so the step above cannot see that. This one starts Docker 25.0.5 in Docker (a privileged container with its own network namespace, no change to this
       # runner) and runs the production host against it: the app's lookup of an undeclared name must reach the sinkhole, and a mock's alias must resolve.
+      # dind 25.0.5's entrypoint probes the legacy iptables tables (/proc/net/ip6_tables_names, arp_tables_names) and stops when some arm runner
+      # kernels have not loaded them (run 41276607301). Load them on the host first; best effort, so a kernel without the modules fails as before.
+      - name: Load the iptables kernel modules dind needs
+        run: sudo modprobe -a ip_tables ip6_tables arp_tables iptable_nat iptable_filter || true
       - name: Docker 25 DNS regression (dind 25.0.5)
         env:
           ROVARA_DOCKER: "1"
