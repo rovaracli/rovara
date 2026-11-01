@@ -21,7 +21,7 @@ import { testRunner } from "../support/kit-runner.js";
 import { writeFakeKit } from "../support/synth-kit-fixture.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { assertSourceIsRelease, gitSourceState, releaseCheckRunner, type SourceState } from "../../scripts/release/synth-kit.js";
+import { assertSameStacks, assertSourceIsRelease, gitSourceState, releaseCheckRunner, type SourceState } from "../../scripts/release/synth-kit.js";
 import { sandboxAvailable } from "../support/kit-runner.js";
 
 if (!existsSync("packages/web/dist/app/index.html")) throw new Error("the release build needs the web app first: run `npm run build:web`");
@@ -323,6 +323,14 @@ describe("the kit step's refusals", () => {
   it("refuses an output folder that is not empty", async () => {
     await expect(buildSynthKit({ releaseDir, out: kitDir, source: ON_RELEASE_COMMIT })).rejects.toThrow(/not empty/);
   }, 600_000);
+});
+
+describe("the stacks an Enterprise profile makes", () => {
+  it("must be the stacks a build from source makes, no more and no fewer", () => {
+    expect(() => assertSameStacks("p", ["access.template.json", "slack.template.json"], ["slack.template.json", "access.template.json"])).not.toThrow();
+    expect(() => assertSameStacks("p", ["access.template.json"], ["access.template.json", "slack.template.json"])).toThrow(/other stacks than a build from source \(p\)/);
+    expect(() => assertSameStacks("p", ["access.template.json", "extra.template.json"], ["access.template.json"])).toThrow(/other stacks/);
+  });
 });
 
 describe("the code map", () => {

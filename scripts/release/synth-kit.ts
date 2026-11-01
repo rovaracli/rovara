@@ -242,6 +242,11 @@ export async function buildSynthKit(input: BuildSynthKitInput): Promise<BuildSyn
   }
 }
 
+/** The kit makes the stacks a build from source makes for the same settings: no more, no fewer. */
+export function assertSameStacks(profileName: string, kitFiles: readonly string[], sourceFiles: readonly string[]): void {
+  if ([...kitFiles].sort().join(",") !== [...sourceFiles].sort().join(",")) throw new Error(`the kit makes other stacks than a build from source (${profileName}): ${kitFiles.join(", ")} against ${sourceFiles.join(", ")}`);
+}
+
 /** The checks every kit passes before the release ships it (see the header). Throws on the first failure. */
 export async function selfCheck(input: { kitRoot: string; release: ReleaseManifest; releaseDir: string; runner: SynthRunner }): Promise<void> {
   const { runner } = input;
@@ -289,7 +294,7 @@ export async function selfCheck(input: { kitRoot: string; release: ReleaseManife
         const stacks = new Map(assembly.stacks.map((stack) => [stack.stackName, stack]));
         const kitParts = (await readdir(join(profile.out, "templates"))).sort();
         const sourceParts = BUILT_PARTS.filter((part) => stacks.has(environmentStackName("kitcheck", part))).map((part) => `${part}.template.json`).sort();
-        if (kitParts.join(",") !== sourceParts.join(",")) throw new Error(`the kit makes other stacks than a build from source (${profile.name}): ${kitParts.join(", ")} against ${sourceParts.join(", ")}`);
+        assertSameStacks(profile.name, kitParts, sourceParts);
         for (const part of BUILT_PARTS) {
           const stack = stacks.get(environmentStackName("kitcheck", part));
           if (stack === undefined) continue;
