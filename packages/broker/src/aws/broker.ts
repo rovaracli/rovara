@@ -4517,18 +4517,35 @@ function requireSlackServiceRole(dependencies: AwsBrokerDependencies, request: A
 /** How many merges a person's id is followed through (the same bound as the agent access rules). Reaching it, or finding a loop, is a refusal: an identity that cannot be traced to its survivor is not served. */
 const SLACK_MERGE_HOPS = 8;
 
-/** The ids a Slack person answers to: their own, then the person each was merged into. Refuses (FORBIDDEN) when the chain loops or is longer than SLACK_MERGE_HOPS. */
-async function slackMergeChain(dependencies: AwsBrokerDependencies, developerId: string): Promise<string[]> {
+/**
+ * The ids a Slack person answers to: their own, then the person each was merged into, then (when `linked` is given and not already reached) the developer their identity is linked to NOW and
+ * whoever that developer was merged into. Later ids are the more current ones. ONE walk: the link counts as a hop, and the hop limit and the loop check cover the merges and the link
+ * together. Refuses (FORBIDDEN) when the walk loops or is longer than SLACK_MERGE_HOPS.
+ */
+async function slackIdWalk(dependencies: AwsBrokerDependencies, developerId: string, linked?: string): Promise<string[]> {
   const ids = [developerId];
   if (dependencies.developer === undefined) return ids;
   const merges = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
-  for (let hop = 0; hop <= SLACK_MERGE_HOPS; hop += 1) {
-    const next = (await merges.getDeveloper(ids[ids.length - 1]!))?.mergedInto;
-    if (typeof next !== "string" || next === "") return ids;
-    if (ids.includes(next) || hop === SLACK_MERGE_HOPS) throw agentXError("FORBIDDEN", "this Slack member's identity merges could not be followed to one person; ask an admin");
+  let pendingLink = linked;
+  for (let hops = 0; ; hops += 1) {
+    const merged = (await merges.getDeveloper(ids[ids.length - 1]!))?.mergedInto;
+    let next = typeof merged === "string" && merged !== "" ? merged : undefined;
+    if (next === undefined && pendingLink !== undefined) {
+      next = ids.includes(pendingLink) ? undefined : pendingLink;
+      pendingLink = undefined;
+    }
+    if (next === undefined) return ids;
+    if (ids.includes(next) || hops >= SLACK_MERGE_HOPS) throw agentXError("FORBIDDEN", "this Slack member's identity could not be followed to one person; ask an admin");
     ids.push(next);
   }
-  return ids;
+}
+
+/** A Slack id's identity link, and the ids it answers to (see slackIdWalk): the merge chain, then the developer the identity is linked to now. A relink writes the link back without restoring the merge an unlink dropped. */
+async function slackRequesterIds(dependencies: AwsBrokerDependencies, developerId: string): Promise<{ ids: string[]; unlinkedFrom: string | undefined }> {
+  const link = dependencies.developer === undefined ? undefined
+    : await new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }).getIdentityLink(developerId);
+  const linked = link !== undefined && link.unlinkedFrom === undefined && link.developerId !== developerId ? link.developerId : undefined;
+  return { ids: await slackIdWalk(dependencies, developerId, linked), unlinkedFrom: link?.unlinkedFrom };
 }
 
 /**
@@ -4544,13 +4561,7 @@ async function requireSlackRequesterRule(dependencies: AwsBrokerDependencies, or
   const resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? orgIdOfTeam : await orgResolverOf(dependencies)({ developerId });
   const orgId = resolved === undefined && options.allowUnlinked === true ? orgIdOfTeam : requireOrgId(resolved);
   if (orgId !== orgIdOfTeam) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
-  const link = dependencies.developer === undefined ? undefined
-    : await new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }).getIdentityLink(developerId);
-  const ids = await slackMergeChain(dependencies, developerId);
-  // The developer the identity is linked to now. A relink writes the link back without restoring the merge an unlink dropped, so the link itself (not only mergedInto) says who the identity
-  // belongs to; that person, and whoever they were merged into, are judged like the merge chain, after it (the survivor wins).
-  const linked = link !== undefined && link.unlinkedFrom === undefined && link.developerId !== developerId ? link.developerId : undefined;
-  if (linked !== undefined && !ids.includes(linked)) for (const id of await slackMergeChain(dependencies, linked)) if (!ids.includes(id)) ids.push(id);
+  const { ids, unlinkedFrom: former } = await slackRequesterIds(dependencies, developerId);
   // The person the id was finally merged or linked into must belong to the team's org too, not only the Slack-derived id.
   const survivor = ids[ids.length - 1]!;
   if (survivor !== developerId && dependencies.orgResolver !== undefined) {
@@ -4560,8 +4571,7 @@ async function requireSlackRequesterRule(dependencies: AwsBrokerDependencies, or
   }
   // A Slack identity that was unlinked from a developer (the unlink also drops the merge) is judged by that developer's removal too: removal marks the survivor only, so a removed or
   // banned person must not become a clean unlinked requester by unlinking the Slack identity afterwards. This covers people already removed. Their record, if any, gives no role here.
-  const former = link?.unlinkedFrom;
-  const formerIds = former === undefined || former === developerId ? [] : await slackMergeChain(dependencies, former);
+  const formerIds = former === undefined || former === developerId ? [] : await slackIdWalk(dependencies, former);
   const refuseIfRemoved = async (id: string): Promise<void> => {
     for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
       if (await getItem(dependencies, key) !== undefined) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
