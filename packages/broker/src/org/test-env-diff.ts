@@ -27,7 +27,7 @@ function flatten(value: unknown, path: string, out: Map<string, string>): void {
     return;
   }
   if (typeof value === "object") { for (const [key, inner] of Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right))) flatten(inner, path === "" ? key : `${path}.${key}`, out); return; }
-  out.set(path, String(value));
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") out.set(path, String(value));
 }
 
 const rank = (path: string): number => { const at = FIRST.findIndex((head) => path === head || path.startsWith(`${head}.`) || path.startsWith(`${head}[`)); return at === -1 ? FIRST.length : at; };

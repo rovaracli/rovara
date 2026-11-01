@@ -336,7 +336,7 @@ describe("the card names the newest proposal, however many there are", () => {
   it("reads every page of proposals, not the first", async () => {
     const t = await setupWizardBench();
     const { store, digest } = await manyProposals(t);
-    const small = { ...store, documentClient: { send: (command: { input?: Record<string, unknown> }) => t.db.send(Object.assign(command, { input: { ...command.input, Limit: 7 } }) as never) } };
+    const small = { ...store, documentClient: { send: (command: { input?: Record<string, unknown> }) => t.db.send(Object.assign(command, { input: { ...command.input, Limit: 7 } })) } };
     expect((await newestProposal(small as never, TEST_ORG, NAME))?.digest).toBe(digest);
   });
 });
