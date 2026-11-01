@@ -3,6 +3,7 @@
 // The one best command tied to tests becomes the test check (the others are listed as alternatives); with none, the question stays. Brazil report paths are not public, so none is ever built in: a report or
 // coverage path comes from the team's own words near the command (cited) or from the language tool's own detector, which keeps running inside a Brazil package (Brazil wraps the language tool, so the proposal can
 // show both and the Prove run decides). Everything here is a PROPOSAL; nothing is run.
+import { formatCommandLine, redactText, remoteCodeReason } from "@agentx/contracts";
 import type { DetectedCheck, DetectedSource, Detector } from "./types.js";
 
 const MAX_DOCS = 30;
@@ -14,7 +15,9 @@ const COMMAND_WORD = /^[A-Za-z0-9_@%+=:,./-]{1,200}$/u;
 const NOT_PLAIN = /[|;&<>`$\\"'(){}[\]*?!~]|\.\.\./u;
 /** Words that make a team-written command something Rovara will not propose (it downloads, deploys, deletes or opens a shell). */
 const BANNED_WORD = /^(?:sh|bash|zsh|csh|ksh|curl|wget|eval|sudo|rm|ssh|scp|nc)$/u;
-const BANNED_ARG = /(?:deploy|publish|promote|push|delete|remove|cleanup|rollback|merge|submit)/u;
+const BANNED_ARG = /(?:deploy|publish|promote|push|delete|remove|cleanup|clean|wipe|rollback|merge|submit)/u;
+/** A download source or a package-source override in an argument (`https://...`, `git+https://...`). */
+const REMOTE_ARG = /:\/\/|git\+/u;
 const NEGATED = /\b(?:never|don'?t|do not|must not|should not|avoid|deprecated|obsolete|instead of)\b/iu;
 const TEST_WORDS = /\b(?:test|tests|testing|unit|integ|integration|coverage|pytest|junit)\b/iu;
 const BUILD_WORDS = /\b(?:build|compile|package)\b/iu;
@@ -40,14 +43,19 @@ const rankOf = (path: string): number => {
   return -1;
 };
 
-/** One plain `brazil-...` command, or undefined. */
+/**
+ * One plain Brazil command, or undefined. Only `brazil-build`, and `brazil-recursive-cmd` running `brazil-build`, are accepted: other `brazil-*` launchers (`brazil-runtime-exec`, ...) run any program
+ * named after them. An argument naming a URL or `git+` source, text the redactor would change (a secret), and anything the download-and-run rule flags are refused.
+ */
 function brazilCommand(span: string): { executable: string; args: string[] } | undefined {
   const text = span.replace(/^(?:\$|>)\s+/u, "").replace(/\s+#.*$/u, "").trim();
-  if (text.length === 0 || text.length > 400 || NOT_PLAIN.test(text)) return undefined;
+  if (text.length === 0 || text.length > 400 || NOT_PLAIN.test(text) || redactText(text) !== text) return undefined;
   const words = text.split(/\s+/u);
   const [executable, ...args] = words as [string, ...string[]];
-  if (!/^brazil(?:-[a-z0-9]+)+$/u.test(executable) || words.length > 40) return undefined;
-  if (!words.every((word) => COMMAND_WORD.test(word) && !BANNED_WORD.test(word)) || args.some((word) => BANNED_ARG.test(word.toLowerCase()))) return undefined;
+  if (words.length > 40) return undefined;
+  if (executable === "brazil-recursive-cmd") { if (args.find((word) => !word.startsWith("-")) !== "brazil-build") return undefined; } else if (executable !== "brazil-build") return undefined;
+  if (!words.every((word) => COMMAND_WORD.test(word) && !BANNED_WORD.test(word) && !REMOTE_ARG.test(word)) || args.some((word) => BANNED_ARG.test(word.toLowerCase()))) return undefined;
+  if (remoteCodeReason(formatCommandLine({ cwd: ".", executable, args, timeoutSeconds: 1 })) !== undefined) return undefined;
   return { executable, args };
 }
 
@@ -55,12 +63,24 @@ function brazilCommand(span: string): { executable: string; args: string[] } | u
 const prose = (line: string): string => (/^(?:[$>]\s*)?brazil-/u.test(line.trim()) ? "" : line.replace(/`[^`\n]*`/gu, " "));
 
 function scan(path: string, text: string): Candidate[] {
-  const lines = text.split("\n").slice(0, MAX_LINES);
+  // HTML comments are not the team's instructions: blanked, keeping every newline so line numbers stay the file's.
+  const lines = text.replace(/<!--[\s\S]*?-->/gu, (match) => match.replace(/[^\n]/gu, " ")).split("\n").slice(0, MAX_LINES);
   const found: Candidate[] = [];
   let fenced = false;
+  let fenceNegated = false;
   lines.forEach((raw, index) => {
     const trimmed = raw.trim();
-    if (/^(?:```|~~~)/u.test(trimmed)) { fenced = !fenced; return; }
+    if (/^(?:```|~~~)/u.test(trimmed)) {
+      fenced = !fenced;
+      // A block the prose just before it says not to run is skipped whole.
+      if (fenced) {
+        const before: string[] = [];
+        for (let back = index - 1; back >= 0 && before.length < 3; back -= 1) { const previous = lines[back]!.trim(); if (previous !== "" && !/^(?:```|~~~)/u.test(previous)) before.push(previous); }
+        fenceNegated = before.some((line) => NEGATED.test(line));
+      }
+      return;
+    }
+    if (fenced && fenceNegated) return;
     const spans = fenced ? [trimmed] : [...raw.matchAll(/`([^`\n]{1,300})`/gu)].map((match) => match[1]!.trim());
     if (spans.length === 0 || NEGATED.test(raw)) return;
     const context: string[] = [prose(raw)];

