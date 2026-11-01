@@ -42,18 +42,18 @@ it("B8 the pr_daily_cap pre-check reads DAILY once and never recounts a full sto
  const {captureCorrection}=await import("../../packages/broker/src/learning/store.js"),f=fixture();const {GetCommand,QueryCommand}=await import("@aws-sdk/lib-dynamodb");
  f.db.set({...projectLearningKey(f.scope.orgId,f.scope.project,"STATE"),entityType:"LEARNING_STATE",orgId:f.scope.orgId,projectCreatedAt:PROJECT_CREATED,revision:0,openSuggestions:0,liveCorrections:2000,pendingRules:0});
  const daily=projectLearningKey(f.scope.orgId,f.scope.project,`DAILY#${new Date(f.clock.ms).toISOString().slice(0,10)}#${Math.floor(Date.parse(PROJECT_CREATED)/1000)}`);f.db.set({...daily,prCount:50,autoCount:50});let dailyReads=0,queries=0;
- const deps={...f.deps,documentClient:{send:async(command:unknown)=>{if(command instanceof GetCommand&&command.input.Key?.sk===daily.sk)dailyReads++;if(command instanceof QueryCommand)queries++;return f.db.send(command);}}};
+ const deps={...f.deps,documentClient:{send:async(command:Parameters<typeof f.db.send>[0])=>{if(command instanceof GetCommand&&command.input.Key?.sk===daily.sk)dailyReads++;if(command instanceof QueryCommand)queries++;return f.db.send(command);}}};
  expect(await captureCorrection(deps,f.scope,{id:"dailycap",stage:"build",source:"pr_comment",sourceKey:"cap-source",sourceRef:{taskId:"task1"},taskId:"task1",text:"Use the shared retry helper for network requests.",signature:["h"],author:person,standing:"member",limit:"automatic_pr"})).toEqual({ok:false,reason:"pr_daily_cap"});expect(dailyReads).toBe(1);expect(queries).toBe(0);
 });
 it("B8 a project off write racing capture prevents the correction transaction",async()=>{
  const {capturePullRequestCorrections}=await import("../../packages/broker/src/learning/capture-pr.js"),{TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb"),f=fixture();let raced=false;
- const deps={...f.deps,documentClient:{send:async(command:unknown)=>{if(command instanceof TransactWriteCommand&&!raced){raced=true;f.db.set({...projectLearningKey(f.scope.orgId,f.scope.project,"SETTINGS"),projectCreatedAt:PROJECT_CREATED,prComments:"off",revision:2});}return f.db.send(command);}}};
+ const deps={...f.deps,documentClient:{send:async(command:Parameters<typeof f.db.send>[0])=>{if(command instanceof TransactWriteCommand&&!raced){raced=true;f.db.set({...projectLearningKey(f.scope.orgId,f.scope.project,"SETTINGS"),projectCreatedAt:PROJECT_CREATED,prComments:"off",revision:2});}return f.db.send(command);}}};
  await capturePullRequestCorrections(deps,f.input).catch(()=>undefined);expect(raced).toBe(true);expect(f.db.find(row=>row.entityType==="LEARNING_CORRECTION")).toEqual([]);
 });
 it("B8 a contributor grant reduced during capture cannot store member feedback",async()=>{
  const {capturePullRequestCorrections}=await import("../../packages/broker/src/learning/capture-pr.js"),{projectMemberKey}=await import("@agentx/contracts"),{TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb"),f=fixture();
  f.db.set({...orgMemberKey(f.scope.orgId,person),orgId:f.scope.orgId,developerId:person,role:"member"});const key=projectMemberKey(f.scope.orgId,person,f.scope.project);f.db.set({...key,role:"developer",projectRole:"contributor",ownerKey:person,projectName:f.scope.project,grantId:"grant1"});let raced=false;
- const deps={...f.deps,documentClient:{send:async(command:unknown)=>{if(command instanceof TransactWriteCommand&&!raced){raced=true;f.db.set({...key,role:"developer",projectRole:"viewer",ownerKey:person,projectName:f.scope.project,grantId:"grant1"});}return f.db.send(command);}}};
+ const deps={...f.deps,documentClient:{send:async(command:Parameters<typeof f.db.send>[0])=>{if(command instanceof TransactWriteCommand&&!raced){raced=true;f.db.set({...key,role:"developer",projectRole:"viewer",ownerKey:person,projectName:f.scope.project,grantId:"grant1"});}return f.db.send(command);}}};
  await capturePullRequestCorrections(deps,f.input).catch(()=>undefined);expect(raced).toBe(true);expect(f.db.find(row=>row.entityType==="LEARNING_CORRECTION")).toEqual([]);
 });
 it("B8 a closing company cannot capture more PR correction text",async()=>{

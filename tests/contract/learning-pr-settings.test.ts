@@ -71,7 +71,7 @@ it("B8 settings, proposal and summary audit roll back together",async()=>{
 });
 for(const mode of ["proposer","expiry"] as const)it(`B8 proposal ${mode} cannot change between evidence and commit`,async()=>{
  const {writeLearningSettings,decideLearningSettings}=await import("../../packages/broker/src/learning/settings.js"),{TransactWriteCommand}=await import("@aws-sdk/lib-dynamodb"),f=await approvalFixture();const p=await writeLearningSettings(f.deps,f.caller,f.scope.project,{expectedRevision:0,prComments:"on"});if(p.applied)throw Error("must propose");let raced=false;const key=projectLearningKey(f.scope.orgId,f.scope.project,`PROPOSAL#${p.proposalId}`);
- const deps={...f.deps,documentClient:{send:async(command:unknown)=>{if(command instanceof TransactWriteCommand&&!raced){raced=true;f.db.set({...f.db.get(key),...key,...(mode==="proposer"?{by:"c".repeat(64)}:{expiresAt:new Date(f.clock.ms-1).toISOString()})});}return f.db.send(command);}}};
+ const deps={...f.deps,documentClient:{send:async(command:Parameters<typeof f.db.send>[0])=>{if(command instanceof TransactWriteCommand&&!raced){raced=true;f.db.set({...f.db.get(key),...key,...(mode==="proposer"?{by:"c".repeat(64)}:{expiresAt:new Date(f.clock.ms-1).toISOString()})});}return f.db.send(command);}}};
  deps.audit.documentClient=deps.documentClient as unknown as typeof deps.audit.documentClient;
  await expect(decideLearningSettings(deps,{...f.caller,developerId:f.admin},f.scope.project,p.proposalId,{decision:"approve"})).rejects.toBeDefined();expect(f.db.get(projectLearningKey(f.scope.orgId,f.scope.project,"SETTINGS"))?.prComments).toBe("off");
 });
