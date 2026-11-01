@@ -1,0 +1,62 @@
+import { test, expect } from "./support/csp.js";
+import { mockRealtime } from "./support/realtime.js";
+import { checkA11y } from "./support/axe.js";
+import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
+type Sent = Array<{ method: string; path: string; body?: Record<string, unknown> }>;
+const BASE = "/v1/web/projects/payments/lessons";
+const writes = async (request: { get: (path: string) => Promise<{ json: () => Promise<unknown> }> }) => ((await (await request.get("/__mock/requests")).json()) as Sent).filter(item => item.method !== "GET" && item.path.startsWith(BASE));
+async function openTab(page: Page, context: BrowserContext, request: APIRequestContext, baseURL: string | undefined, tab = "lessons", width = 1280) {
+ await request.post("/__mock/scenario", { data: { name: "project" } });await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);await mockRealtime(page);
+ await page.setViewportSize({ width, height: 900 });await page.goto("/app/projects/payments?tab=" + tab);
+}
+test("a maintainer approves a low-risk lesson with one tap, gives the first and then the second of two approvals, then removes an active one", async ({ page, context, request, baseURL }) => {
+ await openTab(page, context, request, baseURL);
+ await expect(page.getByRole("heading", { name: "Waiting for you (3)" })).toBeVisible();
+ const one = page.getByRole("region", { name: "Use the shared retry helper" });
+ await expect(one.getByText("Needs one maintainer's OK")).toBeVisible();
+ await expect(one.getByText(/Still holds/u)).toBeVisible();
+ const two = page.getByRole("region", { name: "Reviewers check auth on new routes" });
+ await expect(two.getByText(/Needs two people/u)).toBeVisible();
+ await expect(two.getByText(/Approved first by Ann Archer/u)).toBeVisible();
+ await checkA11y(page, { theme: "light" });
+ await one.getByRole("button", { name: "Approve", exact: true }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Approved. Rovara can use this lesson now." })).toBeVisible();
+ await expect(page.getByRole("heading", { name: "Waiting for you (2)" })).toBeVisible();
+ await expect(page.getByRole("heading", { name: "Active lessons (2)" })).toBeVisible();
+ const three = page.getByRole("region", { name: "Skip flaky integration tests on branches" });
+ await three.getByRole("button", { name: "Approve", exact: true }).click();
+ await expect(page.getByRole("status").filter({ hasText: "now waits for a second maintainer or admin" })).toBeVisible();
+ await expect(three.getByText(/Approved first by You/u)).toBeVisible();
+ await expect(three.getByText(/You approved this/u)).toBeVisible();
+ await expect(three.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
+ await two.getByRole("button", { name: "Approve", exact: true }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Approved. Rovara can use this lesson now." })).toBeVisible();
+ await expect(page.getByRole("heading", { name: "Active lessons (3)" })).toBeVisible();
+ await page.getByRole("button", { name: "Remove: Prefer small pull requests" }).click();
+ await page.getByRole("button", { name: "Remove lesson" }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Lesson removed." })).toBeVisible();
+ await expect(page.getByRole("heading", { name: "Active lessons (2)" })).toBeVisible();
+ const sent = await writes(request);
+ expect(sent.map(item => item.method + " " + item.path.replace(BASE, ""))).toEqual(["POST /les_one00001/approve", "POST /les_thr00001/approve", "POST /les_two00001/approve", "POST /les_act00001/retire"]);
+ expect(sent[0]!.body).toEqual({ expectedVersion: 1 });
+ await checkA11y(page, { theme: "dark" });
+});
+test("a maintainer reads the weekly digest and the sources, and sees a paused source and a maintainers-only source", async ({ page, context, request, baseURL }) => {
+ await openTab(page, context, request, baseURL);
+ const digest = page.getByRole("region", { name: "This week" });
+ await expect(digest.getByRole("heading", { name: "Top lessons" })).toBeVisible();
+ await page.getByRole("tab", { name: "Sources" }).click();
+ await expect(page).toHaveURL(/tab=sources/u);
+ const list = page.getByRole("list", { name: "Sources" });
+ await expect(list.getByText("Rovara keeps: Full history")).toBeVisible();
+ await expect(list.getByText("Kept for maintainers")).toBeVisible();
+ await expect(list.getByText(/Paused: it produced far more lessons than usual/u)).toBeVisible();
+ await checkA11y(page, { theme: "dark" });
+});
+test("the Lessons tab is usable on a phone and the lesson text is plain text", async ({ page, context, request, baseURL }) => {
+ await openTab(page, context, request, baseURL, "lessons", 390);
+ await expect(page.getByRole("heading", { name: "Waiting for you (3)" })).toBeVisible();
+ const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+ expect(overflow).toBeLessThanOrEqual(0);
+ await expect(page.locator(".rv-lessons img, .rv-lessons script")).toHaveCount(0);
+});

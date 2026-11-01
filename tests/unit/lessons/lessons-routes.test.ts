@@ -1,7 +1,9 @@
 // L3b: the Lessons tab, Sources tab and task-page lessons routes. Authority is the point: who may see a lesson, who may decide it, the two-person rule, the Auditor, a stale
 // version, a lesson from a source the viewer cannot see, and text that never reaches a viewer.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { AgentXError, LessonsViewReaderSchema, type OrgId } from "@agentx/contracts";
+import { AgentXError, LESSON_TIER_REASONS, LESSON_VIEW_STATUSES, LessonsViewReaderSchema, type OrgId } from "@agentx/contracts";
+import { LESSON_STATUSES } from "../../../packages/broker/src/lessons/types.js";
 import { routeLessons, type LessonRouteDependencies } from "../../../packages/broker/src/lessons/routes.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
@@ -9,6 +11,7 @@ import type { DeveloperCaller } from "../../../packages/broker/src/aws/developer
 import type { LessonRouteDependencies as _Deps } from "../../../packages/broker/src/lessons/routes.js";
 import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, directory, draft, embedder, facts, Judge, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
 import { addSource, world } from "../../support/team-record-core.js";
+import { webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 
 void (undefined as unknown as _Deps);
 const NAMES: Record<string, string> = { ann: "Ann Archer", bob: "Bob Baker", owner: "Olga Owner", carl: "Carl Cole", mallory: "Mallory Mole" };
@@ -127,6 +130,16 @@ describe("approving", () => {
     expect((await s.store.get(KEY, "les_pend0001"))!.status).toBe("pending");
     expect(await approve(s, "bob", "les_pend0001", 2)).toEqual({ status: "active", needs: "nothing" });
     expect((await s.store.get(KEY, "les_pend0001"))!.approvals.map((a) => a.by)).toEqual(["ann", "bob"]);
+  });
+
+  it("the person who gave the first approval is shown no Approve button, and the others are", async () => {
+    const s = setup();
+    await seed(s.store, pending({ tier: 2, tierReasons: ["escalation_words"] }));
+    await approve(s, "ann");
+    const mine = LessonsViewReaderSchema.parse(await s.call(callerOf("ann"), "GET", base)).waiting[0]!;
+    expect(mine).toMatchObject({ canApprove: false, canReject: true, needs: { required: 2, have: 1, first: { name: "Ann Archer", you: true } } });
+    expect(LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base)).waiting[0]!).toMatchObject({ canApprove: true, needs: { first: { name: "Ann Archer" } } });
+    expect(JSON.stringify(LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base)))).not.toMatch(/"you":true/u);
   });
 
   it("the pilot default needs one person even for a low-risk cited fact", async () => {
@@ -298,12 +311,42 @@ describe("the task page: lessons the agent loaded", () => {
     expect((await refused(s.call(callerOf("mallory"), "POST", `${task}/les_load0001/feedback`, { kind: "wrong_here" }))).code).toBe("CHANGE_STALE");
     expect((await s.store.get(KEY, "les_load0001"))!.counters.harmful).toBe(1);
     expect((await refused(s.call(callerOf("mallory"), "POST", `${task}/les_other001/feedback`, { kind: "helpful" }))).code).toBe("NOT_FOUND");
+    const taskFeedback = `${task}/les_load0001/feedback`;
+    expect((await refused(s.call(callerOf("mallory", { browserSession: undefined }), "POST", taskFeedback, { kind: "helpful" }))).code).toBe("FORBIDDEN");
+    expect((await refused(s.call(callerOf("mallory", { orgRole: "auditor" as never }), "POST", taskFeedback, { kind: "helpful" }))).code).toBe("FORBIDDEN");
+    expect((await s.store.get(KEY, "les_load0001"))!.counters.helpful).toBe(0);
     const dark = setup({ access: { mayRead: async (_o, _v, places) => places.map(() => false) } });
     await seed(dark.store, lessonRecord({ id: "les_load0001", title: "Secret title", provenance: { ...lessonRecord().provenance, sourceScopes: ["slack:T1/CPRIV"] } }));
     await dark.store.putManifest({ taskId: "11111111-1111-1111-1111-111111111111", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, bytes: 10, lessons: [{ id: "les_load0001", version: 1, score: 0.5, why: "scope", citation: "valid" }] });
     const hidden = await dark.call(callerOf("mallory"), "GET", task);
     expect(JSON.stringify(hidden)).not.toContain("Secret");
     expect((hidden as { lessons: Array<{ visible: boolean; canMark: boolean }> }).lessons[0]).toMatchObject({ visible: false, canMark: false });
+  });
+});
+
+describe("the words the screens know", () => {
+  it("the contract's statuses are the store's, and every tier reason the classifier writes has words", () => {
+    expect([...LESSON_VIEW_STATUSES]).toEqual([...LESSON_STATUSES]);
+    const source = readFileSync(new URL("../../../packages/broker/src/lessons/tier.ts", import.meta.url), "utf8");
+    const written = new Set([...source.matchAll(/(?:escalation|why)\.push\("(\w+)"\)/gu)].map((m) => m[1]!).concat([...source.matchAll(/reasons: \["(\w+)"\]/gu)].map((m) => m[1]!), ["supersedes_higher_tier"]));
+    for (const reason of written) if (reason !== "capability_request" && reason !== "outsider_source" && reason !== "ineligible_task") expect(LESSON_TIER_REASONS as readonly string[], reason).toContain(reason);
+    expect(written.size).toBeGreaterThan(10);
+  });
+});
+
+describe("what a browser may reach", () => {
+  const task = "11111111-1111-4111-8111-111111111111";
+  it("the project's lessons routes are under the projects family, and under tasks only the lessons read and the feedback write are open", () => {
+    expect(webRouteAllowed("GET", `/v1/web/projects/${PROJECT}/lessons`)).toBe(true);
+    expect(webRouteAllowed("POST", `/v1/web/projects/${PROJECT}/lessons/les_pend0001/approve`)).toBe(true);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/lessons`)).toBe(true);
+    expect(webRouteAllowed("POST", `/v1/web/tasks/${task}/lessons/les_pend0001/feedback`)).toBe(true);
+    expect(webRouteAllowed("POST", `/v1/web/tasks/${task}/lessons`)).toBe(false);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/lessons/les_pend0001/feedback`)).toBe(false);
+    expect(webRouteAllowed("DELETE", `/v1/web/tasks/${task}/lessons`)).toBe(false);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${task}`)).toBe(false);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/lessons/x`)).toBe(false);
+    expect(webRouteAllowed("POST", `/v1/web/tasks/${task}/continue-as-task`)).toBe(true);
   });
 });
 

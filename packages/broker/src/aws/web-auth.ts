@@ -10,7 +10,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  const relative = pathname.slice("/v1/web/".length), family = relative.split("/")[0]!;
  const read = method === "GET" || method === "HEAD";
  if (relative === "org/service-status" || relative.startsWith("org/service-status/")) return read && relative === "org/service-status";
- if (family === "tasks") return method === "POST" && /^tasks\/[0-9a-f-]{36}\/continue-as-task$/i.test(relative);
+ // L3b: the task page also reads the lessons the agent loaded and marks one "Helpful" / "Wrong here" (exact shapes only; nothing else under tasks/ is reachable from a browser).
+ if (family === "tasks") return (method === "POST" && /^tasks\/[0-9a-f-]{36}\/continue-as-task$/i.test(relative)) || (read && /^tasks\/[0-9a-f-]{36}\/lessons$/i.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/lessons\/[A-Za-z0-9_-]{4,64}\/feedback$/i.test(relative));
  if (!(WEB_ROUTE_FAMILIES as readonly string[]).includes(family)) return false;
  // Lane B: legacy lifecycle writes remain on the token API for compatibility.
  // Cookie callers must use reviewed paths; legacy Slack writes remain held until B34 exposure ships.
