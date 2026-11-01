@@ -1,0 +1,107 @@
+// Test environment (wire-testenv): which approved environment a TASK may use, and how it is pinned.
+//
+// A task uses the project's approved environment only if EVERYTHING in it is something the task flow can carry out today. The approved environment is a project setting a maintainer approved; this is the check that
+// stands between that setting and a worker, so it does not trust the approval alone (an environment approved by an earlier build, or by a path with fewer checks, is read here again):
+//   - the production deny list: nothing the environment points at may be on it, and an environment that reaches a remote with no list is refused (`testEnvProdDenyViolations`, the same matcher the approval used);
+//   - recordings only where the app and its data die with the round: sandbox and per-task preview (`mediaTierAllowed`), never the shared environment;
+//   - sandbox only: the preview and shared tiers, services (mock or pre-prod) and test accounts are not carried out by the task flow yet (no mock is started, no pre-prod session is opened, no account is
+//     provisioned), so an environment that has any is NOT applied, and the task runs the project's own checks with the evidence saying so. A task is never told it used a mock or a pre-prod it did not.
+// The task pins the revision it started with: a later approval changes the NEXT task, never one that is running.
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { INDEX_EXPIRY_ATTRIBUTE, mediaTierAllowed, projectPk, testEnvDigest, testEnvProdDenyViolations, type OrgId, type TestEnvironment } from "@agentx/contracts";
+import type { TransactItem } from "../audit/outbox.js";
+import { readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
+import { testEnvironmentEnabled } from "./switch.js";
+
+export const UNUSED_REASONS = ["none", "unreadable", "names_production", "recording_not_allowed", "services_not_connected", "accounts_not_connected", "tier_not_connected"] as const;
+export type UnusedReason = (typeof UNUSED_REASONS)[number];
+
+/** What a person reads when the approved environment was not used (fixed words). */
+export const UNUSED_WORDS: Record<UnusedReason, string> = {
+  none: "No approved test environment",
+  unreadable: "The approved test environment could not be read",
+  names_production: "The approved test environment points at production",
+  recording_not_allowed: "The approved test environment asks for recordings where they are not allowed",
+  services_not_connected: "The approved test environment calls services, which tasks do not use yet",
+  accounts_not_connected: "The approved test environment uses test accounts, which tasks do not use yet",
+  tier_not_connected: "The approved test environment is not a sandbox, which tasks do not use yet",
+};
+
+export type UsableEnvironment = { ok: true; environment: TestEnvironment } | { ok: false; reason: UnusedReason };
+
+/** Whether an approved environment may be carried out by a task now, and if not, why not. Pure. */
+export function environmentUnusedReason(environment: TestEnvironment): UnusedReason | undefined {
+  const body = environment.environment;
+  if (testEnvProdDenyViolations(body).length > 0) return "names_production";
+  if ((body.capture.video || body.capture.traces) && !mediaTierAllowed(body.tier)) return "recording_not_allowed";
+  if (body.tier !== "sandbox" || body.preview !== undefined || body.shared !== undefined) return "tier_not_connected";
+  if (body.services.length > 0) return "services_not_connected";
+  if (body.accounts.length > 0) return "accounts_not_connected";
+  return undefined;
+}
+
+/**
+ * The project's newest approved environment if a task may use it, else why not. Never throws: a store that cannot be read is `unreadable`, and the task then runs without an environment (the project's own checks).
+ * With the switch off it is always `none` and reads nothing.
+ */
+export async function usableTestEnvironment(deps: TestEnvDeps, orgId: OrgId, project: string, revision?: number, env: NodeJS.ProcessEnv = process.env): Promise<UsableEnvironment> {
+  if (!testEnvironmentEnabled(env)) return { ok: false, reason: "none" };
+  let approved: TestEnvironment | undefined;
+  try {
+    approved = await readApprovedTestEnvironment(deps, orgId, project, revision);
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  }
+  if (approved === undefined) return { ok: false, reason: "none" };
+  const reason = environmentUnusedReason(approved);
+  return reason === undefined ? { ok: true, environment: approved } : { ok: false, reason };
+}
+
+// ---- the pin
+
+const pinKey = (orgId: OrgId, project: string, taskId: string) => ({ pk: projectPk(orgId, project), sk: `TESTENV#PIN#${taskId}` });
+const PIN_TTL_SECONDS = 400 * 86_400;
+
+export interface TestEnvPin { revision: number; digest: string; unused?: UnusedReason }
+
+/** The item that pins the revision a task started with, for the task's start transaction. `unused` records an environment that existed but was not applied, so the evidence can say why. */
+export function testEnvPinItem(tableName: string, input: { orgId: OrgId; project: string; taskId: string; nowMs: number; used?: TestEnvironment; unused?: { revision: number; digest: string; reason: UnusedReason } }): TransactItem | undefined {
+  const pin: TestEnvPin | undefined = input.used !== undefined ? { revision: input.used.revision, digest: testEnvDigest(input.used.environment) }
+    : input.unused !== undefined ? { revision: input.unused.revision, digest: input.unused.digest, unused: input.unused.reason } : undefined;
+  if (pin === undefined) return undefined;
+  return { Put: {
+    TableName: tableName,
+    Item: { ...pinKey(input.orgId, input.project, input.taskId), entityType: "TEST_ENV_PIN", orgId: input.orgId, project: input.project, taskId: input.taskId, ...pin, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(input.nowMs / 1000) + PIN_TTL_SECONDS },
+    ConditionExpression: "attribute_not_exists(pk)",
+  } };
+}
+
+/** The pin of a task, or undefined (none, another org's, or damaged). Never throws. */
+export async function readTestEnvPin(deps: Pick<TestEnvDeps, "documentClient" | "tableName">, orgId: OrgId, project: string, taskId: string): Promise<TestEnvPin | undefined> {
+  try {
+    const item = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: pinKey(orgId, project, taskId), ConsistentRead: true }))) as { Item?: Record<string, unknown> };
+    const stored = item.Item;
+    if (stored === undefined || stored["orgId"] !== orgId || stored["project"] !== project || stored["taskId"] !== taskId) return undefined;
+    const revision = stored["revision"];
+    const digest = stored["digest"];
+    const unused = stored["unused"];
+    if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1 || typeof digest !== "string" || !/^[a-f0-9]{64}$/u.test(digest)) return undefined;
+    if (unused !== undefined && !(UNUSED_REASONS as readonly unknown[]).includes(unused)) return undefined;
+    return { revision, digest, ...(unused === undefined ? {} : { unused: unused as UnusedReason }) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** What a task start does with the project's environment: the environment it uses and the pin item (or why it uses none). With the switch off: nothing at all, and nothing read. */
+export async function testEnvironmentForStart(deps: TestEnvDeps, input: { orgId: OrgId; project: string; taskId: string }, env: NodeJS.ProcessEnv = process.env): Promise<{ used?: TestEnvironment; pin?: TransactItem }> {
+  if (!testEnvironmentEnabled(env)) return {};
+  const found = await usableTestEnvironment(deps, input.orgId, input.project, undefined, env);
+  if (found.ok) return { used: found.environment, pin: testEnvPinItem(deps.tableName, { ...input, nowMs: deps.now(), used: found.environment })! };
+  if (found.reason === "none" || found.reason === "unreadable") return {};
+  // An environment exists but is not applied: say which, from the newest revision, so the evidence names it.
+  let approved: TestEnvironment | undefined;
+  try { approved = await readApprovedTestEnvironment(deps, input.orgId, input.project); } catch { approved = undefined; }
+  const pin = approved === undefined ? undefined : testEnvPinItem(deps.tableName, { ...input, nowMs: deps.now(), unused: { revision: approved.revision, digest: testEnvDigest(approved.environment), reason: found.reason } });
+  return pin === undefined ? {} : { pin };
+}

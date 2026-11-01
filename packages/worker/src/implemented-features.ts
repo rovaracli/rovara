@@ -58,4 +58,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.evidenceCapture.v1",
   // Test environment (wire-testenv): a setup draft run that is told `testEnvDetect` also reports the environment the detectors would propose (test-env-detect.ts).
   "task.testEnvDetect.v1",
+  // Test environment (wire-testenv): a verification run that carries the environment's plan applies its test selection and round budget and reports the selection (verification/test-env-plan.ts).
+  "task.testEnvironment.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

@@ -76,6 +76,7 @@ import {
   taskWorkflowCheckPolicy,
   turnTable,
 } from "./common.js";
+import { testEnvironmentForStart } from "../../test-env/usable.js";
 import { loadOwnedTask, refuse } from "./access.js";
 import { openTasksText, taskView } from "./task-view.js";
 import { runResultOf } from "./task-index.js";
@@ -480,6 +481,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (full !== undefined && await releaseFinishedTasksOf(deps, charge.member) > 0) full = await limitReached(deps.documentClient, deps.tableName, charge, limits);
   if (full !== undefined) return refused(await limitError(deps, caller, full, limits));
 
+  // Test environment (wire-testenv): the project's approved environment, if a task may use it, decides the checks the task is held to, and its revision is pinned with the task. Nothing while the switch is off.
+  const testEnv = asWorkflow ? await testEnvironmentForStart({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, { orgId: deps.orgId, project: request.project, taskId }) : {};
   const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: caller.amr, developerName: caller.name, client }, deps.orgId);
   // A setup draft's preparation clones and checks out only (no devcontainer, no setup command, no readiness command), as an agent-step run's does.
   const preparation = await deps.actions.preparation(identity, project, request.requestId, settingUpDraft ? { readOnly: true, setupDraft: true } : prepared?.runner !== "agent_steps" ? undefined : { ...(prepared.checkout.length === 0 ? {} : { checkout: prepared.checkout }), readOnly: true });
@@ -504,7 +507,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     charge, shared: share !== undefined, ...(share === undefined ? {} : { share, shareVersion: 1 }),
     createdAt: receivedAt, updatedAt: receivedAt,
     ...(asWorkflow ? { workflow: createWorkflowSnapshot({
-      taskId, ownerId: identity.ownerKey, now: receivedAt, path: workflowPath, checkPolicy: taskWorkflowCheckPolicy(project.definition),
+      taskId, ownerId: identity.ownerKey, now: receivedAt, path: workflowPath, checkPolicy: taskWorkflowCheckPolicy(project.definition, testEnv.used?.environment),
       ...(prepared?.program === undefined ? {} : { program: prepared.program }),
       // A 1.1.0 workflow alone may hold the new stages: it starts at UNDERSTAND/READY, and says whether the request or Understand chose the path.
       ...(hasPlanCheck ? { definitionVersion: "1.1.0" as const } : {}),
@@ -552,6 +555,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       orgId: deps.orgId, taskId, requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash,
       project: request.project, agentId: spendingStop.agentId,
     }, spendingStop, preparation.operationId, receivedAt, 0)),
+    ...(testEnv.pin === undefined ? [] : [testEnv.pin]),
     ...(share?.threadTs === undefined ? [] : [putNew(deps.tableName, {
       ...sharedTaskKey({ teamId: share.teamId, channelId: share.channelId, threadTs: share.threadTs }),
       entityType: "SHARED_TASK", taskId, workspaceId, ownerKey: task.ownerKey, developerId: task.developerId,

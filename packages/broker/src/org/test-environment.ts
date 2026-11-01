@@ -20,6 +20,7 @@ import {
   TestEnvironmentBodySchema,
   TestEnvironmentSchema,
   agentXError,
+  mediaTierAllowed,
   projectAllows,
   projectMetaKey,
   projectPk,
@@ -112,6 +113,14 @@ function refuseProduction(body: TestEnvironmentBody, previous?: TestEnvironmentB
   if (found !== undefined) throw invalid(`${found.field} ${PROD_WORDS[found.kind] ?? "names production"}`);
 }
 
+/**
+ * Recordings (video, traces) are kept only where the app and its data die with the round: the sandbox and a per-task preview, never the shared environment (owner default, 2026-10-31). Refused when proposed AND
+ * when approved, whatever the account kinds, so an environment that asks for one in the shared tier is never stored as approvable.
+ */
+function refuseRecordingOnShared(body: TestEnvironmentBody): void {
+  if ((body.capture.video || body.capture.traces) && !mediaTierAllowed(body.tier)) throw invalid("capture: video and traces are kept only in the sandbox and per-task preview tiers");
+}
+
 /** The contract's less-safe fields (pre-prod, shared, preview, video, traces, schema-synth, a raised budget, a moved target, a shortened deny list): any of them needs a second person. */
 export type TestEnvChangeFlag = TestEnvLessSafeField;
 
@@ -132,6 +141,7 @@ export async function proposeTestEnvironment(
   const body = parseBody(input.body);
   const previous = await readApprovedTestEnvironment(deps, input.orgId, input.project);
   refuseProduction(body, previous?.environment);
+  refuseRecordingOnShared(body);
   const digest = testEnvDigest(body);
   const now = deps.now();
   await deps.documentClient.send(new TransactWriteCommand({
@@ -245,6 +255,7 @@ export async function approveTestEnvironment(
   const prove = proveItem === undefined ? undefined : TestEnvProveReportSchema.safeParse(proveItem.report);
   if (!testEnvIsProved(prove?.success === true ? prove.data : undefined, input.digest)) throw invalid("prove this environment (boot, smoke test and a full run) before approving it");
   refuseProduction(body, current?.environment);
+  refuseRecordingOnShared(body);
   if ((current?.revision ?? 0) !== input.expectedRevision) throw stale("someone changed the test environment; reload and review again");
 
   const lessSafe = changeFlags(current?.environment, body);

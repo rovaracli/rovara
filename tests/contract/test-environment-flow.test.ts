@@ -215,3 +215,55 @@ describe("with the switch on", () => {
     });
   });
 });
+
+describe("a task's checks", () => {
+  const withLint = () => draftOf(draftBody({ repos: [{ repositoryId: "web", setupCommands: [command("make", ["old-setup"], 900)], checks: [
+    { id: "unit", label: "Unit tests", command: command("make", ["old-test"], 1800), kind: "test" },
+    { id: "lint", label: "Lint", command: command("ruff", ["check"], 600), kind: "lint" },
+  ] }] }));
+  const approveEnvironment = async (t: Setup, draft: TestEnvDraft) => {
+    await t.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: draft });
+    const proposed = await t.dev(OMAR, "POST", `${ENV}/propose`, {});
+    expect(proposed.status, JSON.stringify(proposed.body)).toBe(200);
+    const digest = testEnvDigest(draft.environment);
+    t.setupCheckPassed();
+    expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
+    const approved = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+  };
+  const startTask = async (t: Setup) => {
+    const started = await t.dev(OMAR, "POST", `/v1/app/projects/${NAME}/code`, { requestId: randomUUID(), input: { text: "Fix the retry bug" }, path: "QUICK" });
+    expect(started.status, JSON.stringify(started.body)).toBe(202);
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    const record = t.db.get(`DEVTASK#${taskId}`, "META") as { workflow: { checkPolicy: { required: Array<{ id: string; label: string; kind?: string; command: { executable: string } }> } } };
+    return { taskId, required: record.workflow.checkPolicy.required, pins: t.db.find((item) => item.entityType === "TEST_ENV_PIN" && item.taskId === taskId) };
+  };
+
+  it("are the project's own while the switch is off, even for a project with an approved environment, and nothing is pinned", async () => {
+    const t = await setup();
+    await withSwitch("1", () => approveEnvironment(t, withLint()));
+    const task = await withSwitch(undefined, () => startTask(t));
+    expect(task.required.map((check) => check.command.executable)).toEqual(["make"]);
+    expect(task.required.every((check) => check.kind === undefined)).toBe(true);
+    expect(task.pins).toEqual([]);
+  });
+
+  it("are the approved environment's with the switch on, with their kinds, and the revision the task started with is pinned", async () => {
+    const t = await setup();
+    await withSwitch("1", async () => {
+      await approveEnvironment(t, withLint());
+      const task = await startTask(t);
+      expect(task.required.map((check) => [check.label, check.kind, check.command.executable])).toEqual([["Unit tests", "test", "make"], ["Lint", "lint", "ruff"]]);
+      expect(task.pins).toHaveLength(1);
+      expect(task.pins[0]).toMatchObject({ revision: 1, digest: testEnvDigest(withLint().environment) });
+      expect(task.pins[0]!.unused).toBeUndefined();
+    });
+  });
+
+  it("with the switch on but no approved environment are the project's own and nothing is pinned", async () => {
+    const t = await setup();
+    const task = await withSwitch("1", () => startTask(t));
+    expect(task.required.map((check) => check.command.executable)).toEqual(["make"]);
+    expect(task.pins).toEqual([]);
+  });
+});

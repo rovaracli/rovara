@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, AGENTX_PREAMBLE_VERSION, PLAN_DOCUMENT_INFO_STRING, TEST_PROOF_ARTIFACT, UNDERSTAND_ARTIFACT_NAME, WorkerInvocationSchema, WORKFLOW_NO_CODE_CHANGE_MESSAGE, WORKFLOW_PLAN_MAX_BYTES, WorkItemProgressV1Schema, WorkflowDependencyResultSchema, agentXError, agentxPreambleSha256, createCandidateManifest, parseAgentClaim, groundingScenarioIds, parsePlanDocument, asksForPlanParts, planAnswerMissingParts, redactText, reportStatus, taskGraphDigest, taskGraphOrder, validateTaskGraph, type CheckReport, type SpecDraft, type SpecReviewResult, type SetupProposal, type PlanDocumentKind, type CandidateRepository, type WorkItemProgressV1, type WorkflowDependencyResult, type WorkflowFeedbackReviewReport, type WorkflowReviewReport, type WorkerInvocation, type E2EModelDayBudgetRequest, type E2EWorkflowAdmissionRef, AgentXError, BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@agentx/contracts";
 import { readSetupProposalAnswer, setupProposalInstructions, setupProposalRetryPrompt } from "./setup-draft.js";
 import { testEnvDraftResult } from "./test-env-detect.js";
+import { applyTestEnvironmentPlan } from "./verification/test-env-plan.js";
 import { DIAGNOSIS_RETRY_PROMPT, cutDiagnosisAnswer, diagnosisInstructions, holdsJsonObject } from "./diagnosis.js";
 import { readSpecWriteAnswer, specWriteInstructions, specWriteRetryPrompt } from "./spec-write.js";
 import type { BashOperations, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -438,7 +439,9 @@ async function runTask(
     const repositories = candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep);
     const candidateBefore = await readCandidateRepositories(repositories);
     const recorder = new CommandRecorder({ fingerprint: (signal) => recorderFingerprint(repositories.map((repository) => ({ name: repository.repositoryId, directory: repository.directory })), signal) });
-    const plan = planChecks(readiness, recorder, checkHistory);
+    // Test environment (wire-testenv): the approved environment's plan narrows its test checks and sets the round's budget. Absent unless the broker sent it; a plan that does not fit the commands is ignored.
+    const testEnv = invocation.payload.testEnvironment === undefined ? undefined : await applyTestEnvironmentPlan({ readiness, plan: invocation.payload.testEnvironment, repositories, candidateBefore, now: new Date() });
+    const plan = planChecks(testEnv?.readiness ?? readiness, recorder, checkHistory);
     const stop = new AbortController();
     const unregister = dependencies.cancellationController?.register(invocation.operationId, { abort: async () => stop.abort() });
     try {
@@ -464,7 +467,7 @@ async function runTask(
         ...(sandbox === undefined ? {} : { sandbox }),
         ...(localShell ? { local: true } : {}),
       });
-      const roundBudgetMs = dependencies.checkBudgetMs?.() ?? CHECK_ROUND_BUDGET_MS;
+      const roundBudgetMs = dependencies.checkBudgetMs?.() ?? testEnv?.budgetMs ?? CHECK_ROUND_BUDGET_MS;
       const roundStarted = Date.now();
       const round = await runChecks(plan, runners, { budgetMs: roundBudgetMs, signal: stop.signal });
       const roundSpentMs = Date.now() - roundStarted;
@@ -505,7 +508,7 @@ async function runTask(
         });
       }
       // Proof and evidence (wire-proof): the checks' own test reports are read before TESTPROOF runs the original code. Only when the broker asked (its proof switch is on); informational.
-      if (invocation.payload.evidenceCapture === true && !stop.signal.aborted) await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore });
+      if (invocation.payload.evidenceCapture === true && !stop.signal.aborted) await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore, selection: testEnv?.selection });
       // TESTPROOF: informational only. It changes no check result and no artifact above; only a failure to put the agent's files back stops the task.
       // It runs after the browser and API checks, so their evidence never sees the build output of a run on the original code. Known limitation: files the
       // original code's run left that git ignores (build output, caches) are not removed and can remain for the stages after this one.

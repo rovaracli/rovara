@@ -7,6 +7,7 @@ import type { CheckEntry } from "@agentx/contracts";
 import { workflowSelectedChecks, type WorkflowSnapshot } from "@agentx/contracts";
 import { keepEvidence, policyKindsOf, type KeepEvidenceResult } from "../../rovara-code/evidence-keep.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
+import { evidenceEnvironmentOf } from "../../test-env/evidence-line.js";
 import { developerTaskActions } from "./dependency-wiring.js";
 import { createEvidencePort, type EvidencePort } from "../developer-tasks/evidence-port.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
@@ -19,18 +20,20 @@ export const EVIDENCE_KEEP_MAX_MS = 6_000;
 /** Keeps the evidence of a verification run. Never throws; returns the result for the tests. */
 export async function keepEvidenceAfterChecks(
   dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "tableName" | "documentClient"> & Partial<AwsBrokerDependencies>,
-  input: { task: Pick<DeveloperTaskRecord, "taskId" | "ownerKey" | "workspaceId">; operation: Pick<OperationRecord, "id" | "workflowMode">; workflow: Pick<WorkflowSnapshot, "checkPolicy">; candidateDigest: string; checks: readonly CheckEntry[] },
+  input: { task: Pick<DeveloperTaskRecord, "taskId" | "ownerKey" | "workspaceId"> & { orgId?: DeveloperTaskRecord["orgId"]; project?: string }; operation: Pick<OperationRecord, "id" | "workflowMode">; workflow: Pick<WorkflowSnapshot, "checkPolicy">; candidateDigest: string; checks: readonly CheckEntry[] },
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<KeepEvidenceResult | undefined> {
   if (!proofEvidenceEnabled(env) || input.operation.workflowMode !== "CHECKS") return undefined;
   let late = false;
-  const run = keepEvidence({
+  // Test environment (wire-testenv): the environment the task pinned, named in the pack (nothing while that switch is off). Inside the same bound as the rest.
+  const run = evidenceEnvironmentOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, input.task, env).then((chosen) => keepEvidence({
     actions: developerTaskActions(dependencies as AwsBrokerDependencies), store: { s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName }, late: () => late,
     log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, taskId: input.task.taskId, operationId: input.operation.id, ...fields })),
   }, {
     task: { ownerKey: input.task.ownerKey, workspaceId: input.task.workspaceId, taskId: input.task.taskId }, operationId: input.operation.id, candidateDigest: input.candidateDigest,
     checks: input.checks.filter((entry) => entry.source === "project"), policyKinds: policyKindsOf(workflowSelectedChecks(input.workflow.checkPolicy)),
-  });
+    ...(chosen.environment === undefined ? {} : { environment: chosen.environment }), ...(chosen.deny === undefined ? {} : { deny: chosen.deny }), ...(chosen.note === undefined ? {} : { environmentNote: chosen.note }),
+  }));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<undefined>((resolve) => { timer = setTimeout(() => { late = true; resolve(undefined); }, EVIDENCE_KEEP_MAX_MS); timer.unref?.(); });
   try { return await Promise.race([run, timeout]); } finally { clearTimeout(timer); }
