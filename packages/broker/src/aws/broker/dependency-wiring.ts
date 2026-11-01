@@ -445,7 +445,7 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
   const survivor = (await personIds(live, developerId)).at(-1)!;
   if (survivor !== developerId && dependencies.orgResolver !== undefined) {
     const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
-    if (survivorOrg === undefined ? options.allowUnlinked !== true : survivorOrg !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+    if (survivorOrg === undefined ? options.allowUnlinked !== true || resolved !== undefined : survivorOrg !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   }
   const role = options.allowReadOnly === true ? await liveReadRole(live, orgId, developerId) : await liveWriterRole(live, orgId, developerId);
   const refuseIfRemoved = async (id: string): Promise<void> => {

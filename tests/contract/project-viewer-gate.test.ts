@@ -287,6 +287,25 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     expect((answered.body.error as { code?: string } | undefined)?.code, JSON.stringify(answered.body)).not.toBe("FORBIDDEN");
   });
 
+  it("a merge survivor with no org refuses an identity that is placed in the team's org, and is accepted for one that is unplaced too", async () => {
+    const SURVIVOR = "5".repeat(64);
+    const placedGuest = async (guestOrg: string | undefined) => {
+      const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === guestId ? guestOrg : subject.developerId === SURVIVOR ? undefined : TEST_ORG) as never;
+      const h = await withKit({ brokerExtra: { orgResolver } });
+      seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+      h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+      h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: SURVIVOR });
+      return h;
+    };
+    const placed = await placedGuest(TEST_ORG);
+    seedMembership(placed.db, guestId, { orgId: TEST_ORG, role: "member" });
+    await refusedOnEveryRoute(placed, GUEST);
+    const unplaced = await placedGuest(undefined);
+    await ensureWorkspace(unplaced.handler, thread, MAYA);
+    const answered = await serviceCall(unplaced.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code, JSON.stringify(answered.body)).not.toBe("FORBIDDEN");
+  });
+
   it("control: a single-org install still treats a person with no record as the implicit member", async () => {
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
