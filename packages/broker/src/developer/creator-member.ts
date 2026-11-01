@@ -4,7 +4,8 @@
 // then ends with outcome `creator_removed` and that message as its reason. "Removed" is the member record gone with the removal's
 // tombstone present (OrgStore writes it in the same transaction): a person with no member record and no tombstone never joined. Their workspaces are left to the idle reaper.
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, agentXError, orgMemberKey, orgMetaKey, orgRemovedKey, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, chainRunKey, orgMemberKey, orgMetaKey, orgRemovedKey, type OrgId } from "@agentx/contracts";
+import { paymentOfTask } from "../spend/payer.js";
 import { hasTaskEndHandlers, onTaskEnded } from "../agents/task-end.js";
 import { leaveTaskEndRow } from "../aws/task-end-row.js";
 import { effectiveTaskOwner, ownerFenceOf, taskAgentRunKey, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "./task-records.js";
@@ -37,16 +38,78 @@ export function requireCreatorStillMember(deps: CreatorCheckDependencies, task: 
   return checkOwnerStillMember(deps, task, 0);
 }
 
+/**
+ * Whether a person has left the org since a piece of work began (ruling R60, and member removal's rejoin rule). The member record is read first, as before:
+ * - none: they are gone when the removal's tombstone is there (a Slack user who has not signed in yet has neither and never joined);
+ * - one that began (`joinedAt`) no later than the work: their membership has been unbroken since, so they pass without reading the tombstone (a removal deletes the record, and
+ *   a rejoin writes a new `joinedAt`);
+ * - one that began after the work: they left and came back. They are gone for this work when the tombstone's `removedAt` is later than the work's start. The tombstone has no
+ *   expiry, so it outlives any task or chain run.
+ * `workStart` is read only when the member record exists, and undefined means "no start time known": today's rule (a member is a member).
+ */
+export async function memberGoneSince(
+  deps: Pick<CreatorCheckDependencies, "documentClient" | "tableName">, orgId: OrgId, developerId: string, workStart: () => Promise<string | undefined> | string | undefined,
+  options: { rejoinedOnly?: boolean } = {},
+): Promise<boolean> {
+  const member = await readConsistent<{ joinedAt?: unknown }>(deps, orgMemberKey(orgId, developerId));
+  // `rejoinedOnly`: for a person (a payer) whose plain absence never stopped the work: only a return after a removal does.
+  if (member === undefined) return options.rejoinedOnly === true ? false : await readConsistent(deps, orgRemovedKey(orgId, developerId)) !== undefined;
+  const started = await workStart();
+  if (started === undefined || typeof member.joinedAt !== "string" || member.joinedAt <= started) return false;
+  const tombstone = await readConsistent<{ removedAt?: unknown }>(deps, orgRemovedKey(orgId, developerId));
+  return typeof tombstone?.removedAt === "string" && tombstone.removedAt > started;
+}
+
+/**
+ * When a task's work began: for a chain step's task, when the chain run began (a step started after a rejoin still belongs to a run that began before the removal); for any other
+ * task, when it was created (a continue-as-task keeps the same record, so its creation applies).
+ */
+export async function taskWorkStart(deps: Pick<CreatorCheckDependencies, "documentClient" | "tableName">, orgId: OrgId, task: Pick<DeveloperTaskRecord, "createdAt" | "chain">): Promise<string | undefined> {
+  if (task.chain !== undefined) {
+    const run = await readConsistent<{ createdAt?: unknown }>(deps, chainRunKey(orgId, task.chain.chainRunId, "META"));
+    if (typeof run?.createdAt === "string") return run.createdAt;
+  }
+  return typeof task.createdAt === "string" ? task.createdAt : undefined;
+}
+
+/**
+ * Task 21, Re-check R-2: no key is minted once the org is closed, or for work whose owner (or whose paying member) has been removed from it. Read live at every mint, so work that
+ * is still running when an org closes (a plain task, a task from before sessions, a Slack thread's operation) gets no new key at its next model call. A read that fails is the proxy's
+ * retryable answer, and nothing is minted. An org with no record of its own (an install from before orgs) is not closed by this; a person with no member record and no removal tombstone never joined.
+ * `workStart` (when the work began, or a way to read it) makes a person who rejoined count as gone for work that began before their removal (see `memberGoneSince`).
+ */
+export async function requireOrgOpenFor(deps: Pick<CreatorCheckDependencies, "documentClient" | "tableName">, orgId: OrgId, people: ReadonlyArray<string | undefined>, workStart?: string | (() => Promise<string | undefined>)): Promise<void> {
+  const denied = agentXError("TASK_ACCESS_DENIED", "This organization is closed, or the person this work is for has left it, so Rovara stopped this work.");
+  try {
+    const meta = await readConsistent<{ closedAt?: unknown }>(deps, orgMetaKey(orgId));
+    if (meta?.closedAt !== undefined) throw denied;
+    for (const developerId of new Set(people)) {
+      if (developerId === undefined) throw denied;
+      if (await memberGoneSince(deps, orgId, developerId, typeof workStart === "function" ? workStart : () => workStart)) throw denied;
+    }
+  } catch (error) {
+    if (error === denied) throw error;
+    console.log(JSON.stringify({ component: "broker", event: "model_access.org_state_unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
+    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
+  }
+}
+
 async function checkOwnerStillMember(deps: CreatorCheckDependencies, task: DeveloperTaskRecord, takeOversSeen: number): Promise<void> {
   const owner = effectiveTaskOwner(task);
   const stored = OrgIdSchema.safeParse(task.orgId);
   const orgId = stored.success ? stored.data : deps.orgOf === undefined ? deps.orgId : await deps.orgOf(task);
   if (orgId === undefined) return;
-  if (await readConsistent(deps, orgMemberKey(orgId, owner.developerId)) !== undefined) return;
+  // The owner, and the member who pays for the task when that is someone else: either gone since the work began stops it (a person who rejoined does not revive their old work).
+  let start: Promise<string | undefined> | undefined;
+  const workStart = () => (start ??= taskWorkStart(deps, orgId, task));
+  const payer = paymentOfTask(task).payer;
+  let goneName: string | undefined;
+  if (await memberGoneSince(deps, orgId, owner.developerId, workStart)) goneName = owner.name;
+  else if (payer.kind === "member" && payer.developerId !== owner.developerId && await memberGoneSince(deps, orgId, payer.developerId, workStart, { rejoinedOnly: true })) goneName = "The person paying for this task";
   // No member record is not enough: a Slack user who has not signed in yet has none and is not removed. Removal leaves a tombstone.
-  if (await readConsistent(deps, orgRemovedKey(orgId, owner.developerId)) === undefined) return;
+  if (goneName === undefined) return;
   const org = await readConsistent<{ name?: unknown }>(deps, orgMetaKey(orgId));
-  const message = creatorRemovedMessage(owner.name, typeof org?.name === "string" ? org.name : "the organization");
+  const message = creatorRemovedMessage(goneName, typeof org?.name === "string" ? org.name : "the organization");
   const fence = ownerFenceOf(task);
   try {
     // First removal wins: a repeat leaves the reason and time of the first.

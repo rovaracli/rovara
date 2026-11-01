@@ -299,7 +299,6 @@ import {
   PROJECT_REVISION_SK_PREFIX,
   orgMemberKey,
   orgMetaKey,
-  orgRemovedKey,
   orgProjectCatalogKey,
   projectMetaKey,
   projectMemberKey,
@@ -471,6 +470,7 @@ import { ROVARA_STATUS_START, approvedFeedbackFixes, withFeedbackFixes, withStat
 import { cloudProjectDefaultsFromEnvironment, cloudProjectDefinition, type CloudProjectDefaults, type CreateProjectInput } from "../org/cloud-projects.js";
 import { installEnvironmentName, orgResolverFromEnvironment, requireOrgId, resolveSlackOrgForInstall, singleOrgResolver, type OrgResolver } from "../org/resolve.js";
 import { OrgStore, type MemberRemovalHook } from "../org/store.js";
+import { requireNotRemoved } from "../org/member-removal/guards.js";
 import { listTeamChannels, readSlackBinding, slackBindingItem } from "../org/slack-binding.js";
 import { decideEgressDomain, listPendingEgress, type EgressDomainsDependencies } from "../org/egress-domains.js";
 import { runEgressDomainsSync, syncCellAllowList } from "./egress-domains-sync.js";
@@ -492,7 +492,7 @@ import {
   TERMINAL, getItem, issueCapability, operationKey, operationOrg, operationRecord, outboxRecord, publicOperation, requestCancellation, requireOperation,
   type CallbackClaims, type OperationRecord,
 } from "./cancellation.js";
-import { requireCreatorStillMember, requireWorkspaceCreatorStillMember, type CreatorCheckDependencies } from "../developer/creator-member.js";
+import { requireCreatorStillMember, requireOrgOpenFor, requireWorkspaceCreatorStillMember, taskWorkStart, type CreatorCheckDependencies } from "../developer/creator-member.js";
 import { driveAgentRun, giveUpAgentRun, type AgentRunHost } from "../agents/run-engine.js";
 import { END_LEASE_MS, hasTaskEndHandlers, hasTaskPauseHandlers, type TaskEndOutcome } from "../agents/task-end.js";
 import { registerAgentSessionTaskHandlers } from "../agent-sessions/index.js";
@@ -555,7 +555,7 @@ import { budgetScopesFor, keyMember, mintTagsFor, paymentOfTaskResolved, resolve
 import type { settlementBudgets} from "../spend/settlement-job.js";
 import { learningFirstTick, redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../spend/settlement-job.js";
 import { runApprovalSweep } from "../agents/approvals.js";
-import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain } from "../agents/lifecycle.js";
+import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain, type LifecycleDeps } from "../agents/lifecycle.js";
 import { estimateRun } from "../spend/estimate.js";
 import { planningLimit, readProjectAi, readSpendPolicy } from "../spend/settings.js";
 import { AgentStore, type AgentStoreInput } from "../agents/store.js";
@@ -1517,6 +1517,12 @@ async function developerDisplayName(dependencies: Pick<AwsBrokerDependencies, "d
   return chosen ?? (typeof out.Item?.displayName === "string" ? safeDisplayName(out.Item.displayName, developerId) : undefined);
 }
 
+/** What a member's removal runs with: the agents' dependencies and the sign-in function that ends the person's sessions (the removal's sign-in step). */
+function removalDepsOf(agents: AgentRouteDependencies, dependencies: Pick<AwsBrokerDependencies, "developer">): AgentRouteDependencies & LifecycleDeps {
+  const end = dependencies.developer?.endDeveloperSessions;
+  return end === undefined ? agents : { ...agents, endDeveloperSessions: end };
+}
+
 function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit">, memberRemoval?: MemberRemovalHook): OrgStore {
   return new OrgStore({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
@@ -2037,7 +2043,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Task 26: a backstop for the checks at the mint, where the install routes models at all.
       const keyAudit = routingOf(dependencies) === undefined ? undefined : dependencies.modelAccess?.access;
       const jobs: SettlementJob[] = [
-        ...(agents === undefined ? [] : [timed("drain-member-merges", "drain", (budgetMs) => runMemberMergeDrain(agents, { budgetMs }))]),
+        ...(agents === undefined ? [] : [timed("drain-member-merges", "drain", (budgetMs) => runMemberMergeDrain(removalDepsOf(agents, dependencies), { budgetMs }))]),
         // Task 21: approvals that expired, writes stuck after a claim, and handlers that never heard the outcome. A stuck write is driven again only while the
         // function has more than the connector's timeout and a margin left.
         ...(agents === undefined ? [] : [timed("expire-approvals", "approvals", (budgetMs) => runApprovalSweep(agents, { budgetMs, redriveUntil: redriveUntil(startedAt) }))]),
@@ -2511,7 +2517,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer sign-in is not set up in this deployment");
         const orgConnections = orgConnectionStoreOf(dependencies);
         const routeDependencies: DeveloperRouteDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
-          orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(agents)),
+          orgs: orgStoreOf(dependencies, agents === undefined ? undefined : memberRemovalHook(removalDepsOf(agents, dependencies))),
           // Plan 3, Task 11: an archived project's agents (its roster and its own agents) stay as they are; this says what was left standing.
           ...(agents === undefined ? {} : { projectArchived: async (orgId: OrgId, project: string) => { await onProjectArchived(agents, { orgId, project }); } }),
           ...(agents === undefined ? {} : { projectMemberChanged: async (orgId: OrgId, project: string, developerId: string) => { await onProjectMemberChanged(agents, { orgId, project, developerId }); } }),
@@ -4507,6 +4513,15 @@ function requireSlackServiceRole(dependencies: AwsBrokerDependencies, request: A
   }
 }
 
+/** The member behind a Slack user (a merged duplicate counts as the member it was merged into) must not have been removed from the org. */
+async function requireSlackRequesterNotRemoved(dependencies: AwsBrokerDependencies, orgId: OrgId, slackUserId: string): Promise<void> {
+  const native = developerIdForSlackUser(slackUserId);
+  const merges = dependencies.developer === undefined ? undefined : new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now });
+  const survivor = merges === undefined ? native : await followMerges(merges, native);
+  await requireNotRemoved(dependencies, orgId, native);
+  if (survivor !== native) await requireNotRemoved(dependencies, orgId, survivor);
+}
+
 async function slackServiceIdentity(
   dependencies: AwsBrokerDependencies,
   request: AdaptedHttpRequest,
@@ -4517,6 +4532,9 @@ async function slackServiceIdentity(
   const orgId = await slackTeamOrg(dependencies, context.thread.teamId);
   const binding = await getSlackBinding(dependencies, orgId, context.thread.teamId, context.thread.channelId);
   if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
+  // A person removed from the company is refused here, for every Slack service route (member removal): the identity link, the single-org resolver and the role fallback of
+  // `slackRequesterRole` (which reads a missing member as "member") all stand behind this. A person who never joined has no tombstone and is served as before.
+  await requireSlackRequesterNotRemoved(dependencies, orgId, context.requester.userId);
   const subject = slackThreadSubject(context.thread);
   const threadOwnerKey = ownerKeyForSubject(SLACK_THREAD_OWNER_ISSUER, subject);
   const own: AuthenticatedIdentity = {
@@ -7277,28 +7295,6 @@ function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: DeveloperT
 }
 
 /**
- * Task 21, Re-check R-2: no key is minted once the org is closed, or for work whose owner (or whose paying member) has been removed from it. Read live at every mint, so work that
- * is still running when an org closes (a plain task, a task from before sessions, a Slack thread's operation) gets no new key at its next model call. A read that fails is the proxy's
- * retryable answer, and nothing is minted. An org with no record of its own (an install from before orgs) is not closed by this; a person with no member record and no removal tombstone never joined.
- */
-async function requireOrgOpenFor(dependencies: AwsBrokerDependencies, orgId: OrgId, people: ReadonlyArray<string | undefined>): Promise<void> {
-  const denied = agentXError("TASK_ACCESS_DENIED", "This organization is closed, or the person this work is for has left it, so Rovara stopped this work.");
-  try {
-    const meta = await getItem<{ closedAt?: unknown }>(dependencies, orgMetaKey(orgId));
-    if (meta?.closedAt !== undefined) throw denied;
-    for (const developerId of new Set(people)) {
-      if (developerId === undefined) throw denied;
-      if (await getItem(dependencies, orgMemberKey(orgId, developerId)) !== undefined) continue;
-      if (await getItem(dependencies, orgRemovedKey(orgId, developerId)) !== undefined) throw denied;
-    }
-  } catch (error) {
-    if (error === denied) throw error;
-    console.log(JSON.stringify({ component: "broker", event: "model_access.org_state_unreadable", errorName: error instanceof Error ? error.name : "unknown" }));
-    throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy could not issue a key");
-  }
-}
-
-/**
  * Ruling R29: the key a running task's worker calls models with, minted for the task's org and developer and capped at the
  * task's budget. The capability is checked like a callback's (signature, expiry, scope, fence); a refused one is 401.
  * The proxy's own failures all answer MODEL_PROXY_UNAVAILABLE, without their detail. The key is never stored or logged.
@@ -7354,7 +7350,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
       // A payer recorded before a merge counts against the member they are now (Task 21, M-3); a merge pointer that can't be read is the proxy's retryable answer.
       const payment = withAgents ? await unreadable("payer", () => paymentOfTaskResolved(task, resolveMember)) : undefined;
       // The org must be open and the task's owner (and the member whose budget pays) still in it, or no key is minted (Task 21, Re-check R-2).
-      await requireOrgOpenFor(dependencies, task.orgId, [tryEffectiveTaskOwner(task)?.developerId, ...(payment?.payer.kind === "member" ? [payment.payer.developerId] : [])]);
+      await requireOrgOpenFor(dependencies, task.orgId, [tryEffectiveTaskOwner(task)?.developerId, ...(payment?.payer.kind === "member" ? [payment.payer.developerId] : [])], () => taskWorkStart(dependencies, task.orgId!, task));
       if (current.spendingAdmission !== undefined || current.spendingTaskId !== undefined || task.spendingStop !== undefined || task.spendingAdmission !== undefined) {
         if (current.orgId !== task.orgId || task.workspaceId !== claims.workspaceId || current.spendingTaskId !== task.taskId || current.spendingAdmission === undefined || task.spendingStop === undefined || task.spendingAdmission === undefined
           || canonicalJson(current.spendingAdmission) !== canonicalJson(task.spendingAdmission)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The operation spending window is unavailable or changed.");
@@ -7470,7 +7466,7 @@ async function handleModelAccess(dependencies: AwsBrokerDependencies, request: A
     const requesterId = requestedBy === undefined ? undefined : await unreadable("requester", () => resolveMember(
       "kind" in requestedBy ? requestedBy.developerId : developerIdForSlackUser(requestedBy.userId),
     ));
-    await requireOrgOpenFor(dependencies, current.orgId, [...(requesterId === undefined ? [] : [requesterId]), ...(keyed === undefined ? [] : [keyed])]);
+    await requireOrgOpenFor(dependencies, current.orgId, [...(requesterId === undefined ? [] : [requesterId]), ...(keyed === undefined ? [] : [keyed])], current.createdAt);
     return {
       orgId: current.orgId, developerId: keyed, refId: current.id,
       ...(route === undefined ? {} : { route }),

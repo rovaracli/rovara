@@ -106,6 +106,7 @@ export * from "./workflow-publication-context.js";
 export * from "./org-node.js";
 export * from "./org-budget-node.js";
 export * from "./org-scoped-keys.js";
+export * from "./member-removal.js";
 export * from "./spend.js";
 export * from "./agent-node.js";
 export * from "./connections.js";
@@ -150,6 +151,7 @@ export * from "./onboarding.js";
 export * from "./setup-draft.js";
 
 export { OrgMemberRoleChangeBodySchema, OrgMemberRoleChangeResponseSchema, OrgMemberRoleChangeResponseReaderSchema } from "./developer-web.js";
+export { MemberRemovalBodySchema, type MemberRemovalBody, MemberRemovalPreviewSchema, MemberRemovalPreviewReaderSchema, MemberRemovalStartedSchema, MemberRemovalStartedReaderSchema, MemberRemovalStatusSchema, MemberRemovalStatusReaderSchema } from "./developer-web.js";
 
 export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "./developer-web.js";
 

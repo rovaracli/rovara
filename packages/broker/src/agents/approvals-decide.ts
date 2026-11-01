@@ -3,12 +3,13 @@ import {modelApplyRefusalOf} from "../model-selection/process-refusal.js";
 // after the claim (applying a change, running a write, telling the subject's handler) is repeatable and found again by the sweep through the OPEN_APPROVALS
 // index. `approvals.ts` re-exports it.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { ApprovalIdSchema, AgentXError, agentXError, approvalKey, type ApprovalId, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, AgentXError, REMOVAL_FORBIDDEN_MESSAGE, agentXError, approvalKey, type ApprovalId, type OrgId } from "@agentx/contracts";
 import { auditApprovalDecided, auditApprovalExpired, auditWriteExecuted } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import { ownerFenceOf, taskKey, tryEffectiveTaskOwner } from "../developer/task-records.js";
+import { deciderStillMemberCheck } from "../org/member-removal/guards.js";
 import { sameMember } from "./lifecycle.js";
 import { type AnyApprovalRecord, type ApprovalCaller, approverRefusalFor, type ApprovalDependencies, type ApprovalStatus, DUE_SK, MAX_APPROVAL_ATTEMPTS, PAGE_LIMIT, RETRY_MS, type TransactItem, type WriteApprovalRecord, approverDrops, commitOrLost, counterDrop, dropItem, dueItems, errorNameOf, forbiddenText, getAnyApproval, getApprovalGaveUpHandler, getApprovalSubjectHandler, hasHandlerPhase, iso, log, mayDecideApproval, parseDecideBody, runApprovalDecisionGuards, runOfApproval, shownText, stripCode, taskOfApproval, updateRecord, withFields } from "./approvals-store.js";
 
@@ -239,7 +240,11 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
       },
     });
   }
-  const claimed = await claim(deps, items, fence === undefined ? undefined : items.length - 1);
+  // The decider is still a member, with the role this decision was judged under, when the claim commits: a removal (or a demotion) that lands after the check and before the
+  // claim fails it, so a click judged before it never counts after it.
+  items.push(deciderStillMemberCheck(deps.tableName, record.orgId, caller.developerId, caller.orgRole));
+  const claimed = await claim(deps, items, fence === undefined ? undefined : items.length - 2, items.length - 1);
+  if (claimed === "forbidden") throw agentXError("FORBIDDEN", REMOVAL_FORBIDDEN_MESSAGE);
   if (claimed === "owner_changed") {
     // The owner changed between the check and the claim. Judge again under the new owner (the record is read again), a few times at most.
     const fresh = await getAnyApproval(deps, record.orgId, record.approvalId);
@@ -260,7 +265,7 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
 const OWNER_CHANGE_TRIES = 3;
 
 /** Commits the claim: `lost` when the record is no longer pending, `owner_changed` when only the owner fence (the item at `fenceAt`) failed. */
-async function claim(deps: ApprovalDependencies, items: TransactItem[], fenceAt: number | undefined): Promise<"claimed" | "lost" | "owner_changed"> {
+async function claim(deps: ApprovalDependencies, items: TransactItem[], fenceAt: number | undefined, deciderAt: number): Promise<"claimed" | "lost" | "owner_changed" | "forbidden"> {
   try {
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
     return "claimed";
@@ -268,6 +273,7 @@ async function claim(deps: ApprovalDependencies, items: TransactItem[], fenceAt:
     if (errorNameOf(error) !== "TransactionCanceledException") throw error;
     const reasons = (error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons;
     if (reasons?.[0]?.Code === "ConditionalCheckFailed") return "lost";
+    if (reasons?.[deciderAt]?.Code === "ConditionalCheckFailed") return "forbidden";
     if (fenceAt !== undefined && reasons?.[fenceAt]?.Code === "ConditionalCheckFailed") return "owner_changed";
     throw error;
   }

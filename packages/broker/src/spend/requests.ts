@@ -44,6 +44,7 @@ import { auditPendingItem, auditPending, tryAuditEvents } from "../audit/outbox.
 import { auditActorOf, centsOf, decisionProofOf } from "../audit/plan3-hooks.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";
 import { endOfFailure, settleSession, type DecisionEnd } from "../developer/decide-session.js";
+import { memberGoneSince, taskWorkStart } from "../developer/creator-member.js";
 import { effectiveTaskOwner, isTaskTakenOver, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord, type TaskOwnerSource } from "../developer/task-records.js";
 import { effectiveLimits, decodeSpendPolicySnapshot, readSpendPolicy, readSpendPolicyWithRevision } from "./settings.js";
 import { cleanUsd, readTopUp } from "./top-ups.js";
@@ -1934,13 +1935,15 @@ async function clearHeldStart(deps: SpendRequestDependencies, key: { pk: string;
 const MEMBER_LEFT_CODES = new Set(["TASK_ACCESS_DENIED", "FORBIDDEN"]);
 const memberLeft = (error: unknown): boolean => MEMBER_LEFT_CODES.has(String((error as { code?: unknown } | undefined)?.code));
 
-/** Whether a task's creator is really gone from its org: no member record, and the removal's tombstone is there (the check R60's `requireCreatorStillMember` makes). */
-async function creatorGone(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName">, orgId: OrgId, task: DeveloperTaskRecord): Promise<boolean> {
+/**
+ * Whether a task's creator is really gone from its org: no member record and the removal's tombstone is there, or (a person who rejoined) a tombstone later than the work's start
+ * (the check R60's `requireCreatorStillMember` makes, from the one function behind it).
+ */
+export async function creatorGone(deps: Pick<SpendRequestDependencies, "documentClient" | "tableName">, orgId: OrgId, task: DeveloperTaskRecord): Promise<boolean> {
   // The owner now (Plan 5 Task 12a): the person who took the task over, else its creator. A task whose owner can't be read is gone for no one here: nothing is dropped.
   const owner = tryEffectiveTaskOwner(task);
   if (owner === undefined) return false;
-  if (await getItem(deps, orgMemberKey(orgId, owner.developerId)) !== undefined) return false;
-  return await getItem(deps, orgRemovedKey(orgId, owner.developerId)) !== undefined;
+  return memberGoneSince(deps, orgId, owner.developerId, () => taskWorkStart(deps, orgId, task));
 }
 
 /** Drops a month resume that can never go on (fix round 2, minor 1), audited as the system's `spend_request.resume_dropped` in the same transaction. */
@@ -2427,7 +2430,8 @@ async function moveOne(deps: LifecycleDeps, record: SpendRequestRecord, from: st
   const stored = await getItem(deps, spendRequestKey(record.orgId, record.spendRequestId));
   const revision = typeof stored?.["moveRevision"] === "number" ? stored["moveRevision"] : 0;
   const ids = [...new Set(record.approverIds.map((id) => (id === from ? to : id)))].sort();
-  const requestedBy = record.requestedBy.kind === "member" && record.requestedBy.developerId === from ? { kind: "member" as const, developerId: to } : record.requestedBy;
+  // A merge makes the survivor the asker; a removal never does (member removal): the leaver stays the one who asked, so the successor is never the asker of a request they decide.
+  const requestedBy = mode === "merged" && record.requestedBy.kind === "member" && record.requestedBy.developerId === from ? { kind: "member" as const, developerId: to } : record.requestedBy;
   const newOwner = record.newOwner?.developerId === from ? { developerId: to } : record.newOwner;
   // A merge: the person the change names is the survivor now (a removal ends such a request instead, `moveRequests`).
   const change = mode === "merged" ? movedChange(record.change, from, to) : undefined;
@@ -2451,6 +2455,8 @@ async function moveOne(deps: LifecycleDeps, record: SpendRequestRecord, from: st
       },
     },
     { Put: { TableName: deps.tableName, Item: { ...openSpendRequestsKey(record.orgId, record.createdAt, record.spendRequestId), entityType: "SPEND_REQUEST_OPEN", orgId: record.orgId, spendRequestId: record.spendRequestId, approverIds: ids } } },
+    // A removal gives it to the successor only while they are still a member when it commits (one removed since is refused, and the next run reads the successor again).
+    ...(mode === "removed" ? [{ ConditionCheck: { TableName: deps.tableName, Key: orgMemberKey(record.orgId, to), ConditionExpression: "attribute_exists(pk)" } }] : []),
     ...events.flatMap((event) => auditPending(deps, event)),
   ] }));
   await flushAuditEvents(deps, events);
@@ -2474,7 +2480,8 @@ async function moveRequests(deps: LifecycleDeps, orgId: OrgId, from: string, to:
       await expireOne(deps, record, "target_left");
       continue;
     }
-    const names = named || record.approverIds.includes(from) || (record.requestedBy.kind === "member" && record.requestedBy.developerId === from) || record.newOwner?.developerId === from || (mode === "merged" && record.forOwner === from);
+    // (A removal does not touch a request only because the leaver asked for it: only who may decide moves.)
+    const names = named || record.approverIds.includes(from) || (mode === "merged" && record.requestedBy.kind === "member" && record.requestedBy.developerId === from) || record.newOwner?.developerId === from || (mode === "merged" && record.forOwner === from);
     if (!names && !(Array.isArray(ids) && ids.includes(from))) continue;
     for (let tried = 0; ; tried += 1) {
       try {
@@ -2544,7 +2551,7 @@ async function settleAfterLeave(deps: LifecycleDeps, orgId: OrgId, id: string, f
 }
 
 /** `from` left an org that has no owner to hand anything to: every open request that lists them is settled (see `settleAfterLeave`). */
-async function orphanRequests(deps: LifecycleDeps, orgId: OrgId, from: string): Promise<void> {
+async function orphanRequests(deps: LifecycleDeps, orgId: OrgId, from: string, before?: string): Promise<void> {
   const open = await queryAll(deps, openSpendRequestsKey(orgId, "2000-01-01T00:00:00.000Z", "spr_0").pk);
   for (const item of open) {
     const id = item["spendRequestId"];
@@ -2552,6 +2559,8 @@ async function orphanRequests(deps: LifecycleDeps, orgId: OrgId, from: string): 
     checkTime(deps);
     const record = await getSpendRequest(deps, orgId, id);
     if (record === undefined || record.status !== "PENDING" || !record.approverIds.includes(from)) continue;
+    // A person who rejoined: a request made since the removal lists them as the member they are now.
+    if (before !== undefined && record.createdAt >= before) continue;
     await settleAfterLeave(deps, orgId, id, from);
   }
 }
@@ -2563,6 +2572,8 @@ registerMemberMover({
   merged: (deps, { orgId, survivorId, duplicateId }) => moveRequests(deps, orgId, duplicateId, survivorId, "merged"),
   removed: (deps, { orgId, developerId, successorId }) => moveRequests(deps, orgId, developerId, successorId, "removed"),
   orphaned: (deps, { orgId, developerId }) => orphanRequests(deps, orgId, developerId),
+  // A rejoin cancels the hand-offs; the requests that listed the person before the removal only drop them.
+  dropped: (deps, { orgId, developerId, removedAt }) => orphanRequests(deps, orgId, developerId, removedAt),
 });
 
 // ---- the confirmation page's kind (PF21)

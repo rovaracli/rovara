@@ -47,6 +47,9 @@ export const AgentXErrorCodeSchema = z.enum([
   "SLACK_TEAM_TAKEN",
   "REMOVED_FROM_ORG",
   "LAST_OWNER",
+  // Member removal (v1.1).
+  "SUCCESSOR_INVALID",
+  "MEMBER_ALREADY_REMOVED",
   "SLACK_TEAM_NOT_BOUND",
   "MODEL_PROXY_UNAVAILABLE",
   "BUDGET_EXCEEDED",

@@ -54,13 +54,14 @@ import {
   type OrgRole,
 } from "@agentx/contracts";
 import { scheduleAuditShred } from "../audit/erase.js";
-import { auditMemberJoined, auditMemberLeft, auditMemberRemoved, auditMemberRoleChanged, auditOccurrence, auditOrgRenamed, auditOrgClosed, auditOrgInviteCreated } from "../audit/events.js";
+import { auditMemberJoined, auditMemberRoleChanged, auditOccurrence, auditOrgRenamed, auditOrgClosed, auditOrgInviteCreated } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, auditPendingItem, auditTransact, tryAuditEvent, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";
 import { memberLimitChangedEvent } from "../audit/plan3-hooks.js";
 import { sha256Hex } from "../developer/tokens.js";
 import { INVITE_HASH_PATTERN, inviteTokenHash } from "./invite-url.js";
 import { safeOrgName } from "../developer/person-name.js";
+import { startMemberRemoval, type StartedRemoval, type StartRemovalInput } from "./member-removal/start.js";
 
 const DEFAULT_INVITE_TTL_SECONDS = 604_800;
 const NOT_EXISTS = "attribute_not_exists(pk)";
@@ -80,7 +81,10 @@ export interface InviteDescription {
  * developer who removed them (themselves when they left), or `system`.
  */
 export interface MemberRemovalHook {
-  onRemoved(event: { orgId: OrgId; developerId: string; by: string; /** The marker's key, so the hook can note on it what it already did. */ marker: OrgKey }): Promise<void>;
+  onRemoved(event: {
+    orgId: OrgId; developerId: string; by: string; /** The marker's key, so the hook can note on it what it already did. */ marker: OrgKey;
+    /** The removal's id (the record and the receipt), when the removal wrote one. */ removalId?: string; /** When S0 committed: the cut every always-run step uses. */ removedAt?: string; /** Who takes over; absent when the org had no owner to hand anything to. */ successorId?: string;
+  }): Promise<void>;
 }
 
 export interface OrgStoreInput {
@@ -517,54 +521,31 @@ export class OrgStore {
   }
 
   /**
-   * Removes a member. Their project grants and monthly limit go first (so a half-finished removal leaves a member with nothing), then one
-   * transaction deletes the member record, the developer pointer and each email pointer that names them, and puts the ban when asked.
-   * Removing the last owner is refused (LAST_OWNER) before anything is deleted.
-   *
-   * Everything the removal reads (the email pointers) is read first, and the member and the other owner are checked last, immediately before
-   * the grants go. The transaction repeats both checks (the member's role is the one just read; another owner still holds the role), so a
-   * change after that point fails it with CHANGE_STALE or LAST_OWNER. The one window left is the time `deleteMemberData` takes: a demotion
-   * landing inside it fails the transaction after the grants and monthly limit are already gone (re-running the removal, or the person
-   * being promoted again, does not bring them back). `expectedRole` is the role the caller's authorization saw; a different one is CHANGE_STALE.
+   * Removes a member (member removal, v1.1): `startMemberRemoval` reads what the removal needs, then ONE transaction deletes the member record, the developer pointer, the
+   * person's email pointers (at most 10 here), the GitHub link when there is one, writes the tombstone, the ban when asked, the removal record (the receipt of `requestId`),
+   * the marker for the movers, the org's membership-version update and the audit item. Nothing is deleted before it, so a refused removal changes nothing. The grants and the
+   * monthly limit are recorded on the removal record and deleted by the always-run access step afterwards (the movers', or here on an install with none).
+   * Removing the last owner is refused (LAST_OWNER). `expectedRole` is the role the caller's authorization saw; a different one is CHANGE_STALE. `successorId` is who takes over
+   * (default the person who removes). Answers the removal's id and state; a repeat of the same request answers the same removal with `replay: true`.
    */
-  async removeMember(input: { orgId: OrgId; developerId: string; emails: string[]; ban: boolean; expectedRole?: OrgRole; /** Who made the change. The person themselves: `member.left`; anyone else: `member.removed`. */ by?: AuditActor }): Promise<void> {
-    const { orgId, developerId } = input;
-    if (await this.get(orgMemberKey(orgId, developerId)) === undefined) throw coded("NOT_FOUND", "that person is not a member of the organization");
-    const pointers = await this.emailPointersOf(input.emails, developerId);
-    const member = await this.get(orgMemberKey(orgId, developerId));
-    if (member === undefined) throw coded("NOT_FOUND", "that person is not a member of the organization");
-    const role = member.role as OrgRole;
-    if (input.expectedRole !== undefined && input.expectedRole !== role) throw coded("CHANGE_STALE", "the organization's members changed; try again");
-    const guard = role === "owner" ? await this.otherOwnerGuard(orgId, developerId) : [];
-    await this.deleteMemberData(orgId, developerId);
-    // One occurrence per membership: the same person removed after joining again has another `joinedAt`.
-    const actor = input.by ?? SYSTEM_ACTOR;
-    const left = actor.kind === "member" && actor.id === developerId;
-    const event = await tryAuditEvent(this.deps(), () => {
-      const facts = { orgId, actor, occurredAt: this.iso(), occurrence: auditOccurrence(developerId, String(member.joinedAt)), memberId: developerId, role };
-      return left ? auditMemberLeft(facts) : auditMemberRemoved(facts);
-    });
-    // The removal's marker (Task 11) goes in the same transaction, so a removal that happened always has one until its moves are done.
-    const hook = this.input.memberRemoval;
-    const by = actor.kind === "member" ? actor.id : "system";
-    const marker = memberRemovalQueueKey(this.iso(), orgId, developerId);
-    const items = this.removalItems(input, role, pointers, guard, [
-      ...this.pendingFor(event),
-      ...await this.approvalMembershipChange(orgId, this.iso(), role === "owner" || role === "admin"),
-      ...(hook === undefined ? [] : [{ Put: { TableName: this.input.tableName, Item: { ...marker, entityType: "MEMBER_REMOVAL", orgId, developerId, by } } }]),
-    ]);
-    await this.transact(items, (failed) => (guard.length > 0 && failed.has(items.length - 1) ? coded("LAST_OWNER", LAST_OWNER_MESSAGE) : failed.has(0) ? coded("CHANGE_STALE", "the organization's members changed; try again") : undefined));
-    await this.flush(event);
-    if (hook === undefined) return;
-    // The person is removed whatever happens here: a hook that fails leaves its marker, and the sweep calls it again.
-    try {
-      await hook.onRemoved({ orgId, developerId, by, marker });
-      await this.input.documentClient.send(new DeleteCommand({ TableName: this.input.tableName, Key: marker }));
-    } catch (error) {
-      // Running out of the request's time is expected: the removal's marker leaves the rest to the sweep, so it is not an error.
-      const level = errorName(error) === "LifecycleDeadline" ? "warn" : "error";
-      console.log(JSON.stringify({ component: "broker", level, event: "member_removal.hook_failed", orgId, error: errorName(error) ?? "unknown" }));
-    }
+  async removeMember(input: StartRemovalInput): Promise<StartedRemoval> {
+    return startMemberRemoval({ documentClient: this.input.documentClient, tableName: this.input.tableName, now: this.input.now, audit: this.input.audit, hasMovers: this.input.memberRemoval !== undefined }, input)
+      .then(async (started) => {
+        const hook = this.input.memberRemoval;
+        // A repeat of a removal that already started leaves the movers to their marker.
+        if (hook === undefined || started.replay) return started;
+        const by = input.by?.kind === "member" ? input.by.id : "system";
+        const marker = memberRemovalQueueKey(started.removedAt, input.orgId, input.developerId);
+        // The person is removed whatever happens here: a hook that fails leaves its marker, and the sweep calls it again.
+        try {
+          await hook.onRemoved({ orgId: input.orgId, developerId: input.developerId, by, marker, removalId: started.removalId, removedAt: started.removedAt, ...(started.successorId === undefined ? {} : { successorId: started.successorId }) });
+        } catch (error) {
+          // Running out of the request's time is expected: the removal's marker leaves the rest to the sweep, so it is not an error.
+          const level = errorName(error) === "LifecycleDeadline" ? "warn" : "error";
+          console.log(JSON.stringify({ component: "broker", level, event: "member_removal.hook_failed", orgId: input.orgId, error: errorName(error) ?? "unknown" }));
+        }
+        return started;
+      });
   }
 
   /**
