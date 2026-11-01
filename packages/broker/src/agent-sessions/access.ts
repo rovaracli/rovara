@@ -13,6 +13,7 @@ import { z } from "zod";
 import {
   AgentPrincipalSchema,
   OrgRoleSchema,
+  isWriterOrgRole,
   SessionIdSchema,
   SessionLevelSchema,
   agentSessionKey,
@@ -323,6 +324,9 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
 
   // A project viewer who isn't the owner only watches, whatever a share or a people entry says.
   if (!owner && projectRole === "viewer" && RANK[level] > RANK.view) level = "view";
+  // I2: the Auditor reads and works on nothing, whatever it owns or is shared (an org or member share, a People entry). The routes hold it to an allow-list first; this keeps the access
+  // answer itself read-only for every other surface (Slack, MCP, agent tools) that asks it.
+  if (!isWriterOrgRole(orgRole) && RANK[level] > RANK.view) level = "view";
   const shareRole = options.wantShareRole === true && session.project !== undefined ? await shareRoleOn(session.project) : undefined;
   return { shareRole, level, undecided: level === "none" && slackNotAsked && !denied, owner, effectiveOwner, projectRole, orgAdmin, orgRole };
 }
