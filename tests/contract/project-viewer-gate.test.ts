@@ -189,6 +189,25 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     await refusedOnEveryRoute(h, GUEST);
   });
 
+  it("the survivor's current role wins over a stale merged-away record's role", async () => {
+    const SURVIVOR = "8".repeat(64);
+    const h = await withKit();
+    // The stale duplicate record says owner (an owner is maintainer everywhere); the survivor is a member, and the Slack id holds a viewer grant.
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: SURVIVOR });
+    h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "owner" });
+    seedMembership(h.db, SURVIVOR, { orgId: TEST_ORG, role: "member" });
+    setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
+    const refused = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+    // A survivor who is an Auditor is refused outright, whatever the stale record says.
+    const auditor = await withKit();
+    auditor.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: SURVIVOR });
+    auditor.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "owner" });
+    seedMembership(auditor.db, SURVIVOR, { orgId: TEST_ORG, role: "auditor" });
+    await refusedOnEveryRoute(auditor, GUEST);
+  });
+
   it("control: a single-org install still treats a person with no record as the implicit member", async () => {
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });

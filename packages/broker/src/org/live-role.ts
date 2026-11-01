@@ -44,7 +44,8 @@ export async function liveWriterRole(deps: { documentClient: DocumentClient; tab
     const stored = await liveStoredRole(deps, orgId, id);
     if (!stored.present) continue;
     if (!isWriterOrgRole(stored.role)) throw agentXError("FORBIDDEN", NOT_A_WRITER_MESSAGE);
-    found ??= stored.role;
+    // Each id is followed to the person it was merged into, so a later record is the more current one: the survivor's role wins over a stale merged-away record's.
+    found = stored.role;
   }
   return found;
 }
