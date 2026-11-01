@@ -317,6 +317,33 @@ describe("GitHub App repository credentials", () => {
     await expect(provider.getFileAtCommit(url, "big.txt", sha, { system: "private-install" })).rejects.toThrow(/file too large/);
   });
 
+  it("reads the head of any ordinary branch (a project's default branch), and refuses names that are not branches", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const requests: string[] = [];
+    const provider = appProvider({
+      credentialRef: "github-agentx-sdlc", appId: "5002502", getPrivateKey: async () => pem,
+      fetchImplementation: async (url) => {
+        const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        requests.push(requestUrl);
+        if (requestUrl.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "lookup-token" }), { status: 201 });
+        if (requestUrl.endsWith("/git/ref/heads/release/2026")) return new Response(JSON.stringify({ ref: "refs/heads/release/2026", object: { type: "commit", sha: "d".repeat(40) } }), { status: 200 });
+        if (requestUrl.endsWith("/git/ref/heads/liar")) return new Response(JSON.stringify({ ref: "refs/heads/other", object: { type: "commit", sha: "d".repeat(40) } }), { status: 200 });
+        if (requestUrl.endsWith("/git/ref/heads/tagged")) return new Response(JSON.stringify({ ref: "refs/heads/tagged", object: { type: "tag", sha: "d".repeat(40) } }), { status: 200 });
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const url = "https://github.com/ps06756/personal-website-test.git";
+    const scope = { system: "private-install" } as const;
+    await expect(provider.getDefaultBranchHead(url, "release/2026", scope)).resolves.toBe("d".repeat(40));
+    await expect(provider.getDefaultBranchHead(url, "missing", scope)).rejects.toThrow(/HTTP 404/);
+    await expect(provider.getDefaultBranchHead(url, "liar", scope)).rejects.toThrow(/invalid branch reference/);
+    await expect(provider.getDefaultBranchHead(url, "tagged", scope)).rejects.toThrow(/invalid branch reference/);
+    const before = requests.length;
+    for (const bad of ["../x", "a..b", "", "a b", "a@{b"]) await expect(provider.getDefaultBranchHead(url, bad, scope), bad).rejects.toThrow(/branch name is invalid/);
+    expect(requests.length).toBe(before);
+  });
+
   it("reads a directory as not found: GitHub answers a directory with a JSON listing, which is never shown as code", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
