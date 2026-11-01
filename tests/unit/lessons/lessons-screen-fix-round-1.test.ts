@@ -135,3 +135,25 @@ describe("S2: a first approval that no longer stands", () => {
   });
 });
 
+describe("S3: reject checks the version on every attempt", () => {
+  it("a commit lost to an edit that bumps the version is not retried against the new text", async () => {
+    const s = setup();
+    await seed(s.store, pending());
+    const real = s.store.commit.bind(s.store);
+    let lost = false;
+    s.store.commit = async (key, expected, writes, at) => {
+      if (!lost) {
+        lost = true;
+        // Someone else's edit lands first (version 2), so this commit fails on the set version.
+        const head = (await s.store.get(KEY, "les_pend0001"))!;
+        await real(key, expected, [{ ...head, version: 2, body: "A different wording that Ann never saw." }], at);
+        return { ok: false, reason: "conflict" };
+      }
+      return real(key, expected, writes, at);
+    };
+    const out = await rejectLesson(s.deps, { ...KEY, lessonId: "les_pend0001", approverId: "ann", reason: "No", expectedVersion: 1 });
+    expect(out).toEqual({ ok: false, code: "conflict" });
+    expect((await s.store.get(KEY, "les_pend0001"))!).toMatchObject({ status: "pending", version: 2 });
+  });
+});
+

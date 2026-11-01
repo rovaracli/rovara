@@ -215,6 +215,8 @@ async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; proje
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     const fresh = await deps.store.get(key, lesson.id);
     if (fresh === undefined || fresh.status !== "pending") return { ok: false, code: "not_pending" };
+    // Every attempt: a retry after a lost race re-reads the lesson, and a lesson that moved on is not rejected under the person who read the earlier text.
+    if (input.expectedVersion !== undefined && fresh.version !== input.expectedVersion) return { ok: false, code: "conflict" };
     const setVersion = await deps.store.setVersion(key);
     const result = await deps.store.commit(key, setVersion, [{ ...fresh, version: nextVersion(fresh, await deps.store.versions(key, fresh.id)), status: "rejected", rejectedReason: cleanForLearning(input.reason, 200), updatedAt: deps.now() }], deps.now());
     if (result.ok) {
