@@ -183,6 +183,19 @@ describe("with the switch on", () => {
     });
   });
 
+  it("keeps no draft too large to store, tells the maintainer so, and the setup draft itself still finishes", async () => {
+    const t = await setup();
+    await withSwitch("1", async () => {
+      const huge = draftOf(draftBody({ repos: [{ repositoryId: "web", setupCommands: [], checks: Array.from({ length: 16 }, (_, index) => ({ id: `c${String(index)}`, label: `Check ${String(index)}`, command: command("make", ["t", `--note=${String(index)}-${"x".repeat(8_100)}`, `--b=${"y".repeat(8_100)}`], 600), kind: "test" })) }] }));
+      await t.drafted({ setupProposal: SETUP_PROPOSAL, [TEST_ENV_DRAFT_RESULT_KEY]: huge });
+      expect(drafts(t)).toEqual([]);
+      const setupDraft = await t.dev(OMAR, "GET", `/v1/app/projects/${NAME}/setup-draft`);
+      expect(setupDraft.body).toMatchObject({ status: "ready" });
+      const read = await t.dev(OMAR, "GET", ENV);
+      expect(read.body).toMatchObject({ draft: { status: "none", notes: ["The environment Rovara found was too large to keep, so none is proposed."] } });
+    });
+  });
+
   it("a person who is not a project maintainer can read where it stands but cannot propose, prove or approve", async () => {
     const t = await setup();
     await t.contributor(MAYA);

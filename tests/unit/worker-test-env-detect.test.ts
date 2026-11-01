@@ -95,6 +95,13 @@ describe("the draft", () => {
     expect(withAgent.environment.repos[0]!.setupCommands.some((command) => command.executable === "make")).toBe(true);
   });
 
+  it("a draft over the size the broker keeps is not reported", async () => {
+    await write("svc/pyproject.toml", PYTEST);
+    const commands = Array.from({ length: 30 }, (_, index) => `pytest -q --note=${String(index)}-${"x".repeat(8_100)} --b=${"y".repeat(8_000)}`);
+    const huge = await detectTestEnvironment({ rootPath: root, repositories: [repo("svc")], setupProposal: proposal([], commands) });
+    expect(huge === undefined || Buffer.byteLength(JSON.stringify(huge)) <= 200 * 1_024).toBe(true);
+  });
+
   it("a repository with nothing recognisable gives no draft, and a result helper that never throws", async () => {
     await write("svc/README.md", "hello");
     expect(await detectTestEnvironment({ rootPath: root, repositories: [repo("svc")] })).toBeUndefined();

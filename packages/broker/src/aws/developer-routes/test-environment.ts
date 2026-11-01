@@ -37,7 +37,7 @@ import {
   approveTestEnvironment, proposeTestEnvironment, readApprovedTestEnvironment, readProposal, readTestEnvProveReport, recordTestEnvProveReport, testEnvRequestId, type TestEnvDeps,
 } from "../../org/test-environment.js";
 import { setupDraftState } from "../../rovara-code/setup-draft.js";
-import { readTestEnvDraft } from "../../test-env/draft.js";
+import { readTestEnvDraft, readTestEnvDraftNote } from "../../test-env/draft.js";
 import { TEST_ENV_REFUSAL_WORDS, proveReportFromSetupCheck } from "../../test-env/prove-from-setup-check.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { StatusReply } from "../status-reply.js";
@@ -88,11 +88,14 @@ async function latestOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: st
 }
 
 /** The latest setup draft's environment draft when it is ready and was written for the project's current settings; otherwise why not. */
-async function currentDraft(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, revision: number): Promise<{ status: "ready"; draft: TestEnvDraft } | { status: "none" | "stale" }> {
+async function currentDraft(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, revision: number): Promise<{ status: "ready"; draft: TestEnvDraft } | { status: "none" | "stale"; note?: string }> {
   const state = await setupDraftState({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name, revision);
   if (state.status !== "ready" || state.pointer === undefined) return { status: "none" };
   const stored = await readTestEnvDraft(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now());
-  if (stored === undefined) return { status: "none" };
+  if (stored === undefined) {
+    const note = await readTestEnvDraftNote(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now());
+    return note === undefined ? { status: "none" } : { status: "none", note };
+  }
   return state.basedOnRevision < revision ? { status: "stale" } : { status: "ready", draft: stored.draft };
 }
 
@@ -118,7 +121,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
     ...(approved === undefined ? {} : { approved: { revision: approved.revision, approvedAt: approved.approvedAt, digest: testEnvDigest(approved.environment), summary: testEnvSummaryOf(approved.environment) } }),
     draft: draft.status === "ready"
       ? { status: "ready", notes: draft.draft.notes, questions: draft.draft.questions, pendingServices: draft.draft.pendingServices }
-      : { status: draft.status, notes: [], questions: [], pendingServices: [] },
+      : { status: draft.status, notes: draft.note === undefined ? [] : [draft.note], questions: [], pendingServices: [] },
     ...(proposal === undefined ? {} : { proposal }),
   };
 }

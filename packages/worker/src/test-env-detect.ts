@@ -11,7 +11,7 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
+import { TEST_ENV_DRAFT_MAX_BYTES, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
 import { ENV_DETECT_MAX_FILE_BYTES, ENV_DETECT_MAX_PATHS, boundedReader, buildEnvironmentDraft, proposalFromDraft, runDetectors } from "./env-detect/index.js";
 
 export interface DetectRepository { name: string; path: string; defaultBranch: string; checkedOut?: unknown }
@@ -144,7 +144,8 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     notes: [...new Set(notes)].map(plainLine).filter((line) => line !== "").slice(0, 60),
     questions: [...new Set(questions)].map(plainLine).filter((line) => line !== "").slice(0, 60),
   });
-  return reported.success ? reported.data : undefined;
+  // A draft the broker would refuse for its size is not reported (the setup draft's result stays small).
+  return reported.success && Buffer.byteLength(JSON.stringify(reported.data), "utf8") <= TEST_ENV_DRAFT_MAX_BYTES ? reported.data : undefined;
 }
 
 const plainLine = (text: string): string => text.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 400);

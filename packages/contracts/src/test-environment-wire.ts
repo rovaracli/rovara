@@ -39,6 +39,9 @@ export const TestEnvDraftSchema = z
   .strict();
 export type TestEnvDraft = z.infer<typeof TestEnvDraftSchema>;
 
+/** The most a draft may weigh once serialized (worker and broker both hold to it): well under DynamoDB's 400 KB item limit, which would cancel the setup draft's own result write. */
+export const TEST_ENV_DRAFT_MAX_BYTES = 200 * 1_024;
+
 /** The key under which a draft rides in a SETUP_DRAFT run's result. */
 export const TEST_ENV_DRAFT_RESULT_KEY = "testEnvironmentDraft";
 

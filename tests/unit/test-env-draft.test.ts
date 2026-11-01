@@ -1,7 +1,7 @@
 // Test environment (wire-testenv): the draft a setup draft run reports (what the broker accepts), the Prove report derived from the setup check, and the merge onto an approved environment.
 import { describe, expect, it } from "vitest";
 import { TEST_ENV_DRAFT_RESULT_KEY, TestEnvironmentBodySchema, projectPk, testEnvDigest, testEnvIsProved, testEnvSummaryOf, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
-import { DRAFT_LEFT_OUT_NOTE, DRAFT_SELECTION_NOTE, readTestEnvDraft, sanitizeTestEnvDraft, testEnvDraftEndItems } from "../../packages/broker/src/test-env/draft.js";
+import { DRAFT_LEFT_OUT_NOTE, DRAFT_SELECTION_NOTE, DRAFT_TOO_LARGE_NOTE, readTestEnvDraftNote, readTestEnvDraft, sanitizeTestEnvDraft, testEnvDraftEndItems } from "../../packages/broker/src/test-env/draft.js";
 import { SETUP_CHECK_MAX_AGE_MS, proveReportFromSetupCheck } from "../../packages/broker/src/test-env/prove-from-setup-check.js";
 import { mergeDraftWithApproved } from "../../packages/broker/src/aws/developer-routes/test-environment.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -22,6 +22,8 @@ const body = (over: Record<string, unknown> = {}): TestEnvironmentBody => TestEn
   capture: { screenshots: "failed", video: false, traces: false },
   ...over,
 });
+/** Thirty checks with eight-kilobyte arguments: valid, and over the cap. */
+const hugeDraft = (): TestEnvDraft => draftOf(body({ repos: [{ repositoryId: "service", setupCommands: [], checks: Array.from({ length: 30 }, (_, index) => ({ id: `c${String(index)}`, label: `Check ${String(index)}`, command: cmd("pytest", ["-q", ...Array.from({ length: 2 }, (_unused, part) => `--note=${String(index)}-${String(part)}-${"x".repeat(8_100)}`)]), kind: "test" })) }] }));
 const narrowingBody = () => body({ repos: [{ repositoryId: "service", setupCommands: [], checks: [{ id: "unit", label: "Unit tests", command: cmd("pytest", ["-q"]), kind: "test", selectArgs: ["{tests}"] }] }], selection: { method: "coverage_map", alwaysRun: [], fullSuiteOn: [] } });
 const draftOf = (environment: TestEnvironmentBody = body()): TestEnvDraft => ({ environment, valueSources: [{ field: "repos[0].checks[0]", source: "detector:python" }], pendingServices: [], notes: ["Found pytest."], questions: [] });
 
@@ -115,6 +117,35 @@ describe("what the broker accepts as a draft", () => {
     // A control or direction character in a note is not a draft the broker takes at all.
     expect(sanitizeTestEnvDraft({ ...draftOf(), notes: [`a${String.fromCharCode(0x202e)}b`] })).toBeUndefined();
     expect(sanitizeTestEnvDraft({ ...draftOf(), questions: ["a\nb"] })).toBeUndefined();
+  });
+});
+
+describe("a draft too large to keep", () => {
+  const task = { taskId: "task-1", purpose: "setup_draft" as const, project: "service", orgId: ORG };
+  const own = { kind: "task", workflowMode: "SETUP_DRAFT" };
+  const NOW = "2026-11-02T10:00:00.000Z";
+  const ON = { TEST_ENVIRONMENT_ENABLED: "1" };
+
+  it("is dropped with a fixed note and a small marker, so the setup draft's own write is never at risk", async () => {
+    const huge = hugeDraft();
+    expect(Buffer.byteLength(JSON.stringify(huge))).toBeGreaterThan(200 * 1_024);
+    expect(sanitizeTestEnvDraft(huge)).toBeUndefined();
+    const items = testEnvDraftEndItems("t", task, own, { status: "SUCCEEDED", result: { [TEST_ENV_DRAFT_RESULT_KEY]: huge } }, NOW, ON);
+    expect(items).toHaveLength(1);
+    const put = (items[0] as { Put: { Item: Record<string, unknown> } }).Put.Item;
+    expect(put.entityType).toBe("TEST_ENV_DRAFT_REFUSED");
+    expect(Buffer.byteLength(JSON.stringify(put))).toBeLessThan(2_000);
+    const db = new FakeDynamoDb();
+    db.set(put);
+    expect(await readTestEnvDraft(db, "t", ORG, "service", "task-1", Date.parse(NOW) + 1_000)).toBeUndefined();
+    expect(await readTestEnvDraftNote(db, "t", ORG, "service", "task-1", Date.parse(NOW) + 1_000)).toBe(DRAFT_TOO_LARGE_NOTE);
+    expect(await readTestEnvDraftNote(db, "t", ORG, "service", "task-2", Date.parse(NOW))).toBeUndefined();
+    expect(await readTestEnvDraftNote(db, "t", ORG, "service", "task-1", Date.parse(NOW) + 8 * 86_400_000)).toBeUndefined();
+  });
+
+  it("a draft just under the cap is kept, and a report that is not a draft at all leaves no marker", () => {
+    expect(testEnvDraftEndItems("t", task, own, { status: "SUCCEEDED", result: { [TEST_ENV_DRAFT_RESULT_KEY]: { not: "a draft" } } }, NOW, ON)).toEqual([]);
+    expect(testEnvDraftEndItems("t", task, own, { status: "SUCCEEDED", result: { [TEST_ENV_DRAFT_RESULT_KEY]: draftOf() } }, NOW, ON)).toHaveLength(1);
   });
 });
 
