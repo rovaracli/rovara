@@ -24,11 +24,11 @@ import { META, type DeveloperRecord } from "../developer/store.js";
 import type { TaskAuthorityAdmission } from "./task-authority-admission.js";
 
 export const TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES = [
-  "pk", "sk", "developerId", "provider", "issuer", "subject", "slackUserId", "revoked", "displayName",
+  "pk", "sk", "developerId", "provider", "issuer", "subject", "slackUserId", "revoked", "mergedInto", "displayName",
 ] as const;
 
 export type TaskPersonDeveloperRecordProjection = { pk: string; sk: string } & Pick<DeveloperRecord,
-  "developerId" | "provider" | "issuer" | "subject" | "slackUserId" | "revoked" | "displayName">;
+  "developerId" | "provider" | "issuer" | "subject" | "slackUserId" | "revoked" | "mergedInto" | "displayName">;
 
 export interface TaskPersonRuntimePorts {
   /** Reads only a task-partition META, PERSON_SUBJECT#<developerId>, or PERSON#<UUID> row. */
@@ -72,6 +72,7 @@ function projectedDeveloperRecord(record: TaskPersonDeveloperRecordProjection | 
     ...(record.subject === undefined ? {} : { subject: record.subject }),
     ...(record.slackUserId === undefined ? {} : { slackUserId: record.slackUserId }),
     ...(record.revoked === undefined ? {} : { revoked: record.revoked }),
+    ...(record.mergedInto === undefined ? {} : { mergedInto: record.mergedInto }),
     ...(record.displayName === undefined ? {} : { displayName: record.displayName }),
   } as unknown as DeveloperRecord;
 }

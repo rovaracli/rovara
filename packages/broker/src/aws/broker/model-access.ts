@@ -202,13 +202,13 @@ export function writeGateRuntime(dependencies: AwsBrokerDependencies, tasks: Dev
 
 /**
  * The commit-time check that a company sign-in (OIDC) task person is still the identity their proof named. The row is keyed by the person:
- * a sign-in writes no `developerId` attribute (store.ts getDeveloper), so only a row naming someone else fails it.
+ * a sign-in writes no `developerId` attribute (store.ts getDeveloper), so only a row naming someone else fails it; a revoked or merged-away row fails too.
  */
 export function oidcTaskPersonIdentityCheck(tableName: string, identity: { developerId: string; issuer: string; subject: string; slackUserId: string }) {
   return { ConditionCheck: {
     TableName: tableName, Key: { pk: `DEVELOPER#${identity.developerId}`, sk: "META" },
-    ConditionExpression: "(attribute_not_exists(#identityId) OR #identityId = :identityId) AND #identityProvider = :identityProvider AND #identityIssuer = :identityIssuer AND #identitySubject = :identitySubject AND #identitySlack = :identitySlack AND #identityRevoked = :identityRevoked",
-    ExpressionAttributeNames: { "#identityId": "developerId", "#identityProvider": "provider", "#identityIssuer": "issuer", "#identitySubject": "subject", "#identitySlack": "slackUserId", "#identityRevoked": "revoked" },
+    ConditionExpression: "(attribute_not_exists(#identityId) OR #identityId = :identityId) AND #identityProvider = :identityProvider AND #identityIssuer = :identityIssuer AND #identitySubject = :identitySubject AND #identitySlack = :identitySlack AND #identityRevoked = :identityRevoked AND attribute_not_exists(#identityMerged)",
+    ExpressionAttributeNames: { "#identityId": "developerId", "#identityProvider": "provider", "#identityIssuer": "issuer", "#identitySubject": "subject", "#identitySlack": "slackUserId", "#identityRevoked": "revoked", "#identityMerged": "mergedInto" },
     ExpressionAttributeValues: { ":identityId": identity.developerId, ":identityProvider": "oidc", ":identityIssuer": identity.issuer,
       ":identitySubject": identity.subject, ":identitySlack": identity.slackUserId, ":identityRevoked": false },
   } };

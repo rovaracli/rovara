@@ -686,6 +686,9 @@ describe("D2 task-person route dependencies", () => {
     const check = developerTaskRouteDependencies({ documentClient: db, tableName: "state", developer: config, now: () => T0 }, { ...maya, developerId: oidcId, amr: "oidc" }).checkTaskPerson;
     if (check === undefined) throw new Error("Task-person checker is required");
     await expect(check(oidcTask, oidcId)).resolves.toMatchObject({ eligible: true, identity: { developerId: oidcId, method: "oidc" } });
+    // Merged into another developer, the identity is no longer this task person, as a revoked one is not.
+    await realIdentityRow({ developerId: oidcId, provider: "oidc", issuer, subject, displayName: "Maya Chen", slackUserId: "U0MAYA001" }, { mergedInto: "c".repeat(64) }, db);
+    await expect(check(oidcTask, oidcId)).resolves.toMatchObject({ eligible: false });
   });
 
   it("propagates the exact authenticated native caller for fresh qualification", async () => {

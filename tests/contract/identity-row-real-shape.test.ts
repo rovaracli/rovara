@@ -83,12 +83,18 @@ describe("a company sign-in (OIDC) task person", () => {
     await expect(checker({ ...await realIdentityRow(oidcProfile), developerId: "b".repeat(64) }).checkTaskPerson(task, oidcId)).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
   });
 
-  it("the model key's commit-time identity check passes on a real row and fails when it names someone else, is revoked or changes sign-in", async () => {
+  for (const [what, changes] of [["revoked", { revoked: true }], ["merged into another developer", { mergedInto: "c".repeat(64) }]] as const) {
+    it(`is not eligible when their real row is ${what}`, async () => {
+      await expect(checker(await realIdentityRow(oidcProfile, changes)).checkTaskPerson(task, oidcId)).resolves.toMatchObject({ eligible: false });
+    });
+  }
+
+  it("the model key's commit-time identity check passes on a real row and fails when it names someone else, is revoked, is merged or changes sign-in", async () => {
     const identity = { developerId: oidcId, issuer, subject, slackUserId };
     const db = new FakeDynamoDb();
     const row = await realIdentityRow(oidcProfile, {}, db);
     expect(await commits(db, oidcTaskPersonIdentityCheck("signin", identity))).toBe(true);
-    for (const changes of [{ developerId: "b".repeat(64) }, { revoked: true }, { subject: "someone-else" }]) {
+    for (const changes of [{ developerId: "b".repeat(64) }, { revoked: true }, { mergedInto: "c".repeat(64) }, { subject: "someone-else" }]) {
       db.set({ ...row, ...changes });
       expect(await commits(db, oidcTaskPersonIdentityCheck("signin", identity))).toBe(false);
     }
