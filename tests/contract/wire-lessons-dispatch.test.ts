@@ -1,7 +1,7 @@
 // Wiring lane wire-lessons: through the real broker. A coding stage's worker invocation carries the approved lessons for the stage (and records the manifest the worker's report is applied to) only
 // where the install has lesson ports and the project's learning mode allows it; delivery removes the field for a worker that does not list the feature.
 import { randomUUID, generateKeyPairSync, sign } from "node:crypto";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { developerTaskIdentity, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
@@ -20,7 +20,12 @@ beforeAll(loadSlackBroker);
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 const PROJECT = "payments";
 
-async function setup(options: { mode?: "On" | "Off"; withLessons?: boolean } = {}) {
+/** The install switch for lessons reaching an agent (apart from the Team record's flag): on for these tests unless one turns it off. */
+const SWITCH = "LEARNED_LESSONS_ENABLED";
+afterAll(() => { delete process.env[SWITCH]; });
+
+async function setup(options: { mode?: "On" | "Off"; withLessons?: boolean; switch?: "on" | "off" } = {}) {
+  if (options.switch === "off") delete process.env[SWITCH]; else process.env[SWITCH] = "1";
   const store = new InMemoryLessonStore();
   const load: LoadDeps = { store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(options.mode === undefined ? {} : { mode: options.mode }), access: allowAllAccess, audit: new Audit(), now: new Clock().now };
   const lessons = options.withLessons === false ? {} : { lessons: { load, directory: { identity: async () => ({ principals: [], groups: [] }), eligibility: async () => { throw new Error("n/a"); } }, settings: load.settings, counters: { store, judge: { rate: async () => { throw new Error("no"); } }, settings: load.settings, audit: load.audit, now: load.now } } };
@@ -65,6 +70,15 @@ describe("the worker invocation of a coding stage", () => {
 
   it("carries nothing, and records nothing, with learning Off for the project", async () => {
     const t = await setup({ mode: "Off" });
+    expect(t.planInvocation.payload).not.toHaveProperty("learnedContext");
+    const { invocation, operation } = await t.accept("IMPLEMENT");
+    expect(invocation.payload).not.toHaveProperty("learnedContext");
+    expect(operation).not.toHaveProperty("learnedLoad");
+    expect(await t.store.manifests({ workspaceId: TEST_ORG, project: PROJECT }, t.meta().taskId)).toEqual([]);
+  });
+
+  it("carries nothing, and records nothing, with the install switch off even where lesson ports exist and learning is On (the default)", async () => {
+    const t = await setup({ switch: "off" });
     expect(t.planInvocation.payload).not.toHaveProperty("learnedContext");
     const { invocation, operation } = await t.accept("IMPLEMENT");
     expect(invocation.payload).not.toHaveProperty("learnedContext");

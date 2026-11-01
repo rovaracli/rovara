@@ -176,6 +176,8 @@ export const BROKER_SETTINGS = {
   proofEvidence: { code: "pe", variable: "PROOF_EVIDENCE_ENABLED" },
   // Decision cards (wire-proof): the card routes (`/v1/app/decisions*`) and the Slack card press. Stack parameter DecisionCardsEnabled, "0" by default: the broker reads it as DECISION_CARDS_ENABLED, and the routes exist only when it is exactly "1". Packed setting, not a Lambda variable (ENV-ROOM).
   decisionCards: { code: "dk", variable: "DECISION_CARDS_ENABLED" },
+  // Lessons reach the agent (follow-up S3 of the wire-lessons review): approved lessons are loaded into an agent's prompt only when this install switch is exactly "1". Stack parameter LearnedLessonsEnabled, "0" by default, SEPARATE from the Team record flag (`tn`): turning the record on to collect and show things does not, by itself, send a lesson to an agent. The broker reads it as LEARNED_LESSONS_ENABLED. Packed setting, not a Lambda variable (ENV-ROOM).
+  learnedLessons: { code: "ll", variable: "LEARNED_LESSONS_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;
