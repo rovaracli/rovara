@@ -12,6 +12,7 @@ import {
   WORKFLOW_REDIRECT_SEND_BACK_REASON,
   WORKER_PING_FEATURES_FIELD,
   agentSessionKey,
+  projectMemberKey,
   workspaceSessionKey,
 } from "../../packages/contracts/src/index.js";
 import { livePersonLabel } from "../../packages/broker/src/agent-sessions/live-steer.js";
@@ -22,6 +23,7 @@ import { sweepStuckCancels } from "../../packages/broker/src/aws/stuck-cancels.j
 import { blockStoppedWorkflowRun } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
 import { redirectRestartHost } from "../../packages/broker/src/aws/broker/redirect-runtime.js";
 import { redirectRestartRequestId } from "../../packages/broker/src/aws/developer-tasks/redirect-restart.js";
+import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -724,5 +726,47 @@ describe("the checks and the review restart coding, as a send-back does", () => 
     expect(t.outbox(coding.id)!.payload["ownerRedirect"]).toMatchObject({ text: TEXT });
     expect(String(t.outbox(coding.id)!.payload["prompt"])).not.toContain("REDIRECT-TEXT-7781");
   });
-});
 
+  // 0.4.27: a redirect that restarts coding as a send-back needs the project access a send-back needs, for the person who redirected. The task owner's channel access (Maya, no grant) and a co-owner's grant
+  // pass (the test above and the next one); a co-owner with no grant, or only a viewer's, is refused before anything is written.
+  /** The stopped review the redirect restarts: coding finished, the review step blocked at its current revision. */
+  const stoppedReview = async (t: Awaited<ReturnType<typeof setup>>) => {
+    const started = await t.runningCoding();
+    await t.finish(started.workspaceId, String(t.operations(started.workspaceId).find((operation) => operation.workflowMode === "IMPLEMENT")!.id), "FAILED", { error: "the model stopped" });
+    const row = t.task(started.taskId);
+    t.db.set({ ...row, workflow: { ...row.workflow, stage: "REVIEW", state: "BLOCKED", blockReason: "The review was stopped." } });
+    t.db.set({ pk: `DEVTASK#${started.taskId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: [{ developerId: OMAR.developerId, slackUserId: "U0OMAR0001", name: OMAR.name, role: "owner" }] });
+    const record = { requestId: randomUUID(), kind: "stop" as const, orgId: TEST_ORG, sessionId: started.sessionId, taskId: started.taskId, actorId: OMAR.developerId, messageId: "msg_0123456789abcdefghij", mode: "keep_plan" as const,
+      blockedRevision: t.task(started.taskId).workflow.revision, step: "REVIEW", state: "stopping" as const, createdAt: new Date().toISOString(), ttl: 1_900_000_000 };
+    return { ...started, record, ownerRedirect: { messageId: record.messageId, sender: "person p_aaaaaa", text: "x" } };
+  };
+  const sendBackAsOmar = async (t: Awaited<ReturnType<typeof setup>>, prepared: Awaited<ReturnType<typeof stoppedReview>>) =>
+    redirectRestartHost(t.brokerInput as never).sendBack(t.task(prepared.taskId) as never, prepared.record, prepared.ownerRedirect);
+
+  it("sends a stopped review back to coding for a co-owner who holds a contributor grant", async () => {
+    const t = await setup();
+    const prepared = await stoppedReview(t);
+    grantProject(t.db, OMAR);
+    await sendBackAsOmar(t, prepared);
+    expect(t.task(prepared.taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
+    expect(t.task(prepared.taskId).workflow.decisions.at(-1)).toMatchObject({ source: "SEND_BACK", reason: WORKFLOW_REDIRECT_SEND_BACK_REASON });
+  });
+
+  it("refuses a co-owner who has no project access at all, and writes nothing", async () => {
+    const t = await setup();
+    const prepared = await stoppedReview(t);
+    const before = t.everything();
+    await expect(sendBackAsOmar(t, prepared)).rejects.toThrow(sendBackNoAccessMessage("payments"));
+    expect(t.everything()).toBe(before);
+    expect(t.operations(prepared.workspaceId).filter((operation) => operation.workflowMode === "IMPLEMENT")).toHaveLength(1);
+  });
+
+  it("refuses a co-owner who is only a project viewer, and writes nothing", async () => {
+    const t = await setup();
+    const prepared = await stoppedReview(t);
+    t.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", role: "viewer" });
+    const before = t.everything();
+    await expect(sendBackAsOmar(t, prepared)).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+    expect(t.everything()).toBe(before);
+  });
+});
