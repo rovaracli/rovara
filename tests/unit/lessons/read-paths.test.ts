@@ -19,6 +19,7 @@ const INTERNAL_LESSON_FILES: Record<string, string> = {
   "lessons/promote.ts": "promotes a lesson to a rule; refuses restricted ones",
   "lessons/process.ts": "the reflector pipeline; lessons go back into the store",
   "lessons/store.ts": "the store itself",
+  "lessons/metric.ts": "the same-mistake-twice measure: reads lessons, their versions and load manifests only to count; returns numbers, never a lesson or any text (metric.test.ts pins that)",
   "lessons/approve.ts": "decisions (approve, reject, retire, roll back) act on a lesson after mayHandle; the lists use readVisible",
 };
 const LESSON_READS = new Set(["list", "get", "manifests", "listAllHeads", "getHead", "versions"]);

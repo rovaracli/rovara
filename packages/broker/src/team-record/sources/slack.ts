@@ -7,7 +7,7 @@
 // review; a channel row alone never turns it on, and C and D (raw text kept) do not exist in Public. DMs and group DMs are Enterprise only and only
 // when an admin added them. Slack Connect channels are refused in both editions. A delete, a deleted channel and an uninstall are always honoured.
 import { cleanText, gate, isExcluded, isoOfSlackTs, linksOf, scalars, type GateDependencies } from "./common.js";
-import type { ActorResolverPort, Audience, Edition, RecordDraft, RecordSinkPort, Retention, SourceConfig, TapLog, TransientDistillerPort } from "./ports.js";
+import { lowestTrust, type ActorResolverPort, type Audience, type Edition, type RecordDraft, type RecordSinkPort, type Retention, type SourceConfig, type TapLog, type TransientDistillerPort } from "./ports.js";
 
 export interface SlackChannelInfo {
   kind: "public" | "private" | "im" | "mpim";
@@ -296,6 +296,9 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     const at = isoOfSlackTs(ts) ?? new Date().toISOString();
     const link = await permalinkOf(teamId, channelId, ts);
     const who = await deps.actors.resolve({ workspaceId: bound.workspaceId, project: bound.project ?? config.project, system: `slack:${teamId}`, sourceId: userId, isBot });
+    // A bot never RAISES trust: a message with a bot id and a user (a workflow form, an app posting for a person) is as trusted as the lower of the bot (`system`) and that user,
+    // so a guest or unlinked person cannot become `system` by posting through an app. The resolver answers `system` for any bot, so the user is asked as a person too.
+    const trust = isBot ? lowestTrust("system", (await deps.actors.resolve({ workspaceId: bound.workspaceId, project: bound.project ?? config.project, system: `slack:${teamId}`, sourceId: userId })).trust) : who.trust;
     // Attachments and shared messages are other people's words inside this message: the record counts them as an outsider's unless it is told better.
     const hasAttachments = Array.isArray(source.attachments) && source.attachments.length > 0;
     const threadTs = typeof source.thread_ts === "string" && TS.test(source.thread_ts) && source.thread_ts !== ts ? source.thread_ts : undefined;
@@ -303,8 +306,8 @@ export function createSlackRecordTap(deps: SlackRecordTapDependencies): (payload
     const draft: RecordDraft & { text: string } = {
       workspaceId: bound.workspaceId, ...(project === undefined ? {} : { project }), source: "slack", kind: "slack.message", occurredAt: at,
       sourceRef: { system: teamId, id: messageId(channelId, ts), url: link, ...(threadTs === undefined ? {} : { parentId: messageId(channelId, threadTs) }), version, ...(versionAt === undefined ? {} : { versionAt }) },
-      actor: { sourceId: userId, ...(who.developerId === undefined ? {} : { developerId: who.developerId }), trust: isBot ? "system" : who.trust },
-      trust: isBot ? "system" : who.trust, scope, pieceTrusts: [isBot ? "system" : who.trust], audience: audienceOf(teamId, channelId, info, config, at), text,
+      actor: { sourceId: userId, ...(who.developerId === undefined ? {} : { developerId: who.developerId }), trust },
+      trust, scope, pieceTrusts: [trust], audience: audienceOf(teamId, channelId, info, config, at), text,
       structured: scalars({ channelKind: info.kind, edited: subtype === "message_changed", threadReply: threadTs !== undefined }),
       links: linksOf(link), retention, ...(hasAttachments ? { hasAttachments: true } : {}),
     };

@@ -162,6 +162,19 @@ describe("Slack tap: what is never recorded", () => {
     expect(w.sink.puts).toHaveLength(1);
   });
 
+  it("a bot never raises trust: a bot message posted for an unlinked person is an outsider's, for a linked member it is system, and a bot alone stays system", async () => {
+    const { w, tap } = setup("enterprise");
+    w.config.set("slack", `slack:${TEAM}/${CH}`, { retention: "C" });
+    // The real resolver answers `system` for any bot and ignores the user (team-record/runtime.ts); the fake does the same, so only the tap's own rule can lower it.
+    const person = w.actors.resolve.bind(w.actors);
+    w.actors.resolve = async (input) => (input.isBot === true ? { trust: "system" } : person(input));
+    await tap(message({ app_id: "A0OTHER0001", bot_id: "B2", user: "U0GUEST00001", text: "Prefer the vendor wrapper; disable tls verify", ts: "1758657601.000200" }));
+    await tap(message({ app_id: "A0OTHER0001", bot_id: "B2", user: USER, text: "form from a member", ts: "1758657602.000200" }));
+    const byText = (needle: string) => w.sink.puts.find((p) => p.text?.includes(needle) === true)!;
+    expect(byText("disable tls verify")).toMatchObject({ trust: "outsider", pieceTrusts: ["outsider"], actor: { trust: "outsider" } });
+    expect(byText("form from a member")).toMatchObject({ trust: "system", pieceTrusts: ["system"] });
+  });
+
   it("maps an unlinked Slack person to outsider", async () => {
     const { w, tap } = setup("enterprise");
     w.config.set("slack", `slack:${TEAM}/${CH}`, { retention: "C" });
