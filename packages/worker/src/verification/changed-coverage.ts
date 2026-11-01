@@ -113,10 +113,48 @@ const JAVA_SOURCE_ROOTS_MAX = 100;
 const JAVA_ROOT = /^((?:[A-Za-z0-9_.-]{1,100}\/){0,10}src\/main\/(?:java|kotlin))\/.+\.(?:java|kt)$/u;
 const COUNT_MAX = 1_000_000_000;
 
-/** Whether the text is a JaCoCo XML report: after the XML declaration, comments and a DOCTYPE, the root element is `<report>`. */
+const isSpace = (character: string | undefined): boolean => character !== undefined && /\s/u.test(character);
+const skipSpace = (text: string, from: number): number => {
+  let at = from;
+  while (at < text.length && isSpace(text[at])) at += 1;
+  return at;
+};
+/** Skips any run of comments (each ends at its FIRST `-->`) and spaces from `from`; -1 when a comment is not closed. One forward pass: the position only moves ahead. */
+function skipComments(text: string, from: number): number {
+  let at = skipSpace(text, from);
+  while (text.startsWith("<!--", at)) {
+    const close = text.indexOf("-->", at + 4);
+    if (close === -1) return -1;
+    at = skipSpace(text, close + 3);
+  }
+  return at;
+}
+
+/**
+ * Whether the text is a JaCoCo XML report: after the XML declaration, comments and a DOCTYPE, the root element is `<report>`. A forward scan with no backtracking (the file is written by a command the agent
+ * can influence, and a pattern with nested quantifiers over comments took exponential time on a file made of empty comments).
+ */
 export function looksLikeJacocoXml(text: string): boolean {
   const head = text.slice(0, 4096).replace(/^\uFEFF/u, "");
-  return /^\s*(?:<\?xml[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*(?:<!DOCTYPE[^>[]*>\s*)?(?:<!--[\s\S]*?-->\s*)*<report[\s>]/u.test(head);
+  let at = skipSpace(head, 0);
+  if (head.startsWith("<?xml", at)) {
+    // `<?xml ... ?>`: the first `>` must be the one that closes the declaration.
+    const close = head.indexOf(">", at);
+    if (close === -1 || head[close - 1] !== "?" || close - 1 < at + 5) return false;
+    at = close + 1;
+  }
+  at = skipComments(head, at);
+  if (at === -1) return false;
+  if (head.startsWith("<!DOCTYPE", at)) {
+    // A DOCTYPE with an internal subset (`[`) is not accepted.
+    const close = head.indexOf(">", at);
+    const subset = head.indexOf("[", at);
+    if (close === -1 || (subset !== -1 && subset < close)) return false;
+    at = close + 1;
+    at = skipComments(head, at);
+    if (at === -1) return false;
+  }
+  return head.startsWith("<report", at) && (isSpace(head[at + 7]) || head[at + 7] === ">");
 }
 
 /**

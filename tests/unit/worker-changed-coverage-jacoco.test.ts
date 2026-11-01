@@ -28,6 +28,28 @@ describe("looksLikeJacocoXml", () => {
     expect(looksLikeJacocoXml('<coverage line-rate="1"><packages/></coverage>')).toBe(false);
     expect(looksLikeJacocoXml('<testsuite name="x"/>')).toBe(false);
   });
+  it("accepts comments before and after the DOCTYPE, a byte-order mark and leading space, and refuses an unclosed comment, a DOCTYPE with an internal subset and a root that is not <report>", () => {
+    expect(looksLikeJacocoXml(`\uFEFF  <?xml version="1.0"?>\n<!-- one -->\n<!-- two -->${DOCTYPE.slice(DOCTYPE.indexOf("<!DOCTYPE"))}<!-- three --> <report name="x"/>`)).toBe(true);
+    expect(looksLikeJacocoXml("<!-- a --><report>")).toBe(true);
+    expect(looksLikeJacocoXml("<!-- never closed <report>")).toBe(false);
+    expect(looksLikeJacocoXml('<!DOCTYPE report [<!ENTITY x "y">]><report>')).toBe(false);
+    expect(looksLikeJacocoXml("<reports/>")).toBe(false);
+    expect(looksLikeJacocoXml("<!-- a --> text <report>")).toBe(false);
+    expect(looksLikeJacocoXml('<?xml version="1.0" <report>')).toBe(false);
+  });
+  it("answers a hostile file of empty comments in linear time (the old pattern took about 30 seconds for 30 comments)", () => {
+    for (const hostile of ["<!---->".repeat(1000) + "x", "<!---->".repeat(30) + "x", "<!-- -->".repeat(1000), `${"<!---->".repeat(500)}<report>`.slice(0, 4096) + "<!--"]) {
+      const started = performance.now();
+      looksLikeJacocoXml(hostile);
+      expect(performance.now() - started).toBeLessThan(50);
+    }
+    expect(looksLikeJacocoXml("<!---->".repeat(1000) + "x")).toBe(false);
+    expect(looksLikeJacocoXml("<!---->".repeat(500) + "<report>")).toBe(true);
+    // The reader that calls it takes the same time: a coverage file made only of comments is "not measured", at once.
+    const started = performance.now();
+    expect(parseLineCoverage("<!---->".repeat(1000) + "x", { javaSourceRoots: ROOTS })).toBeUndefined();
+    expect(performance.now() - started).toBeLessThan(50);
+  });
 });
 
 describe("parseJacocoXml", () => {
