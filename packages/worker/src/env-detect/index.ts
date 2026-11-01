@@ -35,6 +35,7 @@ export function boundedReader(paths: readonly string[], load: (path: string) => 
   return {
     reader: {
       paths: kept,
+      truncated: paths.length > ENV_DETECT_MAX_PATHS,
       async read(path) {
         if (!allowed.has(path)) return undefined;
         if (cache.has(path)) return cache.get(path);

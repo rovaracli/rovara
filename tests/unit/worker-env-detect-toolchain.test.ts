@@ -2,7 +2,7 @@
 // Python (already in the base image) get none; a version that cannot be found or is not offered is a question; a repository's own dev container is used, never replaced.
 import { describe, expect, it } from "vitest";
 import { DEVCONTAINER_PATH_PATTERN, SETUP_DEVCONTAINER_MAX_BYTES } from "@agentx/contracts";
-import { boundedReader } from "../../packages/worker/src/env-detect/index.js";
+import { ENV_DETECT_MAX_PATHS, boundedReader } from "../../packages/worker/src/env-detect/index.js";
 import { BASE_IMAGE_LANGUAGES, DEVCONTAINER_IMAGE_VERSIONS, proposeToolchain } from "../../packages/worker/src/env-detect/toolchain.js";
 
 type Files = Record<string, string>;
@@ -113,6 +113,15 @@ describe("what is not proposed", () => {
     expect(silent.questions.join(" ")).toContain("Does the dev container in .devcontainer.json provide Java");
     const nestedOne = await propose({ "go.mod": GO_MOD("1.22"), "a.go": "", ".devcontainer/go/devcontainer.json": "{}" });
     expect(nestedOne.devcontainer?.configPath).toBe(".devcontainer/go/devcontainer.json");
+  });
+  it("proposes none when the file list was cut at the limit, because an existing dev container could be hidden", async () => {
+    const files: Files = { "go.mod": GO_MOD("1.22"), "a.go": "" };
+    for (let n = 0; n < ENV_DETECT_MAX_PATHS; n += 1) files[`src/f${String(n)}.txt`] = "";
+    const cut = await proposeToolchain(boundedReader(Object.keys(files), (path) => Promise.resolve(files[path])).reader);
+    expect(cut.devcontainer).toBeUndefined();
+    expect(cut.notes.join(" ")).toContain("more files than Rovara reads");
+    expect(cut.questions.join(" ")).toContain("already have a dev container");
+    expect((await propose({ "go.mod": GO_MOD("1.22"), "a.go": "" })).devcontainer).toBeDefined();
   });
   it("proposes one container for the first language and asks about the second", async () => {
     const result = await propose({ "go.mod": GO_MOD("1.22"), "a.go": "", "pom.xml": pom("17"), ...MVNW });

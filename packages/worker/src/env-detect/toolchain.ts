@@ -3,7 +3,8 @@
 // The base image (environments/base/Dockerfile) carries Node and Python. Everything else is read from the repository's own files: Go from go.mod / go.work, Java from the pom or the Gradle build, each cited with file
 // and line. The image is a Microsoft dev container image (mcr.microsoft.com, already an allowed host), at the SMALLEST offered version that satisfies the repository's own minimum; a version Rovara cannot find in the
 // files, or one no listed image offers, is a question, never a guess. Other languages are recognised and asked about (Rovara has not checked their image tags), not proposed.
-// A repository that already has a dev container gets none proposed: its own file is used, and a question is asked when that file does not obviously provide the toolchain.
+// A repository that already has a dev container gets none proposed: its own file is used, and a question is asked when that file does not obviously provide the toolchain. With a cut file list nothing is proposed.
+// The pull request that adds the proposed file MUST be create-only: it must fail, not overwrite, when a file already exists at the path (the list read here can be stale).
 // Pure over a bounded reader: nothing is run, downloaded or written. The file content is a PROPOSAL; the dev container item's own reader re-checks its size, shape and path.
 import { DEVCONTAINER_PATH_PATTERN, SETUP_DEVCONTAINER_MAX_BYTES } from "@agentx/contracts";
 import { GRADLE_JAVA_VERSION, MAVEN_JAVA_VERSION, blank } from "./java.js";
@@ -154,8 +155,14 @@ export async function proposeToolchain(repo: RepositoryReader, options: { baseLa
   }
   if (needs.length === 0) return { notes, questions };
 
-  const existing = repo.paths.find((path) => DEVCONTAINER_PATH_PATTERN.test(path));
   const names = needs.map((need) => LANGUAGE_NAMES[need.language]!).join(" and ");
+  // A cut file list may hide a dev container the repository already has, so nothing is proposed from it. Whoever opens the pull request must also create the file only (never overwrite a file at that path).
+  if (repo.truncated === true) {
+    notes.push("The repository has more files than Rovara reads, so it could not tell whether a dev container already exists; no dev container is proposed.");
+    questions.push(`Does the repository already have a dev container that provides ${names}?`);
+    return { notes, questions };
+  }
+  const existing = repo.paths.find((path) => DEVCONTAINER_PATH_PATTERN.test(path));
   if (existing !== undefined) {
     const text = await repo.read(existing);
     const missing = needs.filter((need) => text === undefined || !MENTIONS[need.language]!.test(text));
