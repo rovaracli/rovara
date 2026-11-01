@@ -1,4 +1,5 @@
 // Runs the detectors over a bounded reader and merges what they found. Bounded: a repository with more than 5,000 files is cut (and says so), a file over 256 KiB is not read, and a detection reads at most 4 MiB.
+import type { ProjectCommand } from "@agentx/contracts";
 import { detectBrazil } from "./brazil.js";
 import { detectIac } from "./iac.js";
 import { detectJava } from "./java.js";
@@ -48,16 +49,44 @@ export function boundedReader(paths: readonly string[], load: (path: string) => 
   };
 }
 
+/** The most of each thing a detection carries (the environment's own schema limits, with room for the proposal's common full-suite globs). */
+export const ENV_DETECT_MAX_CHECKS = 32;
+export const ENV_DETECT_MAX_SETUP_COMMANDS = 20;
+export const ENV_DETECT_MAX_FULL_SUITE_GLOBS = 90;
+
+const sameCommand = (left: ProjectCommand, right: ProjectCommand): boolean => left.cwd === right.cwd && left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
+
+/** `unit` taken by another detector becomes `unit-java`, then `unit-java-2`: always a valid, unused check id. */
+function freeId(id: string, detector: string, taken: ReadonlySet<string>): string {
+  if (!taken.has(id)) return id;
+  const base = `${id}-${detector}`.slice(0, 64).replace(/[-_]+$/u, "");
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n += 1) {
+    const suffix = `-${String(n)}`;
+    const candidate = `${base.slice(0, 64 - suffix.length)}${suffix}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/**
+ * Runs every detector and merges what they found into one detection. Order is precedence. A check whose command (program, arguments, directory) another detector already proposed is dropped, keeping the first
+ * one's citation; a check whose id is taken by a different command is KEPT under `<id>-<detector>` rather than silently replaced; setup commands, globs, services, notes and questions are de-duplicated; and the
+ * environment's limits hold, each cut saying so.
+ */
 export async function runDetectors(reader: RepositoryReader, cwd: string): Promise<Detection> {
   const merged = emptyDetection();
   const ids = new Set<string>();
+  let cutChecks = false;
   for (const detector of DETECTORS) {
     let part: Partial<Detection>;
     try { part = await detector.run({ repo: reader, cwd }); } catch { merged.notes.push(`The ${detector.name} detector could not finish.`); continue; }
     merged.setupCommands.push(...(part.setupCommands ?? []));
     for (const check of part.checks ?? []) {
-      // The first detector to name a check id keeps it (the list order is the precedence).
-      if (!ids.has(check.value.id)) { ids.add(check.value.id); merged.checks.push(check); }
+      if (merged.checks.some((existing) => sameCommand(existing.value.command, check.value.command))) continue;
+      if (merged.checks.length >= ENV_DETECT_MAX_CHECKS) { cutChecks = true; continue; }
+      const id = freeId(check.value.id, detector.name, ids);
+      ids.add(id);
+      merged.checks.push(id === check.value.id ? check : { ...check, value: { ...check.value, id } });
     }
     merged.services.push(...(part.services ?? []));
     merged.iac.push(...(part.iac ?? []));
@@ -69,6 +98,9 @@ export async function runDetectors(reader: RepositoryReader, cwd: string): Promi
   merged.setupCommands = dedupe(merged.setupCommands, (item) => JSON.stringify(item.value));
   merged.fullSuiteOn = dedupe(merged.fullSuiteOn, (item) => item.value);
   merged.services = dedupe(merged.services, (item) => `${item.value.kind}:${item.value.target}`);
+  if (cutChecks) merged.notes.push(`More than ${String(ENV_DETECT_MAX_CHECKS)} checks were found; the first ${String(ENV_DETECT_MAX_CHECKS)} are proposed.`);
+  if (merged.setupCommands.length > ENV_DETECT_MAX_SETUP_COMMANDS) { merged.setupCommands = merged.setupCommands.slice(0, ENV_DETECT_MAX_SETUP_COMMANDS); merged.notes.push(`More than ${String(ENV_DETECT_MAX_SETUP_COMMANDS)} setup commands were found; the first ${String(ENV_DETECT_MAX_SETUP_COMMANDS)} are proposed.`); }
+  if (merged.fullSuiteOn.length > ENV_DETECT_MAX_FULL_SUITE_GLOBS) { merged.fullSuiteOn = merged.fullSuiteOn.slice(0, ENV_DETECT_MAX_FULL_SUITE_GLOBS); merged.notes.push(`More than ${String(ENV_DETECT_MAX_FULL_SUITE_GLOBS)} full-suite paths were found; the first ${String(ENV_DETECT_MAX_FULL_SUITE_GLOBS)} are proposed.`); }
   merged.notes = [...new Set(merged.notes)];
   merged.questions = [...new Set(merged.questions)];
   return merged;
