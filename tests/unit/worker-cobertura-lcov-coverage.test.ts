@@ -272,6 +272,30 @@ describe("reading the report file", () => {
     expect(await readContainedReport({ root, cwd: ".", argument: "fresh.xml", maxBytes: 100, notBeforeMs: undefined })).toEqual({ ok: false, reason: "stale" });
   });
 
+  it("refuses a file dated into the future and a file whose change time is before the round, whatever its modification time says (an agent can date a file, not its change time)", async () => {
+    await writeFile(join(root, "planted.xml"), "<coverage/>");
+    const now = Date.now();
+    const future = new Date(now + 365 * 86_400_000);
+    await utimes(join(root, "planted.xml"), future, future);
+    expect(await readContainedReport({ root, cwd: ".", argument: "planted.xml", maxBytes: 100, notBeforeMs: now - 5_000 })).toEqual({ ok: false, reason: "stale" });
+    // Planted at `now`; the round "began" 10 s later and the file's modification time was set inside it.
+    await writeFile(join(root, "dated.xml"), "<coverage/>");
+    const inside = new Date(now + 11_000);
+    await utimes(join(root, "dated.xml"), inside, inside);
+    expect(await readContainedReport({ root, cwd: ".", argument: "dated.xml", maxBytes: 100, notBeforeMs: now + 10_000, nowMs: now + 20_000 })).toEqual({ ok: false, reason: "stale" });
+    // The same file is accepted when the round began before it was written.
+    expect((await readContainedReport({ root, cwd: ".", argument: "dated.xml", maxBytes: 100, notBeforeMs: now - 5_000, nowMs: now + 12_000 })).ok).toBe(true);
+  });
+
+  it("does not use a planted default-named coverage.xml dated into the future, so the pull request cannot be told every changed line is covered", async () => {
+    const box = await repository({ "a.py": "1\n" }, async (directory) => { await writeFile(join(directory, "a.py"), "2\n"); });
+    await writeFile(join(root, "coverage.xml"), cobertura(box.directory, [{ filename: "a.py", lines: [[1, 1]] }]));
+    const future = new Date(Date.now() + 365 * 86_400_000);
+    await utimes(join(root, "coverage.xml"), future, future);
+    const repositories = [{ repositoryId: "api", directory: box.directory, startCommit: box.base, candidateTreeSha: box.tree }];
+    expect(await collectEvidenceRaw({ rootPath: root, commands: [command(["-q"])], entries: [entry(0)], candidateDigest: DIGEST, repositories, roundStartedAtMs: Date.now() - 5_000 })).toBeUndefined();
+  });
+
   it("has a default size cap of 16 MiB for a coverage report", async () => {
     expect(COVERAGE_REPORT_MAX_BYTES).toBe(16 * 1024 * 1024);
     const box = await repository({ "a.py": "1\n" }, async (directory) => { await writeFile(join(directory, "a.py"), "2\n"); });

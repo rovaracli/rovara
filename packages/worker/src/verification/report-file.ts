@@ -1,6 +1,6 @@
 // Proof and evidence (P3, P4): how the worker reads a report file a project's own check already wrote (a coverage file, a SARIF file). The path comes from the check's own command line or from a fixed list of
 // default names, so it is data the repository influences: it is read only through a path that stays inside the workspace, is a plain file (never a link, at any step of the path) and is within a size cap, and
-// only when the check wrote it during this round (a file left by an earlier run, or put there by the agent before the checks ran, says nothing about this code). Nothing is written, moved or run.
+// only when the check wrote it during this round (a file left by an earlier run, or put there by the agent before the checks ran, says nothing about this code: both its modification and its change time must lie in the round, and neither in the future). Nothing is written, moved or run.
 //
 // The file is opened with O_NOFOLLOW and measured through the open handle, so a link swapped in after the path was checked is refused by the system, and a file that grows while it is read is cut at the cap
 // and refused. A failure is a fixed code, never a message: callers say "not measured".
@@ -37,7 +37,7 @@ export async function containedReportPath(root: string, cwd: string, argument: s
  * The bytes of the report at `argument` (relative to the check's `cwd` under `root`), within `maxBytes`, written at or after `notBeforeMs` (less the slack). Without `notBeforeMs` nothing is read: a caller that cannot say
  * when its round began must not trust a file that may be old.
  */
-export async function readContainedReport(input: { root: string; cwd: string; argument: string; maxBytes: number; notBeforeMs: number | undefined }): Promise<ReportFileRead> {
+export async function readContainedReport(input: { root: string; cwd: string; argument: string; maxBytes: number; notBeforeMs: number | undefined; /** The time now, for tests (default `Date.now()`). */ nowMs?: number }): Promise<ReportFileRead> {
   if (input.notBeforeMs === undefined || !Number.isFinite(input.notBeforeMs)) return { ok: false, reason: "stale" };
   const contained = await containedReportPath(input.root, input.cwd, input.argument);
   if (contained === undefined) return { ok: false, reason: "unsafe_path" };
@@ -49,7 +49,12 @@ export async function readContainedReport(input: { root: string; cwd: string; ar
     const info = await handle.stat();
     if (!info.isFile()) return { ok: false, reason: "unsafe_path" };
     if (info.size > input.maxBytes) return { ok: false, reason: "too_large" };
-    if (info.mtimeMs < input.notBeforeMs - REPORT_FRESHNESS_SLACK_MS) return { ok: false, reason: "stale" };
+    // Written in this round: the modification time can be set by hand (the agent ran before the round and may date a file anything), but the change time cannot be set from user space and setting the
+    // modification time moves it to now, so a file planted before the round has an older change time whatever its modification time says. Neither time may be in the future either.
+    const now = input.nowMs ?? Date.now();
+    const earliest = input.notBeforeMs - REPORT_FRESHNESS_SLACK_MS;
+    const latest = now + REPORT_FRESHNESS_SLACK_MS;
+    if (info.mtimeMs < earliest || info.ctimeMs < earliest || info.mtimeMs > latest || info.ctimeMs > latest) return { ok: false, reason: "stale" };
     // One byte more than the file had when it was measured: a file that grew while it is read does not fit, and is refused.
     const buffer = Buffer.alloc(info.size + 1);
     let length = 0;

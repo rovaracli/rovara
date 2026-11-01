@@ -192,6 +192,15 @@ describe("the evidence a CHECKS run saves for a scanner", () => {
     expect(asked).toBe(1);
   });
 
+  it("does not take an empty SARIF file planted with a future date for a scan that found nothing", async () => {
+    await writeFile(join(root, "bandit.sarif"), sarif([]));
+    const future = new Date(Date.now() + 365 * 86_400_000);
+    await utimes(join(root, "bandit.sarif"), future, future);
+    let asked = 0;
+    expect(await collectEvidenceRaw(input({ baselineScans: async (scans: readonly BaselineScan[]) => { asked += scans.length; return new Map<number, string>(); } }))).toBeUndefined();
+    expect(asked).toBe(0);
+  });
+
   it("an unreadable SARIF file is never a clean scan: a scan whose file does not parse is not reported", async () => {
     await writeFile(join(root, "bandit.sarif"), "{ not sarif");
     expect(await collectEvidenceRaw(input({ baselineScans: baseline(sarif([])) }))).toBeUndefined();
