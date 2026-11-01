@@ -1,6 +1,6 @@
 // G3 v1: the How we work UI reads server decisions; it never selects or classifies models.
 import { z } from "zod";
-import { ModelIdentifierSchema } from "./models.js";
+import { ModelCompanySchema, ModelIdentifierSchema } from "./models.js";
 import { StepThinkingLevelSchema as ThinkingLevelSchema } from "./agent-recipe.js";
 import { NeedsConfirmationSchema } from "./needs-confirmation.js";
 import { forwardReader } from "./forward-reader.js";
@@ -36,7 +36,7 @@ export const StageModelOverridesSchema = z.partialRecord(StageIdSchema, CompanyS
 });
 export const StageModelCandidateSchema = z.object({
   model: ModelIdentifierSchema, label: Line.max(64), provider: z.string().min(1).max(128),
-  company: z.enum(["anthropic", "openai", "google", "other"]),
+  company: ModelCompanySchema,
   status: z.enum(["verified", "unverified", "stale", "denied"]), checkedAt: Instant.optional(),
   blockedReason: StageModelRefusalCodeSchema.optional(),
 }).strict();

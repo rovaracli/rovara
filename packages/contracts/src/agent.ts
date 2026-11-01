@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AGENTX_NAME_PATTERN } from "./names.js";
+import { ModelCompanySchema } from "./models.js";
 
 export const AGENT_NAME_MAX = 60;
 
@@ -73,4 +74,4 @@ export function principalKey(principal: z.infer<typeof AgentPrincipalSchema>): s
 }
 
 /** Available picker models after company/project routing and guardrails. */
-export const ModelListSchema = z.object({ models: z.array(z.object({ provider: z.string(), modelId: z.string(), label: z.string(), company: z.enum(["anthropic","openai","google","other"]), sources: z.array(ModelSourceIdSchema) }).strict()) }).strict();
+export const ModelListSchema = z.object({ models: z.array(z.object({ provider: z.string(), modelId: z.string(), label: z.string(), company: ModelCompanySchema, sources: z.array(ModelSourceIdSchema) }).strict()) }).strict();

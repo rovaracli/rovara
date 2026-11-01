@@ -33,6 +33,9 @@ import {
 import { AgentXErrorCodeSchema, errorStatus } from "../../packages/contracts/src/errors.js";
 import { PROJECT_PERMISSIONS, projectAllows } from "../../packages/contracts/src/app-projects.js";
 import { canonicalModelName, modelCompany } from "../../packages/contracts/src/models-node.js";
+import { ModelListSchema } from "../../packages/contracts/src/agent.js";
+import { PlanCritiqueSchema } from "../../packages/contracts/src/rovara-code.js";
+import { StageModelCandidateSchema } from "../../packages/contracts/src/stage-models.js";
 import { OrgIdSchema, orgScoped } from "../../packages/contracts/src/org-node.js";
 import {
   agentDirectoryKey,
@@ -329,7 +332,7 @@ describe("model helpers", () => {
     expect(modelCompany({ provider: "anthropic", modelId: "claude-haiku-4-5" })).toBe("anthropic");
     expect(modelCompany({ provider: "amazon-bedrock", modelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0" })).toBe("anthropic");
     expect(modelCompany({ provider: "amazon-bedrock", modelId: "anthropic.claude-3-haiku" })).toBe("anthropic");
-    expect(modelCompany({ provider: "amazon-bedrock", modelId: "amazon.nova-pro-v1:0" })).toBe("other");
+    expect(modelCompany({ provider: "amazon-bedrock", modelId: "amazon.nova-pro-v1:0" })).toBe("amazon");
     expect(modelCompany({ provider: "openrouter", modelId: "anthropic/claude-sonnet-4.6" })).toBe("anthropic");
     expect(modelCompany({ provider: "openrouter", modelId: "openai/gpt-5.4" })).toBe("openai");
     expect(modelCompany({ provider: "openrouter", modelId: "google/gemini-3-pro" })).toBe("google");
@@ -338,6 +341,53 @@ describe("model helpers", () => {
     expect(modelCompany({ provider: "custom", modelId: "gpt-5" })).toBe("openai");
     expect(modelCompany({ provider: "custom", modelId: "gemini-3-flash" })).toBe("google");
     expect(modelCompany({ provider: "custom", modelId: "llama-4" })).toBe("other");
+  });
+});
+
+describe("the company behind a Bedrock model (SH33)", () => {
+  const bedrock = (modelId: string) => modelCompany({ provider: "amazon-bedrock", modelId });
+
+  it("names each Bedrock family, bare and with every region prefix the catalog uses", () => {
+    const families: Array<[string, string]> = [
+      ["amazon.nova-pro-v1:0", "amazon"], ["amazon.nova-2-lite-v1:0", "amazon"], ["meta.llama3-3-70b-instruct-v1:0", "meta"], ["mistral.mistral-large-2407-v1:0", "mistral"],
+      ["deepseek.r1-v1:0", "deepseek"], ["openai.gpt-oss-120b-1:0", "openai"], ["qwen.qwen3-32b-v1:0", "qwen"], ["cohere.command-r-plus-v1:0", "cohere"], ["anthropic.claude-3-haiku", "anthropic"],
+    ];
+    for (const [id, company] of families) {
+      expect(bedrock(id)).toBe(company);
+      for (const region of ["us", "eu", "apac", "global", "au", "jp", "in", "ca", "us-gov"]) expect(bedrock(`${region}.${id}`)).toBe(company);
+      expect(bedrock(id.toUpperCase())).toBe(company);
+    }
+  });
+
+  it("makes Nova a different company from Claude, and Nova from another family", () => {
+    const nova = { provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v1:0" };
+    const claude = { provider: "amazon-bedrock", modelId: "us.anthropic.claude-sonnet-4-6" };
+    expect(modelCompany(nova)).not.toBe(modelCompany(claude));
+    expect(modelCompany(nova)).not.toBe(bedrock("meta.llama3-3-70b-instruct-v1:0"));
+    // The same family over two regions is one company.
+    expect(bedrock("eu.amazon.nova-pro-v1:0")).toBe(modelCompany(nova));
+  });
+
+  it("keeps everything it does not recognise as other, and claims nothing from a lookalike", () => {
+    for (const id of ["ai21.jamba-1-5-large-v1:0", "writer.palmyra-x4-v1:0", "stability.sd3-large-v1:0", "xx.amazon.nova-pro-v1:0", "us.us.amazon.nova-pro-v1:0", "amazonx.nova", "nova-pro", "meta", "meta.", "mistralai.large", "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.amazon.nova-pro-v1:0", ""].filter((value) => value !== "")) {
+      expect(bedrock(id)).toBe("other");
+    }
+    // Only the Bedrock route is read this way: other routes keep their rules.
+    expect(modelCompany({ provider: "custom", modelId: "amazon.nova-pro-v1:0" })).toBe("other");
+    expect(modelCompany({ provider: "openrouter", modelId: "meta-llama/llama-3.3-70b" })).toBe("other");
+    expect(modelCompany({ provider: "mistral", modelId: "large" })).toBe("other");
+  });
+
+  it("carries the new companies through every schema that names one, and still reads a stored 'other'", () => {
+    for (const company of ["amazon", "meta", "mistral", "deepseek", "qwen", "cohere", "other"]) {
+      expect(ModelListSchema.safeParse({ models: [{ provider: "amazon-bedrock", modelId: "x", label: "X", company, sources: [] }] }).success).toBe(true);
+    }
+    expect(ModelListSchema.safeParse({ models: [{ provider: "amazon-bedrock", modelId: "x", label: "X", company: "unknown", sources: [] }] }).success).toBe(false);
+    for (const company of ["amazon", "meta", "mistral", "deepseek", "qwen", "cohere", "other"]) {
+      expect(StageModelCandidateSchema.safeParse({ model: { provider: "amazon-bedrock", modelId: "x" }, label: "X", provider: "amazon-bedrock", company, status: "verified" }).success).toBe(true);
+      expect(PlanCritiqueSchema.safeParse({ verdict: "ok", points: [], model: { provider: "amazon-bedrock", modelId: "x", company } }).success).toBe(true);
+    }
+    expect(PlanCritiqueSchema.safeParse({ verdict: "ok", points: [], model: { provider: "amazon-bedrock", modelId: "x", company: "made-up" } }).success).toBe(false);
   });
 });
 

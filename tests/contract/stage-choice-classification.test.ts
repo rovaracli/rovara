@@ -21,3 +21,15 @@ it("uses existing model rules for effective project selection changes",()=>{
  expect(classifyStageChoiceChange({kind:"selection",before:{build:opus},after:{build:{provider:"amazon-bedrock",modelId:"us.anthropic.claude-opus-4-v1:0"}}})).toContain('Lets the step "build" send data through a new model provider (amazon-bedrock)');
  expect(classifyStageChoiceChange({kind:"selection",before:{code_review:opus},after:{code_review:haiku}})).toContain('Moves the review step "code_review" to a weaker model');
 });
+it("tells Nova apart from Claude and from other Bedrock families when it asks whether a step reaches a new AI company (SH33)",async()=>{
+ const {EMPTY_RECIPE}=await import("../../packages/contracts/src/index.js");
+ const bedrock=(modelId:string)=>({provider:"amazon-bedrock",modelId});
+ const recipe=(model:{provider:string;modelId:string})=>({...structuredClone(EMPTY_RECIPE),steps:[{id:"build",name:"Build",kind:"build" as const,settings:{instructions:[],model}}]});
+ const change=(from:{provider:string;modelId:string},to:{provider:string;modelId:string})=>classifyStageChoiceChange({kind:"process",before:recipe(from),after:recipe(to),firstPublish:false});
+ expect(change(bedrock("us.anthropic.claude-opus-4-v1:0"),bedrock("us.amazon.nova-pro-v1:0"))).toEqual(['Lets the step "Build" send data to a new AI company (amazon)']);
+ // Two Bedrock families used to share one "not recognised" key and read as no change.
+ expect(change(bedrock("us.amazon.nova-pro-v1:0"),bedrock("meta.llama3-3-70b-instruct-v1:0"))).toEqual(['Lets the step "Build" send data to a new AI company (meta)']);
+ // The same family on another region is not a new company; an unrecognised model keeps the old wording.
+ expect(change(bedrock("us.amazon.nova-pro-v1:0"),bedrock("eu.amazon.nova-lite-v1:0"))).toEqual([]);
+ expect(change(bedrock("us.amazon.nova-pro-v1:0"),bedrock("ai21.jamba-1-5-large-v1:0"))).toEqual(['Lets the step "Build" send data to a new AI company (one Rovara does not recognise)']);
+});

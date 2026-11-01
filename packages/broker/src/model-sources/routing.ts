@@ -211,7 +211,8 @@ export function routeOnWire(route: ModelRoute, model: ModelIdentifier): Invocati
 export function chatGptServing(connections: Pick<ChatGptConnections, "settings" | "view">, now: () => number = Date.now): ChatGptServing {
   return {
     async serves(developerId, model) {
-      if (modelCompany(model) !== "openai") return undefined;
+      // OpenAI models that Bedrock serves are OpenAI's by company but are reached through Bedrock, never through a person's ChatGPT plan.
+      if (model.provider === "amazon-bedrock" || modelCompany(model) !== "openai") return undefined;
       try {
         if (!(await connections.settings()).enabled) return undefined;
         const view = await connections.view(developerId);

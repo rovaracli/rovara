@@ -279,6 +279,10 @@ describe("personal-chatgpt", () => {
     expect(await serves({ enabled: true, status: "limit-reached", statusAt: "2026-10-21T10:30:00Z" })).toBe("gpt-5.4");
     // A connection that cannot be read serves nothing; the task never fails for it.
     expect(await serves({ enabled: true, fail: true })).toBeUndefined();
+    // OpenAI models reached through Bedrock are OpenAI's by company (SH33) but are never served by a person's ChatGPT plan.
+    const serveBedrock = (modelId: string) => chatGptServing(connections({ enabled: true, models: ["gpt-5.4", "gpt-oss-120b-1:0", "openai.gpt-oss-120b-1:0"] }) as never, () => Date.parse("2026-10-21T12:00:00Z")).serves("maya", { provider: "amazon-bedrock", modelId });
+    expect(await serveBedrock("openai.gpt-oss-120b-1:0")).toBeUndefined();
+    expect(await serveBedrock("us.openai.gpt-oss-120b-1:0")).toBeUndefined();
   });
 });
 

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { OrgIdSchema, SessionBindingSchema, SessionIdSchema } from "./browser-ids.js";
 import { forwardReader } from "./forward-reader.js";
 import { EVIDENCE_NOT_TESTED_KINDS, ProofDetailSchema } from "./evidence.js";
-import { ModelIdentifierSchema } from "./models.js";
+import { ModelCompanySchema, ModelIdentifierSchema } from "./models.js";
 import { redactText } from "./redaction.js";
 import { SetupApplyBodySchema, SetupProposalSchema, SetupReviewEntrySchema } from "./setup-proposal.js";
 
@@ -248,7 +248,7 @@ export const PlanCritiqueSchema = z
     points: z
       .array(z.object({ id: z.string().min(1).max(32), severity: z.enum(["blocking", "note"]), text: z.string().min(1).max(500), claimId: z.string().min(1).max(64).optional() }).strict())
       .max(PLAN_CRITIC_POINTS_MAX),
-    model: ModelIdentifierSchema.extend({ company: z.enum(["anthropic", "openai", "google", "other"]) }).strict(),
+    model: ModelIdentifierSchema.extend({ company: ModelCompanySchema }).strict(),
   })
   .strict();
 export type PlanCritique = z.infer<typeof PlanCritiqueSchema>;
