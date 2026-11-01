@@ -9,5 +9,7 @@ export const REMOVE_STORED_LESSONS = "REMOVE invocation.payload.learnedContext";
 
 /** Whether a record still carries lessons (so an update that may create the item can leave the clause out when there is nothing to drop). */
 export function storedLessonsOf(record: DurableOutboxRecord): boolean {
-  return record.invocation.kind === "task" && record.invocation.payload.learnedContext !== undefined;
+  // A stored record read back may be partial (an older or failed item without its invocation): it then carries no lessons.
+  const invocation = (record as { invocation?: DurableOutboxRecord["invocation"] }).invocation;
+  return invocation?.kind === "task" && (invocation.payload as { learnedContext?: unknown } | undefined)?.learnedContext !== undefined;
 }

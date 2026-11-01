@@ -99,12 +99,15 @@ describe("the broker tags a screenshot, and only a screenshot, with that retenti
     const found = execFileSync("grep", ["-rl", "E2E_ARTIFACT_RETENTION_TAG\\|Tagging:", "packages", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" })
       .trim().split("\n").filter((file) => file !== "");
     // P6: the evidence store tags with the same KEY and the evidence classes' own values; it must never carry the screenshot tag.
-    expect(found.sort()).toEqual(["packages/broker/src/aws/evidence-artifacts.ts", "packages/broker/src/aws/workflow-e2e-artifacts.ts", "packages/contracts/src/e2e-view-node.ts"]);
+    // wire-proof (fix round 1): the evidence pack is tagged with the evidence classes' own value (`evidence-std`) through evidence-keep.ts, never the screenshot tag.
+    expect(found.sort()).toEqual(["packages/broker/src/aws/evidence-artifacts.ts", "packages/broker/src/aws/workflow-e2e-artifacts.ts", "packages/broker/src/rovara-code/evidence-keep.ts", "packages/contracts/src/e2e-view-node.ts"]);
   });
 
   it("keeps the evidence store off the screenshot's tag value, so an evidence object never expires as a screenshot", () => {
-    const evidence = readFileSync("packages/broker/src/aws/evidence-artifacts.ts", "utf8");
-    expect(evidence).not.toMatch(/E2E_ARTIFACT_RETENTION_TAG(?!_KEY)/u);
-    expect(evidence).not.toContain("e2e-screenshot");
+    for (const file of ["packages/broker/src/aws/evidence-artifacts.ts", "packages/broker/src/rovara-code/evidence-keep.ts"]) {
+      const evidence = readFileSync(file, "utf8");
+      expect(evidence, file).not.toMatch(/E2E_ARTIFACT_RETENTION_TAG(?!_KEY)/u);
+      expect(evidence, file).not.toContain("e2e-screenshot");
+    }
   });
 });
