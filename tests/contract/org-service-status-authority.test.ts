@@ -58,3 +58,8 @@ it("B35 no identity row refuses", async () => {
  f.db.delete({ pk: `DEVELOPER#${developerId}`, sk: "META" });
  await expect(readOrgServiceStatus(f.deps, f.caller, { expectedOrgId: orgId })).rejects.toMatchObject({ code: "FORBIDDEN" });expect(f.calls()).toBe(0);
 });
+for (const [mode, changes] of [["revoked", { revoked: true }], ["merged", { mergedInto: "b".repeat(64) }], ["operator", { provider: "operator" }], ["administrator", { entityType: "ADMINISTRATOR" }]] as const) it(`B35 a real sign-in row that is ${mode} still refuses`, async () => {
+ const { readOrgServiceStatus } = await import("../../packages/broker/src/org/service-status.js"), { realIdentityRow } = await import("../support/real-identity-row.js"), f = fixture();
+ await realIdentityRow({ developerId, provider: "slack", issuer: "https://slack.com", subject: "U0OWNER01", displayName: "Owner" }, changes, f.db);
+ await expect(readOrgServiceStatus(f.deps, f.caller, { expectedOrgId: orgId })).rejects.toMatchObject({ code: "FORBIDDEN" });expect(f.calls()).toBe(0);
+});

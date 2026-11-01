@@ -62,10 +62,11 @@ const refused = () => agentXError("PROJECT_ACCESS_DENIED", "task person identity
 
 function projectedDeveloperRecord(record: TaskPersonDeveloperRecordProjection | undefined, developerId: string): DeveloperRecord | undefined {
   if (record === undefined) return undefined;
-  if (record.pk !== `DEVELOPER#${developerId}` || record.sk !== META || record.developerId !== developerId) return undefined;
+  // The row is keyed by the person: a sign-in writes no `developerId` attribute (store.ts getDeveloper), so the id comes from the key and only a row naming someone else is refused.
+  if (record.pk !== `DEVELOPER#${developerId}` || record.sk !== META || (record.developerId !== undefined && record.developerId !== developerId)) return undefined;
   // Keep the runtime value limited even when an injected adapter returns a structurally wider row.
   return {
-    pk: record.pk, sk: record.sk, developerId: record.developerId,
+    pk: record.pk, sk: record.sk, developerId,
     ...(record.provider === undefined ? {} : { provider: record.provider }),
     ...(record.issuer === undefined ? {} : { issuer: record.issuer }),
     ...(record.subject === undefined ? {} : { subject: record.subject }),

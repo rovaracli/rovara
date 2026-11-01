@@ -416,7 +416,8 @@ async function ownedSlackWorkflowTask(dependencies: AwsBrokerDependencies, event
         Key: { pk: `DEVELOPER#${storedOwner.developerId}`, sk: "META" },
         ConsistentRead: true,
       }))).Item as DeveloperRecord | undefined;
-      exactNativeOwner = record?.developerId === storedOwner.developerId && record.provider === "slack"
+      // The row is keyed by the person: a sign-in writes no `developerId` attribute (store.ts getDeveloper), so only a row naming someone else is not theirs.
+      exactNativeOwner = record !== undefined && (record.developerId === undefined || record.developerId === storedOwner.developerId) && record.provider === "slack"
         && record.slackUserId === userId && record.revoked === false;
     }
     if (exactNativeOwner) {

@@ -345,7 +345,8 @@ export function developerTaskRouteDependencies(
       documentClient: deps.documentClient, tableName: deps.tableName, slackTeamId, now: deps.now, uuid: randomUUID, taskPersonProof,
       developerRecord: async (targetDeveloperId) => {
         const response = await deps.documentClient.send(new GetCommand({ TableName: deps.developer.signInTableName, Key: { pk: `DEVELOPER#${targetDeveloperId}`, sk: META }, ConsistentRead: true })) as { Item?: DeveloperRecord };
-        return response.Item;
+        // The row is keyed by the person: a sign-in writes no `developerId` attribute (store.ts getDeveloper). A row naming someone else keeps its id, and is refused.
+        return response.Item === undefined ? undefined : { ...response.Item, developerId: response.Item.developerId ?? targetDeveloperId };
       },
       projectChannelIds,
       targetProjectAccess: async (subject, project, freshMemberOf) => {
