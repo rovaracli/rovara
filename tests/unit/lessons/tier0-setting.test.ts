@@ -270,7 +270,10 @@ describe("one-admin companies: the sole-owner exception for loosening", () => {
     expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" })).toMatchObject({ status: "needs_approval" });
     expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "one" });
     expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
-    expect(w.audit.events.at(-1)).toMatchObject({ action: "lesson.tier0_setting_changed", actor: "owner", facts: { from: "two", to: "one", mode: "sole_owner_exception", proposedBy: "owner", changeId: "chg-1", scope: "project" } });
+    expect(w.audit.events.at(-1)).toMatchObject({ action: "lesson.tier0_setting_changed", actor: "owner", facts: { from: "two", to: "one", mode: "sole_owner_exception", proposedBy: "owner", changeId: "chg-1", scope: "project", membershipVersion: 3, ownerCount: 1, exceptionReason: "sole_owner_no_other_eligible_24h_clear" } });
+    // the exception is recorded on its own, before the change event (as lesson approval does)
+    expect(w.audit.actions()).toEqual(["lesson.tier0_setting_proposed", "lesson.sole_owner_exception", "lesson.tier0_setting_changed"]);
+    expect(w.audit.events.at(-2)).toMatchObject({ action: "lesson.sole_owner_exception", actor: "owner", facts: { changeId: "chg-1", membershipVersion: 3, ownerCount: 1 } });
     expect(w.soleOwner.asked).toEqual([WS]);
   });
   it("the same for one to auto and at company level", async () => {
@@ -287,7 +290,9 @@ describe("one-admin companies: the sole-owner exception for loosening", () => {
     const w = world();
     await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
     await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" });
-    expect(w.audit.events.at(-1)).toMatchObject({ facts: { mode: "second_person" } });
+    expect(w.audit.events.at(-1)).toMatchObject({ facts: { mode: "second_person", membershipVersion: 3 } });
+    expect(w.audit.events.at(-1)?.facts).not.toHaveProperty("exceptionReason");
+    expect(w.audit.actions()).not.toContain("lesson.sole_owner_exception");
     expect(w.soleOwner.asked).toEqual([]);
   });
   it("is refused within 24 h of another eligible person leaving, with the time it opens; allowed from that time", async () => {
@@ -349,9 +354,21 @@ describe("one-admin companies: the sole-owner exception for loosening", () => {
     expect(await approveTier0Change(floor.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "below_company_floor" });
     const audit = solo();
     await requestTier0Change(audit.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
-    audit.audit.emit = async () => { throw new Error("audit down"); };
+    const emit = audit.audit.emit.bind(audit.audit);
+    audit.audit.emit = async (event) => { if (event.action === "lesson.tier0_setting_changed") throw new Error("audit down"); return emit(event); };
     expect(await approveTier0Change(audit.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "audit_unavailable" });
+    // the change event comes after the write; when it cannot be written the loosening is taken back
     expect(audit.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
+    expect(audit.settings.writes.map((x) => x.value)).toEqual(["auto", "one"]);
+  });
+  it("if the exception cannot be recorded, nothing is claimed or written (fails closed, before the write)", async () => {
+    const w = solo();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    const emit = w.audit.emit.bind(w.audit);
+    w.audit.emit = async (event) => { if (event.action === "lesson.sole_owner_exception") throw new Error("audit down"); return emit(event); };
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "audit_unavailable" });
+    expect(w.settings.writes).toEqual([]);
+    expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
   });
   it("a stricter change by a sole owner still applies directly, without asking the switch", async () => {
     const w = solo({ soleOwner: false });
