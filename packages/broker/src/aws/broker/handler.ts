@@ -77,7 +77,7 @@ import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2ERepla
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
 import { installLearningTaskEnd } from "./learning-wiring.js";
-import { installLessons } from "./lessons-wiring.js";
+import { installLessons, recordAndLessonRouteDependencies } from "./lessons-wiring.js";
 import { installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
 import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
 import { runWokenTrackingPass, trackingPassDependencies } from "./e2e-rounds.js";
@@ -777,7 +777,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
               repositoryIdentity: (url: string, orgId: OrgId) => dependencies.githubPullRequests.getRepositoryIdentity!(url, githubScope(dependencies, orgId)),
             }),
           },
-          ...workflowApplicationRouteDependencies(dependencies) };
+          ...workflowApplicationRouteDependencies(dependencies),
+          // The Team record's `/record/` routes (they were wired only on the review page's branch) and the lessons routes; both empty where the record is off.
+          ...recordAndLessonRouteDependencies(dependencies) };
         // Meta repo lane A: creating a project from a meta repo, and the meta repo's config file (reuses the settings route's own pieces).
         Object.assign(routeDependencies, metaRepoRouteDependencies(dependencies, routeDependencies.projectSettings));
         let authenticated: { caller: DeveloperCaller; csrf: string } | undefined;
