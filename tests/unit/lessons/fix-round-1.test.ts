@@ -185,7 +185,7 @@ describe("I1: a refinement is never lower than what it replaces, and never appli
     const { deps, store } = approveSetup();
     await seed(store, lessonRecord({ id: "les_old00001" }), base({ supersedes: "les_old00001", tier: 0 }));
     const lesson = (await store.get(KEY, "les_pend0001"))!;
-    expect(await activateLesson(deps, KEY, lesson, [{ approvalId: "a", by: "system:auto", at: 1, mode: "auto" }], undefined, "lesson.auto_applied")).toBeUndefined();
+    expect(await activateLesson(deps, KEY, lesson, [{ approvalId: "a", by: "system:auto", at: 1, mode: "auto" }], undefined, "lesson.auto_applied", { version: lesson.version, setVersion: 1 })).toBeUndefined();
     expect((await store.get(KEY, "les_old00001"))!.status).toBe("active");
   });
 });

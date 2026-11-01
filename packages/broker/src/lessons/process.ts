@@ -108,7 +108,7 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
       const now = await resolveLearning(deps.settings, key.workspaceId, key.project);
       if (approversRequired(0, now.approval) !== 0 || !modeAllows(now.mode, "auto_apply")) return deps.store.get(key, lessonId);
       try {
-        const active = await activateLesson(deps, key, next, [{ approvalId: `auto-${lessonId}`, by: "system:auto", at: deps.now(), mode: "auto" }], resolved.expiryDays, "lesson.auto_applied");
+        const active = await activateLesson(deps, key, next, [{ approvalId: `auto-${lessonId}`, by: "system:auto", at: deps.now(), mode: "auto" }], resolved.expiryDays, "lesson.auto_applied", { version: next.version, setVersion: result.setVersion });
         if (active !== undefined) return active;
       } catch (error) {
         // If the go-live cannot be audited it does not happen: the lesson stays pending for a person.
