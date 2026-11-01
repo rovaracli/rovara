@@ -287,9 +287,13 @@ describe("an install with no movers", () => {
 });
 
 describe("FakeDynamoDb transaction limits", () => {
-  it("refuses a transaction of more than 100 actions", async () => {
+  // The fake checks the limits only on transactions that touch a partition built to stay inside them (learning-store.test.ts keeps the "elsewhere" case); the removal
+  // transaction always carries its removal record.
+  it("refuses a removal transaction of more than 100 actions", async () => {
     const db = new FakeDynamoDb();
-    const items = Array.from({ length: 101 }, (_, index) => ({ Put: { TableName: "state", Item: { pk: `K#${String(index)}`, sk: "x" } } }));
+    const record = { Put: { TableName: "state", Item: { ...memberRemovalRecordKey("org-1", "req-1"), entityType: "MEMBER_REMOVAL_RECORD" } } };
+    const items = [record, ...Array.from({ length: 100 }, (_, index) => ({ Put: { TableName: "state", Item: { pk: `K#${String(index)}`, sk: "x" } } }))];
     await expect(db.send(new TransactWriteCommand({ TransactItems: items }))).rejects.toMatchObject({ name: "ValidationException" });
+    expect(db.get(memberRemovalRecordKey("org-1", "req-1"))).toBeUndefined();
   });
 });

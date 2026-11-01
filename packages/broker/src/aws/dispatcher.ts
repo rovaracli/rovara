@@ -400,6 +400,16 @@ function taskPersonRuntimePorts(input: {
       input.admission.assertOpen();
       return (response as unknown as { Item?: TaskPersonDeveloperRecordProjection }).Item;
     },
+    async readOrgRecord({ key, abortSignal }) {
+      const response = await taskAuthorityDocumentClient.send(new GetCommand({
+        TableName: input.stateTableName,
+        Key: key,
+        ConsistentRead: true,
+        ...projection(["pk", "sk"]),
+      }), { abortSignal });
+      input.admission.assertOpen();
+      return (response as { Item?: Record<string, unknown> }).Item;
+    },
     projectAuthorityReader: {
       async latestRevision(orgId, project, admission, abortSignal) {
         const response = await taskAuthorityDocumentClient.send(new QueryCommand({

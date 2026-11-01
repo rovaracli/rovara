@@ -3,6 +3,8 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
   SlackTeamIdSchema,
   agentXError,
+  orgMemberKey,
+  orgRemovedKey,
   type OrgId,
   type TaskPersonProofRequest,
   type TaskPersonProofResponse,
@@ -39,6 +41,11 @@ export interface TaskPersonRuntimePorts {
   }): Promise<TaskPersonDeveloperRecordProjection | undefined>;
   /** Exact PROJECT#revision, MEMBER#developerId, and SLACK_BINDING#teamId query adapter. */
   projectAuthorityReader: ProjectAuthorityReader;
+  /**
+   * Strong read, projected to `pk` and `sk`, of only the task person's org member row or removal tombstone (`orgMemberKey`, `orgRemovedKey`): the member-removal check a
+   * qualification makes (org/member-removal/guards.ts).
+   */
+  readOrgRecord(input: { key: { pk: string; sk: string }; abortSignal: AbortSignal }): Promise<Record<string, unknown> | undefined>;
   /** Dedicated fresh proof capability with measured usage; no mixed Identity fallback is accepted. */
   taskPersonProof(
     request: TaskPersonProofRequest,
@@ -68,6 +75,7 @@ function projectedDeveloperRecord(record: TaskPersonDeveloperRecordProjection | 
 }
 
 function identityDocumentClient(input: {
+  orgId: OrgId;
   taskId: string;
   developerId: string;
   stateTableName: string;
@@ -81,6 +89,14 @@ function identityDocumentClient(input: {
       const query = command.input;
       if (query.ConsistentRead !== true || query.TableName !== input.stateTableName) throw unavailable();
       const key = query.Key as { pk?: unknown; sk?: unknown } | undefined;
+      // The removal check reads the person's own org member row and tombstone, and nothing else outside the task.
+      const orgRecord = [orgMemberKey(input.orgId, input.developerId), orgRemovedKey(input.orgId, input.developerId)].find((allowed) => key?.pk === allowed.pk && key.sk === allowed.sk);
+      if (orgRecord !== undefined) {
+        const abortSignal = input.admission.admitStateRead();
+        const item = await input.ports.readOrgRecord({ key: orgRecord, abortSignal });
+        input.admission.assertOpen();
+        return item === undefined ? {} : { Item: item };
+      }
       if (key?.pk !== `DEVTASK#${input.taskId}` || typeof key.sk !== "string") throw unavailable();
       const isSubject = key.sk === `PERSON_SUBJECT#${input.developerId}`;
       const personId = key.sk.startsWith("PERSON#") ? key.sk.slice("PERSON#".length) : undefined;
@@ -121,7 +137,7 @@ function identityDependencies(input: {
     return result.items.filter((binding) => binding.projectName === project).map((binding) => binding.channelId).sort();
   };
   return {
-    documentClient: identityDocumentClient({ taskId: task.taskId, developerId, stateTableName: input.stateTableName, admission, ports }),
+    documentClient: identityDocumentClient({ orgId: input.orgId, taskId: task.taskId, developerId, stateTableName: input.stateTableName, admission, ports }),
     tableName: input.stateTableName,
     slackTeamId,
     now: () => input.now(),

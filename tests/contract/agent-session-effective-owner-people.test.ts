@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { projectMemberKey, projectRevisionKey, slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
+import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org-node.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task-authority-admission.js";
@@ -320,6 +320,7 @@ function dispatch(options: { maxRole?: "developer" | "viewer" | undefined; maxOn
   const ports = {
     readTaskRecord: vi.fn(async ({ sortKey }: { taskId: string; sortKey: string }) => sortKey === "META" ? h.task() as unknown as Record<string, unknown> : undefined),
     readDeveloperRecord: vi.fn(async () => undefined),
+    readOrgRecord: vi.fn(async ({ key }: { key: { pk: string; sk: string } }) => h.db.get(key.pk, key.sk)),
     projectAuthorityReader: {
       latestRevision: vi.fn(async () => ({ revision: { ...revision, revision: 7 }, complete: true })),
       memberships: vi.fn(async (_orgId: string, developerId: string) => ({ items: developerRows().filter((row) => row.developerId === developerId) as never, complete: true })),
@@ -476,9 +477,11 @@ describe("dispatch of a task whose taker is on Slack and holds the project throu
     h.db.set(revision);
     h.db.set(binding);
     const admission = createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 });
+    const readOrgRecord = vi.fn(async ({ key }: { key: { pk: string; sk: string } }) => h.db.get(key.pk, key.sk));
     const ports = {
       readTaskRecord: vi.fn(async ({ sortKey }: { taskId: string; sortKey: string }) => h.db.get(`DEVTASK#${TASK_ID}`, sortKey)),
       readDeveloperRecord: vi.fn(async () => undefined),
+      readOrgRecord,
       projectAuthorityReader: {
         latestRevision: vi.fn(async () => ({ revision: { ...revision, revision: 7 }, complete: true })),
         memberships: vi.fn(async () => ({ items: [], complete: true })),
@@ -495,12 +498,22 @@ describe("dispatch of a task whose taker is on Slack and holds the project throu
       documentClient: h.db, tableName: "state", orgId: TEST_ORG, admission, checkTaskPerson: runtime.checkTaskPerson,
       stateAuthorityWitnessForOwnerActor: (record, ownerActorId) => stateAuthorityWitnessForDispatch(runtime, record, ownerActorId),
     }, outbox);
-    return { ...h, task, runtime, guard, outbox };
+    return { ...h, task, runtime, guard, outbox, readOrgRecord };
   }
 
   it("rests on the Slack identity witness: ALLOWED with no grant at all", async () => {
     const w = slackWorld({ proof: true });
     await expect(w.guard()).resolves.toBe("ALLOWED");
+  });
+
+  it("refuses the Slack identity witness for a taker removed from the company, whatever Slack says (member removal)", async () => {
+    const w = slackWorld({ proof: true });
+    expect((w.task as unknown as { orgId?: unknown }).orgId).toBe(TEST_ORG);
+    w.db.set({ ...orgRemovedKey(TEST_ORG, MAX_NATIVE), removedAt: "2026-10-30T10:00:00.000Z" });
+    // With the tombstone the witness is refused, so the dispatch fails closed and is retried (the test above shows the same world ALLOWED without it). Nothing is posted.
+    await expect(w.guard()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(w.db.get(`OUTBOX#${w.outbox.id}`, "OUTBOX")?.status).toBe("QUEUED");
+    expect(w.readOrgRecord).toHaveBeenCalledWith(expect.objectContaining({ key: orgRemovedKey(TEST_ORG, MAX_NATIVE) }));
   });
 
   it("with Slack unable to vouch for the taker, falls to their project authority, which a channel alone never gives: it fails closed", async () => {
@@ -515,7 +528,7 @@ describe("dispatch of a task whose taker is on Slack and holds the project throu
     // A runtime whose project reads give the taker a grant of their own.
     const granted = createTaskPersonRuntime({
       orgId: TEST_ORG, admission: createTaskAuthorityAdmission({ now: () => START, lambdaRemainingMs: 20_000 }), stateTableName: "state", slackTeamId: TEAM, now: () => START, uuid: () => randomUUID(),
-      ports: { readTaskRecord: async () => undefined, readDeveloperRecord: async () => undefined, taskPersonProof: async () => { throw new Error("unused"); },
+      ports: { readTaskRecord: async () => undefined, readDeveloperRecord: async () => undefined, readOrgRecord: async () => undefined, taskPersonProof: async () => { throw new Error("unused"); },
         projectAuthorityReader: {
           latestRevision: async () => ({ revision: { ...projectRevisionKey(TEST_ORG, "payments", 7), revision: 7, definition: { developerTasks: { enabled: true, channelMembersMayUse: false } } }, complete: true }),
           memberships: async () => ({ items: [grant] as never, complete: true }), bindings: async () => ({ items: [], complete: true }), orgMember: async () => ({ complete: true }),

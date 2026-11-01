@@ -51,7 +51,9 @@ function ports(input: { task?: DeveloperTaskRecord; memberOf?: string[]; develop
     slackCallsUsed: 1,
   };
   });
-  return { readTaskRecord, readDeveloperRecord, projectAuthorityReader, taskPersonProof } as unknown as TaskPersonRuntimePorts & {
+  // Member removal's check: nobody here was removed, so there is no tombstone to read.
+  const readOrgRecord = vi.fn<TaskPersonRuntimePorts["readOrgRecord"]>(async () => undefined);
+  return { readTaskRecord, readDeveloperRecord, readOrgRecord, projectAuthorityReader, taskPersonProof } as unknown as TaskPersonRuntimePorts & {
     readTaskRecord: typeof readTaskRecord;
     readDeveloperRecord: typeof readDeveloperRecord;
     projectAuthorityReader: typeof projectAuthorityReader;
