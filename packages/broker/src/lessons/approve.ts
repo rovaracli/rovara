@@ -162,6 +162,8 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       const decision = trySecondPerson(group, first.by, input.approverId, deps.now());
       if (!decision.ok) return decision;
       mode = decision.mode;
+      // A reviewer, check or security lesson is read by someone who did not write the evidence: two of its own authors are not enough (the sole-owner exception above keeps its own rules).
+      if (mode !== "sole_owner_exception" && !hasNonAuthor([first.by, input.approverId], working.provenance.authors)) return { ok: false, code: "second_person_required" };
     }
 
     const now = deps.now();
@@ -197,6 +199,9 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
   }
   return { ok: false, code: "conflict" };
 }
+
+/** True when at least one of these people is not among the lesson's authors. */
+function hasNonAuthor(people: readonly string[], authors: readonly string[]): boolean { return people.some((person) => !idIn(authors, person)); }
 
 export function trySecondPerson(group: Awaited<ReturnType<ApproverDirectory["eligibility"]>>, proposerId: string, approverId: string, nowMs: number):
   | { ok: true; mode: "second_person" | "sole_owner_exception" } | { ok: false; code: ApprovalFailure } {
@@ -309,7 +314,8 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
   // cool-off as a new one. An approval that does not pass the shared rule does not count; it stays on the record, and the lesson waits for a person.
   const soloAuthored = (a: Lesson["approvals"][number]): boolean => group.eligibleIds.length === 1 && a.mode !== "second_person" && idIn(authors, a.by);
   const standing = countable.filter((a) => !soloAuthored(a) || trySecondPerson(group, a.by, a.by, deps.now()).ok);
-  const enough = sole || new Set(standing.map((a) => normId(a.by))).size >= required;
+  // A tier-2 lesson that two of its own authors approved before the rule existed does not go live on a restore either.
+  const enough = sole || (new Set(standing.map((a) => normId(a.by))).size >= required && (required < 2 || hasNonAuthor(standing.map((a) => a.by), authors)));
   const groupsOk = resolved.requiredGroups.every((name) => standing.some((a) => idIn(group.groups?.[name] ?? [], a.by)));
   if (standing.length === 0 || !enough || !groupsOk) return;
   // Pinned to the version these approvals were judged on (the one this function read or wrote last) and the set version that goes with it.

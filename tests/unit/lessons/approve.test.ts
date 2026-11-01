@@ -125,6 +125,52 @@ describe("tier 2: two people", () => {
     expect(solo.audit.actions()).toContain("lesson.sole_owner_exception");
   });
 
+  it("two of the lesson's own authors cannot complete a tier-2 approval: a person who is not an author is needed", async () => {
+    const authors = { ...lessonRecord().provenance, authors: ["ann", "bob"] };
+    const { deps, store } = setup();
+    await seed(store, tier2({ provenance: authors }));
+    expect(await approveLesson(deps, input("ann"))).toMatchObject({ ok: true, status: "pending", needs: "second_person" });
+    expect(await approveLesson(deps, input("bob"))).toEqual({ ok: false, code: "second_person_required" });
+    let lesson = (await store.get(KEY, "les_pend0001"))!;
+    expect(lesson.status).toBe("pending");
+    expect(lesson.approvals.map((a) => a.by)).toEqual(["ann"]);
+    // A person who did not write it finishes it.
+    expect(await approveLesson(deps, input("owner"))).toMatchObject({ ok: true, status: "active" });
+    lesson = (await store.get(KEY, "les_pend0001"))!;
+    expect(lesson.approvals.map((a) => a.by)).toEqual(["ann", "owner"]);
+  });
+
+  it("one author and one other person is enough (an author may be one of the two)", async () => {
+    const { deps, store } = setup();
+    await seed(store, tier2({ provenance: { ...lessonRecord().provenance, authors: ["ann", "bob"] } }));
+    await approveLesson(deps, input("owner"));
+    expect(await approveLesson(deps, input("ann"))).toMatchObject({ ok: true, status: "active" });
+  });
+
+  it("the sole-owner exception is unchanged: the only eligible person, an author, finishes alone through it", async () => {
+    const solo = setup({ dir: directory({ ownerIds: ["ann"], eligibleIds: ["ann"] }) });
+    await seed(solo.store, tier2({ provenance: { ...lessonRecord().provenance, authors: ["ann"] } }));
+    expect(await approveLesson(solo.deps, input("ann"))).toMatchObject({ ok: true, status: "active" });
+    expect(solo.audit.actions()).toContain("lesson.sole_owner_exception");
+  });
+
+  it("a restored tier-2 lesson approved only by its own authors waits for a person", async () => {
+    const { deps, store } = setup();
+    const two = [{ approvalId: "a1", by: "ann", at: 1, mode: "second_person" as const }, { approvalId: "a2", by: "bob", at: 1, mode: "second_person" as const }];
+    await seed(store, tier2({ status: "active", approvals: two, expiresAt: 9e15, provenance: { ...lessonRecord().provenance, authors: ["ann", "bob"] } }));
+    const v1 = (await store.get(KEY, "les_pend0001"))!;
+    await store.commit(KEY, await store.setVersion(KEY), [{ ...v1, version: 2, status: "stale" }], 2);
+    await rollbackLessonSet(deps, { ...KEY, targetSetVersion: 1, expectedSetVersion: 2, actorId: "owner" });
+    expect((await store.get(KEY, "les_pend0001"))!.status).toBe("pending");
+    // The control: with a non-author among the two approvers the same restore goes live.
+    const ok = setup();
+    await ok.store.commit(KEY, 0, [tier2({ status: "active", approvals: [two[0]!, { approvalId: "a3", by: "owner", at: 1, mode: "second_person" as const }], expiresAt: 9e15, provenance: { ...lessonRecord().provenance, authors: ["ann", "bob"] } })], 1);
+    const w1 = (await ok.store.get(KEY, "les_pend0001"))!;
+    await ok.store.commit(KEY, await ok.store.setVersion(KEY), [{ ...w1, version: 2, status: "stale" }], 2);
+    await rollbackLessonSet(ok.deps, { ...KEY, targetSetVersion: 1, expectedSetVersion: 2, actorId: "owner" });
+    expect((await ok.store.get(KEY, "les_pend0001"))!.status).toBe("active");
+  });
+
   it("with one owner and others eligible, one person cannot approve twice", async () => {
     const { deps, store } = setup({ dir: directory({ ownerIds: ["ann"], eligibleIds: ["ann", "bob"] }) });
     await seed(store, tier2());
