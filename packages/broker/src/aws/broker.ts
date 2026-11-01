@@ -4544,17 +4544,23 @@ async function requireSlackRequesterRule(dependencies: AwsBrokerDependencies, or
   const resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? orgIdOfTeam : await orgResolverOf(dependencies)({ developerId });
   const orgId = resolved === undefined && options.allowUnlinked === true ? orgIdOfTeam : requireOrgId(resolved);
   if (orgId !== orgIdOfTeam) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+  const link = dependencies.developer === undefined ? undefined
+    : await new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }).getIdentityLink(developerId);
   const ids = await slackMergeChain(dependencies, developerId);
-  // The person the id was finally merged into must belong to the team's org too, not only the Slack-derived id.
+  // The developer the identity is linked to now. A relink writes the link back without restoring the merge an unlink dropped, so the link itself (not only mergedInto) says who the identity
+  // belongs to; that person, and whoever they were merged into, are judged like the merge chain, after it (the survivor wins).
+  const linked = link !== undefined && link.unlinkedFrom === undefined && link.developerId !== developerId ? link.developerId : undefined;
+  if (linked !== undefined && !ids.includes(linked)) for (const id of await slackMergeChain(dependencies, linked)) if (!ids.includes(id)) ids.push(id);
+  // The person the id was finally merged or linked into must belong to the team's org too, not only the Slack-derived id.
   const survivor = ids[ids.length - 1]!;
   if (survivor !== developerId && dependencies.orgResolver !== undefined) {
     const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
+    // A survivor with no org is accepted only for an identity that is itself unplaced (an unlinked requester); a placed identity whose survivor has no org does not add up and is refused.
     if (survivorOrg === undefined ? options.allowUnlinked !== true : survivorOrg !== orgIdOfTeam) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   }
   // A Slack identity that was unlinked from a developer (the unlink also drops the merge) is judged by that developer's removal too: removal marks the survivor only, so a removed or
   // banned person must not become a clean unlinked requester by unlinking the Slack identity afterwards. This covers people already removed. Their record, if any, gives no role here.
-  const former = dependencies.developer === undefined ? undefined
-    : (await new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: dependencies.developer.signInTableName, now: Date.now }).getIdentityLink(developerId))?.unlinkedFrom;
+  const former = link?.unlinkedFrom;
   const formerIds = former === undefined || former === developerId ? [] : await slackMergeChain(dependencies, former);
   const refuseIfRemoved = async (id: string): Promise<void> => {
     for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
