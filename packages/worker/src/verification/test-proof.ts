@@ -324,6 +324,19 @@ async function readBytes(path: string): Promise<ReadResult> {
   }
 }
 
+/**
+ * Proof and evidence: the report file a check's own command already writes (see `reportSpecOf`), read as it stands now, within the size cap and only through a path inside the workspace that is not a link. Nothing is
+ * written, moved or run; undefined when the command names no report, the path is unsafe, or the file is missing or unreadable.
+ */
+export async function readCheckReport(root: string, command: ProjectCommand): Promise<{ kind: "json" | "junit"; text: string } | undefined> {
+  const spec = reportSpecOf(command);
+  if (spec === undefined) return undefined;
+  const path = await safeReportPath(root, command, spec);
+  if (path === undefined) return undefined;
+  const read = await readBytes(path);
+  return read.state === "ok" ? { kind: spec.kind, text: read.bytes.toString("utf8") } : undefined;
+}
+
 /** Puts a report file back as the candidate's run left it: its bytes, or gone when it was not there. A link the run left in its place is replaced, never followed. */
 async function restoreFile(report: ReportFile): Promise<void> {
   try {

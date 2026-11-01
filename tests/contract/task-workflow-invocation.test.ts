@@ -71,6 +71,17 @@ describe("workflow-mode worker invocation", () => {
     expect(WORKER_INVOCATION_FEATURES).toContain("task.workflowE2EAdmission");
   });
 
+  it("carries the evidence request only on a verification run, as the literal true, and the worker feature that reads it is listed (wire-proof)", () => {
+    const parse = (extra: Record<string, unknown>, workflowMode = "CHECKS") => WorkerInvocationSchema.safeParse({ ...base, payload: { ...base.payload, workflowMode, ...extra } }).success;
+    expect(parse({ evidenceCapture: true })).toBe(true);
+    expect(parse({ evidenceCapture: true }, "IMPLEMENT")).toBe(false);
+    expect(parse({ evidenceCapture: true }, "REVIEW")).toBe(false);
+    expect(parse({ evidenceCapture: false })).toBe(false);
+    expect(parse({ evidenceCapture: "yes" })).toBe(false);
+    expect(parse({})).toBe(true);
+    expect(WORKER_INVOCATION_FEATURES).toContain("task.evidenceCapture.v1");
+  });
+
   it("carries the approved plan for the reviewers, with its digest, only on a review operation and within 32,768 bytes", () => {
     const sha256 = "a".repeat(64);
     const plan = (workflowReviewPlan: unknown, workflowMode = "REVIEW") => WorkerInvocationSchema.safeParse({ ...base, payload: { ...base.payload, workflowMode, workflowReviewPlan } }).success;

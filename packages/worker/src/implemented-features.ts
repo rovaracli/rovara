@@ -54,4 +54,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "publish.attribution",
   // Live interaction F3: a deep diagnosis, the read-only look answered with the diagnosis JSON (diagnosis.ts).
   "task.diagnosis.v1",
+  // Proof and evidence (wire-proof): a CHECKS run writes evidence-raw.json when the invocation carries `evidenceCapture` (verification/evidence-raw.ts).
+  "task.evidenceCapture.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

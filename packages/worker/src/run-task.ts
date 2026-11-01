@@ -61,6 +61,7 @@ import { RunFindings, type FindingsRecorder } from "./no-change-findings.js";
 import { assistantText, checksArtifactContent, compactCheckReport, finalCheckReport, notVerifiedReport, verificationExtension } from "./verification/extension.js";
 import { AgentFilesRestoreError, gitOriginalCode, recoverAgentFiles, type OriginalCode } from "./verification/original-code.js";
 import { runTestProof, serializeTestProof } from "./verification/test-proof.js";
+import { saveEvidenceRaw } from "./verification/evidence-raw.js";
 import { CommandRecorder } from "./verification/recorder.js";
 import {
   createTaskUsageTelemetry,
@@ -502,6 +503,8 @@ async function runTask(
           ...(dependencies.workflowE2EOnOwnedContainerRunning === undefined ? {} : { onOwnedContainerRunning: dependencies.workflowE2EOnOwnedContainerRunning }),
         });
       }
+      // Proof and evidence (wire-proof): the checks' own test reports are read before TESTPROOF runs the original code. Only when the broker asked (its proof switch is on); informational.
+      if (invocation.payload.evidenceCapture === true && !stop.signal.aborted) await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore });
       // TESTPROOF: informational only. It changes no check result and no artifact above; only a failure to put the agent's files back stops the task.
       // It runs after the browser and API checks, so their evidence never sees the build output of a run on the original code. Known limitation: files the
       // original code's run left that git ignores (build output, caches) are not removed and can remain for the stages after this one.

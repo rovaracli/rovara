@@ -471,6 +471,20 @@ describe("ec2-ebs delivery", () => {
       expect(await plain.deliver(draft, draft.invocation)).toBe("DELIVERED");
     });
 
+    it("never sends a verification run that asks for evidence to a worker that does not list task.evidenceCapture.v1: it is refused, and the field is not dropped (wire-proof)", async () => {
+      const record = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }], evidenceCapture: true });
+      const base = ["task.workflowMode", "task.workflowChecks", "task.readiness"];
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.evidenceCapture.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).evidenceCapture).toBe(true);
+      // A verification run that does not ask is delivered to either, as before.
+      const plain = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }] });
+      expect(await delivery({ workerFeatures: async () => base }).deliver(plain, plain.invocation)).toBe("DELIVERED");
+    });
+
     it("asks for the code review's risk level only on a worker that lists it; an older worker reviews as before (Plan 6 Task 13)", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const workflowBase = [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }];
