@@ -671,6 +671,91 @@ describe("Slack model access for a project viewer or an Auditor", () => {
   });
 });
 
+describe("SY-7: a removal or ban written between the requester check and the key being recorded refuses the key", () => {
+  const WHO = "U0RACESL001";
+  const whoId = developerIdForSlackUser(WHO);
+  const taskThread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000951" };
+  const subject = `${SLACK_TEAM}/${SLACK_CHANNEL}/${taskThread.threadTs}`;
+  /** An install whose proxy mint runs `during` (a removal landing after the requester check, before the key is recorded). */
+  const install = async (during: (h: Harness) => void, options: { agents?: boolean } = {}) => {
+    const holder: { h?: Harness } = {};
+    const revokeKey = vi.fn(async () => undefined);
+    const mintKey = vi.fn(async () => { during(holder.h!); return { key: "sk-proxy-race-turn-key-0001", expiresAt: Date.now() + 900_000 }; });
+    const orgFigures = () => ({ spentUsd: 0, limitUsd: 500 });
+    const access = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend: vi.fn(async () => ({ member: { spentUsd: 0, limitUsd: 29 }, org: orgFigures() })), orgSpend: vi.fn(async () => orgFigures()), keySpend: vi.fn(), mintKey, revokeKey, blockKey: vi.fn(), upsertSource: vi.fn(), removeSource: vi.fn(), checkSource: vi.fn(), listSources: vi.fn(), auditKeys: vi.fn() };
+    const h = await withKit({ brokerExtra: { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true, ...(options.agents === false ? {} : { agents: {} }) } });
+    holder.h = h;
+    seedMembership(h.db, whoId, { orgId: TEST_ORG, role: "member" });
+    setGrant(h.db, { ...KIT, developerId: whoId }, "contributor");
+    return { ...h, mintKey, revokeKey };
+  };
+  const ask = (h: Harness) => serviceCall(h.handler, subject, WHO, "POST", "/v1/service/model-access", { turnId: "Ev1" });
+  const keyRecords = (h: Harness) => h.db.find((item) => item.entityType === "MODEL_KEY");
+  const removal = (h: Harness) => { h.db.delete(orgMemberKey(TEST_ORG, whoId)); h.db.set({ ...orgRemovedKey(TEST_ORG, whoId), orgId: TEST_ORG, developerId: whoId }); };
+  const ban = (h: Harness) => h.db.set({ ...orgBanKey(TEST_ORG, whoId), orgId: TEST_ORG, developerId: whoId });
+
+  it("control: with no change in between, the key is minted and recorded", async () => {
+    const h = await install(() => undefined);
+    const answered = await ask(h);
+    expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+    expect(h.mintKey).toHaveBeenCalledTimes(1);
+    expect(keyRecords(h)).toHaveLength(1);
+    expect(h.revokeKey).not.toHaveBeenCalled();
+  });
+
+  it("control: a person who was removed and invited back (a tombstone and a member record) still gets a key", async () => {
+    const h = await install(() => undefined);
+    h.db.set({ ...orgRemovedKey(TEST_ORG, whoId), orgId: TEST_ORG, developerId: whoId });
+    const answered = await ask(h);
+    expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+    expect(keyRecords(h)).toHaveLength(1);
+  });
+
+  it.each([["removed", removal], ["banned", ban]] as const)("a person %s after the check gets REMOVED_FROM_ORG, no key record, and the key given back", async (_how, write) => {
+    const h = await install(write);
+    const refused = await ask(h);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    expect(h.mintKey).toHaveBeenCalledTimes(1);
+    expect(h.revokeKey).toHaveBeenCalledTimes(1);
+    expect(keyRecords(h)).toHaveLength(0);
+  });
+
+  it("the same holds for a read-only task answer (the Auditor's branch)", async () => {
+    const h = await install(removal);
+    seedMembership(h.db, whoId, { orgId: TEST_ORG, role: "auditor" });
+    const taskId = randomUUID();
+    h.db.set({ ...sharedTaskKey(taskThread), taskId, workspaceId: randomUUID(), ownerKey: taskOwnerKey(KIT.developerId, taskId), developerId: KIT.developerId, developerName: "Kit Alvarez", project: "payments", mode: "view", sharedAt: new Date().toISOString(), workflowThread: true });
+    const refused = await ask(h);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    expect(keyRecords(h)).toHaveLength(0);
+  });
+
+  it("a ban on the survivor of a merged identity, written after the check, refuses the key too", async () => {
+    const other = "8".repeat(64);
+    const h = await install((db) => db.db.set({ ...orgBanKey(TEST_ORG, other), orgId: TEST_ORG, developerId: other }));
+    h.db.delete(orgMemberKey(TEST_ORG, whoId));
+    seedMembership(h.db, other, { orgId: TEST_ORG, role: "member" });
+    h.db.set({ pk: `DEVELOPER#${whoId}`, sk: "META", developerId: whoId, mergedInto: other });
+    const refused = await ask(h);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    expect(keyRecords(h)).toHaveLength(0);
+  });
+
+  it("an install that records no key (no agents) still refuses a removal that lands before the key is handed out", async () => {
+    const h = await install(removal, { agents: false });
+    const refused = await ask(h);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    expect(h.revokeKey).toHaveBeenCalledTimes(1);
+    const control = await install(() => undefined, { agents: false });
+    expect((await ask(control)).status).toBe(200);
+    expect(control.revokeKey).not.toHaveBeenCalled();
+  });
+});
+
 const RESUMED_ORIGINAL = "This task was paused while you could only view the project. It has resumed with its original instructions; the instructions you just sent were not used, so send them again once it finishes.";
 const VIEWER_MESSAGE = "You can view `payments` but not start tasks in it. Ask a maintainer to make you a contributor.";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };

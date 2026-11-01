@@ -27,7 +27,7 @@ import type { TaskAccess } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { issueRepositoryGrant, membershipRecord, object, workspaceItem, workspaceKey, workspaceRuntime } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies, MembershipRecord, RegisteredProjectRecord } from "./definitions.js";
-import { developerTaskActions, orgStoreOf, requireSlackAllowedByEdition, requireSlackRequesterWriterRole, slackRequesterStanding, slackTeamOrg } from "./dependency-wiring.js";
+import { developerTaskActions, orgStoreOf, requireSlackAllowedByEdition, requireSlackRequesterWriterRole, slackRequesterStanding, slackTeamOrg, type RequesterStanding } from "./dependency-wiring.js";
 import { getMembership, requireAdministrator, requireLatestProject, requireWorkspace } from "./records.js";
 import { ensureInstallOrg } from "./scope-helpers.js";
 import { slackTaskAccess } from "./slack-workflow-events.js";
@@ -277,10 +277,15 @@ export async function slackRequesterRole(dependencies: AwsBrokerDependencies, id
 
 /** The Slack person's project role in the team's org, by the one requester rule (see requireSlackRequesterWriterRole): refused outright when they are not a current writer there. */
 export async function slackRequesterProjectRole(dependencies: AwsBrokerDependencies, orgId: OrgId, userId: string, projectName: string): Promise<ProjectRole> {
+  return (await slackRequesterProjectAccess(dependencies, orgId, userId, projectName)).role;
+}
+
+/** `slackRequesterProjectRole`, and the standing the check read (SY-7), for a caller that mints money for the person and re-asserts it in its own write. */
+export async function slackRequesterProjectAccess(dependencies: AwsBrokerDependencies, orgId: OrgId, userId: string, projectName: string): Promise<{ role: ProjectRole; standing: RequesterStanding }> {
   const developerId = developerIdForSlackUser(userId);
   // The one rule for the requester's own identity, shared with the ingress callers (slackCallerFor): their org must be the team's, the company sign-in must allow them, their role is read
   // under every id they answer to (a merge), and the Auditor, a role this release does not know, a record with no role and a missing record outside a single-org install are all refused.
-  const { role: orgRole, ids } = await slackRequesterStanding(dependencies, userId, orgId, { allowUnlinked: true });
+  const { role: orgRole, ids, standing } = await slackRequesterStanding(dependencies, userId, orgId, { allowUnlinked: true });
   // The explicit grant is read under the id whose role wins, as the role is: the survivor's grant first, then back along the merge and link chain to the Slack id's own. The ids are the ones the
   // rule just walked and org-checked (not walked again here). An explicit grant (a viewer's included) is applied before channel access, so linking or merging a Slack identity into a
   // developer with a restrictive grant does not hand it the channel's contributor role.
@@ -289,7 +294,7 @@ export async function slackRequesterProjectRole(dependencies: AwsBrokerDependenc
     grant = await getMembership(dependencies, orgId, id, projectName);
     if (grant !== undefined) break;
   }
-  return effectiveProjectRole({ developerId, orgRole }, grant, true) ?? "contributor";
+  return { role: effectiveProjectRole({ developerId, orgRole }, grant, true) ?? "contributor", standing };
 }
 
 /**

@@ -161,20 +161,31 @@ const uniqueScopes = (scopes: readonly KeyScope[]): KeyScope[] => {
  * Records a key that reserved nothing (a Slack turn's key, an orchestrator's; every task operation's key reserves, Task 31): it settles into the counters,
  * and its spend adds to `committedUsd` as it comes. A key already recorded answers its record and writes nothing.
  */
-export async function registerKey(deps: LedgerDependencies, input: KeyInput): Promise<ModelKeyRecord> {
+export async function registerKey(deps: LedgerDependencies, input: KeyInput, guard?: RegisterGuard): Promise<ModelKeyRecord> {
   checkInput(input);
   const { record, index } = recordItems(deps, { ...input, scopes: uniqueScopes(input.scopes) }, false, deps.now());
+  const checks = guard?.checks ?? [];
   try {
     await send(deps, [
       { Put: { TableName: deps.tableName, Item: record, ConditionExpression: NOT_EXISTS } },
       { Put: { TableName: deps.tableName, Item: index, ConditionExpression: NOT_EXISTS } },
+      ...checks,
     ]);
     return record as unknown as ModelKeyRecord;
   } catch (error) {
-    const existing = failedIndexes(error) === undefined ? undefined : await readRecord(deps, input.orgId, input.keyId);
+    const failed = failedIndexes(error);
+    // A guard that no longer holds refuses before a repeat is looked for: the key is not recorded, and the caller gives it back.
+    if (guard !== undefined && failed !== undefined && checks.some((_check, position) => failed.has(2 + position))) throw guard.refusal();
+    const existing = failed === undefined ? undefined : await readRecord(deps, input.orgId, input.keyId);
     if (existing === undefined) throw error;
     return existing;
   }
+}
+
+/** Conditions written in the same transaction as a key's record (checks on other items, placed after the record's own writes), and the error thrown when one of them fails. */
+export interface RegisterGuard {
+  checks: TransactItem[];
+  refusal: () => Error;
 }
 
 /**

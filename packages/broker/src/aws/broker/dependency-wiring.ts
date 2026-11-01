@@ -8,9 +8,10 @@ import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "..
 import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type OrgRole, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
+import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type OrgRole, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
 import { liveStoredRole, personWalk, survivorRole } from "../../org/live-role.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
+import type { TransactItem } from "../../agents/table-writes.js";
 import { adminReader, queryAllItems, type AdminReadDependencies } from "../admin-reads.js";
 import { outcomeMetric } from "../admin-change-audit.js";
 import type { AdminChangeDependencies } from "../admin-changes.js";
@@ -455,7 +456,7 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
  * under exactly the ids that were org-checked here. The company role comes from the survivor's record only. A ban row under ANY of the ids refuses (an invite clears a ban, so one that is
  * still there is live); a removal row refuses only a person the survivor has no member record for (it is never cleared, and a person invited again under the survivor works).
  */
-export async function slackRequesterStanding(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean; allowReadOnly?: boolean } = {}): Promise<{ role: OrgRole; ids: string[] }> {
+export async function slackRequesterStanding(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean; allowReadOnly?: boolean } = {}): Promise<{ role: OrgRole; ids: string[]; standing: RequesterStanding }> {
   const developerId = developerIdForSlackUser(userId);
   // The single-org resolver answers the install's org for everyone, which says nothing about this person; only a tenant-resolving install (an orgResolver) can say they are of another org.
   const resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? teamOrg : await orgResolverOf(dependencies)({ developerId });
@@ -478,16 +479,50 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
   // A Slack identity that was unlinked from a developer (the unlink also drops the merge) is judged by that developer's removal too: removal marks the survivor only, so a removed or banned
   // person must not become a clean unlinked requester by unlinking the Slack identity afterwards. This covers people already removed. Their record, if any, gives no role here.
   const formerIds = former !== undefined && former !== developerId ? (await personWalk(live, former)).ids : [];
-  for (const id of [...ids, ...formerIds]) if (await has(orgBanKey(orgId, id))) throw refuse();
-  for (const id of formerIds) if ((await liveStoredRole(live, orgId, id)).present === false && await has(orgRemovedKey(orgId, id))) throw refuse();
-  if (role !== undefined) return { role, ids };
+  // What this check read and let the person through on (SY-7): the rows that were absent and the survivor's member record when it was there. A caller that goes on to mint money for the person
+  // re-asserts these in its own write (`requesterStandingGuard`), so a removal or a ban written after this read cannot still get a key.
+  const standing: RequesterStanding = { orgId, absent: [], present: [] };
+  for (const id of [...ids, ...formerIds]) {
+    if (await has(orgBanKey(orgId, id))) throw refuse();
+    standing.absent.push(orgBanKey(orgId, id));
+  }
+  for (const id of formerIds) {
+    if ((await liveStoredRole(live, orgId, id)).present !== false) continue;
+    if (await has(orgRemovedKey(orgId, id))) throw refuse();
+    standing.absent.push(orgRemovedKey(orgId, id));
+  }
+  if (role !== undefined) return { role, ids, standing: { ...standing, present: [orgMemberKey(orgId, survivor)] } };
   // No member record for the survivor: a removed person is refused before anything else, an Enterprise install (one company whose people all sign in) does not let a Slack identity with
   // no record in as an implicit member, and anyone else is the implicit member of a single-org install.
-  for (const id of ids) if (await has(orgRemovedKey(orgId, id))) throw refuse();
+  for (const id of ids) {
+    if (await has(orgRemovedKey(orgId, id))) throw refuse();
+    standing.absent.push(orgRemovedKey(orgId, id));
+  }
   if (dependencies.editionPolicy !== undefined && featureEnabled(dependencies.editionPolicy, "auditorRole")) {
     throw agentXError("FORBIDDEN", "this Slack member has not signed in to Rovara; sign in once, then try again");
   }
-  return { role: "member", ids };
+  return { role: "member", ids, standing };
+}
+
+/** What `slackRequesterStanding` read about a person to let them through: the rows that were not there (a ban, a removal) and the member record that was. */
+export interface RequesterStanding {
+  orgId: OrgId;
+  absent: Array<{ pk: string; sk: string }>;
+  present: Array<{ pk: string; sk: string }>;
+}
+
+/**
+ * SY-7: the requester check and a key mint are separate steps, and a removal or ban written between them used to still get the key. These conditions are added to the write that records
+ * the key, so that write fails (REMOVED_FROM_ORG) if any row the check found absent has appeared, or the member record it found is gone (a removal deletes it as it writes the tombstone).
+ */
+export function requesterStandingGuard(tableName: string, standing: RequesterStanding): { checks: TransactItem[]; refusal: () => Error } {
+  return {
+    checks: [
+      ...standing.absent.map((Key): TransactItem => ({ ConditionCheck: { TableName: tableName, Key, ConditionExpression: "attribute_not_exists(pk)" } })),
+      ...standing.present.map((Key): TransactItem => ({ ConditionCheck: { TableName: tableName, Key, ConditionExpression: "attribute_exists(pk)" } })),
+    ],
+    refusal: () => agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE),
+  };
 }
 
 /**
