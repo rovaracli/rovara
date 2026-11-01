@@ -86,6 +86,20 @@ describe("a task session on a project", () => {
     expect(await levelOf(w, ARJUN, sessionId)).toMatchObject({ level: "use" });
   });
 
+  it("never gives an Auditor more than view: not through an org share, a member share, ownership or a People entry (I2)", async () => {
+    const w = sessionWorld();
+    const { sessionId } = w.seedSession();
+    w.db.set({ pk: `ORG#${ORG_A}`, sk: `MEMBER#${ZED}`, entityType: "ORG_MEMBER", orgId: ORG_A, developerId: ZED, role: "auditor", joinedAt: "2026-10-01T00:00:00.000Z" });
+    w.seedShare(ORG_A, sessionId, { kind: "org" }, "edit");
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ZED }, "use");
+    const access = await levelOf(w, ZED, sessionId);
+    expect(access.level).toBe("view");
+    expect(access.actions).not.toContain("steer");
+    expect(access.actions).not.toContain("take_over");
+    // A member with the same shares still gets them.
+    expect(await levelOf(w, MAX, sessionId)).toMatchObject({ level: "edit" });
+  });
+
   it("gives a person on no project the one session they were given, and no other", async () => {
     const w = sessionWorld();
     const mine = w.seedSession();

@@ -39,6 +39,8 @@ test("a less-safe change in the review dialog shows the stage's lines beside it"
  await signIn(page, context, request, baseURL, "project");
  await patch(page, "**/v1/web/projects/payments/how-we-work", withRecords);
  await patch(page, "**/v1/web/agents/*/diff*", body => { body.lessSafe = ["Changes the instructions of the review step \"Review\"", "Raises the agent's autonomy from suggest to run"]; });
+ // The dialog fades in; axe measures contrast on whatever it finds, so a half-faded dialog (webkit is slower) reads as low contrast. Like the other a11y tests, run without the motion.
+ await page.emulateMedia({ reducedMotion: "reduce" });
  await page.setViewportSize({ width: 1280, height: 900 });await page.goto("/app/projects/payments?tab=how-we-work");
  await expect(page.getByRole("heading", { name: "Build", exact: true })).toBeVisible();
  await page.getByRole("textbox", { name: "Project rules" }).fill("Keep changes small.\nAdd a test for every bug fix.");

@@ -358,8 +358,9 @@ export async function requireProjectAuthority(
   const creator = await options.taskCreator?.();
   const holder = await readOrgMember(dependencies, orgId, creator ?? ownerKey);
   // The raw role is read too: a record whose role does not parse (a role this release does not know) is no writer either, so it is refused, not waved through by its grant.
-  const rawRole = (await getItem<{ role?: unknown }>(dependencies, orgMemberKey(orgId, creator ?? ownerKey)))?.role;
-  if (rawRole !== undefined && !isWriterOrgRole(rawRole)) throw agentXError("TASK_ACCESS_DENIED", "your company role can no longer work on tasks");
+  // A record with no role at all is unreadable too, not a member: only a missing record is left to the branches below.
+  const rawRecord = await getItem<{ role?: unknown }>(dependencies, orgMemberKey(orgId, creator ?? ownerKey));
+  if (rawRecord !== undefined && !isWriterOrgRole(rawRecord.role)) throw agentXError("TASK_ACCESS_DENIED", "your company role can no longer work on tasks");
   // A viewer's row is no authority to work on a project's task paths (Plan 2, Task 21): it falls through to the org role, then NOT_FOUND.
   if (membership && grantRoleOf(membership) !== "viewer") return { kind: "grant", membership };
   const member = holder;

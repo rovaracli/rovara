@@ -3,7 +3,7 @@
 // dispatch for a viewer's task starts, tasks without a People sidecar included. People with no grant keep the share design.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { projectMemberKey, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { pageAccess, requireProjectWorkRole } from "../../packages/broker/src/developer/task-access.js";
@@ -17,6 +17,150 @@ import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 const KIT: Developer = { developerId: "4".repeat(64), name: "Kit Alvarez", provider: "oidc", sessionId: "s-kit" };
+describe("I2: a Slack-linked Auditor is read-only on every Slack route that starts or changes work", () => {
+  const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000701`;
+  const AUDITOR = "U0AUDITSL01";
+
+  it("the service routes refuse an Auditor who also holds a contributor grant (it was resolved to a contributor)", async () => {
+    const h = await withKit();
+    const developerId = developerIdForSlackUser(AUDITOR);
+    seedMembership(h.db, developerId, { orgId: TEST_ORG, role: "auditor" });
+    setGrant(h.db, { ...KIT, developerId }, "contributor");
+    const created = await ensureWorkspace(h.handler, thread, "U0MAYA001");
+    expect(created.status).toBe(200);
+    const workspaceId = String(created.body.workspaceId);
+    const calls: Array<[string, string, string, unknown]> = [
+      ["PUT", "/v1/service/project/model", "model", { provider: "openai", modelId: "gpt-5" }],
+      ["POST", "/v1/service/evals/swebench", "swebench run", {}],
+      ["POST", "/v1/service/evals/batches", "swebench batch", {}],
+      ["POST", "/v1/service/threads/workspace/prepare", "prepare (start work)", { requestId: randomUUID() }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/pull-requests`, "pull request", { requestId: randomUUID(), repository: "demo", title: "Fix" }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/connectors/github/call`, "connector call", { tool: "x", arguments: {} }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/pull-request-actions`, "pull request action", { requestId: randomUUID(), repository: "demo", pullRequestNumber: 1, action: "sync" }],
+    ];
+    for (const [method, path, label, body] of calls) {
+      const refused = await serviceCall(h.handler, thread, AUDITOR, method, path, body);
+      expect(refused.status, `${label} ${JSON.stringify(refused.body)}`).toBe(403);
+      expect(refused.body.error, label).toMatchObject({ code: "FORBIDDEN" });
+    }
+  });
+
+  it("the same Auditor with no grant at all (the channel would have made it a contributor) is refused too", async () => {
+    const h = await withKit();
+    seedMembership(h.db, developerIdForSlackUser(AUDITOR), { orgId: TEST_ORG, role: "auditor" });
+    const refused = await serviceCall(h.handler, thread, AUDITOR, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("cannot start a task or decide one from a Slack thread", async () => {
+    const h = await withKit();
+    const slackThread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000702" };
+    const owner = "U0SLACKOWN2";
+    const ownerId = developerIdForSlackUser(owner), auditorId = developerIdForSlackUser(AUDITOR);
+    seedMembership(h.db, ownerId, { orgId: TEST_ORG, role: "member" });
+    setGrant(h.db, { ...KIT, developerId: ownerId }, "contributor");
+    seedMembership(h.db, auditorId, { orgId: TEST_ORG, role: "auditor" });
+    setGrant(h.db, { ...KIT, developerId: auditorId }, "contributor");
+    const refusedStart = await h.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread: { ...slackThread, threadTs: "1695500000.000703" }, userId: AUDITOR, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+    expect(refusedStart.statusCode).toBe(403);
+    const started = await h.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread: slackThread, userId: owner, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+    const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
+    for (const taskAction of ["decide", "retry", "publish", "feedback"]) {
+      const answer = await h.handler({ source: "agentx.slack-ingress", action: "task-people-authorize", taskAction, taskId, userId: AUDITOR, thread: slackThread });
+      expect(answer.statusCode, taskAction).toBe(403);
+    }
+  });
+});
+
+describe("a Slack requester who is not a current writer of the team's org is refused on every Slack service route (ONE rule with the ingress callers)", () => {
+  const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000801`;
+  const MAYA = "U0MAYA001";
+  const GUEST = "U0GUESTSL01";
+  const guestId = developerIdForSlackUser(GUEST);
+  const OTHER_ORG = "org_cccccccccccccccccccc";
+
+  /** Every route that starts work or changes the project, for the workspace Maya made: the guest must be refused on each. */
+  async function refusedOnEveryRoute(h: Harness, who: string) {
+    const created = await ensureWorkspace(h.handler, thread, MAYA);
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    const workspaceId = String(created.body.workspaceId);
+    const calls: Array<[string, string, string, unknown]> = [
+      ["POST", "/v1/service/threads/workspace/prepare", "prepare", { requestId: randomUUID() }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/pull-requests`, "pull request", { requestId: randomUUID(), repository: "demo", title: "Fix" }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/connectors/github/call`, "connector call", { tool: "x", arguments: {} }],
+      ["PUT", "/v1/service/project/model", "project model", { provider: "openai", modelId: "gpt-5" }],
+    ];
+    const ensure = await ensureWorkspace(h.handler, `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000802`, who);
+    expect(ensure.status, `ensure ${JSON.stringify(ensure.body)}`).toBe(403);
+    for (const [method, path, label, body] of calls) {
+      const refused = await serviceCall(h.handler, thread, who, method, path, body);
+      expect(refused.status, `${label} ${JSON.stringify(refused.body)}`).toBe(403);
+    }
+  }
+
+  it("a member merged into a surviving Auditor is the Auditor (the Slack id has no record of its own)", async () => {
+    const h = await withKit();
+    const survivor = "7".repeat(64);
+    seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "auditor" });
+    h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("a member removed from a cloud org is refused: the removal row ends the implicit membership there too", async () => {
+    const h = await withKit({ brokerExtra: { cloud: true } });
+    h.db.set({ ...orgRemovedKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("a removed member and a banned member are refused even on a single-org install", async () => {
+    for (const row of [orgRemovedKey(TEST_ORG, guestId), orgBanKey(TEST_ORG, guestId)]) {
+      const h = await withKit();
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: guestId });
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("a removal or ban row under the merge survivor's id alone refuses the merged-away Slack id", async () => {
+    const survivor = "9".repeat(64);
+    for (const row of [orgRemovedKey(TEST_ORG, survivor), orgBanKey(TEST_ORG, survivor)]) {
+      const h = await withKit();
+      h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor });
+      // The harness records a signed-in developer as a member; a merge deletes the duplicate's member record (retire), so the Slack id is left with none.
+      h.db.delete(orgMemberKey(TEST_ORG, guestId));
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: survivor });
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
+  it("a requester of another org (a Slack Connect guest, a stale link) is refused", async () => {
+    const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === guestId ? OTHER_ORG : TEST_ORG) as never;
+    const h = await withKit({ brokerExtra: { orgResolver } });
+    seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
+    seedMembership(h.db, guestId, { orgId: OTHER_ORG, role: "member" });
+    h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("a member record with no role field is unreadable and refused, not defaulted to member", async () => {
+    const h = await withKit();
+    seedMembership(h.db, guestId, { orgId: TEST_ORG, role: "member" });
+    const key = orgMemberKey(TEST_ORG, guestId);
+    const record = h.db.get(key.pk, key.sk)!;
+    const withoutRole: Record<string, unknown> = { ...record };
+    delete withoutRole["role"];
+    h.db.set(withoutRole);
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  // The implicit member is the existing behaviour for an unlinked requester on a single-org install (the budget ruling R31 only says such a requester answers to the org alone).
+  it("control: a single-org install still treats a person with no record as the implicit member", async () => {
+    const h = await withKit();
+    const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("FORBIDDEN");
+  });
+});
+
 const RESUMED_ORIGINAL = "This task was paused while you could only view the project. It has resumed with its original instructions; the instructions you just sent were not used, so send them again once it finishes.";
 const VIEWER_MESSAGE = "You can view `payments` but not start tasks in it. Ask a maintainer to make you a contributor.";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -26,8 +170,8 @@ function setGrant(db: FakeDynamoDb, who: Developer, role: ProjectRole): void {
     role: role === "viewer" ? "viewer" : "developer", projectRole: role });
 }
 
-async function withKit(): Promise<Harness> {
-  const h = await createSingleAnswerPlanBroker();
+async function withKit(options: Parameters<typeof createSingleAnswerPlanBroker>[0] = {}): Promise<Harness> {
+  const h = await createSingleAnswerPlanBroker(options);
   await h.orgOf(KIT);
   h.db.set({ pk: `SESSION#${KIT.sessionId}`, sk: "META", sessionId: KIT.sessionId, developerId: KIT.developerId, amr: KIT.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
   h.db.set({ pk: `DEVELOPER#${KIT.developerId}`, sk: "META", developerId: KIT.developerId, provider: "oidc", displayName: KIT.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });

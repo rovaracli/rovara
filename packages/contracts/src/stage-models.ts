@@ -2,7 +2,7 @@
 import { z } from "zod";
 import { ModelIdentifierSchema } from "./models.js";
 import { StepThinkingLevelSchema as ThinkingLevelSchema } from "./agent-recipe.js";
-import { NeedsConfirmationSchema } from "./session-views.js";
+import { NeedsConfirmationSchema } from "./needs-confirmation.js";
 import { forwardReader } from "./forward-reader.js";
 
 export * from "./stage-model-shared.js";

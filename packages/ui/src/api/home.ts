@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { HomeResponseReaderSchema, HomeCardSchema, HomeCardIdSchema, HomeDismissResponseReaderSchema, SessionIdSchema, SessionResponseReaderSchema, type HomeCardReaderSchema } from "@agentx/contracts/web";
+import { HomeResponseReaderSchema, HomeCardSchema, HomeCardIdSchema, HomeDismissResponseReaderSchema, SessionIdSchema, type HomeCardReaderSchema } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
@@ -39,7 +39,8 @@ export function createHomeApi(host: AppHost) {
   },
   retry(card: ReadHomeCard, action: HomeAction) {
    if (action.kind !== "retry" || homeAction(card, { action: "retry", href: host.origin + action.href, method: "POST", label: action.label }, host.origin)?.href !== action.href) throw new ApiError(403, "FORBIDDEN", "This action is unavailable.");
-   return api.send("POST", action.href, { requestId: crypto.randomUUID() }, SessionResponseReaderSchema);
+   // The session view (and the task view inside it) is read only after a retry, so it loads then, not with the first JavaScript.
+   return import("./session-response.js").then(({ SessionResponseReaderSchema }) => api.send("POST", action.href, { requestId: crypto.randomUUID() }, SessionResponseReaderSchema));
   },
  };
 }

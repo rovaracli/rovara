@@ -6,7 +6,7 @@ import { ResolvedRecipeSchema, RecipeOverlaySchema } from "./agent-recipe.js";
 import { AgentOriginViewSchema, SessionMakeAgentCopiedSchema } from "./agent-sessions.js";
 import { RunInputSchema } from "./agent-run.js";
 import { SPEND_ORIGIN_KINDS } from "./spend.js";
-import { forwardReader } from "./session-views.js";
+import { forwardReader } from "./forward-reader.js";
 const Version = z.number().int().positive(), Usd = z.number().finite().nonnegative();
 export const AgentScopeSchema = z.enum(["all", "mine", "shared", "builtin"]);
 export const AgentMonthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);

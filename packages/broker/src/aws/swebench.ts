@@ -14,7 +14,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import {
-  OrgIdSchema, OrgRoleSchema, orgMemberKey, projectMetaKey, calculateTaskStop,
+  OrgIdSchema, OrgRoleSchema, isWriterOrgRole, orgMemberKey, projectMetaKey, calculateTaskStop,
   SWEBENCH_COST_CEILING_DEFAULT_USD,
   SWEBENCH_RUN_TIME_LIMIT_SECONDS,
   SWEBENCH_TERMINAL_STATUSES,
@@ -228,9 +228,13 @@ export async function startSwebenchRun(
   if (context.developerId === undefined) throw agentXError("TASK_STOP_CONFIG_MISSING", "The eval requesting principal is missing.");
   const snapshot = await captureTaskStopEvalAdmission({ ...dependencies, now: () => now(dependencies).getTime(), requireScopeAccess: async () => { await context.projectModel(request.model); } },
     { orgId, developerId: context.developerId, project: context.projectName, agentScope: "none_eval", pathLimitMicrousd });
+  // I2: an eval run spends the company's money like a task does. An Auditor reads and starts nothing, whatever Slack channel or project grant they hold, and whether or not spending stops
+  // are enabled, so the role is read and checked before the enrolled branch.
+  const member = await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: orgMemberKey(orgId, context.developerId), ConsistentRead: true }));
+  // A person with no member record is an unlinked requester (the Slack route decided that); one with a record must hold a writer's role, a record with no or an unknown role included.
+  if (member.Item !== undefined && !isWriterOrgRole(member.Item.role)) throw agentXError("FORBIDDEN", "Your company role is read-only, so it cannot start an eval run.");
   let authority: TransactItem[] = [];
   if (snapshot.kind === "captured") {
-    const member = await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: orgMemberKey(orgId, context.developerId), ConsistentRead: true }));
     const role = OrgRoleSchema.parse(member.Item?.role);
     const actor = { orgId, developerId: context.developerId, role, project: context.projectName };
     authority = [...budgetActorChecks(dependencies.tableName, orgId, actor), ...await taskStartProjectAuthorityChecks(dependencies, actor,

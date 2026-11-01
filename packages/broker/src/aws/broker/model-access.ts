@@ -46,7 +46,8 @@ import { ledgerOf } from "./sweeps-and-readiness.js";
 import { agentToolsBase, workspaceTask } from "./task-operations.js";
 import { releaseIfFinished } from "./terminal-and-github-events.js";
 import { askForPausedTask, blockEndedOperationKeys } from "./terminal-result.js";
-import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole } from "./workspace-preparation.js";
+import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole, slackRequesterProjectRole } from "./workspace-preparation.js";
+import { viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
 import { AuditEventInputSchema, auditEventId, canonicalJson } from "@agentx/contracts";
 import { TaskFundingProofSchema, actualCompanyFunding, fundingAuditItems, fundingRevisionCheck } from "../../org/task-stop-funding.js";
 import { type TransactItem, failedIndexes } from "../../agents/table-writes.js";
@@ -505,6 +506,9 @@ export async function handleSlackModelAccess(dependencies: AwsBrokerDependencies
   if (!binding) throw agentXError("FORBIDDEN", "Slack channel is not bound to a project");
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
+  // The requester is checked here too, before anything is routed, admitted or minted: this route does not rely on a workspace having been made (and so checked) first. The Auditor, a
+  // removed, banned or other-org person and a viewer get no key and reserve no money.
+  if (await slackRequesterProjectRole(dependencies, teamOrg, requester.userId, binding.projectName) === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(binding.projectName));
   // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
   // known) and tagged so; without them it is minted as it always was.
   try {

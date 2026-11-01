@@ -157,7 +157,7 @@ export * from "./app-nav.js";
 export { TICKET_PATTERN } from "./confirmation.js";
 export { AppOrgMembersResponseSchema, AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseSchema, OrgMemberLookupResponseReaderSchema, SetMyNameBodySchema, type SetMyNameBody, SetMyNameResponseSchema, type SetMyNameResponse, SetMyNameResponseReaderSchema } from "./developer-web.js";
 
-export { TaskResponseSchema, TaskResponseReaderSchema } from "./pending-api.js";
+export { TaskResponseSchema, TaskResponseReaderSchema } from "./task-response.js";
 
 export * from "./agent-web-views.js";
 

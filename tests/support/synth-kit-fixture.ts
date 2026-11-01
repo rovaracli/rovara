@@ -56,7 +56,8 @@ export async function writeFakeKit(dir: string, options: FakeKitOptions = {}): P
   const manifest = SynthKitManifestSchema.parse({ schemaVersion: 1, format: "rovara-synth-kit", entry: "synth-kit/synth.mjs", nodeMajor: options.nodeMajor ?? Number(process.versions.node.split(".")[0]) });
   await writeFile(join(dir, "kit.json"), `${JSON.stringify({ ...manifest, ...(options.kitJsonExtra ?? {}) })}\n`);
   const source = `
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 const [contextFile, out] = process.argv.slice(2);
 ${options.fail === true ? 'process.exit(3);' : ""}
 ${options.printBytes === undefined ? "" : `process.stdout.write("x".repeat(${String(options.printBytes)}));`}
@@ -77,7 +78,7 @@ const env = context.agentxEnv;
 const asset = ${JSON.stringify(FAKE_ASSET)};
 mkdirSync(out + "/templates", { recursive: true });
 mkdirSync(out + "/packages", { recursive: true });
-const metadata = ${options.recordInputs === true ? '{ Inputs: { context, environment: Object.keys(process.env).sort(), pwd: process.env.PWD ?? null, cwd: process.cwd() } }' : "{}"};
+const metadata = ${options.recordInputs === true ? '{ Inputs: { context, environment: Object.keys(process.env).sort(), pwd: process.env.PWD ?? null, cwd: process.cwd(), cwdIsWorkDir: (() => { try { return realpathSync(process.cwd()) === realpathSync(dirname(contextFile)); } catch { return false; } })(), pwdIsCwd: (() => { try { return process.env.PWD !== undefined && realpathSync(process.env.PWD) === realpathSync(process.cwd()); } catch { return false; } })() } }' : "{}"};
 let outside = "";
 ${options.readOutside === undefined ? "" : `try { readFileSync(${JSON.stringify(options.readOutside)}); outside = "read"; } catch { outside = "blocked"; }`}
 const base = (part) => ({ Description: ${options.placeholder === true ? '"built for qqenv-placeholderqq"' : "env + \" \" + part"}, Resources: { Marker: { Type: "AWS::SSM::Parameter", Properties: { Name: "/" + env + "/" + part, Type: "String", Value: JSON.stringify({ edition: context.rovaraEdition, cidrs: context.rovaraEnterpriseEgressCidrs ?? null, tsa: context.agentxAuditTsa ?? null }) } } } });

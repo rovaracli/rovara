@@ -27,8 +27,8 @@ import type { TaskAccess } from "../../developer/task-access.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { issueRepositoryGrant, membershipRecord, object, workspaceItem, workspaceKey, workspaceRuntime } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies, MembershipRecord, RegisteredProjectRecord } from "./definitions.js";
-import { developerTaskActions, orgStoreOf, requireSlackAllowedByEdition, slackTeamOrg } from "./dependency-wiring.js";
-import { getMembership, readOrgMember, requireAdministrator, requireLatestProject, requireWorkspace } from "./records.js";
+import { developerTaskActions, orgStoreOf, requireSlackAllowedByEdition, requireSlackRequesterWriterRole, slackTeamOrg } from "./dependency-wiring.js";
+import { getMembership, requireAdministrator, requireLatestProject, requireWorkspace } from "./records.js";
 import { ensureInstallOrg } from "./scope-helpers.js";
 import { slackTaskAccess } from "./slack-workflow-events.js";
 import { requesterOf } from "./thread-workspaces.js";
@@ -268,12 +268,16 @@ export async function heldPreparationDispatch(
 export async function slackRequesterRole(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): Promise<ProjectRole> {
   const slack = identity.slack;
   if (slack === undefined) return "contributor";
-  const orgId = requireOrgId(identity.orgId);
-  const developerId = developerIdForSlackUser(slack.requester.userId);
-  return effectiveProjectRole(
-    { developerId, orgRole: (await readOrgMember(dependencies, orgId, developerId))?.role ?? "member" },
-    await getMembership(dependencies, orgId, developerId, slack.binding.projectName), true,
-  ) ?? "contributor";
+  return slackRequesterProjectRole(dependencies, requireOrgId(identity.orgId), slack.requester.userId, slack.binding.projectName);
+}
+
+/** The Slack person's project role in the team's org, by the one requester rule (see requireSlackRequesterWriterRole): refused outright when they are not a current writer there. */
+export async function slackRequesterProjectRole(dependencies: AwsBrokerDependencies, orgId: OrgId, userId: string, projectName: string): Promise<ProjectRole> {
+  const developerId = developerIdForSlackUser(userId);
+  // The one rule for the requester's own identity, shared with the ingress callers (slackCallerFor): their org must be the team's, the company sign-in must allow them, their role is read
+  // under every id they answer to (a merge), and the Auditor, a role this release does not know, a record with no role and a missing record outside a single-org install are all refused.
+  const orgRole = await requireSlackRequesterWriterRole(dependencies, userId, orgId, { allowUnlinked: true });
+  return effectiveProjectRole({ developerId, orgRole }, await getMembership(dependencies, orgId, developerId, projectName), true) ?? "contributor";
 }
 
 /**

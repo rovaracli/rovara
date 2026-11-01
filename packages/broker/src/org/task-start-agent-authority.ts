@@ -1,11 +1,13 @@
 // A frozen numeric stop does not freeze visibility, archive state or roster
 // membership. Hold those live sources in the accepted task transaction.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentGuardrailsSchema, AgentOwnerSchema, AgentPrincipalSchema, agentGuardrailsKey, builtinSettingsKey, agentKey, projectAgentKey, projectMemberKey, isBuiltinAgentId, type AgentId, type OrgId, type OrgRole } from "@agentx/contracts";
+import { isWriterOrgRole, AgentGuardrailsSchema, AgentOwnerSchema, AgentPrincipalSchema, agentGuardrailsKey, builtinSettingsKey, agentKey, projectAgentKey, projectMemberKey, isBuiltinAgentId, type AgentId, type OrgId, type OrgRole } from "@agentx/contracts";
 import { Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetActorRefused } from "../agents/budget-authority.js";
 export async function taskStartAgentAuthorityChecks(deps: Pick<TableInput, "documentClient" | "tableName">,
   input: { orgId: OrgId; project: string; agentId: AgentId; draft: boolean; process: boolean; developerId: string; role: OrgRole; expectedDraftRevision?: number; frozenRecipe?: boolean }, authorize: () => Promise<void>, readShares: () => Promise<readonly { principal: unknown }[]>): Promise<TransactItem[]> {
+  // I2: same rule as the project fence: an Auditor starts no agent work.
+  if (!isWriterOrgRole(input.role)) throw budgetActorRefused();
   if (isBuiltinAgentId(input.agentId)) {
     const settingsKey = builtinSettingsKey(input.orgId, input.agentId), guardrailsKey = agentGuardrailsKey(input.orgId);
     const rows = await Promise.all([settingsKey, guardrailsKey].map(async Key => {

@@ -1,11 +1,13 @@
 // Numeric capture is not a project authorization lease. These native source
 // conditions accompany the accepted work transaction without pinning money.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { projectMetaKey, projectMemberKey, type OrgId, type OrgRole } from "@agentx/contracts";
+import { isWriterOrgRole, projectMetaKey, projectMemberKey, type OrgId, type OrgRole } from "@agentx/contracts";
 import { Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetActorRefused } from "../agents/budget-authority.js";
 export async function taskStartProjectAuthorityChecks(deps: Pick<TableInput, "documentClient" | "tableName">,
   input: { orgId: OrgId; developerId: string; role: OrgRole; project: string }, authorize: () => Promise<void>): Promise<TransactItem[]> {
+  // I2: this fence guards the start or continuation of work. An Auditor never starts work, so it holds no authority to fence.
+  if (!isWriterOrgRole(input.role)) throw budgetActorRefused();
   const admin = input.role === "owner" || input.role === "admin";
   const sources = [
     { key: projectMetaKey(input.orgId, input.project), fields: ["entityType", "name", "status", "archivedAt", "archiveRevision", "createdAt", "createdBy"] },

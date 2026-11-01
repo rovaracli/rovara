@@ -1,5 +1,5 @@
 import { AgentXNameSchema } from "./names.js";
-import { forwardReader } from "./session-views.js";
+import { forwardReader } from "./forward-reader.js";
 import { z } from "zod";
 import { cleanDisplayName } from "./display-name.js";
 export const RenameOrganizationBodySchema = z.object({
