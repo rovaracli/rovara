@@ -128,6 +128,8 @@ const ROWS: readonly Row[] = [
   // Plan 6 Task 23: undoing a Slack share keeps the creator's task-list row and the owner's in step (`effectiveTaskOwner` is called for the owner)
   ["rovara-code/sharing.ts", "undoCodeShare", "index", ".developerId*2"],
   ["aws/broker/handler.ts", "createAwsBrokerHandler", "other-record", ".ownerKey*2"],
+  // stdio MCP host: the `startedBy` of an ECS task in a DescribeTasks answer (the ECS task's own field, the stamp the controller put on it), not a Rovara task's creator
+  ["mcp-host/aws-adapters.ts", "ecsApiFromSdk>describeTasks", "other-record", ".startedBy"],
   // Learning v2 wiring (WA-2): the audience of a send-back's record row is the owner now (read through `effectiveTaskOwner`); only an owner that cannot be read falls back to the creator, so the row stays private to a person
   ["aws/developer-tasks/learning-events.ts", "announceTaskSendBack", "authority", ".developerId"],
   ["aws/broker/workspace-preparation.ts", "sharedThread", "principal", "taskOwnerKey()"],
