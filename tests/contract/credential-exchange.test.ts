@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import type { GitCredential } from "@agentx/contracts";
+import { editionPolicy, type GitCredential } from "@agentx/contracts";
+import { issueRepositoryGrant } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
+import { NO_HOST_MESSAGE, createPluginRegistry } from "../../packages/broker/src/plugins/registry.js";
 import { CREDENTIAL_REFUSED_MESSAGES, portCredentialResolver, workerWireCredential } from "../../packages/broker/src/aws/broker/credential-exchange.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
 
@@ -17,20 +19,23 @@ const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
 function setup(issued: unknown) {
   const issueGitCredential = vi.fn(async () => issued as GitCredential);
   const forRepository = vi.fn(() => ({ issueGitCredential }));
-  const service = new RepositoryGrantService(Buffer.alloc(32, 7), portCredentialResolver({ codeHost: { forRepository, forKind: forRepository, kinds: () => ["github"] } as never, credentialRef: REF, now: () => NOW }));
+  // The host is the one the record names (`forRecord`); `forRepository` (by address) must never be asked.
+  const forRecord = vi.fn(() => ({ issueGitCredential }));
+  const service = new RepositoryGrantService(Buffer.alloc(32, 7), portCredentialResolver({ codeHost: { forRepository, forRecord, forKind: forRecord, kinds: () => ["github"] } as never, credentialRef: REF, now: () => NOW }));
   const grant = service.issue({ ownerKey: "o", projectName: "payments", workspaceId: WORKSPACE, operationId: OPERATION, repositories: [{ credentialRef: REF, repositoryUrl: URL_A, access: "clone" }] });
   const exchange = (overrides: Partial<{ credentialRef: string; repositoryUrl: string; access: "clone" | "push" }> = {}) =>
     service.exchange(grant, { workspaceId: WORKSPACE, operationId: OPERATION, credentialRef: REF, repositoryUrl: URL_A, access: "clone", ...overrides }, SCOPE);
-  return { exchange, issueGitCredential, forRepository };
+  return { exchange, issueGitCredential, forRepository, forRecord };
 }
 
 const basic = (expiresAt: string, extra: Record<string, unknown> = {}) => ({ kind: "basic", username: "x-access-token", password: "installation-token", expiresAt, ...extra });
 
 describe("the repository credential exchange", () => {
   it("hands the worker a usable credential in the shape it takes, asking the repository's code host for exactly that repository and access", async () => {
-    const { exchange, issueGitCredential, forRepository } = setup(basic(iso(55 * 60_000)));
+    const { exchange, issueGitCredential, forRepository, forRecord } = setup(basic(iso(55 * 60_000)));
     expect(await exchange()).toEqual({ username: "x-access-token", password: "installation-token" });
-    expect(forRepository).toHaveBeenCalledWith({ url: URL_A });
+    expect(forRecord).toHaveBeenCalledWith({});
+    expect(forRepository).not.toHaveBeenCalled();
     expect(issueGitCredential).toHaveBeenCalledWith({ url: URL_A }, "clone", SCOPE);
   });
 
@@ -58,17 +63,17 @@ describe("the repository credential exchange", () => {
   });
 
   it("the grant still decides what may be asked: another repository, access or reference is refused before any code host is asked", async () => {
-    const { exchange, forRepository } = setup(basic(iso(10 * 60_000)));
+    const { exchange, forRecord } = setup(basic(iso(10 * 60_000)));
     await expect(exchange({ repositoryUrl: "https://github.com/acme/other.git" })).rejects.toThrow(/does not cover/);
     await expect(exchange({ access: "push" })).rejects.toThrow(/does not cover/);
     await expect(exchange({ credentialRef: "other-app" })).rejects.toThrow(/does not cover/);
-    expect(forRepository).not.toHaveBeenCalled();
+    expect(forRecord).not.toHaveBeenCalled();
   });
 
   it("a repository under another credential reference than the install's gets nothing (as the GitHub App provider answers)", async () => {
     const issueGitCredential = vi.fn();
-    const resolve = portCredentialResolver({ codeHost: { forRepository: () => ({ issueGitCredential }) } as never, credentialRef: REF, now: () => NOW });
-    expect(await resolve("someone-elses-app", URL_A, "clone", SCOPE)).toEqual({});
+    const resolve = portCredentialResolver({ codeHost: { forRecord: () => ({ issueGitCredential }) } as never, credentialRef: REF, now: () => NOW });
+    expect(await resolve("someone-elses-app", URL_A, "clone", SCOPE, undefined)).toEqual({});
     expect(issueGitCredential).not.toHaveBeenCalled();
   });
 
@@ -76,5 +81,63 @@ describe("the repository credential exchange", () => {
     const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
     expect(source).toMatch(/new RepositoryGrantService\([\s\S]*?portCredentialResolver\(\{ codeHost: plugins\.codeHost/);
     expect(source).not.toMatch(/githubCredentials\.resolve\(/);
+  });
+});
+
+// P5d fix round 1: the host is the one the repository's RECORD names, carried in the grant the broker signs; never the one the address suggests.
+describe("the repository credential exchange routes by the record's host", () => {
+  const ADDRESS = "https://github.com/acme/app.git";
+  function routed() {
+    const github = { issueGitCredential: vi.fn(async () => ({ kind: "basic", username: "x-access-token", password: "github-installation-token", expiresAt: iso(30 * 60_000) })) };
+    const fake = { issueGitCredential: vi.fn(async () => ({ kind: "token", token: "fake-host-token", expiresAt: iso(30 * 60_000) })) };
+    const registry = createPluginRegistry({
+      codeHosts: [{ ...github, kind: "github", capabilities: {}, events: { mode: "none" } } as never, { ...fake, kind: "fake", capabilities: {}, events: { mode: "none" } } as never],
+      checkRunners: [], policy: editionPolicy("enterprise"),
+    });
+    const service = new RepositoryGrantService(Buffer.alloc(32, 7), portCredentialResolver({ codeHost: registry.codeHost, credentialRef: REF, now: () => NOW }));
+    const exchange = (repositories: Array<{ hostKind?: string }>, request: { repositoryUrl?: string } = {}) => {
+      const grant = service.issue({ ownerKey: "o", projectName: "payments", workspaceId: WORKSPACE, operationId: OPERATION, repositories: repositories.map((repository) => ({ credentialRef: REF, repositoryUrl: ADDRESS, access: "clone" as const, ...repository })) });
+      return service.exchange(grant, { workspaceId: WORKSPACE, operationId: OPERATION, credentialRef: REF, repositoryUrl: request.repositoryUrl ?? ADDRESS, access: "clone" }, SCOPE);
+    };
+    return { exchange, github, fake };
+  }
+
+  it("a record that names another host gets that host's credential, even at an address that looks like GitHub's, and GitHub is never asked", async () => {
+    const t = routed();
+    expect(await t.exchange([{ hostKind: "fake" }])).toEqual({ token: "fake-host-token" });
+    expect(t.fake.issueGitCredential).toHaveBeenCalledTimes(1);
+    expect(t.github.issueGitCredential).not.toHaveBeenCalled();
+  });
+
+  it("a record that names GitHub, or no host (a grant from before the record was carried), gets GitHub's", async () => {
+    const t = routed();
+    expect(await t.exchange([{ hostKind: "github" }])).toEqual({ username: "x-access-token", password: "github-installation-token" });
+    expect(await t.exchange([{}])).toEqual({ username: "x-access-token", password: "github-installation-token" });
+    expect(t.fake.issueGitCredential).not.toHaveBeenCalled();
+  });
+
+  it("a record that names a host this install has not registered is refused with the router's sentence, and no host is asked", async () => {
+    const t = routed();
+    await expect(t.exchange([{ hostKind: "gitfarm" }])).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(NO_HOST_MESSAGE) as unknown });
+    await expect(t.exchange([{ hostKind: "gitfarm" }])).rejects.not.toThrow(/gitfarm/u);
+    expect(t.github.issueGitCredential).not.toHaveBeenCalled();
+    expect(t.fake.issueGitCredential).not.toHaveBeenCalled();
+  });
+
+  it("one address held by repositories on different hosts is refused, not resolved by the first", async () => {
+    const t = routed();
+    await expect(t.exchange([{ hostKind: "github" }, { hostKind: "fake" }])).rejects.toThrow(/does not cover/);
+    expect(t.github.issueGitCredential).not.toHaveBeenCalled();
+    expect(t.fake.issueGitCredential).not.toHaveBeenCalled();
+  });
+
+  it("the grants the broker issues carry the host each repository's record names", () => {
+    const issued: unknown[] = [];
+    const dependencies = { repositoryGrants: { issue: (input: unknown) => { issued.push(input); return "g"; } } } as never;
+    const project = { definition: { name: "payments", revision: 1, repositories: [
+      { name: "web", url: ADDRESS, credentialRef: REF }, { name: "api", url: "https://git.example.test/api", credentialRef: REF, host: { kind: "fake" } },
+    ] } } as never;
+    issueRepositoryGrant(dependencies, project, "o", WORKSPACE, OPERATION);
+    expect((issued[0] as { repositories: Array<{ repositoryUrl: string; hostKind: string }> }).repositories.map((repository) => [repository.repositoryUrl, repository.hostKind])).toEqual([[ADDRESS, "github"], ["https://git.example.test/api", "fake"]]);
   });
 });

@@ -552,6 +552,7 @@ describe("AWS control-plane handlers", () => {
       credentialRef: "github-app",
       repositoryUrl: "https://github.com/example/demo.git",
       access: "push",
+      hostKind: "github",
     }]);
 
     const buildCommit = "d".repeat(40);

@@ -38,7 +38,7 @@ async function metaClient(dependencies: AwsBrokerDependencies, task: DeveloperTa
   const scope = await githubScopeOf(dependencies, task);
   const grant = dependencies.repositoryGrants.issue({
     ownerKey: task.ownerKey, projectName: project.definition.name, workspaceId: task.workspaceId, operationId, ttlSeconds: 120,
-    repositories: [{ credentialRef: meta.credentialRef, repositoryUrl: meta.url, access }],
+    repositories: [{ credentialRef: meta.credentialRef, repositoryUrl: meta.url, access, hostKind: host.kind }],
   });
   const credential = await dependencies.repositoryGrants.exchange(grant, { workspaceId: task.workspaceId, operationId, credentialRef: meta.credentialRef, repositoryUrl: meta.url, access }, scope);
   const token = credential.token ?? credential.password;

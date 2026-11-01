@@ -75,8 +75,8 @@ describe("repository grants", () => {
     issueRepositoryGrant(dependencies, project, "owner", "w", "o", "clone");
     issueRepositoryGrant(dependencies, project, "owner", "w", "o", "push");
     issueRepositoryGrant(dependencies, project, "owner", "w", "o", "push", "service-meta");
-    expect(issued[0]!.repositories).toEqual([{ credentialRef: "github-app", repositoryUrl: "https://github.com/acme/api.git", access: "clone" }, { credentialRef: "github-app", repositoryUrl: "https://github.com/acme/service-meta.git", access: "clone" }]);
-    expect(issued[1]!.repositories).toEqual([{ credentialRef: "github-app", repositoryUrl: "https://github.com/acme/api.git", access: "push" }]);
+    expect(issued[0]!.repositories).toEqual([{ credentialRef: "github-app", repositoryUrl: "https://github.com/acme/api.git", access: "clone", hostKind: "github" }, { credentialRef: "github-app", repositoryUrl: "https://github.com/acme/service-meta.git", access: "clone", hostKind: "github" }]);
+    expect(issued[1]!.repositories).toEqual([{ credentialRef: "github-app", repositoryUrl: "https://github.com/acme/api.git", access: "push", hostKind: "github" }]);
     expect(issued[2]!.repositories).toEqual([]);
   });
 

@@ -26,14 +26,17 @@ export function workerWireCredential(credential: GitCredential): RepositoryCrede
 
 /**
  * The resolver the repository grant service calls once a grant has matched the request. A repository registered under another credential reference gets nothing
- * (as the GitHub App provider answers), and the host is the one the router names for the repository.
+ * (as the GitHub App provider answers), and the host is the one the repository's record names (carried in the grant).
  */
-export function portCredentialResolver(input: { codeHost: CodeHostRouter; credentialRef: string; now?: () => number }): (reference: string, repositoryUrl: string, access: RepositoryAccess, scope: GitHubTokenScope) => Promise<RepositoryCredential> {
+export function portCredentialResolver(input: { codeHost: CodeHostRouter; credentialRef: string; now?: () => number }): (reference: string, repositoryUrl: string, access: RepositoryAccess, scope: GitHubTokenScope, hostKind: string | undefined) => Promise<RepositoryCredential> {
   const now = input.now ?? Date.now;
-  return async (reference, repositoryUrl, access, scope) => {
+  return async (reference, repositoryUrl, access, scope, hostKind) => {
     if (reference !== input.credentialRef) return {};
     const repository = { url: repositoryUrl };
-    const credential = await input.codeHost.forRepository(repository).issueGitCredential(repository, access, scope);
+    // The host is the one the repository's RECORD names (the grant carries it, signed): `forRecord`, never the address (`forRepository` answers GitHub for every address). A kind this install has not
+    // registered is refused with the router's fixed sentence, and a record naming another host never gets a GitHub token.
+    const host = input.codeHost.forRecord(hostKind === undefined || hostKind === "github" ? {} : { host: { kind: hostKind } as never });
+    const credential = await host.issueGitCredential(repository, access, scope);
     // The exchange serves a task's own clone and push: the broker is the service identity here, never a person's delegated credential.
     const usable = workerGitCredentialUsable(credential, { now: now(), actingAs: "service" });
     if (!usable.ok) throw agentXError("RUNTIME_UNAVAILABLE", CREDENTIAL_REFUSED_MESSAGES[usable.reason]);
