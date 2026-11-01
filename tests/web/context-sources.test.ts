@@ -252,6 +252,10 @@ it("sends the server's token with the address, once, and offers package-run serv
    expect(text).toContain("WIKI_TOKEN");
    expect(text).toContain(spec.integrity);
    expect(text).toContain("ab12cd34ef56");
+   // everything the approval pins and runs is on the card: the arguments verbatim, the size, and the dependency list's fingerprint
+   expect(text).toContain("It is started with these arguments, exactly: --read-only");
+   expect(text).toContain("Size: 0.25 vCPU and 512 MiB of memory.");
+   expect(text).toContain(`dependency list ${hash("1").slice(0, 12)}`);
    expect(text).toMatch(/does not run install steps/u);
    expect(document.body.textContent).not.toContain("tok-9f3a");
   });
@@ -262,6 +266,7 @@ it("sends the server's token with the address, once, and offers package-run serv
    const card = await screen.findByRole("group", { name: "What Rovara will run" });
    expect(card.textContent).toContain("may not reach any address");
    expect(card.textContent).toContain("given no secrets");
+   expect(card.textContent).toContain("started with these arguments, exactly: --read-only");
   });
   it("starts a proposal for a newer version from an approved one: same package, addresses and secret names, a blank version and blank values; the old one keeps serving", async () => {
    const f = host({ list: [{ ...waiting, status: "approved" }] });
@@ -421,6 +426,28 @@ it("sends the server's token with the address, once, and offers package-run serv
    fireEvent.click(await screen.findByRole("button", { name: "Turn off" }));
    await waitFor(() => expect(f.request.mock.calls.some(([request]) => (request).path.endsWith("/disable"))).toBe(true));
    expect(screen.queryByRole("button", { name: "Look at it again" })).toBeNull();
+  });
+ });
+
+ describe("fix round 1, S4: the card shows every argument and the real size", () => {
+  const spec = { name: "@acme/wiki-mcp", version: "2.0.1", integrity: `sha512-${"A".repeat(86)}==`, args: ["--allow-writes", "--root", "/", "<b>x</b>"], bundleHash: hash("b"), lockfileHash: hash("c"), destinations: [], secretEnv: [], size: { cpu: 1024, memoryMiB: 2048 } };
+  it("lists each argument as plain text, in order, and the size that was approved", async () => {
+   const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => input.method === "GET" ? { status: 200, body: { servers: [{ ...approved, serverId: "mcpargs000001", label: "Args", status: "awaiting_approval", transport: { kind: "stdio", spec } }], stdioAvailable: true } } : { status: 200, body: {} });
+   renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(McpServers) }) }));
+   fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+   const card = await screen.findByRole("group", { name: "What Rovara will run" });
+   const items = [...card.querySelectorAll("li")].map(item => item.textContent);
+   const args = items.find(item => item.startsWith("It is started with"))!;
+   expect(args).toContain("--allow-writes --root / <b>x</b>");
+   expect(card.querySelector("b")).toBeNull();
+   expect(items).toContain("Size: 1 vCPU and 2048 MiB of memory.");
+   expect(items.find(item => item.startsWith("Fingerprint"))).toContain(`dependency list ${hash("c").slice(0, 12)}`);
+  });
+  it("says so when there are no arguments", async () => {
+   const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => input.method === "GET" ? { status: 200, body: { servers: [{ ...approved, serverId: "mcpargs000002", label: "Plain", status: "awaiting_approval", transport: { kind: "stdio", spec: { ...spec, args: [] } } }], stdioAvailable: true } } : { status: 200, body: {} });
+   renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(McpServers) }) }));
+   fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+   expect((await screen.findByRole("group", { name: "What Rovara will run" })).textContent).toContain("It is started with no arguments.");
   });
  });
 });

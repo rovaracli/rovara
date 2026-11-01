@@ -33,9 +33,11 @@ export function PackageCard({ server }: { server: StdioServer }) {
   <ul>
    <li>Package: <code><VisibleText text={`${spec.name}@${spec.version}`} /></code></li>
    {server.install !== undefined && <li>{server.install.packageCount} packages, {megabytes(server.install.unpackedBytes)} once unpacked. Rovara does not run install steps; a package that needs them is refused.</li>}
+   <li>{spec.args.length === 0 ? "It is started with no arguments." : <>It is started with these arguments, exactly: {spec.args.map((arg, index) => <code key={`${index}-${arg}`}><VisibleText text={arg} />{" "}</code>)}</>}</li>
+   {spec.size !== undefined && <li>Size: {spec.size.cpu / 1024} vCPU and {spec.size.memoryMiB} MiB of memory.</li>}
    <li>{spec.destinations.length === 0 ? "It may not reach any address." : <>It may reach only: {spec.destinations.map(item => <code key={`${item.host}:${item.port}`}><VisibleText text={`${item.host}:${item.port}`} />{" "}</code>)}</>}</li>
    <li>{spec.secretEnv.length === 0 ? "It is given no secrets." : <>It is given these secrets (values are never shown again): {spec.secretEnv.map(name => <code key={name}><VisibleText text={name} />{" "}</code>)}</>}</li>
-   <li>Fingerprint: <code><VisibleText text={spec.integrity} /></code>{spec.bundleHash !== undefined && <> · files <code>{spec.bundleHash.slice(0, 12)}</code></>}. From now on Rovara runs only these exact files; a different version or different files is a new server to look at.</li>
+   <li>Fingerprint: <code><VisibleText text={spec.integrity} /></code>{spec.bundleHash !== undefined && <> · files <code>{spec.bundleHash.slice(0, 12)}</code></>}{spec.lockfileHash !== undefined && <> · dependency list <code>{spec.lockfileHash.slice(0, 12)}</code></>}. From now on Rovara runs only these exact files; a different version or different files is a new server to look at.</li>
   </ul>
   <p>A package with an unscoped name (no @scope/) can be confused with a lookalike on a mirror of the public registry. Check the name.</p>
  </div>;
