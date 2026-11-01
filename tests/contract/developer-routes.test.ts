@@ -570,6 +570,26 @@ describe("checkProjectAccess, FR-018's first three checks (FR-013, FR-014, FR-04
     channelMembers.mockResolvedValueOnce({ ok: true, memberOf: [] });
     expect((await refusal("ledger")).code).toBe("PROJECT_ACCESS_DENIED");
   });
+
+  it("with the tasks-off switch set aside (send-back, 0.4.27), applies the same access rule to a project with tasks off", async () => {
+    db.set({ ...projectRevisionKey(TEST_ORG, "solo", 2), entityType: "PROJECT", definition: { name: "solo", revision: 2, developerTasks: { enabled: false } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "payments-api", 8), entityType: "PROJECT", definition: { name: "payments-api", revision: 8, developerTasks: { enabled: false } } });
+    db.set({ ...projectRevisionKey(TEST_ORG, "ledger", 3), entityType: "PROJECT", definition: { name: "ledger", revision: 3, developerTasks: { enabled: false } } });
+    const asideOf = (project: string) => checkProjectAccess(deps(), maya, project, undefined, { ignoreTasksOff: true });
+    // A grant, and a bound channel the caller is in, give their usual role; the policy answered is the project's own, still off.
+    expect(await asideOf("solo")).toMatchObject({ revision: 2, access: "granted", role: "contributor", policy: { enabled: false } });
+    expect(await asideOf("payments-api")).toMatchObject({ revision: 8, access: "channel", role: "contributor", policy: { enabled: false } });
+    // No access is still no access; without the option, tasks off still refuses.
+    channelMembers.mockResolvedValueOnce({ ok: true, memberOf: [] });
+    await expect(asideOf("ledger")).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+    expect((await refusal("solo")).code).toBe("PROJECT_TASKS_DISABLED");
+  });
+
+  it("with the tasks-off switch set aside, a viewer grant is still a viewer", async () => {
+    db.set({ ...projectRevisionKey(TEST_ORG, "solo", 2), entityType: "PROJECT", definition: { name: "solo", revision: 2, developerTasks: { enabled: false } } });
+    db.set({ ...projectMemberKey(TEST_ORG, developerId, "solo"), entityType: "MEMBERSHIP", ownerKey: developerId, projectName: "solo", role: "viewer" });
+    expect(await checkProjectAccess(deps(), maya, "solo", undefined, { ignoreTasksOff: true })).toMatchObject({ access: "granted", role: "viewer" });
+  });
 });
 
 describe("D2 task-person route dependencies", () => {
