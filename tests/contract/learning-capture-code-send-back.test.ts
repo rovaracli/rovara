@@ -2,9 +2,11 @@
 // The one hook is in `sendTaskWorkflowBackToCoding`, which the task page, the developer API, Slack and MCP all reach. The decider's standing is read live, never taken from the task role.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { BUILTIN_AGENTS, EMPTY_RECIPE, createCandidateManifest, type ResolvedRecipe, type WorkflowSnapshot } from "@agentx/contracts";
+import { BUILTIN_AGENTS, EMPTY_RECIPE, agentXError, createCandidateManifest, type ResolvedRecipe, type WorkflowSnapshot } from "@agentx/contracts";
 import { sendTaskWorkflowBackToCoding, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
+import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
+import { viewerCannotStartTasksMessage } from "../../packages/broker/src/developer/project-roles.js";
 import { captureSendBack, captureSendBackQuietly, sendBackSourceKey } from "../../packages/broker/src/learning/capture-decision.js";
 import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
@@ -41,10 +43,14 @@ const workflowOf = (harness: Harness, taskId: string) => taskRow(harness, taskId
 const codingRuns = (harness: Harness, workspaceId: string) => operations(harness, workspaceId).filter((item) => item.workflowMode === "IMPLEMENT");
 const passingChecks = () => ({ status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64), checks: [{ id: "readiness:0", label: "npm test", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 12 }], extraTry: "not_needed", agentClaim: "success" });
 
-function routeDeps(harness: Harness, log: DeveloperTaskRouteDependencies["log"] = () => undefined): DeveloperTaskRouteDependencies {
+type CheckAccess = DeveloperTaskRouteDependencies["checkAccess"];
+/** The default project check: a contributor through the project's Slack channel, for everyone. */
+const channelContributor: CheckAccess = async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL], role: "contributor" as const });
+
+function routeDeps(harness: Harness, log: DeveloperTaskRouteDependencies["log"] = () => undefined, checkAccess: CheckAccess = channelContributor): DeveloperTaskRouteDependencies {
   return {
     documentClient: validatingDocumentClient(harness.db), tableName: "state", actions: harness.actions,
-    orgId: TEST_ORG, checkAccess: async () => ({ revision: 1, policy: {} as never, access: "channel", channelIds: [SLACK_CHANNEL], role: "contributor" as const }),
+    orgId: TEST_ORG, checkAccess,
     projectChannelIds: async () => [SLACK_CHANNEL], now: () => Date.now(), log,
   };
 }
@@ -99,13 +105,16 @@ async function blockedTask(options: { slack?: boolean; program?: boolean; autofi
   /** The owner's Send back to coding, as the route function takes it (page, developer API and MCP reach it through the route). */
   const send = (who: DeveloperCaller, instructions: string, requestId = randomUUID(), log?: DeveloperTaskRouteDependencies["log"]) =>
     sendTaskWorkflowBackToCoding(routeDeps(harness, log), who, taskId, { requestId, expectedRevision: workflowOf(harness, taskId).revision, instructions });
+  /** The same with the person's own project check answer (the default answers a channel contributor for everyone). */
+  const sendWith = (checkAccess: CheckAccess, who: DeveloperCaller, instructions: string) =>
+    sendTaskWorkflowBackToCoding(routeDeps(harness, undefined, checkAccess), who, taskId, { requestId: randomUUID(), expectedRevision: workflowOf(harness, taskId).revision, instructions });
   /** The same through the developer API route. */
   const api = (who: Developer, instructions: string, requestId = randomUUID()) =>
     harness.dev(who, "POST", `/v1/dev/tasks/${taskId}/workflow/send-back`, { requestId, expectedRevision: workflowOf(harness, taskId).revision, instructions });
   const slack = (userId: string, requestId = randomUUID()) =>
     harness.handler({ source: "agentx.slack-ingress", action: "workflow-send-back", taskId, userId, thread: THREAD, requestId, expectedRevision: workflowOf(harness, taskId).revision }) as Promise<{ statusCode: number; body: string }>;
   const owner: DeveloperCaller = { ...MAYA_CALLER, developerId: taskRow(harness, taskId).developerId };
-  return { harness, taskId, workspaceId, takeOver, send, api, slack, owner };
+  return { harness, taskId, workspaceId, takeOver, send, sendWith, api, slack, owner };
 }
 
 const corrections = (harness: Harness): LearningCorrection[] => learningItems(harness.db).filter((item) => String(item.sk).startsWith("CORRECTION#"))
@@ -437,5 +446,78 @@ describe("code send-back capture: it never holds up or fails the send-back", () 
     seedPerson(t.harness.db, MAYA_CALLER, "contributor");
     await captureSendBackQuietly(routeDeps(t.harness), { caller: MAYA_CALLER, taskId: t.taskId, project: PROJECT, requestId: randomUUID(), reason: NOTE, included: [], stage: "code" });
     expect(corrections(t.harness)).toMatchObject([{ stage: "code" }]);
+  });
+});
+
+describe("code send-back needs the project access starting a task needs (0.4.27)", () => {
+  const granted = (role: "viewer" | "contributor" | "maintainer"): CheckAccess => async () => ({ revision: 1, policy: {} as never, access: "granted", channelIds: [], role });
+  const denied: CheckAccess = async () => { throw agentXError("PROJECT_ACCESS_DENIED", "you do not have access to `payments`"); };
+  const tasksOff: CheckAccess = async () => { throw agentXError("PROJECT_TASKS_DISABLED", "tasks from AI tools are turned off for `payments`"); };
+  const slackDown: CheckAccess = async () => { throw agentXError("SLACK_UNAVAILABLE", "Slack could not be reached to check your channel membership"); };
+
+  /** Refused before anything moves: no new coding run, the same workflow revision, nothing captured. */
+  async function expectRefusedUnchanged(t: Awaited<ReturnType<typeof blockedTask>>, attempt: Promise<unknown>, expected: { code: string; message?: string }) {
+    const runs = codingRuns(t.harness, t.workspaceId).length, revision = workflowOf(t.harness, t.taskId).revision;
+    await expect(attempt).rejects.toMatchObject(expected);
+    expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs);
+    expect(workflowOf(t.harness, t.taskId)).toMatchObject({ revision, state: "BLOCKED" });
+    expect(learningItems(t.harness.db)).toEqual([]);
+  }
+
+  it("a taker with no project grant and no channel access is refused like a viewer, and nothing changes", async () => {
+    const t = await blockedTask({ program: true });
+    seedPerson(t.harness.db, OMAR_CALLER, "none");
+    t.takeOver(OMAR_CALLER);
+    await expectRefusedUnchanged(t, t.sendWith(denied, OMAR_CALLER, NOTE), { code: "PROJECT_ACCESS_DENIED", message: `PROJECT_ACCESS_DENIED: ${sendBackNoAccessMessage(PROJECT)}` });
+  });
+
+  it("a taker who is a project viewer is refused with the viewer message, and nothing changes", async () => {
+    const t = await blockedTask({ program: true });
+    seedPerson(t.harness.db, OMAR_CALLER, "viewer");
+    t.takeOver(OMAR_CALLER);
+    await expectRefusedUnchanged(t, t.sendWith(granted("viewer"), OMAR_CALLER, NOTE), { code: "PROJECT_ACCESS_DENIED", message: `PROJECT_ACCESS_DENIED: ${viewerCannotStartTasksMessage(PROJECT)}` });
+  });
+
+  it("a taker who is a contributor by grant may send back", async () => {
+    const t = await blockedTask({ program: true });
+    seedPerson(t.harness.db, OMAR_CALLER, "contributor");
+    t.takeOver(OMAR_CALLER);
+    const runs = codingRuns(t.harness, t.workspaceId).length;
+    await t.sendWith(granted("contributor"), OMAR_CALLER, NOTE);
+    expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs + 1);
+    expect(corrections(t.harness)).toMatchObject([{ source: "send_back", stage: "code", author: OMAR.developerId }]);
+  });
+
+  for (const orgRole of ["owner", "admin"] as const) {
+    it(`a company ${orgRole} with no project grant may send back, even when the project check would refuse them`, async () => {
+      const t = await blockedTask({ program: true });
+      const who = { ...OMAR_CALLER, orgRole };
+      seedPerson(t.harness.db, who, "none");
+      t.takeOver(who);
+      const runs = codingRuns(t.harness, t.workspaceId).length;
+      await t.sendWith(denied, who, NOTE);
+      expect(codingRuns(t.harness, t.workspaceId)).toHaveLength(runs + 1);
+    });
+  }
+
+  it("when the project turned off tasks from AI tools, a grant still decides: a contributor may, no grant may not", async () => {
+    const allowed = await blockedTask({ program: true });
+    seedPerson(allowed.harness.db, OMAR_CALLER, "contributor");
+    allowed.takeOver(OMAR_CALLER);
+    const runs = codingRuns(allowed.harness, allowed.workspaceId).length;
+    await allowed.sendWith(tasksOff, OMAR_CALLER, NOTE);
+    expect(codingRuns(allowed.harness, allowed.workspaceId)).toHaveLength(runs + 1);
+
+    const refused = await blockedTask({ program: true });
+    seedPerson(refused.harness.db, OMAR_CALLER, "none");
+    refused.takeOver(OMAR_CALLER);
+    await expectRefusedUnchanged(refused, refused.sendWith(tasksOff, OMAR_CALLER, NOTE), { code: "PROJECT_ACCESS_DENIED", message: `PROJECT_ACCESS_DENIED: ${sendBackNoAccessMessage(PROJECT)}` });
+  });
+
+  it("when Slack cannot be asked, the retryable error stands and nothing changes", async () => {
+    const t = await blockedTask({ program: true });
+    seedPerson(t.harness.db, OMAR_CALLER, "none");
+    t.takeOver(OMAR_CALLER);
+    await expectRefusedUnchanged(t, t.sendWith(slackDown, OMAR_CALLER, NOTE), { code: "SLACK_UNAVAILABLE" });
   });
 });

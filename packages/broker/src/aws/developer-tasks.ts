@@ -310,7 +310,7 @@ import { readTaskPlanDocument, type TaskPlanDocumentView } from "./task-plan-doc
 import { pageCommentViews, type CommentViewContext, type PageCommentView } from "./plan-page/comments.js";
 import { loadPlanSelfCheck } from "../developer/plan-self-check.js";
 import type { PlanAnchor } from "./plan-page/render-plan.js";
-import { WORK_ACTIONS, can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, taskOpen, type TaskAccess, type TaskAction } from "../developer/task-access.js";
+import { WORK_ACTIONS, can, pageAccess, projectWorkAllowed, requireProjectSendBackRole, requireProjectWorkRole, resolveTaskAccess, taskOpen, type TaskAccess, type TaskAction } from "../developer/task-access.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { captureSendBackQuietly, codeSendBackStage } from "../learning/capture-decision.js";
 import { commentLearningFlags } from "../learning/comment-flags.js";
@@ -4678,6 +4678,8 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "workflow-send-back");
   const access = await authorizeTaskAction(deps, caller, taskId, "work");
   const { task } = access;
+  // Send-back needs the project access starting a task needs; a taker with no project access is refused like a viewer (0.4.27).
+  await requireProjectSendBackRole(deps, task, caller);
   const workflow = task.workflow;
   if (workflow === undefined) throw agentXError("NOT_FOUND", "this task does not have a workflow record");
   if (blockedOnRunLimit(workflow)) throw agentXError("CONFIG_INVALID", RUN_LIMIT_NOT_APPROVED_REFUSAL);
