@@ -90,9 +90,7 @@ export function installSlackAsk(dependencies: AwsBrokerDependencies, actions: De
   dependencies.slackAsk = {
     context: { documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions, sessionLevel },
     readers: dependencies.slackAskReaders ?? access?.ask?.readers ?? askReadersOf(dependencies, actions, env),
-    ask: access?.ask ?? (dependencies.slackAskOn === true
-      ? askDependenciesFor(dependencies, access ?? { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, projectMembers: { roleOf: async () => undefined } }, actions, { ...env, LIVE_ASK_ENABLED: "1" })
-      : undefined),
+    ask: access?.ask,
   };
 }
 
