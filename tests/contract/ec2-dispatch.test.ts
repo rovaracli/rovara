@@ -455,6 +455,22 @@ describe("ec2-ebs delivery", () => {
       expect(await plain.deliver(build, build.invocation)).toBe("DELIVERED");
     });
 
+    it("never sends a deep diagnosis to a worker that does not list task.diagnosis.v1: it is refused, not run as a setup draft, and the marker is not dropped (live interaction F3)", async () => {
+      const diagnosis = { diagnosisId: "dgn_aaaaaaaaaaaaaaaaaaaa" };
+      const record = taskRecord({ workflowMode: "SETUP_DRAFT", diagnosis });
+      const base = ["task.workflowMode", "task.setupDraft", "task.setupProposal.v2"];
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.diagnosis.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      expect(postedPayload(capable.post).diagnosis).toEqual(diagnosis);
+      // A setup draft (no marker) is delivered to either.
+      const draft = taskRecord({ workflowMode: "SETUP_DRAFT" });
+      const plain = delivery({ workerFeatures: async () => base });
+      expect(await plain.deliver(draft, draft.invocation)).toBe("DELIVERED");
+    });
+
     it("asks for the code review's risk level only on a worker that lists it; an older worker reviews as before (Plan 6 Task 13)", async () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const workflowBase = [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }];

@@ -7,7 +7,7 @@
 // The switch (`fd`, LIVE_FIX_ENABLED) is OFF by default: every route then answers NOT_FOUND exactly as if it did not exist.
 import { createHash } from "node:crypto";
 import {
-  DIAGNOSIS_REFUSALS, DIAGNOSIS_UNAVAILABLE_MESSAGE, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
+  DIAGNOSIS_REFUSALS, DIAGNOSIS_UNAVAILABLE_MESSAGE, SETUP_DRAFT_STALE_MINUTES, DiagnosisAnsweredRequestSchema, DiagnosisIdSchema, DiagnosisQueueMessageSchema, DiagnosisRefSchema, DiagnosisStartBodySchema, DiagnosisStatusSchema,
   DiagnosisRecordSchema, agentXError, diagnosisRouteAttributes, errorRefKey,
   type DiagnosisRecord, type DiagnosisStatus, type DiagnosisTier, type DiagnosisTurnResult, type OrgId,
 } from "@agentx/contracts";
@@ -18,8 +18,11 @@ import { auditDiagnosis, type DiagnosisAuditDependencies } from "./audit.js";
 import { diagnosisSubjectFor, type DiagnosisAuthorityDependencies } from "./authority.js";
 import { currentFacts, nonceFor, renderDiagnosisContext, type DiagnosisContextPorts } from "./context.js";
 import { proposalCounts, sanitizeDiagnosis } from "./sanitize.js";
+
+/** The words a failed deep run leaves (fixed; the light result stays). */
+export const DEEP_DIAGNOSIS_FAILED_MESSAGE = "Couldn't read the code to diagnose this. The first diagnosis stays." as const;
 import {
-  REQUEST_STALE_MS, admitDiagnosis, diagnosisEventId, diagnosisIdFor, openDiagnosisFor, readDiagnosisRecord, readDiagnosisRequest, readDiagnosisRequester, settleDiagnosis,
+  REQUEST_STALE_MS, admitDiagnosis, claimProposedAudit, diagnosisEventId, diagnosisIdFor, freeOpenPlace, openDiagnosisFor, readDiagnosisRecord, readDiagnosisRequest, readDiagnosisRequester, settleDiagnosis,
   type DiagnosisRequest,
 } from "./store.js";
 
@@ -67,21 +70,37 @@ export function diagnosisWorkspaceId(diagnosisId: string): string {
 
 // ---- the status a person reads
 
-async function statusOf(deps: DiagnosisCoreDependencies, orgId: OrgId, request: DiagnosisRequest): Promise<DiagnosisStatus> {
+export async function statusOf(deps: DiagnosisCoreDependencies, orgId: OrgId, request: DiagnosisRequest): Promise<DiagnosisStatus> {
   const base = { diagnosisId: request.diagnosisId, tier: request.tier, errorRef: request.errorRef } as const;
   const deep = request.tier === "light" ? await openDiagnosisFor(deps, orgId, "deep", request.errorRef).catch(() => undefined) : undefined;
   const withDeep = deep === undefined ? {} : { deepDiagnosisId: deep };
   // A request nobody answered in time reads as failed, never as waiting for ever; the open place is freed so the error can be asked about again.
-  if (request.state === "queued" && deps.now() - Date.parse(request.createdAt) > REQUEST_STALE_MS) {
+  // (A deep diagnosis is a task that clones and reads repositories: it is given a setup draft's hour, and a task that ended without the broker hearing of it is the stuck-task sweep's.)
+  const staleMs = request.tier === "deep" ? SETUP_DRAFT_STALE_MINUTES * 60_000 : REQUEST_STALE_MS;
+  if (request.state === "queued" && deps.now() - Date.parse(request.createdAt) > staleMs) {
     await settleDiagnosis(deps, orgId, request, { state: "failed" }).catch(() => undefined);
     return DiagnosisStatusSchema.parse({ ...base, state: "failed", failure: DIAGNOSIS_UNAVAILABLE_MESSAGE, ...withDeep });
   }
   if (request.state === "ready") {
     const record = await readDiagnosisRecord(deps, orgId, request.diagnosisId);
-    if (record !== undefined) return DiagnosisStatusSchema.parse({ ...base, state: "ready", proposals: record.proposals, droppedProposals: record.droppedProposals, needsCode: record.needsCode, ...withDeep });
+    if (record !== undefined) {
+      // A deep diagnosis ends in its task's result transaction, which cannot audit: the first read of its result does, once.
+      if (request.tier === "deep" && await claimProposedAudit(deps, orgId, request.diagnosisId)) {
+        const requester = await readDiagnosisRequester(deps, orgId, request.diagnosisId).catch(() => undefined);
+        await auditDiagnosis(deps.audit, () => auditDiagnosisProposed({
+          orgId, actor: auditActorOf(requester ?? "system"), occurredAt: new Date(deps.now()).toISOString(), occurrence: request.diagnosisId,
+          diagnosisId: request.diagnosisId, counts: proposalCounts(record.proposals), dropped: record.droppedProposals,
+        }));
+      }
+      return DiagnosisStatusSchema.parse({ ...base, state: "ready", proposals: record.proposals, droppedProposals: record.droppedProposals, needsCode: record.needsCode, ...withDeep });
+    }
     return DiagnosisStatusSchema.parse({ ...base, state: "failed", failure: DIAGNOSIS_UNAVAILABLE_MESSAGE, ...withDeep });
   }
-  if (request.state === "failed") return DiagnosisStatusSchema.parse({ ...base, state: "failed", failure: DIAGNOSIS_UNAVAILABLE_MESSAGE, ...withDeep });
+  if (request.state === "failed") {
+    // A deep diagnosis whose task ended without an answer lets go of its error's place the first time that is seen, so the error can be asked about again.
+    if (request.tier === "deep") await freeOpenPlace(deps, orgId, request).catch(() => undefined);
+    return DiagnosisStatusSchema.parse({ ...base, state: "failed", failure: request.tier === "deep" ? DEEP_DIAGNOSIS_FAILED_MESSAGE : DIAGNOSIS_UNAVAILABLE_MESSAGE, ...withDeep });
+  }
   return DiagnosisStatusSchema.parse({ ...base, state: "queued", ...withDeep });
 }
 

@@ -39,7 +39,7 @@ export type ReleaseDeps = {
  */
 export async function recordFinishedRunCost(deps: ReleaseDeps, task: DeveloperTaskRecord): Promise<void> {
   // A setup draft is no run of the agent's kind of work: its cost never feeds the estimates.
-  if (deps.modelAccess === undefined || task.orgId === undefined || task.runCostRecordedAt !== undefined || task.purpose === "setup_draft") return;
+  if (deps.modelAccess === undefined || task.orgId === undefined || task.runCostRecordedAt !== undefined || task.purpose === "setup_draft" || task.purpose === "diagnosis") return;
   let ended: { path: "QUICK" | "FULL" | "AGENT"; endedAt: string };
   if (task.agentRunEnd !== undefined) {
     if (task.agentRunEnd.state !== "COMPLETE") return;

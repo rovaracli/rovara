@@ -65,7 +65,10 @@ export async function readDiagnosisRequest(deps: DiagnosisStoreDependencies, org
   const item = await getItem(deps, diagnosisKey(orgId, diagnosisId, "REQUEST"));
   if (item === undefined || item["orgId"] !== orgId || item["entityType"] !== "DIAGNOSIS_REQUEST") return undefined;
   const errorRef = ErrorRefSchema.safeParse(item["errorRef"]);
-  const tier = item["tier"], state = item["state"];
+  const tier = item["tier"], stored = item["state"];
+  // A deep diagnosis ends in its task's own result transaction, which keeps the first end it was given in `ended` (it can never fail on this item); that end is the state once there is one.
+  const ended = typeof item["ended"] === "object" && item["ended"] !== null ? (item["ended"] as { state?: unknown }).state : undefined;
+  const state = stored === "queued" && tier === "deep" && (ended === "ready" || ended === "failed") ? ended : stored;
   if (!errorRef.success || (tier !== "light" && tier !== "deep") || (state !== "queued" && state !== "ready" && state !== "failed") || typeof item["project"] !== "string" || typeof item["createdAt"] !== "string") return undefined;
   return {
     diagnosisId, tier, errorRef: errorRef.data, project: item["project"], state, createdAt: item["createdAt"],
@@ -231,6 +234,20 @@ export async function freeOpenPlace(deps: DiagnosisStoreDependencies, orgId: Org
 export async function openDiagnosisFor(deps: DiagnosisStoreDependencies, orgId: OrgId, tier: DiagnosisTier, errorRef: ErrorRef): Promise<string | undefined> {
   const open = await getItem(deps, diagnosisOpenKey(orgId, tier, errorRefKey(errorRef)));
   return open !== undefined && typeof open["diagnosisId"] === "string" && typeof open["expiresAt"] === "number" && open["expiresAt"] > deps.now() ? open["diagnosisId"] : undefined;
+}
+
+/** Whether this call is the first to claim the "proposed" audit of a deep diagnosis (its result is audited by the first read of it, once). */
+export async function claimProposedAudit(deps: DiagnosisStoreDependencies, orgId: OrgId, diagnosisId: string): Promise<boolean> {
+  try {
+    await deps.documentClient.send(new UpdateCommand({
+      TableName: deps.tableName, Key: diagnosisKey(orgId, diagnosisId, "REQUEST"), UpdateExpression: "SET audited = :yes",
+      ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(audited)", ExpressionAttributeValues: { ":yes": true },
+    }));
+    return true;
+  } catch (error) {
+    if ((error as { name?: string }).name === "ConditionalCheckFailedException") return false;
+    throw error;
+  }
 }
 
 // ---- erasure

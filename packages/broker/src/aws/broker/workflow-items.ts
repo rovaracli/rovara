@@ -36,6 +36,7 @@ import { prHeadItems } from "../../rovara-code/tracking-events.js";
 import { workflowRunEndedReason } from "../outbox-failure.js";
 import { autofixBlockRows } from "../workflow-autofix-dispatch-exhaust.js";
 import { setupDraftEndItems, setupDraftRepositoriesOf } from "../../rovara-code/setup-draft.js";
+import { diagnosisEndItems } from "../../diagnosis/deep.js";
 import { githubRepositoryFullName, pullRequestKey, pullRequestMatchesRepository } from "./admin-and-helpers.js";
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
 import { canReadBranchAndTree, canReadFeedback, canReadTree, changeRequestRef, hostOfRepository, pullRequestFactsOf, repositoryRefOf, requireGithubHost } from "./repository-hosts.js";
@@ -477,6 +478,8 @@ export async function completedWorkflowItems(
       ? setupDraftRepositoriesOf((await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition) : { names: [], urls: {} };
     return setupDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now);
   }
+  // Live interaction F3: a deep diagnosis's result is its diagnosis (or none), written with the result and unable to fail it.
+  if (task?.purpose === "diagnosis") return diagnosisEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError }, now);
   if (task?.workflow === undefined) return [];
   // Meta repo lane D: a spec write's or a spec publication's end settles the task's spec state; neither is a step of the workflow, so nothing below applies to it.
   if (isSpecOperation(operation)) return specOperationEndItems(specEndEnvironmentOf(dependencies), task.taskId, operation, { status: terminalStatus, result });

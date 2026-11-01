@@ -190,7 +190,7 @@ async function cancelledWorkflowStepItems(
   if (target === undefined || pointer === undefined || target.kind !== "task" || target.workflowMode === undefined) return [];
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
   // A cancelled setup draft ends as cancelled, in the cancel's own transaction (it has no workflow step to block).
-  if (task?.purpose === "setup_draft") return completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
+  if (task?.purpose === "setup_draft" || task?.purpose === "diagnosis") return completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
   if (task === undefined || target.workflowMode === "SETUP_DRAFT" || target.workflowMode === "SPEC_WRITE" || !stopBlocksWorkflowStep(task, target)) return [];
   const items = await completedWorkflowItems(dependencies, target, pointer, "CANCELLED", now, undefined, "operation was cancelled");
   // Only the one conditional update of the step the target ran, exactly, and the AUTOFIX row that rides with a block of VERIFY or REVIEW when automatic fixing is on (DISPATCHEXHAUST: refusing

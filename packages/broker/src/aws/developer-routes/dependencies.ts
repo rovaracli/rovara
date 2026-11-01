@@ -123,6 +123,8 @@ export function diagnosisRouteDepsOf(deps: DeveloperRouteDependencies, caller: D
     authority: { ...table, access },
     audit: { ...table, ...(deps.audit === undefined ? {} : { audit: deps.audit }) },
     log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
+    // The deep tier starts a read-only task as the person (the ordinary start: their role, their payer, the allowed models, the budget floor and the planning limit).
+    deep: (() => { const starter = agentRunStarterOf(deps); return starter === undefined ? undefined : { starter }; })(),
     context: {
       ...table, edition: deps.editionPolicy?.edition ?? "public", tagKey: diagnosisTagKeyOf(sessions.cursorKey),
       // The person's own view of the task: its error reference, failure and events, as the app shows them. `details: false` reads nothing the diagnosis does not use and writes nothing.

@@ -12,6 +12,7 @@ import {
   E2E_MODEL_FREE_LIMITS_FEATURE,
   E2E_REPLAY_CHECKS_FEATURE,
   GROUNDING_CHECKS_FEATURE,
+  DIAGNOSIS_WORKER_FEATURE,
   OWNER_REDIRECT_FEATURE,
   PLAN_DRY_RUN_FEATURE,
   E2E_APPLICATION_ADMISSION_SCHEMA_V2,
@@ -377,6 +378,10 @@ async function forWorkerFeatures(
   // Rovara proposes a project's setup (Task 10; version 2 with citations, meta repo lane B): an older worker would fail the mode at its own parse, or answer a draft this broker
   // no longer reads, so the mode is never sent to it.
   if (invocation.kind === "task" && invocation.payload.workflowMode === "SETUP_DRAFT" && !(features.includes("task.setupDraft") && features.includes("task.setupProposal.v2"))) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Live interaction F3: a deep diagnosis is never sent to a worker that does not list it: an older worker would run the look as a setup draft and answer a proposal this broker does not read.
+  if (invocation.kind === "task" && invocation.payload.diagnosis !== undefined && !features.includes(DIAGNOSIS_WORKER_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.

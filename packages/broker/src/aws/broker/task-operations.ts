@@ -58,6 +58,7 @@ import { planQualityContextOf } from "../../developer/plan-self-check.js";
 import { publicWorkspace } from "../../workspaces.js";
 import { parseRuntimeBinding, type AdaptedHttpRequest } from "../lambda.js";
 import { SETUP_DRAFT_PREAMBLE } from "../../rovara-code/setup-draft.js";
+import { DIAGNOSIS_DEEP_PREAMBLE } from "@agentx/contracts";
 import { object, parseBody, verifyCapability } from "./admin-and-helpers.js";
 import { stageHasContextSources } from "../../context-sources/enabled.js";
 import { MAX_SETUP_PROPOSAL_BYTES, type AwsBrokerDependencies, type RegisteredProjectRecord } from "./definitions.js";
@@ -454,7 +455,11 @@ export async function taskOperationParts(
   const gated = input.workflowMode !== undefined && input.legacyTask !== true;
   // The agent's instructions come after Rovara's own rules and the phase text, in a block that says it adds to them (Plan 3, Task 16).
   const agentSection = applied?.promptSection === undefined ? "" : `\n\n${applied.promptSection}`;
-  const selectedPrompt = input.workflowMode === "SETUP_DRAFT"
+  // Live interaction F3: a deep diagnosis has its own preamble and none of the agent's instructions; its request holds the error as data, framed.
+  const diagnosing = task?.purpose === "diagnosis" && task.diagnosis !== undefined && input.workflowMode === "SETUP_DRAFT";
+  const selectedPrompt = diagnosing
+    ? `${DIAGNOSIS_DEEP_PREAMBLE}\n\n${input.prompt}`
+    : input.workflowMode === "SETUP_DRAFT"
     ? `${SETUP_DRAFT_PREAMBLE}${agentSection}\n\nRequest:\n${input.prompt}`
     // Meta repo lane D: the spec write sees the approved plan (the prompt) and nothing else the thread said; no agent section, no thread notes.
     : input.workflowMode === "SPEC_WRITE"
@@ -506,7 +511,9 @@ export async function taskOperationParts(
       conversationStarted: input.conversationStarted,
       ...(input.workflowMode === undefined ? {} : { workflowMode: input.workflowMode }),
       // Meta repo lane B: a setup proposal run is told which repository is the project's meta repository, so it looks there for the team's rules, specs and runbooks.
-      ...(input.workflowMode === "SETUP_DRAFT" && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
+      ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
+      // Live interaction F3: the marker that makes the worker's read-only look a diagnosis. A worker without "task.diagnosis.v1" is refused the run at delivery, never sent it without the field.
+      ...(diagnosing ? { diagnosis: { diagnosisId: task.diagnosis!.diagnosisId } } : {}),
       // The worker reads a planning answer as this kind of document (a Quick plan has no phase and is a coding plan).
       ...(input.workflowMode === "PLAN" && input.workflowPhase !== undefined ? { workflowPhase: input.workflowPhase } : {}),
       // Every planning step asks for a structured plan, so the worker checks the answer and asks once more when it is unreadable.

@@ -3,7 +3,7 @@
 // the service asks the broker for the turn's context and a model key by the diagnosis id, runs a no-tools answer turn and writes the answer back. Nothing in a message, a request or an answer can
 // name a tool, a budget, a role or an approval: every schema here is strict. The message carries ids only; the context text never travels in the queue.
 import { z } from "zod";
-import { DIAGNOSIS_PROPOSALS_MAX, DIAGNOSIS_TIERS, DiagnosisProposalSchema, DiagnosisTierSchema, ErrorRefSchema } from "./live-interaction.js";
+import { DIAGNOSIS_PREFILL_ALLOW, DIAGNOSIS_PROPOSALS_MAX, DIAGNOSIS_TIERS, DiagnosisProposalSchema, DiagnosisTierSchema, ErrorRefSchema } from "./live-interaction.js";
 import { ASK_ROUTE_ATTRIBUTE_NAME } from "./live-ask.js";
 import { ModelIdentifierSchema } from "./models.js";
 import { OrgIdSchema } from "./org.js";
@@ -212,6 +212,15 @@ const PROPOSAL_FORMS = [
   '{"kind":"contact_support"}  when only support can help',
 ] as const;
 
+/** The paths a diagnosis may name, for the rules: each target's paths with the kind of value they take. */
+export function diagnosisPrefillGuide(): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [target, paths] of Object.entries(DIAGNOSIS_PREFILL_ALLOW)) {
+    out[target] = Object.entries(paths).map(([path, rule]) => `${path} (${rule.kind === "enum" ? rule.values.join(" | ") : rule.kind === "boolean" ? "true | false" : "a relative file path"})`);
+  }
+  return out;
+}
+
 /**
  * The rules the diagnosis turn starts with. Everything after them (the "Data" part) is untrusted: it was made by tools, repositories, check output and people, some of them outsiders. The turn has no
  * tools. Its answer only ever reaches a person, who decides.
@@ -232,6 +241,16 @@ export function diagnosisTurnRules(prefillPaths: Readonly<Record<string, readonl
     "You may explain and link, but never propose a change to: secrets, tokens or keys; budgets or spend limits; roles or members; approval rules (including who approves what); network allow-lists; model endpoints or sources; MCP servers.",
   ].join("\n");
 }
+
+/**
+ * A worker that lists this answers a deep diagnosis: the read-only look at the repositories (the same boundary as a setup draft: read, grep, find and ls; no shell, no write tool, no network, no MCP),
+ * answered with the diagnosis JSON. The broker sends `diagnosis` only to such a worker, and never drops it: an older worker would run the look as a setup draft and answer a proposal this broker does not read.
+ */
+export const DIAGNOSIS_WORKER_FEATURE = "task.diagnosis.v1" as const;
+
+/** The marker a deep diagnosis task's invocation carries. Ids only: the data is in the prompt, framed. Valid only in the read-only (setup draft) mode. */
+export const DiagnosisInvocationSchema = z.object({ diagnosisId: DiagnosisIdSchema }).strict();
+export type DiagnosisInvocation = z.infer<typeof DiagnosisInvocationSchema>;
 
 /** The first line of a deep diagnosis task's request, fixed: the task's title is cut from it. */
 export const DIAGNOSIS_DEEP_TITLE = "Diagnose a Rovara error (read-only)" as const;
