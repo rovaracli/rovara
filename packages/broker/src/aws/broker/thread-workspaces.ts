@@ -24,7 +24,7 @@ import { githubLoginOf, personNameForText } from "../../developer/requester-text
 import type { ExtraItems, TransactItems } from "../developer-task-actions.js";
 import { releaseFinishedTasksOf, markWorkflowThreadNoteAnswered, taskCommentSection, taskOwnsThread, workflowTaskAnswerContext } from "../developer-tasks.js";
 import { askContext } from "../../agent-sessions/ask-context.js";
-import { ASK_RATE_TEXT, recordSlackAsk, takeSlackAskRates } from "../../agent-sessions/ask.js";
+import { ASK_RATE_TEXT, recordSlackAsk, slackAskerKey, takeSlackAskRates } from "../../agent-sessions/ask.js";
 import { publicWorkspace } from "../../workspaces.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { closeReleasesStorage, issueRepositoryGrant, object, uuid, workspaceItem, workspaceKey, workspaceRuntime } from "./admin-and-helpers.js";
@@ -880,7 +880,7 @@ const SLACK_TASK_CONTEXT_CHARS = 39_000;
  * and marks the note answered), so a refused question never stays behind as a note the next agent step could read as an instruction.
  */
 export const slackAskRefusalContext = (words: string): string => `This question cannot be answered. Do not use any other information. Reply with exactly this sentence and nothing else: "${words}"`;
-export const SLACK_ASK_NOT_ALLOWED_WORDS = "You need \"can use\" on this task to ask about it. Ask the task owner to share it with you.";
+export const SLACK_ASK_NOT_ALLOWED_WORDS = "This question can't be answered here.";
 
 /**
  * Task mode for the chat agent in a Slack-started task's own thread: a read-only view. No repositories, connectors or actions, no operation and no compute (nothing is created, prepared or
@@ -920,14 +920,18 @@ async function taskAnswerWorkspace(
   }
   // The Ask switch is on. A thread that is not this open task's own stays closed, as before; any other refusal is answered in fixed words.
   if (!await taskOwnsThread({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, { taskId: shared.taskId, workspaceId: shared.workspaceId, thread })) return undefined;
-  // The asker is the Slack user the thread's request came from, as a member of this org; a person who is not a member has no identity to check "can use" on.
+  // Anyone in the task's own thread may ask (owner decision 2026-11-01): the identity route already refused removed, banned and other-org people. A member is rated under their developer id, a Slack
+  // user with no member link under their Slack workspace and user id. What they see is the Slack tier's alone.
   const developerId = await linkedRequester(dependencies, orgId, requester);
-  const context = developerId === undefined ? undefined : await askContext(slackAsk.context, { audience: "slack", workspaceId: shared.workspaceId, thread, asker: { developerId } }, shared.taskId, slackAsk.readers);
-  if (context === undefined || developerId === undefined) return reply(slackAskRefusalContext(SLACK_ASK_NOT_ALLOWED_WORDS));
+  const context = await askContext(slackAsk.context, { audience: "slack", workspaceId: shared.workspaceId, thread, ...(developerId === undefined ? {} : { asker: { developerId } }) }, shared.taskId, slackAsk.readers);
+  if (context === undefined) return reply(slackAskRefusalContext(SLACK_ASK_NOT_ALLOWED_WORDS));
   try {
-    await takeSlackAskRates(slackAsk.ask, task, developerId);
+    await takeSlackAskRates(slackAsk.ask, task, developerId ?? slackAskerKey(thread.teamId, requester.userId));
   } catch (error) {
-    if ((error as { code?: string }).code === "TOO_MANY_REQUESTS") return reply(slackAskRefusalContext(ASK_RATE_TEXT));
+    const code = (error as { code?: string }).code;
+    if (code === "TOO_MANY_REQUESTS") return reply(slackAskRefusalContext(ASK_RATE_TEXT));
+    // A task with no session has nothing to rate on: answered in fixed words, never left as a note.
+    if (code === "RUNTIME_UNAVAILABLE") return reply(slackAskRefusalContext(SLACK_ASK_NOT_ALLOWED_WORDS));
     throw error;
   }
   let taskContext = context.text;

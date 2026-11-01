@@ -265,12 +265,15 @@ async function settleRequest(deps: AskDependencies, orgId: OrgId, sessionId: str
 
 // ---- asking in Slack (the existing task-thread question, on the same rates, record and audit)
 
+/** Names a Slack user with no member link for the rates: a hash of their Slack workspace and user id (nothing readable is stored). */
+export const slackAskerKey = (teamId: string, userId: string): string => `slack_${createHash("sha256").update(`slack-asker\0${teamId}\0${userId}`, "utf8").digest("hex").slice(0, 32)}`;
+
 /** The rates of a Slack Ask: the same 20 an hour per person and 100 a day per task as the web's. Spent BEFORE the answer turn; no room refuses it in fixed words. */
-export async function takeSlackAskRates(deps: AskDependencies, task: DeveloperTaskRecord, developerId: string): Promise<void> {
+export async function takeSlackAskRates(deps: AskDependencies, task: DeveloperTaskRecord, askerKey: string): Promise<void> {
   if (task.orgId === undefined || task.sessionId === undefined) throw unavailable();
   const scope = { orgId: task.orgId, sessionId: task.sessionId };
   for (let attempt = 1; ; attempt += 1) {
-    const person = await rateStep(deps, sessionRateKey(task.orgId, task.sessionId, developerId, "ask"), scope, ASK_RATE.perPersonPerHour, HOUR_MS);
+    const person = await rateStep(deps, sessionRateKey(task.orgId, task.sessionId, askerKey, "ask"), scope, ASK_RATE.perPersonPerHour, HOUR_MS);
     const everyone = await rateStep(deps, sessionRateKey(task.orgId, task.sessionId, "task", "ask_day"), scope, ASK_RATE.perTaskPerDay, DAY_MS);
     if (!person.room || !everyone.room) throw agentXError("TOO_MANY_REQUESTS", ASK_RATE_TEXT);
     try {
