@@ -4,9 +4,13 @@
 // What it adds is the channel's facts, which only the ingress can read (it holds the Slack bot token): whether the channel is public, private, a DM or a group DM, whether it is shared with
 // another organisation (Slack Connect), and for a private channel the members now. Unknown is sent as nothing, and the broker's tap records nothing for an unknown channel.
 //
+// Removals. A deleted message or channel, a channel that became shared or changed id, an uninstall and a revoked token only remove or hide. They need no Slack lookup, carry no message text and
+// must never be lost, so they are cut down to ids (`removalPayload`) and put on the DURABLE queue (`sendRemoval`); the broker drains it, retrying until it is applied, then dead-lettering it
+// for a person. They are sent before anything slow, so Slack's 500 ms budget at the ingress cannot cut them off.
+//
 // How text travels. Public edition: Slack's terms forbid keeping copies of message text, so a text-carrying event (`message`, `message_changed`) is sent as a REQUEST/RESPONSE invoke, answered while the
 // broker processes it in memory: the text is never parked in Lambda's asynchronous queue, where a retry would keep it for hours. An invoke that does not finish in time is dropped, not retried.
-// Everything else (deletes, membership, channel events, which carry no message text) is sent as an asynchronous event so a delete is retried by Lambda. Enterprise sends everything asynchronously.
+// Everything else (membership and conversion events, which carry no message text) is sent as an asynchronous event; the broker THROWS when its tap fails, so Lambda retries it twice. Enterprise sends everything asynchronously.
 import type { SlackChannelInfo } from "./sources/slack.js";
 
 export const TEAM_RECORD_SLACK_SOURCE = "agentx.team-record-slack";
@@ -18,6 +22,22 @@ export interface SlackForwardEvent {
 }
 
 /** `message` events and edits carry text; nothing else the tap handles does. */
+const REMOVAL_EVENTS = new Set(["channel_deleted", "channel_shared", "channel_id_changed", "app_uninstalled", "tokens_revoked"]);
+const KEEP_FIELDS = ["type", "subtype", "channel", "deleted_ts", "ts", "event_ts", "old_channel_id", "new_channel_id", "tokens", "channel_type"] as const;
+
+/** The event cut down to ids, or `undefined` when it is not a removal. A deleted message's old text (`previous_message`, `message`) never leaves the ingress: only the tombstone's `ts` and subtype do. */
+export function removalPayload(raw: unknown): Record<string, unknown> | undefined {
+  const payload = record(raw);
+  const event = record(payload.event);
+  const edit = record(event.message);
+  const removal = REMOVAL_EVENTS.has(String(event.type)) || (event.type === "message" && (event.subtype === "message_deleted" || (event.subtype === "message_changed" && edit.subtype === "tombstone")));
+  if (payload.type !== "event_callback" || !removal) return undefined;
+  const kept: Record<string, unknown> = {};
+  for (const field of KEEP_FIELDS) if (event[field] !== undefined) kept[field] = event[field];
+  if (event.type === "message" && event.subtype === "message_changed") kept.message = { ts: edit.ts, subtype: "tombstone" };
+  return { type: "event_callback", team_id: payload.team_id, ...(typeof payload.api_app_id === "string" ? { api_app_id: payload.api_app_id } : {}), event: kept };
+}
+
 export const carriesText = (payload: Record<string, unknown>): boolean => {
   const event = payload.event;
   const type = typeof event === "object" && event !== null ? (event as { type?: unknown }).type : undefined;
@@ -74,6 +94,8 @@ export async function readChannelInfo(input: { token: string; channelId: string;
 export interface SlackForwarderDependencies {
   /** Sends one event to the broker. `wait` means a request/response invoke; otherwise an asynchronous event. Throws when it was not accepted. */
   invoke(event: SlackForwardEvent, wait: boolean): Promise<void>;
+  /** Puts a removal on the durable queue. Throws when it was not accepted. Absent: a removal goes by an asynchronous invoke like any other event. */
+  sendRemoval?(payload: Record<string, unknown>): Promise<void>;
   token(): Promise<string>;
   fetch: Fetch;
   edition: "enterprise" | "public";
@@ -87,6 +109,9 @@ export function createSlackForwarder(deps: SlackForwarderDependencies): (payload
   return async (raw) => {
     const payload = record(raw);
     if (payload.type !== "event_callback") return;
+    // A removal first: ids only, no lookup, durable.
+    const removal = removalPayload(raw);
+    if (removal !== undefined && deps.sendRemoval !== undefined) { await deps.sendRemoval(removal); return; }
     const event = record(payload.event);
     const teamId = payload.team_id;
     if (typeof teamId !== "string" || !TEAM.test(teamId) || typeof event.type !== "string") return;

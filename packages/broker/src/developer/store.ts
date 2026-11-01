@@ -664,6 +664,11 @@ export class DeveloperSignInStore {
     return link !== undefined && /^[1-9][0-9]{0,19}$/.test(link.subject) ? link.subject : undefined;
   }
 
+  /** The Slack user ids (`U...`) of the developer's linked Slack sign-ins. For the Team record's person erase, which must reach the Slack rows the person wrote; the ids go no further than that. */
+  async slackUserIdsOf(developerId: string): Promise<string[]> {
+    return [...new Set((await this.activeIdentityItems(developerId)).filter((link) => link.provider === "slack" && /^[UW][A-Z0-9]{2,31}$/.test(link.subject)).map((link) => link.subject))];
+  }
+
   /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */
   async identitiesOf(developerId: string): Promise<LinkedIdentity[]> {
     return (await this.activeIdentityItems(developerId)).map((link) => ({

@@ -1,3 +1,4 @@
+import { sqsOpsQueue } from "../team-record/ops-queue.js";
 import { createSlackForwarder } from "../team-record/slack-forward.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -1095,6 +1096,10 @@ function createAwsSlackIngressHandler() {
     token: async () => (await secrets()).botToken,
     fetch: fetch,
     edition: process.env.ROVARA_EDITION === "enterprise" ? "enterprise" : "public",
+    // Removals (a deleted message or channel, an uninstall) go to the durable queue as ids only, with no Slack lookup: the broker drains it and retries until it is applied.
+    ...(process.env.TEAM_RECORD_OPS_QUEUE_URL === undefined || process.env.TEAM_RECORD_OPS_QUEUE_URL === "" ? {} : {
+      sendRemoval: (payload: Record<string, unknown>) => sqsOpsQueue(sqs, process.env.TEAM_RECORD_OPS_QUEUE_URL!).send({ v: 1, op: "slack_removal", payload }),
+    }),
     async invoke(event, wait) {
       const response = await lambda.send(new InvokeCommand({ FunctionName: brokerFunctionName, InvocationType: wait ? "RequestResponse" : "Event", Payload: Buffer.from(JSON.stringify(event)) }));
       if (response.FunctionError !== undefined) throw new Error("the broker refused the record event");

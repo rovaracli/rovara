@@ -112,6 +112,8 @@ export const BROKER_NAMES = {
   // Team record (wire-team-record; present only when the install is synthesised with `agentxTeamRecord=enabled`): the role the broker assumes, with a per-workspace session policy, for every vector call.
   teamRecordVectorsRole: { code: "vr", variable: "TEAM_RECORD_VECTORS_ROLE_ARN", kind: "roleArn" },
   // Team record, Enterprise: the customer's KMS key (its id; the broker builds the ARN in this account and region), named in each workspace's vector session policy.
+  // Team record: the dead-letter queue of the durable queue for removals and edits (listed on the health route as `team-record`).
+  teamRecordDeadLetters: { code: "tq", variable: "HEALTH_DEAD_LETTER_QUEUES", kind: "deadLetterQueue", label: "team-record" },
   teamRecordKmsKey: { code: "tk", variable: "TEAM_RECORD_KMS_KEY_ARN", kind: "kmsKeyArn" },
 } as const satisfies Record<string, BrokerNameSpec>;
 

@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): the Team record's call sites. Everything here is an optional chain on `dependencies.teamRecord`, which is `undefined` unless the install was deployed with the
 // record's switch on (`TEAM_RECORD_ENABLED=1`, team-record/runtime.ts). With it off no function in this file reads, writes, schedules or even builds a client: the handler's branches answer "off" and return.
+import { teamRecordOpsQueueName } from "@agentx/contracts";
 import { registerHumanSendBackListener, sendBackToRecord, } from "../../lessons/send-back-events.js";
 import { TEAM_RECORD_SLACK_SOURCE, type SlackForwardEvent } from "../../team-record/slack-forward.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -39,6 +40,8 @@ export async function runTeamRecordJob(dependencies: HasTeamRecord, event: { job
 export async function recordSlackForward(dependencies: HasTeamRecord, event: SlackForwardEvent): Promise<{ skipped: true; reason: "off" } | { outcome: string }> {
   if (dependencies.teamRecord === undefined) return { skipped: true, reason: "off" };
   const outcome = await dependencies.teamRecord.taps.slack({ payload: event.payload, ...(event.channel === undefined ? {} : { channel: event.channel }) });
+  // The tap swallows its own errors into "failed". A failed record is THROWN so that Lambda runs the asynchronous invoke again (twice, one and two minutes later); a handler that returns is never retried.
+  if (outcome.outcome === "ignored" && outcome.reason === "failed") throw Object.assign(new Error("team record slack event failed"), { name: "TeamRecordSlackFailed" });
   return { outcome: outcome.outcome };
 }
 
@@ -79,4 +82,20 @@ export function recordAuditSinkOf(audit: AuditDeps["audit"], documentClient: { s
     if (items.length > 0) await documentClient.send(new TransactWriteCommand({ TransactItems: items }));
     await flushAuditEvents({ audit }, [event]);
   };
+}
+
+/** A batch from the record's durable queue (`agentx-<env>-team-record-ops`): an SQS event whose every record comes from that queue. */
+export interface QueueBatchEvent { Records: Array<{ eventSource: string; eventSourceARN: string; messageId: string; body: string; attributes?: { ApproximateReceiveCount?: string } }> }
+
+export function isTeamRecordQueueEvent(event: unknown, environment: Record<string, string | undefined> = process.env): event is QueueBatchEvent {
+  const name = environment.AGENTX_ENV;
+  if (event === null || typeof event !== "object" || "requestContext" in event || name === undefined || name === "") return false;
+  const records = (event as { Records?: unknown }).Records;
+  return Array.isArray(records) && records.length > 0 && records.every((record: { eventSource?: unknown; eventSourceARN?: unknown }) => record?.eventSource === "aws:sqs" && typeof record.eventSourceARN === "string" && record.eventSourceARN.endsWith(`:${teamRecordOpsQueueName(name)}`));
+}
+
+/** Drains the batch. Where the record is off the whole batch is reported as failed, so no message is lost to a broker that cannot apply it. */
+export async function drainTeamRecordQueue(dependencies: HasTeamRecord, event: QueueBatchEvent): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> {
+  if (dependencies.teamRecord === undefined) return { batchItemFailures: event.Records.map((record) => ({ itemIdentifier: record.messageId })) };
+  return dependencies.teamRecord.drain(event.Records.map((record) => ({ messageId: record.messageId, body: record.body, receiveCount: Number(record.attributes?.ApproximateReceiveCount ?? "1") || 1 })));
 }

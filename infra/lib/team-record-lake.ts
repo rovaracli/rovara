@@ -173,7 +173,13 @@ export class TeamRecordLake extends Construct {
       new iam.PolicyStatement({
         sid: "TeamRecordGlueCatalog",
         actions: ["glue:GetCatalog", "glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables"],
-        resources: [catalogArn, `${catalogArn}/s3tablescatalog`, `${catalogArn}/s3tablescatalog/${this.tableBucketName}`, stack.formatArn({ service: "glue", resource: "database", resourceName: "*" }), stack.formatArn({ service: "glue", resource: "table", resourceName: "*" })],
+        // Fix round 1, S3: the record's own database (the `record` namespace of the table bucket's federated catalog) and its tables, not every database and table of the account.
+        // [verify] the exact federated ARN form (`database/s3tablescatalog/<bucket>/<namespace>`, `table/s3tablescatalog/<bucket>/<namespace>/<table>`) in the test environment: run one templated query and one archive insert.
+        resources: [
+          catalogArn, `${catalogArn}/s3tablescatalog`, `${catalogArn}/s3tablescatalog/${this.tableBucketName}`,
+          stack.formatArn({ service: "glue", resource: "database", resourceName: `s3tablescatalog/${this.tableBucketName}/${LAKE_NAMESPACE}` }),
+          stack.formatArn({ service: "glue", resource: "table", resourceName: `s3tablescatalog/${this.tableBucketName}/${LAKE_NAMESPACE}/*` }),
+        ],
       }),
       new iam.PolicyStatement({ sid: "TeamRecordLakeFormationData", actions: ["lakeformation:GetDataAccess"], resources: ["*"] }),
       new iam.PolicyStatement({
