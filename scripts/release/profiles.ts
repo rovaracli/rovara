@@ -43,7 +43,7 @@ function everythingOn(): Record<string, string> {
     rovaraMcpHostedZoneId: "Z0123456789ABCDEFGHIJ",
     agentxReservedConcurrency: "true",
     agentxRovaraOrgId: "o-abcdef1234",
-    // (Text, as every recorded setting is. The infrastructure reads this key as an object today, so a text value has no effect on the templates; see the report.)
+    // (Text, as every recorded setting is; the infrastructure parses it as JSON.)
     evidenceRetentionDays: JSON.stringify({ "evidence-short": 30, "evidence-std": 90 }),
   };
 }

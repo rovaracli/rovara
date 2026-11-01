@@ -86,6 +86,40 @@ export function evidenceRetentionDays(retentionClass: EvidenceRetentionClass, co
   return Math.min(rule.max, Math.max(rule.min, configured));
 }
 
+const EVIDENCE_RETENTION_SETTING_MESSAGE = 'evidenceRetentionDays must be a JSON object such as {"evidence-short": 30, "evidence-std": 60}';
+/**
+ * The company's days as the infrastructure reads them. An install's recorded settings are text, so the value is JSON text (an object, as `cdk.json` writes it, is accepted too). Text that is not a JSON
+ * object is an ERROR, never "use the defaults": a customer who asked for 60 days must not get 14 without being told. Values are checked one by one by `evidenceRetentionDays` (clamped to the range).
+ */
+export function evidenceRetentionSetting(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined || value === "") return undefined;
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new Error(EVIDENCE_RETENTION_SETTING_MESSAGE);
+    }
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(EVIDENCE_RETENTION_SETTING_MESSAGE);
+  return parsed as Record<string, unknown>;
+}
+/** What may be RECORDED as the setting: only the two classes, each a whole number of days inside its allowed range (the infrastructure clamps; a record states what it means). */
+export function evidenceRetentionSettingProblem(value: string): string | undefined {
+  let setting: Record<string, unknown> | undefined;
+  try {
+    setting = evidenceRetentionSetting(value);
+  } catch (error) {
+    return error instanceof Error ? error.message : EVIDENCE_RETENTION_SETTING_MESSAGE;
+  }
+  for (const [key, days] of Object.entries(setting ?? {})) {
+    const rule = (EVIDENCE_RETENTION_DAYS as Record<string, { min: number; max: number } | undefined>)[key];
+    if (rule === undefined) return `evidenceRetentionDays names ${JSON.stringify(key.slice(0, 40))}, which is not an evidence class (evidence-short, evidence-std)`;
+    if (typeof days !== "number" || !Number.isInteger(days) || days < rule.min || days > rule.max) return `evidenceRetentionDays: ${key} is a whole number of days from ${String(rule.min)} to ${String(rule.max)}`;
+  }
+  return undefined;
+}
+
 /** What the pack holds about one stored artifact: never its bytes. */
 export const ArtifactRefSchema = z
   .object({

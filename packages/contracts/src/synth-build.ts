@@ -8,6 +8,7 @@ import { z } from "zod";
 import { BundlePath, sha256OfBytes } from "./bundle.js";
 import { canonicalJson } from "./canonical-json.js";
 import { environmentSettingsPrefix } from "./environments.js";
+import { evidenceRetentionSettingProblem } from "./evidence.js";
 
 const Sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -90,7 +91,11 @@ export const SynthSettingsSchema = z
     env: z.string().regex(/^[a-z][a-z0-9-]{0,30}$/),
     region: z.string().regex(/^[a-z]{2}(-[a-z]+)+-\d$/),
     identityMode: z.enum(["cognito", "oidc"]),
-    context: z.object(contextShape).strict(),
+    context: z.object(contextShape).strict().superRefine((context, issue) => {
+      // The one setting the infrastructure reads as an object: recorded as JSON text, checked here so a wrong record is refused when it is made, not ignored when it is built.
+      const problem = context.evidenceRetentionDays === undefined ? undefined : evidenceRetentionSettingProblem(context.evidenceRetentionDays);
+      if (problem !== undefined) issue.addIssue({ code: "custom", message: problem, path: ["evidenceRetentionDays"] });
+    }),
   })
   .strict();
 export type SynthSettings = z.infer<typeof SynthSettingsSchema>;
