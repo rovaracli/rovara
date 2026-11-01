@@ -4,7 +4,7 @@ import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObject
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { WORKSPACE_PROJECT_INDEX, orgProjectCatalogPk, workspaceProjectIndexValue, type OrgId } from "../../packages/contracts/src/index.js";
-import { createEvidenceErase, evidencePrefixesOf, evidenceStoredIn, markEvidenceStored } from "../../packages/broker/src/rovara-code/evidence-erase.js";
+import { createEvidenceErase, evidencePrefixesOf, evidenceStoredIn, markEvidenceStored, resumeEvidenceErase } from "../../packages/broker/src/rovara-code/evidence-erase.js";
 import { evidencePackKey, keepEvidence } from "../../packages/broker/src/rovara-code/evidence-keep.js";
 import { clearArchivedProjectLearning } from "../../packages/broker/src/aws/developer-routes/project-archive-setup.js";
 import { clearOrgData } from "../../packages/broker/src/aws/developer-routes/organization.js";
@@ -233,5 +233,72 @@ describe("an install that never kept evidence, and a walk that continues", () =>
     expect([...t.items.values()].filter((item) => item.pk === "EVIDENCE_ERASE_PENDING")).toEqual([]);
     // And the person's own evidence is gone.
     expect([...b.objects.keys()].some((k) => k.startsWith("private/own1/ws1/evidence-pack/t1/"))).toBe(false);
+  });
+});
+
+describe("a close or an archive that does not finish is not left behind", () => {
+  /** An erase whose clock jumps with every store call, so a pass runs out of time after a couple of calls; `resumer` has all the time it needs. */
+  function interrupted(t: ReturnType<typeof table>, b: ReturnType<typeof bucket>) {
+    let clock = 0;
+    const slow = { ...b.s3, send: async (command: unknown) => { clock += 60; return b.s3.send(command as never); } } as unknown as S3Client;
+    const ports = (now: () => number, maxMs: number) => ({ s3: slow, artifactBucketName: "bucket", ...t, now, maxMs }) as never;
+    return { slow: createEvidenceErase(ports(() => clock, 100)), resumer: ports(() => 0, 60_000), resumeErase: createEvidenceErase(ports(() => 0, 60_000)) };
+  }
+  const pendingOf = (t: ReturnType<typeof table>) => [...t.items.values()].filter((item) => item.pk === "EVIDENCE_ERASE_PENDING");
+  const evidenceLeft = (b: ReturnType<typeof bucket>) => [...b.objects.keys()].filter((k) => /\/evidence(-pack)?\//u.test(k) && !k.startsWith("private/ownx/"));
+
+  it("an interrupted company close: the close swallows the unfinished erase, a pending record is left, and the scheduled run finishes it", async () => {
+    const t = table();
+    const b = populate();
+    const w = interrupted(t, b);
+    // The close's step: the way OrgStore.closeOrg runs it (it catches and logs what the step throws).
+    await clearOrgData({ documentClient: { send: vi.fn(async () => ({ Items: [] })) }, tableName: "State", now: () => 0, evidenceErase: w.slow } as never)(ORG).catch(() => undefined);
+    expect(evidenceLeft(b).length).toBeGreaterThan(0);
+    expect(pendingOf(t)).toHaveLength(1);
+    expect(pendingOf(t)[0]).toMatchObject({ orgId: ORG, kind: "workspace" });
+    const report = await resumeEvidenceErase(w.resumer, w.resumeErase, { millis: 60_000 });
+    expect(report).toEqual({ pending: 1, finished: 1 });
+    expect(evidenceLeft(b)).toEqual([]);
+    expect(pendingOf(t)).toEqual([]);
+    // Another company's evidence was never touched.
+    expect(b.objects.has(key("ownx", "wsx", "evidence-pack", "t9", `${DIGEST}.json`))).toBe(true);
+  });
+
+  it("an interrupted project archive: the archive path logs and goes on, a pending record is left, and the scheduled run finishes it", async () => {
+    const t = table();
+    const b = populate();
+    const w = interrupted(t, b);
+    await expect(clearArchivedProjectLearning({ documentClient: { send: vi.fn(async () => ({})) }, tableName: "State", now: () => 0, evidenceErase: w.slow } as never, ORG, "web")).resolves.toBeUndefined();
+    expect(pendingOf(t)).toHaveLength(1);
+    expect(pendingOf(t)[0]).toMatchObject({ orgId: ORG, kind: "project", scopeKey: "web" });
+    await resumeEvidenceErase(w.resumer, w.resumeErase, { millis: 60_000 });
+    expect([...b.objects.keys()].filter((k) => /\/evidence(-pack)?\//u.test(k))).toEqual([key("own3", "ws3", "evidence", "t6", "b".repeat(64)), key("ownx", "wsx", "evidence-pack", "t9", `${DIGEST}.json`)]);
+    expect(pendingOf(t)).toEqual([]);
+  });
+
+  it("a pass that fails before it saved any progress (the store errors) still leaves its pending record", async () => {
+    const t = table();
+    const b = populate();
+    const broken = { send: async () => { throw new Error("store down"); } } as unknown as S3Client;
+    await expect(createEvidenceErase({ s3: broken, artifactBucketName: "bucket", ...t } as never).project(ORG, "web")).rejects.toThrow("store down");
+    expect(pendingOf(t)).toHaveLength(1);
+    await resumeEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t } as never, createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...t } as never), { millis: 60_000 });
+    expect(pendingOf(t)).toEqual([]);
+  });
+
+  it("the scheduled run continues a company close from the project it stopped in, finishes a person's abandoned erase, and a store that keeps failing leaves the record for the next run", async () => {
+    const t = table({ extraTasks: 3 });
+    const b = populate();
+    const w = interrupted(t, b);
+    await w.slow.person(ORG, DEV).catch(() => undefined);
+    await w.slow.workspace(ORG).catch(() => undefined);
+    expect(pendingOf(t).map((item) => item.kind).sort()).toEqual(["person", "workspace"]);
+    b.failDeletes.on = true;
+    // The person's tasks had nothing left; the company's evidence cannot be deleted just now: its record stays.
+    expect(await resumeEvidenceErase(w.resumer, w.resumeErase, { millis: 60_000 })).toEqual({ pending: 2, finished: 1 });
+    expect(pendingOf(t).map((item) => item.kind)).toEqual(["workspace"]);
+    b.failDeletes.on = false;
+    expect(await resumeEvidenceErase(w.resumer, w.resumeErase, { millis: 60_000 })).toEqual({ pending: 1, finished: 1 });
+    expect(evidenceLeft(b)).toEqual([]);
   });
 });

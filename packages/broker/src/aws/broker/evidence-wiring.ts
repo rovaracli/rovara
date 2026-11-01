@@ -5,7 +5,7 @@ import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { CheckEntry, OrgId } from "@agentx/contracts";
 import { workflowSelectedChecks, type WorkflowSnapshot } from "@agentx/contracts";
-import { createEvidenceErase, markEvidenceStored, type EvidenceErase } from "../../rovara-code/evidence-erase.js";
+import { createEvidenceErase, markEvidenceStored, resumeEvidenceErase, type EvidenceErase } from "../../rovara-code/evidence-erase.js";
 import { keepEvidence, policyKindsOf, type KeepEvidenceResult } from "../../rovara-code/evidence-keep.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
 import { developerTaskActions } from "./dependency-wiring.js";
@@ -60,4 +60,10 @@ export function personErasureStep(teamRecord: { erase: { person(orgId: OrgId, de
     if (teamRecord !== undefined) await teamRecord.erase.person(orgId, developerId);
     await evidence.person(orgId, developerId);
   };
+}
+
+/** The scheduled run's share for the evidence erases a caller left unfinished (a company close or a project archive cannot be repeated; a person's erase may also have been abandoned). */
+export function resumeEvidence(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "documentClient" | "tableName">, millis: number): Promise<{ pending: number; finished: number }> {
+  const ports = { s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName, documentClient: dependencies.documentClient, tableName: dependencies.tableName };
+  return resumeEvidenceErase(ports, createEvidenceErase(ports), { millis });
 }

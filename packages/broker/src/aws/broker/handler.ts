@@ -1,6 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
-import { evidenceEraseOf } from "./evidence-wiring.js";
+import { evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-press.js";
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
@@ -224,7 +224,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         timedSettlementJob({
           name: "resume-learning-walks", pick: "learning", startedAt, now: Date.now, ...learningPriority,
           onSkip: (name) => console.log(JSON.stringify({ component: "broker", event: "learning.settlement_job_skipped", job: name, reason: "not enough time left" })),
-          run: (budgetMs) => resumeOpenLearningWalks(learningWalkDeps({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }), { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))),
+          run: async (budgetMs) => {
+            const started = Date.now();
+            const learning = await resumeOpenLearningWalks(learningWalkDeps({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }), { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })));
+            // Proof and evidence (wire-proof fix round 2): the evidence erases a company close, a project archive or a person erase left unfinished are finished here, from their cursors, with what is left of the slice. Not behind the proof switch.
+            const evidence = await resumeEvidence(dependencies, Math.max(0, budgetMs - (Date.now() - started)));
+            return { learning, evidence };
+          },
         }),
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");

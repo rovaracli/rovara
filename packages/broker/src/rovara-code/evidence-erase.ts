@@ -105,9 +105,9 @@ export function createEvidenceErase(ports: EvidenceErasePorts): EvidenceErase {
   const now = ports.now ?? Date.now;
   const query = (input: Record<string, unknown>) => ports.documentClient.send(new QueryCommand({ TableName: ports.tableName, ...input })) as Promise<{ Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Key }>;
   const pendingKey = (p: PendingErase) => ({ pk: PENDING_PK, sk: `${p.orgId}|${p.kind}|${p.scopeKey}` });
-  async function load(p: PendingErase): Promise<Progress> {
+  async function load(p: PendingErase): Promise<Progress & { exists: boolean }> {
     const read = await ports.documentClient.send(new GetCommand({ TableName: ports.tableName, Key: pendingKey(p), ConsistentRead: true })) as { Item?: { cursor?: Key; projectNext?: number } };
-    return { cursor: read.Item?.cursor, projectNext: read.Item?.projectNext };
+    return { cursor: read.Item?.cursor, projectNext: read.Item?.projectNext, exists: read.Item !== undefined };
   }
   const save = (p: PendingErase, progress: Progress) => ports.documentClient.send(new PutCommand({ TableName: ports.tableName, Item: { ...pendingKey(p), entityType: "EVIDENCE_ERASE_PENDING", orgId: p.orgId, kind: p.kind, scopeKey: p.scopeKey, ...(progress.cursor === undefined ? {} : { cursor: progress.cursor }), ...(progress.projectNext === undefined ? {} : { projectNext: progress.projectNext }) } }));
   const clear = (p: PendingErase) => ports.documentClient.send(new DeleteCommand({ TableName: ports.tableName, Key: pendingKey(p) }));
@@ -165,6 +165,8 @@ export function createEvidenceErase(ports: EvidenceErasePorts): EvidenceErase {
     if (!(await evidenceStoredIn(ports, p.orgId))) { await clear(p); return true; }
     const stop = now() + budgetMs;
     const progress = await load(p);
+    // The pending record is written BEFORE any work, so a pass that dies anywhere (not only one that runs out of time) is found and finished by the scheduled run.
+    if (!progress.exists) await save(p, {});
     let done: boolean;
     if (p.kind === "person") done = await walk(p, progress, stop, personPage(p.orgId, p.scopeKey));
     else if (p.kind === "project") done = await walk(p, progress, stop, workspacePage(p.orgId, p.scopeKey));
