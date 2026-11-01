@@ -563,6 +563,21 @@ export class DynamoLessonStore implements LessonStore {
   }
 
   async isErased(key: ScopeKey, person: string): Promise<boolean> { return (await this.getItem(this.fenceKey(key, "P", normId(person)))) !== undefined; }
+  private markRefKey(key: ScopeKey, person: string) { return this.k(key, `LESSONSET#MARKREF#${sha(normId(person))}`); }
+  async markRef(key: ScopeKey, person: string): Promise<string | undefined> {
+    if (await this.isErased(key, person)) return undefined;
+    const at = this.markRefKey(key, person);
+    let item = await this.getItem(at);
+    if (item === undefined) {
+      const ref = randomUUID().replaceAll("-", "").slice(0, 24);
+      await this.put({ ...at, entityType: "LESSON_MARK_REF", ref }, NOT_EXISTS);
+      item = await this.getItem(at);
+      // An erasure that raced the creation: its fence is up now, so the link is removed again and no mark is made.
+      if (await this.isErased(key, person)) { await this.del(at); return undefined; }
+    }
+    return typeof item?.ref === "string" ? item.ref : undefined;
+  }
+  async forgetMarkRef(key: ScopeKey, person: string): Promise<void> { await this.del(this.markRefKey(key, person)); }
 
   // ---- deletion intents
   async putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void> {

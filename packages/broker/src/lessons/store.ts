@@ -5,6 +5,7 @@
 //   - every lesson version is kept, and every set version records which lesson versions it held, so a rollback restores a past set;
 //   - counters and expiry bookkeeping change in place (`mutate`) without a new version.
 // Every key carries the workspace and the project, so one workspace's call can never read or change another's lessons.
+import { randomUUID } from "node:crypto";
 import { applyWriteFence, planRollback, withUsageOf, type FenceView } from "./store-rules.js";
 import { LessonSchema, normId, normSource, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
 import type { LessonStage } from "@agentx/contracts";
@@ -81,6 +82,13 @@ export interface LessonStore {
    * project's fence item.
    */
   fence(key: ScopeKey, fence: { people?: readonly string[]; ids?: readonly string[]; /** An erased person's SOURCE ids (a Slack or GitHub user id): they may sit in a lesson's audience snapshot, and no commit may carry them. */ sourceIds?: readonly string[] }): Promise<void>;
+  /**
+   * A random reference for a person, the same each time, for keys that must not be derived from who they are (the "one mark per person per lesson" key of Helpful / Wrong here). Erasure
+   * deletes the link (`forgetMarkRef`), so the rows made with the reference name nobody. Undefined for a person who is erased: they can make no new mark.
+   */
+  markRef(key: ScopeKey, person: string): Promise<string | undefined>;
+  /** Deletes the link between a person and their reference. */
+  forgetMarkRef(key: ScopeKey, person: string): Promise<void>;
   /** Whether a person is fenced (erased). Ids are compared case-insensitively. */
   isErased(key: ScopeKey, person: string): Promise<boolean>;
   putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void>;
@@ -101,7 +109,7 @@ interface ProjectState {
   manifests: Map<string, LoadManifest>; once: Set<string>; pending: Map<string, PendingOutcome>; flags: ProjectFlags;
   sourceEvents: Array<{ at: number; source: string }>;
   gone: Map<string, "withdrawn" | "purged">;
-  erased: Set<string>; erasedSources: Set<string>; deletedIds: Set<string>; intents: Map<string, DeletionIntent>;
+  erased: Set<string>; markRefs: Map<string, string>; erasedSources: Set<string>; deletedIds: Set<string>; intents: Map<string, DeletionIntent>;
 }
 
 export class InMemoryLessonStore implements LessonStore {
@@ -111,7 +119,7 @@ export class InMemoryLessonStore implements LessonStore {
     const id = scopeId(key);
     let value = this.state.get(id);
     if (value === undefined) {
-      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map(), erased: new Set(), erasedSources: new Set(), deletedIds: new Set(), intents: new Map() };
+      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map(), markRefs: new Map(), erased: new Set(), erasedSources: new Set(), deletedIds: new Set(), intents: new Map() };
       this.state.set(id, value);
     }
     return value;
@@ -244,6 +252,14 @@ export class InMemoryLessonStore implements LessonStore {
     for (const id of fence.ids ?? []) s.deletedIds.add(id);
   }
   async isErased(key: ScopeKey, person: string): Promise<boolean> { return this.of(key).erased.has(normId(person)); }
+  async markRef(key: ScopeKey, person: string): Promise<string | undefined> {
+    const s = this.of(key), who = normId(person);
+    if (s.erased.has(who)) return undefined;
+    let ref = s.markRefs.get(who);
+    if (ref === undefined) { ref = randomUUID().replaceAll("-", "").slice(0, 24);s.markRefs.set(who, ref); }
+    return ref;
+  }
+  async forgetMarkRef(key: ScopeKey, person: string): Promise<void> { this.of(key).markRefs.delete(normId(person)); }
   async putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void> { this.of(key).intents.set(intent.id, clone(intent)); }
   async getIntent(key: ScopeKey, id: string): Promise<DeletionIntent | undefined> { const i = this.of(key).intents.get(id); return i === undefined ? undefined : clone(i); }
   async listIntents(key: ScopeKey, filter?: { finished?: boolean }): Promise<DeletionIntent[]> {

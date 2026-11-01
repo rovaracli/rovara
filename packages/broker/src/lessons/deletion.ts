@@ -224,6 +224,8 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
         scrubbed.push(h.head.id);
       }
       await deps.store.forgetSource(k, `member:${erased.developerId}`);
+      // The link from the person to the reference their Helpful / Wrong here marks were made with: the marks stay as counts and name nobody.
+      await deps.store.forgetMarkRef(k, erased.developerId);
       return { purged, scrubbed };
     },
   };
