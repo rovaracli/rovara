@@ -134,15 +134,19 @@ export const detectBrazil: Detector = async ({ repo, cwd }) => {
     texts.set(path, text.split("\n"));
     all.push(...scan(path, text));
   }
-  // The best occurrence of each distinct command.
-  const distinct = new Map<string, Candidate>();
-  for (const candidate of all) {
-    const known = distinct.get(candidate.line);
-    if (known === undefined || better(candidate, known, "test")) distinct.set(candidate.line, candidate);
-  }
-  const candidates = [...distinct.values()];
-  const test = candidates.filter((candidate) => candidate.test >= 2).reduce<Candidate | undefined>((best, candidate) => (best === undefined || better(candidate, best, "test") ? candidate : best), undefined);
-  const build = candidates.filter((candidate) => candidate !== test && candidate.build >= 2).reduce<Candidate | undefined>((best, candidate) => (best === undefined || better(candidate, best, "build") ? candidate : best), undefined);
+  // The best occurrence of each distinct command, picked separately for each purpose: a command cited as the build command is cited where the text ties it to building.
+  const bestBy = (score: "test" | "build"): Candidate[] => {
+    const distinct = new Map<string, Candidate>();
+    for (const candidate of all) {
+      const known = distinct.get(candidate.line);
+      if (known === undefined || better(candidate, known, score)) distinct.set(candidate.line, candidate);
+    }
+    return [...distinct.values()];
+  };
+  const pick = (list: Candidate[], score: "test" | "build"): Candidate | undefined => list.filter((candidate) => candidate[score] >= 2).reduce<Candidate | undefined>((best, candidate) => (best === undefined || better(candidate, best, score) ? candidate : best), undefined);
+  const candidates = bestBy("test");
+  const test = pick(candidates, "test");
+  const build = pick(bestBy("build").filter((candidate) => candidate.line !== test?.line), "build");
 
   if (test === undefined && build === undefined) {
     notes.push("Rovara does not guess how Brazil runs tests in your setup: no Brazil build or test command was written down in the steering files, AGENTS.md, CLAUDE.md, README, docs or runbooks.");
@@ -168,8 +172,8 @@ export const detectBrazil: Detector = async ({ repo, cwd }) => {
   notes.push("The Brazil commands below were written down by your team (each is cited with its file and line); Rovara did not invent them.");
   if (test !== undefined && checks[0]?.value.reportPath === undefined) notes.push("Rovara does not know where Brazil writes test reports, so no report path is proposed for the Brazil command; counts come from the exit code unless the language tool's own report is found or a maintainer sets one.");
   if (test === undefined) notes.push("The team's docs name a Brazil build command but none tied to tests, so no Brazil test command is proposed.");
-  const used = new Set([test, build]);
-  const others = candidates.filter((candidate) => !used.has(candidate)).sort((left, right) => (better(left, right, "test") ? -1 : better(right, left, "test") ? 1 : 0)).slice(0, MAX_ALTERNATIVES);
+  const used = new Set([test?.line, build?.line]);
+  const others = candidates.filter((candidate) => !used.has(candidate.line)).sort((left, right) => (better(left, right, "test") ? -1 : better(right, left, "test") ? 1 : 0)).slice(0, MAX_ALTERNATIVES);
   if (others.length > 0) notes.push(`Other Brazil commands the team wrote down: ${others.map((candidate) => `${candidate.line} (${candidate.path} line ${String(candidate.at)})`).join("; ")}.`);
   return test === undefined ? { checks, notes, questions: ["How does your build system run the unit tests, and where does it write the JUnit and coverage reports?"] } : { checks, notes };
 };

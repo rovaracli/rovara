@@ -38,6 +38,21 @@ function selectionNote(): string {
   return "Rovara proposes no per-test selection for Maven or Gradle (their test filters take one pattern per flag, which the selection template cannot express safely), so every run is the whole suite.";
 }
 
+/** The wrapper downloads its build tool from the URL in its properties file; a host other than the tools' own is named so a person sees where code will come from. */
+const WRAPPER_HOSTS = new Set(["services.gradle.org", "repo.maven.apache.org"]);
+async function wrapperSourceNotes(repo: DetectorContext["repo"], path: string, tool: string): Promise<string[]> {
+  const text = await repo.read(path);
+  if (text === undefined) return [];
+  const notes: string[] = [];
+  for (const match of text.matchAll(/^[ \t]*(distributionUrl|wrapperUrl)[ \t]*[=:][ \t]*(\S+)/gmu)) {
+    const host = /^https?:\/\/(?:[^/@\s]*@)?([A-Za-z0-9.-]{1,253})(?::\d{1,5})?(?:[/\s]|$)/u.exec(match[2]!.replace(/\\(.)/gu, "$1"))?.[1]?.toLowerCase();
+    const where = `${path} line ${String(lineOf(text, match.index))}`;
+    if (host === undefined) notes.push(`The ${tool} wrapper's ${match[1]!} (${where}) could not be read as a web address, so where it downloads ${tool} from is not known.`);
+    else if (!WRAPPER_HOSTS.has(host)) notes.push(`The ${tool} wrapper downloads ${tool} from ${host} (${where}), not from the usual source; confirm that is a source you trust.`);
+  }
+  return notes;
+}
+
 // ---- Maven
 
 interface PluginBlock { body: string; index: number; line: number }
@@ -76,6 +91,7 @@ async function detectMaven(context: DetectorContext, hasTests: boolean): Promise
   const notes: string[] = [];
   const hasWrapper = repo.paths.includes("mvnw") && repo.paths.includes(".mvn/wrapper/maven-wrapper.properties");
   if (repo.paths.includes("mvnw") && !hasWrapper) notes.push("A Maven wrapper script (mvnw) was found without .mvn/wrapper/maven-wrapper.properties, so it cannot run; the commands use mvn.");
+  if (hasWrapper) notes.push(...(await wrapperSourceNotes(repo, ".mvn/wrapper/maven-wrapper.properties", "Maven")));
   const executable = hasWrapper ? "./mvnw" : "mvn";
   const run = (goals: string[], timeoutSeconds: number) => cmd(cwd, executable, ["-B", ...goals], timeoutSeconds);
   const top = findLine(pom, /<project[\s>]/u) ?? 1;
@@ -190,8 +206,9 @@ async function detectGradle(context: DetectorContext, hasTests: boolean): Promis
   const build = clean(buildRaw);
   const settings = clean(settingsRaw);
   const notes: string[] = [];
-  const hasWrapper = repo.paths.includes("gradlew") && repo.paths.includes("gradle/wrapper/gradle-wrapper.properties");
-  if (repo.paths.includes("gradlew") && !hasWrapper) notes.push("A Gradle wrapper script (gradlew) was found without gradle/wrapper/gradle-wrapper.properties, so it cannot run; the commands use gradle.");
+  const hasWrapper = repo.paths.includes("gradlew") && repo.paths.includes("gradle/wrapper/gradle-wrapper.properties") && repo.paths.includes("gradle/wrapper/gradle-wrapper.jar");
+  if (repo.paths.includes("gradlew") && !hasWrapper) notes.push("A Gradle wrapper script (gradlew) was found without gradle/wrapper/gradle-wrapper.properties and gradle/wrapper/gradle-wrapper.jar, so it cannot run; the commands use gradle.");
+  if (hasWrapper) notes.push(...(await wrapperSourceNotes(repo, "gradle/wrapper/gradle-wrapper.properties", "Gradle")));
   const executable = hasWrapper ? "./gradlew" : "gradle";
   const run = (tasks: string[], timeoutSeconds: number) => cmd(cwd, executable, ["--console=plain", ...tasks], timeoutSeconds);
   const buildPath = buildName ?? settingsName ?? "build.gradle";

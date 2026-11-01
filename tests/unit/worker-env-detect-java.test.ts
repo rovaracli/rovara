@@ -11,8 +11,8 @@ async function detect(files: Files) {
 const pom = (body: string, head = ""): string => ["<project>", "  <modelVersion>4.0.0</modelVersion>", head, "  <build>", "    <plugins>", body, "    </plugins>", "  </build>", "</project>", ""].join("\n");
 const plugin = (artifactId: string, config = ""): string => `      <plugin>\n        <artifactId>${artifactId}</artifactId>\n${config}      </plugin>`;
 const TEST_FILE: Files = { "src/test/java/com/acme/MatchTest.java": "class MatchTest {}\n" };
-const MAVEN_WRAPPER: Files = { mvnw: "#!/bin/sh\n", ".mvn/wrapper/maven-wrapper.properties": "distributionUrl=x\n" };
-const GRADLE_WRAPPER: Files = { gradlew: "#!/bin/sh\n", "gradle/wrapper/gradle-wrapper.properties": "distributionUrl=x\n" };
+const MAVEN_WRAPPER: Files = { mvnw: "#!/bin/sh\n", ".mvn/wrapper/maven-wrapper.properties": "distributionUrl=https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.6/apache-maven-3.9.6-bin.zip\n" };
+const GRADLE_WRAPPER: Files = { gradlew: "#!/bin/sh\n", "gradle/wrapper/gradle-wrapper.properties": "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n", "gradle/wrapper/gradle-wrapper.jar": "" };
 const byId = (detection: Awaited<ReturnType<typeof detect>>, id: string) => detection.checks.find((check) => check.value.id === id);
 
 describe("Maven", () => {
@@ -206,3 +206,24 @@ describe("ambiguous or unusual Java repositories", () => {
     ]));
   });
 });
+
+describe("fix round 1: wrapper files and where the wrapper downloads from", () => {
+  it("uses gradle, and says why, when gradlew has its properties file but no wrapper jar", async () => {
+    const detection = await detect({ "build.gradle": "", gradlew: "", "gradle/wrapper/gradle-wrapper.properties": "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n", ...TEST_FILE });
+    expect(byId(detection, "unit")?.value.command.executable).toBe("gradle");
+    expect(detection.notes.join(" ")).toContain("gradle-wrapper.jar");
+    const complete = await detect({ "build.gradle": "", ...GRADLE_WRAPPER, ...TEST_FILE });
+    expect(byId(complete, "unit")?.value.command.executable).toBe("./gradlew");
+    expect(complete.notes.join(" ")).not.toContain("downloads");
+  });
+  it("names the host the wrapper downloads from when it is not the tool's own, and says nothing for the usual ones", async () => {
+    const gradle = await detect({ "build.gradle": "", gradlew: "", "gradle/wrapper/gradle-wrapper.jar": "", "gradle/wrapper/gradle-wrapper.properties": "# wrapper\ndistributionUrl=https\\://downloads.evil.example/gradle-8.zip\n", ...TEST_FILE });
+    expect(gradle.notes.join(" ")).toContain("downloads Gradle from downloads.evil.example (gradle/wrapper/gradle-wrapper.properties line 2)");
+    const maven = await detect({ "pom.xml": pom(""), mvnw: "", ".mvn/wrapper/maven-wrapper.properties": "distributionUrl=https://repo.maven.apache.org/x.zip\nwrapperUrl=http://mirror.evil.example:8080/maven-wrapper.jar\n", ...TEST_FILE });
+    expect(maven.notes.join(" ")).toContain("downloads Maven from mirror.evil.example (.mvn/wrapper/maven-wrapper.properties line 2)");
+    expect(maven.notes.join(" ")).not.toContain("repo.maven.apache.org");
+    const unreadable = await detect({ "pom.xml": pom(""), mvnw: "", ".mvn/wrapper/maven-wrapper.properties": "distributionUrl=x\n", ...TEST_FILE });
+    expect(unreadable.notes.join(" ")).toContain("could not be read as a web address");
+  });
+});
+

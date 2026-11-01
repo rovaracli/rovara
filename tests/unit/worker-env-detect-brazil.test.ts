@@ -106,7 +106,7 @@ describe("the language tool keeps running inside a Brazil package", () => {
     expect(detection.notes.join(" ")).toContain("Prove run decides");
   });
   it("shows Gradle and the Brazil command together, and still proposes only the language tool's commands when the docs say nothing", async () => {
-    const files: Files = { Config: CONFIG, "build.gradle": "plugins {\n  id 'java'\n}\n", "gradlew": "", "gradle/wrapper/gradle-wrapper.properties": "", "src/test/java/ATest.java": "" };
+    const files: Files = { Config: CONFIG, "build.gradle": "plugins {\n  id 'java'\n}\n", "gradlew": "", "gradle/wrapper/gradle-wrapper.properties": "", "gradle/wrapper/gradle-wrapper.jar": "", "src/test/java/ATest.java": "" };
     const quiet = await detect(files);
     expect(quiet.checks.map((check) => check.value.id)).toEqual(["unit"]);
     expect(quiet.checks[0]?.value.reportPath).toBe("build/test-results/test");
@@ -166,5 +166,14 @@ describe("fix round 1: Brazil launchers, negation, comments, secrets and package
     expect(JSON.stringify(detection)).not.toContain(fakeKey);
     const only = await detect({ Config: CONFIG, "README.md": doc("## Tests", `\`brazil-build -Dtoken=${fakeKey} release\``) });
     expect(only.checks).toEqual([]);
+  });
+  it("cites the build command where the text ties it to building, not where it best fits the test command", async () => {
+    const detection = await detect({
+      Config: CONFIG,
+      "README.md": doc("## Tests", "`brazil-build test`", "", "Also `brazil-build` runs the tests."),
+      "docs/build.md": doc("## Build", "", "Compile with `brazil-build`."),
+    });
+    expect(byId(detection, "brazil-test")?.source).toEqual({ path: "README.md", line: 2 });
+    expect(byId(detection, "brazil-build")?.source).toEqual({ path: "docs/build.md", line: 3 });
   });
 });

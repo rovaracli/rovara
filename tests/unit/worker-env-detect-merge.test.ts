@@ -11,7 +11,7 @@ async function detect(files: Files) {
 }
 const CONFIG = "package.PartnerService = {\n  interfaces = (1.0);\n};\n";
 const PYTEST: Files = { "pytest.ini": "[pytest]\naddopts = -q --junitxml=out/results.xml\n", "tests/test_a.py": "" };
-const GRADLE: Files = { "build.gradle": "plugins {\n  id 'java'\n  id 'checkstyle'\n}\n", gradlew: "", "gradle/wrapper/gradle-wrapper.properties": "", "src/test/java/ATest.java": "" };
+const GRADLE: Files = { "build.gradle": "plugins {\n  id 'java'\n  id 'checkstyle'\n}\n", gradlew: "", "gradle/wrapper/gradle-wrapper.properties": "", "gradle/wrapper/gradle-wrapper.jar": "", "src/test/java/ATest.java": "" };
 const NODE: Files = { "package.json": '{\n  "scripts": {\n    "test": "vitest run",\n    "lint": "eslint ."\n  }\n}', "package-lock.json": "{}" };
 const BRAZIL_DOC: Files = { "README.md": "## Tests\n```\nbrazil-build release\n```\n" };
 
