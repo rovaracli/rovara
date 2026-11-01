@@ -426,7 +426,7 @@ export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId
  * allow them (I-1); their role is read under every id they answer to, so a member merged into another person is judged by the surviving record, and anything that is not a writer's role
  * (the Auditor, an unknown role, a record with no role) is refused (I-2). With no member record at all: an Enterprise (Auditor-role) install refuses them, a removed or banned person
  * (their ORG_REMOVED / ORG_BAN row, under any id they answer to) is refused everywhere, and anyone else is the implicit member of a single-org install. Where a person may be UNLINKED
- * (`allowUnlinked`, the service routes: ruling R31, Slack-first work paid by the project or org when no member is known) a person with no org at all is that same implicit member; the
+ * (`allowUnlinked`, the service routes) a person with no org at all is that same implicit member: the existing behaviour for an unlinked requester, whose spend ruling R31 admits against the org alone (R31 is a budget ruling and says nothing about roles); the
  * ingress callers need a real caller identity, so for them an unlinked person is refused.
  */
 export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean } = {}): Promise<WriterOrgRole> {

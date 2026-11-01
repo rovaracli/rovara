@@ -121,6 +121,18 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     }
   });
 
+  it("a removal or ban row under the merge survivor's id alone refuses the merged-away Slack id", async () => {
+    const survivor = "9".repeat(64);
+    for (const row of [orgRemovedKey(TEST_ORG, survivor), orgBanKey(TEST_ORG, survivor)]) {
+      const h = await withKit();
+      h.db.set({ pk: `DEVELOPER#${guestId}`, sk: "META", developerId: guestId, mergedInto: survivor });
+      // The harness records a signed-in developer as a member; a merge deletes the duplicate's member record (retire), so the Slack id is left with none.
+      h.db.delete(orgMemberKey(TEST_ORG, guestId));
+      h.db.set({ ...row, orgId: TEST_ORG, developerId: survivor });
+      await refusedOnEveryRoute(h, GUEST);
+    }
+  });
+
   it("a requester of another org (a Slack Connect guest, a stale link) is refused", async () => {
     const orgResolver = async (subject: { developerId?: string; ownerKey?: string }) => (subject.developerId === guestId ? OTHER_ORG : TEST_ORG) as never;
     const h = await withKit({ brokerExtra: { orgResolver } });
@@ -141,6 +153,7 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     await refusedOnEveryRoute(h, GUEST);
   });
 
+  // The implicit member is the existing behaviour for an unlinked requester on a single-org install (the budget ruling R31 only says such a requester answers to the org alone).
   it("control: a single-org install still treats a person with no record as the implicit member", async () => {
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
