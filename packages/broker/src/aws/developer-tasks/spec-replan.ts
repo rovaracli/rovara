@@ -8,6 +8,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { WorkflowTransitionError, agentXError, redactText, replanForChangedSpec, specStripHidden, workflowOwnerAuthorized, type DeveloperTaskView, type SpecFile, type WorkflowSnapshot } from "@agentx/contracts";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
+import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 import { aiToolTurn, developerTaskIdentity, taskKey } from "../../developer/task-records.js";
 import { specRendererFor } from "../../spec/index.js";
 import { specStateItem } from "../../spec/hooks.js";
@@ -88,6 +89,8 @@ export async function replanForSpecChange(deps: DeveloperTaskRouteDependencies, 
   if (prior !== undefined) return view();
   if (state.editPrompt.status !== "open") throw agentXError("IDEMPOTENCY_CONFLICT", SPEC_REPLAN_REFUSALS.stale);
   await requireMayGoOn(deps, caller, task);
+  // An archived project takes no new work: a re-plan restarts planning, so it is refused here as a plan change request is (decide.ts).
+  await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   const receivedAt = new Date(deps.now()).toISOString();
   let returned: WorkflowSnapshot;
   try {

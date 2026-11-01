@@ -23,6 +23,7 @@ import { creatorGuard, get, iso, taskBaseOption } from "./common.js";
 import { accessFence, authorizeTaskAction, systemTaskAccess } from "./access.js";
 import { approvedCodingPlan } from "./workflow-inputs.js";
 import { replanForSpecChange } from "./spec-replan.js";
+import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 
 const refOf = (task: DeveloperTaskRecord): SpecTaskRef => ({ taskId: task.taskId, title: task.title, knowledgeCommit: task.knowledgeCommit });
 
@@ -233,6 +234,8 @@ async function queueRepublish(deps: DeveloperTaskRouteDependencies, task: Develo
 export async function specOwnerChoice(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, action: "retry" | "continue_without_spec" | "keep" | "replan"): Promise<{ status: string }> {
   const access = await authorizeTaskAction(deps, caller, taskId, "publish");
   const task = access.task;
+  // An archived project takes no new work: Retry starts the spec write again (Re-plan has its own check in replanForSpecChange).
+  if (action === "retry") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   // Re-plan sends the task back to plan approval (wire lane D, MD-1): the workflow, the planning run and the spec's record move in one transaction.
   if (action === "replan") { await replanForSpecChange(deps, caller, taskId); return { status: "replan" }; }
   const hooks = createSpecHooks(worldFor(deps, task, accessFence(deps, access)));
