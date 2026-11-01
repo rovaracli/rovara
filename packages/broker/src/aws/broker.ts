@@ -7634,7 +7634,11 @@ async function handleSlackModelAccess(dependencies: AwsBrokerDependencies, reque
   const modelAccess = dependencies.modelAccess;
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   // The requester is checked here too, before anything is routed, admitted or minted: this route does not rely on a workspace having been made (and so checked) first.
-  if (await slackRequesterProjectRole(dependencies, teamOrg, requester.userId, binding.projectName) === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(binding.projectName));
+  // A project viewer may read: in a Slack-started task's own thread the channel's people ask questions about the task (task-answer mode, a read-only view with no tools), and that turn needs a
+  // key. The thread decides this on the server (its shared task record, as `slackServiceIdentity` reads it), never the request, so a viewer's key cannot be widened to a working thread.
+  const shared = await sharedThread(dependencies, thread);
+  const taskAnswerThread = shared !== undefined && !sharedThreadOpen(shared, binding) && shared.workflowThread === true && shared.closedAt === undefined && binding.projectName === shared.project;
+  if (await slackRequesterProjectRole(dependencies, teamOrg, requester.userId, binding.projectName) === "viewer" && !taskAnswerThread) throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(binding.projectName));
   // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
   // known) and tagged so; without them it is minted as it always was.
   try {
