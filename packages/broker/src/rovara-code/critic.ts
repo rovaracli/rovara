@@ -202,9 +202,16 @@ export function criticModelFor(input: CriticModelInput): CriticModel {
   return { refuse: agentXError("MODEL_NOT_ALLOWED", modelNotAllowedText(subject, input.planModel ?? input.sources[0] ?? input.project.approved?.[0] ?? { provider: "unknown", modelId: "unknown" }, input.project.name)) };
 }
 
+/**
+ * The company names a 0.4.27 build accepts in a stored critique. Until 0.4.27 can no longer be rolled back to (remove this when the release line has moved past 0.5.x), a critique records any other company as
+ * "other", so a rolled-back build still parses the task's workflow snapshot. The stored read itself is lenient (PlanCritiqueSchema).
+ */
+const STORED_CRITIQUE_COMPANIES: ReadonlySet<string> = new Set(["anthropic", "openai", "google", "other"]);
+
 /** A model as the critique records it: its provider and id, and the company by which Rovara knows it. */
 export function critiqueModelOf(model: ModelIdentifier): PlanCritique["model"] {
-  return { provider: model.provider, modelId: model.modelId, company: modelCompany(model) };
+  const company = modelCompany(model);
+  return { provider: model.provider, modelId: model.modelId, company: STORED_CRITIQUE_COMPANIES.has(company) ? company : "other" };
 }
 
 // ---- what the critic is told, what a planner is told of it, and what a person reads

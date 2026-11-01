@@ -5,7 +5,7 @@ import { z } from "zod";
 import { OrgIdSchema, SessionBindingSchema, SessionIdSchema } from "./browser-ids.js";
 import { forwardReader } from "./forward-reader.js";
 import { EVIDENCE_NOT_TESTED_KINDS, ProofDetailSchema } from "./evidence.js";
-import { ModelCompanySchema, ModelIdentifierSchema } from "./models.js";
+import { MODEL_COMPANIES, ModelCompanySchema, ModelIdentifierSchema } from "./models.js";
 import { redactText } from "./redaction.js";
 import { SetupApplyBodySchema, SetupProposalSchema, SetupReviewEntrySchema } from "./setup-proposal.js";
 
@@ -248,7 +248,8 @@ export const PlanCritiqueSchema = z
     points: z
       .array(z.object({ id: z.string().min(1).max(32), severity: z.enum(["blocking", "note"]), text: z.string().min(1).max(500), claimId: z.string().min(1).max(64).optional() }).strict())
       .max(PLAN_CRITIC_POINTS_MAX),
-    model: ModelIdentifierSchema.extend({ company: ModelCompanySchema }).strict(),
+    // A stored critique is read leniently: a company name this build does not know reads as "other" rather than failing the whole workflow snapshot (a rollback must never strand a task).
+    model: ModelIdentifierSchema.extend({ company: z.preprocess((value) => (typeof value === "string" && !(MODEL_COMPANIES as readonly string[]).includes(value) ? "other" : value), ModelCompanySchema) }).strict(),
   })
   .strict();
 export type PlanCritique = z.infer<typeof PlanCritiqueSchema>;

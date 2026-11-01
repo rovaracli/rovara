@@ -387,7 +387,8 @@ describe("the company behind a Bedrock model (SH33)", () => {
       expect(StageModelCandidateSchema.safeParse({ model: { provider: "amazon-bedrock", modelId: "x" }, label: "X", provider: "amazon-bedrock", company, status: "verified" }).success).toBe(true);
       expect(PlanCritiqueSchema.safeParse({ verdict: "ok", points: [], model: { provider: "amazon-bedrock", modelId: "x", company } }).success).toBe(true);
     }
-    expect(PlanCritiqueSchema.safeParse({ verdict: "ok", points: [], model: { provider: "amazon-bedrock", modelId: "x", company: "made-up" } }).success).toBe(false);
+    // A stored critique with a company this build does not know reads as "other" (a rollback must not strand a task).
+    expect(PlanCritiqueSchema.parse({ verdict: "ok", points: [], model: { provider: "amazon-bedrock", modelId: "x", company: "made-up" } }).model.company).toBe("other");
   });
 });
 
