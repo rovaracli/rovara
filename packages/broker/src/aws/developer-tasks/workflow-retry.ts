@@ -367,6 +367,8 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
       return retryTaskWorkflow(deps, caller, taskId, request.expectedRevision === undefined ? value : { ...(value as Record<string, unknown>), expectedRevision: fresh.workflow.revision }, true);
     }
   }
+  // An archived project takes no new work: a CI fix or branch sync Retry starts agent work, so it is refused before that branch is taken (not only after it).
+  if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   // Plan 6 Task 15: a CI fix that waited for a person (suggest), ran out of rounds or changed nothing goes on at the owner's Retry.
   if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED" && (isCiFixBlockReason(task.workflow.blockReason) || isBranchConflictAskReason(task.workflow.blockReason) || isBranchSyncGiveUpReason(task.workflow.blockReason))) return retryCiFix(deps, caller, access, request);
   // A lifecycle restart is new agent work, unlike Continue or an existing workflow decision.

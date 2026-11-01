@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, WorkflowSnapshotSchema, ciFixAskMessage, ciFixStopMessage, type WorkflowProgram } from "@agentx/contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
+import { projectMetaKey } from "@agentx/contracts";
 import { TEST_ORG } from "../../support/orgs.js";
 import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { ciEvidenceKey } from "../../../packages/broker/src/rovara-code/ci-fix.js";
@@ -179,6 +180,24 @@ describe("Suite 14: fixing failing CI", () => {
     expect(e2e.workflow().ciFixApproved).toBeUndefined();
     expect(said(e2e).at(-1)).toBe(PUSHED_FIX_TRACKED(pullRequest.number));
     expect(prompts.some((prompt) => prompt.includes(CI_OUTPUT_BLOCK_HEADER))).toBe(true);
+  }, 240_000);
+
+  it("14.3b an archived project refuses the owner's Retry of a CI fix that waited for them: nothing moves and no round is queued", async () => {
+    const { e2e, github } = await waitingForMerge();
+    freezeAutonomy(e2e, "suggest");
+    github.state.red = true;
+    await trackAndFix(e2e);
+    const asked = e2e.workflow();
+    expect(asked).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: ciFixAskMessage("test") });
+    const key = projectMetaKey(TEST_ORG, "payments");
+    e2e.db.set({ ...e2e.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
+    const before = structuredClone(task(e2e));
+    const refused = await retry(e2e, "11111111-2222-4333-8444-555555555561");
+    expect(refused.isError).toBe(true);
+    expect(JSON.stringify(refused)).toContain("archived");
+    expect(task(e2e)).toEqual(before);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", revision: asked.revision });
+    expect(dispatchRows(e2e)).toEqual([]);
   }, 240_000);
 
   it("14.4 three rounds that do not help stop with the exact text, and each Retry is one more round and a stop again", async () => {
