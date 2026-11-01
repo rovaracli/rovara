@@ -2,10 +2,11 @@
 // look at a task and cancel it, but every action that changes it or starts work is refused with the viewer message, on every surface, and no
 // dispatch for a viewer's task starts, tasks without a People sidecar included. People with no grant keep the share design.
 import { createHash, randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { describe, expect, it, vi } from "vitest";
+import { orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, sharedTaskKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
+import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { pageAccess, requireProjectWorkRole } from "../../packages/broker/src/developer/task-access.js";
 import { registerRevision } from "../support/developer-task-broker.js";
 import type { createDeveloperTaskBroker} from "../support/developer-task-broker.js";
@@ -238,6 +239,72 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     const h = await withKit();
     const answered = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
     expect((answered.body.error as { code?: string } | undefined)?.code).not.toBe("FORBIDDEN");
+  });
+});
+
+describe("Slack model access for a project viewer or an Auditor", () => {
+  const VIEWER = "U0VIEWERSL2";
+  const viewerId = developerIdForSlackUser(VIEWER);
+  const taskThread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000901" };
+  const subject = `${SLACK_TEAM}/${SLACK_CHANNEL}/${taskThread.threadTs}`;
+  const modelAccessInstall = async (role: "member" | "auditor" = "member") => {
+    const mintKey = vi.fn(async () => ({ key: "sk-proxy-per-turn-key-0001", expiresAt: Date.now() + 900_000 }));
+    const orgFigures = () => ({ spentUsd: 0, limitUsd: 500 });
+    const access = { upsertOrg: vi.fn(), upsertMember: vi.fn(), spend: vi.fn(async () => ({ member: { spentUsd: 0, limitUsd: 29 }, org: orgFigures() })), orgSpend: vi.fn(async () => orgFigures()), keySpend: vi.fn(), mintKey, revokeKey: vi.fn(), blockKey: vi.fn(), upsertSource: vi.fn(), removeSource: vi.fn(), checkSource: vi.fn(), listSources: vi.fn(), auditKeys: vi.fn() };
+    const h = await withKit({ brokerExtra: { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true } });
+    seedMembership(h.db, viewerId, { orgId: TEST_ORG, role });
+    setGrant(h.db, { ...KIT, developerId: viewerId }, "viewer");
+    return { ...h, mintKey };
+  };
+  const sharedTask = (h: Harness, extra: Record<string, unknown> = {}) => {
+    const taskId = randomUUID();
+    h.db.set({ ...sharedTaskKey(taskThread), taskId, workspaceId: randomUUID(), ownerKey: taskOwnerKey(KIT.developerId, taskId), developerId: KIT.developerId, developerName: "Kit Alvarez", project: "payments", mode: "view", sharedAt: new Date().toISOString(), workflowThread: true, ...extra });
+  };
+  const ask = (h: Harness) => serviceCall(h.handler, subject, VIEWER, "POST", "/v1/service/model-access", { turnId: "Ev1" });
+
+  it("gets a key for a read-only task answer in a Slack-started task's thread, and is still refused one for any working thread", async () => {
+    const answer = await modelAccessInstall();
+    sharedTask(answer);
+    const answered = await ask(answer);
+    expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+    expect(answer.mintKey).toHaveBeenCalledTimes(1);
+    // An ordinary channel thread, a closed task thread and a task thread opened for continuing are working threads.
+    const ordinary = await modelAccessInstall();
+    const refusedOrdinary = await ask(ordinary);
+    expect(refusedOrdinary.status).toBe(403);
+    expect(refusedOrdinary.body.error).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+    expect(ordinary.mintKey).not.toHaveBeenCalled();
+    for (const extra of [{ closedAt: new Date().toISOString() }, { workflowThread: undefined, mode: "continue" }]) {
+      const h = await modelAccessInstall();
+      sharedTask(h, extra);
+      const refused = await ask(h);
+      expect(refused.status, JSON.stringify(extra)).toBe(403);
+      expect(h.mintKey).not.toHaveBeenCalled();
+    }
+  });
+
+  it("gives an Auditor a key for a task answer only: read-only is read-only, and a working thread is refused", async () => {
+    const answer = await modelAccessInstall("auditor");
+    sharedTask(answer);
+    expect((await ask(answer)).status).toBe(200);
+    expect(answer.mintKey).toHaveBeenCalledTimes(1);
+    const ordinary = await modelAccessInstall("auditor");
+    expect((await ask(ordinary)).status).toBe(403);
+    expect(ordinary.mintKey).not.toHaveBeenCalled();
+  });
+
+  it("is refused a task-answer key once removed from the company, or with a record that has no role", async () => {
+    const removed = await modelAccessInstall();
+    sharedTask(removed);
+    removed.db.delete(orgMemberKey(TEST_ORG, viewerId));
+    removed.db.set({ ...orgRemovedKey(TEST_ORG, viewerId), orgId: TEST_ORG, developerId: viewerId });
+    expect((await ask(removed)).status).toBe(403);
+    expect(removed.mintKey).not.toHaveBeenCalled();
+    const unreadable = await modelAccessInstall();
+    sharedTask(unreadable);
+    unreadable.db.set({ ...orgMemberKey(TEST_ORG, viewerId), orgId: TEST_ORG, developerId: viewerId });
+    expect((await ask(unreadable)).status).toBe(403);
+    expect(unreadable.mintKey).not.toHaveBeenCalled();
   });
 });
 

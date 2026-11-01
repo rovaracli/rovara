@@ -2,7 +2,7 @@
 // approval page, GitHub reviews, task paths). The dispatcher holds an Auditor to a short allow-list; these surfaces ask here instead, and a person who is not a writer
 // (the Auditor, or a role this release does not know) is refused. A person with no member record has no role: the caller decides what that means for its surface.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, isWriterOrgRole, orgMemberKey, type OrgId, type WriterOrgRole } from "@agentx/contracts";
+import { OrgRoleSchema, agentXError, isWriterOrgRole, orgMemberKey, type OrgId, type OrgRole, type WriterOrgRole } from "@agentx/contracts";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };
 
@@ -46,6 +46,22 @@ export async function liveWriterRole(deps: { documentClient: DocumentClient; tab
     if (!isWriterOrgRole(stored.role)) throw agentXError("FORBIDDEN", NOT_A_WRITER_MESSAGE);
     // Each id is followed to the person it was merged into, so a later record is the more current one: the survivor's role wins over a stale merged-away record's.
     found = stored.role;
+  }
+  return found;
+}
+
+/**
+ * The person's role now, whatever it is, for a surface that only READS (a task answer, a read-only view with no tools): `undefined` when they have no member record under any id they answer
+ * to, the survivor's record winning. A record whose role is missing or not one this release knows is refused (FORBIDDEN) as unreadable; the Auditor is allowed here, and only here.
+ */
+export async function liveReadRole(deps: { documentClient: DocumentClient; tableName: string; signInTableName?: string | undefined }, orgId: OrgId, developerId: string): Promise<OrgRole | undefined> {
+  let found: OrgRole | undefined;
+  for (const id of await personIds(deps, developerId)) {
+    const stored = await liveStoredRole(deps, orgId, id);
+    if (!stored.present) continue;
+    const role = OrgRoleSchema.safeParse(stored.role);
+    if (!role.success) throw agentXError("FORBIDDEN", "your company role could not be read");
+    found = role.data;
   }
   return found;
 }

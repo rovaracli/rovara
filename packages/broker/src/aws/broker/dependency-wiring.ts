@@ -6,8 +6,8 @@ import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "..
 import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
-import { liveStoredRole, liveWriterRole, personIds } from "../../org/live-role.js";
+import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type OrgRole, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
+import { liveReadRole, liveStoredRole, liveWriterRole, personIds } from "../../org/live-role.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
 import { adminReader, queryAllItems, type AdminReadDependencies } from "../admin-reads.js";
 import { outcomeMetric } from "../admin-change-audit.js";
@@ -429,7 +429,10 @@ export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId
  * (`allowUnlinked`, the service routes) a person with no org at all is that same implicit member: the existing behaviour for an unlinked requester, whose spend ruling R31 admits against the org alone (R31 is a budget ruling and says nothing about roles); the
  * ingress callers need a real caller identity, so for them an unlinked person is refused.
  */
-export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean } = {}): Promise<WriterOrgRole> {
+export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options?: { allowUnlinked?: boolean; allowReadOnly?: false }): Promise<WriterOrgRole>;
+/** With `allowReadOnly`, for a surface that only reads (a task answer), the Auditor passes too: every other refusal stands. */
+export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean; allowReadOnly: true }): Promise<OrgRole>;
+export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean; allowReadOnly?: boolean } = {}): Promise<OrgRole> {
   const developerId = developerIdForSlackUser(userId);
   // The single-org resolver answers the install's org for everyone, which says nothing about this person; only a tenant-resolving install (an orgResolver) can say they are of another org.
   const resolved = options.allowUnlinked === true && dependencies.orgResolver === undefined ? teamOrg : await orgResolverOf(dependencies)({ developerId });
@@ -444,7 +447,7 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
     const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
     if (survivorOrg === undefined ? options.allowUnlinked !== true : survivorOrg !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   }
-  const role = await liveWriterRole(live, orgId, developerId);
+  const role = options.allowReadOnly === true ? await liveReadRole(live, orgId, developerId) : await liveWriterRole(live, orgId, developerId);
   const refuseIfRemoved = async (id: string): Promise<void> => {
     for (const key of [orgRemovedKey(orgId, id), orgBanKey(orgId, id)]) {
       if (await getItem(dependencies, key) !== undefined) throw agentXError("FORBIDDEN", "you are no longer a member of this organization");

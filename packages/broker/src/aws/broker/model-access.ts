@@ -38,7 +38,7 @@ import { resolveTaskAccess } from "../../developer/task-access.js";
 import { acceptTask } from "./acceptance.js";
 import { parseBody, verifyCapability } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
-import { orgStoreOf, slackTeamOrg } from "./dependency-wiring.js";
+import { orgStoreOf, requireSlackRequesterWriterRole, slackTeamOrg } from "./dependency-wiring.js";
 import { putArtifact } from "./pull-request-reconcile.js";
 import { requireProjectAuthority, requireWorkspace } from "./records.js";
 import { creatorCheckOf, routingOf } from "./scope-helpers.js";
@@ -46,7 +46,7 @@ import { ledgerOf } from "./sweeps-and-readiness.js";
 import { agentToolsBase, workspaceTask } from "./task-operations.js";
 import { releaseIfFinished } from "./terminal-and-github-events.js";
 import { askForPausedTask, blockEndedOperationKeys } from "./terminal-result.js";
-import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole, slackRequesterProjectRole } from "./workspace-preparation.js";
+import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole, sharedThread, sharedThreadOpen, slackRequesterProjectRole } from "./workspace-preparation.js";
 import { viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
 import { AuditEventInputSchema, auditEventId, canonicalJson } from "@agentx/contracts";
 import { TaskFundingProofSchema, actualCompanyFunding, fundingAuditItems, fundingRevisionCheck } from "../../org/task-stop-funding.js";
@@ -508,7 +508,13 @@ export async function handleSlackModelAccess(dependencies: AwsBrokerDependencies
   if (modelAccess === undefined) throw agentXError("MODEL_PROXY_UNAVAILABLE", "the model proxy is not set up in this deployment");
   // The requester is checked here too, before anything is routed, admitted or minted: this route does not rely on a workspace having been made (and so checked) first. The Auditor, a
   // removed, banned or other-org person and a viewer get no key and reserve no money.
-  if (await slackRequesterProjectRole(dependencies, teamOrg, requester.userId, binding.projectName) === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(binding.projectName));
+  // A project viewer or an Auditor may read: in a Slack-started task's own thread the channel's people ask questions about the task (task-answer mode, a read-only view with no tools), and that
+  // turn needs a key. The thread decides this on the server (its shared task record, as `slackServiceIdentity` reads it), never the request, so the key cannot be widened to a working thread.
+  // Everything else about the requester (removed, banned, another org, an unreadable role) is refused there as anywhere.
+  const shared = await sharedThread(dependencies, thread);
+  const taskAnswerThread = shared !== undefined && !sharedThreadOpen(shared, binding) && shared.workflowThread === true && shared.closedAt === undefined && binding.projectName === shared.project;
+  if (taskAnswerThread) await requireSlackRequesterWriterRole(dependencies, requester.userId, teamOrg, { allowUnlinked: true, allowReadOnly: true });
+  else if (await slackRequesterProjectRole(dependencies, teamOrg, requester.userId, binding.projectName) === "viewer") throw agentXError("PROJECT_ACCESS_DENIED", viewerCannotStartTasksMessage(binding.projectName));
   // Task 29: with agents set up the turn is the bound project's expense, paid by the linked member (or the project when it pays, or when no member is
   // known) and tagged so; without them it is minted as it always was.
   try {
