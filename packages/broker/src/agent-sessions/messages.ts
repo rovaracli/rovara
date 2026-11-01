@@ -136,7 +136,7 @@ export const plainMentions = (text: string): string => text.replace(SLACK_MARKUP
 export const withoutInvisible = (raw: string): string => raw.replace(/(?![\t\n\r])[\p{Cc}\p{Cf}]/gu, "");
 
 /** A comment's text as it is stored: cleaned and redacted (the page's rules), mentions made plain, and only then cut to the limit by characters. */
-function storedText(raw: string, tooLong: string = TOO_LONG_TEXT): string {
+export function storedText(raw: string, tooLong: string = TOO_LONG_TEXT): string {
   const cleaned = cleanCommentText(withoutInvisible(raw));
   if (!cleaned.ok) throw agentXError("CONFIG_INVALID", cleaned.reason === "empty" ? EMPTY_TEXT : tooLong);
   return [...plainMentions(cleaned.text)].slice(0, SESSION_MESSAGE_MAX_CHARS).join("");
@@ -170,7 +170,7 @@ export function parseAnchorQuery(raw: string): Pick<SessionAnchorRef, "target" |
 // ---- ids
 
 /** `msg_` and 20 characters: nine of the time (base 36, so ids sort by time) and eleven from the writer and their request, so a retry of one request is the same id. */
-function newMessageId(nowMs: number, developerId: string, requestId: string): string {
+export function newMessageId(nowMs: number, developerId: string, requestId: string): string {
   const time = nowMs.toString(36).padStart(ID_TIME_WIDTH, "0");
   return `msg_${time}${createHash("sha256").update(`${developerId}\n${requestId}`, "utf8").digest("hex").slice(0, 20 - ID_TIME_WIDTH)}`;
 }
@@ -178,8 +178,8 @@ function newMessageId(nowMs: number, developerId: string, requestId: string): st
 /** The id a task page comment has in a session's list: the same every read. */
 const pageMessageId = (commentId: string): string => `msg_${createHash("sha256").update(`page-comment\0${commentId}`, "utf8").digest("hex").slice(0, 20)}`;
 
-const messageKey = (session: { orgId: OrgId; sessionId: string }, messageId: string) => agentSessionKey(session.orgId, session.sessionId, `MESSAGE#${messageId}`);
-const countKey = (session: { orgId: OrgId; sessionId: string }) => agentSessionKey(session.orgId, session.sessionId, "MESSAGE#COUNT");
+export const messageKey = (session: { orgId: OrgId; sessionId: string }, messageId: string) => agentSessionKey(session.orgId, session.sessionId, `MESSAGE#${messageId}`);
+export const countKey = (session: { orgId: OrgId; sessionId: string }) => agentSessionKey(session.orgId, session.sessionId, "MESSAGE#COUNT");
 
 function messageOf(item: Item | undefined, session: { orgId: OrgId; sessionId: string }, nowSeconds: number): SessionMessage | undefined {
   if (item === undefined || item["orgId"] !== session.orgId || item["sessionId"] !== session.sessionId) return undefined;
@@ -194,13 +194,13 @@ function messageOf(item: Item | undefined, session: { orgId: OrgId; sessionId: s
 
 // ---- the rate of writing
 
-interface RateStep { room: boolean; item: TransactItem }
+export interface RateStep { room: boolean; item: TransactItem }
 
 /**
  * One person's count of comments (or of changes to them) on one session in the current ten-minute window (or of messages to the agent in the current hour), as a step of the write's own transaction: the new count is set from the count
  * that was read, and the step is conditional on it, so two writes can't both take the last place. `room` is false when the window is full.
  */
-async function rateStep(deps: SessionMessageDependencies, session: AgentSessionRecord, developerId: string, kind: "comment" | "change" | "steer" | "steer_all", limit: number, nowMs: number, windowMs: number = COMMENT_RATE.windowMs): Promise<RateStep> {
+export async function rateStep(deps: SessionMessageDependencies, session: AgentSessionRecord, developerId: string, kind: "comment" | "change" | "steer" | "steer_all", limit: number, nowMs: number, windowMs: number = COMMENT_RATE.windowMs): Promise<RateStep> {
   const key = sessionRateKey(session.orgId, session.sessionId, developerId, kind);
   const stored = await getItem(deps, key);
   const window = Math.floor(nowMs / windowMs) * windowMs;
@@ -226,7 +226,7 @@ async function rateStep(deps: SessionMessageDependencies, session: AgentSessionR
 }
 
 /** The check that the session is still there, so nothing is written into one that was removed since it was read; `open` also needs it not to have ended (a message to the agent is never queued into an ended session). */
-const sessionStillThere = (deps: SessionMessageDependencies, session: AgentSessionRecord, open = false): TransactItem => ({
+export const sessionStillThere = (deps: SessionMessageDependencies, session: AgentSessionRecord, open = false): TransactItem => ({
   ConditionCheck: { TableName: deps.tableName, Key: agentSessionKey(session.orgId, session.sessionId, "META"), ConditionExpression: open ? "attribute_exists(pk) AND attribute_not_exists(endedAt)" : "attribute_exists(pk)" },
 });
 

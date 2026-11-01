@@ -4,7 +4,7 @@
 // and nothing here holds a person's text except the request bodies a person typed themselves. Every stored record, audit fact and error reference built from these
 // shapes holds fixed codes, ids and counts only.
 import { z } from "zod";
-import { SessionIdSchema } from "./browser-ids.js";
+import { OrgIdSchema, SessionIdSchema } from "./browser-ids.js";
 import { redactText } from "./redaction.js";
 import { sha256Hex } from "./web-hash.js";
 
@@ -71,14 +71,17 @@ export const REDIRECT_ITEM_TTL_SECONDS = 7 * 24 * 60 * 60;
 /** The sweep closes a redirect still `stopping` after this long as `left_blocked` (minutes). */
 export const REDIRECT_STOPPING_SWEEP_MINUTES = 15;
 
-/** The state of the `REDIRECT#` item. `stopping` is the only state a restart can start from; every other state is final. */
-export const REDIRECT_STATES = ["stopping", "restarted", "revise_started", "left_blocked", "failed"] as const;
+/**
+ * The state of the `REDIRECT#` item. `stopping` is the only state a restart can start from; `restarting` is the claim one hook makes (conditional on `stopping`) before it starts the step, so
+ * two hooks can never both start it; every other state is final. The sweep closes a `stopping` or `restarting` item older than `REDIRECT_STOPPING_SWEEP_MINUTES` as `left_blocked`.
+ */
+export const REDIRECT_STATES = ["stopping", "restarting", "restarted", "revise_started", "left_blocked", "failed"] as const;
 export type RedirectState = (typeof REDIRECT_STATES)[number];
 /** What the audit event and the response say happened (`session.redirected`). */
 export const REDIRECT_OUTCOMES = ["restarted", "revise_started", "left_blocked", "refused"] as const;
 export type RedirectOutcome = (typeof REDIRECT_OUTCOMES)[number];
 /** Why a redirect is refused or fell back, as fixed words (never the instruction). */
-export const REDIRECT_REFUSALS = ["not_owner", "rate_limited", "paused_for_budget", "session_ended", "old_worker", "stale"] as const;
+export const REDIRECT_REFUSALS = ["not_owner", "rate_limited", "paused_for_budget", "session_ended", "old_worker", "stale", "busy", "not_available"] as const;
 export type RedirectRefusal = (typeof REDIRECT_REFUSALS)[number];
 
 /** The `reason` a steer message carries when it is a redirect's instruction. */
@@ -87,7 +90,25 @@ export const REDIRECT_MESSAGE_REASON = "redirect" as const;
 /** Fixed words. The instruction text is never repeated in any of them. */
 export const REDIRECT_LEFT_BLOCKED_MESSAGE = "Stopped for your new instruction. Press Retry to continue with it." as const;
 export const REDIRECT_BUDGET_PAUSE_MESSAGE = "Paused for budget: your instruction is saved and used when work resumes." as const;
-export const REDIRECT_OLD_WORKER_NOTE = "The agent's worker is older than this feature, so your instruction was sent as an ordinary note and it will not stop for re-approval." as const;
+// Replaces: REDIRECT_OLD_WORKER_NOTE (an older worker got the instruction as an ordinary note). Owner decision 2026-11-01: a redirect is refused on an older worker, never degraded.
+/** What a restarted coding step's own prompt says in place of the owner's words (the words travel in `ownerRedirect`, framed; they are never in this line). */
+export const REDIRECT_RETRY_INSTRUCTIONS = "The owner stopped this step to give a new instruction; continue from the current code." as const;
+/** The words a stopped step's prompt (Understand or Plan) opens the owner's instruction with. The instruction itself follows in a nonce tag as untrusted data. */
+export const REDIRECT_PLANNING_INTRO = "The task owner stopped the previous run of this step and gave a new instruction. It is the owner's own request for this step; follow it within the task." as const;
+/** The decision a redirect that changes the plan records (fixed words, never the instruction). Later coding rounds read it as one of the owner's plan instructions. */
+export const WORKFLOW_REDIRECT_PLAN_DECISION_REASON = "The plan is being revised to include a change the owner gave when they stopped coding and redirected it." as const;
+/** The decision a redirect that restarts coding from a stopped check or review records (fixed words, never the instruction). */
+export const WORKFLOW_REDIRECT_SEND_BACK_REASON = "The owner stopped this step and redirected it, so coding runs again with their new instruction." as const;
+/** Fixed refusals of the redirect route. Nothing from the instruction is in any of them. */
+export const REDIRECT_REFUSAL_MESSAGES: Readonly<Record<Exclude<RedirectRefusal, "session_ended">, string>> = {
+  not_owner: "Only the task's owner or a co-owner can stop and redirect it. You can send the agent a message, or stop it.",
+  rate_limited: "This task has been redirected a lot lately. Try again later, or stop it and start a new task.",
+  paused_for_budget: REDIRECT_BUDGET_PAUSE_MESSAGE,
+  old_worker: "This task's agent can't take a redirect yet because its worker is older than this feature. Stop it, or send it a message.",
+  stale: "The task moved on while you were redirecting it. Look at where it is now and try again.",
+  busy: "A redirect of this task is still being carried out. Try again in a moment.",
+  not_available: "Stop & redirect isn't available for this task right now. You can stop it, or send the agent a message.",
+};
 /** The line a restarted step always starts with: the stopped run may have left a file half written. */
 export const REDIRECT_RESTART_NOTE = "The previous run was stopped in the middle of a step; check the current state of the files before going on." as const;
 /** The one status line a Slack thread gets. It never holds the instruction. */
@@ -105,9 +126,18 @@ export const OwnerRedirectInvocationSchema = z.object({
 }).strict();
 export type OwnerRedirectInvocation = z.infer<typeof OwnerRedirectInvocationSchema>;
 
-/** The `REDIRECT#<requestId>` item as the broker stores it. Ids, a mode, a revision and a state: never the instruction (it lives in the steer message). */
+/**
+ * The `REDIRECT#<requestId>` item as the broker stores it, on the task's partition. Ids, a mode, a revision and a state: never the instruction (it lives in the steer message).
+ * `blockedRevision` is the workflow revision the stop's block will have (the running revision plus one; for a step that is blocked already, its own revision): the restart is
+ * conditional on it, so a task that moved on is never restarted. `actorId` is the person who pressed it; the restart acts for them after checking again that they still own the task.
+ * Replaces: the first T0 shape (no org, session, task or person ids), which nothing wrote yet.
+ */
 export const RedirectRecordSchema = z.object({
   requestId: z.string().uuid(),
+  orgId: OrgIdSchema,
+  sessionId: SessionIdSchema,
+  taskId: z.string().uuid(),
+  actorId: z.string().regex(/^[a-f0-9]{64}$/),
   messageId: z.string().regex(/^msg_[0-9a-z]{20}$/),
   mode: RedirectModeSchema,
   /** The workflow revision the restart is conditional on. */

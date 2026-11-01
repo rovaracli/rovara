@@ -100,7 +100,7 @@ export function parseControlBody(body: unknown): z.infer<typeof BodySchema> {
 
 /** What a stop or a retry answered, kept under its request id on the session so a repeat answers it again and writes nothing. */
 export interface ControlRequest {
-  action: "stop" | "retry" | "handoff" | "answer";
+  action: "stop" | "retry" | "handoff" | "answer" | "redirect";
   by: string;
   at: string;
   /** The session that answers the request: the same session, or the new one a retry made. */
@@ -118,7 +118,7 @@ export async function readControlRequest(deps: SessionReadDependencies, session:
   const item = await getItem(deps, requestKey(session.orgId, session.sessionId, requestId));
   if (item === undefined) return undefined;
   const { action, by, at, sessionId, fingerprint, result, bodyHash } = item;
-  if ((action !== "stop" && action !== "retry" && action !== "handoff" && action !== "answer") || typeof by !== "string" || typeof at !== "string" || typeof sessionId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", NOT_READABLE);
+  if ((action !== "stop" && action !== "retry" && action !== "handoff" && action !== "answer" && action !== "redirect") || typeof by !== "string" || typeof at !== "string" || typeof sessionId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", NOT_READABLE);
   return { action, by, at, sessionId, ...(typeof fingerprint === "string" ? { fingerprint } : {}), ...(result === undefined ? {} : { result }), ...(typeof bodyHash === "string" ? { bodyHash } : {}) };
 }
 
