@@ -189,6 +189,9 @@ async function completedPullRequestUpdateItems(
   // carry yet, stays GitHub's; another host then cannot show a fix's ancestry, and the fix is not taken as landed.
   const host = repository === undefined ? undefined : hostOfRepository(dependencies, repository);
   const github = host?.kind === GITHUB_HOST_KIND ? dependencies.githubPullRequests : undefined;
+  // The linked-pull-request rows are keyed by GitHub's full name (left for P6): a repository on another host stops here, before anything is read, with a clear sentence. (Acceptance refuses the push
+  // first; this is the same rule where the result is handled.)
+  if (host !== undefined) requireGithubHost(host);
   if (repository === undefined || host === undefined || !canReadFeedback(dependencies, host)) {
     if (pushedCommit === undefined) return failed(cause);
     throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the updated pull request against the reviewed fix");
@@ -246,8 +249,6 @@ async function completedPullRequestUpdateItems(
   const next = mergeBase !== undefined && current.pullRequest.state !== "merged"
     ? recordWorkflowBranchSync(updated, { repositoryId: pullRequest.repositoryId, number: pullRequest.number, headSha: head, headTreeSha: binding.treeSha, baseCommitSha: mergeBase, now })
     : updated;
-  // The linked-pull-request rows are keyed by GitHub's full name (left for P6): a repository on another host stops here with a clear sentence.
-  requireGithubHost(host);
   const repositoryFullName = githubRepositoryFullName(repository.url);
   // A pull request this save moves to MERGED counts in the project's month of merges, in the same transaction as the move (the task update is conditioned on the revision read, so a replay
   // counts nothing), as it does when a webhook or the sweep finds the merge. A task whose org is not known is not counted.
@@ -344,6 +345,8 @@ export async function completedBranchSyncItems(
   const repository = codeRepositoriesOf(project.definition).find((entry) => entry.name === maintenance.repository);
   const host = repository === undefined ? undefined : hostOfRepository(dependencies, repository);
   const githubProvider = host?.kind === GITHUB_HOST_KIND ? dependencies.githubPullRequests : undefined;
+  // The linked-pull-request rows are keyed by GitHub's full name (left for P6): a repository on another host stops here, before anything is read, with a clear sentence.
+  if (host !== undefined) requireGithubHost(host);
   const parsed = terminalStatus === "SUCCEEDED" ? PullRequestLifecycleResultSchema.safeParse(result) : undefined;
   const reported = parsed?.success === true && parsed.data.repository === maintenance.repository ? parsed.data : undefined;
   // What GitHub shows now. A merge the worker says it pushed is never judged without it (the result is then recorded by the next attempt); for a merge that failed, an unreadable GitHub shows nothing.
@@ -394,8 +397,6 @@ export async function completedBranchSyncItems(
     ];
   }
   // A clean merge, on GitHub: the pull request's record learns its head (the worker's callback usually did already), the link follows the new candidate, and the new head is indexed for check events.
-  // The linked-pull-request rows are keyed by GitHub's full name (left for P6): a repository on another host stops here with a clear sentence.
-  requireGithubHost(host!);
   const repositoryFullName = githubRepositoryFullName(repository!.url);
   const record = await getItem<PullRequestRecord>(dependencies, pullRequestKey(task.workspaceId, maintenance.repository, maintenance.pullRequestNumber));
   return [

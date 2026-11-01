@@ -24,7 +24,7 @@ import { gatedTaskWorkspace, workspaceTaskOwner } from "./model-access.js";
 import { boundedTurnAdmission } from "../../model-selection/turn-admission.js";
 import { adoptLegacyPullRequest, publicationProject, requireAdministrator, requireOwnedWorkspace, requireProjectAuthority, requireWorkspace } from "./records.js";
 import { creatorCheckOf, githubScopeOf } from "./scope-helpers.js";
-import { changeRequestRef, hostOfRepository, pullRequestDetailsOf } from "./repository-hosts.js";
+import { changeRequestRef, hostOfRepository, pullRequestDetailsOf, requireGithubHost } from "./repository-hosts.js";
 import { taskOperationParts } from "./task-operations.js";
 import { latestChecksItem } from "./terminal-result.js";
 import { attributedBody, requesterOf } from "./thread-workspaces.js";
@@ -470,6 +470,9 @@ export async function acceptPullRequestLifecycle(
   const scope = await githubScopeOf(dependencies, workspace);
   // P5d: the pull request is read and changed through the code host the repository's record names (an unknown kind is refused with the router's fixed sentence).
   const host = hostOfRepository(dependencies, repository);
+  // The workflow's own push of a fix or merge of the base is handled by GitHub-only code once the worker has pushed (the linked-pull-request rows are GitHub's, left for P6): refused here, before the
+  // pull request is read, an operation is claimed or the worker is sent to push, on any host that is not GitHub.
+  if (workflowBound) requireGithubHost(host);
   const ref = changeRequestRef(repository.url, request.pullRequestNumber);
   const remote = pullRequestDetailsOf(await host.getChangeRequest(ref, scope));
   const record = existingRecord ?? await adoptLegacyPullRequest(
