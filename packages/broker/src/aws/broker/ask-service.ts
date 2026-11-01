@@ -8,7 +8,7 @@
 // task) comes from the broker's own record of that Ask, never from the request. The switch is OFF by default: with it off (`LIVE_ASK_ENABLED` not exactly "1") nothing is built, every route
 // answers NOT_FOUND, and a queued Ask cannot exist.
 import { LambdaClient } from "@aws-sdk/client-lambda";
-import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { createHmac } from "node:crypto";
 import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, liveInteractionFlagOn, type HookRecord, type OrgId } from "@agentx/contracts";
 import { handleLinearComment, type LinearCommentDependencies } from "../../rovara-code/linear-comments.js";
@@ -154,39 +154,69 @@ export async function handleAskServiceRoute(
   return json(await mintChatTurnKey(dependencies, named.orgId, task.project, requester, { turnId, model, classifierModel }), request.requestId);
 }
 
-/** The orgs the maintenance covers: this install's org, and every org with a model-sources record (a page; Public's many orgs are covered over successive days by the saved cursor in the sweep). */
-async function orgsToMaintain(dependencies: AwsBrokerDependencies): Promise<OrgId[]> {
-  const orgs = new Set<OrgId>();
-  try { orgs.add(installOrgIdFromEnvironment()); } catch { /* a multi-tenant deployment names no single org */ }
-  try { for (const orgId of await modelSourceStoreOf(dependencies).listOrgs(undefined, 200)) orgs.add(orgId); } catch { /* the directory is best effort */ }
-  return [...orgs];
+/** Where the upkeep got to today: the day, the last org done (orgs are walked in id order), and whether the whole walk is finished. */
+const MAINTENANCE_KEY = { pk: "ASK_MAINTENANCE", sk: "STATE" };
+const ORGS_PER_PAGE = 200;
+/** The upkeep stops starting new orgs after this long (the session sweep that runs it has a 30-second function timeout); the next run goes on from where it stopped. */
+export const ASK_MAINTENANCE_BUDGET_MS = 15_000;
+
+export interface AskMaintenanceOptions {
+  /** The orgs in id order after `after`, at most `limit`. Default: the model-sources directory. */
+  listOrgs?: (after: string | undefined, limit: number) => Promise<OrgId[]>;
+  pageSize?: number;
+  budgetMs?: number;
+  /** The clock the budget is measured by (tests). */
+  clock?: () => number;
 }
 
 /**
- * The daily upkeep of Asks, run from the broker's scheduled session sweep (every 5 minutes; a day marker makes it once a day): deletes the Asks past their 30 days (`sweepExpiredAsks`, for tables with
- * no TTL), the erased people's aliases past theirs, and writes the daily count events of Public (`flushDailyAskCounts`). Bounded, never throws, and does nothing while the switch is off.
+ * The daily upkeep of Asks, run from the broker's scheduled session sweep (every 5 minutes): deletes the Asks past their 30 days (`sweepExpiredAsks`, for tables with no TTL), the erased people's
+ * aliases past theirs, and writes the daily count events of Public (`flushDailyAskCounts`). It covers EVERY org: this install's own first, then the directory page by page with the cursor saved after
+ * each org, so a run cut off by its time budget (or by the function timeout) goes on from there at the next run instead of skipping the day, and the day is marked done only when the last page is.
+ * Bounded, never throws, and does nothing while the switch is off. "partial": more orgs wait for the next run.
  */
-export async function runAskMaintenance(dependencies: AwsBrokerDependencies, nowMs: number, env: NodeJS.ProcessEnv = process.env, orgs: (dependencies: AwsBrokerDependencies) => Promise<OrgId[]> = orgsToMaintain): Promise<"off" | "skipped" | "ran" | "failed"> {
+export async function runAskMaintenance(dependencies: AwsBrokerDependencies, nowMs: number, env: NodeJS.ProcessEnv = process.env, options: AskMaintenanceOptions = {}): Promise<"off" | "skipped" | "partial" | "ran" | "failed"> {
   if (!liveInteractionFlagOn(env["LIVE_ASK_ENABLED"])) return "off";
+  const clock = options.clock ?? Date.now;
+  const startedAt = clock();
+  const budget = options.budgetMs ?? ASK_MAINTENANCE_BUDGET_MS;
+  const pageSize = options.pageSize ?? ORGS_PER_PAGE;
   try {
     const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
     const day = new Date(nowMs).toISOString().slice(0, 10);
-    try {
-      await dependencies.documentClient.send(new UpdateCommand({
-        TableName: dependencies.tableName, Key: { pk: "ASK_MAINTENANCE", sk: "LAST_RUN" }, UpdateExpression: "SET #day = :day, entityType = :type",
-        ConditionExpression: "attribute_not_exists(#day) OR #day < :day", ExpressionAttributeNames: { "#day": "day" }, ExpressionAttributeValues: { ":day": day, ":type": "ASK_MAINTENANCE" },
-      }));
-    } catch (error) {
-      if ((error as { name?: string }).name === "ConditionalCheckFailedException") return "skipped";
-      throw error;
-    }
+    const saved = ((await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: MAINTENANCE_KEY, ConsistentRead: true }))) as { Item?: { day?: unknown; cursor?: unknown; done?: unknown; installDone?: unknown } }).Item;
+    if (saved?.day === day && saved.done === true) return "skipped";
+    let cursor = saved?.day === day && typeof saved.cursor === "string" ? saved.cursor : undefined;
+    let installDone = saved?.day === day && saved.installDone === true;
     const edition = dependencies.editionPolicy?.edition ?? "public";
-    for (const orgId of await orgs(dependencies)) {
-      await sweepExpiredAsks(table, orgId, nowMs);
-      await sweepErasedAliases(table, orgId, nowMs);
-      await flushDailyAskCounts({ ...table, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, edition, orgId, nowMs);
+    const remember = async (done: boolean): Promise<void> => {
+      await dependencies.documentClient.send(new PutCommand({ TableName: dependencies.tableName, Item: { ...MAINTENANCE_KEY, entityType: "ASK_MAINTENANCE", day, installDone, done, ...(cursor === undefined ? {} : { cursor }) } }));
+    };
+    const maintain = async (orgId: OrgId): Promise<void> => {
+      // One org's trouble never stops the others.
+      try {
+        await sweepExpiredAsks(table, orgId, nowMs);
+        await sweepErasedAliases(table, orgId, nowMs);
+        await flushDailyAskCounts({ ...table, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) }, edition, orgId, nowMs);
+      } catch (error) {
+        console.log(JSON.stringify({ component: "broker", event: "ask.maintenance_org_failed", error: error instanceof Error ? error.name : "unknown" }));
+      }
+    };
+    if (!installDone) {
+      try { await maintain(installOrgIdFromEnvironment()); } catch { /* a multi-tenant deployment names no single org */ }
+      installDone = true;
     }
-    return "ran";
+    const list = options.listOrgs ?? ((after, limit) => modelSourceStoreOf(dependencies).listOrgs(after, limit));
+    for (;;) {
+      const page = await list(cursor, pageSize);
+      for (const orgId of page) {
+        if (clock() - startedAt >= budget) { await remember(false); return "partial"; }
+        await maintain(orgId);
+        cursor = orgId;
+      }
+      if (page.length < pageSize) { await remember(true); return "ran"; }
+      await remember(false);
+    }
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "ask.maintenance_failed", error: error instanceof Error ? error.name : "unknown" }));
     return "failed";

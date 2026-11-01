@@ -77,7 +77,7 @@ export async function flushDailyAskCounts(deps: AskAuditDependencies, edition: E
       const count = item["count"];
       if (typeof project !== "string" || typeof count !== "number" || count < 1) continue;
       const events = await tryAuditEvents(deps, () => [auditTaskAsked({
-        scope: "daily", orgId, actor: auditActorOf("system"), occurredAt: `${day}T23:59:59.000Z`, occurrence: auditOccurrence(project, day), projectName: project, count,
+        scope: "daily", orgId, actor: auditActorOf("system"), occurredAt: `${day}T23:59:59.000Z`, occurrence: auditOccurrence(orgId, project, day), projectName: project, count,
       })]);
       const items = events.flatMap((event) => auditPending(deps, event));
       if (items.length === 0) continue;

@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { ASK_RATE, askErasedAliasPk, sessionRateKey, sessionAskKey } from "../../packages/contracts/src/index.js";
+import { ASK_RATE, askCountKey, askErasedAliasPk, sessionRateKey, sessionAskKey } from "../../packages/contracts/src/index.js";
 
 const mint = vi.hoisted(() => vi.fn((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); }));
 vi.mock("../../packages/broker/src/aws/broker/model-access.js", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), mintChatTurnKey: mint }));
@@ -226,13 +226,73 @@ describe("the daily upkeep", () => {
     expect(await runAskMaintenance(brokerOf(w), w.clock.now + 31 * 86_400_000, env(false))).toBe("off");
     expect(w.db.get(sessionAskKey(ORG_A, made.sessionId as never, askId))).toBeDefined();
     const later = w.clock.now + 31 * 86_400_000;
-    const orgs = async () => [ORG_A];
+    const orgs = { listOrgs: async (after: string | undefined) => (after === undefined ? [ORG_A] : []) };
     expect(await runAskMaintenance(brokerOf(w), later, env(true), orgs)).toBe("ran");
     expect(w.db.get(sessionAskKey(ORG_A, made.sessionId as never, askId))).toBeUndefined();
     // Once a day: the same day again does nothing, the next day runs.
     expect(await runAskMaintenance(brokerOf(w), later + 60_000, env(true), orgs)).toBe("skipped");
     expect(await runAskMaintenance(brokerOf(w), later + 86_400_000, env(true), orgs)).toBe("ran");
     expect(ASK_SWEEP_LOOKBACK_DAYS).toBeGreaterThan(0);
+  });
+
+  it("covers EVERY org, not the first 200, and a run cut off by its time budget goes on from where it stopped (S4)", async () => {
+    const w = sessionWorld();
+    const audit = capturingAuditDeps({ db: w.db, now: () => w.clock.now });
+    const broker = { documentClient: w.db, tableName: "state", editionPolicy: { edition: "public" }, audit: audit.audit } as unknown as AwsBrokerDependencies;
+    const orgs = Array.from({ length: 450 }, (_, index) => `org_${index.toString(36).padStart(20, "0")}`).sort();
+    const now = Date.UTC(2026, 10, 3, 12, 0, 0);
+    const yesterday = new Date(now - 86_400_000).toISOString().slice(0, 10);
+    for (const orgId of orgs) w.db.set({ ...askCountKey(orgId, yesterday, "web"), entityType: "ASK_COUNT", orgId, projectName: "web", day: yesterday, count: 3 });
+    const requested: Array<[string | undefined, number]> = [];
+    const listOrgs = async (after: string | undefined, limit: number) => { requested.push([after, limit]); return orgs.filter((id) => after === undefined || id > after).slice(0, limit); };
+    // A clock that moves 1 ms for every look at it: about 100 orgs fit in a 100 ms budget.
+    let ticks = 0;
+    const options = { listOrgs, budgetMs: 100, clock: () => (ticks += 1) };
+    const statuses: string[] = [];
+    for (let run = 0; run < 20 && statuses.at(-1) !== "ran"; run += 1) {
+      ticks = 0;
+      statuses.push(await runAskMaintenance(broker, now, env(true), options));
+    }
+    expect(statuses.filter((status) => status === "partial").length).toBeGreaterThanOrEqual(3);
+    expect(statuses.at(-1)).toBe("ran");
+    // Every org got its daily event, once, though there are more than the 200 a page holds; and the next run the same day has nothing left to do.
+    const events = audit.recordedBy("task.asked");
+    expect(events).toHaveLength(450);
+    expect(new Set(events.map((event) => event.eventId)).size).toBe(450);
+    expect(requested.every(([, limit]) => limit === 200)).toBe(true);
+    expect(requested.some(([after]) => after !== undefined)).toBe(true);
+    ticks = 0;
+    expect(await runAskMaintenance(broker, now, env(true), options)).toBe("skipped");
+    // The next day starts again from the first org.
+    ticks = 0;
+    requested.length = 0;
+    expect(["partial", "ran"]).toContain(await runAskMaintenance(broker, now + 86_400_000, env(true), options));
+    expect(requested[0]![0]).toBeUndefined();
+  });
+
+  it("with time to spare one run walks every page to the end", async () => {
+    const w = sessionWorld();
+    const audit = capturingAuditDeps({ db: w.db, now: () => w.clock.now });
+    const broker = { documentClient: w.db, tableName: "state", editionPolicy: { edition: "public" }, audit: audit.audit } as unknown as AwsBrokerDependencies;
+    const orgs = Array.from({ length: 450 }, (_, index) => `org_${index.toString(36).padStart(20, "0")}`).sort();
+    const now = Date.UTC(2026, 10, 3, 12, 0, 0);
+    const yesterday = new Date(now - 86_400_000).toISOString().slice(0, 10);
+    for (const orgId of orgs) w.db.set({ ...askCountKey(orgId, yesterday, "web"), entityType: "ASK_COUNT", orgId, projectName: "web", day: yesterday, count: 1 });
+    const listOrgs = async (after: string | undefined, limit: number) => orgs.filter((id) => after === undefined || id > after).slice(0, limit);
+    expect(await runAskMaintenance(broker, now, env(true), { listOrgs })).toBe("ran");
+    expect(audit.recordedBy("task.asked")).toHaveLength(450);
+  });
+
+  it("an org whose upkeep fails does not stop the others", async () => {
+    const w = sessionWorld();
+    const broker = { documentClient: { send: async (command: unknown) => {
+      const key = (command as { input?: { Key?: { pk?: string } } }).input?.Key?.pk ?? "";
+      const query = (command as { input?: { ExpressionAttributeValues?: Record<string, unknown> } }).input?.ExpressionAttributeValues?.[":pk"];
+      if ((typeof query === "string" ? query : key).includes("org_bad")) throw new Error("table says no");
+      return w.db.send(command as never);
+    } }, tableName: "state", editionPolicy: { edition: "public" } } as unknown as AwsBrokerDependencies;
+    const outcome = await runAskMaintenance(broker, w.clock.now, env(true), { listOrgs: async (after) => (after === undefined ? ["org_bad0000000000000000", "org_good000000000000000"] : []) });
+    expect(outcome).toBe("ran");
   });
 });
 
