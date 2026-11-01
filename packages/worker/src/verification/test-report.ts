@@ -171,7 +171,9 @@ export function parseJunit(text: string): ParsedTestReport | undefined {
     const attributes = parseAttributes(attributeText);
     const status: ReportedTestStatus = /<error[\s/>]/.test(body) ? "errored" : /<failure[\s/>]/.test(body) ? "failed" : /<skipped[\s/>]/.test(body) ? "skipped" : "passed";
     const classname = attributes.get("classname");
-    const file = attributes.get("file") ?? (classname === undefined || classname === "" ? undefined : /[/\\]/.test(classname) ? classname : classname.replaceAll(".", "/"));
+    const rawFile = attributes.get("file") ?? (classname === undefined || classname === "" ? undefined : /[/\\]/.test(classname) ? classname : classname.replaceAll(".", "/"));
+    // The file is text from a file the agent can write, kept and shown like the name: one plain line, secrets redacted, cut.
+    const file = rawFile === undefined || rawFile === "" ? undefined : plainName(rawFile);
     const time = attributes.get("time") === undefined ? undefined : Number(attributes.get("time"));
     const ms = duration(time, "s");
     tests.push({ ...(file === undefined ? {} : { file }), name: plainName(attributes.get("name") ?? ""), status, ...(ms === undefined ? {} : { durationMs: ms }) });

@@ -8,7 +8,7 @@
 // Fail closed and bounded: a text that is not a complete, well-formed profile (a wrong header, a malformed line, mixed modes, a reversed or enormous range, more than 1,000,000 blocks) is `undefined`, "not measured".
 // Ranges are merged, never expanded line by line, so a block over millions of lines costs nothing.
 import { EVIDENCE_COVERAGE_FILES_MAX, EVIDENCE_UNCOVERED_LINES_MAX } from "@agentx/contracts";
-import { parseAttributes, tagEnd, withoutCommentsAndCdata } from "./test-report.js";
+import { parseAttributes, plainName, tagEnd, withoutCommentsAndCdata } from "./test-report.js";
 
 /** A cover profile larger than this, or with more blocks, is not read. */
 export const GO_COVER_PROFILE_MAX_BYTES = 8 * 1024 * 1024;
@@ -190,6 +190,12 @@ const wholeNumber = (value: string | undefined, min: number, max: number): numbe
   return number >= min && number <= max ? number : undefined;
 };
 
+/**
+ * A package or file name from a report is kept (as part of a path) and may be shown, so it goes through the same guard as a test name (`plainName`: control characters, secrets, length). A name the guard
+ * would change is not a name this reader can trust as a path: the file is counted as not placed, never stored under an altered or redacted name.
+ */
+const plainPath = (value: string): boolean => plainName(value) === value;
+
 type RangeEntry = { all: Array<[number, number]>; ran: Array<[number, number]> };
 
 export function parseJacocoXml(text: string, options: JacocoOptions): LineCoverage | undefined {
@@ -238,14 +244,14 @@ export function parseJacocoXml(text: string, options: JacocoOptions): LineCovera
     } else if (name === "package") {
       const packageName = selfClosing ? undefined : (attributesOf().get("name") ?? "");
       // "\0" marks a package name that leaves the source root or holds odd characters: its files are counted as not placed.
-      currentPackage = packageName === undefined || packageName === "" || safeName(packageName) ? packageName : "\0";
+      currentPackage = packageName === undefined || packageName === "" || (safeName(packageName) && plainPath(packageName)) ? packageName : "\0";
     } else if (name === "sourcefile") {
       if (!rootSeen || currentPackage === undefined) return undefined;
       const file = attributesOf().get("name");
       current = undefined;
       if (selfClosing) continue;
       if (found.size + repeated.size + unmapped >= JACOCO_MAX_SOURCE_FILES) return undefined;
-      if (currentPackage === "\0" || !safeName(file) || file === "" || file.includes("/")) {
+      if (currentPackage === "\0" || !safeName(file) || file === "" || file.includes("/") || !plainPath(file)) {
         unmapped += 1;
         current = { entry: undefined };
         continue;

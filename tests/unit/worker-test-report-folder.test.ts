@@ -127,6 +127,56 @@ describe("readJunitFolder", () => {
   });
 });
 
+describe("readJunitFolder inside a workspace root", () => {
+  it("refuses a folder reached through a symbolic link in a PARENT part, not only in the last part", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "rovara-report-outside-"));
+    try {
+      mkdirSync(join(outside, "reports"));
+      writeFileSync(join(outside, "reports", "TEST-z.Z.xml"), suite("z.Z", OK("z.Z", "leaked")));
+      symlinkSync(outside, join(dir, "target"));
+      // The last part (`reports`) is a real folder, so the final lstat alone would pass.
+      const result = await readJunitFolder(join(dir, "target", "reports"), dir);
+      expect(result.report).toBeUndefined();
+      expect(result.complete).toBe(false);
+      expect(result.notes.join(" ")).toMatch(/not inside the workspace/u);
+      expect(JSON.stringify(result)).not.toContain("leaked");
+      expect((await readTestReportAt(dir, "target/reports")).problem).toBe("refused");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+  it("reads a folder inside the root, also when the root itself is reached through a link", async () => {
+    const linked = join(tmpdir(), `rovara-report-linked-${String(process.pid)}-${String(Date.now())}`);
+    try {
+      mkdirSync(join(dir, "r"));
+      writeFileSync(join(dir, "r", "TEST-a.A.xml"), suite("a.A", OK("a.A", "t")));
+      symlinkSync(dir, linked);
+      expect((await readJunitFolder(join(linked, "r"), linked)).report?.total).toBe(1);
+      expect((await readTestReportAt(linked, "r")).report?.total).toBe(1);
+    } finally {
+      rmSync(linked, { force: true });
+    }
+  });
+  it("cuts a very long path before doing any work on it, and drops trailing slashes without a pattern that is quadratic", async () => {
+    for (const path of ["/".repeat(80_000) + "a", "a".repeat(501), "a" + "/".repeat(80_000)]) {
+      const started = performance.now();
+      expect((await readTestReportAt(dir, path)).problem, path.slice(0, 5)).toBe("refused");
+      expect(performance.now() - started).toBeLessThan(50);
+    }
+    mkdirSync(join(dir, "r"));
+    writeFileSync(join(dir, "r", "TEST-a.A.xml"), suite("a.A", OK("a.A", "t")));
+    expect((await readTestReportAt(dir, "r" + "/".repeat(300))).report?.total).toBe(1);
+  });
+  it("keeps the text of a report's file attribute out of the evidence when it holds a secret or a control character", async () => {
+    const token = ["gh", "p_", "a".repeat(36)].join("");
+    put("TEST-a.A.xml", suite("a.A", `<testcase name="t" classname="a.A" file="src/${token}/A.java"/><testcase name="u" classname="a.A" file="src/B\u202e.java"/><testcase name="v" classname="a.A" file="src/Fine.java"/>`));
+    const result = await readJunitFolder(dir);
+    expect(JSON.stringify(result.report)).not.toContain(token);
+    expect(JSON.stringify(result.report)).not.toContain("\u202e");
+    expect(result.report?.tests.map((test) => test.file)[2]).toBe("src/Fine.java");
+  });
+});
+
 describe("readTestReportAt", () => {
   it("reads a folder or a single file under the root, by relative path", async () => {
     mkdirSync(join(dir, "target", "surefire-reports"), { recursive: true });

@@ -103,6 +103,25 @@ describe("parseJacocoXml", () => {
     expect(read.unmappedBlocks).toBe(3);
     expect(parseJacocoXml(report(pkg("../escape", sourcefile("B.java", line(1, 0, 1)))), { sourceRoots: ROOTS })).toBeUndefined();
   });
+  it("sends package and file names through the data guard: a name with a secret or a control character is never stored or listed, and its file counts as not placed", () => {
+    const token = ["gh", "p_", "a".repeat(36)].join("");
+    const text = report(
+      pkg("com/acme", sourcefile("A.java", line(1, 0, 1)), sourcefile(`${token}.java`, line(1, 0, 1)), sourcefile("Evil&#x202E;gnp.java", line(1, 0, 1)), sourcefile("Tab&#9;Name.java", line(1, 0, 1))),
+      pkg(`com/${token}`, sourcefile("B.java", line(1, 0, 1))),
+      pkg("com/acme", sourcefile("Dup.java", line(1, 0, 1))), pkg("com/acme", sourcefile("Dup.java", line(1, 0, 1))),
+    );
+    const read = parseJacocoXml(text, { sourceRoots: ROOTS })!;
+    expect([...read.files.keys()]).toEqual(["src/main/java/com/acme/A.java"]);
+    expect(read.unmappedBlocks).toBe(4);
+    expect(read.ambiguousFiles).toEqual(["com/acme/Dup.java"]);
+    expect(JSON.stringify([...read.files.keys(), read.ambiguousFiles])).not.toContain(token);
+    // With the repository's file list as well: nothing a report invented is placed, and nothing is listed.
+    const paths = ["src/main/java/com/acme/A.java"];
+    const listed = parseJacocoXml(text, { sourceRoots: ROOTS, repoPaths: paths })!;
+    expect(JSON.stringify(listed.ambiguousFiles)).not.toContain(token);
+    // A name the guard leaves alone is untouched.
+    expect(parseJacocoXml(report(pkg("com/acme/util", sourcefile("Strings$Inner_2.java", line(1, 0, 1)))), { sourceRoots: ROOTS })!.files.has("src/main/java/com/acme/util/Strings$Inner_2.java")).toBe(true);
+  });
   it("is not fooled by package or line elements inside comments or CDATA", () => {
     const text = report(pkg("com/acme", sourcefile("A.java", line(1, 0, 1)))).replace("</report>", '<!-- <package name="com/fake"><sourcefile name="F.java"><line nr="1" mi="0" ci="1"/></sourcefile></package> --></report>');
     expect([...parseJacocoXml(text, { sourceRoots: ROOTS })!.files.keys()]).toEqual(["src/main/java/com/acme/A.java"]);
