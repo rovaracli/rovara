@@ -248,6 +248,53 @@ describe("a Slack requester who is not a current writer of the team's org is ref
       const never = await withKit({ brokerExtra: { editionPolicy: enterprise } });
       expect(await code(never)).toMatchObject({ code: "FORBIDDEN" });
     });
+
+    it("the company role comes from the survivor's record only: a stale owner record under the Slack id is no role when the survivor has none", async () => {
+      for (const [how, arrange] of reach) {
+        const h = await withKit();
+        arrange(h);
+        // Arranged after the reach, which clears the Slack id's own record: a stale owner record there, a viewer grant under the Slack id, and no record under the survivor.
+        h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "owner" });
+        setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
+        expect(await code(h), `${how} stale owner`).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+      }
+      // And with a survivor who is a member the stale owner record gives no maintainer role either.
+      for (const [how, arrange] of reach) {
+        const h = await withKit();
+        seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "member" });
+        arrange(h);
+        h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "owner" });
+        setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
+        expect(await code(h), `${how} stale owner, member survivor`).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+      }
+    });
+
+    it("a survivor's viewer grant beats a stale contributor grant under the Slack id", async () => {
+      for (const [how, arrange] of reach) {
+        const h = await withKit();
+        seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "member" });
+        setGrant(h.db, { ...KIT, developerId: survivorId }, "viewer");
+        arrange(h);
+        setGrant(h.db, { ...KIT, developerId: guestId }, "contributor");
+        expect(await code(h), how).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+      }
+    });
+
+    it("the person's ids are walked once per role read, and the grant is read under exactly those ids", async () => {
+      const h = await withKit();
+      seedMembership(h.db, survivorId, { orgId: TEST_ORG, role: "member" });
+      reach[0]![1](h);
+      const { slackRequesterProjectRole } = await import("../../packages/broker/src/aws/broker/workspace-preparation.js");
+      let reads = 0;
+      const send = h.db.send.bind(h.db);
+      h.db.send = (async (command: { constructor: { name: string }; input?: { Key?: { pk?: string } } }) => {
+        if (command.constructor.name === "GetCommand" && (command.input?.Key?.pk === `SIGNIN_IDENTITY#${guestId}` || command.input?.Key?.pk === `DEVELOPER#${guestId}`)) reads += 1;
+        return send(command as never);
+      }) as never;
+      await slackRequesterProjectRole(h.brokerInput as never, TEST_ORG, GUEST, "payments");
+      // One read of the Slack id's link and one of its record, by the single walk; the grant read reuses its ids.
+      expect(reads).toBe(2);
+    });
   });
 
   it("a member record with no role field is unreadable and refused, not defaulted to member", async () => {
