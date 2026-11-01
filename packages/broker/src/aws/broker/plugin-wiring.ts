@@ -13,10 +13,12 @@ export function createBrokerPlugins(input: {
   /** The credential reference the GitHub App provider was configured with (GITHUB_APP_CREDENTIAL_REF). */
   credentialRef: string;
   codeBuild: CodeBuildGateway;
+  /** P6: the GitHub App's webhook secret, so the code host can verify and normalise a delivery. */
+  webhookSecret?: (options?: { refresh?: boolean }) => Promise<string>;
   policy?: EditionPolicy;
 }): PluginRegistry {
   return createPluginRegistry({
-    codeHosts: [githubCodeHost(input.provider, { credentialRef: input.credentialRef })],
+    codeHosts: [githubCodeHost(input.provider, { credentialRef: input.credentialRef, ...(input.webhookSecret === undefined ? {} : { webhookSecret: input.webhookSecret }) })],
     checkRunners: [
       { kind: "github-actions", create: () => githubActionsCheckRunner(input.provider) },
       { kind: "codebuild", create: (context) => codeBuildCheckRunner({ gateway: input.codeBuild, allowedRepositories: context.allowedRepositories }) },

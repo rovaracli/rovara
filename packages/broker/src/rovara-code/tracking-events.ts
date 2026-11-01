@@ -3,10 +3,11 @@
 // index is only a lead: the installation's org, the task, the pull request recorded in its workflow, the link of that pull request to the task and the project's pinned
 // repository all have to agree before anything is woken.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, TRACKING_REVIEW_COALESCE_SECONDS, githubInstallationKey, prHeadKey, type OrgId } from "@agentx/contracts";
-import { findLinkedGithubWorkflowPullRequest, type HeadWebhookEvent, type PullRequestWebhookEvent } from "../aws/github-webhooks.js";
-import { parseGitHubRepository } from "../github-app.js";
+import { OrgIdSchema, TRACKING_REVIEW_COALESCE_SECONDS, githubInstallationKey, prHeadKey, type CodeHostEvent, type OrgId, type PluginKind } from "@agentx/contracts";
+import type { HeadWebhookEvent, PullRequestWebhookEvent } from "../aws/github-webhooks.js";
 import { wakeTrackingRow } from "../aws/workflow-merge-recovery.js";
+import { codeHostRepositoryKey } from "../plugins/events/repository-key.js";
+import { findLinkedChangeRequest } from "./linked-change-requests.js";
 import { tracksMerge, type TrackedTask } from "./merge-tracking.js";
 export { prHeadItems } from "./head-index.js";
 
@@ -29,7 +30,7 @@ export interface FollowedHead {
   number: number;
 }
 
-async function indexed(deps: HeadEventDependencies, orgId: OrgId, fullName: string, key: string): Promise<Record<string, unknown> | undefined> {
+async function indexed(deps: Pick<HeadEventDependencies, "documentClient" | "tableName">, orgId: OrgId, fullName: string, key: string): Promise<Record<string, unknown> | undefined> {
   // A key the index cannot hold (a "#" or a control character in a branch name) is no lead.
   if (key.includes("#") || /[\p{Cc}\p{Cf}]/u.test(key)) return undefined;
   const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: prHeadKey(orgId, fullName, key), ConsistentRead: true })) as { Item?: Record<string, unknown> };
@@ -65,16 +66,30 @@ export async function resolveHeadEventTask(
 async function followedPullRequest(
   deps: HeadEventDependencies, orgId: OrgId, fullName: string, lead: { taskId: string; repositoryId: string; number: number },
 ): Promise<{ taskId: string; repositoryId: string; number: number; repositoryUrl: string } | undefined> {
+  return followedChangeRequest(deps, orgId, { hostKind: "github", repositoryAddress: `https://github.com/${fullName}` }, lead);
+}
+
+/** What a wake needs, whichever code host the event came from: no installation, no GitHub read. */
+export type FollowedDependencies = Pick<HeadEventDependencies, "documentClient" | "tableName" | "loadTask" | "repositoryUrl">;
+
+/**
+ * The agreement every wake needs, for any code host (P6; `followedPullRequest` is this for GitHub): the task is the org's, tracks its merge and is not finished, its workflow holds the change
+ * request, the change request's link names the task (the neutral row, else for GitHub the old one), and the project's pinned repository is the one the event came for. The repository
+ * is compared by its neutral key, so a spelling of the same address (case, `.git`) still matches and another repository never does.
+ */
+export async function followedChangeRequest(
+  deps: FollowedDependencies, orgId: OrgId, repository: { hostKind: PluginKind; repositoryAddress: string }, lead: { taskId: string; repositoryId: string; number: number },
+): Promise<{ taskId: string; repositoryId: string; number: number; repositoryUrl: string } | undefined> {
   const task = await deps.loadTask(lead.taskId);
   if (task === undefined || task.orgId !== orgId || !tracksMerge(task.workflow) || task.closedAt !== undefined || task.releasedAt !== undefined) return undefined;
   const recorded = task.workflow.pullRequests?.find((pr) => pr.repositoryId === lead.repositoryId && pr.number === lead.number);
   if (recorded === undefined) return undefined;
-  const linked = await findLinkedGithubWorkflowPullRequest({ documentClient: deps.documentClient, tableName: deps.tableName, repositoryFullName: fullName, number: recorded.number });
+  const linked = await findLinkedChangeRequest({ documentClient: deps.documentClient, tableName: deps.tableName }, { ...repository, id: String(recorded.number) });
   if (linked === undefined || linked.taskId !== task.taskId || linked.repositoryId !== recorded.repositoryId || linked.url !== recorded.url) return undefined;
   const url = await deps.repositoryUrl(task.project, task.startingRevision, recorded.repositoryId, orgId);
   if (url === undefined) return undefined;
-  const pinned = parseGitHubRepository(url);
-  if (`${pinned.owner}/${pinned.name}`.toLowerCase() !== fullName) return undefined;
+  const pinned = codeHostRepositoryKey(repository.hostKind, url);
+  if (pinned === undefined || pinned !== codeHostRepositoryKey(repository.hostKind, repository.repositoryAddress)) return undefined;
   return { taskId: task.taskId, repositoryId: recorded.repositoryId, number: recorded.number, repositoryUrl: url };
 }
 
@@ -112,7 +127,7 @@ export async function wakeFromPullRequestEvent(deps: HeadEventDependencies, even
   const orgId = await deps.orgOfInstallation(event.installationId);
   if (orgId === undefined) return "unfollowed";
   const fullName = event.fullName.toLowerCase();
-  const linked = await findLinkedGithubWorkflowPullRequest({ documentClient: deps.documentClient, tableName: deps.tableName, repositoryFullName: fullName, number: event.number });
+  const linked = await findLinkedChangeRequest(deps, { hostKind: "github", repositoryAddress: `https://github.com/${fullName}`, id: String(event.number) });
   if (linked === undefined) return "unfollowed";
   const followed = await followedPullRequest(deps, orgId, fullName, { taskId: linked.taskId, repositoryId: linked.repositoryId, number: linked.number });
   if (followed === undefined) return "unfollowed";
@@ -126,4 +141,38 @@ export async function boundInstallationOrg(deps: Pick<HeadEventDependencies, "do
   const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: githubInstallationKey(installationId), ConsistentRead: true })) as { Item?: { orgId?: unknown; status?: unknown } };
   const org = OrgIdSchema.safeParse(found.Item?.orgId);
   return org.success && found.Item?.status === "active" ? org.data : undefined;
+}
+
+// ---- P6: the same wake, from a neutral code host event
+
+/** What the neutral wake reads: the same task and link reads, and the clock. The org the event belongs to is the caller's (the host's own binding), never taken from the event. */
+export type CodeHostWakeDependencies = FollowedDependencies & Pick<HeadEventDependencies, "now">;
+
+const CHANGE_REQUEST_ID = /^[1-9][0-9]{0,9}$/;
+
+/**
+ * Wakes the tracking row of the task a neutral event is about, so the pass that follows reads the change request from its host within seconds. Nothing in the event is believed beyond which
+ * change request or commit to look at: the task is found by the change request's own link (or, for a check or a push, by the head index), and the org, the task, its workflow and the project's pinned
+ * repository are read again here. `orgId` is the org the host's binding names for this delivery; an event is "unfollowed" unless every one of those agrees.
+ *  - opened: nothing to wake (the row is made when the change request is published). updated, merged, closed, a comment: a pass is due. A review: due sooner, as a person's review is waited for.
+ *  - a check or a push names a commit (and a push a branch): the head index says which change request, as for GitHub's check and status events.
+ */
+export async function wakeFromCodeHostEvent(deps: CodeHostWakeDependencies, event: CodeHostEvent, orgId: OrgId): Promise<"woken" | "none" | "unfollowed"> {
+  const wake = (taskId: string, options: { coalesceSeconds?: number } = {}) => wakeTrackingRow({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, taskId, options);
+  if (event.type === "change_request.opened") return "none";
+  if (event.type === "check.completed" || event.type === "revision.pushed") {
+    const repositoryKey = codeHostRepositoryKey(event.host, event.repository.url);
+    if (repositoryKey === undefined) return "unfollowed";
+    const lead = await indexed(deps, orgId, repositoryKey, event.revision)
+      ?? (event.type === "revision.pushed" ? await indexed(deps, orgId, repositoryKey, `branch:${event.branch}`) : undefined);
+    if (lead === undefined || lead["orgId"] !== orgId || typeof lead["taskId"] !== "string" || typeof lead["repositoryId"] !== "string" || typeof lead["number"] !== "number") return "unfollowed";
+    const followed = await followedChangeRequest(deps, orgId, { hostKind: event.host, repositoryAddress: event.repository.url }, { taskId: lead["taskId"], repositoryId: lead["repositoryId"], number: lead["number"] });
+    return followed === undefined ? "unfollowed" : wake(followed.taskId);
+  }
+  if (!CHANGE_REQUEST_ID.test(event.ref.id)) return "unfollowed";
+  const linked = await findLinkedChangeRequest(deps, { hostKind: event.host, repositoryAddress: event.ref.repository.url, id: event.ref.id });
+  if (linked === undefined) return "unfollowed";
+  const followed = await followedChangeRequest(deps, orgId, { hostKind: event.host, repositoryAddress: event.ref.repository.url }, { taskId: linked.taskId, repositoryId: linked.repositoryId, number: linked.number });
+  if (followed === undefined) return "unfollowed";
+  return wake(followed.taskId, event.type === "review.submitted" ? { coalesceSeconds: TRACKING_REVIEW_COALESCE_SECONDS } : {});
 }

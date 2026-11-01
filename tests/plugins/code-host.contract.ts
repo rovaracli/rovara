@@ -3,8 +3,8 @@
 // a capability says so with `needs`.
 import { expect } from "vitest";
 import {
-  ChangeRequestDetailsSchema, ChangeRequestFeedbackSchema, ChangeRequestStatusSchema, CodeHostCapabilitiesSchema, CodeHostEventSchema, GitCredentialSchema,
-  type ChangeRequestRef, type CodeHost, type HostScope, type RawDelivery, type RepositoryRef,
+  ChangeRequestDetailsSchema, ChangeRequestFeedbackSchema, ChangeRequestStatusSchema, CodeHostCapabilitiesSchema, CodeHostEventSchema, GitCredentialSchema, hostRateLimitRetryAt, MergeObservationSchema,
+  type ChangeRequestRef, type CodeHost, type HostScope, type RawDelivery, type ReadBudget, type RepositoryRef,
 } from "../../packages/contracts/src/index.js";
 import type { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
 import { workerGitCredentialUsable } from "../../packages/contracts/src/index.js";
@@ -29,6 +29,14 @@ export interface CodeHostWorld {
   readonly signedDelivery?: (event: { kind: "change_request.opened"; id: string } | { kind: "revision.pushed"; branch: string; revision: string }) => RawDelivery;
   /** A delivery whose signature does not verify. */
   readonly forgedDelivery?: () => RawDelivery;
+  /** P6: makes the host answer every read as rate limited until `retryAt` (milliseconds), in the host's own way (a 429 for GitHub). */
+  readonly limitReads?: (retryAt: number) => void;
+}
+
+/** A read allowance that counts its requests, as a tracking pass's does. */
+export function countingBudget(): { budget: ReadBudget; requests: () => number } {
+  let count = 0;
+  return { budget: { signal: new AbortController().signal, beforeRequest: () => { count += 1; } }, requests: () => count };
 }
 
 /** Opens a change request from a new branch with one added file, and returns it. */
@@ -99,6 +107,19 @@ export const codeHostChecks: readonly ContractCheck<CodeHostWorld>[] = [
       expect(await host.fileAtRevision(repository, "notes.txt", first, scope)).toBe("one\n");
       expect(await host.fileAtRevision(repository, "notes.txt", second, scope)).toBe("two\n");
       expect(await host.fileAtRevision(repository, "missing.txt", second, scope)).toBeUndefined();
+    },
+  },
+  {
+    name: "refuses a file over the caller's size cap, never cutting it, and reads one within it",
+    async run({ host, model, repository, scope }) {
+      const body = "x".repeat(200);
+      const revision = model.commit("main", { "config.yml": body });
+      expect(await host.fileAtRevision(repository, "config.yml", revision, scope, { maxBytes: 200 })).toBe(body);
+      expect(await host.fileAtRevision(repository, "config.yml", revision, scope, { maxBytes: 4_096 })).toBe(body);
+      const refused = await rejection(() => host.fileAtRevision(repository, "config.yml", revision, scope, { maxBytes: 199 }));
+      expect(refused?.code).toBe("CONFIG_INVALID");
+      // A file that is not there is still not there, whatever the cap.
+      expect(await host.fileAtRevision(repository, "missing.yml", revision, scope, { maxBytes: 10 })).toBeUndefined();
     },
   },
   {
@@ -351,6 +372,62 @@ export const codeHostChecks: readonly ContractCheck<CodeHostWorld>[] = [
       const refused = await rejection(async () => { events = await host.events.normalise!(world.forgedDelivery!(), scope); });
       expect(refused).toBeDefined();
       expect(events).toBeUndefined();
+    },
+  },
+  {
+    name: "reads the head of an ordinary branch and the parents of a revision",
+    async run(world) {
+      const { host, model, repository, unregistered, scope } = world;
+      const root = model.headOf(model.defaultBranch);
+      expect(await host.baseBranchHead(repository, model.defaultBranch, scope)).toBe(root);
+      // An ordinary branch name, not only Rovara's own: a base branch named with a slash.
+      const release = model.commit("release/2026-11", { "VERSION": "1\n" });
+      expect(await host.baseBranchHead(repository, "release/2026-11", scope)).toBe(release);
+      expect(await host.commitParents(repository, root, scope)).toEqual([]);
+      expect(await host.commitParents(repository, release, scope)).toEqual([root]);
+      const { head } = await openChangeRequest(world);
+      expect(await host.commitParents(repository, head, scope)).toHaveLength(1);
+      expect(await rejection(() => host.baseBranchHead(repository, "no-such-branch", scope))).toBeDefined();
+      expect(await rejection(() => host.commitParents(repository, "f".repeat(40), scope))).toBeDefined();
+      expect(await rejection(() => host.baseBranchHead(unregistered, model.defaultBranch, scope))).toBeDefined();
+    },
+  },
+  {
+    name: "observes a merge: what it merged as and when, within the read allowance",
+    needs: ({ host }) => host.mergeObservation !== undefined && host.merge !== undefined,
+    async run(world) {
+      const { host, scope } = world;
+      const { ref, head } = await openChangeRequest(world);
+      const open = countingBudget();
+      const before = MergeObservationSchema.parse(await host.mergeObservation!(ref, scope, open.budget));
+      expect(before).toMatchObject({ state: "open", headRevision: head });
+      expect(before.mergedAt).toBeUndefined();
+      expect(before.mergeRevision).toBeUndefined();
+      expect(open.requests()).toBeGreaterThan(0);
+      const merged = await host.merge!(ref, { revision: head, method: "merge" }, scope);
+      expect(merged.outcome).toBe("merged");
+      const after = MergeObservationSchema.parse(await host.mergeObservation!(ref, scope, countingBudget().budget));
+      expect(after.state).toBe("merged");
+      expect(after.mergeRevision).toBe(merged.outcome === "merged" ? merged.mergeRevision : undefined);
+      expect(Number.isFinite(Date.parse(after.mergedAt ?? ""))).toBe(true);
+      // The details a plain read gives carry the same time.
+      expect((await host.getChangeRequest(ref, scope)).mergedAt).toBe(after.mergedAt);
+      // A spent allowance stops the read.
+      expect(await rejection(() => host.mergeObservation!(ref, scope, { signal: new AbortController().signal, beforeRequest: () => { throw new Error("allowance spent"); } }))).toBeDefined();
+    },
+  },
+  {
+    name: "signals its rate limit as the neutral error, with the time to try again",
+    needs: (world) => world.limitReads !== undefined,
+    async run(world) {
+      const { host, scope } = world;
+      const { ref } = await openChangeRequest(world);
+      const retryAt = world.now() + 60_000;
+      world.limitReads!(retryAt);
+      const { budget } = countingBudget();
+      for (const read of [() => host.changeRequestStatus(ref, scope, budget), () => host.standing(world.repository, { login: "priya" }, scope, budget), ...(host.mergeObservation === undefined ? [] : [() => host.mergeObservation!(ref, scope, budget)])]) {
+        expect(hostRateLimitRetryAt(await rejection(read))).toBe(retryAt);
+      }
     },
   },
 ];

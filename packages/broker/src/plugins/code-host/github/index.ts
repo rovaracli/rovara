@@ -6,14 +6,15 @@
 //  - `branchHead` reads Rovara's own working branches only (`agentx/<uuid>`): the provider refuses any other name.
 //  - `listBranches` is org-scoped and needs the installation binding (cloud installs); a system scope is refused.
 //  - `reply` posts Rovara's own fixed text only (200 characters, one line, no mention).
-//  - The webhook normaliser (`events.normalise`) is task P6; until then this adapter says it receives webhooks and verifies none.
+//  - `events.normalise` (task P6, `events.ts`) exists only when the adapter is given the install's webhook secret; without one it verifies nothing and offers no normaliser.
 import {
   agentXError, ChangeRequestInputSchema, ChangeRequestUpdateSchema, HostScopeSchema,
   type BranchPage, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled, type ChangeRequestRef,
   type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type CodeHostCapabilities, type GitAccess, type GitCredential, type HostAccount, type HostScope,
-  type HostStanding, type MergeMethod, type MergeResult, type ReadBudget, type RepositoryIdentity, type RepositoryRef,
+  type HostStanding, type MergeMethod, type MergeObservation, type MergeResult, type ReadBudget, type RepositoryIdentity, type RepositoryRef,
 } from "@agentx/contracts";
 import { parseGitHubRepository, type GitHubAppCredentialProvider } from "../../../github-app.js";
+import { githubCodeHostEvents } from "./events.js";
 import { detailsOf, feedbackOf, fileOf, mergeResultOf, pullRequestNumber, refOf, replyTargetOf, statusOf } from "./mapping.js";
 
 export const GITHUB_HOST_KIND = "github";
@@ -32,6 +33,7 @@ export const GITHUB_CODE_HOST_CAPABILITIES: CodeHostCapabilities = {
 /** The provider methods the adapter uses: a narrow type, so a test can stand in for the rest. */
 export type GitHubCodeHostProvider = Pick<GitHubAppCredentialProvider,
   | "getRepositoryIdentity" | "checkRepository" | "getRepositoryStanding" | "resolveWithExpiry" | "getFileAtCommit" | "getCommitTree" | "getBranchHead" | "listWorkingBranches"
+  | "getCommitParents" | "getDefaultBranchHead" | "getPullRequestMergeObservation"
   | "installationForRepository" | "readCodeOwners" | "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "getPullRequestStatus" | "listPullRequestFiles"
   | "getPullRequestFeedback" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest">;
 
@@ -40,6 +42,8 @@ export interface GitHubCodeHostOptions {
   credentialRef: string;
   /** The clock, in milliseconds. Default `Date.now`. */
   now?: () => number;
+  /** P6: the install's webhook secret (read for each delivery; `refresh` rereads it after a rotation). Absent: the adapter has no `events.normalise`, so no delivery is accepted through the port. */
+  webhookSecret?: (options?: { refresh?: boolean }) => Promise<string>;
 }
 
 function checkedScope(scope: HostScope): HostScope {
@@ -52,8 +56,8 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
   const host: CodeHost = {
     kind: GITHUB_HOST_KIND,
     capabilities: GITHUB_CODE_HOST_CAPABILITIES,
-    // Webhooks arrive at the broker's existing route today; the neutral normaliser is task P6.
-    events: { mode: "webhook" },
+    // P6: with a webhook secret the adapter verifies and maps GitHub's deliveries (events.ts); the broker's existing route keeps its own intake until the cut-over.
+    events: options.webhookSecret === undefined ? { mode: "webhook" } : githubCodeHostEvents(options.webhookSecret),
 
     async repositoryIdentity(repository: RepositoryRef, scope: HostScope): Promise<RepositoryIdentity | undefined> {
       const identity = await provider.getRepositoryIdentity(repository.url, checkedScope(scope));
@@ -81,7 +85,7 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       return { kind: "basic", username: credential.username, password: credential.password, expiresAt: new Date(stated).toISOString() };
     },
 
-    async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, fileOptions?: { untilLine?: number; timeoutMs?: number }): Promise<string | undefined> {
+    async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, fileOptions?: { untilLine?: number; timeoutMs?: number; maxBytes?: number }): Promise<string | undefined> {
       return provider.getFileAtCommit(repository.url, path, revision, checkedScope(scope), fileOptions);
     },
 
@@ -91,6 +95,14 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
 
     async branchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string> {
       return provider.getBranchHead(repository.url, branch, checkedScope(scope));
+    },
+
+    async baseBranchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string> {
+      return provider.getDefaultBranchHead(repository.url, branch, checkedScope(scope));
+    },
+
+    async commitParents(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string[]> {
+      return provider.getCommitParents(repository.url, revision, checkedScope(scope));
     },
 
     async listBranches(repository: RepositoryRef, page: number, scope: HostScope): Promise<BranchPage> {
@@ -125,6 +137,11 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       await provider.updatePullRequest(ref.repository.url, pullRequestNumber(ref), {
         ...(parsed.title === undefined ? {} : { title: parsed.title }), ...(parsed.body === undefined ? {} : { body: parsed.body }), ...(parsed.state === undefined ? {} : { state: parsed.state }),
       }, checkedScope(scope));
+    },
+
+    async mergeObservation(ref: ChangeRequestRef, scope: HostScope, budget: ReadBudget): Promise<MergeObservation> {
+      const observed = await provider.getPullRequestMergeObservation(ref.repository.url, pullRequestNumber(ref), budget, checkedScope(scope));
+      return { ...detailsOf(ref.repository.url, observed), headTreeRevision: observed.headTreeSha };
     },
 
     async changeRequestStatus(ref: ChangeRequestRef, scope: HostScope, budget?: ReadBudget): Promise<ChangeRequestStatus> {

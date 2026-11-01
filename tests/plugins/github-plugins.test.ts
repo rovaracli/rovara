@@ -12,6 +12,7 @@ import { checkRunnerChecks, type CheckRunnerWorld } from "./check-runner.contrac
 import { codeHostChecks, type CodeHostWorld } from "./code-host.contract.js";
 import { runContract } from "./contract-kit.js";
 import { GITHUB_ORG_SCOPE, GITHUB_OTHER_URL, GITHUB_REPO_URL, GitHubFixtureApi, providerOver } from "./github-fixture-api.js";
+import { githubDelivery, githubPayloads, signGithubBody, webhookSecretReader } from "./github-deliveries.js";
 
 const GITHUB_NOW = Date.parse("2026-10-30T10:00:00.000Z");
 const WORKING_BRANCH = (n: number) => `agentx/00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -23,8 +24,16 @@ function githubModel(): FakeHostModel {
 function githubCodeHostWorld(): CodeHostWorld & { api: GitHubFixtureApi } {
   const model = githubModel();
   const api = new GitHubFixtureApi(model);
-  const host = githubCodeHost(providerOver(api), { credentialRef: "github", now: () => GITHUB_NOW });
-  return { host, model, api, repository: { url: GITHUB_REPO_URL }, unregistered: { url: GITHUB_OTHER_URL }, scope: GITHUB_ORG_SCOPE, now: () => GITHUB_NOW, branch: WORKING_BRANCH };
+  const host = githubCodeHost(providerOver(api), { credentialRef: "github", now: () => GITHUB_NOW, webhookSecret: webhookSecretReader() });
+  return {
+    host, model, api, repository: { url: GITHUB_REPO_URL }, unregistered: { url: GITHUB_OTHER_URL }, scope: GITHUB_ORG_SCOPE, now: () => GITHUB_NOW, branch: WORKING_BRANCH,
+    // P6: the GitHub normaliser. A pull request opened, and a push to a branch, signed as GitHub signs them; and one whose signature is wrong.
+    signedDelivery: (event) => event.kind === "change_request.opened"
+      ? githubDelivery("pull_request", githubPayloads.pullRequest("opened", Number(event.id)))
+      : githubDelivery("push", githubPayloads.push(`refs/heads/${event.branch}`, event.revision)),
+    forgedDelivery: () => githubDelivery("pull_request", githubPayloads.pullRequest("opened"), { signature: signGithubBody("{}") }),
+    limitReads: (retryAt) => { api.limitReadsFor((retryAt - GITHUB_NOW) / 1_000); },
+  };
 }
 
 function githubActionsWorld(): CheckRunnerWorld {
@@ -42,12 +51,8 @@ function githubActionsWorld(): CheckRunnerWorld {
   };
 }
 
-// What the GitHub adapter does not do yet is named here, so a gap is visible in the test output and never silent.
-const GITHUB_CODE_HOST_SKIPS = {
-  "maps a signed delivery to neutral events, and never returns events from one that does not verify": "the GitHub webhook normaliser is task P6 (github-webhooks.ts becomes it)",
-};
-
-runContract("GitHub CodeHost adapter passes the CodeHost contract", codeHostChecks, githubCodeHostWorld, { skip: GITHUB_CODE_HOST_SKIPS });
+// Nothing is skipped: the GitHub normaliser (task P6) runs the neutral events check too.
+runContract("GitHub CodeHost adapter passes the CodeHost contract", codeHostChecks, githubCodeHostWorld);
 runContract("GitHub Actions CheckRunner passes the CheckRunner contract", checkRunnerChecks, githubActionsWorld);
 
 class FakeCodeBuild implements CodeBuildGateway {

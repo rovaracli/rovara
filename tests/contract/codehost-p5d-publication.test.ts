@@ -84,14 +84,16 @@ describe("a workflow publication on a fake host", () => {
     expect(w.db.get(`WORKSPACE#${WORKSPACE}`, "PULL_REQUEST#api#000000000001")).toBeUndefined();
   });
 
-  it("checks the pinned base through the commit-parent read: the checked commit must descend from it", async () => {
+  // Replaces (P6): this used the GitHub provider's `getCommitParents`; the ancestry is read from the host now (`commitParents`), so the checked commit's parents are the host's own.
+  it("checks the pinned base through the host's commit-parent read: the checked commit must descend from it", async () => {
     const w = world();
     const base = w.model.headOf("main");
-    w.github.getCommitParents.mockResolvedValueOnce([]);
-    await expect(reconcilePullRequest(w.dependencies, w.operation({ expectedBaseCommit: base }), w.body(w.commit))).rejects.toThrow("the pushed commit is not the checked code");
+    // A base the checked commit does not descend from stops the publication; nothing is opened.
+    await expect(reconcilePullRequest(w.dependencies, w.operation({ expectedBaseCommit: "e".repeat(40) }), w.body(w.commit))).rejects.toThrow("the pushed commit is not the checked code");
     expect(w.model.changeRequests).toHaveLength(0);
-    w.github.getCommitParents.mockResolvedValue([base]);
+    // One that it does descend from lets it through, and GitHub's own parents read is never used.
     await expect(reconcilePullRequest(w.dependencies, w.operation({ expectedBaseCommit: base }), w.body(w.commit))).resolves.toMatchObject({ number: 1 });
+    expect(w.github.getCommitParents).not.toHaveBeenCalled();
   });
 });
 

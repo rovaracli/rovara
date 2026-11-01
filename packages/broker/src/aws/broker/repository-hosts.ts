@@ -115,6 +115,16 @@ export async function baseTreeHolds(dependencies: HostDependencies, repository: 
   return await host.tree({ url: repository.url }, commit, scope) === expectedTree;
 }
 
+/** Whether a commit's parents (P6) can be read from this host. The port always can; a GitHub provider built without the read (a harness) cannot. */
+export function canReadParents(dependencies: Pick<AwsBrokerDependencies, "githubPullRequests">, host: Pick<CodeHost, "kind">): boolean {
+  return host.kind !== GITHUB_HOST_KIND || dependencies.githubPullRequests.getCommitParents !== undefined;
+}
+
+/** Whether the head of an ordinary branch (P6) can be read from this host. The port always can; a GitHub provider built without the read (a harness) cannot. */
+export function canReadBaseBranchHead(dependencies: Pick<AwsBrokerDependencies, "githubPullRequests">, host: Pick<CodeHost, "kind">): boolean {
+  return host.kind !== GITHUB_HOST_KIND || dependencies.githubPullRequests.getDefaultBranchHead !== undefined;
+}
+
 /** Whether a branch head and a tree can both be read from this host (see `canReadTree`). */
 export function canReadBranchAndTree(dependencies: Pick<AwsBrokerDependencies, "githubPullRequests">, host: Pick<CodeHost, "kind">): boolean {
   return host.kind !== GITHUB_HOST_KIND || (dependencies.githubPullRequests.getBranchHead !== undefined && dependencies.githubPullRequests.getCommitTree !== undefined);

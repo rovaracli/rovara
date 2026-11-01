@@ -2,10 +2,10 @@
 // a real adapter must answer what this one answers for the same state.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
-  agentXError, CodeHostEventSchema, HostScopeSchema, ChangeRequestUpdateSchema, ChangeRequestInputSchema,
+  agentXError, CodeHostEventSchema, HostRateLimitError, HostScopeSchema, ChangeRequestUpdateSchema, ChangeRequestInputSchema,
   type BranchPage, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled,
   type ChangeRequestRef, type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type CodeHostCapabilities, type CodeHostEvent, type CodeHostEvents, type GitAccess,
-  type GitCredential, type HostAccount, type HostScope, type HostStanding, type MergeMethod, type MergeResult, type RawDelivery, type ReadBudget, type RepositoryIdentity,
+  type GitCredential, type HostAccount, type HostScope, type HostStanding, type MergeMethod, type MergeObservation, type MergeResult, type RawDelivery, type ReadBudget, type RepositoryIdentity,
   type RepositoryRef,
 } from "@agentx/contracts";
 import type { FakeChangeRequest, FakeHostModel } from "./model.js";
@@ -76,7 +76,7 @@ export class FakeCodeHost implements CodeHost {
 
   async standing(repository: RepositoryRef, person: HostAccount, scope: HostScope, budget?: ReadBudget): Promise<HostStanding> {
     this.checkScope(scope);
-    budget?.beforeRequest();
+    this.spend(budget);
     const model = this.registered(repository);
     const account = model.accounts.get(person.login);
     return (account === undefined ? { permission: "none" } : { permission: account.permission, accountType: account.accountType });
@@ -89,11 +89,12 @@ export class FakeCodeHost implements CodeHost {
     return ({ kind: "token", username: "x-access-token", token: `fake-${access}-token-not-a-real-secret`, expiresAt: new Date(Date.parse(this.model.now()) + 50 * 60_000).toISOString() });
   }
 
-  async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { untilLine?: number }): Promise<string | undefined> {
+  async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { untilLine?: number; maxBytes?: number }): Promise<string | undefined> {
     this.checkScope(scope);
     const model = this.registered(repository);
     const content = model.revision(revision).files.get(path);
     if (content === undefined) return (undefined);
+    if (options?.maxBytes !== undefined && Buffer.byteLength(content, "utf8") > options.maxBytes) throw agentXError("CONFIG_INVALID", "file too large");
     return (options?.untilLine === undefined ? content : content.split("\n").slice(0, options.untilLine).join("\n"));
   }
 
@@ -105,6 +106,23 @@ export class FakeCodeHost implements CodeHost {
   async branchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string> {
     this.checkScope(scope);
     return (this.registered(repository).headOf(branch));
+  }
+
+  async baseBranchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string> {
+    this.checkScope(scope);
+    return (this.registered(repository).headOf(branch));
+  }
+
+  async commitParents(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string[]> {
+    this.checkScope(scope);
+    return ([...this.registered(repository).revision(revision).parents]);
+  }
+
+  /** A budgeted read: it counts against the pass's allowance, and a host that has told Rovara to slow down says so with the neutral signal. */
+  protected spend(budget: ReadBudget | undefined): void {
+    budget?.beforeRequest();
+    const until = this.model.rateLimitedUntil;
+    if (until !== undefined) throw new HostRateLimitError(until);
   }
 
   async listBranches(repository: RepositoryRef, page: number, scope: HostScope): Promise<BranchPage> {
@@ -141,7 +159,7 @@ export class FakeCodeHost implements CodeHost {
   protected details(cr: FakeChangeRequest): ChangeRequestDetails {
     return {
       ref: this.ref(cr.id), state: cr.state, sourceBranch: cr.sourceBranch, targetBranch: cr.targetBranch, headRevision: this.model.headRevisionOf(cr),
-      ...(cr.mergeRevision === undefined ? {} : { mergeRevision: cr.mergeRevision }), ...(cr.mergedBy === undefined ? {} : { mergedBy: cr.mergedBy }), title: cr.title, body: cr.body,
+      ...(cr.mergeRevision === undefined ? {} : { mergeRevision: cr.mergeRevision }), ...(cr.mergedAt === undefined ? {} : { mergedAt: cr.mergedAt }), ...(cr.mergedBy === undefined ? {} : { mergedBy: cr.mergedBy }), title: cr.title, body: cr.body,
     };
   }
 
@@ -153,9 +171,18 @@ export class FakeCodeHost implements CodeHost {
     return;
   }
 
+  async mergeObservation(ref: ChangeRequestRef, scope: HostScope, budget: ReadBudget): Promise<MergeObservation> {
+    this.checkScope(scope);
+    this.spend(budget);
+    const cr = this.cr(ref);
+    // One read for the change request, one for its head's tree (the host's real reads are three; the count is the adapter's business, the budget is spent per request).
+    this.spend(budget);
+    return ({ ...this.details(cr), headTreeRevision: this.model.revision(this.model.headRevisionOf(cr)).tree });
+  }
+
   async changeRequestStatus(ref: ChangeRequestRef, scope: HostScope, budget?: ReadBudget): Promise<ChangeRequestStatus> {
     this.checkScope(scope);
-    budget?.beforeRequest();
+    this.spend(budget);
     const cr = this.cr(ref);
     const head = this.model.headRevisionOf(cr);
     return ({
@@ -196,19 +223,19 @@ export class FakeCodeHost implements CodeHost {
 
   async reply(ref: ChangeRequestRef, commentId: string, body: string, scope: HostScope, budget?: ReadBudget): Promise<"replied" | "gone"> {
     this.checkScope(scope);
-    budget?.beforeRequest();
+    this.spend(budget);
     return (this.model.reply(this.cr(ref).id, commentId, body));
   }
 
   async markReady(ref: ChangeRequestRef, scope: HostScope, budget?: ReadBudget): Promise<"ready" | "already_ready"> {
     this.checkScope(scope);
-    budget?.beforeRequest();
+    this.spend(budget);
     return (this.model.markReady(this.cr(ref).id));
   }
 
   async requestReviewers(ref: ChangeRequestRef, reviewers: readonly string[], scope: HostScope, budget?: ReadBudget): Promise<"requested" | "refused"> {
     this.checkScope(scope);
-    budget?.beforeRequest();
+    this.spend(budget);
     if (reviewers.length === 0 || reviewers.length > 10) throw agentXError("CONFIG_INVALID", "reviewers must be one to ten names");
     return (this.model.requestReviewers(this.cr(ref).id, reviewers));
   }

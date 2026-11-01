@@ -21,7 +21,7 @@ export function refOf(repositoryUrl: string, number: number, url: string): Chang
 export function detailsOf(repositoryUrl: string, details: GitHubPullRequestDetails): ChangeRequestDetails {
   return {
     ref: refOf(repositoryUrl, details.number, details.url), state: details.state, sourceBranch: details.headBranch, targetBranch: details.baseBranch, headRevision: details.headCommit,
-    ...(details.mergeCommit === undefined ? {} : { mergeRevision: details.mergeCommit }), ...(details.mergedBy === undefined ? {} : { mergedBy: details.mergedBy }),
+    ...(details.mergeCommit === undefined ? {} : { mergeRevision: details.mergeCommit }), ...(details.mergedAt === undefined ? {} : { mergedAt: details.mergedAt }), ...(details.mergedBy === undefined ? {} : { mergedBy: details.mergedBy }),
     title: cut(details.title, 500), body: cut(details.body, TEXT_MAX),
   };
 }

@@ -19,7 +19,7 @@ import { sessionWorld } from "../support/agent-session-world.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { pullRequestDetails, type TestRepository } from "../support/p5-world.js";
-import { FAKE_META_URL, FAKE_URL, GITHUB_META_URL, GITHUB_URL, MYSTERY_URL, SCOPE, TASK, WORKSPACE, refusal, world } from "../support/p5-host-world.js";
+import { FAKE_URL, GITHUB_META_URL, GITHUB_URL, MYSTERY_URL, SCOPE, TASK, WORKSPACE, refusal, world } from "../support/p5-host-world.js";
 
 describe("P5e: erasing a person from the attribution a change request carries", () => {
   const BODY = "Summary\nRequested by: Maya Chen\nPlan approved by: Priya Raman\n";
@@ -63,7 +63,7 @@ describe("P5e: erasing a person from the attribution a change request carries", 
   });
 });
 
-describe("P5e: the meta repository reads that the port cannot carry yet stay GitHub's alone", () => {
+describe("P5e/P6: the meta repository is read from the code host its record names", () => {
   it("the config import's two reads (a capped file, the default branch head) are asked of GitHub for a GitHub meta repository", async () => {
     const w = world();
     const readers = metaRepositoryReaders(w.dependencies);
@@ -71,27 +71,44 @@ describe("P5e: the meta repository reads that the port cannot carry yet stay Git
     await expect(readers.readMetaFile({ orgId: TEST_ORG, project: "demo", repository: { name: "web-meta", url: GITHUB_META_URL }, commit: "a".repeat(40), path: ".rovara/project.yaml" })).resolves.toBe("file");
   });
 
-  it("refuses a meta repository on another host, or on an unknown one, with the fixed sentences, and never asks GitHub", async () => {
-    const w = world();
+  // Replaces (P6): "refuses a meta repository on another host ... with GITHUB_ONLY_MESSAGE". The head and the capped file read are the port's now, so a registered host serves its own meta repository.
+  const FAKE_META = [{ name: "web", url: GITHUB_URL }, { name: "api-meta", url: FAKE_URL, role: "meta" as const, host: { kind: "fake" } }];
+
+  it("reads a meta repository on another registered host from that host (its head, and its file under the config cap), and never asks GitHub", async () => {
+    const w = world({ repositories: FAKE_META });
+    const head = w.model.commit("main", { ".rovara/project.yaml": "name: demo\n", "big.yaml": "x".repeat(262_145) });
     const readers = metaRepositoryReaders(w.dependencies);
-    const input = (name: string, url: string) => ({ orgId: TEST_ORG, project: "demo", repository: { name, url, defaultBranch: "main" } });
-    await expect(readers.getHead(input("api-meta", FAKE_META_URL))).rejects.toThrow(refusal(GITHUB_ONLY_MESSAGE));
-    await expect(readers.readMetaFile({ ...input("api-meta", FAKE_META_URL), commit: "a".repeat(40), path: "x" })).rejects.toThrow(refusal(GITHUB_ONLY_MESSAGE));
-    await expect(readers.getHead(input("mystery", MYSTERY_URL))).rejects.toThrow(refusal(NO_HOST_MESSAGE));
+    const input = { orgId: TEST_ORG, project: "demo", repository: { name: "api-meta", url: FAKE_URL, defaultBranch: "main" } };
+    await expect(readers.getHead(input)).resolves.toBe(head);
+    await expect(readers.readMetaFile({ ...input, commit: head, path: ".rovara/project.yaml" })).resolves.toBe("name: demo\n");
+    await expect(readers.readMetaFile({ ...input, commit: head, path: "missing.yaml" })).resolves.toBeUndefined();
+    // The config cap reaches the host: a file over it is refused by the host, not cut.
+    await expect(readers.readMetaFile({ ...input, commit: head, path: "big.yaml" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(w.github.getDefaultBranchHead).not.toHaveBeenCalled();
     expect(w.github.getFileAtCommit).not.toHaveBeenCalled();
   });
 
-  it("pinning the meta repository's head for a new workspace: GitHub's meta repository is read; another host's is refused in its own words, not as 'cannot read just now'", async () => {
+  it("refuses a meta repository on a host this install has not registered with the router's sentence, and never asks GitHub", async () => {
+    const w = world();
+    const readers = metaRepositoryReaders(w.dependencies);
+    const input = { orgId: TEST_ORG, project: "demo", repository: { name: "mystery", url: MYSTERY_URL, defaultBranch: "main" } };
+    await expect(readers.getHead(input)).rejects.toThrow(refusal(NO_HOST_MESSAGE));
+    await expect(readers.readMetaFile({ ...input, commit: "a".repeat(40), path: "x" })).rejects.toThrow(refusal(NO_HOST_MESSAGE));
+    expect(w.github.getDefaultBranchHead).not.toHaveBeenCalled();
+    expect(w.github.getFileAtCommit).not.toHaveBeenCalled();
+  });
+
+  it("pinning the meta repository's head for a new workspace: each host's own head; an unknown host is refused in its own words, not as 'cannot read just now'", async () => {
     const withMeta = (repositories: TestRepository[]) => world({ repositories });
     const github = withMeta([{ name: "web", url: GITHUB_URL }, { name: "web-meta", url: GITHUB_META_URL, role: "meta" }]);
     const project = github.db.get(`PROJECT#${TEST_ORG}#demo`, "REVISION#000000000001") ?? github.db.find((item) => item.entityType === "PROJECT")[0]!;
     await expect(metaPrepareOf(github.dependencies as never, project as never, TEST_ORG)).resolves.toMatchObject({ knowledgeCommit: "a".repeat(40) });
-    const other = withMeta([{ name: "api", url: FAKE_URL, host: { kind: "fake" } }, { name: "api-meta", url: FAKE_META_URL, role: "meta", host: { kind: "fake" } }]);
-    await expect(metaPrepareOf(other.dependencies as never, other.db.find((item) => item.entityType === "PROJECT")[0] as never, TEST_ORG)).rejects.toThrow(refusal(GITHUB_ONLY_MESSAGE));
+    const other = withMeta(FAKE_META);
+    const otherHead = other.model.commit("main", { "x.txt": "1" });
+    await expect(metaPrepareOf(other.dependencies as never, other.db.find((item) => item.entityType === "PROJECT")[0] as never, TEST_ORG)).resolves.toMatchObject({ knowledgeCommit: otherHead });
+    expect(other.github.getDefaultBranchHead).not.toHaveBeenCalled();
     const unknown = withMeta([{ name: "m", url: MYSTERY_URL, role: "meta", host: { kind: "gitfarm" } }, { name: "c", url: GITHUB_URL }]);
     await expect(metaPrepareOf(unknown.dependencies as never, unknown.db.find((item) => item.entityType === "PROJECT")[0] as never, TEST_ORG)).rejects.toThrow(refusal(NO_HOST_MESSAGE));
-    expect(other.github.getDefaultBranchHead).not.toHaveBeenCalled();
     expect(unknown.github.getDefaultBranchHead).not.toHaveBeenCalled();
   });
 });
