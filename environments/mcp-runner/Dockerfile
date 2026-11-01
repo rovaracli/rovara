@@ -33,7 +33,9 @@ COPY infra/package.json infra/package.json
 RUN npm ci --ignore-scripts
 
 # The programs import only @agentx/contracts and @agentx/gateway (and the MCP SDK and zod under them). Each is bundled with everything it imports into one file, so the image holds
-# no node_modules at all, and no AWS SDK.
+# no node_modules at all, and no AWS SDK. The build graph is audit-verifier -> contracts -> gateway: the contracts project references ../audit-verifier (tsconfig), so tsc -b builds it first
+# and needs its sources and tsconfig.json, not only its package.json.
+COPY packages/audit-verifier packages/audit-verifier
 COPY packages/contracts packages/contracts
 COPY packages/gateway packages/gateway
 COPY packages/broker/src/mcp-runner packages/broker/src/mcp-runner
