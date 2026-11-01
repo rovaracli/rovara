@@ -87,7 +87,15 @@ export function createThreadApi(options: { controlPlaneUrl: string; signedFetch:
     },
     async markThreadNoteAnswered(input) {
       const body = SlackThreadNoteAnsweredRequestSchema.parse(input);
-      SlackThreadNoteAnsweredResultSchema.parse(await servicePost("/v1/tasks/thread-notes/answered", body, "marking the thread note answered failed"));
+      try {
+        SlackThreadNoteAnsweredResultSchema.parse(await servicePost("/v1/tasks/thread-notes/answered", body, "marking the thread note answered failed"));
+      } catch (error) {
+        // A broker built before Ask refuses the `ask` field (its body schema is strict): the note must still be marked answered, so the call is made again without it (the Ask is simply not recorded there).
+        if (body.ask === undefined || !(error instanceof Error) || !error.message.includes("CONFIG_INVALID")) throw error;
+        const { ask: _ask, ...plain } = body;
+        void _ask;
+        SlackThreadNoteAnsweredResultSchema.parse(await servicePost("/v1/tasks/thread-notes/answered", plain, "marking the thread note answered failed"));
+      }
     },
     async prepareWorkspace(requestId) {
       return SlackThreadPrepareResultSchema.parse(await servicePost("/v1/threads/workspace/prepare", { requestId, includeOpenTaskCount: true, includeSharedTask: true }, "thread workspace preparation failed"));

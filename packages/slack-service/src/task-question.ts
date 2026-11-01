@@ -3,6 +3,7 @@
 // broker says about the task), and its note is then marked answered so the next step skips it. Anything else, and any
 // failure on the way, leaves the note as an instruction for the next step, and the sender is told so privately.
 import {
+  ASK_QUESTION_MAX_CHARS,
   TASK_NOTE_SAVED_TEXT,
   slackThreadSubject,
   splitSlackMessage,
@@ -22,6 +23,14 @@ export { TASK_NOTE_SAVED_TEXT };
 export const TASK_ANSWER_FOOTER = "_This was answered as a question, so it won't be passed to the next step. To give an instruction instead, reply without @mentioning AgentX._";
 /** Said privately when the question could not be answered: the message still waits for the next step. */
 export const TASK_ANSWER_FAILED_TEXT = "I couldn't answer that just now; your message is saved for the next step.";
+
+/** The text cut to at most `max` UTF-16 units (how the broker's schema counts), never through a surrogate pair. */
+export function cutUnits(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+}
 
 export interface TaskQuestionDependencies {
   /** The classifier model's router. Absent (it is not available here): nothing is classified, so the note stays an instruction. */
@@ -102,7 +111,7 @@ export async function handleTaskQuestion(message: SlackRequestMessage, route: Ta
       deps.log("task_question.footer_post_failed", { ...fields, errorName: errorName(error) });
     }
     try {
-      await deps.markAnswered({ taskId: route.taskId, messageTs: route.noteTs, thread: message.thread, ask: { question: Array.from(withoutChatPrefix(message.text)).slice(0, 1_000).join(""), answer: Array.from(answered).slice(0, 20_000).join("") } });
+      await deps.markAnswered({ taskId: route.taskId, messageTs: route.noteTs, thread: message.thread, ask: { question: cutUnits(withoutChatPrefix(message.text), ASK_QUESTION_MAX_CHARS), answer: cutUnits(answered, 20_000) } });
     } catch (error) {
       // The answer stands; the note is still read as an instruction by the next step.
       deps.log("task_question.mark_failed", { ...fields, errorName: errorName(error) });

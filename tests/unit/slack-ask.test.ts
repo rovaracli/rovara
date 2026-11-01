@@ -7,7 +7,8 @@ import {
 import { NO_TEXT_RESPONSE } from "../../packages/orchestrator/src/orchestrator.js";
 import { processGroup, type QueueClient } from "../../packages/slack-service/src/consumer.js";
 import { handleAsk, type AskServiceApi } from "../../packages/slack-service/src/ask-question.js";
-import { createAskApi } from "../../packages/slack-service/src/thread-api.js";
+import { createAskApi, createThreadApi } from "../../packages/slack-service/src/thread-api.js";
+import { cutUnits, handleTaskQuestion } from "../../packages/slack-service/src/task-question.js";
 import { turnModelAccessSource } from "../../packages/slack-service/src/model-access.js";
 
 const SECRET_QUESTION = "Why was ZEBRA-QUESTION-TEXT-77 changed?";
@@ -142,5 +143,70 @@ describe("the service's calls to the broker", () => {
     await turnModelAccessSource({ controlPlaneUrl: "https://cp.example.invalid", signedFetch, turnId: "Ev1" })();
     expect(calls[0]!.url).toBe("https://cp.example.invalid/v1/model-access");
     expect(calls[0]!.body).toEqual({ turnId: "Ev1" });
+  });
+});
+
+describe("an Ask's record rides with the 'answered' call without breaking the old path (S5)", () => {
+  const thread = { teamId: "T0BSHLLUGBD", channelId: "C0123456789", threadTs: "1695500000.000001" };
+  const taskId = "9d1f3c52-4a52-4d54-8a0b-0a4b5a6c7d8e";
+  const qmessage = { version: 1 as const, eventId: "Ev0000000077", thread, userId: "U0123456789", text: "", receivedAt: "2026-10-09T12:00:00.000Z" };
+  const lone = (text: string): boolean => /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/u.test(text);
+
+  /** A broker: `old` refuses an `ask` field (its body schema is strict), as a broker built before Ask does. */
+  function broker(kind: "new" | "old" | "failing") {
+    const calls: Array<Record<string, unknown>> = [];
+    const signedFetch = (async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const body = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as Record<string, unknown>;
+      calls.push(body);
+      if (kind === "failing") return new Response(JSON.stringify({ error: { code: "RUNTIME_UNAVAILABLE", message: "down" } }), { status: 503 });
+      if (kind === "old" && "ask" in body) return new Response(JSON.stringify({ error: { code: "CONFIG_INVALID", message: "taskId, messageTs and thread are required" } }), { status: 400 });
+      return new Response(JSON.stringify({ outcome: "ANSWERED" }), { status: 200 });
+    }) as typeof fetch;
+    return { calls, api: createThreadApi({ controlPlaneUrl: "https://cp.example.invalid", signedFetch }) };
+  }
+  const run = async (api: ReturnType<typeof broker>["api"], text: string, answer: string) => {
+    const marked: unknown[] = [];
+    const posts: string[] = [];
+    await handleTaskQuestion({ ...qmessage, text }, { taskId, noteTs: "1695500002.000007", chat: true }, {
+      answer: async () => answer, post: async (_thread, post) => { posts.push(post); }, postPrivate: async () => undefined,
+      markAnswered: async (input) => { marked.push(input); await api.markThreadNoteAnswered!(input); }, finish: async () => undefined, log: () => undefined,
+    });
+    return { marked, posts };
+  };
+
+  it("an old broker that refuses the ask field still gets the note marked answered, by a second call without it", async () => {
+    const old = broker("old");
+    const { marked } = await run(old.api, "What is left?", "Two checks.");
+    expect(old.calls).toHaveLength(2);
+    expect(old.calls[0]).toHaveProperty("ask");
+    expect(old.calls[1]).not.toHaveProperty("ask");
+    expect(old.calls[1]).toMatchObject({ taskId, messageTs: "1695500002.000007" });
+    expect(marked).toHaveLength(1);
+    // A new broker takes the first call.
+    const next = broker("new");
+    await run(next.api, "What is left?", "Two checks.");
+    expect(next.calls).toHaveLength(1);
+    expect(next.calls[0]).toMatchObject({ ask: { question: "What is left?", answer: "Two checks." } });
+  });
+
+  it("another failure is not retried without the field (the service then tells the sender in its own words)", async () => {
+    const failing = broker("failing");
+    await run(failing.api, "What is left?", "Two checks.");
+    expect(failing.calls).toHaveLength(1);
+  });
+
+  it("a long question or answer of emoji is cut by UTF-16 length, never through a pair, and passes the broker's body schema", async () => {
+    const fine = broker("new");
+    const question = "😀".repeat(700);
+    const answer = `${"x".repeat(19_999)}😀tail`;
+    await run(fine.api, question, answer);
+    const ask = (fine.calls[0] as { ask: { question: string; answer: string } }).ask;
+    expect(ask.question.length).toBeLessThanOrEqual(1_000);
+    expect(ask.answer.length).toBeLessThanOrEqual(20_000);
+    expect(lone(ask.question)).toBe(false);
+    expect(lone(ask.answer)).toBe(false);
+    expect(fine.calls).toHaveLength(1);
+    expect(cutUnits("😀😀", 3)).toBe("😀");
+    expect(cutUnits("abc", 5)).toBe("abc");
   });
 });
