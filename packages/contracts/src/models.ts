@@ -11,3 +11,7 @@ export const ThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "h
 export const ModelSelectionSchema = ModelIdentifierSchema.extend({
   thinkingLevel: ThinkingLevelSchema.optional(),
 }).strict();
+
+/** The AI companies Rovara can name behind a model. `other` is anything it does not recognise, and never counts as different from another company. */
+export const MODEL_COMPANIES = ["anthropic", "openai", "google", "amazon", "meta", "mistral", "deepseek", "qwen", "cohere", "other"] as const;
+export const ModelCompanySchema = z.enum(MODEL_COMPANIES);

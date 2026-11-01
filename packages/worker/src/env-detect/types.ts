@@ -50,6 +50,8 @@ export const emptyDetection = (): Detection => ({ setupCommands: [], checks: [],
 export interface RepositoryReader {
   /** Repository-relative POSIX paths, files only. */
   paths: readonly string[];
+  /** True when the path list was cut at the limit: absence of a file from `paths` then proves nothing. */
+  truncated?: boolean;
   /** The file's text, or undefined when it is missing, binary, unreadable or over the read limits. Never throws. */
   read(path: string): Promise<string | undefined>;
 }

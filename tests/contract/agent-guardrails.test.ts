@@ -628,6 +628,21 @@ describe("validateRecipeForOrg", () => {
       expect(await check(sameCompany, { guardrails: guardrails({ requireCrossCompanyReview: true, forbiddenModels: [mistral] }), servable: [SONNET, OPUS, GPT, mistral] })).toEqual([{ path: "steps.1", message: different }]);
     });
 
+    it("accepts a Nova review of a Claude build once Bedrock families are known (SH33), and still refuses an unrecognised Bedrock model", async () => {
+      const nova: ModelIdentifier = { provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v1:0" };
+      const novaEu: ModelIdentifier = { provider: "amazon-bedrock", modelId: "eu.amazon.nova-lite-v1:0" };
+      const unrecognised: ModelIdentifier = { provider: "amazon-bedrock", modelId: "ai21.jamba-1-5-large-v1:0" };
+      const claudeOnly = [SONNET, OPUS];
+      expect(await check(recipeOf([build({ model: SONNET }), review({ model: nova })]), { guardrails: on, servable: [...claudeOnly, nova] })).toEqual([]);
+      // Nova is itself a second company the company can use, so the plain "no second company" message no longer applies when Nova is served.
+      expect(await check(recipeOf([build({ model: SONNET }), review({ model: OPUS })]), { guardrails: on, servable: [...claudeOnly, nova] })).toEqual([{ path: "steps.1", message: different }]);
+      // Two Nova regions are one company; a fallback of the build's company still fails.
+      expect(await check(recipeOf([build({ model: nova }), review({ model: novaEu })]), { guardrails: on, servable: [...claudeOnly, nova, novaEu] })).toEqual([{ path: "steps.1", message: different }]);
+      expect(await check(recipeOf([build({ model: SONNET }), review({ model: nova, fallbackModel: OPUS })]), { guardrails: on, servable: [...claudeOnly, nova] })).toEqual([{ path: "steps.1", message: different }]);
+      // An unrecognised Bedrock model neither passes nor counts as a second company.
+      expect(await check(recipeOf([build({ model: SONNET }), review({ model: unrecognised })]), { guardrails: on, servable: [...claudeOnly, unrecognised] })).toEqual([{ path: "steps.1", message: noSecond }]);
+    });
+
     it("asks nothing of review steps while the rule is off", async () => {
       expect(await check(recipeOf([build({ model: SONNET }), review({ model: OPUS })]), { servable: WITH_SECOND_COMPANY })).toEqual([]);
     });

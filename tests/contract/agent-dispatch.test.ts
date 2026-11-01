@@ -15,7 +15,7 @@ import { fixtureActor } from "../support/money-authority.js";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
-import { applyAgentStep, crossCompanyTargets, priorStepIds, stepForOperation, PROMPT_SECTION_MAX_BYTES, type ApplyAgentStepInput, type DispatchMode } from "../../packages/broker/src/agents/dispatch.js";
+import { applyAgentStep, crossCompanyTargets, differentCompany, priorStepIds, stepForOperation, PROMPT_SECTION_MAX_BYTES, type ApplyAgentStepInput, type DispatchMode } from "../../packages/broker/src/agents/dispatch.js";
 import { readGuardrailsWithRevision } from "../../packages/broker/src/agents/guardrails.js";
 import { WORKFLOW_PREAMBLE } from "../../packages/broker/src/aws/broker-shared.js";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
@@ -214,6 +214,30 @@ describe("applyAgentStep: a different AI company", () => {
     // The rule is only for review steps, and off by default.
     expect(apply({ recipe: two, mode: "IMPLEMENT", guardrails: rule, priorOperations: prior, projectModel: SONNET }).model).toEqual(SONNET);
     expect(apply({ recipe: two, mode: "REVIEW", priorOperations: prior }).model).toEqual(HAIKU);
+  });
+
+  it("never counts a Bedrock-routed OpenAI model as served by the person's ChatGPT plan, whatever the provider's case (SH33 fix round 1)", () => {
+    const rule = guardrails({ requireCrossCompanyReview: true });
+    const oss: ModelSelection = { provider: "Amazon-Bedrock", modelId: "openai.gpt-oss-120b-1:0" };
+    const planned = recipeOf([build({ model: SONNET }), review({ model: oss })]);
+    // The plan serves exactly this id, but the step's model is reached through Bedrock, so it does not run on the plan.
+    const result = apply({ recipe: planned, mode: "REVIEW", guardrails: rule, priorOperations: priorBuild(SONNET), chatgptModel: { provider: "openai", modelId: oss.modelId } });
+    expect(result.dropChatgpt).toBe(true);
+    expect(result.model).toEqual(oss);
+  });
+
+  it("lets a Nova review of a Claude build pass the cross-company rule, and holds back Nova against Nova and unrecognised Bedrock models (SH33)", () => {
+    const rule = guardrails({ requireCrossCompanyReview: true });
+    const nova: ModelSelection = { provider: "amazon-bedrock", modelId: "us.amazon.nova-pro-v1:0" };
+    const novaEu: ModelSelection = { provider: "amazon-bedrock", modelId: "eu.amazon.nova-lite-v1:0" };
+    const unrecognised: ModelSelection = { provider: "amazon-bedrock", modelId: "ai21.jamba-1-5-large-v1:0" };
+    expect(apply({ recipe: recipeOf([build({ model: SONNET }), review({ model: nova })]), mode: "REVIEW", guardrails: rule, priorOperations: priorBuild(SONNET) }).model).toEqual(nova);
+    expect(apply({ recipe: recipeOf([build({ model: nova }), review({ model: SONNET })]), mode: "REVIEW", guardrails: rule, priorOperations: priorBuild(nova) }).model).toEqual(SONNET);
+    expect(refusal(() => apply({ recipe: recipeOf([build({ model: nova }), review({ model: novaEu })]), mode: "REVIEW", guardrails: rule, priorOperations: priorBuild(nova) }))?.code).toBe("MODEL_NOT_ALLOWED");
+    expect(refusal(() => apply({ recipe: recipeOf([build({ model: SONNET }), review({ model: unrecognised })]), mode: "REVIEW", guardrails: rule, priorOperations: priorBuild(SONNET) }))?.code).toBe("MODEL_NOT_ALLOWED");
+    expect(differentCompany(nova, SONNET)).toBe(true);
+    expect(differentCompany(nova, novaEu)).toBe(false);
+    expect(differentCompany(unrecognised, SONNET)).toBe(false);
   });
 
   it("counts the person's ChatGPT plan model as what an operation that stayed on the plan ran on", () => {

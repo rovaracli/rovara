@@ -17,7 +17,8 @@ import { defaultWorkerModel } from "../../packages/broker/src/agents/dispatch.js
 import { CRITIC_MODEL_ATTEMPTS_MAX, criticCapabilityTier, criticModelFor, criticModelUnusable, rankCriticModels, recommendCriticModel, type CriticModelInput } from "../../packages/broker/src/rovara-code/critic.js";
 import { WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_BLOCK_REASONS } from "@agentx/contracts";
 import { taskPageStep } from "../../packages/broker/src/aws/developer-tasks.js";
-import { critiqueLines } from "../../packages/broker/src/rovara-code/critic.js";
+import { critiqueLines, critiqueModelOf } from "../../packages/broker/src/rovara-code/critic.js";
+import { WorkflowCritiqueSchema } from "../../packages/contracts/src/rovara-code.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { agentGuardrailsKey, builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
@@ -1517,5 +1518,25 @@ describe("a plan check whose model the account can't use (staging 0.4.10, bug A)
     const checks = t.byMode(workspaceId, "PLAN_CRITIQUE");
     expect(checks).toHaveLength(3);
     expect(modelOf(t, workspaceId, 2)).not.toBe("us.anthropic.claude-fable-5-1");
+  });
+});
+
+describe("the company a stored critique records (SH33 fix round 1)", () => {
+  const bedrock = (modelId: string) => critiqueModelOf({ provider: "amazon-bedrock", modelId }).company;
+  it("records only company names a 0.4.27 build accepts, so a rollback can still read the task: Nova and Llama read as other", () => {
+    expect(bedrock("us.amazon.nova-pro-v1:0")).toBe("other");
+    expect(bedrock("meta.llama3-3-70b-instruct-v1:0")).toBe("other");
+    expect(bedrock("mistral.mistral-large-2407-v1:0")).toBe("other");
+    expect(bedrock("us.anthropic.claude-opus-4-6-v1")).toBe("anthropic");
+    expect(bedrock("openai.gpt-oss-120b-1:0")).toBe("openai");
+    expect(critiqueModelOf({ provider: "openai", modelId: "gpt-5.4" }).company).toBe("openai");
+  });
+  it("reads a stored critique with a company this build does not know as other, in the critique and in the whole workflow snapshot", () => {
+    const critique = { status: "done", revisions: 0, critiques: [{ verdict: "ok", points: [], model: { provider: "p", modelId: "m", company: "some-future-company" } }] };
+    expect(WorkflowCritiqueSchema.parse(critique).critiques[0]?.model.company).toBe("other");
+    const snapshot = WorkflowSnapshotSchema.parse({ ...createWorkflowSnapshot({ taskId: "550e8400-e29b-41d4-a716-446655440012", ownerId: "a".repeat(64), now: "2026-11-01T10:00:00.000Z", definitionVersion: "1.1.0", understand: true, pathFrom: "understand" }), critique });
+    expect(snapshot.critique?.critiques[0]?.model.company).toBe("other");
+    expect(WorkflowCritiqueSchema.parse({ ...critique, critiques: [{ ...critique.critiques[0]!, model: { provider: "p", modelId: "m", company: "amazon" } }] }).critiques[0]?.model.company).toBe("amazon");
+    expect(WorkflowCritiqueSchema.safeParse({ ...critique, critiques: [{ ...critique.critiques[0]!, model: { provider: "p", modelId: "m", company: 5 } }] }).success).toBe(false);
   });
 });
