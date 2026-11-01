@@ -2,6 +2,7 @@ import { decodeJwt } from "jose";
 import { describe, expect, it, vi } from "vitest";
 import { BREAK_GLASS_NOT_FRESH_MESSAGE, BREAK_GLASS_NOT_RECORDED_MESSAGE, ENTERPRISE_SESSION_MAX_SECONDS, GROUP_MAPPING_MESSAGES, editionPolicy, orgMetaKey } from "@agentx/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
+import { REMOVED_FROM_ORG_MESSAGE } from "../../packages/broker/src/org/sign-in.js";
 import { decideCompanySignIn } from "../../packages/broker/src/developer/sso-sign-in.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { OIDC_ISSUER, T0, authorizeQuery, httpEvent, identityHarness, type FakeOidcUser } from "../support/developer-fakes.js";
@@ -129,6 +130,24 @@ describe("refusals (fail closed, and before anything is written about the person
     expect(lookup).not.toHaveBeenCalled();
     expect(capture!.recordedBy("sso.sign_in_refused")[0]).toMatchObject({ facts: { refusal: reason } });
     expect(capture!.recordedBy("sso.sign_in")).toEqual([]);
+  });
+
+  it("a banned person is refused with only the refusal on record: no allowed sign-in, no Slack allowance", async () => {
+    const { h, capture } = await world();
+    const first = await signInAs(h, "una");
+    expect(roleOf(first.tokens)).toBe("member");
+    const id = ownerKeyForSubject(OIDC_ISSUER, "una");
+    await h.orgs.removeMember({ orgId: TEST_ORG, developerId: id, emails: [], ban: true, by: { kind: "member", id: ownerId } });
+    vi.spyOn(h.deps.directory, "lookupByEmail").mockResolvedValue({ userId: "U0UNA0001" } as never);
+    const record = vi.spyOn(h.deps.sso!.slack, "record");
+    const allowed = capture!.recordedBy("sso.sign_in").length;
+    const refused = await signInAs(h, "una");
+    expect(refused.tokens).toBeUndefined();
+    expect(refused.redirect.searchParams.get("error")).toBe("access_denied");
+    expect(refused.redirect.searchParams.get("error_description")).toBe(REMOVED_FROM_ORG_MESSAGE);
+    expect(record).not.toHaveBeenCalled();
+    expect(capture!.recordedBy("sso.sign_in")).toHaveLength(allowed);
+    expect(capture!.recordedBy("sso.sign_in_refused").at(-1)).toMatchObject({ facts: { refusal: "removed_from_org" } });
   });
 
   it("no saved mapping refuses everyone who is not a break-glass owner", async () => {

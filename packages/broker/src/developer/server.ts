@@ -591,6 +591,8 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const outcome = await decideCompanySignIn({
       policy: deps.editionPolicy!, stores: deps.sso, method, orgId: deps.singleOrgId, identity, developerId, currentRole: current?.role, occurrence,
       auditAvailable: deps.audit !== undefined, nowMs: deps.now(),
+      // A banned person is refused here, before an allowance or an "allowed" record is made for them; resolveOrgOnSignIn refuses the same person later for the other methods.
+      banned: deps.singleOrgId !== undefined && await deps.orgs.isBanned(deps.singleOrgId, developerId),
     });
     if (outcome.allow && outcome.breakGlass) {
       await recordAuditEventDurably(audit, outcome.event);

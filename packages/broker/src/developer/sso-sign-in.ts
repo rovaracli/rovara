@@ -8,6 +8,7 @@ import {
   type AuditEventInput, type EditionPolicy, type OrgId, type OrgRole, type SignInDecision,
 } from "@agentx/contracts";
 import type { AuditRuntime } from "../audit/outbox.js";
+import { REMOVED_FROM_ORG_MESSAGE } from "../org/sign-in.js";
 import { auditOccurrence, auditSsoBreakGlassUsed, auditSsoSignIn, auditSsoSignInRefused } from "../audit/events.js";
 import { decideSignIn, dynamoBreakGlassStore, dynamoGroupMappingStore, readBreakGlassForSignIn, readMappingForSignIn, type BreakGlassStore, type GroupMappingStore } from "./group-mapping.js";
 import type { ProviderIdentity } from "./providers.js";
@@ -54,6 +55,8 @@ export async function decideCompanySignIn(input: {
   occurrence: string;
   /** Whether there is a ledger to record an emergency sign-in in. Without one a break-glass sign-in is refused: it is never silent. */
   auditAvailable: boolean;
+  /** The person is banned from the org (removed from a single-org install, not invited back): refused before any mapping is read, with a refusal on record and no allowance. */
+  banned?: boolean;
   nowMs: number;
 }): Promise<CompanySignIn> {
   const occurredAt = new Date(input.nowMs).toISOString();
@@ -61,6 +64,8 @@ export async function decideCompanySignIn(input: {
   if (input.method !== "oidc" || input.orgId === undefined) return { allow: false, reason: "not_configured", message: GROUP_MAPPING_MESSAGES.not_configured, event: undefined };
   const base = { orgId: input.orgId, actor: { kind: "member" as const, id: input.developerId }, occurredAt, occurrence: auditOccurrence(input.occurrence, input.developerId) };
   const refused = (reason: string, message: string): CompanySignIn => ({ allow: false, reason, message, event: auditSsoSignInRefused({ ...base, memberId: input.developerId, reason }) });
+
+  if (input.banned === true) return refused("removed_from_org", REMOVED_FROM_ORG_MESSAGE);
 
   const config = input.stores === undefined ? undefined : await readMappingForSignIn(input.stores.mappings, input.orgId);
   const breakGlass = input.stores === undefined ? [] : await readBreakGlassForSignIn(input.stores.breakGlass, input.orgId);
