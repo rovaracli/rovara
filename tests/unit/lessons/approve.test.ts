@@ -96,14 +96,26 @@ describe("tier 2: two people", () => {
     expect(lesson.approvals.map((a) => [a.by, a.mode])).toEqual([["ann", "one"], ["owner", "second_person"]]);
   });
 
-  it("a first approver who is no longer eligible does not count: the second person cannot complete on their approval", async () => {
-    const { deps, store, dir } = setup();
+  it("a first approver who is no longer eligible does not count: their approval is dropped (audited) and the next person gives the first, then a third finishes it", async () => {
+    const { deps, store, dir, audit } = setup();
     await seed(store, tier2());
     await approveLesson(deps, input("ann"));
-    dir.value.eligibleIds = ["owner", "bob"];
-    const result = await approveLesson(deps, input("bob"));
-    expect(result.ok).toBe(false);
-    expect((await store.get(KEY, "les_pend0001"))!.status).toBe("pending");
+    dir.value.eligibleIds = ["owner", "bob", "carl"];
+    const bob = await approveLesson(deps, input("bob"));
+    expect(bob).toMatchObject({ ok: true, status: "pending", needs: "second_person" });
+    const kept = (await store.get(KEY, "les_pend0001"))!;
+    expect(kept.status).toBe("pending");
+    expect(kept.approvals.map((a) => a.by)).toEqual(["bob"]);
+    expect(audit.events.some((e) => e.action === "lesson.updated" && e.facts.reason === "approver_not_eligible" && e.facts.dropped === 1)).toBe(true);
+    expect(await approveLesson(deps, input("carl"))).toMatchObject({ ok: true, status: "active" });
+    expect((await store.get(KEY, "les_pend0001"))!.approvals.map((a) => a.by)).toEqual(["bob", "carl"]);
+  });
+
+  it("an erased first approver does not count either", async () => {
+    const { deps, store } = setup();
+    await seed(store, tier2({ approvals: [{ approvalId: "x", by: "erased", at: 1, mode: "one" }] }));
+    expect(await approveLesson(deps, input("bob"))).toMatchObject({ ok: true, status: "pending", needs: "second_person" });
+    expect((await store.get(KEY, "les_pend0001"))!.approvals.map((a) => a.by)).toEqual(["bob"]);
   });
 
   it("the sole eligible owner may finish alone through the audited exception", async () => {

@@ -124,3 +124,14 @@ describe("S1 and M1: Helpful / Wrong here marks", () => {
   });
 });
 
+describe("S2: a first approval that no longer stands", () => {
+  it("never loops on try again: Bob gives the first approval, Dee the second", async () => {
+    const s = setup();
+    await seed(s.store, pending({ tier: 2, tierReasons: ["reviewer_stage"], type: "review_check", stages: ["REVIEW"] }));
+    await approveLesson(s.deps, input("ann"));
+    s.dir.value.eligibleIds = ["owner", "bob", "dee"];
+    expect(await approveLesson(s.deps, input("bob"))).toMatchObject({ ok: true, status: "pending" });
+    expect(await approveLesson(s.deps, input("dee"))).toMatchObject({ ok: true, status: "active" });
+  });
+});
+

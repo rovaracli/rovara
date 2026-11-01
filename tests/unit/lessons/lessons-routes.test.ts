@@ -262,6 +262,23 @@ describe("rate limits", () => {
   });
 });
 
+describe("fix round 1 at the route", () => {
+  it("a tier-2 lesson whose first approver left the project is not stuck: the card no longer counts them, the next approval is the first, the one after finishes it", async () => {
+    const s = setup({ eligible: ["owner", "ann", "bob", "carl"] });
+    await seed(s.store, pending({ tier: 2, tierReasons: ["escalation_words"] }));
+    await s.call(callerOf("ann"), "POST", `${base}/les_pend0001/approve`, { expectedVersion: 1 });
+    s.dir.value.eligibleIds = ["owner", "bob", "carl"];
+    const card = LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base)).waiting[0]!;
+    expect(card.needs).toMatchObject({ required: 2, have: 0 });
+    expect(card.needs!.first).toBeUndefined();
+    expect(await s.call(callerOf("bob"), "POST", `${base}/les_pend0001/approve`, { expectedVersion: card.version })).toEqual({ status: "pending", needs: "second_person" });
+    const next = LessonsViewReaderSchema.parse(await s.call(callerOf("carl"), "GET", base)).waiting[0]!;
+    expect(next.needs).toMatchObject({ have: 1, first: { name: "Bob Baker" } });
+    expect(await s.call(callerOf("carl"), "POST", `${base}/les_pend0001/approve`, { expectedVersion: next.version })).toEqual({ status: "active", needs: "nothing" });
+  });
+
+});
+
 describe("rejecting, removing and rolling back", () => {
   it("reject keeps the reason and refuses a stale version; retire is the kill switch for an active lesson", async () => {
     const s = setup();

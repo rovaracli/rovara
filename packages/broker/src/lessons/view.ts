@@ -37,13 +37,13 @@ const NAMES_MAX = 300;
 const keyOf = (caller: LessonCaller, project: string): ScopeKey => ({ workspaceId: caller.orgId, project });
 
 /** Who may decide lessons here: the project's maintainers, How-we-work editors and company admins, as the directory says. An incomplete answer is nobody. */
-async function deciderState(deps: LessonViewDeps, key: ScopeKey, caller: LessonCaller): Promise<{ canDecide: boolean; eligibleCount: number; viewer: IdentitySet }> {
+async function deciderState(deps: LessonViewDeps, key: ScopeKey, caller: LessonCaller): Promise<{ canDecide: boolean; eligibleCount: number; eligible: readonly string[]; viewer: IdentitySet }> {
   const [group, viewer] = await Promise.all([
     deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined),
     deps.directory.identity(key.workspaceId, caller.developerId),
   ]);
   const canDecide = group !== undefined && group.complete && idIn(group.eligibleIds, caller.developerId);
-  return { canDecide, eligibleCount: group?.eligibleIds.length ?? 0, viewer };
+  return { canDecide, eligibleCount: group?.eligibleIds.length ?? 0, eligible: group?.complete === true ? group.eligibleIds : [], viewer };
 }
 
 /** Display names for the people a set of lessons names. A person who was erased, or whose record cannot be read, is "a former member"; the signed-in person is marked. */
@@ -70,8 +70,9 @@ async function namePeople(deps: LessonViewDeps, orgId: OrgId, me: string, ids: r
 const personIdsOf = (lesson: Lesson): string[] => [...lesson.provenance.authors, ...lesson.approvals.map((a) => a.by)];
 
 /** What a pending lesson still needs: the people the policy asks for, who approved first, and the groups not yet represented. */
-function needsOf(lesson: Lesson, required: 0 | 1 | 2, groups: readonly string[], person: (id: string) => LessonPerson): LessonView["needs"] {
-  const people = lesson.approvals.filter((a) => a.mode !== "auto");
+function needsOf(lesson: Lesson, required: 0 | 1 | 2, groups: readonly string[], eligible: readonly string[], person: (id: string) => LessonPerson): LessonView["needs"] {
+  // Only approvals from people who can still approve count: a first approver who left no longer stands (the next approval drops it).
+  const people = lesson.approvals.filter((a) => a.mode !== "auto" && idIn(eligible, a.by));
   const distinct = new Set(people.map((a) => normId(a.by)));
   const total = Math.max(required, lesson.reviewRequired === true ? 1 : 0, 1) as 1 | 2;
   const first = people[0];
@@ -81,7 +82,7 @@ function needsOf(lesson: Lesson, required: 0 | 1 | 2, groups: readonly string[],
   };
 }
 
-interface Context { canDecide: boolean; eligibleCount: number; me: string; required: (lesson: Lesson) => 0 | 1 | 2; groups: readonly string[]; person: (id: string) => LessonPerson }
+interface Context { canDecide: boolean; eligibleCount: number; eligible: readonly string[]; me: string; required: (lesson: Lesson) => 0 | 1 | 2; groups: readonly string[]; person: (id: string) => LessonPerson }
 
 /** The people a lesson comes from, each once; everyone who cannot be named is one "a former member", so the count of erased people is not shown. */
 function fromPeople(ids: readonly string[], person: (id: string) => LessonPerson): LessonPerson[] {
@@ -122,7 +123,7 @@ function toView(lesson: Lesson, ctx: Context): LessonView {
     citations,
     from: fromPeople(lesson.provenance.authors, ctx.person),
     measured: lesson.provenance.measured, supportTasks: new Set(lesson.provenance.supportTasks).size,
-    ...(pending ? { needs: needsOf(lesson, ctx.required(lesson), ctx.groups, ctx.person) } : {}),
+    ...(pending ? { needs: needsOf(lesson, ctx.required(lesson), ctx.groups, ctx.eligible, ctx.person) } : {}),
     approvals: lesson.approvals.map((a) => ({ by: ctx.person(a.by), at: a.at, mode: a.mode })),
     ...(lesson.reviewRequired === true ? { reviewRequired: true as const } : {}), ...(lesson.contradictsWith === undefined ? {} : { contradicts: lesson.contradictsWith }),
     ...(lesson.retireProposedAt === undefined ? {} : { retireProposed: true as const }), ...(lesson.supersedes === undefined ? {} : { supersedes: lesson.supersedes }),
@@ -152,7 +153,7 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
   const removedAll = shown.filter((l) => l.status === "retired" || l.status === "expired" || l.status === "rejected").sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
   const waiting = waitingAll.slice(0, WAITING_MAX), active = activeAll.slice(0, ACTIVE_MAX), removed = state.canDecide ? removedAll.slice(0, REMOVED_MAX) : [];
   const person = await namePeople(deps, caller.orgId, caller.developerId, [...waiting, ...active, ...removed].flatMap(personIdsOf));
-  const ctx: Context = { canDecide: state.canDecide, eligibleCount: state.eligibleCount, me: caller.developerId, required: (lesson) => approversRequired(lesson.tier, resolved.approval), groups: resolved.requiredGroups, person };
+  const ctx: Context = { canDecide: state.canDecide, eligibleCount: state.eligibleCount, eligible: state.eligible, me: caller.developerId, required: (lesson) => approversRequired(lesson.tier, resolved.approval), groups: resolved.requiredGroups, person };
 
   const setVersion = await deps.store.setVersion(key);
   const snapshots = state.canDecide ? (await deps.store.snapshots(key)).filter((s) => s.setVersion !== setVersion).slice(-SNAPSHOTS_MAX).map((s) => ({ setVersion: s.setVersion, at: s.at, lessons: s.members.length })) : [];

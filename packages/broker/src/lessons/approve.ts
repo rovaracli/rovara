@@ -116,6 +116,12 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       approvals = [];
     }
 
+    // An approval counts only while its giver is still eligible: a first approver who left the project (or was erased) is dropped, audited, and the person deciding now gives the first.
+    const gone = approvals.filter((a) => a.mode !== "auto" && !idIn(group.eligibleIds, a.by));
+    if (gone.length > 0) {
+      approvals = approvals.filter((a) => !gone.includes(a));
+      await emitAudit(deps.audit, { action: "lesson.updated", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { dropped: gone.length, reason: "approver_not_eligible" } });
+    }
     if (approvals.some((a) => sameId(a.by, input.approverId))) return { ok: false, code: "already_approved" };
     const tier: Tier = working.tier;
     // A lesson sent back to a person (review required) needs at least one person even if the policy would let its tier apply by itself.
