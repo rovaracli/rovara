@@ -17,11 +17,11 @@ const importersOf = (module: string): string[] => files(WORKER).filter((path) =>
 
 describe("the worker side is reachable only through the evidence hook", () => {
   it("only the evidence hook and its own modules use the new modules", () => {
-    expect(importersOf("changed-coverage")).toEqual(["verification/evidence-raw.ts", "verification/migration-check.ts", "verification/sarif.ts"]);
+    expect(importersOf("cobertura-lcov-coverage")).toEqual(["verification/evidence-raw.ts", "verification/migration-check.ts", "verification/sarif.ts"]);
     expect(importersOf("sarif")).toEqual(["verification/evidence-raw.ts", "verification/sarif-baseline.ts"]);
     expect(importersOf("sarif-baseline")).toEqual(["verification/evidence-raw.ts"]);
     expect(importersOf("migration-check")).toEqual(["verification/evidence-raw.ts"]);
-    expect(importersOf("report-file")).toEqual(["verification/changed-coverage.ts", "verification/evidence-raw.ts", "verification/sarif-baseline.ts"]);
+    expect(importersOf("report-file")).toEqual(["verification/cobertura-lcov-coverage.ts", "verification/evidence-raw.ts", "verification/sarif-baseline.ts"]);
     expect(importersOf("evidence-raw")).toEqual(["run-task.ts"]);
   });
 

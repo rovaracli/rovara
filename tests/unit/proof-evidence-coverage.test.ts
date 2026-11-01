@@ -25,11 +25,11 @@ function world(rawText: string) {
     async artifacts() { return [{ name: "evidence-raw.json", objectKey: `${PREFIX}evidence-raw.json` }]; },
     async readArtifact(key, max) { return key.startsWith(PREFIX) ? rawText.slice(0, max) : objects.get(key)?.slice(0, max) ?? ""; },
   };
-  return { deps: { actions, store: { s3, artifactBucketName: "bucket" } } satisfies KeepEvidenceDeps };
+  return { deps: { markStored: async () => undefined, actions, store: { s3, artifactBucketName: "bucket" } } satisfies KeepEvidenceDeps };
 }
 const keep = async (checks: unknown[]) => {
   const w = world(JSON.stringify(rawOf(checks)));
-  const result = await keepEvidence(w.deps, { task: TASK, operationId: OP, candidateDigest: DIGEST, checks: [entry("readiness:0", "pytest -q")] });
+  const result = await keepEvidence(w.deps, { orgId: "org-a", task: TASK, operationId: OP, candidateDigest: DIGEST, checks: [entry("readiness:0", "pytest -q")] });
   return { result, pack: await loadEvidencePack(w.deps.actions, TASK, DIGEST) };
 };
 const prLines = (pack: NonNullable<Awaited<ReturnType<typeof keep>>["pack"]>) => evidenceLines({ pack, mode: "summary" }, DIGEST, 0).lines.join("\n");

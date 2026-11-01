@@ -4,9 +4,9 @@
 //     another org's rows alone.
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { githubInstallationKey, githubRepoProjectKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
-import { installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
+import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
@@ -25,8 +25,10 @@ const noSdk = async (): Promise<never> => { throw new SdkUnavailableError(); };
 /** A fake AWS: Bedrock answers a 1,024-dimension embedding, S3 Vectors records every command with the credentials it was signed with, and STS records every session policy it was asked for. */
 function fakeAws() {
   const vectorCalls: Array<{ command: string; input: Record<string, unknown>; accessKeyId: string }> = [];
+  const athenaCalls: Array<{ command: string; sql: string }> = [];
+  const athena = { down: false };
   const embedBodies: string[] = [];
-  const sessions: Array<{ roleArn: string; policy: string; sessionName: string }> = [];
+  const sessions: Array<{ roleArn: string; policy: string; sessionName: string; tags?: ReadonlyArray<{ Key: string; Value: string }> | undefined }> = [];
   const command = (name: string) => ({ [name]: class { constructor(readonly input: Record<string, unknown>) {} get commandName() { return name; } } });
   const sdk = async (name: string): Promise<Record<string, unknown>> => {
     if (name === "@aws-sdk/client-bedrock-runtime") {
@@ -47,15 +49,29 @@ function fakeAws() {
         ...command("PutVectorsCommand"), ...command("QueryVectorsCommand"), ...command("GetVectorsCommand"), ...command("DeleteVectorsCommand"), ...command("CreateIndexCommand"),
       };
     }
+    if (name === "@aws-sdk/client-athena") {
+      return {
+        AthenaClient: class {
+          async send(c: { commandName: string; input: Record<string, unknown> }) {
+            athenaCalls.push({ command: c.commandName, sql: typeof c.input.QueryString === "string" ? c.input.QueryString : "" });
+            if (athena.down && c.commandName === "StartQueryExecutionCommand") throw Object.assign(new Error("secret"), { name: "InternalServerException" });
+            if (c.commandName === "StartQueryExecutionCommand") return { QueryExecutionId: `q${athenaCalls.length}` };
+            if (c.commandName === "GetQueryExecutionCommand") return { QueryExecution: { Status: { State: "SUCCEEDED" } } };
+            return { ResultSet: { ResultSetMetadata: { ColumnInfo: [] }, Rows: [] } };
+          }
+        },
+        ...command("StartQueryExecutionCommand"), ...command("GetQueryExecutionCommand"), ...command("GetQueryResultsCommand"), ...command("StopQueryExecutionCommand"),
+      };
+    }
     throw new SdkUnavailableError();
   };
   const sts = {
-    async assumeRole(request: { roleArn: string; sessionName: string; policy: string; durationSeconds: number }) {
-      sessions.push({ roleArn: request.roleArn, policy: request.policy, sessionName: request.sessionName });
+    async assumeRole(request: { roleArn: string; sessionName: string; policy: string; durationSeconds: number; tags?: ReadonlyArray<{ Key: string; Value: string }> }) {
+      sessions.push({ roleArn: request.roleArn, policy: request.policy, sessionName: request.sessionName, tags: request.tags });
       return { credentials: { accessKeyId: `AKIA-${sessions.length}`, secretAccessKey: "s", sessionToken: "t" }, expiresAtMs: T0 + 3_600_000 };
     },
   };
-  return { sdk, sts, vectorCalls, embedBodies, sessions };
+  return { sdk, sts, vectorCalls, embedBodies, sessions, athenaCalls, athena };
 }
 const VECTORS_ENV = { TEAM_RECORD_VECTORS_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx/ent/vr", TEAM_RECORD_VECTOR_BUCKETS: "agentx-ent-record-vectors", AGENTX_ACCOUNT_ID: "123456789012" } as const;
 const everything = (db: FakeDynamoDb): string => JSON.stringify(db.find(() => true));
@@ -174,6 +190,14 @@ describe("vectors are opened per workspace", () => {
     expect(indexArns(first!.policy)).toHaveLength(1);
     expect(indexArns(second!.policy)).toHaveLength(1);
     expect(indexArns(first!.policy)[0]).not.toBe(indexArns(second!.policy)[0]);
+    // Fix round 1, S2: each session is TAGGED with its own workspace's index name (the data role's rights are written in terms of that tag), and the tag is the index the policy names.
+    for (const session of aws.sessions) {
+      expect(session.tags).toHaveLength(1);
+      expect(session.tags![0]!.Key).toBe("rovara-index");
+      expect(session.tags![0]!.Value).toMatch(/^ws-[0-9a-f]{32}$/);
+      expect(session.policy).toContain(session.tags![0]!.Value);
+    }
+    expect(first!.tags![0]!.Value).not.toBe(second!.tags![0]!.Value);
     // The put of org A used session 1 and the put of org B used session 2: no call is signed with the other workspace's session.
     const puts = aws.vectorCalls.filter((call) => call.command === "PutVectorsCommand");
     expect(puts.map((call) => call.accessKeyId)).toStrictEqual(["AKIA-1", "AKIA-2"]);
@@ -399,3 +423,268 @@ describe("the scheduled jobs reach only the orgs that have written, and finish a
 });
 
 void vi;
+
+// ---- fix round 1, B1: a delete or an edit is never swallowed
+describe("a delete that arrives during a store failure is retried and lands", () => {
+  const SCOPE = "slack:T0123456789/C0123456789";
+  const channel = { teamId: "T0123456789", channelId: "C0123456789", info: { kind: "public" as const, extShared: false } };
+  const post = { type: "event_callback", team_id: "T0123456789", event: { type: "message", channel: "C0123456789", user: "U0123456789", text: `please ${MARKER} always`, ts: "1761818400.000100", channel_type: "channel" } };
+  const removal = { type: "event_callback", team_id: "T0123456789", event: { type: "message", subtype: "message_deleted", channel: "C0123456789", deleted_ts: "1761818400.000100", ts: "1761818500.000100" } };
+
+  /** A client whose WRITES fail while `down.on` is set (reads still answer); the record table is "down for writes". */
+  function flaky(db: FakeDynamoDb) {
+    const down = { on: false, writes: 0 };
+    const client = { send: async (command: unknown) => {
+      const name = (command as { constructor: { name: string } }).constructor.name;
+      if (down.on && /^(Put|Update|Delete|TransactWrite|BatchWrite)/.test(name)) { down.writes += 1; throw Object.assign(new Error("ProvisionedThroughputExceeded secret detail"), { name: "ProvisionedThroughputExceededException" }); }
+      return db.send(command as never);
+    } };
+    return { client, down };
+  }
+  const queueOf = () => { const sent: Array<Record<string, unknown>> = []; return { sent, queue: { send: async (op: Record<string, unknown>) => { sent.push(op); } } }; };
+  const asRecords = (sent: Array<Record<string, unknown>>) => sent.map((op, i) => ({ messageId: `m${i}`, body: JSON.stringify(op), receiveCount: 1 }));
+  const eventRows = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+
+  it("Slack: the tombstone that fails is queued, the queue drains it once the table is back, and the text is gone", async () => {
+    const db = dbOf();
+    db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
+    const { client, down } = flaky(db);
+    const { sent, queue } = queueOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client, opsQueue: queue });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SCOPE, retention: "C" });
+    await runtime.taps.slack({ payload: post, channel });
+    expect(JSON.stringify(eventRows(db))).toContain(MARKER);
+    down.on = true;
+    expect(await runtime.taps.slack({ payload: removal, channel })).toMatchObject({ outcome: "deleted" });
+    expect(down.writes).toBeGreaterThan(0);
+    expect(sent.map((op) => op.op)).toStrictEqual(["tombstone"]);
+    expect(JSON.stringify(eventRows(db))).toContain(MARKER);
+    down.on = false;
+    expect(await runtime.drain(asRecords(sent))).toStrictEqual({ batchItemFailures: [] });
+    expect(everything(db)).not.toContain(MARKER);
+  });
+
+  it("the ingress's queued removal is applied by the strict tap: a failure leaves the message on the queue, the retry lands", async () => {
+    const db = dbOf();
+    db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
+    const { client, down } = flaky(db);
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SCOPE, retention: "C" });
+    await runtime.taps.slack({ payload: post, channel });
+    const record = { messageId: "m1", body: JSON.stringify({ v: 1, op: "slack_removal", payload: removal }), receiveCount: 1 };
+    down.on = true;
+    expect(await runtime.drain([record])).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    down.on = false;
+    expect(await runtime.drain([{ ...record, receiveCount: 2 }])).toStrictEqual({ batchItemFailures: [] });
+    expect(everything(db)).not.toContain(MARKER);
+  });
+
+  it("a failure to READ the Slack team's binding is a failure (retried), not an unknown team (dropped)", async () => {
+    const db = dbOf();
+    const broken = { send: async () => { throw new Error("read failed"); } };
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: broken });
+    await expect(runtime.taps.slackStrict({ payload: removal, channel })).rejects.toThrow();
+  });
+
+  it("GitHub: a deleted comment whose tombstone fails is queued and lands on the drain; an edit (a new version) is queued the same way", async () => {
+    const db = dbOf();
+    const { client, down } = flaky(db);
+    const { sent, queue } = queueOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client, opsQueue: queue });
+    seedRepository(db, ORG_A, { installationId: 55, repositoryId: 101, project: "web" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/101", retention: "C" });
+    expect(await runtime.taps.github(delivery(55, 101, `first ${MARKER}`))).toMatchObject({ written: 1 });
+    const comment = delivery(55, 101, "edited").payload;
+    down.on = true;
+    const deleted = { eventName: "issue_comment", deliveryId: "d-9", payload: { ...comment, action: "deleted" } };
+    await runtime.taps.github(deleted);
+    expect(sent.map((op) => op.op)).toContain("tombstone");
+    down.on = false;
+    expect(await runtime.drain(asRecords(sent))).toStrictEqual({ batchItemFailures: [] });
+    expect(everything(db)).not.toContain(MARKER);
+  });
+
+  it("a failed write with no queue is rethrown to the caller (never swallowed), and a Public Slack message is never queued", async () => {
+    const db = dbOf();
+    const { client, down } = flaky(db);
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    down.on = true;
+    await expect(runtime.sink.tombstone({ workspaceId: ORG_A, system: "github.com", scope: "github:repo/9", cause: "source_deleted" })).rejects.toThrow();
+    const dbP = dbOf();
+    const flakyP = flaky(dbP);
+    const queued = queueOf();
+    const publicRuntime = build(dbP, { ...ON, ROVARA_EDITION: "public" }, { documentClient: flakyP.client, opsQueue: queued.queue });
+    flakyP.down.on = true;
+    await expect(publicRuntime.sink.put(githubDraft({ source: "slack", kind: "slack.message", workspaceId: ORG_A, text: `slack ${MARKER}` }))).rejects.toThrow();
+    await expect(publicRuntime.sink.put(githubDraft({ workspaceId: ORG_A, origin: "slack", text: `from slack ${MARKER}` }))).rejects.toThrow();
+    expect(queued.sent).toStrictEqual([]);
+    expect(JSON.stringify(queued.sent)).not.toContain(MARKER);
+  });
+
+  it("the broker's Slack branch THROWS when the tap failed, so Lambda runs the invoke again", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: { send: async () => { throw new Error("down"); } } });
+    await expect(recordSlackForward({ teamRecord: runtime }, { source: "agentx.team-record-slack", payload: post, channel })).rejects.toThrow();
+  });
+
+  it("the queue's event is recognised only from the record's own queue, and a broker with the record off fails the whole batch", async () => {
+    const arn = "arn:aws:sqs:us-west-2:123456789012:agentx-staging-team-record-ops";
+    const record = (eventSourceARN: string) => ({ eventSource: "aws:sqs", eventSourceARN, messageId: "m1", body: "{}" });
+    const env = { AGENTX_ENV: "staging" };
+    expect(isTeamRecordQueueEvent({ Records: [record(arn)] }, env)).toBe(true);
+    expect(isTeamRecordQueueEvent({ Records: [record("arn:aws:sqs:us-west-2:123456789012:other")] }, env)).toBe(false);
+    expect(isTeamRecordQueueEvent({ Records: [record(arn)], requestContext: {} }, env)).toBe(false);
+    expect(isTeamRecordQueueEvent({ Records: [] }, env)).toBe(false);
+    expect(await drainTeamRecordQueue({ teamRecord: undefined }, { Records: [record(arn)] })).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+  });
+});
+
+
+// ---- fix round 1, B2 and S5: an erase is recorded first, bounded inline, and finished by the hourly job, the lake included
+describe("an erase that does not finish is resumed, and a company stays in the directory until its lake delete has run", () => {
+  const LAKE = { TEAM_RECORD_LAKE_ENABLED: "1", TEAM_RECORD_TABLE_BUCKET: "agentx-ent-record-lake", TEAM_RECORD_ATHENA_WORKGROUP: "agentx-ent-record" } as const;
+  const orgMeta = (db: FakeDynamoDb, extra: Record<string, unknown>) => db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, ...extra });
+  const directory = (db: FakeDynamoDb) => db.find((item) => item.pk === "TEAM_RECORD_ORGS" && item.sk === ORG_A);
+  const jobs = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_ERASE_JOB");
+
+  async function company(extra: Partial<Parameters<typeof createTeamRecordRuntime>[0]> = {}) {
+    const db = dbOf();
+    const aws = fakeAws();
+    const runtime = build(db, { ...ON, ...LAKE, ROVARA_EDITION: "enterprise" }, { sdk: aws.sdk, sts: aws.sts, ...extra });
+    db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `${MARKER} history` }));
+    return { db, aws, runtime };
+  }
+
+  it("a close interrupted after the hot store was cleared still deletes the lake rows on the next pass, and only then leaves the directory", async () => {
+    const { db, aws, runtime } = await company();
+    orgMeta(db, { closingAt: "2026-10-30T11:00:00.000Z" });
+    await runtime.erase.workspace(ORG_A);
+    // The hot store is clear and the company waits in the directory for the lake: the marker says so.
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+    expect(directory(db)).toHaveLength(1);
+    expect(jobs(db)).toHaveLength(1);
+    // The lake is down at the first hourly run: nothing is dropped.
+    aws.athena.down = true;
+    await runtime.jobs.run("hourly");
+    expect(directory(db)).toHaveLength(1);
+    expect(jobs(db)).toHaveLength(1);
+    // The lake is back: its delete statement for THIS company runs, and then the marker and the directory entry go.
+    aws.athena.down = false;
+    await runtime.jobs.run("hourly");
+    const deletes = aws.athenaCalls.filter((call) => call.command === "StartQueryExecutionCommand" && /DELETE FROM/i.test(call.sql));
+    expect(deletes.length).toBeGreaterThan(0);
+    expect(deletes.every((call) => call.sql.includes(ORG_A))).toBe(true);
+    expect(directory(db)).toStrictEqual([]);
+    expect(jobs(db)).toStrictEqual([]);
+  });
+
+  it("an erase interrupted by a storage failure leaves its marker, and the next hourly run finishes it", async () => {
+    const db = dbOf();
+    const { client, down } = (() => {
+      const state = { on: false };
+      return { down: state, client: { send: async (command: unknown) => {
+        const name = (command as { constructor: { name: string } }).constructor.name;
+        if (state.on && /^(Delete|Update|TransactWrite|BatchWrite)/.test(name)) throw new Error("down");
+        return db.send(command as never);
+      } } };
+    })();
+    const aws = fakeAws();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client, sdk: aws.sdk, sts: aws.sts });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    const person = { sourceId: "123", developerId: "dev-1", trust: "member" as const };
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", actor: person, text: `${MARKER} mine` }));
+    down.on = true;
+    await expect(runtime.erase.person(ORG_A, "dev-1")).rejects.toThrow();
+    expect(jobs(db)).toHaveLength(1);
+    expect(JSON.stringify(jobs(db))).toContain("dev-1");
+    down.on = false;
+    await runtime.jobs.run("hourly");
+    expect(everything(db)).not.toContain(MARKER);
+    expect(jobs(db)).toStrictEqual([]);
+  });
+
+  it("a small project's inline erase finishes in its one pass and leaves no marker", async () => {
+    const { db, runtime } = await company();
+    await runtime.erase.project(ORG_A, "web", "project_archived");
+    expect(jobs(db)).toHaveLength(0);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+  });
+
+  it("a company marker for a company that is still open is stale and is dropped without erasing anything (the close did not happen)", async () => {
+    const { db, runtime } = await company();
+    orgMeta(db, {});
+    // Put the marker by hand, as an erase that began and then never closed the company would have left it.
+    db.set({ pk: "TEAM_RECORD_ORGS", sk: `ERASE#${ORG_A}#workspace#all`, entityType: "TEAM_RECORD_ERASE_JOB", orgId: ORG_A, at: "2026-10-30T11:00:00.000Z", job: { kind: "workspace", phase: "hot", projects: ["web"] } });
+    await runtime.jobs.run("hourly");
+    expect(jobs(db)).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+  });
+
+  it("a project marker for a project that is NOT archived is stale: it is dropped and the project's rows stay", async () => {
+    const { db, runtime } = await company();
+    db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "active", createdAt: "x", createdBy: "y" });
+    db.set({ pk: "TEAM_RECORD_ORGS", sk: `ERASE#${ORG_A}#project#web`, entityType: "TEAM_RECORD_ERASE_JOB", orgId: ORG_A, at: "2026-10-30T11:00:00.000Z", job: { kind: "project", project: "web", cause: "project_archived" } });
+    await runtime.jobs.run("hourly");
+    expect(jobs(db)).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+  });
+
+  it("a project marker only runs while the project is archived", async () => {
+    const { db, runtime } = await company();
+    db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "x", createdBy: "y", archivedAt: "z" });
+    db.set({ pk: "TEAM_RECORD_ORGS", sk: `ERASE#${ORG_A}#project#web`, entityType: "TEAM_RECORD_ERASE_JOB", orgId: ORG_A, at: "2026-10-30T11:00:00.000Z", job: { kind: "project", project: "web", cause: "project_archived" } });
+    await runtime.jobs.run("hourly");
+    expect(jobs(db)).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+  });
+});
+
+describe("fix round 1, S1: a workspace whose vector index cannot be opened is not retried on every write", () => {
+  it("in Public, with the S3 Vectors package missing, five writes look up the bucket assignment ONCE and every row is still stored", async () => {
+    const db = dbOf();
+    const bucketReads: number[] = [];
+    const counting = { send: async (command: unknown) => { if ((command as { input?: { Key?: { sk?: string } } }).input?.Key?.sk === "VECBUCKET") bucketReads.push(1); return db.send(command as never); } };
+    const aws = fakeAws();
+    const sdk = async (name: string) => (name === "@aws-sdk/client-s3vectors" ? Promise.reject(new SdkUnavailableError()) : aws.sdk(name));
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "public" }, { sdk, sts: aws.sts, documentClient: counting });
+    await addSource(db, "public", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "D" });
+    for (const id of ["a", "b", "c", "d", "e"]) expect(await runtime.sink.put(githubDraft({ retention: "D", audience: { kind: "project" }, scope: "github:repo/9", sourceRef: { system: "github.com", id, version: "1" } }))).toMatchObject({ status: "stored" });
+    expect(aws.sessions).toHaveLength(1);
+    expect(bucketReads).toHaveLength(1);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(5);
+  });
+});
+
+describe("fix round 1, S4: a person's erase also reaches the Slack rows they wrote", () => {
+  const SCOPE = "slack:T0123456789/C0123456789";
+  const channel = { teamId: "T0123456789", channelId: "C0123456789", info: { kind: "public" as const, extShared: false } };
+  const says = (user: string, ts: string, text: string) => ({ type: "event_callback", team_id: "T0123456789", event: { type: "message", channel: "C0123456789", user, text, ts, channel_type: "channel" } });
+
+  async function world(slackUserIdsOf?: (developerId: string) => Promise<string[]>) {
+    const db = dbOf();
+    db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
+    db.set({ ...orgSlackTeamKey(ORG_A, "T0123456789"), teamId: "T0123456789" });
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { ...(slackUserIdsOf === undefined ? {} : { slackUserIdsOf }) });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SCOPE, retention: "C" });
+    await runtime.taps.slack({ payload: says("U0123456789", "1761818400.000100", `leaver ${MARKER}`), channel });
+    await runtime.taps.slack({ payload: says("U0123456780", "1761818401.000100", "colleague stays"), channel });
+    return { db, runtime };
+  }
+
+  it("with the person's Slack id known, their Slack messages go and a colleague's stay", async () => {
+    const { db, runtime } = await world(async (developerId) => (developerId === "dev-1" ? ["U0123456789"] : []));
+    expect(everything(db)).toContain(MARKER);
+    await runtime.erase.person(ORG_A, "dev-1");
+    expect(everything(db)).not.toContain(MARKER);
+    expect(everything(db)).toContain("colleague stays");
+  });
+
+  it("without a Slack link their Slack rows cannot be found by developer id (the stated limit)", async () => {
+    const { db, runtime } = await world();
+    await runtime.erase.person(ORG_A, "dev-1");
+    expect(everything(db)).toContain(MARKER);
+  });
+});

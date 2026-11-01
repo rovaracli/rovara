@@ -1,7 +1,7 @@
 // Proof and evidence (wire-proof): `GET /v1/app/tasks/{id}/evidence/{sha256}`, the one place a stored evidence artifact leaves the store. It exists only while the proof switch is on (`deps.evidence`): with it off the
 // path is not a route at all. The reader's right to the task is the page's own rule (`resolveTaskAccess`: the owner, a person the task was shared with, or a member of the task's Slack channel who can use its project),
-// checked on EVERY request, and only a role that may read the task is served; anyone else is told 403, a task that does not exist as well. What is served is only what the task's CURRENT pack names as available
-// (`servableEvidenceArtifact`, in `serveEvidenceArtifact`); every download that is served is audited first, and one that cannot be audited does not happen.
+// checked on EVERY request, and only a role that may read the task is served; on top of it the person must hold the task's PROJECT (owner decision on proof Q8: signed in with access to the project), which a session share, even company-wide, does not give; anyone else is told 403, a task that does not exist as well. What is served is only what the task's CURRENT pack names as available
+// (`servableEvidenceArtifact`, in `serveEvidenceArtifact`); every download that is served is audited first; where the install keeps an audit ledger, a download that cannot be audited does not happen (a legacy install has no ledger and keeps none).
 import { agentXError } from "@agentx/contracts";
 import type { AuditEventInput } from "@agentx/contracts";
 import { auditActorOf } from "../audit/plan3-hooks.js";
@@ -11,6 +11,7 @@ import type { DeveloperCaller } from "./developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./developer-tasks.js";
 import { handleEvidenceDownload } from "./evidence-download-route.js";
 import { RawReply } from "./status-reply.js";
+import { mayReadEvidence } from "./developer-tasks/evidence-port.js";
 
 export const EVIDENCE_DOWNLOAD_PATH = /^\/v1\/app\/tasks\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/evidence\/([0-9a-f]{64})$/u;
 
@@ -42,6 +43,8 @@ export async function routeEvidenceDownload(request: EvidenceDownloadRequest): P
         const { task, role } = await resolveAccess(request.deps, request.caller, request.taskId);
         // Whoever may read the task page may read what it shows; a role that cannot read it is told the page's own not-found.
         if (!can(role, "read")) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
+        // Q8: evidence is for signed-in people with access to the PROJECT. A session share (even company-wide) reads the task page; it does not hold the project.
+        if (!(await mayReadEvidence(request.deps, task))) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
         const candidateDigest = task.workflow?.candidate?.digest;
         return { ownerKey: task.ownerKey, workspaceId: task.workspaceId, taskId: task.taskId, candidateDigest, view: await port.view(task, candidateDigest) };
       },

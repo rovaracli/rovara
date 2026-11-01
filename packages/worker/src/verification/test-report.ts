@@ -1,4 +1,4 @@
-// Proof and evidence P2: what a check's own test report says. A JUnit XML file (pytest --junitxml, Maven, Gradle, Go's gotestsum) or a vitest/jest JSON file the check ALREADY writes is read into totals, test
+// Proof and evidence P2: what a check's own test report says. A JUnit XML file (pytest --junitxml, Maven, Gradle, Go's gotestsum), a vitest/jest JSON file or a `go test -json` event file the check ALREADY writes is read into totals, test
 // names, the tests the change added or changed, and the number of skips among the tests the change did not touch. AgentX never alters a customer's command (the same rule as TESTPROOF), so a check with no
 // report keeps one verdict and this module is never asked about it.
 //
@@ -29,7 +29,7 @@ export interface ReportedTest {
   durationMs?: number;
 }
 export interface ParsedTestReport {
-  format: "junit" | "json";
+  format: "junit" | "json" | "gotest";
   total: number;
   passed: number;
   failed: number;
@@ -46,7 +46,7 @@ export function plainName(text: string): string {
   return line === "" ? "test" : Array.from(line).slice(0, NAME_MAX).join("");
 }
 
-function counted(format: ParsedTestReport["format"], tests: ReportedTest[]): ParsedTestReport {
+export function counted(format: ParsedTestReport["format"], tests: ReportedTest[]): ParsedTestReport {
   const count = (status: ReportedTestStatus) => tests.filter((test) => test.status === status).length;
   return { format, total: tests.length, passed: count("passed"), failed: count("failed"), skipped: count("skipped"), errored: count("errored"), tests };
 }
@@ -221,12 +221,83 @@ export function parseJsonReport(text: string): ParsedTestReport | undefined {
   return tests.length === 0 ? undefined : counted("json", tests);
 }
 
+// ---- go test -json
+
+const GO_ACTIONS: ReadonlySet<string> = new Set(["start", "run", "pause", "cont", "pass", "bench", "fail", "output", "skip", "build-output", "build-fail"]);
+const GO_LINE_MAX_CHARS = 1_048_576;
+
+interface GoEvent { action: string; pkg: string; test: string | undefined; elapsed: number | undefined }
+
+/** One line of a `go test -json` stream as an event, or undefined when it is not one (any other text, a line that is too long, a wrong type or an Action Go does not define). */
+function goEvent(line: string): GoEvent | undefined {
+  if (line.length > GO_LINE_MAX_CHARS || !line.startsWith("{")) return undefined;
+  let parsed: unknown;
+  try { parsed = JSON.parse(line); } catch { return undefined; }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+  const event = parsed as { Action?: unknown; Package?: unknown; Test?: unknown; Elapsed?: unknown };
+  if (typeof event.Action !== "string" || !GO_ACTIONS.has(event.Action) || typeof event.Package !== "string" || event.Package === "") return undefined;
+  return { action: event.Action, pkg: event.Package, test: typeof event.Test === "string" && event.Test !== "" ? event.Test : undefined, elapsed: typeof event.Elapsed === "number" ? event.Elapsed : undefined };
+}
+
+/** Whether the first non-empty line is a `go test -json` event: how `auto` tells it from vitest/jest JSON, which is one object with no `Action`. */
+export function looksLikeGoTestJson(text: string): boolean {
+  const start = text.search(/\S/u);
+  if (start === -1) return false;
+  const end = text.indexOf("\n", start);
+  return goEvent((end === -1 ? text.slice(start) : text.slice(start, end)).trim()) !== undefined;
+}
+
 /**
- * Reads a report's text in the format its check names (`junit`, `json`) or, for `auto`, the one it looks like (JSON starts with `{`). Anything else, or a text over the size cap, is `undefined`:
- * not measured.
+ * `go test -json` (test2json): one event per line. Only the Action, Package, Test and Elapsed fields are read; the Output text, where a test can print anything, never is. A `pass`, `fail` or `skip` event with a
+ * Test is one test (a subtest and its parent are both tests, and a repeated run with -count counts again). A test that started and never finished is errored, so a file cut short never reads as passing. A package
+ * that failed with no failing test of its own (a build failure, a panic outside a test) is one errored entry named for the package. Lines that are not events are skipped; a file with no test result is `undefined`.
+ * `file` is the package's import path: it is not a test file, so no test is ever taken for one the change touched.
+ */
+export function parseGoTestJson(text: string): ParsedTestReport | undefined {
+  const tests: ReportedTest[] = [];
+  const running = new Map<string, number>();
+  const failedTestsIn = new Set<string>();
+  const failedPackages: string[] = [];
+  const key = (pkg: string, test: string): string => `${pkg}\u0000${test}`;
+  for (const raw of text.split("\n")) {
+    const event = goEvent(raw.trim());
+    if (event === undefined) continue;
+    if (event.test === undefined) {
+      if (event.action === "fail" && !failedPackages.includes(event.pkg)) failedPackages.push(event.pkg);
+      continue;
+    }
+    if (event.action === "run") { running.set(key(event.pkg, event.test), (running.get(key(event.pkg, event.test)) ?? 0) + 1); continue; }
+    const status: ReportedTestStatus | undefined = event.action === "pass" ? "passed" : event.action === "fail" ? "failed" : event.action === "skip" ? "skipped" : undefined;
+    if (status === undefined) continue;
+    if (tests.length >= TEST_REPORT_MAX_TESTS) return undefined;
+    const pending = running.get(key(event.pkg, event.test)) ?? 0;
+    if (pending > 0) running.set(key(event.pkg, event.test), pending - 1);
+    if (status === "failed") failedTestsIn.add(event.pkg);
+    const ms = duration(event.elapsed, "s");
+    tests.push({ file: event.pkg, name: plainName(event.test), status, ...(ms === undefined ? {} : { durationMs: ms }) });
+  }
+  for (const [entry, pending] of running) {
+    for (let count = 0; count < pending; count += 1) {
+      if (tests.length >= TEST_REPORT_MAX_TESTS) return undefined;
+      const [pkg, test] = entry.split("\u0000") as [string, string];
+      tests.push({ file: pkg, name: plainName(test), status: "errored" });
+    }
+  }
+  for (const pkg of failedPackages) {
+    if (failedTestsIn.has(pkg)) continue;
+    if (tests.length >= TEST_REPORT_MAX_TESTS) return undefined;
+    tests.push({ file: pkg, name: plainName(pkg), status: "errored" });
+  }
+  return tests.length === 0 ? undefined : counted("gotest", tests);
+}
+
+/**
+ * Reads a report's text in the format its check names (`junit`, `json`) or, for `auto`, the one it looks like (JSON starts with `{`). A `go test -json` event stream is recognised by its content under `auto` and
+ * `json`. Anything else, or a text over the size cap, is `undefined`: not measured.
  */
 export function parseTestReport(text: string, format: "junit" | "json" | "auto" = "auto"): ParsedTestReport | undefined {
   if (text.length === 0 || Buffer.byteLength(text, "utf8") > TEST_REPORT_MAX_BYTES) return undefined;
+  if (format !== "junit" && looksLikeGoTestJson(text)) return parseGoTestJson(text);
   const kind = format === "auto" ? (text.trimStart().startsWith("{") ? "json" : "junit") : format;
   return kind === "json" ? parseJsonReport(text) : parseJunit(text);
 }

@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
 import { handleSlackDecisionPress, isSlackDecisionPressEvent } from "./decision-press.js";
 import { handleAskServiceRoute, installSlackAsk, linearCommentIntakeOf, runAskMaintenance } from "./ask-service.js";
@@ -77,7 +78,7 @@ import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2ERepla
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
 import { installLearningTaskEnd } from "./learning-wiring.js";
-import { installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
+import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
 import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
 import { runWokenTrackingPass, trackingPassDependencies } from "./e2e-rounds.js";
 import { handleProjectSetupCallback, handleProjectSetupEvidenceChunk, handleProjectSetupEvidenceFinalize, handleProjectSetupEvidenceInit, handleProjectSetupExecutionRead } from "./evidence-and-setup.js";
@@ -223,7 +224,13 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         timedSettlementJob({
           name: "resume-learning-walks", pick: "learning", startedAt, now: Date.now, ...learningPriority,
           onSkip: (name) => console.log(JSON.stringify({ component: "broker", event: "learning.settlement_job_skipped", job: name, reason: "not enough time left" })),
-          run: (budgetMs) => resumeOpenLearningWalks(learningWalkDeps({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }), { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry }))),
+          run: async (budgetMs) => {
+            const started = Date.now();
+            const learning = await resumeOpenLearningWalks(learningWalkDeps({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, audit: dependencies.audit }), { millis: budgetMs }, (entry) => console.log(JSON.stringify({ component: "broker", ...entry })));
+            // Proof and evidence (wire-proof fix round 2): the evidence erases a company close, a project archive or a person erase left unfinished are finished here, from their cursors, with what is left of the slice. Not behind the proof switch.
+            const evidence = await resumeEvidence(dependencies, Math.max(0, budgetMs - (Date.now() - started)));
+            return { learning, evidence };
+          },
         }),
       ];
       if (jobs.length === 0) return json({ skipped: true }, "spend-settlement");
@@ -249,9 +256,12 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       try { return json(await recordSlackForward(dependencies, event), "team-record-slack"); }
       catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "team_record.slack_failed", error: error instanceof Error ? error.name : "unknown" }));
-        return json({ error: "record_failed" }, "team-record-slack", 500);
+        // THROWN, not answered: a handler that returns is never run again. Lambda retries an asynchronous invoke that errors (twice); the ingress's request/response invoke sees the error.
+        throw error;
       }
     }
+    // The record's durable queue (removals and edits that could not be applied at once): the partial-batch answer SQS reads, so only the messages that failed come back.
+    if (isTeamRecordQueueEvent(event)) return await drainTeamRecordQueue(dependencies, event) as never;
     // Meta repo lane F (F2): every minute, the intake sources that are due are read (each by its own interval and hourly cap); a source that fails is backed off and, after an hour, its maintainers are told.
     if (isIntakePollEvent(event)) {
       try {
@@ -377,7 +387,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     // Decision cards (wire-proof): a card's button pressed in Slack. Answered with one fixed sentence for the interactivity Lambda to say privately; `enabled: false` while the cards switch is off.
     if (isSlackDecisionPressEvent(event)) {
       if (!decisionCardsEnabled() || dependencies.developer === undefined) return json({ enabled: false }, "slack-ingress");
-      return json(await handleSlackDecisionPress(dependencies, { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies), ...(agents === undefined ? {} : { agents }) }, event), "slack-ingress");
+      return json(await handleSlackDecisionPress(dependencies, { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies), ...routeEditionDependencies(dependencies), ...(agents === undefined ? {} : { agents }) }, event), "slack-ingress");
     }
     if (isSlackTaskAuthorizationEvent(event)) {
       try { return json(await authorizeSlackTaskAction(dependencies, tasks, event), "slack-ingress"); }
@@ -467,7 +477,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.cloud === true ? { cloud: true } : {}),
           ...routeEditionDependencies(dependencies),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
-          ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
+          evidenceErase: evidenceEraseOf(dependencies),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           ...repositoriesGateRoute(dependencies),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
@@ -745,11 +755,15 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(dependencies.sso === undefined ? {} : { sso: dependencies.sso }),
           ...(dependencies.egressDomainsSync === undefined ? {} : { egressSync: dependencies.egressDomainsSync }),
           ...(dependencies.chatgpt === undefined ? {} : { chatgpt: dependencies.chatgpt }),
+          // Team record (fix round 1: the first round put this in the review-page branch by mistake): the record routes, and its erase on project archive and company close, only where its switch is on.
+          ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),
           createProject: (caller, input) => createCloudProject(dependencies, caller, input),
           ...(dependencies.auditLedger === undefined ? {} : { auditLedger: dependencies.auditLedger }),
           ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
           ...githubConnectRoute(dependencies),
+          // Proof and evidence (wire-proof fix round 1): the stored evidence of an archived project or a closed company is deleted with it.
+          evidenceErase: evidenceEraseOf(dependencies),
           ...(agents === undefined ? {} : { agents }),
           // Meta repo lane B: the setup agent's citations are re-read from GitHub, through the org's own installation.
           ...(dependencies.githubPullRequests.getFileAtCommit === undefined ? {} : {

@@ -186,6 +186,7 @@ export const LESSON_AUDIT_ACTIONS = [
   "lesson.rolled_back", "lesson.promoted", "lesson.wrong_here", "lesson.helpful", "lesson.source_paused", "lesson.source_resumed", "lesson.volume_spike",
   "lesson.sole_owner_exception", "lesson.citation_moved", "lesson.contradiction", "lesson.withdrawn", "lesson.promote_failed", "lesson.held_source_paused",
   "lesson.tier0_setting_proposed", "lesson.tier0_setting_changed", "lesson.tier0_setting_cancelled",
+  "lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed",
 ] as const;
 export type LessonAuditAction = (typeof LESSON_AUDIT_ACTIONS)[number];
 

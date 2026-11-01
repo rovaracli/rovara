@@ -1,8 +1,10 @@
 // Wiring lane B, LR-W3: a write that loosens the tier-0 approval to "auto" (project or company) needs a SECOND person: a different eligible maintainer or admin approves a proposal.
 // Stricter writes apply directly. A company floor can only be stricter. Nothing loosens while automatic go-live is not enabled.
+// One-admin companies (owner 2026-11-01): the sole-owner exception (shared with lesson approval) lets the only eligible person approve their own loosening after the 24 h cool-off;
+// a company setting turns the exception off. Replaces: no sole-owner path for tier-0 loosening.
 import { describe, expect, it } from "vitest";
 import {
-  approveTier0Change, cancelTier0Change, requestTier0Change, type Tier0Change, type Tier0ChangeStore, type Tier0Deps, type Tier0Level, type Tier0Scope, type Tier0SettingsStore,
+  approveSoleOwnerSwitch, approveTier0Change, cancelTier0Change, requestTier0Change, setSoleOwnerSwitch, type SoleOwnerSwitchChange, type SoleOwnerSwitchDeps, type SoleOwnerSwitchStore, type Tier0Change, type Tier0ChangeStore, type Tier0Deps, type Tier0Fence, type Tier0Level, type Tier0Scope, type Tier0SettingsStore,
 } from "../../../packages/broker/src/lessons/tier0-setting.js";
 import { Audit, Clock, PROJECT, WS } from "./lesson-helpers.js";
 
@@ -17,9 +19,14 @@ class Settings implements Tier0SettingsStore {
   async read(scope: Tier0Scope): Promise<Tier0Level | undefined> { return this.values.get(scopeId(scope)); }
   /** Runs between a caller's read and its write: another writer got in. */
   beforeWrite: (() => void) | undefined;
-  async write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level): Promise<boolean> {
+  /** The membership generation in force now (what a real store's commit conditions pin); a write whose fence names another generation commits nothing. */
+  membershipNow: () => number = () => 3;
+  fences: Array<Tier0Fence | undefined> = [];
+  async write(scope: Tier0Scope, value: Tier0Level, meta: { by: string; at: number }, from: Tier0Level, fence?: Tier0Fence): Promise<boolean> {
     if (this.failWrite) throw new Error("down");
     this.beforeWrite?.();
+    this.fences.push(fence);
+    if (fence !== undefined && fence.membershipVersion !== this.membershipNow()) return false;
     const current = this.values.get(scopeId(scope)) ?? (scope.kind === "project" ? "one" : "auto");
     if (current !== from) return false;
     this.values.set(scopeId(scope), value); this.writes.push({ scope: scopeId(scope), value, by: meta.by });
@@ -36,15 +43,18 @@ class Changes implements Tier0ChangeStore {
   }
 }
 
-function world(over: { eligible?: string[]; owners?: string[]; autoEnabled?: boolean; complete?: boolean } = {}) {
+function world(over: { eligible?: string[]; owners?: string[]; autoEnabled?: boolean; complete?: boolean; soleOwner?: boolean | "throws" } = {}) {
   const settings = new Settings();
   const changes = new Changes();
   const audit = new Audit();
   const clock = new Clock();
   const group = { complete: over.complete ?? true, membershipVersion: 3, ownerIds: over.owners ?? ["owner"], eligibleIds: over.eligible ?? ["owner", "ann", "bob"], lastEligibleLossAtMs: null as number | null };
-  const authority = { calls: 0, failing: false, async eligibility() { this.calls += 1; if (this.failing) throw new Error("down"); return group; } };
-  const deps: Tier0Deps = { settings, changes, audit, authority, now: clock.now, autoApplyEnabled: () => over.autoEnabled ?? true, newId: (() => { let n = 0; return () => `chg-${++n}`; })() };
-  return { deps, settings, changes, audit, clock, authority, group };
+  settings.membershipNow = () => group.membershipVersion;
+  const authority = { calls: 0, failing: false, asked: [] as Array<{ proposerId: string; approverId: string }>, async eligibility(_scope: Tier0Scope, who: { proposerId: string; approverId: string }) { this.calls += 1; this.asked.push(who); if (this.failing) throw new Error("down"); return { ...group, fence: [{ pinned: group.membershipVersion }] }; } };
+  const soleOwner = { asked: [] as string[] };
+  const soleOwnerLoosening = async (workspaceId: string): Promise<boolean> => { soleOwner.asked.push(workspaceId); if (over.soleOwner === "throws") throw new Error("down"); return over.soleOwner ?? true; };
+  const deps: Tier0Deps = { settings, changes, audit, authority, now: clock.now, autoApplyEnabled: () => over.autoEnabled ?? true, soleOwnerLoosening, newId: (() => { let n = 0; return () => `chg-${++n}`; })() };
+  return { deps, settings, changes, audit, clock, authority, group, soleOwner };
 }
 
 describe("stricter writes apply directly", () => {
@@ -103,8 +113,8 @@ describe("loosening to auto needs a second person", () => {
     expect(w.settings.writes).toEqual([]);
     expect(w.audit.actions()).toEqual(["lesson.tier0_setting_proposed"]);
   });
-  it("the proposer cannot approve their own change, in any way (no sole-owner exception)", async () => {
-    const w = world({ eligible: ["owner"], owners: ["owner"] });
+  it("the proposer cannot approve their own change while another eligible person exists, however the id is spelled", async () => {
+    const w = world({ eligible: ["owner", "bob"], owners: ["owner"] });
     await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
     w.clock.advance(3 * 86_400_000);
     expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
@@ -113,6 +123,10 @@ describe("loosening to auto needs a second person", () => {
     expect(await approveTier0Change(w2.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: " ann " })).toEqual({ ok: false, code: "second_person_required" });
     expect(w.settings.writes).toEqual([]);
     expect(w2.settings.writes).toEqual([]);
+    // a proposer who is not the only owner, with a lone eligible group, still has no exception
+    const w3 = world({ eligible: ["ann"], owners: ["owner"] });
+    await requestTier0Change(w3.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    expect(await approveTier0Change(w3.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "ann" })).toEqual({ ok: false, code: "second_person_required" });
   });
   it("a different eligible maintainer or admin approves and the value changes, audited, once", async () => {
     const w = world();
@@ -249,5 +263,280 @@ describe("fails closed", () => {
     const w = world();
     w.audit.emit = async () => { throw new Error("audit down"); };
     expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "two", requestedBy: "ann" })).toMatchObject({ ok: true, status: "applied" });
+  });
+});
+
+describe("one-admin companies: the sole-owner exception for loosening", () => {
+  const solo = (over: Parameters<typeof world>[0] = {}) => world({ eligible: ["owner"], owners: ["owner"], ...over });
+  const DAY = 86_400_000;
+
+  it("the only eligible person approves their own loosening alone (project), audited with the mode", async () => {
+    const w = solo();
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" })).toMatchObject({ status: "needs_approval" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "one" });
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
+    expect(w.audit.events.at(-1)).toMatchObject({ action: "lesson.tier0_setting_changed", actor: "owner", facts: { from: "two", to: "one", mode: "sole_owner_exception", proposedBy: "owner", changeId: "chg-1", scope: "project", membershipVersion: 3, ownerCount: 1, exceptionReason: "sole_owner_no_other_eligible_24h_clear" } });
+    // the exception is recorded on its own, before the change event (as lesson approval does)
+    expect(w.audit.actions()).toEqual(["lesson.tier0_setting_proposed", "lesson.sole_owner_exception", "lesson.tier0_setting_changed"]);
+    expect(w.audit.events.at(-2)).toMatchObject({ action: "lesson.sole_owner_exception", actor: "owner", facts: { changeId: "chg-1", membershipVersion: 3, ownerCount: 1 } });
+    expect(w.soleOwner.asked).toEqual([WS]);
+  });
+  it("the same for one to auto and at company level", async () => {
+    const w = solo();
+    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" })).toMatchObject({ status: "needs_approval" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "auto" });
+    const c = solo();
+    c.settings.values.set(scopeId(COMPANY_SCOPE), "two");
+    await requestTier0Change(c.deps, { scope: COMPANY_SCOPE, value: "one", requestedBy: "owner" });
+    expect(await approveTier0Change(c.deps, { scope: COMPANY_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "one" });
+    expect(c.audit.events.at(-1)).toMatchObject({ facts: { scope: "company", mode: "sole_owner_exception" } });
+  });
+  it("a second person's approval is still recorded as second_person, even when the exception is on", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" });
+    expect(w.audit.events.at(-1)).toMatchObject({ facts: { mode: "second_person", membershipVersion: 3 } });
+    expect(w.audit.events.at(-1)?.facts).not.toHaveProperty("exceptionReason");
+    expect(w.audit.actions()).not.toContain("lesson.sole_owner_exception");
+    expect(w.soleOwner.asked).toEqual([]);
+  });
+  it("is refused within 24 h of another eligible person leaving, with the time it opens; allowed from that time", async () => {
+    const w = solo();
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    const left = w.clock.now() - 2 * 3_600_000;
+    w.group.lastEligibleLossAtMs = left;
+    const result = await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" });
+    expect(result).toEqual({ ok: false, code: "sole_owner_cool_off", availableAt: new Date(left + DAY).toISOString() });
+    expect(w.settings.writes).toEqual([]);
+    expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
+    w.clock.t = left + DAY - 1;
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toMatchObject({ ok: false, code: "sole_owner_cool_off" });
+    w.clock.t = left + DAY;
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "one" });
+  });
+  it("a departure longer than 24 h ago no longer blocks", async () => {
+    const w = solo();
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    w.group.lastEligibleLossAtMs = w.clock.now() - 2 * DAY;
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: true, value: "one" });
+  });
+  it("with the company switch OFF the exception is refused and nothing changes", async () => {
+    const w = solo({ soleOwner: false });
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(w.settings.writes).toEqual([]);
+    expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
+    const c = solo({ soleOwner: false });
+    c.settings.values.set(scopeId(COMPANY_SCOPE), "two");
+    await requestTier0Change(c.deps, { scope: COMPANY_SCOPE, value: "one", requestedBy: "owner" });
+    expect(await approveTier0Change(c.deps, { scope: COMPANY_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+  });
+  it("a switch that cannot be read counts as OFF (fail closed)", async () => {
+    const w = solo({ soleOwner: "throws" });
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(w.settings.writes).toEqual([]);
+  });
+  it("the switch does not affect a second person's approval", async () => {
+    const w = world({ soleOwner: false });
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: true, value: "auto" });
+  });
+  it("the other guards still hold for a sole owner: not to auto while go-live is off, stale value, company floor, audit outage", async () => {
+    const off = solo({ autoEnabled: true });
+    await requestTier0Change(off.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    expect(await approveTier0Change({ ...off.deps, autoApplyEnabled: () => false }, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "auto_apply_not_enabled" });
+    const stale = solo();
+    await requestTier0Change(stale.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    stale.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    expect(await approveTier0Change(stale.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "stale" });
+    const floor = solo();
+    await requestTier0Change(floor.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    floor.settings.values.set(scopeId(COMPANY_SCOPE), "one");
+    expect(await approveTier0Change(floor.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "below_company_floor" });
+    const audit = solo();
+    await requestTier0Change(audit.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    const emit = audit.audit.emit.bind(audit.audit);
+    audit.audit.emit = async (event) => { if (event.action === "lesson.tier0_setting_changed") throw new Error("audit down"); return emit(event); };
+    expect(await approveTier0Change(audit.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "audit_unavailable" });
+    // the change event comes after the write; when it cannot be written the loosening is taken back
+    expect(audit.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("one");
+    expect(audit.settings.writes.map((x) => x.value)).toEqual(["auto", "one"]);
+  });
+  it("if the exception cannot be recorded, nothing is claimed or written (fails closed, before the write)", async () => {
+    const w = solo();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    const emit = w.audit.emit.bind(w.audit);
+    w.audit.emit = async (event) => { if (event.action === "lesson.sole_owner_exception") throw new Error("audit down"); return emit(event); };
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "audit_unavailable" });
+    expect(w.settings.writes).toEqual([]);
+    expect(w.changes.rows.get("chg-1")?.state).toBe("pending");
+  });
+  it("a proposal made while another eligible person existed is not turned into a self-approval when they leave; cancel and propose again works", async () => {
+    const w = world({ eligible: ["owner", "ann"], owners: ["owner"] });
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    expect(w.changes.rows.get("chg-1")?.soleEligibleAtProposal).toBe(false);
+    w.group.eligibleIds = ["owner"]; w.group.lastEligibleLossAtMs = w.clock.now();
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    w.clock.advance(DAY);
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(w.settings.writes).toEqual([]);
+    expect(await cancelTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", actorId: "owner" })).toEqual({ ok: true });
+    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" })).toMatchObject({ status: "needs_approval", changeId: "chg-2" });
+    expect(w.changes.rows.get("chg-2")?.soleEligibleAtProposal).toBe(true);
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-2", approverId: "owner" })).toEqual({ ok: true, value: "one" });
+  });
+  it("a row stored before this field existed cannot be self-approved", async () => {
+    const w = solo();
+    w.changes.rows.set("old", { id: "old", scope: PROJECT_SCOPE, from: "one", to: "auto", proposedBy: "owner", at: w.clock.now(), expiresAt: w.clock.now() + 1000, state: "pending" });
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "old", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+  });
+  it("a stricter change by a sole owner still applies directly, without asking the switch", async () => {
+    const w = solo({ soleOwner: false });
+    expect(await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "two", requestedBy: "owner" })).toEqual({ ok: true, status: "applied", value: "two" });
+    expect(w.soleOwner.asked).toEqual([]);
+  });
+  it("an ineligible or incomplete group never gets the exception", async () => {
+    const w = solo();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "owner" });
+    w.group.complete = false;
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "eligibility_unavailable" });
+    w.group.complete = true; w.group.eligibleIds = ["someone"];
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "not_eligible" });
+  });
+});
+
+describe("the membership fence: a change in who may approve between the read and the write stops it", () => {
+  it("a second admin added after a sole owner's eligibility read: the self-approval is not applied", async () => {
+    const w = world({ eligible: ["owner"], owners: ["owner"] });
+    w.settings.values.set(scopeId(PROJECT_SCOPE), "two");
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "one", requestedBy: "owner" });
+    w.settings.beforeWrite = () => { w.group.eligibleIds = ["owner", "newadmin"]; w.group.membershipVersion = 4; };
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "owner" })).toEqual({ ok: false, code: "stale" });
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBe("two");
+    expect(w.settings.writes).toEqual([]);
+    expect(w.changes.rows.get("chg-1")?.state).toBe("cancelled");
+    expect(w.audit.actions()).not.toContain("lesson.tier0_setting_changed");
+  });
+  it("an approver removed after the read (second-person mode): not applied", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    w.settings.beforeWrite = () => { w.group.eligibleIds = ["owner", "ann"]; w.group.membershipVersion = 4; };
+    expect(await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(w.settings.values.get(scopeId(PROJECT_SCOPE))).toBeUndefined();
+  });
+  it("every loosening write carries the fence the eligibility answer gave (version and conditions); the authority is asked about the proposer and the approver", async () => {
+    const w = world();
+    await requestTier0Change(w.deps, { scope: PROJECT_SCOPE, value: "auto", requestedBy: "ann" });
+    await approveTier0Change(w.deps, { scope: PROJECT_SCOPE, changeId: "chg-1", approverId: "bob" });
+    expect(w.settings.fences).toEqual([{ membershipVersion: 3, conditions: [{ pinned: 3 }] }]);
+    expect(w.authority.asked.at(-1)).toEqual({ proposerId: "ann", approverId: "bob" });
+    const direct = world();
+    await requestTier0Change(direct.deps, { scope: PROJECT_SCOPE, value: "two", requestedBy: "ann" });
+    expect(direct.settings.fences).toEqual([{ membershipVersion: 3, conditions: [{ pinned: 3 }] }]);
+    expect(direct.authority.asked).toEqual([{ proposerId: "ann", approverId: "ann" }]);
+  });
+});
+
+class SwitchStore implements SoleOwnerSwitchStore {
+  value = true; rows = new Map<string, SoleOwnerSwitchChange>(); writes: boolean[] = []; membershipNow = (): number => 3; beforeWrite: (() => void) | undefined; failRead = false;
+  async read(): Promise<boolean> { if (this.failRead) throw new Error("bad"); return this.value; }
+  async write(_ws: string, enabled: boolean, _meta: { by: string; at: number }, from: boolean, fence?: Tier0Fence): Promise<boolean> {
+    this.beforeWrite?.();
+    if (fence !== undefined && fence.membershipVersion !== this.membershipNow()) return false;
+    if (this.value !== from) return false;
+    this.value = enabled; this.writes.push(enabled); return true;
+  }
+  async create(change: SoleOwnerSwitchChange): Promise<boolean> { if (this.rows.has(change.id)) return false; this.rows.set(change.id, structuredClone(change)); return true; }
+  async get(_ws: string, id: string): Promise<SoleOwnerSwitchChange | undefined> { const c = this.rows.get(id); return c === undefined ? undefined : structuredClone(c); }
+  async open(_ws: string, now: number): Promise<SoleOwnerSwitchChange | undefined> { return [...this.rows.values()].find((c) => c.state === "pending" && c.expiresAt > now); }
+  async transition(_ws: string, id: string, from: SoleOwnerSwitchChange["state"], to: SoleOwnerSwitchChange["state"]): Promise<boolean> { const c = this.rows.get(id); if (c === undefined || c.state !== from) return false; c.state = to; return true; }
+}
+function switchWorld(over: Parameters<typeof world>[0] = {}) {
+  const w = world(over);
+  const store = new SwitchStore();
+  store.membershipNow = () => w.group.membershipVersion;
+  const deps: SoleOwnerSwitchDeps = { store, audit: w.audit, authority: w.authority, now: w.clock.now, newId: (() => { let n = 0; return () => `sw-${++n}`; })() };
+  return { ...w, store, sdeps: deps };
+}
+
+describe("the sole-owner switch setter (the only way routes change the switch)", () => {
+  it("OFF applies at once by an eligible admin, audited; an audit outage does not block it; a stranger is refused", async () => {
+    const w = switchWorld();
+    expect(await setSoleOwnerSwitch(w.sdeps, { workspaceId: WS, enabled: false, requestedBy: "mallory" })).toEqual({ ok: false, code: "not_eligible" });
+    expect(await setSoleOwnerSwitch(w.sdeps, { workspaceId: WS, enabled: false, requestedBy: "ann" })).toEqual({ ok: true, status: "applied", enabled: false });
+    expect(w.store.value).toBe(false);
+    expect(w.audit.events.at(-1)).toMatchObject({ action: "lesson.sole_owner_switch_changed", actor: "ann", facts: { from: true, to: false, mode: "direct", membershipVersion: 3 } });
+    const down = switchWorld();
+    down.audit.emit = async () => { throw new Error("audit down"); };
+    expect(await setSoleOwnerSwitch(down.sdeps, { workspaceId: WS, enabled: false, requestedBy: "ann" })).toMatchObject({ ok: true, status: "applied" });
+    expect(down.store.value).toBe(false);
+  });
+  it("ON is a loosening: a proposal; a DIFFERENT admin approves; the proposer cannot, in any spelling", async () => {
+    const w = switchWorld();
+    w.store.value = false;
+    expect(await setSoleOwnerSwitch(w.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" })).toEqual({ ok: true, status: "needs_approval", changeId: "sw-1" });
+    expect(w.store.value).toBe(false);
+    expect(await setSoleOwnerSwitch(w.sdeps, { workspaceId: WS, enabled: true, requestedBy: "bob" })).toEqual({ ok: false, code: "already_open" });
+    expect(await approveSoleOwnerSwitch(w.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: " ANN " })).toEqual({ ok: false, code: "second_person_required" });
+    expect(await approveSoleOwnerSwitch(w.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "mallory" })).toEqual({ ok: false, code: "not_eligible" });
+    expect(await approveSoleOwnerSwitch(w.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: true, enabled: true });
+    expect(w.store.value).toBe(true);
+    expect(w.audit.actions()).toEqual(["lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed"]);
+    expect(w.audit.events.at(-1)).toMatchObject({ actor: "bob", facts: { mode: "second_person", proposedBy: "ann", from: false, to: true } });
+  });
+  it("the sole-owner exception does NOT apply to turning the switch back ON (one admin, no delay, cool-off over)", async () => {
+    const w = switchWorld({ eligible: ["owner"], owners: ["owner"] });
+    w.store.value = false;
+    await setSoleOwnerSwitch(w.sdeps, { workspaceId: WS, enabled: true, requestedBy: "owner" });
+    w.clock.advance(3 * 86_400_000);
+    expect(await approveSoleOwnerSwitch(w.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
+    expect(w.store.value).toBe(false);
+    // even if the switch for the exception were on
+    expect(w.store.rows.get("sw-1")?.state).toBe("pending");
+  });
+  it("a no-op (already in that state) writes and proposes nothing", async () => {
+    const w = switchWorld();
+    expect(await setSoleOwnerSwitch(w.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" })).toEqual({ ok: true, status: "applied", enabled: true });
+    expect(w.store.writes).toEqual([]);
+    expect(w.store.rows.size).toBe(0);
+    expect(await setSoleOwnerSwitch(w.sdeps, { workspaceId: WS, enabled: "yes" as never, requestedBy: "ann" })).toEqual({ ok: false, code: "invalid_value" });
+  });
+  it("fails closed: unreadable eligibility or switch, proposal audit outage, expiry, stale, claimed twice, fence, and a taken-back change on audit outage", async () => {
+    const a = switchWorld({ complete: false });
+    expect(await setSoleOwnerSwitch(a.sdeps, { workspaceId: WS, enabled: false, requestedBy: "ann" })).toEqual({ ok: false, code: "eligibility_unavailable" });
+    const b = switchWorld(); b.store.failRead = true;
+    expect(await setSoleOwnerSwitch(b.sdeps, { workspaceId: WS, enabled: false, requestedBy: "ann" })).toEqual({ ok: false, code: "conflict" });
+    const c = switchWorld(); c.store.value = false; c.audit.emit = async () => { throw new Error("audit down"); };
+    expect(await setSoleOwnerSwitch(c.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" })).toEqual({ ok: false, code: "audit_unavailable" });
+    expect(c.store.rows.size).toBe(0);
+    const d = switchWorld(); d.store.value = false; await setSoleOwnerSwitch(d.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" });
+    d.clock.advance(7 * 86_400_000 + 1);
+    expect(await approveSoleOwnerSwitch(d.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: false, code: "expired" });
+    const e = switchWorld(); e.store.value = false; await setSoleOwnerSwitch(e.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" });
+    e.store.value = true;
+    expect(await approveSoleOwnerSwitch(e.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(await approveSoleOwnerSwitch(e.sdeps, { workspaceId: WS, changeId: "nope", approverId: "bob" })).toEqual({ ok: false, code: "not_found" });
+    const f = switchWorld(); f.store.value = false; await setSoleOwnerSwitch(f.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" });
+    f.store.beforeWrite = () => { f.group.membershipVersion = 4; };
+    expect(await approveSoleOwnerSwitch(f.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: false, code: "stale" });
+    expect(f.store.value).toBe(false);
+    const g = switchWorld(); g.store.value = false; await setSoleOwnerSwitch(g.sdeps, { workspaceId: WS, enabled: true, requestedBy: "ann" });
+    g.audit.emit = async () => { throw new Error("audit down"); };
+    expect(await approveSoleOwnerSwitch(g.sdeps, { workspaceId: WS, changeId: "sw-1", approverId: "bob" })).toEqual({ ok: false, code: "audit_unavailable" });
+    expect(g.store.value).toBe(false);
+    expect(g.store.writes).toEqual([true, false]);
+    expect(g.store.rows.get("sw-1")?.state).toBe("cancelled");
+  });
+  it("turning it OFF is fenced too: a membership change after the read stops it", async () => {
+    const w = switchWorld();
+    w.store.beforeWrite = () => { w.group.membershipVersion = 4; };
+    expect(await setSoleOwnerSwitch(w.sdeps, { workspaceId: WS, enabled: false, requestedBy: "ann" })).toEqual({ ok: false, code: "stale" });
+    expect(w.store.value).toBe(true);
   });
 });

@@ -7,7 +7,7 @@
 // secrets the quoted text in it (which may be the secret) is removed.
 import { redactText, type EvidenceRaw, EVIDENCE_FINDINGS_MAX, type ProjectCommand } from "@agentx/contracts";
 import { isAbsolute, normalize, relative, sep } from "node:path";
-import { plainPath } from "./changed-coverage.js";
+import { plainPath } from "./cobertura-lcov-coverage.js";
 
 export const SARIF_REPORT_MAX_BYTES = 16 * 1024 * 1024;
 /** More results than this in one file and the file is not read: the counts could not be trusted to be complete. */

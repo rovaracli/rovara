@@ -1,344 +1,111 @@
-// Proof and evidence P3: changed-line coverage. The worker reads the Cobertura XML or LCOV file a project's own tests already write (the command is never changed), intersects it with the lines the change
-// added or changed (renames included; a pure deletion counts no line), and reports covered and uncovered changed lines per file. Real files in a real workspace, and a real git repository for the diff.
-import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { EvidenceRawSchema, type CheckEntry, type ProjectCommand } from "../../packages/contracts/src/index.js";
-import {
-  COVERAGE_REPORT_MAX_BYTES, coveragePart, coverageSpecsOf, intersectCoverage, parseCobertura, parseLcov, readChangedCoverage, type RepositoryChanges,
-} from "../../packages/worker/src/verification/changed-coverage.js";
-import { candidateChanges, parseCandidateChanges } from "../../packages/worker/src/verification/diff.js";
-import { collectEvidenceRaw } from "../../packages/worker/src/verification/evidence-raw.js";
-import { readContainedReport } from "../../packages/worker/src/verification/report-file.js";
+// Setup and test health SH31: the Go cover-profile reader and the changed-line coverage it feeds (the evidence's `coverage` part). Fail closed: a profile it cannot read completely is "not measured" (undefined),
+// a line counts as covered when ANY block on it ran, and only lines the profile calls statements are counted.
+import { describe, expect, it } from "vitest";
+import { EVIDENCE_COVERAGE_FILES_MAX, EVIDENCE_UNCOVERED_LINES_MAX, EvidenceCoverageSchema } from "../../packages/contracts/src/evidence.js";
+import { GO_COVER_PROFILE_MAX_BLOCKS, changedLineCoverage, looksLikeGoCoverProfile, parseGoCoverProfile } from "../../packages/worker/src/verification/changed-coverage.js";
 
-const run = promisify(execFile);
-const DIGEST = "d".repeat(64);
-const command = (args: string[], cwd = ".", executable = "pytest"): ProjectCommand => ({ executable, args, cwd, timeoutSeconds: 60 });
-const entry = (index: number, over: Partial<CheckEntry> = {}): CheckEntry => ({ id: `readiness:${String(index)}`, label: "pytest", source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 100, exitCode: 0, ...over });
+const MODULES = [{ path: "example.com/acme/match", dir: "." }];
+const profile = (...blocks: string[]): string => ["mode: set", ...blocks, ""].join("\n");
+const changed = (entries: Record<string, number[]>): ReadonlyMap<string, readonly number[]> => new Map(Object.entries(entries));
 
-let root: string;
-beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "changed-coverage-")); });
-afterEach(async () => { await rm(root, { recursive: true, force: true }); });
-
-async function git(directory: string, args: string[]): Promise<string> {
-  return (await run("git", ["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", ...args], { cwd: directory })).stdout.trim();
-}
-
-/** A repository under the workspace root with a base commit; `change` edits the work tree, and the candidate is the tree of everything in it afterwards. */
-async function repository(files: Record<string, string>, change: (directory: string) => Promise<void>): Promise<{ directory: string; base: string; tree: string }> {
-  const directory = join(root, "api");
-  await mkdir(directory, { recursive: true });
-  await git(directory, ["init", "-q"]);
-  for (const [path, text] of Object.entries(files)) {
-    await mkdir(join(directory, path, ".."), { recursive: true });
-    await writeFile(join(directory, path), text);
-  }
-  await git(directory, ["add", "-A"]);
-  await git(directory, ["commit", "-q", "-m", "base"]);
-  const base = await git(directory, ["rev-parse", "HEAD"]);
-  await change(directory);
-  await git(directory, ["add", "-A"]);
-  return { directory, base, tree: await git(directory, ["write-tree"]) };
-}
-
-const lines = (count: number, prefix = "x") => Array.from({ length: count }, (_, index) => `${prefix}${String(index + 1)}`).join("\n") + "\n";
-/** Cobertura as pytest-cov writes it: sources absolute, file names relative to a source. */
-const cobertura = (source: string, classes: Array<{ filename: string; lines: Array<[number, number]> }>) => `<?xml version="1.0" ?>
-<coverage version="7.6" timestamp="1" lines-valid="9" lines-covered="5" line-rate="0.5" branches-covered="0" branches-valid="0" branch-rate="0" complexity="0">
-  <sources><source>${source}</source></sources>
-  <packages><package name="pkg"><classes>
-${classes.map((item) => `    <class name="${item.filename}" filename="${item.filename}" complexity="0" line-rate="0.5" branch-rate="0"><methods/><lines>${item.lines.map(([number, hits]) => `<line number="${String(number)}" hits="${String(hits)}"/>`).join("")}</lines></class>`).join("\n")}
-  </classes></package></packages>
-</coverage>`;
-const lcov = (records: Array<{ file: string; lines: Array<[number, number]> }>) => records.map((record) => `TN:\nSF:${record.file}\n${record.lines.map(([number, hits]) => `DA:${String(number)},${String(hits)}`).join("\n")}\nLF:${String(record.lines.length)}\nLH:0\nend_of_record\n`).join("");
-
-describe("the coverage report formats", () => {
-  it("reads a Cobertura report: a line is covered when any listing of it says so, and the sources come with it", () => {
-    const text = `<coverage><sources><source>/w/api/src</source><source>.</source></sources><packages><package><classes>
-      <class filename="a.py"><methods><method name="f"><lines><line number="2" hits="0"/></lines></method></methods><lines><line number="1" hits="3"/><line number="2" hits="1"/></lines></class>
-      <class filename="b.py"><lines><line number="5" hits="0"/></lines></class></classes></package></packages></coverage>`;
-    const parsed = parseCobertura(text)!;
-    expect(parsed.sources).toEqual(["/w/api/src", "."]);
-    expect([...parsed.files.get("a.py")!]).toEqual([[2, true], [1, true]]);
-    expect([...parsed.files.get("b.py")!]).toEqual([[5, false]]);
+describe("parseGoCoverProfile", () => {
+  it("maps import paths to repository paths through the module path and its directory, longest module first", () => {
+    const text = profile(
+      "example.com/acme/match/pkg/a.go:3.10,5.2 2 1",
+      "example.com/acme/match/tools/b.go:1.1,2.2 1 0",
+      "example.com/acme/match/tools/sub/c.go:1.1,2.2 1 1",
+    );
+    const read = parseGoCoverProfile(text, { modules: [...MODULES, { path: "example.com/acme/match/tools", dir: "tools" }] })!;
+    expect([...read.files.keys()].sort()).toEqual(["pkg/a.go", "tools/b.go", "tools/sub/c.go"]);
+    expect(read.unmappedBlocks).toBe(0);
+    const nested = parseGoCoverProfile("mode: set\nexample.com/acme/match/tools/b.go:1.1,2.2 1 1\n", { modules: [{ path: "example.com/acme/match", dir: "svc" }, { path: "example.com/acme/match/tools", dir: "svc/tools" }] })!;
+    expect([...nested.files.keys()]).toEqual(["svc/tools/b.go"]);
   });
-
-  it("refuses a Cobertura file that is not a report or is malformed, and ignores a class hidden in a comment or CDATA", () => {
-    expect(parseCobertura("<html><body>hello</body></html>")).toBeUndefined();
-    expect(parseCobertura('<coverage><packages><class filename="a.py"><lines><line number="1" hits="1"')).toBeUndefined();
-    expect(parseCobertura('<coverage><!-- <class filename="x.py"><lines><line number="1" hits="1"/></lines></class> --></coverage>')?.files.size).toBe(0);
-    expect(parseCobertura('<coverage><![CDATA[<class filename="x.py">]]></coverage>')?.files.size).toBe(0);
-    expect(parseCobertura('<coverage><!-- never closed')).toBeUndefined();
-    // Lines before any class, or with a bad number or hits, are not read.
-    const odd = parseCobertura('<coverage><line number="1" hits="1"/><class filename="a.py"><lines><line number="x" hits="1"/><line number="2" hits="-1"/><line number="3" hits="1"/></lines></class></coverage>')!;
-    expect([...odd.files.get("a.py")!]).toEqual([[3, true]]);
+  it("drops blocks outside every known module, with a path that leaves the repository, or in a lookalike module, and counts them", () => {
+    const text = profile(
+      "example.com/acme/match/a.go:1.1,2.2 1 1",
+      "example.com/other/lib/x.go:1.1,2.2 1 1",
+      "example.com/acme/matchmaker/y.go:1.1,2.2 1 1",
+      "example.com/acme/match/../escape.go:1.1,2.2 1 1",
+      "example.com/acme/match//double.go:1.1,2.2 1 1",
+      "/abs/z.go:1.1,2.2 1 1",
+    );
+    const read = parseGoCoverProfile(text, { modules: MODULES })!;
+    expect([...read.files.keys()]).toEqual(["a.go"]);
+    expect(read.unmappedBlocks).toBe(5);
+    expect(parseGoCoverProfile(profile("example.com/other/lib/x.go:1.1,2.2 1 1"), { modules: MODULES })).toBeUndefined();
   });
-
-  it("reads an LCOV tracefile: DA records per SF, repeated files merged, CRLF and unknown records tolerated", () => {
-    const parsed = parseLcov("TN:\r\nSF:/w/api/a.py\r\nDA:1,2\r\nDA:2,0,abc\r\nFN:1,f\r\nBRDA:1,0,0,1\r\nend_of_record\r\nSF:/w/api/a.py\nDA:2,5\nDA:1,0\nend_of_record\nDA:9,9\nSF:/w/api/b.py\nDA:oops,1\nDA:4,0\nend_of_record\n")!;
-    expect([...parsed.files.get("/w/api/a.py")!]).toEqual([[1, true], [2, true]]);
-    expect([...parsed.files.get("/w/api/b.py")!]).toEqual([[4, false]]);
-    expect(parseLcov("hello\nworld\n")).toBeUndefined();
+  it("reads set, count and atomic modes, repeated identical headers, and refuses mixed modes", () => {
+    for (const mode of ["set", "count", "atomic"]) expect(parseGoCoverProfile(`mode: ${mode}\nexample.com/acme/match/a.go:1.1,2.2 1 7\n`, { modules: MODULES })).toBeDefined();
+    const joined = "mode: count\nexample.com/acme/match/a.go:1.1,2.2 1 1\nmode: count\nexample.com/acme/match/b.go:1.1,2.2 1 0\n";
+    expect([...parseGoCoverProfile(joined, { modules: MODULES })!.files.keys()]).toEqual(["a.go", "b.go"]);
+    expect(parseGoCoverProfile("mode: set\nexample.com/acme/match/a.go:1.1,2.2 1 1\nmode: count\n", { modules: MODULES })).toBeUndefined();
+    expect(parseGoCoverProfile("mode: weird\nexample.com/acme/match/a.go:1.1,2.2 1 1\n", { modules: MODULES })).toBeUndefined();
   });
-
-  it("refuses a report with more files or lines than its limits (the totals could not be trusted), and a path that is too long", () => {
-    const many = Array.from({ length: 6 }, (_, index) => `SF:/f${String(index)}.py\nDA:1,1\nend_of_record`).join("\n");
-    expect(parseLcov(many, { files: 5, lines: 100 })).toBeUndefined();
-    expect(parseLcov(many, { files: 6, lines: 5 })).toBeUndefined();
-    expect(parseLcov(many, { files: 6, lines: 6 })?.files.size).toBe(6);
-    const xml = `<coverage>${Array.from({ length: 3 }, (_, index) => `<class filename="f${String(index)}.py"><lines><line number="1" hits="1"/></lines></class>`).join("")}</coverage>`;
-    expect(parseCobertura(xml, { files: 2, lines: 100 })).toBeUndefined();
-    expect(parseCobertura(xml, { files: 3, lines: 2 })).toBeUndefined();
-    expect(parseCobertura(xml, { files: 3, lines: 3 })?.files.size).toBe(3);
-    expect(parseLcov(`SF:${"p".repeat(2000)}\nDA:1,1\nend_of_record\n`)?.files.size).toBe(0);
+  it("is not measured (undefined) for a profile it cannot read completely", () => {
+    const bad = [
+      "", "mode: set\n", "example.com/acme/match/a.go:1.1,2.2 1 1\n",
+      profile("example.com/acme/match/a.go:1.1,2.2 1"), profile("example.com/acme/match/a.go:1.1,2.2 1 1 1"), profile("example.com/acme/match/a.go:1.1,2.2 x 1"),
+      profile("example.com/acme/match/a.go:5.1,2.2 1 1"), profile("example.com/acme/match/a.go:0.1,2.2 1 1"), profile("example.com/acme/match/a.go:1.1,20000000.2 1 1"),
+      profile("example.com/acme/match/a.go:1.1,2.2 1 1", "garbage line"), profile("example.com/acme/match/a.go:1.1,2.2 1 -1"),
+    ];
+    for (const text of bad) expect(parseGoCoverProfile(text, { modules: MODULES }), text).toBeUndefined();
+    expect(parseGoCoverProfile(profile("example.com/acme/match/a.go:1.1,2.2 1 1"), { modules: [] })).toBeUndefined();
+  });
+  it("is bounded: too many blocks or too large a text is not read, and a block over millions of lines costs no per-line work", () => {
+    // The byte cap bites first (a block line is at least 19 bytes), so a profile of a million blocks is refused whole.
+    const many = ["mode: set", ...Array.from({ length: 1_000_001 }, (_, n) => `example.com/acme/match/a.go:${String(n + 1)}.1,${String(n + 1)}.5 1 1`)].join("\n");
+    expect(parseGoCoverProfile(many, { modules: MODULES })).toBeUndefined();
+    expect(GO_COVER_PROFILE_MAX_BLOCKS).toBe(1_000_000);
+    const started = Date.now();
+    const wide = parseGoCoverProfile(profile("example.com/acme/match/a.go:1.1,9999999.2 1 1"), { modules: MODULES })!;
+    expect(changedLineCoverage(wide, changed({ "a.go": [5_000_000] })).coverage).toMatchObject({ linesChanged: 1, linesCovered: 1 });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+  it("recognises a Go cover profile by its header, not a Cobertura or LCOV file", () => {
+    expect(looksLikeGoCoverProfile("mode: atomic\nx.go:1.1,2.2 1 1\n")).toBe(true);
+    expect(looksLikeGoCoverProfile("\n  mode: set\n")).toBe(true);
+    expect(looksLikeGoCoverProfile('<?xml version="1.0"?><coverage/>')).toBe(false);
+    expect(looksLikeGoCoverProfile("TN:\nSF:a.go\nend_of_record\n")).toBe(false);
+    expect(looksLikeGoCoverProfile("mode: other\n")).toBe(false);
   });
 });
 
-describe("which file a command's tool writes (the command is never altered)", () => {
-  const specs = (...args: string[]) => coverageSpecsOf(command(args)).map((spec) => `${spec.format}:${spec.argument}${spec.inferred ? "*" : ""}`);
+describe("changedLineCoverage", () => {
+  const read = parseGoCoverProfile(profile(
+    "example.com/acme/match/a.go:10.20,14.2 3 1",   // lines 10-14 ran
+    "example.com/acme/match/a.go:16.2,18.3 2 0",    // lines 16-18 never ran
+    "example.com/acme/match/a.go:20.5,20.30 1 1",   // line 20: the condition ran
+    "example.com/acme/match/a.go:20.31,22.3 1 0",   // lines 20-22: the body did not
+    "example.com/acme/match/b.go:1.1,3.2 2 0",
+  ), { modules: MODULES })!;
 
-  it("reads pytest-cov and coverage.py report options", () => {
-    expect(specs("--cov=src", "--cov-report=xml")).toEqual(["cobertura:coverage.xml"]);
-    expect(specs("--cov-report", "xml:reports/cov.xml", "--cov-report=term-missing")).toEqual(["cobertura:reports/cov.xml"]);
-    expect(specs("--cov-report=lcov:out/cov.lcov", "--cov-report=xml")).toEqual(["cobertura:coverage.xml", "lcov:out/cov.lcov"]);
-    expect(coverageSpecsOf(command(["xml", "-o", "out/c.xml"], ".", "coverage")).map((spec) => spec.argument)).toEqual(["out/c.xml"]);
-    expect(coverageSpecsOf(command(["-m", "coverage", "lcov"], ".", "python")).map((spec) => spec.argument)).toEqual(["coverage.lcov"]);
+  it("counts only the changed lines the profile calls statements, covered when any block on the line ran", () => {
+    const { coverage } = changedLineCoverage(read, changed({ "a.go": [1, 9, 10, 12, 15, 17, 18, 19, 20, 21, 22, 23] }));
+    // statements among the changed lines: 10 12 (ran) 17 18 (never) 20 (cond ran, body did not: covered) 21 22 (never)
+    expect(coverage).toEqual({ linesChanged: 7, linesCovered: 3, files: [{ path: "a.go", uncovered: [17, 18, 21, 22] }] });
+    expect(EvidenceCoverageSchema.safeParse(coverage).success).toBe(true);
   });
-
-  it("reads jest, vitest, nyc and c8 reporter options; vitest's own test reporter is not a coverage reporter", () => {
-    expect(coverageSpecsOf(command(["--coverage", "--coverageReporters=lcov", "--coverageDirectory=cov"], ".", "jest")).map((spec) => spec.argument)).toEqual(["cov/lcov.info"]);
-    expect(coverageSpecsOf(command(["--coverageReporters", "text", "cobertura", "lcov"], ".", "jest")).map((spec) => spec.argument)).toEqual(["coverage/cobertura-coverage.xml", "coverage/lcov.info"]);
-    expect(coverageSpecsOf(command(["run", "--coverage.reporter=lcov", "--coverage.reportsDirectory=out"], ".", "vitest")).map((spec) => spec.argument)).toEqual(["out/lcov.info"]);
-    expect(coverageSpecsOf(command(["--reporter=lcov", "--report-dir=r", "mocha"], ".", "nyc")).map((spec) => spec.argument)).toEqual(["r/lcov.info"]);
-    expect(coverageSpecsOf(command(["-r", "cobertura", "npm", "test"], ".", "c8")).map((spec) => spec.argument)).toEqual(["coverage/cobertura-coverage.xml"]);
-    // `vitest --reporter=json` is the test reporter: no coverage file is named, so a test command gets only the inferred defaults.
-    expect(coverageSpecsOf(command(["run", "--reporter=json"], ".", "vitest")).every((spec) => spec.inferred)).toBe(true);
+  it("lists files with uncovered lines in path order, lines ascending and without repeats, and ignores files the profile does not name", () => {
+    const { coverage, unmeasured } = changedLineCoverage(read, changed({ "b.go": [3, 1, 1, 2], "a.go": [17], "c.go": [1, 2], "d_test.go": [1] }));
+    expect(coverage).toEqual({ linesChanged: 4, linesCovered: 0, files: [{ path: "a.go", uncovered: [17] }, { path: "b.go", uncovered: [1, 2, 3] }] });
+    expect(unmeasured).toEqual(["c.go"]);
   });
-
-  it("reads any option about coverage that is given a report file, but not pytest-cov's own report option", () => {
-    expect(specs("--my-coverage-out=build/cov.xml")).toEqual(["cobertura:build/cov.xml"]);
-    expect(specs("--lcov-file", "build/x.info")).toEqual(["lcov:build/x.info"]);
-    expect(specs("--cov-report=xml:a.xml")).toEqual(["cobertura:a.xml"]);
+  it("ignores lines that are not positive whole numbers", () => {
+    expect(changedLineCoverage(read, changed({ "a.go": [0, -1, 1.5, Number.NaN, 11] })).coverage).toEqual({ linesChanged: 1, linesCovered: 1, files: [] });
   });
-
-  it("looks for the tools' default names only for a test command that names none; a lint command is never given any", () => {
-    expect(specs("-q")).toEqual(["cobertura:coverage.xml*", "cobertura:coverage/cobertura-coverage.xml*", "lcov:coverage/lcov.info*", "lcov:coverage.lcov*", "lcov:lcov.info*"]);
-    expect(coverageSpecsOf(command(["test"], ".", "npm")).length).toBeGreaterThan(0);
-    expect(coverageSpecsOf(command(["."], ".", "eslint"))).toEqual([]);
-    expect(coverageSpecsOf(command(["check"], ".", "ruff"))).toEqual([]);
+  it("has nothing to report when no changed line is a measured statement", () => {
+    expect(changedLineCoverage(read, changed({ "a.go": [1, 2, 3] })).coverage).toEqual({ linesChanged: 0, linesCovered: 0, files: [] });
+    expect(changedLineCoverage(read, changed({})).coverage).toEqual({ linesChanged: 0, linesCovered: 0, files: [] });
   });
-});
-
-describe("the lines the change wrote", () => {
-  it("counts only added and changed lines: a pure deletion wrote none, and the default reading is unchanged", () => {
-    const status = "M\0a.py\0";
-    const patch = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -3,2 +3,0 @@\n-x\n-y\n@@ -10,0 +9,2 @@\n+n\n+m\n@@ -20 +21 @@\n-p\n+q\n";
-    expect(parseCandidateChanges(status, patch, false, { exactLines: true })[0]?.hunks).toEqual([[9, 10], [21, 21]]);
-    expect(parseCandidateChanges(status, patch, false)[0]?.hunks).toEqual([[3, 4], [9, 10], [21, 21]]);
-  });
-});
-
-describe("the intersection of a report with the diff", () => {
-  const changesOf = async (box: { directory: string; base: string; tree: string }): Promise<RepositoryChanges[]> => [{ repositoryId: "api", directory: box.directory, changes: await candidateChanges({ directory: box.directory, baseCommitSha: box.base, treeSha: box.tree }, { exactLines: true }) }];
-
-  it("reports covered and uncovered changed lines per file, for a modified file, an added file and a renamed file with edits", async () => {
-    const box = await repository({ "src/mod.py": lines(10), "src/old.py": lines(10, "o"), "src/same.py": lines(5, "s") }, async (directory) => {
-      await writeFile(join(directory, "src/mod.py"), lines(10).replace("x3\n", "NEW3\n").replace("x4\n", "NEW4\n"));
-      await writeFile(join(directory, "src/fresh.py"), lines(4, "f"));
-      await rename(join(directory, "src/old.py"), join(directory, "src/moved.py"));
-      await writeFile(join(directory, "src/moved.py"), lines(10, "o").replace("o9\n", "EDIT9\n"));
-      await rename(join(directory, "src/same.py"), join(directory, "src/same_moved.py"));
-    });
-    const parsed = parseCobertura(cobertura(join(box.directory, "src"), [
-      { filename: "mod.py", lines: [[1, 1], [3, 1], [4, 0], [5, 1], [7, 0]] },
-      { filename: "fresh.py", lines: [[1, 1], [2, 1], [3, 0], [4, 0]] },
-      { filename: "moved.py", lines: [[9, 0], [10, 1]] },
-      { filename: "same_moved.py", lines: [[1, 0]] },
-    ]))!;
-    const result = (await intersectCoverage(parsed, { repositories: await changesOf(box), bases: [root] }))!;
-    const byPath = Object.fromEntries(result.files.map((file) => [file.path, file]));
-    expect(byPath["src/mod.py"]).toMatchObject({ changed: 2, covered: 1, uncovered: [4] });
-    expect(byPath["src/fresh.py"]).toMatchObject({ changed: 4, covered: 2, uncovered: [3, 4] });
-    expect(byPath["src/moved.py"]).toMatchObject({ changed: 1, covered: 0, uncovered: [9] });
-    // A pure rename changed no line, so nothing of it is claimed even though the report lists its lines.
-    expect(byPath["src/same_moved.py"]).toBeUndefined();
-    expect(result.linesChanged).toBe(7);
-    expect(result.linesCovered).toBe(3);
-    // Files with uncovered lines come first.
-    expect(result.files[0]?.uncovered.length).toBeGreaterThanOrEqual(result.files[1]!.uncovered.length);
-  });
-
-  it("does not count a deleted line, a changed line the report does not list, or a changed file the report does not name", async () => {
-    const box = await repository({ "a.py": lines(8), "b.py": lines(3), "docs.md": "x\n" }, async (directory) => {
-      await writeFile(join(directory, "a.py"), lines(8).replace("x2\nx3\n", "").replace("x6\n", "NEW6\n"));
-      await writeFile(join(directory, "docs.md"), "changed\n");
-      await writeFile(join(directory, "b.py"), "totally\nnew\nfile\n");
-    });
-    const parsed = parseLcov(lcov([{ file: join(box.directory, "a.py"), lines: [[1, 1], [2, 1], [3, 1], [4, 1], [5, 0], [7, 0]] }]))!;
-    const result = (await intersectCoverage(parsed, { repositories: await changesOf(box), bases: [root] }))!;
-    // a.py lost two lines (nothing written) and rewrote the line now numbered 4 (x6 -> NEW6, listed and covered); b.py and docs.md are not in the report.
-    expect(result.files).toEqual([{ repositoryId: "api", path: "a.py", changed: 1, covered: 1, uncovered: [] }]);
-    expect(result).toMatchObject({ linesChanged: 1, linesCovered: 1 });
-  });
-
-  it("finds a file by a name relative to the check's directory, to the workspace root, or to a `<source>` that is not on this machine (unique suffix of two segments)", async () => {
-    const box = await repository({ "pkg/a.py": lines(3), "pkg/b.py": lines(3), "other/b.py": lines(3) }, async (directory) => {
-      for (const path of ["pkg/a.py", "pkg/b.py", "other/b.py"]) await writeFile(join(directory, path), "changed\nchanged\nchanged\n");
-    });
-    const repositories = await changesOf(box);
-    const foreign = parseCobertura(cobertura("/home/runner/work/app/api", [{ filename: "pkg/a.py", lines: [[1, 1], [2, 0]] }]))!;
-    expect((await intersectCoverage(foreign, { repositories, bases: [root] }))?.files).toEqual([{ repositoryId: "api", path: "pkg/a.py", changed: 2, covered: 1, uncovered: [2] }]);
-    const relative = parseLcov(lcov([{ file: "api/pkg/a.py", lines: [[1, 1]] }]))!;
-    expect((await intersectCoverage(relative, { repositories, bases: [root] }))?.linesChanged).toBe(1);
-    const here = parseLcov(lcov([{ file: "pkg/a.py", lines: [[3, 0]] }]))!;
-    expect((await intersectCoverage(here, { repositories, bases: [box.directory] }))?.files[0]).toMatchObject({ path: "pkg/a.py", uncovered: [3] });
-    // A suffix of one path segment is never used, and a suffix that fits two repositories equally well is not guessed.
-    const single = parseLcov(lcov([{ file: "/x/a.py", lines: [[1, 1]] }]))!;
-    expect((await intersectCoverage(single, { repositories, bases: [root] }))?.files).toEqual([]);
-    const both: RepositoryChanges[] = ["api", "web"].map((repositoryId) => ({ repositoryId, directory: join(root, repositoryId), changes: [{ path: "src/a.py", status: "MODIFIED" as const, hunks: [[1, 1] as const] }] }));
-    const twice = parseLcov(lcov([{ file: "/ci/build/src/a.py", lines: [[1, 1]] }]))!;
-    expect((await intersectCoverage(twice, { repositories: both, bases: [root] }))?.files).toEqual([]);
-    // Inside a repository, a name is exact: the same file in the second repository is found by its own directory.
-    const exact = parseLcov(lcov([{ file: join(root, "web/src/a.py"), lines: [[1, 0]] }]))!;
-    expect((await intersectCoverage(exact, { repositories: both, bases: [root] }))?.files).toEqual([{ repositoryId: "web", path: "src/a.py", changed: 1, covered: 0, uncovered: [1] }]);
-  });
-
-  it("selects only among the paths the diff names: a report naming files outside the repository, or `..`, measures nothing", async () => {
-    const box = await repository({ "a.py": lines(2) }, async (directory) => { await writeFile(join(directory, "a.py"), "c\nc\n"); });
-    const parsed = parseLcov(lcov([{ file: "/etc/passwd", lines: [[1, 1]] }, { file: "../../etc/a.py", lines: [[1, 1]] }, { file: "../api/../api/../../a.py", lines: [[1, 1]] }]))!;
-    expect((await intersectCoverage(parsed, { repositories: await changesOf(box), bases: [box.directory] }))?.files).toEqual([]);
-  });
-
-  it("refuses a change too large to expand line by line", async () => {
-    const box = await repository({ "a.py": lines(2) }, async (directory) => { await writeFile(join(directory, "a.py"), lines(50, "n")); });
-    const parsed = parseLcov(lcov([{ file: join(box.directory, "a.py"), lines: [[1, 1]] }]))!;
-    expect(await intersectCoverage(parsed, { repositories: await changesOf(box), bases: [root], maxChangedLines: 49 })).toBeUndefined();
-    expect((await intersectCoverage(parsed, { repositories: await changesOf(box), bases: [root], maxChangedLines: 50 }))?.linesChanged).toBe(1);
-  });
-
-  it("bounds the part the pack holds: 100 files, 200 uncovered lines each, repository-qualified paths for several repositories, one plain line", () => {
-    const files = Array.from({ length: 130 }, (_, index) => ({ repositoryId: "api", path: `src/f${String(index)}.py`, changed: 300, covered: 0, uncovered: Array.from({ length: 300 }, (_unused, line) => line + 1) }));
-    const part = coveragePart({ linesChanged: 39_000, linesCovered: 0, files }, 1);
-    expect(part.files).toHaveLength(100);
-    expect(part.files[0]?.uncovered).toHaveLength(200);
-    expect(coveragePart({ linesChanged: 1, linesCovered: 1, files: [{ repositoryId: "web", path: "a\nb.ts", changed: 1, covered: 1, uncovered: [] }] }, 2).files[0]?.path).toBe("web/a b.ts");
-  });
-});
-
-describe("reading the report file", () => {
-  const NOW = () => Date.now() - 5_000;
-
-  it("reads a plain file inside the workspace, relative to the check's directory", async () => {
-    await mkdir(join(root, "svc/reports"), { recursive: true });
-    await writeFile(join(root, "svc/reports/cov.xml"), "<coverage/>");
-    const read = await readContainedReport({ root, cwd: "svc", argument: "reports/cov.xml", maxBytes: 100, notBeforeMs: NOW() });
-    expect(read).toMatchObject({ ok: true });
-    expect(read.ok && read.bytes.toString()).toBe("<coverage/>");
-  });
-
-  it("refuses a path that leaves the workspace, a symlink, a link in the middle of the path, a directory and an absolute path outside", async () => {
-    const outside = await mkdtemp(join(tmpdir(), "outside-"));
-    try {
-      await writeFile(join(outside, "secret.xml"), "<coverage/>");
-      await mkdir(join(root, "w"));
-      await symlink(join(outside, "secret.xml"), join(root, "w/link.xml"));
-      await symlink(outside, join(root, "w/dir"));
-      await mkdir(join(root, "w/real"));
-      const attempt = (argument: string, cwd = "w") => readContainedReport({ root: join(root, "w"), cwd: cwd === "w" ? "." : cwd, argument, maxBytes: 100, notBeforeMs: NOW() });
-      for (const argument of ["../../" + outside.split("/").slice(-1)[0] + "/secret.xml", "link.xml", "dir/secret.xml", "real", join(outside, "secret.xml"), "", "a\0b"]) {
-        expect((await attempt(argument)).ok, argument).toBe(false);
-      }
-      expect(await attempt("link.xml")).toEqual({ ok: false, reason: "unsafe_path" });
-      expect(await attempt("../w2/none.xml")).toMatchObject({ ok: false });
-    } finally {
-      await rm(outside, { recursive: true, force: true });
-    }
-  });
-
-  it("refuses a file over the size cap (and a missing one with its own code), and one written before the round", async () => {
-    await writeFile(join(root, "big.xml"), Buffer.alloc(101, 0x20));
-    await writeFile(join(root, "ok.xml"), Buffer.alloc(100, 0x20));
-    expect(await readContainedReport({ root, cwd: ".", argument: "big.xml", maxBytes: 100, notBeforeMs: NOW() })).toEqual({ ok: false, reason: "too_large" });
-    expect((await readContainedReport({ root, cwd: ".", argument: "ok.xml", maxBytes: 100, notBeforeMs: NOW() })).ok).toBe(true);
-    expect(await readContainedReport({ root, cwd: ".", argument: "none.xml", maxBytes: 100, notBeforeMs: NOW() })).toEqual({ ok: false, reason: "missing" });
-    const old = new Date(Date.now() - 3_600_000);
-    await utimes(join(root, "ok.xml"), old, old);
-    expect(await readContainedReport({ root, cwd: ".", argument: "ok.xml", maxBytes: 100, notBeforeMs: NOW() })).toEqual({ ok: false, reason: "stale" });
-    // Without a start time nothing is trusted.
-    await writeFile(join(root, "fresh.xml"), "x");
-    expect(await readContainedReport({ root, cwd: ".", argument: "fresh.xml", maxBytes: 100, notBeforeMs: undefined })).toEqual({ ok: false, reason: "stale" });
-  });
-
-  it("has a default size cap of 16 MiB for a coverage report", async () => {
-    expect(COVERAGE_REPORT_MAX_BYTES).toBe(16 * 1024 * 1024);
-    const box = await repository({ "a.py": "1\n" }, async (directory) => { await writeFile(join(directory, "a.py"), "2\n"); });
-    await writeFile(join(root, "coverage.xml"), Buffer.alloc(COVERAGE_REPORT_MAX_BYTES + 1, 0x20));
-    const result = await readChangedCoverage({ rootPath: root, command: command(["--cov-report=xml"]), repositories: async () => [{ repositoryId: "api", directory: box.directory, changes: [] }], notBeforeMs: NOW(), used: new Set() });
-    expect(result).toEqual({ skip: "too_large" });
-  });
-
-  it("says why there is none: no option and not a test command, a report that is not one, or a diff that cannot be read; and uses one file for one check", async () => {
-    const box = await repository({ "a.py": "1\n" }, async (directory) => { await writeFile(join(directory, "a.py"), "2\n"); });
-    const repositories = async () => [{ repositoryId: "api", directory: box.directory, changes: await candidateChanges({ directory: box.directory, baseCommitSha: box.base, treeSha: box.tree }, { exactLines: true }) }];
-    const input = { rootPath: root, repositories, notBeforeMs: NOW(), used: new Set<string>() };
-    expect(await readChangedCoverage({ ...input, command: command(["."], ".", "eslint") })).toEqual({ skip: "no_spec" });
-    expect(await readChangedCoverage({ ...input, command: command(["--cov-report=xml"]) })).toEqual({ skip: "missing" });
-    await writeFile(join(root, "coverage.xml"), "<html/>");
-    expect(await readChangedCoverage({ ...input, command: command(["--cov-report=xml"]) })).toEqual({ skip: "unparsable" });
-    await writeFile(join(root, "coverage.xml"), cobertura(box.directory, [{ filename: "a.py", lines: [[1, 0]] }]));
-    expect(await readChangedCoverage({ ...input, command: command(["--cov-report=xml"]), repositories: async () => undefined })).toEqual({ skip: "changes_unreadable" });
-    const first = await readChangedCoverage({ ...input, command: command(["--cov-report=xml"]) });
-    expect(first).toMatchObject({ coverage: { linesChanged: 1, linesCovered: 0 } });
-    // The same file is not the evidence of a second check.
-    expect(await readChangedCoverage({ ...input, command: command(["--cov-report=xml"]) })).toEqual({ skip: "missing" });
-  });
-});
-
-describe("the evidence a CHECKS run saves", () => {
-  async function scenario(report: string, args = ["--cov=src", "--cov-report=xml"]) {
-    const box = await repository({ "src/a.py": lines(6) }, async (directory) => { await writeFile(join(directory, "src/a.py"), lines(6).replace("x2\n", "N2\n").replace("x5\n", "N5\n")); });
-    await writeFile(join(root, "coverage.xml"), report.replaceAll("@SRC@", join(box.directory, "src")));
-    const repositories = [{ repositoryId: "api", directory: box.directory, startCommit: box.base, candidateTreeSha: box.tree }];
-    return { box, repositories, args };
-  }
-  const REPORT = cobertura("@SRC@", [{ filename: "a.py", lines: [[1, 1], [2, 1], [4, 1], [5, 0]] }]);
-
-  it("puts the changed-line coverage of the project's own report into the raw evidence, valid for the schema, and never alters the command", async () => {
-    const { repositories, args } = await scenario(REPORT);
-    const commands = [command(args)];
-    const raw = await collectEvidenceRaw({ rootPath: root, commands, entries: [entry(0)], candidateDigest: DIGEST, repositories, roundStartedAtMs: Date.now() - 5_000 });
-    expect(raw?.checks[0]?.coverage).toEqual({ linesChanged: 2, linesCovered: 1, files: [{ path: "src/a.py", uncovered: [5] }] });
-    expect(EvidenceRawSchema.safeParse(raw).success).toBe(true);
-    expect(commands[0]?.args).toEqual(["--cov=src", "--cov-report=xml"]);
-  });
-
-  it("claims nothing without a round start, for a stale report, for a check that did not end, or when the report is not for the check", async () => {
-    const { repositories, args } = await scenario(REPORT);
-    const base = { rootPath: root, candidateDigest: DIGEST, repositories };
-    expect(await collectEvidenceRaw({ ...base, commands: [command(args)], entries: [entry(0)] })).toBeUndefined();
-    const old = new Date(Date.now() - 3_600_000);
-    await utimes(join(root, "coverage.xml"), old, old);
-    expect(await collectEvidenceRaw({ ...base, commands: [command(args)], entries: [entry(0)], roundStartedAtMs: Date.now() - 5_000 })).toBeUndefined();
-    const now = new Date();
-    await utimes(join(root, "coverage.xml"), now, now);
-    expect(await collectEvidenceRaw({ ...base, commands: [command(args)], entries: [entry(0, { after: "timed_out" })], roundStartedAtMs: Date.now() - 5_000 })).toBeUndefined();
-    expect(await collectEvidenceRaw({ ...base, commands: [command(["."], ".", "eslint")], entries: [entry(0)], roundStartedAtMs: Date.now() - 5_000 })).toBeUndefined();
-    // No repository to diff: the changed lines are unknown, so nothing is claimed.
-    expect(await collectEvidenceRaw({ ...base, repositories: [], commands: [command(args)], entries: [entry(0)], roundStartedAtMs: Date.now() - 5_000 })).toBeUndefined();
-  });
-
-  it("keeps a failed check's coverage next to its output tail, and finds the default file of a test command that names none", async () => {
-    const { repositories } = await scenario(REPORT);
-    const raw = await collectEvidenceRaw({ rootPath: root, commands: [command(["-q"])], entries: [entry(0, { after: "failed", exitCode: 1, output: "boom" })], candidateDigest: DIGEST, repositories, roundStartedAtMs: Date.now() - 5_000 });
-    expect(raw?.checks[0]).toMatchObject({ outputTail: "boom", coverage: { linesChanged: 2, linesCovered: 1 } });
-  });
-
-  it("gives the report to the first check that asks for it, not to the lint check after it", async () => {
-    const { repositories } = await scenario(REPORT);
-    const raw = await collectEvidenceRaw({ rootPath: root, commands: [command(["-q"]), command(["-q"])], entries: [entry(0), entry(1)], candidateDigest: DIGEST, repositories, roundStartedAtMs: Date.now() - 5_000 });
-    expect(raw?.checks.map((check) => check.checkId)).toEqual(["readiness:0"]);
+  it("keeps the evidence's limits: files and uncovered lines per file are cut, and the counts stay true", () => {
+    const blocks = Array.from({ length: EVIDENCE_COVERAGE_FILES_MAX + 5 }, (_, n) => `example.com/acme/match/f${String(n).padStart(3, "0")}.go:1.1,${String(EVIDENCE_UNCOVERED_LINES_MAX + 50)}.2 1 0`);
+    const big = parseGoCoverProfile(profile(...blocks), { modules: MODULES })!;
+    const lines = Array.from({ length: EVIDENCE_UNCOVERED_LINES_MAX + 50 }, (_, n) => n + 1);
+    const { coverage } = changedLineCoverage(big, changed(Object.fromEntries(blocks.map((_, n) => [`f${String(n).padStart(3, "0")}.go`, lines]))));
+    expect(coverage.files).toHaveLength(EVIDENCE_COVERAGE_FILES_MAX);
+    expect(coverage.files[0]?.uncovered).toHaveLength(EVIDENCE_UNCOVERED_LINES_MAX);
+    expect(coverage.linesChanged).toBe((EVIDENCE_COVERAGE_FILES_MAX + 5) * (EVIDENCE_UNCOVERED_LINES_MAX + 50));
+    expect(EvidenceCoverageSchema.safeParse(coverage).success).toBe(true);
   });
 });

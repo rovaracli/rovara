@@ -8,7 +8,7 @@
 import { EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_RAW_ARTIFACT, EVIDENCE_RAW_MAX_BYTES, EvidenceRawSchema, createCandidateManifest, redactText, type CandidateRepository, type CheckEntry, type EvidenceRaw, type ProjectCommand } from "@agentx/contracts";
 import type { ArtifactSink } from "../artifacts.js";
 import type { CheckPlan } from "./checks.js";
-import { coveragePart, readChangedCoverage, type RepositoryChanges } from "./changed-coverage.js";
+import { coveragePart, readChangedCoverage, type RepositoryChanges } from "./cobertura-lcov-coverage.js";
 import { candidateChanges } from "./diff.js";
 import { changedMigrationFiles, migrationDirectionOf, migrationEvidence } from "./migration-check.js";
 import { readContainedReport } from "./report-file.js";

@@ -13,7 +13,7 @@ import {
   type CheckEntry, type CheckKind, type EvidenceEnvironment, type EvidenceNotTested, type EvidencePack, type EvidenceRaw, type TestEnvProdDeny,
 } from "@agentx/contracts";
 import type { TestProofActions } from "../developer/test-proof-lines.js";
-import { storeEvidenceArtifacts, type EvidenceArtifactStore } from "../aws/evidence-artifacts.js";
+import { evidenceTagging, storeEvidenceArtifacts, type EvidenceArtifactStore } from "../aws/evidence-artifacts.js";
 import { buildEvidencePack, type EvidenceProblem } from "./evidence-pack.js";
 import { NO_PROD_DENY, guardPack, guardRaw } from "./evidence-guard.js";
 import { kindOfRawCheck } from "./evidence-risk.js";
@@ -29,9 +29,12 @@ const PACK_READ_BYTES = 4 * 1_048_576;
 /** What the sandbox without an approved test environment is: the project's own checks in the task's sandbox. Test environments are a later lane; this says so in the pack instead of claiming a setup. */
 export const DEFAULT_EVIDENCE_ENVIRONMENT: EvidenceEnvironment = { tier: "sandbox", envRevision: 0, services: [], data: "synthetic", accounts: [] };
 const NO_ENVIRONMENT_ITEM: EvidenceNotTested = { kind: "environment", id: "test_environment", text: "No approved test environment: the project's own test setup was used", reason: "not set up" };
+const NOT_CAPTURED_ITEM: EvidenceNotTested = { kind: "environment", id: "evidence_capture", text: "Test details were not captured for this run", reason: "the worker reported none" };
 const WITHHELD_ITEM: EvidenceNotTested = { kind: "environment", id: "data_guard", text: "Some test details were left out", reason: "personal or production data found" };
 
 export interface KeepEvidenceInput {
+  /** The org the task belongs to: the first pack an org keeps marks it, so an erase for an org that never kept evidence costs one read. */
+  orgId: string;
   task: EvidenceTask;
   operationId: string;
   candidateDigest: string;
@@ -46,6 +49,8 @@ export interface KeepEvidenceInput {
 export interface KeepEvidenceDeps {
   actions: Pick<TestProofActions, "artifacts" | "readArtifact">;
   store: EvidenceArtifactStore;
+  /** Marks that the org has kept evidence (`markEvidenceStored`). Called BEFORE anything is stored, and nothing is stored if it fails. */
+  markStored(orgId: string): Promise<void>;
   /** An abandoned call (its time has run out) writes nothing more. */
   late?: (() => boolean) | undefined;
   log?: ((event: string, fields: Record<string, unknown>) => void) | undefined;
@@ -53,7 +58,7 @@ export interface KeepEvidenceDeps {
 
 export type KeepEvidenceResult =
   | { kept: true; problems: EvidenceProblem[]; guardedParts: number }
-  | { kept: false; reason: "no_raw" | "not_bound" | "withheld" | "invalid" | "fault" };
+  | { kept: false; reason: "not_bound" | "withheld" | "invalid" | "fault" };
 
 /** The raw file's text for this operation, or undefined (none, not under the operation's own prefix, unreadable). Over the cap it returns the cap plus one byte, which the builder refuses whole. */
 async function readRaw(deps: KeepEvidenceDeps, input: KeepEvidenceInput): Promise<string | undefined> {
@@ -70,10 +75,14 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
     const deny = input.deny ?? NO_PROD_DENY;
     let rawText = await readRaw(deps, input);
     let guarded = 0;
-    if (rawText === undefined) return { kept: false, reason: "no_raw" };
+    // No raw file (an older worker was sent no request, or the checks named no report): recorded as NOT CAPTURED, in the log and on the pack itself, so the pull request and the Evidence tab can tell it from
+    // evidence that expired or from a switch that was off. The pack then holds only what the broker knows itself (its own verdict for each check).
+    if (rawText === undefined) deps.log?.("evidence.not_captured", { reason: "no_raw_file" });
     // The guard works on a raw file that parses (a file that does not is refused whole by the builder: it would never have been used).
     let parsedRaw: EvidenceRaw | undefined;
-    try { const parsed = EvidenceRawSchema.safeParse(JSON.parse(rawText)); parsedRaw = parsed.success ? parsed.data : undefined; } catch { parsedRaw = undefined; }
+    if (rawText !== undefined) {
+      try { const parsed = EvidenceRawSchema.safeParse(JSON.parse(rawText)); parsedRaw = parsed.success ? parsed.data : undefined; } catch { parsedRaw = undefined; }
+    }
     if (parsedRaw !== undefined && parsedRaw.candidateDigest !== input.candidateDigest) return { kept: false, reason: "not_bound" };
     if (parsedRaw !== undefined) {
       const guard = guardRaw(parsedRaw, deny);
@@ -89,7 +98,7 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
     const environment = input.environment ?? DEFAULT_EVIDENCE_ENVIRONMENT;
     const built = buildEvidencePack({
       candidateDigest: input.candidateDigest, rawText, checks: input.checks, checkKinds: kinds, environment,
-      notTested: [...(environment.envRevision === 0 ? [NO_ENVIRONMENT_ITEM] : []), ...(guarded > 0 ? [WITHHELD_ITEM] : [])], storedArtifacts: new Map(),
+      notTested: [...(environment.envRevision === 0 ? [NO_ENVIRONMENT_ITEM] : []), ...(rawText === undefined ? [NOT_CAPTURED_ITEM] : []), ...(guarded > 0 ? [WITHHELD_ITEM] : [])], storedArtifacts: new Map(),
     });
     if (built.pack === undefined) return { kept: false, reason: "invalid" };
     const guardedPack = guardPack(built.pack, built.newArtifacts, deny);
@@ -100,6 +109,8 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
       pack = { ...pack, notTested: [...pack.notTested, WITHHELD_ITEM].slice(0, EVIDENCE_NOT_TESTED_MAX) };
     }
     if (deps.late?.() === true) return { kept: false, reason: "fault" };
+    // The org is marked before the first object is stored, so an erase never skips an org that holds evidence.
+    await deps.markStored(input.orgId);
     // The tails are stored first: a pack never names a file the store does not hold.
     const owner = { ownerKey: input.task.ownerKey, workspaceId: input.task.workspaceId, taskId: input.task.taskId };
     const stored = await storeEvidenceArtifacts(deps.store, owner, guardedPack.newArtifacts.map((artifact) => ({ kind: "log_txt" as const, bytes: Buffer.from(artifact.text, "utf8"), sha256: artifact.ref.sha256 })));
@@ -112,7 +123,7 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
     const checked = EvidencePackSchema.safeParse(pack);
     if (!checked.success) return { kept: false, reason: "invalid" };
     if (deps.late?.() === true) return { kept: false, reason: "fault" };
-    await deps.store.s3.send(new PutObjectCommand({ Bucket: deps.store.artifactBucketName, Key: evidencePackKey(input.task, input.candidateDigest), Body: JSON.stringify(checked.data), ContentType: "application/json", Metadata: { kind: "evidence-pack" } }));
+    await deps.store.s3.send(new PutObjectCommand({ Bucket: deps.store.artifactBucketName, Key: evidencePackKey(input.task, input.candidateDigest), Body: JSON.stringify(checked.data), ContentType: "application/json", Metadata: { kind: "evidence-pack" }, Tagging: evidenceTagging("evidence-std") }));
     return { kept: true, problems: built.problems, guardedParts: guarded };
   } catch (error) {
     deps.log?.("evidence.keep_failed", { error: error instanceof Error ? error.name : "unknown" });

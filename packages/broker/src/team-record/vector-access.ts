@@ -77,7 +77,7 @@ export interface VectorCredentials {
 
 /** STS AssumeRole with an inline session policy. */
 export interface StsAssumePort {
-  assumeRole(request: { roleArn: string; sessionName: string; policy: string; durationSeconds: number }): Promise<{ credentials: VectorCredentials; expiresAtMs: number }>;
+  assumeRole(request: { roleArn: string; sessionName: string; policy: string; durationSeconds: number; tags?: ReadonlyArray<{ Key: string; Value: string }> }): Promise<{ credentials: VectorCredentials; expiresAtMs: number }>;
 }
 
 /** The real port over `@aws-sdk/client-sts`. Errors carry no text (the caller sees a fixed message). */
@@ -86,7 +86,7 @@ export function createStsAssumePort(client: Pick<STSClient, "send">): StsAssumeP
     async assumeRole(request) {
       let output;
       try {
-        output = await client.send(new AssumeRoleCommand({ RoleArn: request.roleArn, RoleSessionName: request.sessionName, Policy: request.policy, DurationSeconds: request.durationSeconds }));
+        output = await client.send(new AssumeRoleCommand({ RoleArn: request.roleArn, RoleSessionName: request.sessionName, Policy: request.policy, DurationSeconds: request.durationSeconds, ...(request.tags === undefined ? {} : { Tags: request.tags.map((tag) => ({ Key: tag.Key, Value: tag.Value })) }) }));
       } catch {
         throw new Error("team-record: could not assume the vector data role");
       }
@@ -110,7 +110,8 @@ export function createAssume(options: {
 }): WorkspaceVectorPortsOptions["assume"] {
   return async ({ workspaceId, sessionPolicy }) => {
     const sessionName = `team-record-${createHash("sha256").update(workspaceId).digest("hex").slice(0, 24)}`;
-    const session = await options.sts.assumeRole({ roleArn: options.roleArn, sessionName, policy: sessionPolicy, durationSeconds: options.durationSeconds ?? 3600 });
+    // The session TAG names the one index the session may reach; the data role's own rights are written in terms of it (infra/lib/team-record-vectors.ts), so a session without it reaches nothing.
+    const session = await options.sts.assumeRole({ roleArn: options.roleArn, sessionName, policy: sessionPolicy, durationSeconds: options.durationSeconds ?? 3600, tags: [{ Key: "rovara-index", Value: teamRecordVectorIndexName(workspaceId) }] });
     return { port: options.portFromCredentials(session.credentials), expiresAtMs: session.expiresAtMs };
   };
 }

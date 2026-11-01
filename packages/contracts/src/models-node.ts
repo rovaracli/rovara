@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { E2E_MODEL_FAILURE_CLASSES, type E2EModelFailureClass } from "./e2e-model-failure-classes.js";
 import type { ModelSelectionSchema } from "./models.js";
-import { ModelIdentifierSchema, ThinkingLevelSchema } from "./models.js";
+import { ModelIdentifierSchema, ThinkingLevelSchema, type ModelCompanySchema } from "./models.js";
 import { isKeyedModelProvider, KEYED_MODEL_PROVIDERS } from "./model-providers.js";
 
 /**
@@ -79,21 +79,50 @@ export function modelKey(model: ModelIdentifier): string {
   return `${model.provider}\0${model.modelId}`;
 }
 
-export type ModelCompany = "anthropic" | "openai" | "google" | "other";
+export type ModelCompany = z.infer<typeof ModelCompanySchema>;
 
 const BEDROCK_REGION_PREFIX = /^(?:us|eu|apac|global)\./;
 
 /**
+ * The regional and global inference-profile prefixes Bedrock puts before a vendor, as the model catalog lists them. A prefix not listed here leaves the model as
+ * `other`, which never counts as a different company: a new region fails closed. (`canonicalModelName` still strips only `BEDROCK_REGION_PREFIX`.)
+ */
+const BEDROCK_COMPANY_REGION_PREFIX = /^(?:us-gov|us|eu|apac|global|au|jp|in|ca)\./;
+
+/** The vendor segment of a Bedrock model id (`amazon.nova-pro-v1:0`) and the company it names. */
+const BEDROCK_VENDOR_COMPANY: Readonly<Record<string, ModelCompany>> = {
+  anthropic: "anthropic",
+  amazon: "amazon",
+  meta: "meta",
+  mistral: "mistral",
+  deepseek: "deepseek",
+  openai: "openai",
+  qwen: "qwen",
+  cohere: "cohere",
+};
+
+function bedrockCompany(id: string): ModelCompany {
+  const vendor = id.replace(BEDROCK_COMPANY_REGION_PREFIX, "").split(".", 2);
+  // Both a vendor and a model name must follow the optional region: `amazon` alone, or `us.us.amazon.x`, is not a Bedrock model id.
+  if (vendor.length < 2 || vendor[1] === "") return "other";
+  return Object.hasOwn(BEDROCK_VENDOR_COMPANY, vendor[0]!) ? BEDROCK_VENDOR_COMPANY[vendor[0]!]! : "other";
+}
+
+/**
  * The company that trained a model, whichever route reaches it: an Anthropic id over Bedrock or OpenRouter is
- * still Anthropic's. Anything unrecognised is `other`, so a "different company" check never treats two
- * unknown models as the same company by accident of a shared route.
+ * still Anthropic's. Bedrock's own vendors (Amazon Nova, Meta, Mistral, DeepSeek, OpenAI, Qwen, Cohere) are read from the id, with or without a region prefix.
+ * Anything unrecognised is `other`, so a "different company" check never treats two
+ * unknown models as the same company by accident of a shared route, and never treats an unknown one as different.
  */
 export function modelCompany(model: ModelIdentifier): ModelCompany {
   const provider = model.provider.toLowerCase();
   const id = model.modelId.toLowerCase();
   if (provider === "anthropic") return "anthropic";
   if (provider === "openai") return "openai";
-  if (provider === "amazon-bedrock" && id.replace(BEDROCK_REGION_PREFIX, "").startsWith("anthropic.")) return "anthropic";
+  if (provider === "amazon-bedrock") {
+    const found = bedrockCompany(id);
+    if (found !== "other") return found;
+  }
   if (provider === "openrouter") {
     if (id.startsWith("anthropic/")) return "anthropic";
     if (id.startsWith("openai/")) return "openai";

@@ -31,11 +31,11 @@ function world(rawText: string) {
     async artifacts() { return [{ name: "evidence-raw.json", objectKey: `${PREFIX}evidence-raw.json` }]; },
     async readArtifact(key, max) { return key.startsWith(PREFIX) ? rawText.slice(0, max) : objects.get(key)?.slice(0, max) ?? ""; },
   };
-  return { deps: { actions, store: { s3, artifactBucketName: "bucket" } } satisfies KeepEvidenceDeps };
+  return { deps: { markStored: async () => undefined, actions, store: { s3, artifactBucketName: "bucket" } } satisfies KeepEvidenceDeps };
 }
 async function keep(checks: unknown[], entries: CheckEntry[], policyKinds?: ReadonlyMap<string, "security" | "lint" | "migration" | "test">) {
   const w = world(JSON.stringify(rawOf(checks)));
-  await keepEvidence(w.deps, { task: TASK, operationId: OP, candidateDigest: DIGEST, checks: entries, ...(policyKinds === undefined ? {} : { policyKinds }) });
+  await keepEvidence(w.deps, { orgId: "org-a", task: TASK, operationId: OP, candidateDigest: DIGEST, checks: entries, ...(policyKinds === undefined ? {} : { policyKinds }) });
   return loadEvidencePack(w.deps.actions, TASK, DIGEST);
 }
 const prLine = (pack: EvidencePack) => evidenceLines({ pack, mode: "summary" }, DIGEST, 0).lines[0] ?? "";

@@ -34,6 +34,8 @@ export function auditIntakeQueueName(env: string): string {
  */
 export const teamRecordNamePrefix = (env: string): string => `agentx-${env}`;
 export const teamRecordTableName = (env: string): string => `agentx-${env}-team-record`;
+export const teamRecordOpsQueueName = (env: string): string => `agentx-${env}-team-record-ops`;
+export const teamRecordOpsDeadLetterName = (env: string): string => `agentx-${env}-team-record-ops-dead`;
 export const teamRecordVectorBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-vectors`;
 export const teamRecordTableBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-lake`;
 export const teamRecordWorkGroupName = (env: string): string => `${teamRecordNamePrefix(env)}-record`;
