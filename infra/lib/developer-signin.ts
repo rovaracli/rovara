@@ -30,6 +30,8 @@ export interface DeveloperSignInParameters {
   autofixEnabled: CfnParameter;
   /** Live steer: a person's message to a running step. "0" (the default) keeps every message a note; "1" turns it on. Turn it on only after the dispatcher, publisher, broker and the worker image carrying task.liveSteer.v1 are deployed. */
   liveSteerEnabled: CfnParameter;
+  /** Stop & redirect: the owner (or a co-owner) stops a running step and gives a new instruction. "0" (the default) leaves the route off; "1" turns it on. Turn it on only after the dispatcher and the worker image carrying task.ownerRedirect.v1 are deployed, and the broker can ask a worker what it supports. */
+  liveRedirectEnabled: CfnParameter;
   /** v1.2 learning loop: whether a company that never chose gets suggested rules (the install-wide default of its master switch). Off unless an operator turns it on. */
   learningSuggestionsDefault: CfnParameter;
 }
@@ -57,6 +59,7 @@ export function developerSignInParameters(stack: Stack): DeveloperSignInParamete
     autofixEnabled: new CfnParameter(stack, "AutofixEnabled", { type: "String", default: "true", allowedValues: ["true", "false"], description: "Whether Rovara sends blocked checks or reviews back to coding by itself, before any pull request exists (agentx config set autofix.enabled false turns it off)" }),
     liveSteerEnabled: new CfnParameter(stack, "LiveSteerEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: a person's message to a running step is given to it live (only after the dispatcher, publisher, broker and worker image that carry live steer are deployed); 0: every message waits as a note for the next step (agentx config set liveSteer.enabled 1)" }),
     learningSuggestionsDefault: new CfnParameter(stack, "LearningSuggestionsDefault", { type: "String", default: "off", allowedValues: ["on", "off"], description: "Whether a company that has not chosen gets suggested rules from Rovara's learning (on) or only has its corrections collected (off). A company's own choice always wins. Off unless an operator turns it on" }),
+    liveRedirectEnabled: new CfnParameter(stack, "LiveRedirectEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: the task owner can stop a running step and redirect it with a new instruction (only after the dispatcher, broker and worker image that carry Stop & redirect are deployed); 0: the redirect route is off (agentx config set liveRedirect.enabled 1)" }),
     mcpConfirmElicitation: new CfnParameter(stack, "McpConfirmElicitation", { type: "String", default: "enabled", allowedValues: ["enabled", "disabled"], description: "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button (or the CLI)" }),
   };
 }

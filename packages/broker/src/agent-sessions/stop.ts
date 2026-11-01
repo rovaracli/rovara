@@ -46,6 +46,11 @@ export interface SessionControlHost {
   cancelTask(task: DeveloperTaskRecord, requestId: string): Promise<void>;
   /** `retryTaskWorkflowFor` with the session actor, at the task's revision now: the same retry as the task's own route. */
   retryWorkflow(task: DeveloperTaskRecord, requestId: string): Promise<void>;
+  /**
+   * Stop & redirect while the plan waits for approval: the owner's request for changes with the instruction as its words, through the task's own decision (it checks who may decide, the revision and the plan's
+   * digest, and is idempotent by the request id). Without it a redirect of a plan that waits is refused.
+   */
+  requestPlanChanges?(task: DeveloperTaskRecord, input: { requestId: string; expectedRevision: number; artifactDigest: string; reason: string }): Promise<void>;
   /** `startAgentRun`, which resolves the payer and applies the roster, budget and version rules; it is idempotent by the request's `requestId`. */
   startAgentRun(request: AgentRunRequest): Promise<AgentRunResult>;
   /**
@@ -100,7 +105,7 @@ export function parseControlBody(body: unknown): z.infer<typeof BodySchema> {
 
 /** What a stop or a retry answered, kept under its request id on the session so a repeat answers it again and writes nothing. */
 export interface ControlRequest {
-  action: "stop" | "retry" | "handoff" | "answer";
+  action: "stop" | "retry" | "handoff" | "answer" | "redirect";
   by: string;
   at: string;
   /** The session that answers the request: the same session, or the new one a retry made. */
@@ -118,7 +123,7 @@ export async function readControlRequest(deps: SessionReadDependencies, session:
   const item = await getItem(deps, requestKey(session.orgId, session.sessionId, requestId));
   if (item === undefined) return undefined;
   const { action, by, at, sessionId, fingerprint, result, bodyHash } = item;
-  if ((action !== "stop" && action !== "retry" && action !== "handoff" && action !== "answer") || typeof by !== "string" || typeof at !== "string" || typeof sessionId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", NOT_READABLE);
+  if ((action !== "stop" && action !== "retry" && action !== "handoff" && action !== "answer" && action !== "redirect") || typeof by !== "string" || typeof at !== "string" || typeof sessionId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", NOT_READABLE);
   return { action, by, at, sessionId, ...(typeof fingerprint === "string" ? { fingerprint } : {}), ...(result === undefined ? {} : { result }), ...(typeof bodyHash === "string" ? { bodyHash } : {}) };
 }
 

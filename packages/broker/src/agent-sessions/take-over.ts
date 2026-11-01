@@ -5,6 +5,7 @@
 // audited. Everything the approval rests on is read live each time it is looked at: the asker's access, their role on the project and their room to pay.
 import { DeleteCommand, GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
+import type { RedirectConfig } from "./redirect.js";
 import {
   INDEX_EXPIRY_ATTRIBUTE,
   OrgRoleSchema,
@@ -73,6 +74,8 @@ export interface SessionTakeOverDependencies extends SessionShareDependencies {
   chainOwner?: ChainOwnerMover | undefined;
   /** Carried to the session routes for a message to the agent: the broker's signing key for live steer (`live-steer.ts`). */
   liveSteer?: { callbackSigningKey: string } | undefined;
+  /** Carried to the session routes for Stop & redirect (`redirect.ts`): present only while the `rd` switch is on. */
+  redirect?: RedirectConfig | undefined;
   log?: ((entry: Record<string, unknown>) => void) | undefined;
 }
 

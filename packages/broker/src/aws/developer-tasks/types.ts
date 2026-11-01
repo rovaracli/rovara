@@ -128,7 +128,14 @@ export interface DeveloperTaskRouteDependencies {
    * route checked just now ("can edit", live). For that person, and only for `retry` and `control` (stop), the task's own rules are not asked (they are not the task's owner);
    * a retry still needs their project role to start work. Every write is still fenced on the task's People revision.
    */
-  sessionActor?: { developerId: string };
+  sessionActor?: {
+    developerId: string;
+    /**
+     * Stop & redirect's restart only: the person must be the task's effective owner or a co-owner on the People list THIS access read (the one whose revision every write is fenced on), else the
+     * access is refused. One read for the check and the fence, so a removal or a take-over in between cannot slip through (fix round 1, S1).
+     */
+    requireOwner?: true;
+  };
   /** Plan 5 Task 5: what a session's level needs. With it a person who can view a task's session reads the task page (read only), and a task from before sessions is given one when it is first read in full. */
   agentSessions?: SessionAccessDependencies;
   /** Plan 3, Task 22: the agent-step engine's dependencies (the same object as `agentRuns` where agents are set up); a cancel of a run that waits ends the run through it. */

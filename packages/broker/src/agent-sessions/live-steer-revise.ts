@@ -73,7 +73,9 @@ export interface RevisePlanHost<A extends RevisePlanAccess = RevisePlanAccess> {
    * planner reads after the request, and the update that moves the task's mark past them (`fed`), retried when a reply is saved meanwhile.
    */
   withNotes<T>(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, requestId: string,
-    accept: (current: DeveloperTaskRecord, notes: { suffix: string; fed: { clause: string; condition: string; values: Record<string, string | number> } }) => Promise<T>): Promise<T>;
+    accept: (current: DeveloperTaskRecord, notes: { suffix: string; fed: { clause: string; condition: string; values: Record<string, string | number> } }) => Promise<T>,
+    /** Stop & redirect: message ids the prompt leaves out of the notes it carries. */
+    skipMessageIds?: readonly string[]): Promise<T>;
   /** The turn record and the access fence that go in the one transaction. */
   acceptItems(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: A, input: { request: string; response: string; operationId: string; at: string }): TransactItems;
   /** Turns a refused acceptance into the words the task module says (busy workspace, closing). */
@@ -166,10 +168,58 @@ export async function reviseTaskPlan<A extends RevisePlanAccess>(deps: Developer
   if (recorded === undefined || recorded.workflowRevision !== workflow.revision || recorded.usedBy !== undefined || messageIds.length === 0) throw agentXError("CONFIG_INVALID", REVISE_PLAN_REFUSALS.noChange);
   const change = await requestedChange(deps, task, messageIds);
   if (change === undefined) throw agentXError("CONFIG_INVALID", REVISE_PLAN_REFUSALS.noChange);
+  const started = await startRevisedPlan(deps, caller, taskId, host, access, {
+    requestId: request.requestId, change,
+    source: `The owner sent this as a live message while coding ran; coding stopped because it asks for a change outside the approved plan. Write the change into the revised document. The owner approves the revised plan before any coding.`,
+    turnRequest: "Revise the plan with the owner's live message",
+    stoppedReason: WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise,
+    // The record is spent by this press (and only by it): a second press, even a newer request, finds it used.
+    spent: (revision) => [{ Update: {
+      TableName: deps.tableName, Key: liveSteerChangeKey(taskId), UpdateExpression: "SET usedBy = :request",
+      ConditionExpression: "workflowRevision = :revision AND attribute_not_exists(usedBy)", ExpressionAttributeValues: { ":request": request.requestId, ":revision": revision },
+    } }],
+  });
+  if (started !== "started") return started;
+  // The messages say what became of them (best effort and after the commit: the revised plan is already being written whatever happens here; a repeat of this request makes the mark again).
+  for (const id of messageIds) await markSteerRevised(deps, task.orgId as OrgId, task.sessionId as SessionId, id);
+  return host.view(deps, caller, taskId);
+}
+
+/** What starting the revised plan needs beyond the press: the owner's words as the change, why the step is stopped, and (a live message's press) the record that is spent in the same transaction. */
+export interface RevisedPlanStart {
+  requestId: string;
+  /** The owner's words as the planner reads them (already redacted, on one line, cut). */
+  change: string;
+  /** Why the change is here, written after the document so the planner knows what its answer is for. */
+  source: string;
+  turnRequest: string;
+  /** The block reason the coding step must still have when the transaction commits. */
+  stoppedReason: string;
+  /** Items to commit with the start, built from the workflow revision the press read (the live message's spent record). */
+  spent?: (revision: number) => TransactItems;
+  /**
+   * Stop & redirect "this changes the plan": the transition is the redirect's (the step was stopped by the owner), the cap window is kept (a redirect never resets it), a pause that waits for an approval is
+   * refused rather than skipped, and the messages in `skipNoteIds` are left out of the prompt's notes (the change already holds them).
+   */
+  redirect?: { skipNoteIds: readonly string[] };
+  /** Who is authorised as owner for the transition. The press passes the task's own authority; a redirect, which checked the owner itself, passes the person. */
+  authority?: WorkflowOwnerAuthority;
+}
+
+/**
+ * The part of the press that starts the planning run: the workflow goes from coding to PLAN with the owner's request for changes recorded, and the planner is asked to write the revised document,
+ * in ONE transaction that is conditional on the revision and the stopped coding step (so a double press, or a press after anything moved, commits once or not at all). Answers `started`, or the view
+ * when another press of the same request got there first; refuses (writing nothing) otherwise.
+ */
+export async function startRevisedPlan<A extends RevisePlanAccess>(
+  deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, host: RevisePlanHost<A>, access: A, start: RevisedPlanStart,
+): Promise<"started" | { task: DeveloperTaskView }> {
+  const { task } = access;
+  const workflow = task.workflow!;
   const receivedAt = new Date(deps.now()).toISOString();
   let returned: WorkflowSnapshot;
   try {
-    returned = revisePlanWithLiveChange(workflow, { requestId: request.requestId, actorId: access.actorId, now: receivedAt }, access.authority);
+    returned = revisePlanWithLiveChange(workflow, { requestId: start.requestId, actorId: access.actorId, now: receivedAt, ...(start.redirect === undefined ? {} : { redirect: true as const }) }, start.authority ?? access.authority);
   } catch (error) {
     return transitionRefusal(error);
   }
@@ -178,41 +228,37 @@ export async function reviseTaskPlan<A extends RevisePlanAccess>(deps: Developer
   const loaded = await loadWorkflowDocument((objectKey, maxBytes) => deps.actions.readArtifact(objectKey, maxBytes), artifact, {});
   if (loaded === undefined) throw agentXError("WORKSPACE_NOT_READY", REVISE_PLAN_REFUSALS.planUnreadable);
   // The owner's words, and why they are here, after the document (the planner is told what its answer is for; only the owner's approval of what it writes starts coding).
-  const source = `The owner sent this as a live message while coding ran; coding stopped because it asks for a change outside the approved plan. Write the change into the revised document. The owner approves the revised plan before any coding.`;
-  const comments = `\n\n${source}`;
+  const comments = `\n\n${start.source}`;
   const prompt = loaded.format === "structured"
-    ? host.structuredPrompt(loaded, change, workflow.reviewPhase, comments)
-    : `Revise the current coding plan. Requested changes: ${change}\n\nReturn the complete revised document. Do not edit files.\n\n${host.markdownBlock(loaded.markdown)}${comments}`;
+    ? host.structuredPrompt(loaded, start.change, workflow.reviewPhase, comments)
+    : `Revise the current coding plan. Requested changes: ${start.change}\n\nReturn the complete revised document. Do not edit files.\n\n${host.markdownBlock(loaded.markdown)}${comments}`;
   const retired = await host.retiredClaimIds(deps, workflow);
-  const cap = await host.capWindow(deps, task);
+  // A redirect keeps the person's cap window and does not go on over a pause that waits for an approval; the press (a person's go-on) starts a new window as every retry does.
+  if (start.redirect !== undefined && task.budgetPause !== undefined) throw agentXError("IDEMPOTENCY_CONFLICT", "this task is waiting for an approval of more spend; Rovara does not go on by itself");
+  const cap = start.redirect === undefined ? await host.capWindow(deps, task) : { clause: "", values: {} };
   const next: WorkflowSnapshot = { ...returned, revision: returned.revision + 1, state: "RUNNING", updatedAt: receivedAt };
   try {
-    await host.withNotes(deps, task, request.requestId, (current, notes) => deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId,
-      { requestId: request.requestId, conversationId: current.conversationId, prompt: prompt + notes.suffix }, (operation) => [
+    await host.withNotes(deps, task, start.requestId, (current, notes) => deps.actions.acceptTask(developerTaskIdentity(current, deps.orgId), current.workspaceId,
+      { requestId: start.requestId, conversationId: current.conversationId, prompt: prompt + notes.suffix }, (operation) => [
         { Update: {
           TableName: deps.tableName, Key: taskKey(taskId),
           UpdateExpression: `SET workflow = :workflow, updatedAt = :now${notes.fed.clause}${cap.clause}`,
           ConditionExpression: `workflow.revision = :revision AND workflow.#stage = :implement AND workflow.#state = :blocked AND workflow.blockReason = :reason AND attribute_not_exists(closedAt)${notes.fed.condition}`,
           ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
-          ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":reason": WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise, ...notes.fed.values, ...cap.values },
+          ExpressionAttributeValues: { ":workflow": next, ":now": receivedAt, ":revision": workflow.revision, ":implement": "IMPLEMENT", ":blocked": "BLOCKED", ":reason": start.stoppedReason, ...notes.fed.values, ...cap.values },
         } },
-        // The record is spent by this press (and only by it): a second press, even a newer request, finds it used.
-        { Update: {
-          TableName: deps.tableName, Key: liveSteerChangeKey(taskId), UpdateExpression: "SET usedBy = :request",
-          ConditionExpression: "workflowRevision = :revision AND attribute_not_exists(usedBy)", ExpressionAttributeValues: { ":request": request.requestId, ":revision": workflow.revision },
-        } },
-        ...host.acceptItems(deps, caller, access, { request: "Revise the plan with the owner's live message", response: `Planning the revised plan started as operation ${operation.id}`, operationId: operation.id, at: receivedAt }),
-      ], { sharedTask: current.shared === true, workflowMode: "PLAN", ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(workflow.reviewPhase === undefined ? {} : { workflowPhase: workflow.reviewPhase }) }));
+        ...(start.spent === undefined ? [] : start.spent(workflow.revision)),
+        ...host.acceptItems(deps, caller, access, { request: start.turnRequest, response: `Planning the revised plan started as operation ${operation.id}`, operationId: operation.id, at: receivedAt }),
+      ], { sharedTask: current.shared === true, workflowMode: "PLAN", ...(retired.length === 0 ? {} : { retiredClaimIds: retired }), ...(workflow.reviewPhase === undefined ? {} : { workflowPhase: workflow.reviewPhase }) }),
+    start.redirect?.skipNoteIds);
   } catch (error) {
     // Another press, or anything else that moved the task, got there first: the same request is that press; any other is out of date.
     const fresh = await host.authorize(deps, caller, taskId);
-    if (fresh.task.workflow?.decisions.some((decision) => decision.requestId === request.requestId) === true) return host.view(deps, caller, taskId);
+    if (fresh.task.workflow?.decisions.some((decision) => decision.requestId === start.requestId) === true) return host.view(deps, caller, taskId);
     if (fresh.task.workflow !== undefined && fresh.task.workflow.revision !== workflow.revision) throw agentXError("IDEMPOTENCY_CONFLICT", REVISE_PLAN_REFUSALS.stale);
     return host.refuse(deps, task, error);
   }
-  // The messages say what became of them (best effort and after the commit: the revised plan is already being written whatever happens here; a repeat of this request makes the mark again).
-  for (const id of messageIds) await markSteerRevised(deps, task.orgId as OrgId, task.sessionId as SessionId, id);
-  return host.view(deps, caller, taskId);
+  return "started";
 }
 
 /** The owner's Revise the plan press from Slack. Its own event kind (not a flag on Send back), so a broker that does not know it drops it instead of sending the work back to coding. */

@@ -11,6 +11,7 @@ import {
   type WorkflowSnapshot,
   WorkflowTransitionError,
   WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON,
+  type OwnerRedirectInvocation,
   returnWorkflowToImplementation,
   sendBackProblems,
   workflowSendBackOffered,
@@ -90,6 +91,14 @@ export async function queueWorkflowCoding(
   input: { requestId: string; prompt: (notes: string) => string; next: WorkflowSnapshot; request: string; response: string; workflowDependencies?: WorkflowDependencyInvocation;
     /** AUTOFIX (mainline #408): Rovara's own send-back; the cap window is kept and a pause that waits for an approval stops it (see above). */
     automatic?: true;
+    /**
+     * Stop & redirect: the person's own restart that keeps their cap window (a redirect never resets it, owner decision 2026-11-01) and does not go on over a pause that waits for an approval, exactly as
+     * `automatic` does for those two; unlike `automatic` it is a person's move. `ownerRedirect` is the instruction the worker is given, framed (it is not in `prompt`); `skipNoteIds` are the notes the
+     * prompt leaves out because the worker is given them that way (they still count as given to this step).
+     */
+    keepWindow?: true;
+    ownerRedirect?: OwnerRedirectInvocation;
+    skipNoteIds?: readonly string[];
     recovery?: { sourceOperation: Operation; sourceBinding: WorkflowDependencyInvocation; graphApproval: WorkflowDependencyInvocation["approval"]; graphProgress: NonNullable<WorkflowDependencyInvocation["resumeProgress"]>;
       payloadHash: string; actorId: string; requestId: string } },
 ): Promise<{ task: DeveloperTaskView }> {
@@ -103,8 +112,9 @@ export async function queueWorkflowCoding(
   // A human's retry or send-back (rulings R38 and R39) starts a new window of the task's cap, unless that skips an approval they may not decide.
   // MONEY (mainline #408 sync; owner ruling pending): Rovara's own send-back to coding (`input.automatic`, AUTOFIX) is not a person's choice: it keeps the window (no new baseline), and it
   // does not go on over a pause that waits for an approval, so the run limit the owner accepted binds every automatic round.
-  if (input.automatic === true) refuseAutomaticWhilePaused(task); else await requireMayGoOn(deps, caller, task);
-  const cap = input.automatic === true ? AUTOMATIC_KEEPS_WINDOW : capWindowUpdate(await capWindowBaseline(deps, task), task);
+  const keepsWindow = input.automatic === true || input.keepWindow === true;
+  if (keepsWindow) refuseAutomaticWhilePaused(task); else await requireMayGoOn(deps, caller, task);
+  const cap = keepsWindow ? AUTOMATIC_KEEPS_WINDOW : capWindowUpdate(await capWindowBaseline(deps, task), task);
   const receivedAt = iso(deps);
   try {
     await withCurrentThreadNotes(deps, task, input.requestId, (current, notes) => {
@@ -138,10 +148,10 @@ export async function queueWorkflowCoding(
           request: input.request, response: `${input.response} as operation ${operation.id}.`, operationId: operation.id,
         })),
         accessFence(deps, access),
-      ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(input.next), ...taskBaseOption(task, input.next), ...(input.next.programStepId === undefined ? {} : { programStepId: input.next.programStepId }), ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }),
+      ], { sharedTask: task.shared === true, workflowMode: "IMPLEMENT", ...selectedCheckCommands(input.next), ...(input.ownerRedirect === undefined ? {} : { ownerRedirect: input.ownerRedirect }), ...taskBaseOption(task, input.next), ...(input.next.programStepId === undefined ? {} : { programStepId: input.next.programStepId }), ...(input.workflowDependencies === undefined ? {} : { workflowDependencies: input.workflowDependencies }),
         // A retry or a send-back inside a fix to an open pull request is still that fix (Plan 6 Task 15).
         ...(input.next.fixSource === undefined ? {} : { workflowFix: { source: input.next.fixSource } }) });
-    });
+    }, input.skipNoteIds);
   } catch (error) {
     if (isConditional(error)) await authorizeTaskAction(deps, caller, task.taskId, "work");
     return busyOrClosing(deps, task, error);
@@ -304,6 +314,8 @@ export async function retryCiFix(
 
 export async function retryWorkflowImplementation(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, access: AuthorizedTask, request: z.infer<typeof ContinueDeveloperTaskRequestSchema>,
+  /** Stop & redirect (keep the plan): the restart carries the owner's framed instruction to the worker, keeps the cap window and leaves that message out of the prompt's notes. `request.instructions` is then a fixed sentence, never the owner's words. */
+  redirect?: { ownerRedirect: OwnerRedirectInvocation; skipNoteIds: readonly string[] },
 ): Promise<{ task: DeveloperTaskView }> {
   const { task } = access;
   const workflow = task.workflow!;
@@ -340,7 +352,8 @@ export async function retryWorkflowImplementation(
     return `Implement the human-approved plan below. The previous coding run stopped before it finished; continue from the current code. Follow its ordered steps, run the listed checks, and report results and limitations. ${NO_PUBLISH_NOTE}\n\nOwner note: ${request.instructions}${ownerConstraintsSection(workflow, plan)}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}${notes}`;
   };
   return queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next,
-    request: request.instructions, response: workflowDependencies === undefined ? "Restarting the coding step" : "Restarting the approved ordered work plan", ...(workflowDependencies === undefined ? {} : { workflowDependencies }) });
+    request: request.instructions, response: workflowDependencies === undefined ? "Restarting the coding step" : "Restarting the approved ordered work plan", ...(workflowDependencies === undefined ? {} : { workflowDependencies }),
+    ...(redirect === undefined ? {} : { keepWindow: true as const, ownerRedirect: redirect.ownerRedirect, skipNoteIds: redirect.skipNoteIds }) });
 }
 
 /**

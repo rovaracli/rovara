@@ -12,6 +12,7 @@ import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, blockWorkflow, closePla
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { workflowRunEndedReason } from "./outbox-failure.js";
 import { endedRunRows } from "./workflow-autofix-dispatch-exhaust.js";
+import { continueRedirectAfterStop } from "../agent-sessions/redirect-hook.js";
 
 type WorkflowMode = "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "CHECKS" | "REVIEW" | "FEEDBACK_REVIEW";
 /** A setup draft (Rovara Code, Task 10) is no step of a workflow: nothing here ever blocks a step for it. */
@@ -114,6 +115,8 @@ export async function blockStoppedWorkflowRun(client: Client, tableName: string,
       ...endedRunRows(tableName, workflow, "owner-stopped", now),
     ] }));
     log({ component: "broker", event: "workflow.released_run_blocked", operationId: run.id, workflowMode: mode });
+    // Stop & redirect, phase 2: this block may be the stop a redirect waits for.
+    await continueRedirectAfterStop(client, pointer.taskId);
     return true;
   } catch (failure) {
     // Names only: an error's own text could quote stored data. The owner's Retry recovers the row if this is lost.

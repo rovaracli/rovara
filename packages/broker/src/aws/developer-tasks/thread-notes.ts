@@ -475,11 +475,13 @@ async function threadNotesSuffix(
   deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">, task: DeveloperTaskRecord, requestId: string,
   /** The notes after this time; by default the ones no step has been given (after the task's mark). `undefined` here means all of them (an agent step run again from the start). */
   from: { since: string | undefined } = { since: task.threadNotesFedThrough },
+  /** Stop & redirect: messages the step is given another way (the worker frames the owner's instruction itself), so the prompt does not show them twice. They still count as given (their time moves the mark). */
+  skipMessageIds: readonly string[] = [],
 ): Promise<ThreadNotesForStep> {
   // An answered reply is not an instruction, so the prompt skips it; it still counts as given to this step (its time
   // moves the mark), as it counts toward the task's reply limit.
   const all = await readWorkflowThreadNotes(deps, task.taskId, from.since, { includeAnswered: true });
-  const notes = all.filter((note) => note.answeredAt === undefined);
+  const notes = all.filter((note) => note.answeredAt === undefined && !(isAppNote(note) && skipMessageIds.includes(note.messageId)));
   const section = threadNotesPromptSection(notes, promptTagId(task, requestId));
   const fedThrough = all.at(-1)?.receivedAt;
   return {
@@ -533,12 +535,14 @@ export async function agentStepNotes(
 export async function withCurrentThreadNotes<T>(
   deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, requestId: string,
   accept: (task: DeveloperTaskRecord, notes: ThreadNotesForStep) => Promise<T>,
+  /** Stop & redirect: the message ids the prompt leaves out (see `threadNotesSuffix`). */
+  skipMessageIds?: readonly string[],
 ): Promise<T> {
   let current = task;
   for (let attempt = 1; ; attempt += 1) {
     // Ruling R60, first: every caller of this accepts a task operation, and a removed creator's task starts none.
     await creatorGuard(deps, current);
-    const notes = await threadNotesSuffix(deps, current, requestId);
+    const notes = await threadNotesSuffix(deps, current, requestId, { since: current.threadNotesFedThrough }, skipMessageIds);
     try {
       return await accept(current, notes);
     } catch (error) {

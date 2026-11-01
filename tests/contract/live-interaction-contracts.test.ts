@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ASK_LIMITS, ASK_RATE, AUDIT_FACT_KEYS, AskBodySchema, AskRecordSchema, AuditEventInputSchema, BROKER_SETTINGS, DIAGNOSIS_PROPOSALS_MAX, DIAGNOSIS_RATE, ERROR_REF_KINDS, ErrorRefSchema,
   LIVE_INTERACTION_FLAGS, OWNER_REDIRECT_FEATURE, OwnerRedirectInvocationSchema, REDIRECT_RATE, RedirectBodySchema, RedirectRecordSchema, askAuditMode, askStoresText, diagnosisPathDenied, diagnosisPrefillAllowed, DIAGNOSIS_PREFILL_ALLOW,
-  editionPolicy, errorRefKey, errorRefOf, liveInteractionFlagOn, parseDiagnosisProposals, requireFeature,
+  editionPolicy, errorRefKey, errorRefOf, liveInteractionFlagOn, parseDiagnosisProposals, requireFeature, WORKFLOW_BLOCK_REASONS,
 } from "../../packages/contracts/src/index.js";
 import {
   auditDiagnosisBundlePrepared, auditDiagnosisProposalRaised, auditDiagnosisProposed, auditDiagnosisStarted, auditDiagnosisSupportEscalated, auditSessionRedirected, auditTaskAsked, auditOccurrence,
@@ -17,13 +17,26 @@ const AT = "2026-10-31T10:00:00.000Z";
 const ORG = "org_abcdefghij0123456789";
 const base = { orgId: ORG, actor: { kind: "member" as const, id: "dev_1" }, occurredAt: AT, occurrence: "occ-1" };
 
+describe("the words about work kept on a stopped coding run (R3)", () => {
+  it("say the stopped round's changes stay in the workspace unchecked, in both re-approval stops, and never that the work was discarded (tests/integration/worker-cancelled-implement-keeps-work.test.ts pins what the worker keeps)", () => {
+    for (const reason of [WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding, WORKFLOW_BLOCK_REASONS.liveSteerReapprovalRevise]) {
+      expect(reason).toContain("still in the workspace but was not checked");
+      expect(reason).not.toMatch(/work was not kept|not kept/u);
+    }
+    expect(WORKFLOW_BLOCK_REASONS.liveSteerReapprovalCoding).toContain("continues the approved plan from the current code");
+  });
+});
+
 describe("switches", () => {
-  it("has three distinct two-letter codes that do not collide with an existing broker setting (fx is the autofix switch)", () => {
+  it("has three distinct two-letter codes; the ones not wired yet collide with no broker setting (fx is the autofix switch), and the redirect switch is wired under its own code", () => {
     const codes = Object.values(LIVE_INTERACTION_FLAGS).map((spec) => spec.code);
     expect(new Set(codes).size).toBe(3);
-    const taken = new Set<string>(Object.values(BROKER_SETTINGS).map((spec) => spec.code));
+    // `rd` is in BROKER_SETTINGS since Stop & redirect (R2/LI-1); `ak` and `fd` wait for their own lanes and the hard deploy gate.
+    expect(BROKER_SETTINGS.liveRedirect).toEqual({ code: LIVE_INTERACTION_FLAGS.redirect.code, variable: LIVE_INTERACTION_FLAGS.redirect.variable });
+    const others = Object.entries(BROKER_SETTINGS).filter(([key]) => key !== "liveRedirect").map(([, spec]) => spec);
+    const taken = new Set<string>(others.map((spec) => spec.code));
     for (const code of codes) expect(taken.has(code), code).toBe(false);
-    const variables = new Set<string>(Object.values(BROKER_SETTINGS).map((spec) => spec.variable));
+    const variables = new Set<string>(others.map((spec) => spec.variable));
     for (const spec of Object.values(LIVE_INTERACTION_FLAGS)) expect(variables.has(spec.variable), spec.variable).toBe(false);
   });
 
@@ -71,10 +84,14 @@ describe("redirect payloads", () => {
   });
 
   it("stores no instruction text on the REDIRECT# record", () => {
-    const record = { requestId: REQUEST, messageId: MESSAGE, mode: "keep_plan", blockedRevision: 4, step: "IMPLEMENT", state: "stopping", createdAt: AT, ttl: 1_800_000_000 };
+    const record = { requestId: REQUEST, kind: "stop", orgId: "org_aaaaaaaaaaaaaaaaaaaa", sessionId: "ses_00000000000000000001", taskId: "11111111-1111-4111-8111-111111111111", actorId: "a".repeat(64), messageId: MESSAGE, mode: "keep_plan", blockedRevision: 4, step: "IMPLEMENT", state: "stopping", createdAt: AT, ttl: 1_800_000_000 };
     expect(RedirectRecordSchema.safeParse(record).success).toBe(true);
     expect(RedirectRecordSchema.safeParse({ ...record, text: "do this" }).success).toBe(false);
     expect(RedirectRecordSchema.safeParse({ ...record, state: "done" }).success).toBe(false);
+    // The claim a restart takes before it starts the step is a state of its own; the person and the task are ids, not names.
+    expect(RedirectRecordSchema.safeParse({ ...record, state: "restarting" }).success).toBe(true);
+    expect(RedirectRecordSchema.safeParse({ ...record, actorId: "Priya" }).success).toBe(false);
+    expect(RedirectRecordSchema.safeParse({ ...record, taskId: "not-a-uuid" }).success).toBe(false);
   });
 });
 
