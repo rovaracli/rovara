@@ -36,7 +36,8 @@ function snapshot(tableName: string, key: Key, row: Row, fields: readonly string
  }
  return { ConditionCheck: { TableName: tableName, Key: key, ConditionExpression: clauses.join(" AND "), ExpressionAttributeNames: names, ...(Object.keys(values).length === 0 ? {} : { ExpressionAttributeValues: values }) } };
 }
-const identityLive = (row: Row | undefined, id: string): boolean => row !== undefined && row.developerId === id && row.revoked !== true && row.mergedInto === undefined && row.provider !== "operator" && row.entityType !== "ADMINISTRATOR";
+// The identity row is keyed by the person: a sign-in writes no `developerId` attribute (store.ts getDeveloper), so only a row naming someone else is not theirs.
+const identityLive = (row: Row | undefined, id: string): boolean => row !== undefined && (row.developerId === undefined || row.developerId === id) && row.revoked !== true && row.mergedInto === undefined && row.provider !== "operator" && row.entityType !== "ADMINISTRATOR";
 
 async function livePerson(deps: SecondPersonEvidenceDependencies, scope: SecondPersonEvidenceScope, id: string) {
  const [member, pointer, identity] = await Promise.all([

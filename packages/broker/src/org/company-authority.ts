@@ -12,6 +12,7 @@ export async function requireLiveCompanyAdmin(deps: CompanyAuthorityDependencies
  }
  const member = await read(orgMemberKey(caller.orgId, caller.developerId));
  if (member?.orgId !== caller.orgId || member.developerId !== caller.developerId || (member.role !== "owner" && member.role !== "admin")) throw forbidden();
+ // The identity row is keyed by the person: a sign-in writes no `developerId` attribute (store.ts getDeveloper), so only a row naming someone else refuses.
  const [pointer, identity, org] = await Promise.all([read(developerOrgKey(caller.developerId)), read({ pk: `DEVELOPER#${caller.developerId}`, sk: "META" }, deps.signInTableName), read(orgMetaKey(caller.orgId))]);
- if (pointer?.orgId !== caller.orgId || pointer.role !== member.role || identity?.developerId !== caller.developerId || identity.revoked === true || identity.mergedInto !== undefined || identity.provider === "operator" || identity.entityType === "ADMINISTRATOR" || org === undefined || org.orgId !== caller.orgId || org.closingAt !== undefined || org.closedAt !== undefined) throw forbidden();
+ if (pointer?.orgId !== caller.orgId || pointer.role !== member.role || identity === undefined || (identity.developerId !== undefined && identity.developerId !== caller.developerId) || identity.revoked === true || identity.mergedInto !== undefined || identity.provider === "operator" || identity.entityType === "ADMINISTRATOR" || org === undefined || org.orgId !== caller.orgId || org.closingAt !== undefined || org.closedAt !== undefined) throw forbidden();
 }

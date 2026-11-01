@@ -24,6 +24,17 @@ function fixture() {
 }
 
 describe("live shared approval evidence", () => {
+ it("accepts identity rows as a real sign-in writes them (no developerId attribute: the id is the key)", async () => {
+  const f = fixture();f.person(admin, "admin");
+  for (const id of [owner, admin]) { const { developerId: _id, ...row } = f.db.get(`DEVELOPER#${id}`, "META")!;void _id;f.db.set({ ...row, entityType: "DEVELOPER", provider: "slack" }); }
+  const proof = await f.read(admin);
+  expect(decideSecondPersonApproval(proof.decisionInput).mode).toBe("second_person");
+ });
+ it("still refuses an identity row that names another person", async () => {
+  const f = fixture();f.person(admin, "admin");
+  f.db.set({ pk: `DEVELOPER#${admin}`, sk: "META", developerId: member, revoked: false });
+  await expect(f.read(admin)).rejects.toMatchObject({ code: "FORBIDDEN" });
+ });
  it("accepts distinct live company people using server evidence", async () => {
   const f = fixture();f.person(admin, "admin");
   const proof = await f.read(admin);

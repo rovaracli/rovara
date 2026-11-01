@@ -41,3 +41,20 @@ it("B35 company budget caps combined reads from different live admins at 120", a
   else for (let n = 0; n < 30; n++) await readOrgServiceStatus(f.deps, caller, { expectedOrgId: orgId });
  }expect(f.calls()).toBe(120);
 });
+it("B35 a company owner whose identity row a real sign-in wrote (no developerId attribute, the id is the key) may read", async () => {
+ const { readOrgServiceStatus } = await import("../../packages/broker/src/org/service-status.js"), { DeveloperSignInStore } = await import("../../packages/broker/src/developer/store.js"), f = fixture();
+ f.db.delete({ pk: `DEVELOPER#${developerId}`, sk: "META" });
+ await new DeveloperSignInStore({ documentClient: f.db, tableName: "signin", now: () => now }).upsertDeveloper({ developerId, provider: "slack", issuer: "https://slack.com", subject: "U0OWNER01", displayName: "Owner", slackUserId: "U0OWNER01" });
+ expect(f.db.get(`DEVELOPER#${developerId}`, "META")).not.toHaveProperty("developerId");
+ await expect(readOrgServiceStatus(f.deps, f.caller, { expectedOrgId: orgId })).resolves.toMatchObject({ orgId, configured: true });
+});
+it("B35 an identity row naming another person still refuses", async () => {
+ const { readOrgServiceStatus } = await import("../../packages/broker/src/org/service-status.js"), f = fixture();
+ f.db.set({ pk: `DEVELOPER#${developerId}`, sk: "META", developerId: "b".repeat(64), provider: "slack", revoked: false });
+ await expect(readOrgServiceStatus(f.deps, f.caller, { expectedOrgId: orgId })).rejects.toMatchObject({ code: "FORBIDDEN" });expect(f.calls()).toBe(0);
+});
+it("B35 no identity row refuses", async () => {
+ const { readOrgServiceStatus } = await import("../../packages/broker/src/org/service-status.js"), f = fixture();
+ f.db.delete({ pk: `DEVELOPER#${developerId}`, sk: "META" });
+ await expect(readOrgServiceStatus(f.deps, f.caller, { expectedOrgId: orgId })).rejects.toMatchObject({ code: "FORBIDDEN" });expect(f.calls()).toBe(0);
+});
