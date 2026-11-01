@@ -98,6 +98,7 @@ const ROWS: readonly Row[] = [
   ["aws/broker/ask-service.ts", "handleAskServiceRoute", "history", ".provider"],
   // a note a person sent from a session, as the Ask context lists it: the note's own sender (not the task's creator)
   ["agent-sessions/ask-readers.ts", "createAskReaders>notes", "other-record", ".developerId"],
+  ["aws/developer-tasks/task-answer-context.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-answer-context.ts", "commentAnswerSection", "principal", ".ownerKey"],
   ["aws/developer-tasks/close.ts", "finishTaskClose>closing", "index", ".developerId"],
   ["aws/developer-tasks/release.ts", "releaseFinishedTaskNow>rest", "index", ".developerId"],

@@ -11,8 +11,7 @@ import { createPageComment, listPageComments, type DeveloperTaskRouteDependencie
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { deleteTaskComment, editTaskComment, takeAskRateAcrossTasks, takeRate } from "../../packages/broker/src/developer/page-comments.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
-import { MAYA, createSingleAnswerPlanBroker, seedMembership, teammate } from "../support/developer-task-broker.js";
-import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
+import { MAYA, createSingleAnswerPlanBroker, teammate } from "../support/developer-task-broker.js";
 import { planAnswer } from "../support/plan-documents.js";
 import { pagePlan } from "../support/page-tasks.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
@@ -36,9 +35,7 @@ const commentItems = (harness: Harness, taskId: string) => harness.db.find((item
 
 /** A Quick task whose structured coding plan waits for Maya; started in a Slack thread unless `fromTool`. */
 async function waitingTask(options: { fromTool?: boolean; queue?: false | ((sent: Sent) => Promise<void>); wrap?: (client: DeveloperTaskRouteDependencies["documentClient"]) => DeveloperTaskRouteDependencies["documentClient"] } = {}) {
-  // The AgentX answer is an Ask (live interaction A3): its asker must be a member with "can use" on the task's session, read now. The fixture gives the thread's teammate that.
-  const harness = await createSingleAnswerPlanBroker({ brokerExtra: { slackAskLevel: async () => "use" } });
-  seedMembership(harness.db, developerIdForSlackUser("U0TEAMMATE1"));
+  const harness = await createSingleAnswerPlanBroker();
   const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000071" };
   let taskId: string;
   if (options.fromTool === true) {
@@ -50,7 +47,7 @@ async function waitingTask(options: { fromTool?: boolean; queue?: false | ((sent
   }
   const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { workspaceId: string; developerId: string; workflow: WorkflowSnapshot };
   const workspaceId = record.workspaceId;
-  harness.db.set({ ...record, sessionId: "ses_aaaaaaaaaaaaaaaaaaaa", workflow: { ...record.workflow, checkPolicy: { required: [], optional: [], selectedOptionalIds: [] } } });
+  harness.db.set({ ...record, workflow: { ...record.workflow, checkPolicy: { required: [], optional: [], selectedOptionalIds: [] } } });
   await harness.finish(workspaceId, String(operations(harness, workspaceId).find((item) => item.kind === "prepare")?.id), "SUCCEEDED", PREPARED);
   const planning = operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN" && item.status === "ACCEPTED")!;
   await harness.artifact(workspaceId, String(planning.id), "plan.md", planAnswer(PLAN));
