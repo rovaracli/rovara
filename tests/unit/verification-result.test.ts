@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AUTO_FIX_CODES, AUTO_FIX_ENVIRONMENT_CODES, AUTO_FIX_PERSON_GROUP_CODES, AUTO_FIX_TRANSIENT_GROUP_CODES, E2E_APPLICATION_SEND_BACK_CODES, EvidencePackSchema, TestingViewSchema, WORKFLOW_AGENTX_ACTOR_ID,
-  WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
+  WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX,
   WORKFLOW_BLOCK_REASONS, WorkflowDecisionRecordSchema, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, wholeTaskSpendUsd,
   type AutoFixBudget, type AutoFixFacts, type WorkflowDecision, type WorkflowSnapshot,
 } from "@agentx/contracts";
@@ -343,5 +343,17 @@ describe("the new environment codes (SH16) and the card mapping stay in step wit
   it("agrees with the codes the Fix setup card is for", () => {
     const environment = Object.entries(RESULT_RULES).filter(([, rule]) => rule.kind === "environment" || rule.kind === "original_fails").map(([name]) => name).sort();
     expect(environment).toEqual([...AUTO_FIX_ENVIRONMENT_CODES].sort());
+  });
+});
+
+describe("Opus review fix 3", () => {
+  it("fix 3: a fault that stays today's ask is not renamed Blocked by environment when an environment code is beside it", () => {
+    const make = () => blocked("VERIFY", WORKFLOW_BLOCK_REASONS.checkRunnerFailed);
+    expect(run(make(), { facts: { blockCause: "owner-stopped", hostBlocked: true } })).toEqual(waiting("needs_a_person"));
+    expect(run(verifyE2e(incomplete("g1: cancelled", "g2: login-failed")), { facts: { ownerCancelled: true } })).toEqual(waiting("needs_a_person"));
+    expect(run(verifyE2e(`${WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX}selection`), { facts: { hostBlocked: true } })).toEqual(waiting("needs_a_person"));
+    expect(run(verifyE2e(WORKFLOW_HISTORY_REWRITTEN_MESSAGE), { facts: { hostBlocked: true } })).toEqual(waiting("needs_a_person"));
+    // Code still wins over an ask.
+    expect(run(verifyE2e(incomplete("g1: build-failed", "g2: model-route-not-tested")))).toEqual(decided("code_failed", ["app_failed"]));
   });
 });

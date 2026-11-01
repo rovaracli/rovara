@@ -173,16 +173,16 @@ export function classifyTestingResult(input: ResultInput): ResultOutcome {
   const retryComing = decision.action === "RETRY";
   if (unclearWaiting !== undefined) return { decided: false, waiting: retryComing ? "retry_pending" : unclearWaiting };
 
-  // ---- 3. Blocked by environment, only after the one automatic retry
+  // ---- 3. a fault that is today's ask (the owner's stop, a changed selection, a rewritten history ...) is not renamed "Blocked by environment" because an environment code is beside it
+  if (ask) return { decided: false, waiting: retryComing ? "retry_pending" : "needs_a_person" };
+
+  // ---- 4. Blocked by environment, only after the one automatic retry
   let knownFailingOnly = false;
   if (originalFails) {
     if (excused()) knownFailingOnly = true;
     else blockedReasons.push("fails_on_original_code");
   }
   if (blockedReasons.length > 0) return retryComing ? { decided: false, waiting: "retry_pending" } : { decided: true, result: "blocked_by_environment", reasons: unique(blockedReasons) };
-
-  // ---- 4. a fault that is today's ask and about neither code nor the test environment
-  if (ask) return { decided: false, waiting: retryComing ? "retry_pending" : "needs_a_person" };
 
   // ---- 5. nothing failed or was blocked: was everything required checked on this exact code?
   if (verification === undefined) return { decided: false, waiting: "not_checked_yet" };
