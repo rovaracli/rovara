@@ -3,7 +3,7 @@
 // dispatch for a viewer's task starts, tasks without a People sidecar included. People with no grant keep the share design.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { orgBanKey, orgRemovedKey, projectMemberKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { orgBanKey, orgMemberKey, orgRemovedKey, projectMemberKey, slackTeamOrgKey, type ProjectRole } from "../../packages/contracts/src/index.js";
 import { guardTaskDispatch, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { pageAccess, requireProjectWorkRole } from "../../packages/broker/src/developer/task-access.js";
@@ -127,6 +127,17 @@ describe("a Slack requester who is not a current writer of the team's org is ref
     seedMembership(h.db, developerIdForSlackUser(MAYA), { orgId: TEST_ORG, role: "member" });
     seedMembership(h.db, guestId, { orgId: OTHER_ORG, role: "member" });
     h.db.set({ ...slackTeamOrgKey(SLACK_TEAM), orgId: TEST_ORG });
+    await refusedOnEveryRoute(h, GUEST);
+  });
+
+  it("a member record with no role field is unreadable and refused, not defaulted to member", async () => {
+    const h = await withKit();
+    seedMembership(h.db, guestId, { orgId: TEST_ORG, role: "member" });
+    const key = orgMemberKey(TEST_ORG, guestId);
+    const record = h.db.get(key.pk, key.sk)!;
+    const withoutRole: Record<string, unknown> = { ...record };
+    delete withoutRole["role"];
+    h.db.set(withoutRole);
     await refusedOnEveryRoute(h, GUEST);
   });
 

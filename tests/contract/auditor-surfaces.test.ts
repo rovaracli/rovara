@@ -131,6 +131,19 @@ describe("the task paths", () => {
     for (const role of ["auditor", "future-role"]) expect(await attempt(role), role).toMatchObject({ code: "TASK_ACCESS_DENIED" });
     expect(await attempt("member")).toBeUndefined();
   });
+
+  it("refuse a member record that has no role at all as unreadable, not as a member", async () => {
+    const h = await createDeveloperTaskBroker();
+    const who = "6".repeat(64);
+    const { requireProjectAuthority } = await import("../../packages/broker/src/aws/broker/records.js");
+    h.db.set({ ...projectMemberKey(TEST_ORG, who, "payments"), entityType: "MEMBERSHIP", ownerKey: who, projectName: "payments", role: "developer", projectRole: "maintainer", grantId: "g2" });
+    seedMembership(h.db, who, { orgId: TEST_ORG, role: "member" });
+    const record = h.db.get(orgMemberKey(TEST_ORG, who).pk, orgMemberKey(TEST_ORG, who).sk)!;
+    const withoutRole: Record<string, unknown> = { ...record };
+    delete withoutRole["role"];
+    h.db.set(withoutRole);
+    expect(await refused(requireProjectAuthority(h.brokerInput as never, TEST_ORG, who, "payments"))).toMatchObject({ code: "TASK_ACCESS_DENIED" });
+  });
 });
 
 describe("the task creator is the person whose role is read (re-check)", () => {
