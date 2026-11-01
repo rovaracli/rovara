@@ -11,7 +11,7 @@ import { keepEvidence } from "../../packages/broker/src/rovara-code/evidence-kee
 import { loadProofContext } from "../../packages/broker/src/rovara-code/proof-inputs.js";
 import { proofSection } from "../../packages/broker/src/rovara-code/proof-section.js";
 import { rovaraPullRequestBody } from "../../packages/broker/src/rovara-code/pull-request-body.js";
-import { environmentLine } from "../../packages/broker/src/rovara-code/evidence-lines.js";
+import { environmentLine, evidenceNotTestedLines } from "../../packages/broker/src/rovara-code/evidence-lines.js";
 import { EvidencePackSchema } from "../../packages/contracts/src/evidence.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
@@ -109,5 +109,13 @@ describe("the environment line of a pack with no approved test environment", () 
   it("says so instead of claiming synthetic test data nobody checked (replaces the pack's 'Test data: synthetic' for such a pack)", () => {
     expect(environmentLine(pack, 0)).toBe("Environment: sandbox. No approved test environment: the project's own test setup was used.");
     expect(environmentLine({ ...pack, environment: { ...pack.environment, envRevision: 2 } }, 0)).toBe("Environment: sandbox. Test data: synthetic.");
+  });
+});
+
+describe("a run whose details were not captured", () => {
+  it("the pull request says so under What wasn't tested, so a reader can tell it from evidence that expired", () => {
+    const pack = EvidencePackSchema.parse({ schemaVersion: 1, candidateDigest: CODE.digest, environment: { tier: "sandbox", envRevision: 0, services: [], data: "synthetic", accounts: [] }, checks: [], selection: { method: "full", selected: 0, total: 0 }, api: [], browser: [],
+      notTested: [{ kind: "environment", id: "evidence_capture", text: "Test details were not captured for this run", reason: "the worker reported none" }] });
+    expect(evidenceNotTestedLines(pack, 0)).toEqual(["- Detail Test details were not captured for this run (the worker reported none)"]);
   });
 });

@@ -75,14 +75,26 @@ describe("assembling the evidence of a run", () => {
     expect(evidencePackKey(TASK, DIGEST)).toBe(`private/owner-1/ws-1/evidence-pack/task-1/${DIGEST}.json`);
   });
 
-  it("keeps nothing for a raw file of other code, none at all, an unreadable one, or one outside the operation's own prefix", async () => {
+  it("keeps nothing for a raw file of other code; for none at all or one outside the operation's own prefix it keeps a pack that says not captured; an unreadable one is the broker's verdicts and says so", async () => {
     const good = JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }]));
     expect(await keepEvidence(world(JSON.stringify(rawOf([{ checkId: "readiness:0", tests: tests(["t1", "t2", "t3"]) }], OTHER))).deps, input())).toEqual({ kept: false, reason: "not_bound" });
-    // No raw file (an older worker was sent no request): recorded as not captured, and no pack is kept.
+    // No raw file (an older worker was sent no request): recorded as NOT CAPTURED in the log and on the pack, which holds only the broker's own verdicts; the page can tell it from expired or off.
     const logged: string[] = [];
-    expect(await keepEvidence({ ...world(undefined).deps, log: (event) => { logged.push(event); } }, input())).toEqual({ kept: false, reason: "no_raw" });
+    const none = world(undefined);
+    expect(await keepEvidence({ ...none.deps, log: (event) => { logged.push(event); } }, input())).toMatchObject({ kept: true });
     expect(logged).toEqual(["evidence.not_captured"]);
-    expect(await keepEvidence(world(good, { key: `private/another-owner/${TASK.workspaceId}/${OP}/evidence-raw.json` }).deps, input())).toEqual({ kept: false, reason: "no_raw" });
+    const notCaptured = await loadEvidencePack(none.deps.actions, TASK, DIGEST);
+    expect(notCaptured?.notTested).toContainEqual({ kind: "environment", id: "evidence_capture", text: "Test details were not captured for this run", reason: "the worker reported none" });
+    expect(notCaptured?.checks.every((check) => check.tests === undefined && check.outputTailRef === undefined)).toBe(true);
+    expect(notCaptured?.checks.map((check) => check.after)).toEqual(["passed", "passed"]);
+    // A raw file outside the operation's own prefix is not read: the same, not captured.
+    const outside = world(good, { key: `private/another-owner/${TASK.workspaceId}/${OP}/evidence-raw.json` });
+    expect(await keepEvidence(outside.deps, input())).toMatchObject({ kept: true });
+    expect((await loadEvidencePack(outside.deps.actions, TASK, DIGEST))?.notTested.some((item) => item.id === "evidence_capture")).toBe(true);
+    // A pack made from a raw file does not say so.
+    const captured = world(good);
+    await keepEvidence(captured.deps, input());
+    expect((await loadEvidencePack(captured.deps.actions, TASK, DIGEST))?.notTested.some((item) => item.id === "evidence_capture")).toBe(false);
     // Unreadable: the pack still holds what the broker knows itself, and says the details could not be read.
     const unreadable = world("{ not json");
     expect(await keepEvidence(unreadable.deps, input())).toMatchObject({ kept: true });

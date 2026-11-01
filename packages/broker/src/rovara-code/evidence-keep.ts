@@ -28,6 +28,7 @@ const PACK_READ_BYTES = 4 * 1_048_576;
 /** What the sandbox without an approved test environment is: the project's own checks in the task's sandbox. Test environments are a later lane; this says so in the pack instead of claiming a setup. */
 export const DEFAULT_EVIDENCE_ENVIRONMENT: EvidenceEnvironment = { tier: "sandbox", envRevision: 0, services: [], data: "synthetic", accounts: [] };
 const NO_ENVIRONMENT_ITEM: EvidenceNotTested = { kind: "environment", id: "test_environment", text: "No approved test environment: the project's own test setup was used", reason: "not set up" };
+const NOT_CAPTURED_ITEM: EvidenceNotTested = { kind: "environment", id: "evidence_capture", text: "Test details were not captured for this run", reason: "the worker reported none" };
 const WITHHELD_ITEM: EvidenceNotTested = { kind: "environment", id: "data_guard", text: "Some test details were left out", reason: "personal or production data found" };
 
 export interface KeepEvidenceInput {
@@ -56,7 +57,7 @@ export interface KeepEvidenceDeps {
 
 export type KeepEvidenceResult =
   | { kept: true; problems: EvidenceProblem[]; guardedParts: number }
-  | { kept: false; reason: "no_raw" | "not_bound" | "withheld" | "invalid" | "fault" };
+  | { kept: false; reason: "not_bound" | "withheld" | "invalid" | "fault" };
 
 /** The raw file's text for this operation, or undefined (none, not under the operation's own prefix, unreadable). Over the cap it returns the cap plus one byte, which the builder refuses whole. */
 async function readRaw(deps: KeepEvidenceDeps, input: KeepEvidenceInput): Promise<string | undefined> {
@@ -73,14 +74,14 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
     const deny = input.deny ?? NO_PROD_DENY;
     let rawText = await readRaw(deps, input);
     let guarded = 0;
-    if (rawText === undefined) {
-      // Recorded, not claimed: no evidence was captured for this run (an older worker was sent no request, or the checks named no report), so no pack is kept and nothing is said about its tests.
-      deps.log?.("evidence.not_captured", { reason: "no_raw_file" });
-      return { kept: false, reason: "no_raw" };
-    }
+    // No raw file (an older worker was sent no request, or the checks named no report): recorded as NOT CAPTURED, in the log and on the pack itself, so the pull request and the Evidence tab can tell it from
+    // evidence that expired or from a switch that was off. The pack then holds only what the broker knows itself (its own verdict for each check).
+    if (rawText === undefined) deps.log?.("evidence.not_captured", { reason: "no_raw_file" });
     // The guard works on a raw file that parses (a file that does not is refused whole by the builder: it would never have been used).
     let parsedRaw: EvidenceRaw | undefined;
-    try { const parsed = EvidenceRawSchema.safeParse(JSON.parse(rawText)); parsedRaw = parsed.success ? parsed.data : undefined; } catch { parsedRaw = undefined; }
+    if (rawText !== undefined) {
+      try { const parsed = EvidenceRawSchema.safeParse(JSON.parse(rawText)); parsedRaw = parsed.success ? parsed.data : undefined; } catch { parsedRaw = undefined; }
+    }
     if (parsedRaw !== undefined && parsedRaw.candidateDigest !== input.candidateDigest) return { kept: false, reason: "not_bound" };
     if (parsedRaw !== undefined) {
       const guard = guardRaw(parsedRaw, deny);
@@ -94,7 +95,7 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
     const environment = input.environment ?? DEFAULT_EVIDENCE_ENVIRONMENT;
     const built = buildEvidencePack({
       candidateDigest: input.candidateDigest, rawText, checks: input.checks, checkKinds: kinds, environment,
-      notTested: [...(environment.envRevision === 0 ? [NO_ENVIRONMENT_ITEM] : []), ...(guarded > 0 ? [WITHHELD_ITEM] : [])], storedArtifacts: new Map(),
+      notTested: [...(environment.envRevision === 0 ? [NO_ENVIRONMENT_ITEM] : []), ...(rawText === undefined ? [NOT_CAPTURED_ITEM] : []), ...(guarded > 0 ? [WITHHELD_ITEM] : [])], storedArtifacts: new Map(),
     });
     if (built.pack === undefined) return { kept: false, reason: "invalid" };
     const guardedPack = guardPack(built.pack, built.newArtifacts, deny);
