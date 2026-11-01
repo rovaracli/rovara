@@ -72,8 +72,11 @@ export type AskCaller = SessionCaller;
 /** Posts a comment on a Linear issue as Rovara (see `LinearReplyPort`; this is the part an Ask needs). */
 export interface LinearAnswerPort { reply(input: { orgId: OrgId; issueKey: string; text: string }): Promise<void> }
 
-/** An answer for a Linear issue: secrets redacted, and every `@` that starts a word broken so that the answer can never notify someone by mention. */
-export const linearAnswerText = (text: string): string => `${redactText(text).replace(/@(?=[\p{L}\p{N}_])/gu, "@\u200b")}\n\n_${ASK_ANSWER_LABEL}_`;
+/** Text for a Linear issue with every `@` that starts a word broken, so that it can never notify someone by mention and Rovara's own words can never read as a mention of Rovara. */
+export const withoutMentions = (text: string): string => text.replace(/@(?=[\p{L}\p{N}_])/gu, "@\u200b");
+
+/** An answer for a Linear issue: secrets redacted, mentions broken, with the AI label. */
+export const linearAnswerText = (text: string): string => `${withoutMentions(redactText(text))}\n\n_${ASK_ANSWER_LABEL}_`;
 
 const getItem = async (deps: Pick<AskDependencies, "documentClient" | "tableName">, key: { pk: string; sk: string }): Promise<Item | undefined> =>
   ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Item }).Item;

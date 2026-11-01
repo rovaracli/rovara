@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { ASK_QUESTION_MAX_CHARS, ASK_UNAVAILABLE_MESSAGE, INDEX_EXPIRY_ATTRIBUTE, askLinearCommentKey, redactText, type HookRecord, type OrgId } from "@agentx/contracts";
-import { admitAsk, type AskDependencies } from "../agent-sessions/ask.js";
+import { admitAsk, withoutMentions, type AskDependencies } from "../agent-sessions/ask.js";
 import { sessionForSurface } from "../agent-sessions/bindings.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { linearCommentOf } from "../triggers/providers/linear.js";
@@ -18,6 +18,8 @@ import { linearCommentOf } from "../triggers/providers/linear.js";
 /** Posts a comment on a Linear issue as Rovara. The only way an Ask's answer or a refusal reaches Linear; absent, the Linear intake does nothing. */
 export interface LinearReplyPort {
   reply(input: { orgId: OrgId; issueKey: string; text: string }): Promise<void>;
+  /** Linear's user id of the account Rovara writes as in this org (so a comment Rovara wrote is never read as a person's). Undefined when it cannot be known. */
+  ownActorId(orgId: OrgId): Promise<string | undefined>;
 }
 
 export const LINEAR_LINK_REPLY = "I answer questions here (`@rovara ask <question>`). To stop or change anything, use the task page";
@@ -83,12 +85,15 @@ export async function handleLinearComment(deps: LinearCommentDependencies, input
   // Not addressed to Rovara at all: a person talking to a person. Nothing is read, nothing is written.
   if (comment === undefined || !MENTION.test(comment.text)) return "ignored";
   const { orgId } = input;
+  // Rovara's own account is never a person asking (its replies must never start another reply). An id that cannot be read ends the comment too: fail closed.
+  const own = await deps.reply.ownActorId(orgId).then((id) => ({ id }), () => undefined);
+  if (own === undefined || own.id === comment.authorId) return "ignored";
   // The issue must be one a session of this hook's org AND project follows; anything else is ignored without a word (an unbound issue is not Rovara's business).
   const session = await sessionForSurface({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, { kind: "linear_issue", issueId: comment.issueKey, url: `https://linear.app/issue/${comment.issueKey}` });
   if (session === undefined || session.kind !== "task" || session.subject.kind !== "task" || session.project !== input.hook.project) return "ignored";
   if (!await firstTime(deps, orgId, comment.commentId)) return "duplicate";
   const say = async (text: string): Promise<void> => {
-    try { await deps.reply!.reply({ orgId, issueKey: comment.issueKey, text }); } catch (error) { deps.log?.({ event: "linear_comment.reply_failed", error: error instanceof Error ? error.name : "unknown" }); }
+    try { await deps.reply!.reply({ orgId, issueKey: comment.issueKey, text: withoutMentions(text) }); } catch (error) { deps.log?.({ event: "linear_comment.reply_failed", error: error instanceof Error ? error.name : "unknown" }); }
   };
   const question = askQuestionOf(comment.text);
   if (question === undefined) {

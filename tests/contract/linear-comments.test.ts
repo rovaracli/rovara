@@ -4,7 +4,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { askRequestKey, type HookRecord, type OrgId } from "../../packages/contracts/src/index.js";
-import { askIdFor, completeAsk, prepareAskTurn, type AskDependencies } from "../../packages/broker/src/agent-sessions/ask.js";
+import { askIdFor, completeAsk, prepareAskTurn, withoutMentions, type AskDependencies } from "../../packages/broker/src/agent-sessions/ask.js";
 import { bindSessionSurface } from "../../packages/broker/src/agent-sessions/bindings.js";
 import { LINEAR_BUSY_REPLY, LINEAR_LINK_REPLY, LINEAR_TOO_LONG_REPLY, askQuestionOf, handleLinearComment, linearAskerKey, type LinearReplyPort } from "../../packages/broker/src/rovara-code/linear-comments.js";
 import { linearCommentOf, linearProvider } from "../../packages/broker/src/triggers/providers/linear.js";
@@ -14,9 +14,11 @@ import { capturingAuditDeps } from "../support/audit-capture.js";
 
 const ISSUE = "ENG-142";
 const OUTSIDER = "linear-user-outsider-1";
+const ROVARA_ACTOR = "linear-user-rovara-account";
 const KEY = "k".repeat(48);
 const QUESTION = "Why is this blocked?";
 
+const MENTION_TEST = /(?:\[@rovara\]\([^)]*\)|@rovara)\b/iu;
 type Replies = Array<{ orgId: OrgId; issueKey: string; text: string }>;
 
 async function world(options: { edition?: "enterprise" | "public"; bind?: boolean; project?: string; enabled?: boolean; reply?: boolean } = {}) {
@@ -30,7 +32,7 @@ async function world(options: { edition?: "enterprise" | "public"; bind?: boolea
   const hw = setupHookWorld({ linear: linearProvider }, { db: w.db, clock: w.clock });
   const hook = await hw.hook({ source: "linear", orgId: ORG_A, project: "web", secret: SECRET_1 });
   const replies: Replies = [];
-  const reply: LinearReplyPort = { reply: async (input) => { replies.push(input); } };
+  const reply: LinearReplyPort = { reply: async (input) => { replies.push(input); }, ownActorId: async () => ROVARA_ACTOR };
   const sent: Array<{ body: string }> = [];
   const audit = capturingAuditDeps({ db: w.db, now: () => w.clock.now });
   const ask: AskDependencies = {
@@ -143,7 +145,7 @@ describe("Linear is ask-only: nothing but a link comes back for a stop or an ins
     expect(t.outcomes).toEqual(Array(6).fill("link_reply"));
     expect(t.sent).toEqual([]);
     expect(t.replies).toHaveLength(6);
-    for (const reply of t.replies) expect(reply.text).toBe(`${LINEAR_LINK_REPLY}: https://app.example.invalid/s/${t.made.sessionId}`);
+    for (const reply of t.replies) expect(reply.text).toBe(withoutMentions(`${LINEAR_LINK_REPLY}: https://app.example.invalid/s/${t.made.sessionId}`));
     // The session, the task and the steer notes are as they were.
     expect(t.w.db.find((item) => String(item.sk).startsWith("MESSAGE#") || String(item.sk).startsWith("NOTE#") || String(item.sk).startsWith("REQUEST#") || String(item.pk).startsWith("OUTBOX#"))).toEqual([]);
   });
@@ -234,6 +236,45 @@ describe("what is ignored without a word, and writes nothing", () => {
       expect(t.sent).toEqual([]);
       expect(t.table().filter((item) => !before.includes(item) && !/"pk":"[^"]*HOOK/u.test(item))).toEqual([]);
     }
+  });
+
+  it("a comment with no actor type is not believed to be a person (fail closed), and neither is one written by Rovara's own Linear account, whatever type it carries", async () => {
+    const t = await world();
+    const untyped = t.comment(`@rovara ask ${QUESTION}`);
+    untyped.actor = { id: OUTSIDER } as never;
+    await ignored(t, untyped);
+    const bare = t.comment(`@rovara ask ${QUESTION}`);
+    (bare as { actor?: unknown }).actor = undefined;
+    await ignored(t, bare);
+    const own = t.comment(`@rovara ask ${QUESTION}`);
+    own.actor = { id: ROVARA_ACTOR, type: "user", name: "Rovara" };
+    await ignored(t, own);
+    expect(t.outcomes).toEqual(["ignored", "ignored", "ignored"]);
+    // An account id that cannot be read ends the comment too.
+    const unknown = await world();
+    unknown.deps.reply = { reply: async () => undefined, ownActorId: async () => { throw new Error("no Linear"); } };
+    await ignored(unknown, unknown.comment(`@rovara ask ${QUESTION}`));
+    expect(unknown.outcomes).toEqual(["ignored"]);
+  });
+
+  it("Rovara's own words can never start another reply: every reply it makes, posted back as a person's comment, is ignored or answered with nothing", async () => {
+    const t = await world();
+    await t.send(t.comment("@rovara stop"));
+    await t.send(t.comment(`@rovara ask ${"x".repeat(1001)}`));
+    await t.send(t.comment("@rovara ask first"));
+    await t.send(t.comment("@rovara ask second"));
+    const own = [...t.replies];
+    expect(own.length).toBeGreaterThanOrEqual(3);
+    for (const reply of own) {
+      expect(reply.text).not.toMatch(/@rovara\b/iu);
+      expect(MENTION_TEST.test(reply.text)).toBe(false);
+    }
+    // Even if Linear shows them as a person's comment (no loop through the link reply), nothing new is said or queued.
+    const before = t.replies.length;
+    const sentBefore = t.sent.length;
+    for (const reply of own) await t.send(t.comment(reply.text));
+    expect(t.replies).toHaveLength(before);
+    expect(t.sent).toHaveLength(sentBefore);
   });
 
   it("the comment parser believes the hook's own organization and nothing else", () => {

@@ -95,9 +95,10 @@ export function linearCommentOf(body: unknown, hook: HookRecord): LinearComment 
   const parsed = CommentBody.safeParse(body);
   if (!parsed.success || !same(parsed.data.organizationId, tenant.organizationId)) return undefined;
   const { data, actor } = parsed.data;
-  // A comment by an application or an integration (a bot, Rovara's own account) is never an Ask: Rovara must not answer itself.
+  // Only a comment the delivery SAYS a person wrote is an Ask: an application or integration (a bot, Rovara's own account) is not, and a delivery that names no kind is not believed to be a person
+  // (fail closed): Rovara must not answer itself.
   const kind = actor?.type ?? data.user?.type;
-  if (kind !== undefined && kind !== "user") return undefined;
+  if (kind !== "user") return undefined;
   const authorId = actor?.id ?? data.userId ?? data.user?.id;
   const link = httpsLinkOn(parsed.data.url, "linear.app");
   const issue = link === undefined ? undefined : parseLinearIssue(link);
