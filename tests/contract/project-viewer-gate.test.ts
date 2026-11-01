@@ -17,6 +17,62 @@ import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createDeveloperTaskBroker>>;
 const KIT: Developer = { developerId: "4".repeat(64), name: "Kit Alvarez", provider: "oidc", sessionId: "s-kit" };
+describe("I2: a Slack-linked Auditor is read-only on every Slack route that starts or changes work", () => {
+  const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000701`;
+  const AUDITOR = "U0AUDITSL01";
+
+  it("the service routes refuse an Auditor who also holds a contributor grant (it was resolved to a contributor)", async () => {
+    const h = await withKit();
+    const developerId = developerIdForSlackUser(AUDITOR);
+    seedMembership(h.db, developerId, { orgId: TEST_ORG, role: "auditor" });
+    setGrant(h.db, { ...KIT, developerId }, "contributor");
+    const created = await ensureWorkspace(h.handler, thread, "U0MAYA001");
+    expect(created.status).toBe(200);
+    const workspaceId = String(created.body.workspaceId);
+    const calls: Array<[string, string, string, unknown]> = [
+      ["PUT", "/v1/service/project/model", "model", { provider: "openai", modelId: "gpt-5" }],
+      ["POST", "/v1/service/evals/swebench", "swebench run", {}],
+      ["POST", "/v1/service/evals/batches", "swebench batch", {}],
+      ["POST", "/v1/service/threads/workspace/prepare", "prepare (start work)", { requestId: randomUUID() }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/pull-requests`, "pull request", { requestId: randomUUID(), repository: "demo", title: "Fix" }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/connectors/github/call`, "connector call", { tool: "x", arguments: {} }],
+      ["POST", `/v1/service/workspaces/${workspaceId}/pull-request-actions`, "pull request action", { requestId: randomUUID(), repository: "demo", pullRequestNumber: 1, action: "sync" }],
+    ];
+    for (const [method, path, label, body] of calls) {
+      const refused = await serviceCall(h.handler, thread, AUDITOR, method, path, body);
+      expect(refused.status, `${label} ${JSON.stringify(refused.body)}`).toBe(403);
+      expect(refused.body.error, label).toMatchObject({ code: "TASK_ACCESS_DENIED" });
+    }
+  });
+
+  it("the same Auditor with no grant at all (the channel would have made it a contributor) is refused too", async () => {
+    const h = await withKit();
+    seedMembership(h.db, developerIdForSlackUser(AUDITOR), { orgId: TEST_ORG, role: "auditor" });
+    const refused = await serviceCall(h.handler, thread, AUDITOR, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(refused.body.error).toMatchObject({ code: "TASK_ACCESS_DENIED" });
+  });
+
+  it("cannot start a task or decide one from a Slack thread", async () => {
+    const h = await withKit();
+    const slackThread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000702" };
+    const owner = "U0SLACKOWN2";
+    const ownerId = developerIdForSlackUser(owner), auditorId = developerIdForSlackUser(AUDITOR);
+    seedMembership(h.db, ownerId, { orgId: TEST_ORG, role: "member" });
+    setGrant(h.db, { ...KIT, developerId: ownerId }, "contributor");
+    seedMembership(h.db, auditorId, { orgId: TEST_ORG, role: "auditor" });
+    setGrant(h.db, { ...KIT, developerId: auditorId }, "contributor");
+    const refusedStart = await h.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread: { ...slackThread, threadTs: "1695500000.000703" }, userId: AUDITOR, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+    expect(refusedStart.statusCode).toBe(403);
+    const started = await h.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread: slackThread, userId: owner, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
+    const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
+    for (const taskAction of ["decide", "retry", "publish", "feedback"]) {
+      const answer = await h.handler({ source: "agentx.slack-ingress", action: "task-people-authorize", taskAction, taskId, userId: AUDITOR, thread: slackThread });
+      expect(answer.statusCode, taskAction).toBe(403);
+    }
+  });
+});
+
 const RESUMED_ORIGINAL = "This task was paused while you could only view the project. It has resumed with its original instructions; the instructions you just sent were not used, so send them again once it finishes.";
 const VIEWER_MESSAGE = "You can view `payments` but not start tasks in it. Ask a maintainer to make you a contributor.";
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };

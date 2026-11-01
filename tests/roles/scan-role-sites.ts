@@ -4,7 +4,7 @@
 // A check written as a positive list (`role === "owner" || role === "admin"`, or its refusal form `role !== "owner" && role !== "admin"`) refuses the Auditor by
 // construction, and so does a comparison with `owner` alone. Two shapes do not:
 //   - a comparison with `member` (or with `admin` alone): `role !== "member"` lets the Auditor in, and `role === "member" ? a : b` sends it down the else branch;
-//   - a default that turns a role the code does not read into a member: `role ?? "member"`.
+//   - a default that turns a role the code does not read into a member or a contributor: `role ?? "member"`, `projectRole ?? "contributor"`.
 // Every such site must be in the reviewed list (tests/roles/role-sites-reviewed.ts) with the reason the Auditor is safe there. A new site fails the test until
 // someone reads it and adds it, which is how "a new role check forgot the Auditor" is caught.
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -22,7 +22,7 @@ const TEST_FILE = /\.(?:test|spec)\.tsx?$/;
 const ROLEISH = String.raw`(?:[A-Za-z_$][\w$]*\.)*[\w$]*[rR]ole[\w$]*(?:\??\.[\w$]+|\[[^\]]*\])*`;
 const COMPARISON = new RegExp(`(${ROLEISH})\\s*(===|!==|==|!=)\\s*(["'])(owner|admin|member)\\3|(["'])(owner|admin|member)\\5\\s*(===|!==|==|!=)\\s*(${ROLEISH})`, "g");
 const SWITCH_CASE = /\bcase\s+(["'])(owner|admin|member)\1\s*:/g;
-const DEFAULT_TO_MEMBER = new RegExp(`(?:${ROLEISH})[^;]{0,60}(?:\\?\\?|\\|\\|)\\s*(["'\`])member\\1`);
+const DEFAULT_TO_MEMBER = new RegExp(`(?:${ROLEISH})[^;]{0,60}(?:\\?\\?|\\|\\|)\\s*(["'\`])(?:member|contributor)\\1`);
 /** The literal `member` in any quote, on a line that names a role: `["member"].includes(role)`, a template, a ternary. */
 const QUOTED_MEMBER = /(["'`])member\1/;
 const ROLEISH_ANYWHERE = new RegExp(ROLEISH);

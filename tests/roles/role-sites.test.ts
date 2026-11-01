@@ -41,6 +41,7 @@ describe("role checks that the Auditor could slip through", () => {
     expect(shapes('const { orgRole: r } = caller;')).toEqual(["alias"]);
     expect(shapes('const check = ({ role: r }) => r !== "member";')).toEqual(["alias"]);
     expect(shapes('const r = caller.orgRole || "member";')).toEqual(["default"]);
+    expect(shapes('const r = caller.orgRole ?? "contributor";')).toEqual(["default"]);
     expect(shapes('const r = OrgRoleSchema.safeParse(item.role).success;')).toEqual(["schema"]);
     expect(shapes('if (caller.orgRole.startsWith("mem")) go();')).toEqual(["text"]);
     expect(shapes('if (/^m/.test(caller.orgRole)) go();')).toEqual(["text"]);
