@@ -4,7 +4,7 @@
 //     another org's rows alone.
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { githubInstallationKey, githubRepoProjectKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { githubInstallationKey, githubRepoProjectKey, orgMetaKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
@@ -25,6 +25,8 @@ const noSdk = async (): Promise<never> => { throw new SdkUnavailableError(); };
 /** A fake AWS: Bedrock answers a 1,024-dimension embedding, S3 Vectors records every command with the credentials it was signed with, and STS records every session policy it was asked for. */
 function fakeAws() {
   const vectorCalls: Array<{ command: string; input: Record<string, unknown>; accessKeyId: string }> = [];
+  const athenaCalls: Array<{ command: string; sql: string }> = [];
+  const athena = { down: false };
   const embedBodies: string[] = [];
   const sessions: Array<{ roleArn: string; policy: string; sessionName: string }> = [];
   const command = (name: string) => ({ [name]: class { constructor(readonly input: Record<string, unknown>) {} get commandName() { return name; } } });
@@ -47,6 +49,20 @@ function fakeAws() {
         ...command("PutVectorsCommand"), ...command("QueryVectorsCommand"), ...command("GetVectorsCommand"), ...command("DeleteVectorsCommand"), ...command("CreateIndexCommand"),
       };
     }
+    if (name === "@aws-sdk/client-athena") {
+      return {
+        AthenaClient: class {
+          async send(c: { commandName: string; input: Record<string, unknown> }) {
+            athenaCalls.push({ command: c.commandName, sql: typeof c.input.QueryString === "string" ? c.input.QueryString : "" });
+            if (athena.down && c.commandName === "StartQueryExecutionCommand") throw Object.assign(new Error("secret"), { name: "InternalServerException" });
+            if (c.commandName === "StartQueryExecutionCommand") return { QueryExecutionId: `q${athenaCalls.length}` };
+            if (c.commandName === "GetQueryExecutionCommand") return { QueryExecution: { Status: { State: "SUCCEEDED" } } };
+            return { ResultSet: { ResultSetMetadata: { ColumnInfo: [] }, Rows: [] } };
+          }
+        },
+        ...command("StartQueryExecutionCommand"), ...command("GetQueryExecutionCommand"), ...command("GetQueryResultsCommand"), ...command("StopQueryExecutionCommand"),
+      };
+    }
     throw new SdkUnavailableError();
   };
   const sts = {
@@ -55,7 +71,7 @@ function fakeAws() {
       return { credentials: { accessKeyId: `AKIA-${sessions.length}`, secretAccessKey: "s", sessionToken: "t" }, expiresAtMs: T0 + 3_600_000 };
     },
   };
-  return { sdk, sts, vectorCalls, embedBodies, sessions };
+  return { sdk, sts, vectorCalls, embedBodies, sessions, athenaCalls, athena };
 }
 const VECTORS_ENV = { TEAM_RECORD_VECTORS_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx/ent/vr", TEAM_RECORD_VECTOR_BUCKETS: "agentx-ent-record-vectors", AGENTX_ACCOUNT_ID: "123456789012" } as const;
 const everything = (db: FakeDynamoDb): string => JSON.stringify(db.find(() => true));
@@ -513,5 +529,98 @@ describe("a delete that arrives during a store failure is retried and lands", ()
     expect(isTeamRecordQueueEvent({ Records: [record(arn)], requestContext: {} }, env)).toBe(false);
     expect(isTeamRecordQueueEvent({ Records: [] }, env)).toBe(false);
     expect(await drainTeamRecordQueue({ teamRecord: undefined }, { Records: [record(arn)] })).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+  });
+});
+
+
+// ---- fix round 1, B2 and S5: an erase is recorded first, bounded inline, and finished by the hourly job, the lake included
+describe("an erase that does not finish is resumed, and a company stays in the directory until its lake delete has run", () => {
+  const LAKE = { TEAM_RECORD_LAKE_ENABLED: "1", TEAM_RECORD_TABLE_BUCKET: "agentx-ent-record-lake", TEAM_RECORD_ATHENA_WORKGROUP: "agentx-ent-record" } as const;
+  const orgMeta = (db: FakeDynamoDb, extra: Record<string, unknown>) => db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, ...extra });
+  const directory = (db: FakeDynamoDb) => db.find((item) => item.pk === "TEAM_RECORD_ORGS" && item.sk === ORG_A);
+  const jobs = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_ERASE_JOB");
+
+  async function company(extra: Partial<Parameters<typeof createTeamRecordRuntime>[0]> = {}) {
+    const db = dbOf();
+    const aws = fakeAws();
+    const runtime = build(db, { ...ON, ...LAKE, ROVARA_EDITION: "enterprise" }, { sdk: aws.sdk, sts: aws.sts, ...extra });
+    db.set({ ...orgProjectCatalogKey(ORG_A, "web"), entityType: "PROJECT_CATALOG", name: "web" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `${MARKER} history` }));
+    return { db, aws, runtime };
+  }
+
+  it("a close interrupted after the hot store was cleared still deletes the lake rows on the next pass, and only then leaves the directory", async () => {
+    const { db, aws, runtime } = await company();
+    orgMeta(db, { closingAt: "2026-10-30T11:00:00.000Z" });
+    await runtime.erase.workspace(ORG_A);
+    // The hot store is clear and the company waits in the directory for the lake: the marker says so.
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+    expect(directory(db)).toHaveLength(1);
+    expect(jobs(db)).toHaveLength(1);
+    // The lake is down at the first hourly run: nothing is dropped.
+    aws.athena.down = true;
+    await runtime.jobs.run("hourly");
+    expect(directory(db)).toHaveLength(1);
+    expect(jobs(db)).toHaveLength(1);
+    // The lake is back: its delete statement for THIS company runs, and then the marker and the directory entry go.
+    aws.athena.down = false;
+    await runtime.jobs.run("hourly");
+    const deletes = aws.athenaCalls.filter((call) => call.command === "StartQueryExecutionCommand" && /DELETE FROM/i.test(call.sql));
+    expect(deletes.length).toBeGreaterThan(0);
+    expect(deletes.every((call) => call.sql.includes(ORG_A))).toBe(true);
+    expect(directory(db)).toStrictEqual([]);
+    expect(jobs(db)).toStrictEqual([]);
+  });
+
+  it("an erase interrupted by a storage failure leaves its marker, and the next hourly run finishes it", async () => {
+    const db = dbOf();
+    const { client, down } = (() => {
+      const state = { on: false };
+      return { down: state, client: { send: async (command: unknown) => {
+        const name = (command as { constructor: { name: string } }).constructor.name;
+        if (state.on && /^(Delete|Update|TransactWrite|BatchWrite)/.test(name)) throw new Error("down");
+        return db.send(command as never);
+      } } };
+    })();
+    const aws = fakeAws();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" }, { documentClient: client, sdk: aws.sdk, sts: aws.sts });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    const person = { sourceId: "123", developerId: "dev-1", trust: "member" as const };
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", actor: person, text: `${MARKER} mine` }));
+    down.on = true;
+    await expect(runtime.erase.person(ORG_A, "dev-1")).rejects.toThrow();
+    expect(jobs(db)).toHaveLength(1);
+    expect(JSON.stringify(jobs(db))).toContain("dev-1");
+    down.on = false;
+    await runtime.jobs.run("hourly");
+    expect(everything(db)).not.toContain(MARKER);
+    expect(jobs(db)).toStrictEqual([]);
+  });
+
+  it("a small project's inline erase finishes in its one pass and leaves no marker", async () => {
+    const { db, runtime } = await company();
+    await runtime.erase.project(ORG_A, "web", "project_archived");
+    expect(jobs(db)).toHaveLength(0);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
+  });
+
+  it("a company marker for a company that is still open is stale and is dropped without erasing anything (the close did not happen)", async () => {
+    const { db, runtime } = await company();
+    orgMeta(db, {});
+    // Put the marker by hand, as an erase that began and then never closed the company would have left it.
+    db.set({ pk: "TEAM_RECORD_ORGS", sk: `ERASE#${ORG_A}#workspace#all`, entityType: "TEAM_RECORD_ERASE_JOB", orgId: ORG_A, at: "2026-10-30T11:00:00.000Z", job: { kind: "workspace", phase: "hot", projects: ["web"] } });
+    await runtime.jobs.run("hourly");
+    expect(jobs(db)).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
+  });
+
+  it("a project marker only runs while the project is archived", async () => {
+    const { db, runtime } = await company();
+    db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "x", createdBy: "y", archivedAt: "z" });
+    db.set({ pk: "TEAM_RECORD_ORGS", sk: `ERASE#${ORG_A}#project#web`, entityType: "TEAM_RECORD_ERASE_JOB", orgId: ORG_A, at: "2026-10-30T11:00:00.000Z", job: { kind: "project", project: "web", cause: "project_archived" } });
+    await runtime.jobs.run("hourly");
+    expect(jobs(db)).toStrictEqual([]);
+    expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toStrictEqual([]);
   });
 });

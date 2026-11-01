@@ -325,8 +325,10 @@ export async function leaveOrganization(deps: DeveloperRouteDependencies, caller
     });
     const clearSessions = deps.closeOrgHooks?.clearSessions ?? ((orgId: OrgId) => closeOrgSessions({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId));
     // v1.2 learning loop: the company's learning data is deleted by a bounded walk over its projects; a walk that does not finish is resumed later (`resumeLearningWalks`).
-    // Team record (wire-team-record): the company's whole record (rows, vectors, facts, lessons, lake) is erased with it, where the record's switch is on; a pass that does not finish throws, and the close is repeated.
-    const clearLearning = deps.closeOrgHooks?.clearLearning ?? (async (orgId: OrgId) => { await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId); await deps.teamRecord?.erase.workspace(orgId); });
+    const clearLearning = deps.closeOrgHooks?.clearLearning ?? (async (orgId: OrgId) => { await clearOrgLearning({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId); });
+    // Team record (wire-team-record): the company's whole record (rows, vectors, facts, lessons, lake) is erased with it, where the record's switch is on. Unlike the learning walk this is NOT best
+    // effort: the hook writes an erase-in-progress marker first (a failure stops the close and a fresh close resumes it) and does one bounded pass; the hourly job finishes the rest, the lake rows included.
+    const clearTeamRecord = deps.closeOrgHooks?.clearTeamRecord ?? (deps.teamRecord === undefined ? undefined : (orgId: OrgId) => deps.teamRecord!.erase.workspace(orgId));
     await deps.orgs.closeOrg(caller.orgId, {
       archiveProjects: deps.closeOrgHooks?.archiveProjects ?? ((orgId) => archiveOrgProjects(archiveDepsOf(deps), orgId, { developerId: caller.developerId })), clearEgress: deps.closeOrgHooks?.clearEgress ?? ((orgId) => clearOrgEgress(egressDepsOf(deps), orgId)),
       // Plan 3 Task 12, PF11: the org's connection secrets are scheduled for deletion with the org.
@@ -339,6 +341,7 @@ export async function leaveOrganization(deps: DeveloperRouteDependencies, caller
       ...(releaseModelSources === undefined ? {} : { releaseModelSources }),
       clearSessions,
       clearLearning,
+      ...(clearTeamRecord === undefined ? {} : { clearTeamRecord }),
       stopWork,
       emails,
       by: { kind: "member", id: caller.developerId },

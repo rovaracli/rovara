@@ -150,7 +150,7 @@ export interface DeveloperRouteDependencies {
    */
   /** Team record (wire-team-record): the record's runtime, absent while its switch is off. Its routes, and its erase when a project is archived or a company closes. */
   teamRecord?: TeamRecordRuntime;
-  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void>; clearSessions?: (orgId: OrgId) => Promise<void>; stopWork?: (orgId: OrgId) => Promise<void>; clearLearning?: (orgId: OrgId) => Promise<void> };
+  closeOrgHooks?: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; clearTriggers?: (orgId: OrgId) => Promise<void>; clearHooks?: (orgId: OrgId) => Promise<void>; releaseModelSources?: (orgId: OrgId) => Promise<void>; clearSessions?: (orgId: OrgId) => Promise<void>; stopWork?: (orgId: OrgId) => Promise<void>; clearLearning?: (orgId: OrgId) => Promise<void>; clearTeamRecord?: (orgId: OrgId) => Promise<void> };
   /**
    * Plan 3 Task 11: what follows a project's archive on the agents platform (`onProjectArchived`). Called once the archive has applied, never on a
    * replay; a failure is logged and never undoes or fails the archive. Absent where agents are not set up.

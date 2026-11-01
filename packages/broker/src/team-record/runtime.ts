@@ -13,7 +13,8 @@ import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { STSClient } from "@aws-sdk/client-sts";
 import { OrgIdSchema, VECTOR_DIMENSION_DEFAULT, githubMemberKey, memberGithubKey, TEAM_RECORD_ORG_DIRECTORY_PK, orgProjectCatalogPk, teamRecordOrgDirectoryKey, type OrgId, type ProjectRole } from "@agentx/contracts";
-import { readProjectRole, readStanding } from "../learning/standing.js";
+import { companyIsOpen, readProjectRole, readStanding } from "../learning/standing.js";
+import { readProjectMeta } from "../developer/project-roles.js";
 import { OrgStore } from "../org/store.js";
 import { resolveSlackOrg } from "../org/resolve.js";
 import { orgOfInstallation, projectsOf as projectsOfRepository } from "../triggers/github-events.js";
@@ -29,7 +30,7 @@ import { callRecordTool, recordToolsFor, type RecordToolContext } from "./agent-
 import { runDeleteWorker, type DeleteBudget } from "./delete-worker.js";
 import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition.js";
 import { createEmbedder } from "./embed.js";
-import { eraseProject, eraseWorkspace, erasePerson, type EraseResult } from "./erase.js";
+import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
 import { createLakeClient, type LakeClient } from "./lake.js";
 import { runLakeDeletes } from "./lake-delete.js";
@@ -128,7 +129,6 @@ const MAX_ORGS_PER_RUN = 500;
 /** One scheduled run's whole budget: inside the broker function's 30 s timeout with room for the answer. */
 export const JOB_BUDGET_MS = 24_000;
 const PER_ORG_MS = 8_000;
-const ERASE_PASSES = 5;
 
 const unavailable = (): Error => Object.assign(new Error("the team record could not finish this just now"), { name: "TeamRecordUnfinished" });
 
@@ -399,40 +399,102 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     },
   };
 
-  // ---- erase: each repeats the walk until it finishes or gives up; unfinished work throws so the request that asked is repeated
-  async function untilComplete(step: () => Promise<EraseResult>): Promise<void> {
-    for (let pass = 0; pass < ERASE_PASSES; pass += 1) if ((await step()).complete) return;
-    throw unavailable();
+  // ---- erase. Every erase writes an "erase in progress" marker FIRST (in the org directory's partition, so it survives the erase of the org's own partition), then does ONE bounded pass inline. What does not
+  // finish is finished by the hourly job, which resumes each marker a pass at a time until it is done; a company's marker then waits for the lake delete to run before the org leaves the directory.
+  type EraseJob =
+    | { kind: "workspace"; phase: "hot" | "lake"; projects: string[] }
+    | { kind: "project"; project: string; cause: "project_archived" | "org_closed" }
+    | { kind: "person"; developerId: string; identities: Array<{ system: string; sourceId: string }>; projects: string[] };
+  type StoredJob = EraseJob & { sk: string };
+  const jobKey = (orgId: OrgId, job: EraseJob): { pk: string; sk: string } => ({ pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: `ERASE#${orgId}#${job.kind}#${job.kind === "workspace" ? "all" : job.kind === "project" ? job.project : job.developerId}` });
+  async function putJob(orgId: OrgId, job: EraseJob): Promise<StoredJob> {
+    await listOrg(orgId);
+    const key = jobKey(orgId, job);
+    // A job already recorded keeps its progress (its phase and remaining projects): the request that repeats does not start it over.
+    const existing = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> };
+    if (existing.Item?.job !== undefined) return { ...(existing.Item.job as EraseJob), sk: key.sk };
+    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...key, entityType: "TEAM_RECORD_ERASE_JOB", orgId, at: new Date(now()).toISOString(), job } }));
+    return { ...job, sk: key.sk };
   }
+  async function saveJob(orgId: OrgId, job: StoredJob): Promise<void> {
+    const { sk, ...rest } = job;
+    await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk, entityType: "TEAM_RECORD_ERASE_JOB", orgId, at: new Date(now()).toISOString(), job: rest } }));
+  }
+  const dropJob = async (sk: string): Promise<void> => { await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk } })); };
+  async function jobsOf(orgId: OrgId): Promise<StoredJob[]> {
+    const read = (await table.documentClient.send(new QueryCommand({
+      TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true, Limit: 50,
+      ExpressionAttributeValues: { ":pk": TEAM_RECORD_ORG_DIRECTORY_PK, ":prefix": `ERASE#${orgId}#` },
+    }))) as { Items?: Array<{ sk?: unknown; job?: EraseJob }> };
+    return (read.Items ?? []).flatMap((item) => (typeof item.sk === "string" && item.job !== undefined ? [{ ...item.job, sk: item.sk }] : []));
+  }
+
+  /** One bounded step of a job. `true` when the job is finished (its marker is gone). Never runs past `budget`. */
+  async function advance(orgId: OrgId, job: StoredJob, budget: EraseBudget, lakeMs: number): Promise<boolean> {
+    const deps = await purgeFor(orgId);
+    if (job.kind === "workspace") {
+      if (job.phase === "hot") {
+        const result = await eraseWorkspace(deps, orgId, job.projects, `org_closed:${orgId}`, budget);
+        if (!(result.complete && result.remainingProjects.length === 0)) { await saveJob(orgId, { ...job, projects: result.remainingProjects }); return false; }
+        job = { ...job, phase: "lake", projects: [] };
+        await saveJob(orgId, job);
+      }
+      // The lake: the whole-workspace delete queued by the erase is run here, and the org stays in the directory until nothing is left in the queue. Without a lake there is nothing to wait for.
+      const lakeNow = lakeClient();
+      if (lakeNow !== undefined) {
+        await runLakeDeletes({ queue: lakeQueue, lake: lakeNow, tableBucket }, { workspaceId: orgId, budget: { maxStatements: 5, maxMs: Math.max(1_000, lakeMs) } });
+        if ((await lakeQueue.listPending(orgId, 1)).length > 0) return false;
+      }
+      await dropJob(job.sk);
+      if ((await jobsOf(orgId)).length === 0) {
+        await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: teamRecordOrgDirectoryKey(orgId) }));
+        listed.delete(orgId);
+        sinks.delete(orgId);
+      }
+      return true;
+    }
+    const complete = job.kind === "project"
+      ? (await eraseProject(deps, orgId, job.project, job.cause, `${job.cause}:${job.project}`, budget)).complete
+      : (await erasePerson(deps, orgId, { developerId: job.developerId, projects: job.projects, ...(job.identities.length === 0 ? {} : { identities: job.identities }) }, `erase:${job.developerId}`, budget)).complete;
+    if (complete) await dropJob(job.sk);
+    return complete;
+  }
+  /** The source identities a person has: their linked GitHub account. */
+  async function personIdentities(orgId: OrgId, developerId: string): Promise<Array<{ system: string; sourceId: string }>> {
+    const github = ((await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: memberGithubKey(orgId, developerId), ConsistentRead: true }))) as { Item?: { githubUserId?: unknown } }).Item?.githubUserId;
+    return typeof github === "string" ? [{ system: "github", sourceId: github }] : [];
+  }
+  const INLINE_ERASE: EraseBudget = { maxItems: 500, maxMs: 8_000 };
   const erase: TeamRecordRuntime["erase"] = {
     async person(orgId, developerId) {
       const parsed = OrgIdSchema.parse(orgId);
-      const deps = await purgeFor(parsed);
-      const github = ((await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: memberGithubKey(parsed, developerId), ConsistentRead: true }))) as { Item?: { githubUserId?: unknown } }).Item?.githubUserId;
-      const projects = await projectsOf(parsed);
-      await untilComplete(() => erasePerson(deps, parsed, { developerId, projects, ...(typeof github === "string" ? { identities: [{ system: "github", sourceId: github }] } : {}) }, `erase:${developerId}`));
+      const identities = await personIdentities(parsed, developerId);
+      const job = await putJob(parsed, { kind: "person", developerId, identities, projects: await projectsOf(parsed) });
+      // The request that asked is told to repeat while the erase is unfinished (the audit erase answers "send the same request again"); the hourly job also carries it on.
+      if (!(await advance(parsed, job, INLINE_ERASE, 2_000))) throw unavailable();
     },
     async project(orgId, project, cause) {
       const parsed = OrgIdSchema.parse(orgId);
-      const deps = await purgeFor(parsed);
-      await untilComplete(() => eraseProject(deps, parsed, project, cause, `${cause}:${project}`));
+      const job = await putJob(parsed, { kind: "project", project, cause });
+      await advance(parsed, job, INLINE_ERASE, 2_000);
     },
     async workspace(orgId) {
       const parsed = OrgIdSchema.parse(orgId);
-      const deps = await purgeFor(parsed);
-      for (let pass = 0; pass < ERASE_PASSES; pass += 1) {
-        const result = await eraseWorkspace(deps, parsed, await projectsOf(parsed), `org_closed:${parsed}`);
-        if (result.complete && result.remainingProjects.length === 0) {
-          // Nothing of the org is left for the jobs to find.
-          await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: teamRecordOrgDirectoryKey(parsed) }));
-          listed.delete(parsed);
-          sinks.delete(parsed);
-          return;
-        }
-      }
-      throw unavailable();
+      const job = await putJob(parsed, { kind: "workspace", phase: "hot", projects: await projectsOf(parsed) });
+      await advance(parsed, job, INLINE_ERASE, 2_000);
     },
   };
+
+  /** The jobs of an org the hourly run resumes. A company job only runs while the company is closing or closed; a project job only while the project is archived; otherwise the marker is stale (the close or archive did not happen) and is dropped. */
+  async function resumeErases(orgId: OrgId, budgetMs: number): Promise<number> {
+    let finished = 0;
+    for (const job of await jobsOf(orgId)) {
+      if (job.kind === "workspace" && await companyIsOpen(state, orgId)) { await dropJob(job.sk); continue; }
+      if (job.kind === "project" && (await readProjectMeta(state, orgId, job.project))?.status !== "archived") { await dropJob(job.sk); continue; }
+      if (await advance(orgId, job, { maxItems: 2_000, maxMs: Math.max(1_000, budgetMs / 2) }, budgetMs / 4)) finished += 1;
+    }
+    return finished;
+  }
 
   // ---- the scheduled jobs: bounded in orgs, in time and (inside each module) in items
   async function eachOrg(work: (orgId: OrgId, budgetMs: number) => Promise<Record<string, number>>): Promise<TeamRecordJobSummary> {
@@ -470,7 +532,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           const done = await runDeleteWorker(await purgeFor(orgId), orgId, deleteBudget);
           const lakeNow = lakeClient();
           const lakeDeletes = lakeNow === undefined ? undefined : await runLakeDeletes({ queue: lakeQueue, lake: lakeNow, tableBucket }, { workspaceId: orgId, budget: { maxStatements: 5, maxMs: Math.max(1_000, budgetMs / 2) } });
-          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, lakeStatements: lakeDeletes?.statements ?? 0 };
+          // Erases that did not finish where they were asked for (a person, a project, a whole company): one bounded step each, then the company's lake delete is waited for.
+          const erased = await resumeErases(orgId, budgetMs);
+          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased };
         });
       }
       return eachOrg(async (orgId, budgetMs) => {
