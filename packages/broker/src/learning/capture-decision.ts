@@ -3,6 +3,9 @@
 // The one hook is in `decideTaskWorkflow` (aws/developer-tasks.ts), which every surface reaches: the task page, the developer API, Slack and MCP. It calls `captureSendBackQuietly` after a
 // REQUEST_CHANGES decision on a requirements, design or plan document has committed.
 //
+// A CODE send-back (the owner sends failed checks, review findings or finished code back to coding) is captured the same way by a second call in `sendTaskWorkflowBackToCoding`:
+// `stage` is then the coding step the work goes back to (`codeSendBackStage`), and there are no included comments (that request carries none).
+//
 // Standing is the DECIDER's, read live from the company and project records (standing.ts), never the task role: an owner who took a task over as a viewer, as a commenter or with no
 // grant can send a plan back (review Critical 1), and that person's reason is stored as `outsider` and never grouped. Each included comment keeps its own author's standing. Nothing the
 // request says about standing, author or stage is read.
@@ -16,7 +19,9 @@
 //
 // Capture never fails the send-back: `captureSendBackQuietly` catches everything and logs fixed words (never the text).
 import { createHash } from "node:crypto";
-import type { LearningStanding, OrgId, TaskComment } from "@agentx/contracts";
+import { LEARNING_PROJECT_WIDE, LearningStageSchema, type LearningStage, type LearningStanding, type OrgId, type TaskComment, type WorkflowSnapshot } from "@agentx/contracts";
+import { stepForOperation } from "../agents/dispatch.js";
+import { readTaskRecipe } from "../agents/runs.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { COMMENT_STAGE, commentSourceKey } from "./capture-comment.js";
@@ -38,10 +43,39 @@ export interface SendBackInput {
   reason: string;
   /** The comments the decision sent along, as the decision locked them. */
   included: readonly TaskComment[];
+  /** The step the correction is for. Absent: the plan (a plan send-back). A code send-back names the coding step the work goes back to (`codeSendBackStage`). */
+  stage?: LearningStage;
 }
 export interface SendBackOutcome {
   /** Ids of the corrections created by this call (empty on a repeat). */
   created: string[];
+}
+
+/**
+ * The stage of a correction from a CODE send-back: the id of the coding step that will run the work, so the lesson lands on the step that runs. With the task's frozen agent snapshot it is
+ * the step `stepForOperation` picks for a coding run (the program's step the work returned to, else the recipe's FIRST build step: what dispatch uses); never a hard-coded id. Without a
+ * snapshot, a program's own build step; with neither, or when the recipe has no build step (an agent-steps recipe reads only `*`), `LEARNING_PROJECT_WIDE`.
+ * Reading the snapshot can fail: that too gives `LEARNING_PROJECT_WIDE`, never a failed send-back.
+ */
+export async function codeSendBackStage(deps: CaptureDeps, orgId: OrgId, taskId: string, returned: Pick<WorkflowSnapshot, "program" | "programStepId">): Promise<LearningStage> {
+  const valid = (id: string | undefined): LearningStage => {
+    const stage = id === undefined ? undefined : LearningStageSchema.safeParse(id);
+    return stage?.success === true ? stage.data : LEARNING_PROJECT_WIDE;
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // The send-back never waits on this read longer than the capture itself may.
+    const limit = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), SEND_BACK_CAPTURE_BUDGET_MS); });
+    const snapshot = await Promise.race([readTaskRecipe(deps, taskId, orgId), limit]);
+    if (snapshot === "timeout") return LEARNING_PROJECT_WIDE;
+    if (snapshot !== undefined) return valid(stepForOperation(snapshot.recipe, "IMPLEMENT", returned.programStepId)?.id);
+  } catch {
+    return LEARNING_PROJECT_WIDE;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  const step = returned.program?.steps.find((candidate) => candidate.id === returned.programStepId);
+  return step?.kind === "build" ? valid(step.id) : LEARNING_PROJECT_WIDE;
 }
 
 /** The source key of a send-back: one correction per (task, decision request). */
@@ -78,6 +112,7 @@ async function write(deps: CaptureDeps, scope: LearningScope, projectChecks: Sta
  */
 export async function captureSendBack(deps: CaptureDeps, input: SendBackInput): Promise<SendBackOutcome> {
   const { caller, taskId, project, requestId } = input;
+  const stage = input.stage ?? COMMENT_STAGE;
   const outcome: SendBackOutcome = { created: [] };
   const note = prepareCorrection(input.reason);
   const comments = input.included.slice(0, COMMENTS_MAX).flatMap((comment) => {
@@ -98,7 +133,7 @@ export async function captureSendBack(deps: CaptureDeps, input: SendBackInput): 
     const sourceKey = sendBackSourceKey(taskId, requestId);
     const decider = await standingOf(deps, cache, caller.orgId, caller.developerId, project);
     const created = await write(deps, scope, projectChecks, {
-      id: correctionIdOf(sourceKey), stage: COMMENT_STAGE, source: "send_back", sourceKey, sourceRef: { taskId, decisionRequestId: requestId }, taskId, text: note.text,
+      id: correctionIdOf(sourceKey), stage, source: "send_back", sourceKey, sourceRef: { taskId, decisionRequestId: requestId }, taskId, text: note.text,
       signature: [...signatureOf(note.text, salt)], author: caller.developerId, standing: decider.standing, limit: "automatic",
     }, decider);
     if (created !== undefined) {
@@ -112,7 +147,7 @@ export async function captureSendBack(deps: CaptureDeps, input: SendBackInput): 
       const sourceKey = commentSourceKey(taskId, entry.comment.commentId);
       const author = await standingOf(deps, cache, caller.orgId, entry.authorId, project);
       const created = await write(deps, scope, projectChecks, {
-        id: correctionIdOf(sourceKey), stage: COMMENT_STAGE, source: "send_back", sourceKey, sourceRef: { taskId, commentId: entry.comment.commentId, decisionRequestId: requestId }, taskId, text: entry.text,
+        id: correctionIdOf(sourceKey), stage, source: "send_back", sourceKey, sourceRef: { taskId, commentId: entry.comment.commentId, decisionRequestId: requestId }, taskId, text: entry.text,
         signature: [...signatureOf(entry.text, salt)], author: entry.authorId, standing: author.standing, ...(mainId === undefined ? {} : { linkedTo: mainId }), limit: "automatic",
       }, author);
       if (created !== undefined) outcome.created.push(created);

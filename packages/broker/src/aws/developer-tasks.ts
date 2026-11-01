@@ -312,7 +312,7 @@ import { loadPlanSelfCheck } from "../developer/plan-self-check.js";
 import type { PlanAnchor } from "./plan-page/render-plan.js";
 import { WORK_ACTIONS, can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, taskOpen, type TaskAccess, type TaskAction } from "../developer/task-access.js";
 import type { AuditRuntime } from "../audit/outbox.js";
-import { captureSendBackQuietly } from "../learning/capture-decision.js";
+import { captureSendBackQuietly, codeSendBackStage } from "../learning/capture-decision.js";
 import { commentLearningFlags } from "../learning/comment-flags.js";
 import { getTaskPeoplePresentation, loadTaskPeople, resolveTaskDispatchPeople, taskAccessFence } from "../developer/task-people.js";
 import { getTaskPeople as readTaskPeople, getTaskPeopleCapabilities as readTaskPeopleCapabilities, type TaskPersonCheck } from "../developer/task-people.js";
@@ -4716,10 +4716,19 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   const problems = sendBackProblemsPromptSection(sendBackProblems(workflow, E2E_OWNER_SENTENCES.groupSentence), promptTagId(task, request.requestId));
   const prompt = (notes: string) => `Address the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}\n\nOwner note (the owner's own instructions for this step): ${request.instructions}${ownerConstraintsSection(workflow, plan)}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}${notes}`;
   const next: WorkflowSnapshot = { ...returned, revision: returned.revision + 1, state: "RUNNING", updatedAt: receivedAt };
-  return queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next,
+  const view = await queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next,
     request: request.instructions, response: workflowDependencies === undefined ? "AgentX sent the change back to coding" : "AgentX restarted the approved ordered work plan",
     ...(restartApprovedGraph === undefined ? {} : { workflowDependencies: restartApprovedGraph }) });
+  // v1.2 learning loop: a person's reason for sending CODE back becomes a correction, as a plan send-back's does (capture-decision.ts). This is the one path for the page, the developer API,
+  // Slack and MCP. It runs last, after the new coding run has committed and the index is synced, within capture's own time budget: a slow or failing capture cannot fail or hold up the
+  // send-back. A replayed request returned early above and never reaches here. The caller is the decider, so the standing is theirs; Rovara's own automatic send-back
+  // (`autoSendBackToCodingFromSystem`) is another function and never captures. A code send-back carries no included comments. Slack's fixed note is not a person's reason.
+  await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, included: [], stage: await codeSendBackStage(deps, caller.orgId, task.taskId, next) });
+  return view;
 }
+
+/** What Slack's "Send back to coding" button sends as the owner's note: the button has no text box, so these are not a person's words. */
+export const SLACK_SEND_BACK_INSTRUCTIONS = "Fix the problems listed above, then report what changed.";
 
 /**
  * The owner answers each blocking review finding: accept it with a reason, or have it fixed (with optional
