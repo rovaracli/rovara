@@ -6,7 +6,8 @@ import { WORKFLOW_BLOCK_REASONS, WorkflowFeedbackBundleSchema, WorkflowFeedbackB
 import { auditOccurrence, auditPullRequestMerged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
-import { githubWorkflowPullRequestKey, type GithubWorkflowPullRequestRecord } from "../developer/task-records.js";
+import { type GithubWorkflowPullRequestRecord } from "../developer/task-records.js";
+import { findLegacyGithubLink, findLinkedChangeRequest } from "../rovara-code/linked-change-requests.js";
 import { parseGitHubRepository, type GitHubPullRequestFeedback } from "../github-app.js";
 import { isConditional } from "./broker-shared.js";
 import { failedIndexes, isTransactionConflict } from "../agents/table-writes.js";
@@ -132,25 +133,14 @@ export interface PullRequestWebhookEvent {
     comment?: { id: number; body: string; truncated: boolean; url: string; author: string; updatedAt?: string; path?: string; line?: number; diffHunk?: string; source: "review" | "review_comment" | "pr_discussion" };
 }
 
-/** Looks up only an already-published PR; webhooks cannot associate arbitrary GitHub work with a task. */
+/** Looks up only an already-published PR; webhooks cannot associate arbitrary GitHub work with a task. Reads the link as it was written before P6 (the old GitHub row). */
 export async function findLinkedGithubWorkflowPullRequest(input: {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   repositoryFullName: string;
   number: number;
 }): Promise<GithubWorkflowPullRequestRecord | undefined> {
-  let key: ReturnType<typeof githubWorkflowPullRequestKey>;
-  try {
-    key = githubWorkflowPullRequestKey(input.repositoryFullName, input.number);
-  } catch {
-    return undefined;
-  }
-  const result = await input.documentClient.send(new GetCommand({ TableName: input.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> };
-  const item = result.Item;
-  if (item?.entityType !== "GITHUB_WORKFLOW_PR" || typeof item.repositoryFullName !== "string" || item.repositoryFullName.toLowerCase() !== input.repositoryFullName.toLowerCase()
-    || item.number !== input.number || typeof item.repositoryId !== "string" || typeof item.taskId !== "string"
-    || typeof item.workspaceId !== "string" || typeof item.candidateDigest !== "string" || typeof item.url !== "string") return undefined;
-  return item as unknown as GithubWorkflowPullRequestRecord;
+  return findLegacyGithubLink({ documentClient: input.documentClient, tableName: input.tableName }, input);
 }
 
 /** Requires the PR index, live workflow snapshot, pinned project repo and GitHub App identity to agree. */
@@ -168,12 +158,11 @@ export async function authorizeLinkedGithubWebhook(input: {
   repositoryUrl(projectName: string, revision: number, repositoryId: string, orgId?: OrgId): Promise<string | undefined>;
   verifyRepository(url: string, scope: { installationId: number; repositoryId: number; fullName: string }): Promise<boolean>;
 }): Promise<boolean> {
-  const linked = await findLinkedGithubWorkflowPullRequest({
-    documentClient: input.documentClient,
-    tableName: input.tableName,
-    repositoryFullName: input.scope.fullName,
-    number: input.scope.pullRequestNumber,
-  });
+  // P6: the link is read from the neutral row, then the old GitHub row.
+  const linked = await findLinkedChangeRequest(
+    { documentClient: input.documentClient, tableName: input.tableName },
+    { hostKind: "github", repositoryAddress: `https://github.com/${input.scope.fullName}`, id: String(input.scope.pullRequestNumber) },
+  );
   if (linked === undefined) return false;
   const task = await input.loadTask(linked.taskId);
   const workflow = task?.workflow;

@@ -14,7 +14,8 @@ import { DeveloperSignInStore } from "../../developer/store.js";
 import { deliverCodeMilestones } from "../../rovara-code/milestones.js";
 import { OrgStore } from "../../org/store.js";
 import { TERMINAL, getItem, operationKey, type OperationRecord } from "../cancellation.js";
-import { aiToolTurn, completedTurn, githubWorkflowPullRequestKey, OUTCOME, partyOfTask, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type GithubWorkflowPullRequestRecord, type StoredEvent } from "../../developer/task-records.js";
+import { aiToolTurn, completedTurn, githubWorkflowPullRequestKey, OUTCOME, partyOfTask, taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord, type StoredEvent } from "../../developer/task-records.js";
+import { findLinkedChangeRequest } from "../../rovara-code/linked-change-requests.js";
 import { isConditional, isTemporaryAwsError } from "../broker-shared.js";
 import { readTaskRecipe } from "../../agents/runs.js";
 import { developerTaskRouteDependencies } from "../developer-routes.js";
@@ -510,7 +511,8 @@ export async function processGithubWorkflowEvent(
     }),
     now: new Date().toISOString(),
   });
-  const linked = await getItem<GithubWorkflowPullRequestRecord>(dependencies, githubWorkflowPullRequestKey(event.fullName, event.number));
+  // P6: the link is read from the neutral row, then the old GitHub row.
+  const linked = await findLinkedChangeRequest(dependencies, { hostKind: "github", repositoryAddress: `https://github.com/${event.fullName}`, id: String(event.number) });
   // A merge that finished the task gives back its slot and workspace (again for a redelivery, which changes nothing).
   if (linked !== undefined && options?.release !== "queue") await releaseIfFinished(dependencies, linked.taskId);
   // Track record: after the release, which never waits on it, and never throwing.
@@ -749,7 +751,7 @@ export async function reconcileWorkflowMergeRecoveryTask(
   for (const pullRequest of pullRequests) {
     const parsed = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/.exec(pullRequest.url);
     if (parsed === null || Number(parsed[2]) !== pullRequest.number) continue;
-    const linked = await stronglyRead<GithubWorkflowPullRequestRecord>(dependencies, githubWorkflowPullRequestKey(parsed[1]!, pullRequest.number));
+    const linked = await findLinkedChangeRequest(dependencies, { hostKind: "github", repositoryAddress: `https://github.com/${parsed[1]!}`, id: String(pullRequest.number) });
     if (linked?.taskId === task.taskId && linked.workspaceId === task.workspaceId && linked.repositoryId === pullRequest.repositoryId
       && linked.number === pullRequest.number && linked.url === pullRequest.url && linked.candidateDigest === pullRequest.candidateDigest) {
       selected = { fullName: parsed[1]!, number: pullRequest.number };
