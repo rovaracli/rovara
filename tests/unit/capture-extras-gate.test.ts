@@ -20,7 +20,7 @@ describe("why the gate is needed: an older worker refuses the new shape", () => 
 
 describe("what the broker sets", () => {
   it("says a policy needs the extras exactly when it carries either field (any value, 'failed' included)", () => {
-    expect(capturePolicyNeedsExtras(BASE)).toBe(false);
+    expect(capturePolicyNeedsExtras(BASE as Parameters<typeof capturePolicyNeedsExtras>[0])).toBe(false);
     expect(capturePolicyNeedsExtras({ ...BASE, screenshotMode: "failed" })).toBe(true);
     expect(capturePolicyNeedsExtras({ ...BASE, screenshotMode: "all" })).toBe(true);
     expect(capturePolicyNeedsExtras({ ...BASE, apiSamples: false })).toBe(true);

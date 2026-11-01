@@ -15,7 +15,7 @@ const KEY = { workspaceId: ORG_A, project: "web" };
 const OTHER = { workspaceId: ORG_B, project: "web" };
 const DAY = 86_400_000;
 const mk = (id: string, over: Partial<Lesson> = {}): Lesson => lessonRecord({ id, workspaceId: ORG_A, project: "web", ...over });
-const restricted = (principals: string[]) => ({ kind: "restricted" as const, acl: { source: "slack", scope: "slack:T1/C1", principals, capturedAt: "2026-10-30T09:00:00.000Z", liveCheck: "none" as const } });
+const restricted = (principals: string[]) => ({ kind: "restricted" as const, acl: { source: "slack" as const, scope: "slack:T1/C1", principals, capturedAt: "2026-10-30T09:00:00.000Z", liveCheck: "none" as const } });
 const withAuthors = (id: string, authors: string[], over: Partial<Lesson> = {}): Lesson => mk(id, { provenance: { ...draft().provenance, authors, audience: { kind: "project" } }, ...over });
 const manifest = (taskId: string, ids: string[], over: Partial<LoadManifest> = {}): LoadManifest => ({
   taskId, workspaceId: ORG_A, project: "web", stage: "PLAN", round: 1, setVersion: 1, memory: "live", at: 5, bytes: 10,
@@ -265,11 +265,11 @@ describe("the DynamoDB lesson store only", () => {
     const ids = Array.from({ length: 130 }, (_, i) => `les_big${String(i).padStart(5, "0")}`);
     const first = await commitAll(store, ids.map((id) => mk(id)));
     const second = await commitAll(store, ids.map((id) => ({ ...mk(id, { title: "Later" }), version: 2 })));
-    const before = db.transactionLog.length;
+    const before = db.transactions().length;
     const result = await store.rollback(KEY, first, first + second, 99);
     expect(result).toMatchObject({ ok: true, setVersion: first + second + 1 });
     expect((result as { restored: string[] }).restored).toHaveLength(130);
-    expect(db.transactionLog.length - before).toBeGreaterThan(1);
+    expect(db.transactions().length - before).toBeGreaterThan(1);
     const list = await store.list(KEY);
     expect(list).toHaveLength(130);
     expect(new Set(list.map((l) => l.status))).toEqual(new Set(["pending"]));

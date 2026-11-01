@@ -202,7 +202,7 @@ describe("source settings", () => {
     const [first] = w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE");
     w.db.set({ ...first!, pk: (first!.pk as string).replace("#P#web", "#P#api"), project: "api" });
     expect(await getSourceConfigByScope(w.table, ORG_A, "github", GITHUB_SCOPE)).toBeUndefined();
-    expect(await putSourceConfig(w.table, { workspaceId: ORG_A, project: "web", source: "github", scope: "", enabled: true, retention: "D", exclude: [], audienceDefault: "project", health: "ok", addedBy: "d", updatedAt: "2026-10-30T10:00:00.000Z" })).toEqual({ status: "refused", reason: "invalid" });
+    expect(await putSourceConfig(w.table, { workspaceId: ORG_A, project: "web", source: "github", scope: "", enabled: true, retention: "D", exclude: [], audienceDefault: "project", health: "ok", addedBy: "d", updatedAt: "2026-10-30T10:00:00.000Z" }, { edition: w.deps.edition })).toEqual({ status: "refused", reason: "invalid" });
   });
 
   it("the sink's source port and capture port speak the ingest lane's shapes", async () => {

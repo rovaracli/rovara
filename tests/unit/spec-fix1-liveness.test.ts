@@ -190,7 +190,7 @@ describe("M2: the spec line on a code pull request", () => {
 
 describe("M4: a bug is told from a feature by the request", () => {
   it.each([["Fix crash when saving", "bugfix"], ["Totals drop cents (bug)", "bugfix"], ["Regression in checkout", "bugfix"], ["Add password reset", "feature"], ["Prefix handling", "feature"]])("%s is a %s", (title, kind) => {
-    expect(specKindOf({ title, requestText: undefined })).toBe(kind);
+    expect(specKindOf({ title })).toBe(kind);
   });
   it("reads the request text too", () => { expect(specKindOf({ title: "Cart", requestText: "The total is broken for 3 items" })).toBe("bugfix"); });
 });

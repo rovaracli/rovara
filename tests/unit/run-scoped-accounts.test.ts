@@ -422,7 +422,7 @@ describe("revocation and its proof (C1)", () => {
   });
   it("does not settle a report with no account, one with an account missing a part, or a malformed hold", () => {
     expect(revocationSettledAt({ confirmed: false, accounts: [] }, NOW)).toBe(false);
-    const part = { profileId: "a", sessionsEnded: true, revoked: true, accountGone: true };
+    const part = { profileId: "a", sessionsEnded: true, revoked: true, accountGone: true, existenceControl: true, recorded: true };
     expect(revocationSettledAt({ confirmed: false, accounts: [{ ...part, sessionProof: "not_possible" }], heldUntil: "garbage" }, NOW + 1e12)).toBe(false);
     expect(revocationSettledAt({ confirmed: false, accounts: [{ ...part, sessionProof: "not_possible" }] }, NOW + 1e12)).toBe(false);
     expect(revocationSettledAt({ confirmed: false, accounts: [{ ...part, accountGone: false, sessionProof: "dead" }] }, NOW)).toBe(false);

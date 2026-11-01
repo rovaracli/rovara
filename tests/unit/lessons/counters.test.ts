@@ -6,7 +6,7 @@ import { expiryWindowMs, renewLesson, sweepExpired } from "../../../packages/bro
 import { lessonPanelRows } from "../../../packages/broker/src/lessons/panel.js";
 import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, Judge, ScriptedModel, KEY, PROJECT, WS, lessonRecord, seed, settings, allowAllAccess } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, Judge, ScriptedModel, KEY, PROJECT, WS, lessonRecord, seed, settings, allowAllAccess, type FeedbackDeps } from "./lesson-helpers.js";
 
 const DAY = 86_400_000;
 function setup(judge = new Judge(), s = settings()) {
@@ -14,7 +14,7 @@ function setup(judge = new Judge(), s = settings()) {
   const audit = new Audit();
   const alerts = new Alerts();
   const clock = new Clock();
-  const deps: CounterDeps = { access: allowAllAccess, store, judge, settings: s, audit, alerts, now: clock.now };
+  const deps: FeedbackDeps = { access: allowAllAccess, store, judge, settings: s, audit, alerts, now: clock.now };
   return { deps, store, audit, alerts, clock, judge };
 }
 const manifest = (taskId: string, ids: string[], over: Partial<LoadManifest> = {}): LoadManifest => ({

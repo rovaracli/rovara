@@ -48,7 +48,7 @@ describe("archive source (for the storage lane's archiver)", () => {
       pages += 1;
     } while (cursor !== undefined && pages < 10);
     expect(ids.sort()).toEqual(["api-old", "old-1", "old-2"]);
-    expect((await source.listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows.every((row) => row.scope.length > 0)).toBe(true);
+    expect((await source.listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows.every((row) => (row.scope ?? "").length > 0)).toBe(true);
     await w.sink.tombstone({ workspaceId: ORG_A, system: "github.com", sourceIds: ["old-1"], cause: "source_deleted" });
     const fresh = tableHotArchiveSource(w.table, projects, tableLakeDeleteQueue(w.table), () => w.clock.ms);
     const again = (await fresh.listArchivable({ workspaceId: ORG_A, olderThan: days(w, 90), limit: 10 })).rows.map((row) => row.sourceRef.id).sort();
