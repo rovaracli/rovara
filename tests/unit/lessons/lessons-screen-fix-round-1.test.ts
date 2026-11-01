@@ -52,6 +52,34 @@ describe("B1: an editor is a writer of the text", () => {
     expect((await s2.port.erasePerson(WS, KEY.project, { developerId: "bob" }, new Set())).scrubbed).toEqual(["les_pend0001"]);
     expect((await s2.store.get(KEY, "les_pend0001"))!.approvals[0]!.by).toBe("erased");
   });
+  it("an editor who is no longer an approver (a later edit reset the approvals) is still found and the lesson deleted", async () => {
+    const s = setup();
+    await seed(s.store, pending({ tier: 2, tierReasons: ["escalation_words"] }));
+    await approveLesson(s.deps, input("ann", { edit }));
+    await approveLesson(s.deps, input("bob", { edit: { ...edit, body: "Call withRetry for every outgoing HTTP call." } }));
+    const head = (await s.store.getHead(KEY, "les_pend0001"))!;
+    expect(head.approvals.map((a) => a.by)).toEqual(["bob"]);
+    expect(head.provenance.editors).toEqual(["ann", "bob"]);
+    expect((await s.port.erasePerson(WS, KEY.project, { developerId: "ann" }, new Set())).purged).toEqual(["les_pend0001"]);
+  });
+  it("after the erasure fence a stale writer cannot put an erased editor back", async () => {
+    const s = setup();
+    await seed(s.store, pending());
+    await s.store.fence(KEY, { people: ["ann"] });
+    const stale = pending({ id: "les_late0001", provenance: { ...pending().provenance, sources: [], inputSources: [], authors: ["carl"], editors: ["Ann"] } });
+    expect(await s.store.commit(KEY, await s.store.setVersion(KEY), [stale], 5)).toEqual({ ok: false, reason: "erased" });
+    expect(await s.store.get(KEY, "les_late0001")).toBeUndefined();
+  });
+  it("an edit's intermediate save carries no approval given to the old text, even if the go-live then fails", async () => {
+    const s = setup();
+    await seed(s.store, pending({ approvals: [{ approvalId: "old", by: "owner", at: 1, mode: "one" }] }));
+    const emit = s.audit.emit.bind(s.audit);
+    s.audit.emit = async (event) => { if (event.action === "lesson.activated") throw new Error("audit down"); await emit(event); };
+    expect(await approveLesson(s.deps, input("ann", { edit }))).toEqual({ ok: false, code: "audit_unavailable" });
+    const kept = (await s.store.getHead(KEY, "les_pend0001"))!;
+    expect(kept).toMatchObject({ status: "pending", body: edit.body });
+    expect(kept.approvals).toEqual([]);
+  });
   it("a lesson stored before the field existed reads as having no editors", () => {
     const old = JSON.parse(JSON.stringify(lessonRecord())) as Record<string, unknown>;
     expect((old.provenance as Record<string, unknown>).editors).toBeUndefined();
@@ -100,6 +128,14 @@ describe("S1 and M1: Helpful / Wrong here marks", () => {
     expect(names[0]).toContain(before!);
     // The count the mark made stays (a number, not a person).
     expect((await s.store.get(KEY, "les_aaaa1111"))!.counters.helpful).toBe(1);
+  });
+  it("erasing a person asks the store to delete their reference link", async () => {
+    const s = setup();
+    const seen: string[] = [];
+    const real = s.store.forgetMarkRef.bind(s.store);
+    s.store.forgetMarkRef = async (key, person) => { seen.push(person);await real(key, person); };
+    await s.port.erasePerson(WS, KEY.project, { developerId: "dee" }, new Set());
+    expect(seen).toEqual(["dee"]);
   });
   it("the link itself is deleted: forgetting it gives the person a different reference", async () => {
     const s = setup();
