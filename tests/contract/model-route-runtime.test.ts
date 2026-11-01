@@ -282,6 +282,13 @@ describe("a Slack turn's model access", () => {
     expect(signed).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses a removed or banned member as a forbidden one, and still reports any other refusal as the proxy being unavailable", async () => {
+    const refused = (code: string) => source(() => new Response(JSON.stringify({ error: { code, message: "refused" } }), { status: 403 }))();
+    await expect(refused("REMOVED_FROM_ORG")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(refused("FORBIDDEN")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(refused("TASK_ACCESS_DENIED")).rejects.toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });
+  });
+
   it("has no route when the answer has none, and refuses a malformed one", async () => {
     expect(await turnModelRoute(source(() => access({})))).toBeUndefined();
     await expect(source(() => access({ route: { alias: "a", api: "grpc", catalog: "c" } }))()).rejects.toMatchObject({ code: "MODEL_PROXY_UNAVAILABLE" });

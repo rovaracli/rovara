@@ -64,6 +64,9 @@ function slackPlanApprovalRefusal(reason: string): string | undefined {
 /** An archived project takes no new work (a plan change, a send-back, a retry, Revise the plan): said plainly to the presser, who can ask an admin to restore it. */
 export const SLACK_PROJECT_ARCHIVED = "This project is archived, so new work can't start. Ask an admin to restore it.";
 
+/** What a person removed from the company hears when they press a button. */
+export const SLACK_REMOVED_FROM_ORG = "You're no longer a member of this organization.";
+
 export function slackRefusalMessage(code: string, outOfDate: string, reason = "", decidedBy?: unknown): string | undefined {
   switch (code) {
     // A refusal the presser can act on is said as it is; any other means the press no longer fits the task.
@@ -75,6 +78,7 @@ export function slackRefusalMessage(code: string, outOfDate: string, reason = ""
     case "WORKSPACE_BUSY":
     case "TASK_BUSY": return "AgentX is still working on the previous step. Try again when it posts.";
     case "FORBIDDEN": return "Only the task owner can do that.";
+    case "REMOVED_FROM_ORG": return SLACK_REMOVED_FROM_ORG;
     case "PROJECT_ARCHIVED": return SLACK_PROJECT_ARCHIVED;
     case "TASK_NOT_FOUND": return "This task can't be changed from Slack. Continue it where it was started, or start a new request.";
     default: return undefined;
