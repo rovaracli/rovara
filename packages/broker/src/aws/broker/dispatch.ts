@@ -41,6 +41,7 @@ import { refreshTaskFeedbackForOwnerDecision, refusalText, releaseIfFinished } f
 import { blockEndedOperationKeys, tellTaskStop } from "./terminal-result.js";
 import { loadWorkflowE2EScenarioResults, workflowE2EPresentation, workflowE2EPublicationChecks } from "./workflow-e2e-verification.js";
 import { specSeamsOf } from "./spec-wiring.js";
+import { evidenceRouteDependencies } from "./evidence-wiring.js";
 
 /**
  * Plan 3, Task 22: the agent-step engine's row. It runs the engine for the task (the result of a step that ended, the next step, an end whose follow-up is not
@@ -268,6 +269,8 @@ export async function runWorkflowDispatch(dependencies: AwsBrokerDependencies, i
       now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (taskId) => refreshTaskFeedbackForOwnerDecision(dependencies, taskId),
       workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
       workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
+      // Proof and evidence: the system-run publish and update rows (the autonomous path) read the same evidence port as an owner's press, so the risk rule and the evidence lines apply here too; empty with the proof switch off.
+      ...evidenceRouteDependencies(dependencies),
       taskAutonomyNow: (target) => target.orgId === undefined ? Promise.resolve("suggest" as const)
         : taskAutonomy(() => readTaskRecipe(dependencies, target.taskId, target.orgId!), undefined, () => companyAutonomyLimit(dependencies, target.orgId!)),
       ...specSeamsOf(dependencies),

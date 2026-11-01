@@ -3,8 +3,10 @@ import { capturingAuditDeps } from "../support/audit-capture.js";
 import { githubInstallationKey, orgMetaKey, orgMemberKey, developerOrgKey, orgProjectCatalogKey } from "@agentx/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { createHash, randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCandidateManifest, workflowRequestId } from "../../packages/contracts/src/task-workflow-node.js";
+import { EvidencePackSchema } from "../../packages/contracts/src/evidence.js";
+import { evidencePackKey } from "../../packages/broker/src/rovara-code/evidence-keep.js";
 import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
 import { executeSerialWorkflowDependencies } from "../../packages/worker/src/workflow-dependencies.js";
 import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan, type PlanDocument, type TaskPersonProofRequest, type TaskPersonProofResponse, type WorkItemProgressV1 } from "@agentx/contracts";
@@ -5936,5 +5938,45 @@ describe("a workflow task's cap window restarts when its owner retries or sends 
     expect(h.record(taskId).budgetBaselineUsd).toBe(0);
     expect(taskWorkflow(h, taskId)).toMatchObject({ stage: "IMPLEMENT", state: "BLOCKED", revision: blocked.revision });
     expect(JSON.stringify(h.db.find(() => true))).toBe(before);
+  });
+});
+
+
+// Proof and evidence P4 (fix round 1, B2): a draft pull request opened by the sweep itself (the autonomous path, runWorkflowDispatch) reads the evidence port like an owner's press does, so a new high finding from a
+// security scan makes it High risk there too, and with the proof switch off the same pack changes nothing.
+describe("the autonomous publication and the evidence's risk rule", () => {
+  afterEach(() => { delete process.env.PROOF_EVIDENCE_ENABLED; });
+  const securityPack = (digest: string) => EvidencePackSchema.parse({
+    schemaVersion: 1, candidateDigest: digest,
+    environment: { tier: "sandbox", envRevision: 0, services: [], data: "synthetic", accounts: [] },
+    checks: [{ checkId: "readiness:0", kind: "security", label: "bandit", before: "passed", after: "failed", class: "regression", durationMs: 5,
+      findings: { tool: "Bandit", newCount: 1, bySeverity: { critical: 0, high: 1, medium: 0, low: 0, info: 0 }, items: [{ ruleId: "B608", severity: "high", path: "src/db.py", line: 7, message: "SQL built from input" }] } }],
+    selection: { method: "full", selected: 0, total: 0 }, api: [], browser: [], notTested: [],
+  });
+  async function autoPublished(on: boolean) {
+    if (on) process.env.PROOF_EVIDENCE_ENABLED = "1";
+    else delete process.env.PROOF_EVIDENCE_ENABLED;
+    const harness = await createSingleAnswerPlanBroker({ brokerExtra: { githubPullRequests: pullRequestGateway("b".repeat(40)) } });
+    const { taskId, workspaceId, candidate, finishImplementation } = await workflowAtVerification(harness);
+    const record = harness.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> & { ownerKey: string; workflow: Record<string, unknown> };
+    harness.db.set({ ...record, workflow: { ...record.workflow, definitionVersion: "1.1.0" } });
+    harness.s3.objects.set(evidencePackKey({ ownerKey: record.ownerKey, workspaceId, taskId }, candidate.digest), JSON.stringify(securityPack(candidate.digest)));
+    await finishImplementation();
+    await passReviews(harness, workspaceId, candidate);
+    const publish = operations(harness, workspaceId).find((item) => item.kind === "publish") as { publication: { body: string } } | undefined;
+    return { body: String(publish?.publication.body), harness, taskId };
+  }
+
+  it("with the switch on, the pull request the sweep opens says the security scan found a new high finding and is High risk, and the recorded risk agrees", async () => {
+    const { body, harness, taskId } = await autoPublished(true);
+    expect(body).toContain("A security scan found 1 new high or critical finding.");
+    expect(body).toMatch(/## Risk: High/u);
+    expect(taskWorkflow(harness, taskId).risk?.level).toBe("high");
+  });
+
+  it("with the switch off the same stored pack changes nothing", async () => {
+    const { body, harness, taskId } = await autoPublished(false);
+    expect(body).not.toContain("security scan found");
+    expect(taskWorkflow(harness, taskId).risk?.level).not.toBe("high");
   });
 });
