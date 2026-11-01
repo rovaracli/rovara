@@ -259,6 +259,16 @@ describe("Public Slack text is processed, then dropped", () => {
     }
   });
 
+  it("reads an older Slack row that was kept as raw text (C), from before the install became Public, as live only: no text is stored", async () => {
+    const db = dbOf();
+    bind(db);
+    // Written as an Enterprise row (the store refuses C for Public), then read by a Public install.
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SCOPE, retention: "C" });
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "public" });
+    expect(await runtime.taps.slack({ payload: payload(`please ${MARKER} always`), channel: publicChannel })).toMatchObject({ outcome: "ignored", reason: "retention_a" });
+    expect(everything(db)).not.toContain(MARKER);
+  });
+
   it("records nothing from a Slack Connect channel, a channel the ingress could not read, an unbound team, or a channel with no source row", async () => {
     const db = dbOf();
     bind(db);
