@@ -3,6 +3,7 @@ import {
   AGENT_RUN_FEATURE,
   AGENT_STEP_FEATURE,
   AGENT_WORKER_OUTDATED,
+  LEARNED_CONTEXT_FEATURE,
   MODEL_ROUTE_FEATURE,
   E2E_AGENT_MODEL_CHOICE_FEATURE,
   E2E_AGENT_STEPS_FEATURE,
@@ -351,7 +352,9 @@ async function forWorkerFeatures(
   const carriesFix = invocation.kind === "task" && invocation.payload.workflowFix !== undefined;
   const carriesContextSources = invocation.kind === "task" && invocation.payload.contextSources === true;
   const carriesOwnerRedirect = invocation.kind === "task" && invocation.payload.ownerRedirect !== undefined;
-  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy && !carriesSpec) return invocation;
+  // Learning v2: advice from approved lessons. An older worker is sent the stage without it (never refused), so it runs as it would without memory.
+  const carriesLearnedContext = invocation.kind === "task" && invocation.payload.learnedContext !== undefined;
+  if (requestedThinkingLevel === undefined && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -702,7 +705,19 @@ async function forWorkerFeatures(
       workspaceId: invocation.workspaceId,
     }));
   }
-  return sent;
+  const withLessons = withoutLearnedContext(sent, features);
+  if (withLessons !== sent) {
+    console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.learned_context_omitted", reason, operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
+  }
+  return withLessons;
+}
+
+/** A stage without the lessons chosen for it, for a worker that does not list "task.learnedContext.v1": it would reject the field. Nothing is lost but the advice. */
+export function withoutLearnedContext(invocation: WorkerInvocation, features: readonly string[]): WorkerInvocation {
+  if (invocation.kind !== "task" || invocation.payload.learnedContext === undefined || features.includes(LEARNED_CONTEXT_FEATURE)) return invocation;
+  const { learnedContext: _lessons, ...payload } = invocation.payload;
+  void _lessons;
+  return { ...invocation, payload };
 }
 
 /**

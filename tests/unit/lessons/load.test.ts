@@ -14,7 +14,9 @@ function setup(s = settings()) {
   const vectors = new MemoryVectors();
   const clock = new Clock();
   const deps: LoadDeps = { access: allowAllAccess, store, embedder, vectors, settings: s, audit: new Audit(), now: clock.now };
-  const add = async (...lessons: Lesson[]) => {
+  const add = async (...input: Lesson[]) => {
+    // Only approved lessons load: a fixture with no person's approval gets one (the "approved only" tests below say otherwise on purpose).
+    const lessons = input.map((l) => (l.approvals.some((a) => a.mode !== "auto") ? l : { ...l, approvals: [...l.approvals, { approvalId: "ap-ann", by: "ann", at: 1, mode: "one" as const }] }));
     await seed(store, ...lessons);
     for (const l of lessons) await vectors.upsert(l.workspaceId, l.project, l.id, await embedder.embed(`${l.title}\n${l.description}\n${l.body}`), { status: l.status });
   };

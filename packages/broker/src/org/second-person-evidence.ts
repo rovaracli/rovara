@@ -101,47 +101,75 @@ export async function readSecondPersonApprovalEvidence(deps: SecondPersonEvidenc
  }
  const conditions: TransactItem[] = [{ ConditionCheck: { TableName: deps.tableName, Key: orgMetaKey(scope.orgId), ...(unset ? { ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(closedAt) AND attribute_not_exists(closingAt) AND attribute_not_exists(approvalMembershipVersion)" } : secondPersonMembershipCondition(version)) } }, ...approver.conditions, ...(proposer === approver ? [] : proposer.conditions)];
  if (project !== undefined && scope.project !== undefined) conditions.push(snapshot(deps.tableName, projectMetaKey(scope.orgId, scope.project), project, ["status", "archiveRevision", "createdAt", "createdBy", "approvalLastMaintainerLossAt"]));
- const ownerIds: string[] = [], eligibleIds: string[] = [];
+ let ownerIds: string[] = [], eligibleIds: string[] = [];
  let complete = true, lastEligibleLossAtMs: number | null = null;
+ if (scope.proposerId !== scope.approverId) {
+  eligibleIds.push(scope.proposerId, scope.approverId);
+ } else {
+  ({ complete, ownerIds, eligibleIds, lastEligibleLossAtMs } = await rosterEligibility(deps, scope, meta, project, nowMs));
+ }
+ const after = await read(deps, orgMetaKey(scope.orgId));
+ if (after === undefined || after.approvalMembershipVersion !== meta.approvalMembershipVersion || after.closedAt !== undefined || after.closingAt !== undefined) throw stale();
+ return { decisionInput: { proposerId: scope.proposerId, approverId: scope.approverId, nowMs, complete, membershipVersion: version, ownerIds: ownerIds.sort(), eligibleIds: eligibleIds.sort(), lastEligibleLossAtMs }, conditions };
+}
+
+
+/** The roster evidence the second-person decision and the lessons directory share: who may approve in this company/project right now, and how complete the answer is. Reads only; conveys no authority. */
+async function rosterEligibility(deps: SecondPersonEvidenceDependencies, scope: { orgId: OrgId; project?: string }, meta: Row, project: Row | undefined, nowMs: number): Promise<{ complete: boolean; ownerIds: string[]; eligibleIds: string[]; lastEligibleLossAtMs: number | null }> {
+ const ownerIds: string[] = [], eligibleIds: string[] = [];
+ let complete: boolean, lastEligibleLossAtMs: number | null = null;
  const loss = (value: unknown) => {
   if (value === undefined) return;
   if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) { complete = false;return; }
   lastEligibleLossAtMs = Math.max(lastEligibleLossAtMs ?? 0, Date.parse(value));
  };
- if (scope.proposerId !== scope.approverId) {
-  eligibleIds.push(scope.proposerId, scope.approverId);
- } else {
-  const tracked = typeof meta.approvalTrackingSince === "string" ? Date.parse(meta.approvalTrackingSince) : Number.NaN;
-  complete = Number.isFinite(tracked) && tracked <= nowMs && (tracked <= nowMs - 86_400_000 || meta.approvalTrackingSince === meta.createdAt);
-  loss(meta.approvalLastCompanyEligibleLossAt);loss(project?.approvalLastMaintainerLossAt);
-  const roster = await members(deps, scope.orgId);
-  // Eight database-only identity/grant reads at a time; no vendor or network probe.
-  for (let offset = 0; offset < roster.length; offset += 8) {
-   await Promise.all(roster.slice(offset, offset + 8).map(async row => {
-    const id = String(row.developerId);if (row.role === "owner") ownerIds.push(id);
-    // I2: only these three roles can be a second person; the Auditor (or any role this release does not know) is never counted, and is not an incomplete roster either.
-    if (row.role !== "owner" && row.role !== "admin" && row.role !== "member") return;
-    if (row.role === "member") {
-     if (scope.project === undefined) return;
-     const grant = await read(deps, projectMemberKey(scope.orgId, id, scope.project));
-     if (grant?.role !== "developer" || grant.projectRole !== "maintainer") return;
-     if (grant.ownerKey !== id || grant.projectName !== scope.project || typeof grant.grantId !== "string") { complete = false;return; }
-    }
-    const [identity, pointer] = await Promise.all([read(deps, { pk: `DEVELOPER#${id}`, sk: "META" }, deps.signInTableName), read(deps, developerOrgKey(id))]);
-    if (pointer?.orgId !== scope.orgId || pointer.role !== row.role) { complete = false;return; }
-    if (!identityLive(identity, id)) {
-     // A session ending is not evidence of when a later account revocation occurred.
-     const ended = identity?.revoked === true ? identity.revokedAt : identity?.mergedInto !== undefined ? identity.sessionsEndedAt : undefined;
-     if (ended === undefined) complete = false;else loss(ended);
-     return;
-    }
-    eligibleIds.push(id);
-   }));
-  }
+ const tracked = typeof meta.approvalTrackingSince === "string" ? Date.parse(meta.approvalTrackingSince) : Number.NaN;
+ complete = Number.isFinite(tracked) && tracked <= nowMs && (tracked <= nowMs - 86_400_000 || meta.approvalTrackingSince === meta.createdAt);
+ loss(meta.approvalLastCompanyEligibleLossAt);loss(project?.approvalLastMaintainerLossAt);
+ const roster = await members(deps, scope.orgId);
+ // Eight database-only identity/grant reads at a time; no vendor or network probe.
+ for (let offset = 0; offset < roster.length; offset += 8) {
+  await Promise.all(roster.slice(offset, offset + 8).map(async row => {
+   const id = String(row.developerId);if (row.role === "owner") ownerIds.push(id);
+   // I2: only these three roles can be a second person; the Auditor (or any role this release does not know) is never counted, and is not an incomplete roster either.
+   if (row.role !== "owner" && row.role !== "admin" && row.role !== "member") return;
+   if (row.role === "member") {
+    if (scope.project === undefined) return;
+    const grant = await read(deps, projectMemberKey(scope.orgId, id, scope.project));
+    if (grant?.role !== "developer" || grant.projectRole !== "maintainer") return;
+    if (grant.ownerKey !== id || grant.projectName !== scope.project || typeof grant.grantId !== "string") { complete = false;return; }
+   }
+   const [identity, pointer] = await Promise.all([read(deps, { pk: `DEVELOPER#${id}`, sk: "META" }, deps.signInTableName), read(deps, developerOrgKey(id))]);
+   if (pointer?.orgId !== scope.orgId || pointer.role !== row.role) { complete = false;return; }
+   if (!identityLive(identity, id)) {
+    // A session ending is not evidence of when a later account revocation occurred.
+    const ended = identity?.revoked === true ? identity.revokedAt : identity?.mergedInto !== undefined ? identity.sessionsEndedAt : undefined;
+    if (ended === undefined) complete = false;else loss(ended);
+    return;
+   }
+   eligibleIds.push(id);
+  }));
  }
+ return { complete, ownerIds, eligibleIds, lastEligibleLossAtMs };
+}
+
+/**
+ * Who may approve in a project right now (its maintainers, company admins and owners), for the lessons directory: the same live evidence a second-person decision reads, with no caller.
+ * `complete: false` means the answer must not be trusted (nobody is then eligible). It reads only; it conveys no authority and any write that relies on it checks the caller itself.
+ */
+export async function readApproverRoster(deps: SecondPersonEvidenceDependencies, scope: { orgId: OrgId; project: string }): Promise<{ complete: boolean; membershipVersion: number; ownerIds: string[]; eligibleIds: string[]; lastEligibleLossAtMs: number | null }> {
+ if (!deps.signInTableName) throw forbidden();
+ const meta = await read(deps, orgMetaKey(scope.orgId));
+ if (meta === undefined || meta.closedAt !== undefined || meta.closingAt !== undefined) throw stale();
+ const project = await read(deps, projectMetaKey(scope.orgId, scope.project));
+ if (project === undefined || project.status !== "active") throw stale();
+ // An absent counter proves no history: the answer is read as it stands, and a decision that needs a sole-owner exception refuses it (version 0).
+ const version = meta.approvalMembershipVersion === undefined ? 0 : Number(meta.approvalMembershipVersion);
+ if (!Number.isSafeInteger(version) || version < 0) throw stale();
+ const roster = await rosterEligibility(deps, scope, meta, project, deps.now());
  const after = await read(deps, orgMetaKey(scope.orgId));
  if (after === undefined || after.approvalMembershipVersion !== meta.approvalMembershipVersion || after.closedAt !== undefined || after.closingAt !== undefined) throw stale();
- return { decisionInput: { proposerId: scope.proposerId, approverId: scope.approverId, nowMs, complete, membershipVersion: version, ownerIds: ownerIds.sort(), eligibleIds: eligibleIds.sort(), lastEligibleLossAtMs }, conditions };
+ return { ...roster, membershipVersion: version, ownerIds: roster.ownerIds.sort(), eligibleIds: roster.eligibleIds.sort() };
 }
 
 /** A direct narrowing needs live actor authority, not a second-person decision. */

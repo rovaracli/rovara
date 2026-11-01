@@ -6,7 +6,7 @@ import {
 } from "@agentx/contracts";
 import { globToRegExp } from "./guards.js";
 import { safeScopeLabel } from "./render.js";
-import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
+import { approversRequired, modeAllows, resolveLearning, type ApprovalPolicy, type LearningSettingsReader } from "./policy.js";
 import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
@@ -67,6 +67,22 @@ export function wilsonLower(helpful: number, loaded: number): number {
   return Math.max(0, (p + (z * z) / (2 * n) - z * Math.sqrt((p * (1 - p) + (z * z) / (4 * n)) / n)) / (1 + (z * z) / n));
 }
 
+/**
+ * Only approved lessons are used (the pilot rule): an active lesson loads only while the approvals it carries still meet what the project's policy asks of its tier NOW, counting people only.
+ * Tier 2 always needs two people (or the audited sole-owner exception); tier 1 needs what `approval.tier1` says; tier 0 needs what `approval.tier0` says, which is one person unless a project
+ * has turned automatic go-live on (and `resolveLearning` reads "auto" as "one" while that is off). A lesson sent back to a person (`reviewRequired`) needs at least one person whatever its tier.
+ * This is a second line behind the status: an old row, a hand edit or a bug that left a lesson `active` without its approvals does not reach an agent.
+ */
+export function approvedForUse(lesson: Lesson, policy: ApprovalPolicy): boolean {
+  const people = new Set(lesson.approvals.filter((a) => a.mode !== "auto").map((a) => normId(a.by))).size;
+  if (lesson.tier === 2) return isTierTwoApproved(lesson);
+  const needed = Math.max(approversRequired(lesson.tier, policy), lesson.reviewRequired === true ? 1 : 0);
+  return people >= needed;
+}
+
+/** A code citation the broker's own check found stale keeps its lesson out; the worker checks again at the base commit. */
+const hasStaleCitation = (lesson: Lesson): boolean => (lesson.citationChecks ?? []).some((check) => check.result === "stale");
+
 const isTierTwoApproved = (lesson: Lesson): boolean => lesson.tier === 2 && (new Set(lesson.approvals.filter((a) => a.mode !== "auto").map((a) => normId(a.by))).size >= 2 || lesson.approvals.some((a) => a.mode === "sole_owner_exception"));
 
 /** Which lesson types a stage may load (design §4.7). Reviewer stages get only tier-2-approved review checks. */
@@ -106,7 +122,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   let active: Lesson[];
   try {
     setVersion = await deps.store.setVersion(key);
-    active = (await deps.store.list(key, { statuses: ["active"] })).filter((l) => l.expiresAt > now);
+    active = (await deps.store.list(key, { statuses: ["active"] })).filter((l) => l.expiresAt > now && approvedForUse(l, resolved.approval) && !hasStaleCitation(l));
     const text = cleanLessonText(`${request.intent}\n${request.planSummary ?? ""}`, 2000);
     const hits = await deps.vectors.query(key.workspaceId, key.project, await deps.embedder.embed(text), VECTOR_FETCH);
     similarity = new Map(hits.map((h) => [h.id, Math.max(0, Math.min(1, h.score))]));

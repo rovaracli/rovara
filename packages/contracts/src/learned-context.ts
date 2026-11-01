@@ -53,3 +53,13 @@ export const LoadReportSchema = z.object({
   }).strict()).max(LEARNED_CONTEXT_MAX_LESSONS),
 }).strict();
 export type LoadReport = z.infer<typeof LoadReportSchema>;
+
+/** The progress-event field the worker carries its load report in: `{ learnedLoadReport: <report> }`. */
+export const LEARNED_LOAD_REPORT_FIELD = "learnedLoadReport";
+
+/** The load report in a worker progress payload, or undefined for anything else (a malformed report is dropped whole, never partly used). */
+export function learnedLoadReportOfProgress(payload: unknown): LoadReport | undefined {
+  if (payload === null || typeof payload !== "object" || !Object.hasOwn(payload, LEARNED_LOAD_REPORT_FIELD)) return undefined;
+  const parsed = LoadReportSchema.safeParse((payload as Record<string, unknown>)[LEARNED_LOAD_REPORT_FIELD]);
+  return parsed.success ? parsed.data : undefined;
+}
