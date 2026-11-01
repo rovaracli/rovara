@@ -39,6 +39,10 @@ export function buildEnvironmentDraft(detection: Detection, input: { repositoryI
   const fullSuiteOn = [...new Set([...detection.fullSuiteOn.map((item) => item.value), ...COMMON_FULL_SUITE])].slice(0, 100);
   setup.forEach((item, index) => valueSources.push({ field: `repos[0].setupCommands[${String(index)}]`, source: sourceOf(item.source) }));
   checks.forEach((item, index) => valueSources.push({ field: `repos[0].checks[${String(index)}]`, source: sourceOf(item.source) }));
+  checks.forEach((item, index) => {
+    if (item.value.reportPath !== undefined && item.value.reportSource !== undefined) valueSources.push({ field: `repos[0].checks[${String(index)}].reportPath`, source: sourceOf(item.value.reportSource) });
+    if (item.value.coveragePath !== undefined && item.value.coverageSource !== undefined) valueSources.push({ field: `repos[0].checks[${String(index)}].coveragePath`, source: sourceOf(item.value.coverageSource) });
+  });
   detection.fullSuiteOn.forEach((item, index) => { if (index < fullSuiteOn.length) valueSources.push({ field: `selection.fullSuiteOn[${String(index)}]`, source: sourceOf(item.source) }); });
   const environment = TestEnvironmentBodySchema.safeParse({
     tier: "sandbox",

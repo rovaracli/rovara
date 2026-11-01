@@ -258,6 +258,25 @@ describe("the executor image build uses the pulled copy", () => {
     expect(() => rewriteDockerfile("RUN true\n", images)).toThrow(/no FROM/);
   });
 
+  it("accepts exactly FROM scratch (optionally AS a name), leaves it as it is, and keeps every other base strict", () => {
+    const pinned = pinnedRef(byName("node-build"));
+    const local = localAlias(byName("node-build"));
+    expect(rewriteDockerfile(`FROM ${pinned} AS rootfs\nFROM scratch\nCOPY --from=rootfs /a /b\n`, images)).toBe(`FROM ${local} AS rootfs\nFROM scratch\nCOPY --from=rootfs /a /b\n`);
+    expect(rewriteDockerfile("FROM scratch AS base\r\nCOPY --from=base /a /b\r\n", images)).toBe("FROM scratch AS base\r\nCOPY --from=base /a /b\r\n");
+    expect(rewriteDockerfile("from --platform=linux/arm64 scratch as base\n", images)).toBe("from --platform=linux/arm64 scratch as base\n");
+    for (const bad of ["FROM scratch:latest", "FROM scratchy", "FROM Scratch", "FROM scratch@sha256:" + "a".repeat(64), "FROM node:22", "FROM scratch extra", "FROM scratch AS"]) {
+      expect(() => rewriteDockerfile(`${bad}\n`, images), bad).toThrow(/does not name a pinned CI image/);
+    }
+  });
+
+  it("rewrites the MCP runner Dockerfile: its two node stages to the local alias, and its final FROM scratch untouched", () => {
+    const original = read("environments/mcp-runner/Dockerfile");
+    const rewritten = rewriteDockerfile(original, images);
+    const local = localAlias(byName("node-build"));
+    expect(rewritten.match(/^FROM .*$/gm)).toEqual([`FROM ${local} AS build`, `FROM ${local} AS rootfs`, "FROM scratch"]);
+    expect(rewritten.replaceAll(local, pinnedRef(byName("node-build")))).toBe(original);
+  });
+
   const node = pinnedRef(byName("node-build"));
   const alias = localAlias(byName("node-build"));
 
