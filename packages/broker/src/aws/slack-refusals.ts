@@ -61,6 +61,9 @@ function slackPlanApprovalRefusal(reason: string): string | undefined {
   return /[.!?]$/u.test(sentence) ? sentence : `${sentence}.`;
 }
 
+/** What a person removed from the company hears when they press a button. */
+export const SLACK_REMOVED_FROM_ORG = "You're no longer a member of this organization.";
+
 export function slackRefusalMessage(code: string, outOfDate: string, reason = "", decidedBy?: unknown): string | undefined {
   switch (code) {
     // A refusal the presser can act on is said as it is; any other means the press no longer fits the task.
@@ -72,6 +75,7 @@ export function slackRefusalMessage(code: string, outOfDate: string, reason = ""
     case "WORKSPACE_BUSY":
     case "TASK_BUSY": return "AgentX is still working on the previous step. Try again when it posts.";
     case "FORBIDDEN": return "Only the task owner can do that.";
+    case "REMOVED_FROM_ORG": return SLACK_REMOVED_FROM_ORG;
     case "TASK_NOT_FOUND": return "This task can't be changed from Slack. Continue it where it was started, or start a new request.";
     default: return undefined;
   }
