@@ -103,8 +103,10 @@ describe("building the install's templates at approval", () => {
     // (macOS adds __CF_USER_TEXT_ENCODING to every process it starts. bubblewrap sets PWD itself when it is given --chdir, to that directory, which is the kit's own work directory: it is
     // allowed only when it names the directory the kit runs in, so it is never the caller's.)
     // The kit decides whether PWD names its own directory while it runs: the build removes that directory when it ends, so the test cannot look at it afterwards.
-    const inputs = foundation.Metadata.Inputs as { environment: string[]; pwdIsCwd: boolean };
-    const ownPwd = inputs.pwdIsCwd;
+    // The kit also says whether it was started IN its own work directory (the context file's), so a PWD that leaks from the caller cannot pass for the kit's own when the directory is wrong.
+    const inputs = foundation.Metadata.Inputs as { environment: string[]; pwdIsCwd: boolean; cwdIsWorkDir: boolean };
+    expect(inputs.cwdIsWorkDir).toBe(true);
+    const ownPwd = inputs.pwdIsCwd && inputs.cwdIsWorkDir;
     expect(inputs.environment.filter((name) => name !== "__CF_USER_TEXT_ENCODING" && !(name === "PWD" && ownPwd))).toEqual(["HOME", "LANG", "LC_ALL", "NODE_ENV", "TMPDIR", "TZ"]);
     expect(foundation.Metadata.Inputs.context.rovaraEnterpriseEgressCidrs).toBe("10.20.0.0/16");
     expect(foundation.Metadata.Inputs.context.rovaraOperatorAccess).toBeUndefined();
