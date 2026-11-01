@@ -6,7 +6,7 @@
 
 export type OutboundCategory =
   | "customer-integration" | "model-provider" | "agent-egress-default" | "aws-service-principal" | "aws-endpoint" | "audit-timestamp" | "rovara-operated"
-  | "deploy-supply-chain" | "benchmark-tooling" | "provenance-text" | "doc-link" | "reserved-example";
+  | "deploy-supply-chain" | "benchmark-tooling" | "provenance-text" | "detector-comparison" | "doc-link" | "reserved-example";
 
 export interface HostRule {
   hosts: readonly string[];
@@ -57,6 +57,10 @@ export const CATEGORY_TITLES: Readonly<Record<OutboundCategory, { title: string;
     title: "Provenance notes inside the audit trust roots",
     enterprise: "Text in a certificate bundle saying where each root came from. Never contacted.",
   },
+  "detector-comparison": {
+    title: "Hosts a repository scan compares against",
+    enterprise: "Names the environment detector holds so it can tell a repository's usual download source from an unusual one. Compared with text read from a repository; never called by the install.",
+  },
   "doc-link": {
     title: "Links shown to people",
     enterprise: "Shown in help text and messages. Never called by the install.",
@@ -99,11 +103,15 @@ export const HOST_RULES: readonly HostRule[] = [
       "crates.io", "*.crates.io", "mcr.microsoft.com", "*.data.mcr.microsoft.com", "ghcr.io", "*.ghcr.io", "*.githubusercontent.com", "rubygems.org", "*.rubygems.org",
       "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com", "deb.debian.org", "security.debian.org", "dl-cdn.alpinelinux.org", "auth.docker.io", "registry-1.docker.io",
       "production.cloudflare.docker.com", "production.cloudfront.docker.com", "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
-      "files.pythonhosted.org", "pypi.org", "proxy.golang.org", "sum.golang.org", "registry.yarnpkg.com", "repo.maven.apache.org", "repo1.maven.org",
+      "files.pythonhosted.org", "pypi.org", "proxy.golang.org", "sum.golang.org", "registry.yarnpkg.com", "repo1.maven.org",
     ],
   },
   {
-    category: "agent-egress-default", why: "The npm registry: in the default list, and the setup draft's default allowed domain.", files: [...DEFAULT_ALLOW, "packages/worker/src/setup-draft.ts", "packages/contracts/src/e2e-native-recipes.ts"],
+    category: "agent-egress-default", why: "Maven Central: in the default list, and the usual wrapper download host the environment detector compares a repository's wrapper properties with.", files: [...DEFAULT_ALLOW, "packages/worker/src/env-detect/java.ts"],
+    hosts: ["repo.maven.apache.org"],
+  },
+  {
+    category: "agent-egress-default", why: "The npm registry: in the default list, the setup draft's default allowed domain, and the registry an install uses for package-run MCP servers when it sets rovaraMcpPublicNpm and names none.", files: [...DEFAULT_ALLOW, "packages/worker/src/setup-draft.ts", "packages/contracts/src/e2e-native-recipes.ts", "infra/lib/private-mcp.ts"],
     hosts: ["registry.npmjs.org"],
   },
   {
@@ -150,6 +158,10 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["huggingface.co", "datasets-server.huggingface.co", "raw.githubusercontent.com"],
   },
   {
+    category: "detector-comparison", why: "The Gradle wrapper's usual download host, which the environment detector compares a repository's wrapper properties with (a host other than the usual ones is reported to the person).", files: ["packages/worker/src/env-detect/java.ts"],
+    hosts: ["services.gradle.org"],
+  },
+  {
     category: "doc-link", why: "Documentation links in CLI messages.", files: ["packages/cli/src/init/"],
     hosts: ["docs.aws.amazon.com"],
   },
@@ -158,6 +170,8 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: [
       "agentx.invalid", "agentx-mock.invalid", "mock.invalid", "application.invalid", "none.invalid", "rovara.invalid", "auth.test", "agentx.example.com", "probe.example.com", "acme.okta.com",
       "abc123.execute-api.us-west-2.amazonaws.com", "host.example.test", "builds.example.test", "nativeexport.app",
+      // The example registry address in the private-MCP install setting's error message (infra/lib/private-mcp.ts); example.net is reserved and cannot resolve.
+      "registry.corp.example.net",
     ],
   },
 ];

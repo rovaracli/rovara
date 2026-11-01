@@ -31,8 +31,10 @@ Enterprise: An Enterprise install calls the customer's own Bedrock through a VPC
 Enterprise: These names are in the default DNS firewall allow-list that agent machines use, which today is the same list on every install that runs the firewall. An Enterprise install should replace it with a list built from its own settings (registries, code host, build system); that is a follow-up (the list is not yet built from settings).
 
 - The default list of package, image and OS mirror hosts agent machines may resolve. (only in `packages/contracts/src/default-allow-domains.ts`)
-  `*.crates.io`, `*.data.mcr.microsoft.com`, `*.ghcr.io`, `*.githubusercontent.com`, `*.rubygems.org`, `archive.ubuntu.com`, `auth.docker.io`, `crates.io`, `deb.debian.org`, `dl-cdn.alpinelinux.org`, `docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com`, `files.pythonhosted.org`, `ghcr.io`, `mcr.microsoft.com`, `ports.ubuntu.com`, `production.cloudflare.docker.com`, `production.cloudfront.docker.com`, `proxy.golang.org`, `pypi.org`, `registry-1.docker.io`, `registry.yarnpkg.com`, `repo.maven.apache.org`, `repo1.maven.org`, `rubygems.org`, `security.debian.org`, `security.ubuntu.com`, `sum.golang.org`
-- The npm registry: in the default list, and the setup draft's default allowed domain. (only in `packages/contracts/src/default-allow-domains.ts`, `packages/worker/src/setup-draft.ts`, `packages/contracts/src/e2e-native-recipes.ts`)
+  `*.crates.io`, `*.data.mcr.microsoft.com`, `*.ghcr.io`, `*.githubusercontent.com`, `*.rubygems.org`, `archive.ubuntu.com`, `auth.docker.io`, `crates.io`, `deb.debian.org`, `dl-cdn.alpinelinux.org`, `docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com`, `files.pythonhosted.org`, `ghcr.io`, `mcr.microsoft.com`, `ports.ubuntu.com`, `production.cloudflare.docker.com`, `production.cloudfront.docker.com`, `proxy.golang.org`, `pypi.org`, `registry-1.docker.io`, `registry.yarnpkg.com`, `repo1.maven.org`, `rubygems.org`, `security.debian.org`, `security.ubuntu.com`, `sum.golang.org`
+- Maven Central: in the default list, and the usual wrapper download host the environment detector compares a repository's wrapper properties with. (only in `packages/contracts/src/default-allow-domains.ts`, `packages/worker/src/env-detect/java.ts`)
+  `repo.maven.apache.org`
+- The npm registry: in the default list, the setup draft's default allowed domain, and the registry an install uses for package-run MCP servers when it sets rovaraMcpPublicNpm and names none. (only in `packages/contracts/src/default-allow-domains.ts`, `packages/worker/src/setup-draft.ts`, `packages/contracts/src/e2e-native-recipes.ts`, `infra/lib/private-mcp.ts`)
   `registry.npmjs.org`
 
 ## AWS service principals in policies
@@ -88,6 +90,13 @@ Enterprise: Text in a certificate bundle saying where each root came from. Never
 - Where the pinned timestamp trust roots came from, written beside them. (only in `packages/audit-verifier/src/trust-roots.ts`)
   `cacerts.digicert.com`, `ccadb.my.salesforce-sites.com`, `crt.sectigo.com`, `knowledge.digicert.com`, `www.digicert.com`
 
+## Hosts a repository scan compares against
+
+Enterprise: Names the environment detector holds so it can tell a repository's usual download source from an unusual one. Compared with text read from a repository; never called by the install.
+
+- The Gradle wrapper's usual download host, which the environment detector compares a repository's wrapper properties with (a host other than the usual ones is reported to the person). (only in `packages/worker/src/env-detect/java.ts`)
+  `services.gradle.org`
+
 ## Links shown to people
 
 Enterprise: Shown in help text and messages. Never called by the install.
@@ -100,4 +109,4 @@ Enterprise: Shown in help text and messages. Never called by the install.
 Enterprise: Names that cannot resolve (.invalid, .test, example domains) or that are not hosts at all. Never reached.
 
 - Names that cannot resolve, example values in help text, test doubles' addresses, and a bundle id that looks like a host.
-  `abc123.execute-api.us-west-2.amazonaws.com`, `acme.okta.com`, `agentx-mock.invalid`, `agentx.example.com`, `agentx.invalid`, `application.invalid`, `auth.test`, `builds.example.test`, `host.example.test`, `mock.invalid`, `nativeexport.app`, `none.invalid`, `probe.example.com`, `rovara.invalid`
+  `abc123.execute-api.us-west-2.amazonaws.com`, `acme.okta.com`, `agentx-mock.invalid`, `agentx.example.com`, `agentx.invalid`, `application.invalid`, `auth.test`, `builds.example.test`, `host.example.test`, `mock.invalid`, `nativeexport.app`, `none.invalid`, `probe.example.com`, `registry.corp.example.net`, `rovara.invalid`
