@@ -42,6 +42,12 @@ export interface ControllerRegistry {
   approved(serverId: string): Promise<ApprovedServer | undefined>;
   /** Told when a started server's tools are not the ones approved. The admin sees the diff; the server is not served until they look. */
   toolsChanged?(serverId: string, change: { approved: string; observed: string }): Promise<void>;
+  /**
+   * The secret a TEST of a proposal reads (T9). `serverId` is the proposal's own id, named by the broker. It resolves only for an id that has no entry yet (a proposal being tested for the
+   * first time) or whose entry is still waiting for approval; for an approved, disabled or other entry it answers undefined, so an approved server's secret never goes into a test of
+   * a package the broker names. Absent, or undefined: the test runs with no secrets (and a package that declares secret names then cannot start).
+   */
+  probeSecret?(serverId: string): Promise<string | undefined>;
 }
 
 /** What a task definition is made from. */
@@ -167,7 +173,7 @@ export interface McpControllerOptions {
 
 /** A refusal the controller can name to the broker as a fixed word. */
 export class ControllerError extends Error {
-  constructor(readonly code: "closed" | "start_failed" | "start_timeout" | "task_stopped" | "tools_changed" | "bundle_mismatch" | "keeps_stopping" | "busy" | "resources_failed") {
+  constructor(readonly code: "closed" | "start_failed" | "start_timeout" | "task_stopped" | "tools_changed" | "bundle_mismatch" | "keeps_stopping" | "busy" | "resources_failed" | "destination_refused") {
     super(code);
     this.name = "ControllerError";
   }
@@ -420,7 +426,10 @@ export function createMcpController(options: McpControllerOptions): McpControlle
     let taskId: string | undefined;
     try {
       let made: { family: string; taskDefinition: string; securityGroupId?: string | undefined };
-      try { made = await resources.ensure({ kind: input.kind, id: input.id, spec: input.spec, secretRef: input.secretRef }); } catch { throw new ControllerError("resources_failed"); }
+      try { made = await resources.ensure({ kind: input.kind, id: input.id, spec: input.spec, secretRef: input.secretRef }); } catch (error) {
+        // A destination the install does not allow is the admin's to fix, so it has its own code (and, to the broker, its own fixed sentence); anything else is the cloud's.
+        throw new ControllerError((error as { name?: unknown } | null)?.name === "DestinationRefused" ? "destination_refused" : "resources_failed");
+      }
       if (input.isCancelled()) throw new ControllerError("task_stopped");
       const bundleHash = input.spec.bundleHash;
       taskId = await startTask({
@@ -589,16 +598,18 @@ export function createMcpController(options: McpControllerOptions): McpControlle
   }
 
   /** The install-then-probe (or probe-only, when the bundle is pinned) a proposal and an approval need. */
-  async function probe(proposal: McpStdioProposal, pinned: { lockfileHash: string; bundleHash: string } | undefined, jobCancelled: () => boolean): Promise<
-    { ok: true; tools: ProbedTool[]; integrity: string; lockfileHash: string; bundleHash: string } | { ok: false; install?: InstallOutcome & { ok: false } }
+  async function probe(proposal: McpStdioProposal, pinned: { lockfileHash: string; bundleHash: string } | undefined, jobCancelled: () => boolean, secretRef?: string): Promise<
+    { ok: true; tools: ProbedTool[]; integrity: string; lockfileHash: string; bundleHash: string; installed?: { packageCount: number; unpackedBytes: number } } | { ok: false; install?: InstallOutcome & { ok: false } }
   > {
     let lockfileHash: string;
     let bundleHash: string;
     let integrity: string;
+    let installed: { packageCount: number; unpackedBytes: number } | undefined;
     if (pinned === undefined) {
       const outcome = await runInstall(proposal, jobCancelled);
       if (!outcome.ok) return { ok: false, install: outcome };
       ({ lockfileHash, bundleHash, integrity } = outcome.report);
+      installed = { packageCount: outcome.report.packageCount, unpackedBytes: outcome.report.unpackedBytes };
     } else {
       // An approval probes the bundle it pinned. Nothing is installed again.
       if (proposal.integrity === undefined || !await options.bundles.has(pinned.bundleHash)) return { ok: false };
@@ -606,8 +617,8 @@ export function createMcpController(options: McpControllerOptions): McpControlle
       integrity = proposal.integrity;
     }
     const probeId = `probe${createHash("sha256").update(`${bundleHash}${now()}${Math.random()}`).digest("hex").slice(0, 10)}`;
-    const tools = await runProbe({ name: proposal.name, args: proposal.args, secretEnv: proposal.secretEnv, destinations: proposal.destinations, size: proposal.size, bundleHash }, probeId, undefined, jobCancelled);
-    return { ok: true, tools, integrity, lockfileHash, bundleHash };
+    const tools = await runProbe({ name: proposal.name, args: proposal.args, secretEnv: proposal.secretEnv, destinations: proposal.destinations, size: proposal.size, bundleHash }, probeId, secretRef, jobCancelled);
+    return { ok: true, tools, integrity, lockfileHash, bundleHash, ...(installed === undefined ? {} : { installed }) };
   }
 
   function track<T>(job: Promise<T>): Promise<T> {
@@ -619,10 +630,13 @@ export function createMcpController(options: McpControllerOptions): McpControlle
 
   // ---- the broker's routes -----------------------------------------------------------------------------------
   async function handleProbe(req: IncomingMessage, res: ServerResponse, installOnly: boolean): Promise<void> {
-    let body: { spec?: unknown; pinned?: unknown } | undefined;
+    let body: { spec?: unknown; pinned?: unknown; serverId?: unknown } | undefined;
     try { body = JSON.parse((await readBytes(req, limits.bodyBytes)).toString("utf8")) as typeof body; } catch { send(res, 400, { error: "bad_request" }); return; }
     const parsed = McpStdioProposalSchema.safeParse(body?.spec);
     if (!parsed.success) { send(res, 400, { error: "bad_spec" }); return; }
+    // The id of the proposal being tested, named by the broker so a package that declares secrets can be tested with them. Only the shape of a server id is accepted.
+    const proposalId = body?.serverId;
+    if (proposalId !== undefined && (typeof proposalId !== "string" || !/^mcp[a-z0-9]{6,24}$/u.test(proposalId))) { send(res, 400, { error: "bad_spec" }); return; }
     let pinned: { lockfileHash: string; bundleHash: string } | undefined;
     if (body?.pinned !== undefined) {
       const candidate = body.pinned as { lockfileHash?: unknown; bundleHash?: unknown };
@@ -640,13 +654,15 @@ export function createMcpController(options: McpControllerOptions): McpControlle
           const outcome = await runInstall(parsed.data, () => overtime);
           return { status: 200, body: outcome.ok ? { ok: true, ...outcome.report } : outcome };
         }
-        const result = await probe(parsed.data, pinned, () => overtime);
+        // A test of a proposal with secret names reads the secret the broker stored for the proposal (see `probeSecret`). The lookup failing is "no secret", which stops the start.
+        const secretRef = parsed.data.secretEnv.length === 0 || proposalId === undefined ? undefined : await options.registry.probeSecret?.(proposalId).catch(() => undefined);
+        const result = await probe(parsed.data, pinned, () => overtime, secretRef);
         if (!result.ok) return { status: 200, body: { error: "host_refused", ...(result.install === undefined ? {} : { install: result.install }) } };
-        return { status: 200, body: { tools: result.tools, integrity: result.integrity, lockfileHash: result.lockfileHash, bundleHash: result.bundleHash } };
+        return { status: 200, body: { tools: result.tools, integrity: result.integrity, lockfileHash: result.lockfileHash, bundleHash: result.bundleHash, ...(result.installed === undefined ? {} : { installed: result.installed }) } };
       } catch (error) {
-        // The task's own text is never passed on: it can hold paths and registry addresses.
+        // The task's own text is never passed on: it can hold paths and registry addresses. Only a refused destination is named: it is the admin's to fix.
         log("mcp_controller.probe_failed", { error: error instanceof ControllerError ? error.code : "unknown" });
-        return { status: 200, body: { error: "host_refused" } };
+        return { status: 200, body: { error: "host_refused", ...(error instanceof ControllerError && error.code === "destination_refused" ? { reason: "destination_refused" } : {}) } };
       } finally {
         await release().catch(() => undefined);
       }

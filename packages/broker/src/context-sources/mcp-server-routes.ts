@@ -22,7 +22,7 @@ function withoutSecretVersion<T extends { secretVersion?: string | undefined }>(
 
 const notThere = () => agentXError("NOT_FOUND", "route not found");
 
-const AddBodySchema = z.object({ label: z.string().max(200), transport: z.unknown(), secret: z.string().min(1).max(4_096).optional() }).strict();
+const AddBodySchema = z.object({ label: z.string().max(200), transport: z.unknown(), secret: z.string().min(1).max(4_096).optional(), secrets: z.record(z.string().max(64), z.string().max(4_096)).optional() }).strict();
 
 function jsonBody(request: AdaptedHttpRequest): unknown {
   if (request.body === undefined || request.body === "") return {};

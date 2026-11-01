@@ -42,6 +42,14 @@ export function registryFor(store: ReturnType<typeof dynamoMcpServerStore>, orgI
       const secretRef = entry.hasSecret === true && secretArn !== undefined ? await secretArn(serverId).catch(() => undefined) : undefined;
       return { spec, toolsHash: entry.probe.toolsHash, secretVersion: entry.secretVersion, secretRef };
     },
+    async probeSecret(serverId): Promise<string | undefined> {
+      if (secretArn === undefined) return undefined;
+      // The broker stores a proposal's secrets under the proposal's id BEFORE the test. That secret is read by a test only while the proposal has no entry yet or its entry still waits for
+      // approval: the secret of an approved, disabled or other entry never goes into a test of a package the caller names.
+      const entry = await store.get(org, serverId);
+      if (entry !== undefined && entry.status !== "awaiting_approval") return undefined;
+      return secretArn(serverId).catch(() => undefined);
+    },
   };
 }
 

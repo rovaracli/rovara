@@ -65,6 +65,15 @@ describe("controller main: the registry", () => {
     expect(await registry(entry({ transport: { kind: "http", address: "https://mcp.corp.example/mcp" } })).approved("mcpsim000001")).toBeUndefined();
     expect(await registry(undefined).approved("mcpsim000001")).toBeUndefined();
   });
+  it("T9: a test reads a proposal's secret only while the proposal has no entry or its entry waits for approval (never an approved, disabled or other entry's)", async () => {
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    expect(await registry(undefined).probeSecret!("mcpnew0000001")).toBe(arn("mcpnew0000001"));
+    expect(await registry(entry({ status: "awaiting_approval", hasSecret: true })).probeSecret!("mcpsim000001")).toBe(arn("mcpsim000001"));
+    for (const status of ["approved", "disabled", "needs_reapproval"] as const) expect(await registry(entry({ status, hasSecret: true })).probeSecret!("mcpsim000001"), status).toBeUndefined();
+    // no resolver, or one that fails: no secret
+    expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa").probeSecret!("mcpnew0000001")).toBeUndefined();
+    expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa", async () => { throw new Error("denied"); }).probeSecret!("mcpnew0000001")).toBeUndefined();
+  });
   it("hashes tools the way the broker hashes what the admin was shown", () => {
     const tools = [{ name: "b", inputSchema: { type: "object" } }, { name: "a", inputSchema: { type: "object" } }];
     expect(toolsHashOf(tools)).toBe(summariseProbe(tools, 123).toolsHash);

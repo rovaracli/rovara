@@ -168,11 +168,163 @@ it("sends the server's token with the address, once, and offers package-run serv
   await screen.findByText("No MCP servers added yet.");
   fireEvent.click(screen.getByLabelText("Rovara runs a package for it"));
   fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Wiki" } });
-  fireEvent.change(screen.getByLabelText("Package"), { target: { value: "@acme/wiki-mcp" } });
+  // The package form is its own chunk (T9): it arrives a moment after the choice.
+  fireEvent.change(await screen.findByLabelText("Package"), { target: { value: "@acme/wiki-mcp" } });
   fireEvent.change(screen.getByLabelText("Exact version"), { target: { value: "1.4.2" } });
   fireEvent.change(screen.getByLabelText("Arguments"), { target: { value: "--read-only  --lang en" } });
   fireEvent.click(screen.getByRole("button", { name: "Test it" }));
   expect((await screen.findByRole("alert")).textContent).toBe("The server did not answer in time.");
   expect(posts[0]!.body).toEqual({ label: "Wiki", transport: { kind: "stdio", spec: { registry: "npm", name: "@acme/wiki-mcp", version: "1.4.2", args: ["--read-only", "--lang", "en"] } } });
+ });
+
+ describe("T9: a server Rovara runs from a package", () => {
+  const spec = { name: "@acme/wiki-mcp", version: "2.0.1", integrity: `sha512-${"A".repeat(86)}==`, args: ["--read-only"], bundleHash: "ab12cd34ef56".padEnd(64, "0"), lockfileHash: hash("1"), destinations: [{ host: "wiki.corp.example", port: 443 }], secretEnv: ["WIKI_TOKEN"], size: { cpu: 256, memoryMiB: 512 } };
+  const waiting = { ...approved, serverId: "mcpwiki000001", label: "Wiki", status: "awaiting_approval", hasSecret: true, transport: { kind: "stdio", spec }, install: { packageCount: 42, unpackedBytes: 12 * 1_048_576 }, probe: { tools: [{ name: "lookup_page", description: "Look up", annotation: "read_only" }] } };
+  function host(over: { list?: unknown[]; reply?: (input: ApiRequest) => ApiResponse; stdioAvailable?: boolean } = {}) {
+   const posts: ApiRequest[] = [];
+   const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => {
+    if (input.method === "GET") return { status: 200, body: { servers: over.list ?? [], stdioAvailable: over.stdioAvailable ?? true } };
+    posts.push(input);
+    return over.reply?.(input) ?? { status: 202, body: { status: "NEEDS_APPROVAL", server: waiting } };
+   });
+   return { ...f, posts };
+  }
+  const mount = (f: ReturnType<typeof host>) => renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(McpServers) }) }));
+  async function choosePackage() {
+   fireEvent.click(await screen.findByLabelText("Rovara runs a package for it"));
+   fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Wiki" } });
+   fireEvent.change(await screen.findByLabelText("Package"), { target: { value: "@acme/wiki-mcp" } });
+   fireEvent.change(screen.getByLabelText("Exact version"), { target: { value: "2.0.1" } });
+  }
+  it("sends the addresses, the secret names and the values once, with the values in the password fields", async () => {
+   const f = host();
+   mount(f);
+   await choosePackage();
+   fireEvent.change(screen.getByLabelText("Addresses it talks to"), { target: { value: "Wiki.Corp.Example:443\n\n 10.2.3.4:8443 " } });
+   fireEvent.change(screen.getByLabelText("Add a secret name"), { target: { value: "wiki_token" } });
+   fireEvent.click(screen.getByRole("button", { name: "Add this secret" }));
+   const value = screen.getByLabelText<HTMLInputElement>("Value of WIKI_TOKEN");
+   expect(value.type).toBe("password");
+   fireEvent.change(value, { target: { value: "tok-9f3a" } });
+   fireEvent.click(screen.getByRole("button", { name: "Test it" }));
+   await screen.findByRole("button", { name: "Allow this server" });
+   expect(f.posts).toHaveLength(1);
+   expect(f.posts[0]!.body).toEqual({
+    label: "Wiki", secrets: { WIKI_TOKEN: "tok-9f3a" },
+    transport: { kind: "stdio", spec: { registry: "npm", name: "@acme/wiki-mcp", version: "2.0.1", args: [], destinations: [{ host: "wiki.corp.example", port: 443 }, { host: "10.2.3.4", port: 8443 }], secretEnv: ["WIKI_TOKEN"] } },
+   });
+  });
+  it("refuses an address line without a port and a secret name without a value, before anything is sent", async () => {
+   const f = host();
+   mount(f);
+   await choosePackage();
+   fireEvent.change(screen.getByLabelText("Addresses it talks to"), { target: { value: "wiki.corp.example" } });
+   fireEvent.click(screen.getByRole("button", { name: "Test it" }));
+   expect((await screen.findByRole("alert")).textContent).toMatch(/host name and a port/u);
+   fireEvent.change(screen.getByLabelText("Addresses it talks to"), { target: { value: "" } });
+   fireEvent.change(screen.getByLabelText("Add a secret name"), { target: { value: "JIRA_TOKEN" } });
+   fireEvent.click(screen.getByRole("button", { name: "Add this secret" }));
+   fireEvent.click(screen.getByRole("button", { name: "Test it" }));
+   await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/value for each secret name/u));
+   expect(f.posts).toEqual([]);
+  });
+  it("says what the wait is while it installs and tests, and shows the broker's fixed sentence when it fails", async () => {
+   let release: (response: ApiResponse) => void = () => undefined;
+   const f = fakeHost(async (input: ApiRequest): Promise<ApiResponse> => input.method === "GET" ? { status: 200, body: { servers: [], stdioAvailable: true } } : new Promise<ApiResponse>(resolve => { release = resolve; }));
+   renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(McpServers) }) }));
+   await choosePackage();
+   fireEvent.click(screen.getByRole("button", { name: "Test it" }));
+   expect((await screen.findByRole("status")).textContent).toMatch(/Installing the package \(about 1 to 2 minutes\)/u);
+   release({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "This package needs a git dependency. Rovara installs only from your registry." } } });
+   expect((await screen.findByRole("alert")).textContent).toBe("This package needs a git dependency. Rovara installs only from your registry.");
+   // the form is back, and the secret value is not kept anywhere on the page
+   expect(screen.getByRole("button", { name: "Test it" })).toBeTruthy();
+  });
+  it("shows the card before allowing: package, count and size, the addresses, the secret names, the fingerprint and the short bundle hash; no secret value", async () => {
+   const f = host({ list: [waiting] });
+   mount(f);
+   fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+   const card = await screen.findByRole("group", { name: "What Rovara will run" });
+   const text = card.textContent;
+   expect(text).toContain("@acme/wiki-mcp@2.0.1");
+   expect(text).toContain("42 packages, 12 MB once unpacked");
+   expect(text).toContain("wiki.corp.example:443");
+   expect(text).toContain("WIKI_TOKEN");
+   expect(text).toContain(spec.integrity);
+   expect(text).toContain("ab12cd34ef56");
+   expect(text).toMatch(/does not run install steps/u);
+   expect(document.body.textContent).not.toContain("tok-9f3a");
+  });
+  it("says so when a server may reach no address and is given no secrets", async () => {
+   const bare = { ...waiting, transport: { kind: "stdio", spec: { ...spec, destinations: [], secretEnv: [] } }, hasSecret: undefined, install: undefined };
+   mount(host({ list: [bare] }));
+   fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+   const card = await screen.findByRole("group", { name: "What Rovara will run" });
+   expect(card.textContent).toContain("may not reach any address");
+   expect(card.textContent).toContain("given no secrets");
+  });
+  it("starts a proposal for a newer version from an approved one: same package, addresses and secret names, a blank version and blank values; the old one keeps serving", async () => {
+   const f = host({ list: [{ ...waiting, status: "approved" }] });
+   mount(f);
+   fireEvent.click(await screen.findByRole("button", { name: "Add a newer version" }));
+   expect((await screen.findByLabelText<HTMLInputElement>("Package")).value).toBe("@acme/wiki-mcp");
+   expect(screen.getByLabelText<HTMLInputElement>("Exact version").value).toBe("");
+   expect(screen.getByLabelText<HTMLInputElement>("Name").value).toBe("Wiki");
+   expect(screen.getByLabelText<HTMLTextAreaElement>("Addresses it talks to").value).toBe("wiki.corp.example:443");
+   expect(screen.getByLabelText<HTMLInputElement>("Value of WIKI_TOKEN").value).toBe("");
+   expect(f.posts).toEqual([]);
+   // the approved entry is still listed as allowed
+   expect(screen.getByText(/Allowed/)).toBeTruthy();
+  });
+  it("offers no 'newer version' button for an entry that must be added again, or where package-run servers are not available", async () => {
+   const again = mount(host({ list: [{ ...waiting, status: "needs_reapproval" }] }));
+   await screen.findByText(/Add it again to approve/);
+   expect(screen.queryByRole("button", { name: "Add a newer version" })).toBeNull();
+   again.unmount();
+   mount(host({ list: [{ ...waiting, status: "approved" }], stdioAvailable: false }));
+   await screen.findByText(/Allowed/);
+   expect(screen.queryByRole("button", { name: "Add a newer version" })).toBeNull();
+  });
+  it("refuses a port that is not 1 to 65535, before anything is sent", async () => {
+   const f = host();
+   mount(f);
+   await choosePackage();
+   for (const line of ["wiki.corp.example:0", "wiki.corp.example:65536", "wiki.corp.example:443443"]) {
+    fireEvent.change(screen.getByLabelText("Addresses it talks to"), { target: { value: line } });
+    fireEvent.click(screen.getByRole("button", { name: "Test it" }));
+    expect((await screen.findByRole("alert")).textContent, line).toMatch(/host name and a port/u);
+   }
+   fireEvent.change(screen.getByLabelText("Addresses it talks to"), { target: { value: "wiki.corp.example:1\nwiki.corp.example:65535" } });
+   fireEvent.click(screen.getByRole("button", { name: "Test it" }));
+   await screen.findByRole("button", { name: "Allow this server" });
+   expect((f.posts[0]!.body as { transport: { spec: { destinations: unknown } } }).transport.spec.destinations).toEqual([{ host: "wiki.corp.example", port: 1 }, { host: "wiki.corp.example", port: 65_535 }]);
+  });
+  it("clears the typed secret values after a failed test, so a retry asks for them again", async () => {
+   const f = host({ reply: () => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "The server did not answer in time." } } }) });
+   mount(f);
+   await choosePackage();
+   fireEvent.change(screen.getByLabelText("Add a secret name"), { target: { value: "JIRA_TOKEN" } });
+   fireEvent.click(screen.getByRole("button", { name: "Add this secret" }));
+   fireEvent.change(screen.getByLabelText("Value of JIRA_TOKEN"), { target: { value: "tok-7b" } });
+   fireEvent.click(screen.getByRole("button", { name: "Test it" }));
+   await screen.findByText("The server did not answer in time.");
+   expect(f.posts[0]!.body).toMatchObject({ secrets: { JIRA_TOKEN: "tok-7b" } });
+   expect(screen.getByLabelText<HTMLInputElement>("Value of JIRA_TOKEN").value).toBe("");
+   expect(document.body.innerHTML).not.toContain("tok-7b");
+  });
+  it("words the wait by how long it has been: installing first, then testing", async () => {
+   const { progressWords } = await import("../../packages/ui/src/screens/admin/connections/McpPackageServer.js");
+   expect(progressWords(0)).toMatch(/^Installing the package/u);
+   expect(progressWords(74)).toMatch(/^Installing the package/u);
+   expect(progressWords(75)).toMatch(/^Testing it/u);
+   expect(progressWords(400)).toMatch(/^Testing it/u);
+  });
+  it("keeps the package form out of the startup code: McpServers loads it only through a dynamic import, and imports only its type", async () => {
+   const { readFileSync } = await import("node:fs");
+   const source = readFileSync("packages/ui/src/screens/admin/connections/McpServers.tsx", "utf8");
+   const staticImports = source.split("\n").filter(line => /^import /u.test(line) && line.includes("McpPackageServer"));
+   expect(staticImports).toEqual(['import type { PackageDraft } from "./McpPackageServer.js";']);
+   expect(source.match(/import\("\.\/McpPackageServer\.js"\)/gu)).toHaveLength(2);
+  });
  });
 });

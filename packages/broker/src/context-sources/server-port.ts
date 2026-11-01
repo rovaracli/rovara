@@ -9,7 +9,8 @@ import { connectMcp, listMcpTools, type McpConnection, type McpToolResult } from
 import { agentXError, editionPolicy, featureEnabled, type ContextSourceServer, type Edition, type McpAuth, type OrgId } from "@agentx/contracts";
 import { mcpEndpointGuard, type McpEndpointGuard } from "../connections/pinned-endpoint.js";
 import { privateMcpEndpointGuard, probeMcpEndpointGuard } from "../connections/private-endpoints.js";
-import { McpProbeError, STDIO_OFF_MESSAGE, allowedTargets, stdioAvailable, type McpProber, type McpServerSecrets, type McpServerStore } from "./mcp-servers.js";
+import { McpProbeError, STDIO_OFF_MESSAGE, allowedTargets, stdioAvailable, type McpHostControl, type McpProber, type McpServerSecrets, type McpServerStore } from "./mcp-servers.js";
+import { MCP_INSTALL_FAILURES, type McpInstallFailureCode } from "@agentx/contracts";
 import type { ContextServerPort, ContextServerSession } from "./routes.js";
 import type { DiscoveredTool, SourceEnvironment } from "./settings.js";
 
@@ -158,7 +159,7 @@ export const HOST_PROBE_TIMEOUT_MS = 450_000;
 
 export interface HostProbeClient {
   /** Asks the MCP host to install a package for a moment and list its tools (with `pinned`: to test the pinned bundle without installing). Throws McpProbeError. */
-  probe(spec: Parameters<McpProber["stdio"]>[0], pinned?: Parameters<McpProber["stdio"]>[1]): Promise<{ tools: DiscoveredTool[]; integrity: string; lockfileHash?: string | undefined; bundleHash?: string | undefined }>;
+  probe(spec: Parameters<McpProber["stdio"]>[0], pinned?: Parameters<McpProber["stdio"]>[1], serverId?: string): ReturnType<McpProber["stdio"]>;
 }
 
 /** Maps what went wrong while testing an address to one of the fixed codes. The error's own text is never kept. */
@@ -190,9 +191,9 @@ export function gatewayProber(deps: { host?: HostProbeClient | undefined; privat
         throw classify(error);
       }
     },
-    async stdio(spec, pinned) {
+    async stdio(spec, pinned, serverId) {
       if (deps.host === undefined) throw new McpProbeError("host_unavailable");
-      try { return await deps.host.probe(spec, pinned); } catch (error) { throw error instanceof McpProbeError ? error : new McpProbeError("host_refused"); }
+      try { return await deps.host.probe(spec, pinned, serverId); } catch (error) { throw error instanceof McpProbeError ? error : new McpProbeError("host_refused"); }
     },
   };
 }
@@ -200,25 +201,69 @@ export function gatewayProber(deps: { host?: HostProbeClient | undefined; privat
 /** The MCP host's probe route, called by the broker with the host's token. */
 export function hostProbeClient(host: McpHostEndpoint, fetchImplementation: typeof fetch = fetch): HostProbeClient {
   return {
-    async probe(spec, pinned) {
+    async probe(spec, pinned, serverId) {
       assertSecureHostUrl(host.url);
       let response: Response;
       try {
         response = await fetchImplementation(`${host.url.replace(/\/$/u, "")}/probe`, {
-          method: "POST", headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" }, body: JSON.stringify({ spec, ...(pinned === undefined ? {} : { pinned }) }), signal: AbortSignal.timeout(HOST_PROBE_TIMEOUT_MS),
+          method: "POST", headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" }, body: JSON.stringify({ spec, ...(pinned === undefined ? {} : { pinned }), ...(serverId === undefined ? {} : { serverId }) }), signal: AbortSignal.timeout(HOST_PROBE_TIMEOUT_MS),
         });
       } catch {
         throw new McpProbeError("host_unavailable");
       }
-      if (!response.ok) throw new McpProbeError(response.status === 401 ? "host_unavailable" : "host_refused");
-      const body = await response.json().catch(() => undefined) as { tools?: unknown; error?: unknown } | undefined;
+      if (!response.ok) throw new McpProbeError(response.status === 401 ? "host_unavailable" : response.status === 429 ? "host_busy" : "host_refused");
+      const body = await response.json().catch(() => undefined) as { tools?: unknown; error?: unknown; reason?: unknown; install?: { code?: unknown; computedIntegrity?: unknown } } | undefined;
+      // The host's words are never shown: of what it says, only a refused destination and the FIXED code of a failed install are taken, and each is looked up in the broker's own tables.
+      if (body !== undefined && body.error === "host_refused") {
+        if (body.reason === "destination_refused") throw new McpProbeError("destination_refused");
+        const code = body.install?.code;
+        if (typeof code === "string" && Object.prototype.hasOwnProperty.call(MCP_INSTALL_FAILURES, code)) {
+          const computed = body.install?.computedIntegrity;
+          throw new McpProbeError("install_failed", { installCode: code as McpInstallFailureCode, ...(typeof computed === "string" && /^sha512-[A-Za-z0-9+/=]{20,200}$/u.test(computed) ? { computedIntegrity: computed } : {}) });
+        }
+      }
       if (body === undefined || !Array.isArray(body.tools) || typeof (body as { integrity?: unknown }).integrity !== "string") throw new McpProbeError("host_refused");
       const tools = (body.tools as Array<{ name?: unknown; description?: unknown; inputSchema?: unknown; annotations?: unknown }>)
         .filter((tool): tool is { name: string; description?: string; inputSchema: Record<string, unknown>; annotations?: DiscoveredTool["annotations"] } => typeof tool.name === "string" && typeof tool.inputSchema === "object" && tool.inputSchema !== null)
         .slice(0, 200).map((tool) => ({ name: tool.name, description: typeof tool.description === "string" ? tool.description : undefined, inputSchema: tool.inputSchema, annotations: tool.annotations }));
       const hash = (value: unknown): string | undefined => (typeof value === "string" && /^[0-9a-f]{64}$/u.test(value) ? value : undefined);
-      const answer = body as { integrity: string; lockfileHash?: unknown; bundleHash?: unknown };
-      return { tools, integrity: answer.integrity, lockfileHash: hash(answer.lockfileHash), bundleHash: hash(answer.bundleHash) };
+      const answer = body as { integrity: string; lockfileHash?: unknown; bundleHash?: unknown; installed?: { packageCount?: unknown; unpackedBytes?: unknown } };
+      const count = (value: unknown, max: number): number | undefined => (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max ? value : undefined);
+      const packageCount = count(answer.installed?.packageCount, 5_000), unpackedBytes = count(answer.installed?.unpackedBytes, 2 ** 40);
+      return { tools, integrity: answer.integrity, lockfileHash: hash(answer.lockfileHash), bundleHash: hash(answer.bundleHash), ...(packageCount === undefined || unpackedBytes === undefined ? {} : { installed: { packageCount, unpackedBytes } }) };
     },
   };
+}
+
+/** Calls the MCP host's `warm` and `release` routes (T9). Both are POSTs with the host's token, bounded to 10 seconds, and any failure is the caller's to ignore: neither is needed for a call to work. */
+export function hostControlClient(host: McpHostEndpoint, fetchImplementation: typeof fetch = fetch): McpHostControl {
+  const send = async (serverId: string, action: "warm" | "release"): Promise<void> => {
+    if (!/^mcp[a-z0-9]{6,24}$/u.test(serverId)) throw new Error("not a server id");
+    const base = assertSecureHostUrl(host.url);
+    const response = await fetchImplementation(`${base.href.replace(/\/$/u, "")}/servers/${serverId}/${action}`, {
+      method: "POST", headers: { authorization: `Bearer ${host.token}`, "content-type": "application/json" }, body: "{}", signal: AbortSignal.timeout(10_000), redirect: "error",
+    });
+    await response.body?.cancel();
+    if (!response.ok && !(action === "release" && response.status === 409)) throw new Error(`the host answered ${response.status}`);
+  };
+  return { warm: (serverId) => send(serverId, "warm"), release: (serverId) => send(serverId, "release") };
+}
+
+/**
+ * Starts the tasks of the package-run servers a stage is about to use, so the first tool call does not wait for a cold start (design section 6, "Prewarm"). Called when a stage that has
+ * package-run sources starts. Fire and forget: it never throws, never waits for a task to come up, and does at most 16 calls. Returns how many it asked for.
+ */
+export async function prewarmStdioServers(deps: { host: Pick<McpHostControl, "warm"> | undefined; servers: Pick<McpServerStore, "get">; edition: Edition; stdioEnabled: boolean | undefined }, orgId: OrgId, serverIds: readonly string[]): Promise<number> {
+  if (deps.host === undefined || !stdioAvailable({ edition: deps.edition, stdioEnabled: deps.stdioEnabled })) return 0;
+  let asked = 0;
+  for (const serverId of [...new Set(serverIds)].slice(0, 16)) {
+    try {
+      const entry = await deps.servers.get(orgId, serverId);
+      // Only an approved package-run server is warmed; the host checks this again from the registry.
+      if (entry?.status !== "approved" || entry.transport.kind !== "stdio") continue;
+      asked += 1;
+      void deps.host.warm(serverId).catch(() => undefined);
+    } catch { /* a stage never fails because a server could not be warmed */ }
+  }
+  return asked;
 }

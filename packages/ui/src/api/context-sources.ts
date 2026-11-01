@@ -19,10 +19,16 @@ const SourcesReader = z.object({ project: z.string().max(100), document: z.objec
 export const DiscoveredReader = z.object({ tools: z.array(z.object({ name: z.string().max(64), description: z.string().max(300), schemaHash: z.string().length(64), annotation: z.enum(["read_only", "unannotated", "unsafe"]), nameSuggestsChange: z.boolean(), takesAddress: z.boolean() })).max(200) });
 export type DiscoveredView = z.infer<typeof DiscoveredReader>["tools"][number];
 const ProbeTool = z.object({ name: z.string().max(64), description: z.string().max(300), annotation: z.enum(["read_only", "unannotated", "unsafe"]) });
+const Sha256 = z.string().length(64);
 const McpServerReader = z.object({
   serverId: z.string().max(40), label: z.string().max(60), status: z.enum(["awaiting_approval", "approved", "disabled", "needs_reapproval"]),
-  transport: z.discriminatedUnion("kind", [z.object({ kind: z.literal("http"), address: z.string().max(2048) }), z.object({ kind: z.literal("stdio"), spec: z.object({ name: z.string().max(100), version: z.string().max(50), integrity: z.string().max(200) }) })]),
+  transport: z.discriminatedUnion("kind", [z.object({ kind: z.literal("http"), address: z.string().max(2048) }), z.object({ kind: z.literal("stdio"), spec: z.object({
+    name: z.string().max(100), version: z.string().max(50), integrity: z.string().max(200), args: z.array(z.string().max(100)).max(8).default([]), bundleHash: Sha256.optional(), lockfileHash: Sha256.optional(),
+    destinations: z.array(z.object({ host: z.string().max(253), port: z.number() })).max(8).default([]), secretEnv: z.array(z.string().max(64)).max(8).default([]),
+    size: z.object({ cpu: z.number(), memoryMiB: z.number() }).optional(),
+  }) })]),
   probe: z.object({ tools: z.array(ProbeTool).max(100) }), hasSecret: z.boolean().optional(), requestedAt: z.string().max(40),
+  install: z.object({ packageCount: z.number(), unpackedBytes: z.number() }).optional(),
 });
 export type McpServerView = z.infer<typeof McpServerReader>;
 
@@ -48,7 +54,7 @@ export function createContextSourcesApi(host: AppHost) {
     confirm: (project: string, changeId: string) => call({ method: "POST", path: `${sourcesPath(project)}/changes/${changeId}/confirm` }, z.object({}).passthrough()),
     reject: (project: string, changeId: string) => call({ method: "POST", path: `${sourcesPath(project)}/changes/${changeId}/reject` }, z.object({}).passthrough()),
     servers: () => call({ method: "GET", path: serversPath }, z.object({ servers: z.array(McpServerReader).max(200), stdioAvailable: z.boolean().optional() })),
-    addServer: (body: { label: string; transport: unknown; secret?: string }) => call({ method: "POST", path: serversPath, body }, z.object({ server: McpServerReader }), [202]),
+    addServer: (body: { label: string; transport: unknown; secret?: string; secrets?: Record<string, string> }) => call({ method: "POST", path: serversPath, body }, z.object({ server: McpServerReader }), [202]),
     approveServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/approve` }, z.object({ server: McpServerReader })),
     disableServer: (serverId: string) => call({ method: "POST", path: `${serversPath}/${serverId}/disable` }, z.object({}).passthrough()),
     removeServer: (serverId: string) => call({ method: "DELETE", path: `${serversPath}/${serverId}` }, z.object({}).passthrough()),

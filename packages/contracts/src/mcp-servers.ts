@@ -180,6 +180,8 @@ export const McpServerEntrySchema = z.object({
   hasSecret: z.boolean().optional(),
   secretVersion: z.string().max(200).optional(),
   probe: McpServerProbeSchema,
+  /** What the install found, for the card the admin reads before approving (T9). Absent on an http server and on an entry stored before it was kept. */
+  install: z.object({ packageCount: z.number().int().min(0).max(5_000), unpackedBytes: z.number().int().min(0).max(2 ** 40) }).strict().optional(),
   requestedBy: z.string().max(200),
   requestedAt: z.string().max(40),
   decidedBy: z.string().max(200).optional(),
@@ -228,5 +230,34 @@ export const MCP_PROBE_FAILURES = {
   not_mcp: "The server answered, but not as an MCP server.",
   host_unavailable: "The MCP host is not set up in this install, so stdio servers cannot be used.",
   host_refused: "The MCP host would not start that package.",
+  // T9: the reasons the admin can act on. The host names a refused destination, a busy test slot, or the fixed code of an install that failed; nothing it says in words is shown.
+  destination_refused: "This address is outside the ranges your install allows.",
+  host_busy: "Rovara is testing other servers right now. Wait a few minutes and try again.",
+  install_failed: "Rovara could not install that package.",
 } as const;
 export type McpProbeFailure = keyof typeof MCP_PROBE_FAILURES;
+
+/**
+ * Why an install of a package failed, as the sentence the admin reads. The install task keeps the same table (broker `mcp-runner/install-main.ts`) and a test keeps the two equal; the
+ * broker shows THIS table's sentence for the code the host reports, never the host's words. A package or rule name is not part of any sentence.
+ */
+export const MCP_INSTALL_FAILURES = {
+  invalid_request: "That package name or version cannot be installed.",
+  integrity_mismatch: "The package's checksum is not the one you typed.",
+  not_found: "Your registry does not have that package or version.",
+  download_failed: "Rovara could not download that package from your registry.",
+  bad_package: "The package file is not one Rovara can unpack.",
+  wrong_package: "Your registry returned a different package from the one asked for.",
+  git_dependency: "This package needs a git dependency. Rovara installs only from your registry.",
+  unsupported_manifest: "This package changes the versions of its dependencies with overrides or resolutions. Rovara does not support that in this version.",
+  install_scripts: "This package needs install steps or a native build. Rovara does not run install steps, so this package cannot be used yet.",
+  lockfile_policy: "This package's dependencies are not allowed.",
+  resolve_failed: "Rovara could not work out this package's dependencies from your registry.",
+  install_failed: "Rovara could not install this package's dependencies from your registry.",
+  no_program: "This package does not offer a program Rovara can run.",
+  too_large: "This package is larger than Rovara allows.",
+  timed_out: "Installing this package took longer than Rovara allows.",
+  bundle_failed: "Rovara could not prepare this package to run.",
+  upload_failed: "Rovara could not store the prepared package.",
+} as const;
+export type McpInstallFailureCode = keyof typeof MCP_INSTALL_FAILURES;

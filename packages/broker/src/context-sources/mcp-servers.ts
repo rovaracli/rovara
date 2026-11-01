@@ -9,8 +9,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  MCP_PROBE_FAILURES, McpServerEntrySchema, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, featureEnabled, orgScoped, readStoredMcpServerEntry, requireFeature, stdioSpecIfComplete,
-  type Edition, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type McpStdioProposal, type OrgId,
+  MCP_INSTALL_FAILURES, MCP_PROBE_FAILURES, McpServerEntrySchema, McpServerProposalTransportSchema, agentXError, canonicalJson, editionPolicy, featureEnabled, orgScoped, readStoredMcpServerEntry, requireFeature, stdioSpecIfComplete,
+  type Edition, type McpInstallFailureCode, type McpProbeFailure, type McpServerEntry, type McpServerProbe, type McpServerTransport, type McpStdioProposal, type OrgId,
 } from "@agentx/contracts";
 import { parsePrivateTarget, type AllowedTarget } from "../connections/private-endpoints.js";
 import { inertSentence } from "./present.js";
@@ -20,10 +20,21 @@ type DocumentClient = { send(command: unknown): Promise<unknown> };
 
 /** A test of a server failed for a reason an admin can be told in a fixed sentence. */
 export class McpProbeError extends Error {
-  constructor(readonly code: McpProbeFailure) {
+  /** `installCode` is the fixed code of an install that failed; `computedIntegrity` is the checksum the registry's tarball really has (shown when the admin typed another). Both are checked values, never host text. */
+  constructor(readonly code: McpProbeFailure, readonly detail: { installCode?: McpInstallFailureCode; computedIntegrity?: string } = {}) {
     super(code);
     this.name = "McpProbeError";
   }
+}
+
+/** The one sentence an admin is shown for a failed test. A fixed table: nothing the host or a server said is in it. */
+export function probeFailureSentence(error: McpProbeError): string {
+  if (error.code === "install_failed" && error.detail.installCode !== undefined) {
+    const sentence = MCP_INSTALL_FAILURES[error.detail.installCode];
+    return error.detail.installCode === "integrity_mismatch" && error.detail.computedIntegrity !== undefined && /^sha512-[A-Za-z0-9+/=]{20,200}$/u.test(error.detail.computedIntegrity)
+      ? `${sentence} The checksum of what your registry serves is ${error.detail.computedIntegrity}.` : sentence;
+  }
+  return MCP_PROBE_FAILURES[error.code];
 }
 
 export interface McpProber {
@@ -34,7 +45,9 @@ export interface McpProber {
    * `bundleHash` are the install's: the approval binds them. A host that returns neither cannot complete a proposal. With `pinned` (an approval) nothing is installed: the host tests the
    * bundle that was pinned, and says which bundle it tested.
    */
-  stdio(spec: McpStdioProposal, pinned?: { lockfileHash: string; bundleHash: string }): Promise<{ tools: DiscoveredTool[]; integrity: string; lockfileHash?: string | undefined; bundleHash?: string | undefined }>;
+  stdio(spec: McpStdioProposal, pinned?: { lockfileHash: string; bundleHash: string }, serverId?: string): Promise<{
+    tools: DiscoveredTool[]; integrity: string; lockfileHash?: string | undefined; bundleHash?: string | undefined; installed?: { packageCount: number; unpackedBytes: number } | undefined;
+  }>;
 }
 
 export interface McpServerStore {
@@ -189,6 +202,16 @@ export interface McpServerDependencies {
   secondAdminToApprove?: boolean;
   newId?: () => string;
   audit?: (event: McpServerAuditEvent) => Promise<void>;
+  /** The MCP host (package-run servers). Told, best effort, when a server is turned off or removed so its task, task definition and security group go at once; the host's own sweep does it within a minute otherwise. */
+  host?: Pick<McpHostControl, "release"> | undefined;
+}
+
+/** What the broker asks of the MCP host besides tests and calls (T9). Every call is bounded and best effort: a host that does not answer never blocks the admin. */
+export interface McpHostControl {
+  /** Starts the server's task now (a stage that has this source is about to run), so no tool call waits for the cold start. */
+  warm(serverId: string): Promise<void>;
+  /** Stops the server's task and removes what was made for it. The host refuses while the server is still approved. */
+  release(serverId: string): Promise<void>;
 }
 
 function guard(deps: McpServerDependencies, actor: McpServerActor): void {
@@ -234,12 +257,13 @@ export function probeLimiter(options: { max: number; windowMs: number; now: () =
   return Object.assign(limiter, { size: () => seen.size });
 }
 
-async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerEntry["transport"] | { kind: "stdio"; spec: McpStdioProposal }, token: string | undefined): Promise<{ probe: McpServerProbe; integrity?: string; lockfileHash?: string | undefined; bundleHash?: string | undefined }> {
+async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpServerEntry["transport"] | { kind: "stdio"; spec: McpStdioProposal }, token: string | undefined, serverId?: string): Promise<{ probe: McpServerProbe; integrity?: string; lockfileHash?: string | undefined; bundleHash?: string | undefined; installed?: { packageCount: number; unpackedBytes: number } }> {
   if (deps.probeAllowed !== undefined && !deps.probeAllowed(orgId)) throw agentXError("TOO_MANY_REQUESTS", "Too many server tests just now. Wait a few minutes and try again.");
   let tools: DiscoveredTool[];
   let integrity: string | undefined;
   let lockfileHash: string | undefined;
   let bundleHash: string | undefined;
+  let installed: { packageCount: number; unpackedBytes: number } | undefined;
   try {
     if (transport.kind === "http") {
       tools = await deps.prober.http(transport.address, token);
@@ -251,17 +275,40 @@ async function probe(deps: McpServerDependencies, orgId: OrgId, transport: McpSe
       const pinned = typeof held.lockfileHash === "string" && typeof held.bundleHash === "string" ? { lockfileHash: held.lockfileHash, bundleHash: held.bundleHash } : undefined;
       delete proposal.lockfileHash;
       delete proposal.bundleHash;
-      ({ tools, integrity, lockfileHash, bundleHash } = await deps.prober.stdio(proposal as McpStdioProposal, pinned));
+      ({ tools, integrity, lockfileHash, bundleHash, installed } = await deps.prober.stdio(proposal as McpStdioProposal, pinned, serverId));
     }
   } catch (error) {
     // Only a fixed sentence is shown: a server's own error can hold addresses, banners and paths.
-    const code = error instanceof McpProbeError ? error.code : "unreachable";
-    throw agentXError("CONFIG_INVALID", MCP_PROBE_FAILURES[code]);
+    throw agentXError("CONFIG_INVALID", error instanceof McpProbeError ? probeFailureSentence(error) : MCP_PROBE_FAILURES.unreachable);
   }
-  return { probe: summariseProbe(tools, deps.now()), ...(integrity === undefined ? {} : { integrity }), ...(lockfileHash === undefined ? {} : { lockfileHash }), ...(bundleHash === undefined ? {} : { bundleHash }) };
+  return {
+    probe: summariseProbe(tools, deps.now()), ...(integrity === undefined ? {} : { integrity }), ...(lockfileHash === undefined ? {} : { lockfileHash }), ...(bundleHash === undefined ? {} : { bundleHash }),
+    ...(installed === undefined ? {} : { installed }),
+  };
 }
 
-export async function proposeMcpServer(deps: McpServerDependencies, actor: McpServerActor, body: { label: unknown; transport: unknown; secret?: string | undefined }): Promise<McpServerEntry> {
+/** The values a package-run server is given as environment variables, by name. Bounded; only printable characters, so a pasted value cannot smuggle a line break into an environment. */
+const SECRET_VALUE = /^[\x20-\x7e]{1,4096}$/u;
+
+/** The JSON secret for a package-run server: exactly one value per declared name, none extra. Throws a fixed sentence naming the field, never a value. */
+export function stdioSecretDocument(secretEnv: readonly string[], values: unknown): string | undefined {
+  if (secretEnv.length === 0) {
+    if (values !== undefined && !(typeof values === "object" && values !== null && Object.keys(values).length === 0)) throw agentXError("CONFIG_INVALID", "secrets: this server declares no secret names, so it takes no secret values");
+    return undefined;
+  }
+  if (typeof values !== "object" || values === null || Array.isArray(values)) throw agentXError("CONFIG_INVALID", "secrets: give a value for each secret name");
+  const given = Object.keys(values);
+  if (given.length !== secretEnv.length || !secretEnv.every((name) => Object.prototype.hasOwnProperty.call(values, name))) throw agentXError("CONFIG_INVALID", "secrets: give exactly one value for each secret name, and no others");
+  const document: Record<string, string> = {};
+  for (const name of secretEnv) {
+    const value = (values as Record<string, unknown>)[name];
+    if (typeof value !== "string" || !SECRET_VALUE.test(value)) throw agentXError("CONFIG_INVALID", `secrets: the value for ${name} must be 1 to 4096 plain characters`);
+    document[name] = value;
+  }
+  return JSON.stringify(document);
+}
+
+export async function proposeMcpServer(deps: McpServerDependencies, actor: McpServerActor, body: { label: unknown; transport: unknown; secret?: string | undefined; secrets?: unknown }): Promise<McpServerEntry> {
   guard(deps, actor);
   const label = typeof body.label === "string" ? inertSentence(body.label, 60) : "";
   if (label === "") throw agentXError("CONFIG_INVALID", "label: give the server a short name");
@@ -277,19 +324,34 @@ export async function proposeMcpServer(deps: McpServerDependencies, actor: McpSe
     if (same !== undefined) throw agentXError("CONFIG_INVALID", "that server is already added; open it in the list");
   } else {
     if (!stdioAvailable(deps)) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
-    if (body.secret !== undefined) throw agentXError("CONFIG_INVALID", "a server that Rovara runs takes no token");
+    if (body.secret !== undefined) throw agentXError("CONFIG_INVALID", "a server that Rovara runs takes secrets by name (secrets), not a token");
   }
+  if (transport.data.kind === "http" && body.secrets !== undefined) throw agentXError("CONFIG_INVALID", "secrets: a server with an address takes one token, not secrets by name");
+  // The values of a package-run server's secrets, as the one JSON document the task reads (checked now; stored below, before the test, because the test task reads them too).
+  const secretDocument = transport.data.kind === "stdio" ? stdioSecretDocument(transport.data.spec.secretEnv, body.secrets) : undefined;
   const serverId = `mcp${(deps.newId ?? (() => randomBytes(8).toString("hex")))().replace(/[^a-z0-9]/gu, "").slice(0, 16)}`;
-  const shown = await probe(deps, actor.orgId, transport.data, body.secret);
-  // A stdio package is pinned by its tarball's integrity (the one the admin gave, which the host refused anything else than, or the one the host computed and the admin sees now)
-  // AND by the install's lockfile and bundle hashes. A host that did not return the hashes cannot complete a proposal: nothing is stored.
-  if (transport.data.kind === "stdio" && (shown.integrity === undefined || shown.lockfileHash === undefined || shown.bundleHash === undefined)) throw agentXError("CONFIG_INVALID", MCP_PROBE_FAILURES.host_refused);
+  // A package-run server's secrets are stored under the proposal's own id BEFORE the test (the probe task reads them like the serving task will); they are deleted again if the test fails
+  // or the entry cannot be stored. If that delete fails the secret stays, unreferenced: only a test of THIS id can read it (the controller refuses it once the id has an approved or
+  // other entry), nothing else is ever given the id, and the secret store's own recovery window applies when it is cleaned up.
+  const dropStoredSecrets = async (): Promise<void> => { if (secretDocument !== undefined) await deps.secrets.remove(actor.orgId, serverId).catch(() => undefined); };
+  let stdioSecretVersion: string | undefined;
+  if (secretDocument !== undefined) stdioSecretVersion = await deps.secrets.put(actor.orgId, serverId, secretDocument);
+  let shown: Awaited<ReturnType<typeof probe>>;
+  try {
+    shown = await probe(deps, actor.orgId, transport.data, body.secret, secretDocument === undefined ? undefined : serverId);
+    // A stdio package is pinned by its tarball's integrity (the one the admin gave, which the host refused anything else than, or the one the host computed and the admin sees now)
+    // AND by the install's lockfile and bundle hashes. A host that did not return the hashes cannot complete a proposal: nothing is stored.
+    if (transport.data.kind === "stdio" && (shown.integrity === undefined || shown.lockfileHash === undefined || shown.bundleHash === undefined)) throw agentXError("CONFIG_INVALID", MCP_PROBE_FAILURES.host_refused);
+  } catch (error) {
+    await dropStoredSecrets();
+    throw error;
+  }
   const stored: McpServerTransport = transport.data.kind === "http" ? transport.data : { kind: "stdio", spec: { ...transport.data.spec, integrity: shown.integrity!, lockfileHash: shown.lockfileHash!, bundleHash: shown.bundleHash! } };
-  // The token is stored only after the test passed with it, under this server's id, and is never returned (the entry holds only that there is one).
-  const secretVersion = body.secret === undefined ? undefined : await deps.secrets.put(actor.orgId, serverId, body.secret);
+  // An address-server's token is stored only after the test passed with it, under this server's id, and is never returned (the entry holds only that there is one).
+  const secretVersion = stdioSecretVersion ?? (body.secret === undefined ? undefined : await deps.secrets.put(actor.orgId, serverId, body.secret));
   const entry: McpServerEntry = McpServerEntrySchema.parse({
     serverId, label, status: "awaiting_approval", transport: stored, ...(secretVersion === undefined ? {} : { hasSecret: true, secretVersion }),
-    probe: shown.probe, requestedBy: actor.developerId, requestedAt: new Date(deps.now()).toISOString(),
+    probe: shown.probe, ...(shown.installed === undefined ? {} : { install: shown.installed }), requestedBy: actor.developerId, requestedAt: new Date(deps.now()).toISOString(),
   });
   if (!await deps.store.create(actor.orgId, entry)) {
     await deps.secrets.remove(actor.orgId, serverId).catch(() => undefined);
@@ -313,14 +375,15 @@ export async function approveMcpServer(deps: McpServerDependencies, actor: McpSe
   if (entry.transport.kind === "stdio" && !stdioAvailable(deps)) throw agentXError("FORBIDDEN", STDIO_OFF_MESSAGE);
   // The server's own token is read now (review m3): an entry whose token cannot be read is not approved, and the test sends exactly what a call will send.
   let token: string | undefined;
-  if (entry.hasSecret === true) {
+  // A package-run server's secrets are read by its test task from the secret store, never by the broker; only an address-server's token is read here.
+  if (entry.hasSecret === true && entry.transport.kind === "http") {
     token = await deps.secrets.read(actor.orgId, serverId, entry.secretVersion).catch(() => undefined);
     if (token === undefined) throw agentXError("CONFIG_INVALID", "This server's token can no longer be read. Add the server again.");
   }
   // A package-run entry is approved only with its install pinned (both hashes); the strict schema already refuses to store one without.
   const pinned = entry.transport.kind === "stdio" ? stdioSpecIfComplete(entry) : undefined;
   if (entry.transport.kind === "stdio" && pinned === undefined) throw agentXError("CHANGE_STALE", "This server was added before approvals pinned the install. Add the package again to look at it now.");
-  const again = await probe(deps, actor.orgId, entry.transport, token);
+  const again = await probe(deps, actor.orgId, entry.transport, token, entry.transport.kind === "stdio" && entry.hasSecret === true ? serverId : undefined);
   // The host installed the tarball again and checked it against the pinned integrity; a different tarball or bundle never gets here, and the tools must be the ones that were shown.
   if (pinned !== undefined && (again.integrity !== pinned.integrity || again.lockfileHash !== pinned.lockfileHash || again.bundleHash !== pinned.bundleHash)) throw agentXError("CHANGE_STALE", "The package is not the one you were shown. Add it again to look at it now.");
   if (again.probe.toolsHash !== entry.probe.toolsHash) throw agentXError("CHANGE_STALE", "The server's tools are not the ones you were shown. Add it again to look at what it offers now.");
@@ -340,6 +403,7 @@ export async function disableMcpServer(deps: McpServerDependencies, actor: McpSe
   const result = await deps.store.decide({ orgId: actor.orgId, serverId, from: entry.status, to: "disabled", by: actor.developerId, at: new Date(deps.now()).toISOString() });
   if (result === "stale") throw agentXError("CHANGE_STALE", "That server changed while this was decided. Reload the list.");
   await told(deps, { action: "mcp_server.disabled", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
+  if (entry.transport.kind === "stdio") await deps.host?.release(serverId).catch(() => undefined);
   // ME-16: a disabled server is never turned back on, so its token has no further use: delete it now. The server is already off (the allow-list reads the entry at every call); if the delete
   // fails the admin is told and removing the server tries again.
   if (entry.hasSecret === true) {
@@ -372,6 +436,7 @@ export async function removeMcpServer(deps: McpServerDependencies, actor: McpSer
     try { await deps.secrets.remove(actor.orgId, serverId); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "The server's token could not be deleted just now, so the server was kept. Try removing it again."); }
   }
   await deps.store.remove(actor.orgId, serverId);
+  if (entry.transport.kind === "stdio") await deps.host?.release(serverId).catch(() => undefined);
   if (entry.hasSecret === true) await told(deps, { action: "mcp_server.token_changed", actor, serverId, change: "deleted" });
   await told(deps, { action: "mcp_server.removed", actor, serverId, label: entry.label, transport: entry.transport.kind, hasToken: entry.hasSecret === true });
 }
