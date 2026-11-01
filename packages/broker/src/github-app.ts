@@ -1,5 +1,5 @@
 import { createHash, createSign } from "node:crypto";
-import { GitBranchNameSchema, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
+import { GitBranchNameSchema, HostRateLimitError, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 import { isAllowedLogAddress, logTail, readLogEnd } from "./github-job-log.js";
@@ -233,12 +233,10 @@ export function githubReasonOf(body: Record<string, unknown>): string | undefine
   return cut === "" ? undefined : cut;
 }
 
-export class GithubMergeRateLimitError extends Error {
-  constructor(readonly retryAt: number) {
-    if (!Number.isSafeInteger(retryAt) || retryAt < 1 || !Number.isFinite(new Date(retryAt).getTime())) {
-      throw new Error("GitHub merge rate-limit retry time is invalid");
-    }
-    super("GitHub merge observation is rate limited");
+/** GitHub's rate-limit answer. P6: it is one kind of the neutral `HostRateLimitError`, so a caller that bounds its reads handles every host's limit the same way. */
+export class GithubMergeRateLimitError extends HostRateLimitError {
+  constructor(retryAt: number) {
+    super(retryAt, "GitHub merge observation is rate limited");
     this.name = "GithubMergeRateLimitError";
   }
 }

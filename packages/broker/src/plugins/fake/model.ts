@@ -17,7 +17,7 @@ export interface FakeThread { id: string; resolved: boolean; commentIds: string[
 export interface FakeRevision { sha: string; tree: string; parents: string[]; files: ReadonlyMap<string, string> }
 export interface FakeChangeRequest {
   id: string; sourceBranch: string; targetBranch: string; title: string; body: string; draft: boolean; draftRefused: boolean;
-  state: "open" | "closed" | "merged"; author: string; frozenHead?: string; mergeRevision?: string; mergedBy?: string;
+  state: "open" | "closed" | "merged"; author: string; frozenHead?: string; mergeRevision?: string; mergedAt?: string; mergedBy?: string;
   reviews: Review[];
   /** What each review also holds (parallel to `reviews`): the host's id for it and its summary text. */
   reviewMeta: Array<{ id: string; body: string }>;
@@ -50,6 +50,8 @@ export class FakeHostModel {
   readonly changeRequests: FakeChangeRequest[] = [];
   /** Names the target branch requires before a merge. */
   requiredChecks: string[] = [];
+  /** P6: when set, the host answers every budgeted read as rate limited until this time (milliseconds). A test sets it; nothing in the model reads the real clock. */
+  rateLimitedUntil: number | undefined;
   private readonly checksByRevision = new Map<string, Check[]>();
   private readonly logs = new Map<string, string>();
   private serial = 0;
@@ -321,6 +323,7 @@ export class FakeHostModel {
     cr.state = "merged";
     cr.frozenHead = input.revision;
     cr.mergeRevision = merged.sha;
+    cr.mergedAt = this.now();
     cr.mergedBy = mergedBy;
     return { outcome: "merged", method: input.method, fellBack: false, mergeRevision: merged.sha };
   }

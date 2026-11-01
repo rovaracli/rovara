@@ -32,6 +32,7 @@ function githubCodeHostWorld(): CodeHostWorld & { api: GitHubFixtureApi } {
       ? githubDelivery("pull_request", githubPayloads.pullRequest("opened", Number(event.id)))
       : githubDelivery("push", githubPayloads.push(`refs/heads/${event.branch}`, event.revision)),
     forgedDelivery: () => githubDelivery("pull_request", githubPayloads.pullRequest("opened"), { signature: signGithubBody("{}") }),
+    limitReads: (retryAt) => { api.limitReadsFor((retryAt - GITHUB_NOW) / 1_000); },
   };
 }
 

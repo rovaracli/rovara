@@ -113,11 +113,20 @@ export const ChangeRequestDetailsSchema = z.object({
   targetBranch: BranchNameSchema,
   headRevision: RevisionSchema,
   mergeRevision: RevisionSchema.optional(),
+  /** When the host says it merged (a merged change request only). Optional: a host that does not say, or a record from before P6, has none. */
+  mergedAt: ISO_TIME.optional(),
   mergedBy: z.string().min(1).max(200).optional(),
   title: z.string().max(500),
   body: z.string().max(65_536),
 }).strict();
 export type ChangeRequestDetails = z.infer<typeof ChangeRequestDetailsSchema>;
+
+/**
+ * P6: a change request's merge state read for scoring or recovery: its details and the id of its head's tree, read so that the answer did not change while it was read.
+ * `mergeRevision` and `mergedAt` are what track-record samples carry.
+ */
+export const MergeObservationSchema = ChangeRequestDetailsSchema.extend({ headTreeRevision: RevisionSchema }).strict();
+export type MergeObservation = z.infer<typeof MergeObservationSchema>;
 
 export const ChangeRequestUpdateSchema = z.object({
   title: z.string().min(1).max(500).optional(),
@@ -289,6 +298,10 @@ export interface CodeHost {
   /** The id of the tree a revision holds. */
   tree(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string>;
   branchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string>;
+  /** P6: the head of an ordinary branch (a default or base branch), not only Rovara's own working branches. Throws when the branch does not exist. */
+  baseBranchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string>;
+  /** P6: the revisions a revision builds on (its parents): one for an ordinary commit, two for a merge, none for a root. Throws when the revision does not exist. */
+  commitParents(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string[]>;
   listBranches(repository: RepositoryRef, page: number, scope: HostScope): Promise<BranchPage>;
   codeOwners?(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string | undefined>;
 
@@ -297,7 +310,12 @@ export interface CodeHost {
   reconcileChangeRequest(input: ChangeRequestInput, scope: HostScope): Promise<ChangeRequestReconciled>;
   getChangeRequest(ref: ChangeRequestRef, scope: HostScope): Promise<ChangeRequestDetails>;
   updateChangeRequest(ref: ChangeRequestRef, update: ChangeRequestUpdate, scope: HostScope): Promise<void>;
-  /** Reviews, approvals, checks and mergeability. `budget` bounds the reads one tracking pass may spend. */
+  /**
+   * P6: a bounded, stable read of one change request's merge state (what it merged as and when). Every request counts against `budget`. A host that has told Rovara to slow down
+   * throws `HostRateLimitError`. A host that cannot read it leaves this out: what waits on it is then unavailable, never guessed.
+   */
+  mergeObservation?(ref: ChangeRequestRef, scope: HostScope, budget: ReadBudget): Promise<MergeObservation>;
+  /** Reviews, approvals, checks and mergeability. `budget` bounds the reads one tracking pass may spend. A host's rate limit is signalled with `HostRateLimitError`. */
   changeRequestStatus(ref: ChangeRequestRef, scope: HostScope, budget?: ReadBudget): Promise<ChangeRequestStatus>;
   changedFiles(ref: ChangeRequestRef, page: number, scope: HostScope): Promise<ChangeRequestFilesPage>;
   /** Comments and threads. Untrusted text. */

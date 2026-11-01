@@ -86,6 +86,33 @@ class TrustsForgedDelivery extends FakeCodeHost {
     };
   }
 }
+class BaseHeadOnlyForRovarasBranches extends FakeCodeHost {
+  override baseBranchHead(...args: Parameters<FakeCodeHost["baseBranchHead"]>) {
+    // GitHub's old `branchHead` rule: only Rovara's own working branches have a head.
+    if (!/^agentx\//.test(args[1])) return Promise.reject(new Error("branch name is invalid"));
+    return super.baseBranchHead(...args);
+  }
+}
+class NoParents extends FakeCodeHost {
+  override commitParents() { return Promise.resolve([]); }
+}
+class ObservesWithoutTime extends FakeCodeHost {
+  override async mergeObservation(...args: Parameters<NonNullable<FakeCodeHost["mergeObservation"]>>) {
+    const observed = await super.mergeObservation(...args);
+    delete observed.mergedAt;
+    return observed;
+  }
+}
+class ObservesWithoutSpendingTheAllowance extends FakeCodeHost {
+  override mergeObservation(ref: Parameters<NonNullable<FakeCodeHost["mergeObservation"]>>[0], scope: Parameters<NonNullable<FakeCodeHost["mergeObservation"]>>[1]) {
+    return super.mergeObservation(ref, scope, { signal: new AbortController().signal, beforeRequest: () => undefined });
+  }
+}
+class RateLimitAsPlainFailure extends FakeCodeHost {
+  protected override spend(): void {
+    if (this.model.rateLimitedUntil !== undefined) throw new Error("rate limited");
+  }
+}
 class DeliversUnadvertisedCredentialKind extends FakeCodeHost {
   override issueGitCredential(...args: Parameters<FakeCodeHost["issueGitCredential"]>) {
     return super.issueGitCredential(...args).then((credential) => ({ kind: "ssh-key" as const, privateKey: "k", expiresAt: credential.expiresAt }));
@@ -102,6 +129,11 @@ describe("a broken CodeHost fails the check that guards its behaviour", () => {
     ["accepts a call with no scope", (m) => new IgnoresScope(m), "refuses a call with no valid scope, before touching the host"],
     ["posts any reply text", (m) => new RepliesWithAnything(m), "replies only with fixed text, and says 'gone' for a comment that is not in a thread"],
     ["trusts a forged delivery", (m) => new TrustsForgedDelivery(m), "maps a signed delivery to neutral events, and never returns events from one that does not verify"],
+    ["reads the head of Rovara's own branches only", (m) => new BaseHeadOnlyForRovarasBranches(m), "reads the head of an ordinary branch and the parents of a revision"],
+    ["says no revision has a parent", (m) => new NoParents(m), "reads the head of an ordinary branch and the parents of a revision"],
+    ["observes a merge without its time", (m) => new ObservesWithoutTime(m), "observes a merge: what it merged as and when, within the read allowance"],
+    ["observes a merge without spending the allowance", (m) => new ObservesWithoutSpendingTheAllowance(m), "observes a merge: what it merged as and when, within the read allowance"],
+    ["reports its rate limit as a plain failure", (m) => new RateLimitAsPlainFailure(m), "signals its rate limit as the neutral error, with the time to try again"],
     ["hands out a credential kind it does not advertise", (m) => new DeliversUnadvertisedCredentialKind(m), "hands out a short-lived git credential of an advertised kind for clone and push"],
   ];
   it.each(mutants)("%s", async (_label, make, checkName) => {

@@ -11,7 +11,7 @@ import {
   agentXError, ChangeRequestInputSchema, ChangeRequestUpdateSchema, HostScopeSchema,
   type BranchPage, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled, type ChangeRequestRef,
   type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type CodeHostCapabilities, type GitAccess, type GitCredential, type HostAccount, type HostScope,
-  type HostStanding, type MergeMethod, type MergeResult, type ReadBudget, type RepositoryIdentity, type RepositoryRef,
+  type HostStanding, type MergeMethod, type MergeObservation, type MergeResult, type ReadBudget, type RepositoryIdentity, type RepositoryRef,
 } from "@agentx/contracts";
 import { parseGitHubRepository, type GitHubAppCredentialProvider } from "../../../github-app.js";
 import { githubCodeHostEvents } from "./events.js";
@@ -33,6 +33,7 @@ export const GITHUB_CODE_HOST_CAPABILITIES: CodeHostCapabilities = {
 /** The provider methods the adapter uses: a narrow type, so a test can stand in for the rest. */
 export type GitHubCodeHostProvider = Pick<GitHubAppCredentialProvider,
   | "getRepositoryIdentity" | "checkRepository" | "getRepositoryStanding" | "resolveWithExpiry" | "getFileAtCommit" | "getCommitTree" | "getBranchHead" | "listWorkingBranches"
+  | "getCommitParents" | "getDefaultBranchHead" | "getPullRequestMergeObservation"
   | "installationForRepository" | "readCodeOwners" | "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "getPullRequestStatus" | "listPullRequestFiles"
   | "getPullRequestFeedback" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest">;
 
@@ -96,6 +97,14 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       return provider.getBranchHead(repository.url, branch, checkedScope(scope));
     },
 
+    async baseBranchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string> {
+      return provider.getDefaultBranchHead(repository.url, branch, checkedScope(scope));
+    },
+
+    async commitParents(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string[]> {
+      return provider.getCommitParents(repository.url, revision, checkedScope(scope));
+    },
+
     async listBranches(repository: RepositoryRef, page: number, scope: HostScope): Promise<BranchPage> {
       const checked = checkedScope(scope);
       const identity = await provider.getRepositoryIdentity(repository.url, checked);
@@ -128,6 +137,11 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       await provider.updatePullRequest(ref.repository.url, pullRequestNumber(ref), {
         ...(parsed.title === undefined ? {} : { title: parsed.title }), ...(parsed.body === undefined ? {} : { body: parsed.body }), ...(parsed.state === undefined ? {} : { state: parsed.state }),
       }, checkedScope(scope));
+    },
+
+    async mergeObservation(ref: ChangeRequestRef, scope: HostScope, budget: ReadBudget): Promise<MergeObservation> {
+      const observed = await provider.getPullRequestMergeObservation(ref.repository.url, pullRequestNumber(ref), budget, checkedScope(scope));
+      return { ...detailsOf(ref.repository.url, observed), headTreeRevision: observed.headTreeSha };
     },
 
     async changeRequestStatus(ref: ChangeRequestRef, scope: HostScope, budget?: ReadBudget): Promise<ChangeRequestStatus> {

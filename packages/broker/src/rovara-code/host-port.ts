@@ -6,9 +6,8 @@
 //
 // Two small things that the CodeHost port does not carry yet live here, named, so the gap is visible and not silent:
 //   - `isTeamMember`: whether a person is in a team of the repository's organization (CODEOWNERS teams). GitHub-only today; absent means "unknown", which fails closed.
-//   - the rate-limit signal (`rateLimitRetryAt`): GitHub's merge-read limit is a GitHub class today; the neutral signal is task P6's.
-import type { ChangeRequestRef, ChangeRequestStatus, CheckRunner, CodeHost, HostScope, OrgId, Review } from "@agentx/contracts";
-import { GithubMergeRateLimitError } from "../github-app.js";
+//   - (P6 closed the rate-limit gap: a host's limit is the neutral `HostRateLimitError`, which GitHub's class extends.)
+import { hostRateLimitRetryAt, type ChangeRequestRef, type ChangeRequestStatus, type CheckRunner, type CodeHost, type HostScope, type OrgId, type Review } from "@agentx/contracts";
 import type { PullRequestReview } from "../github-pull-status.js";
 
 /** One repository of a task's project, as the consumers read it. */
@@ -45,9 +44,9 @@ export function approvalReviewsOf(reviews: ChangeRequestStatus["reviews"] | read
   }));
 }
 
-/** The retry time of a host's rate limit, when the error is one. GitHub's class today; the neutral signal comes with the event work (P6). */
+/** The retry time of a host's rate limit, when the error is one: the neutral `HostRateLimitError` of any host (GitHub's class is one). */
 export function rateLimitRetryAt(error: unknown): number | undefined {
-  return error instanceof GithubMergeRateLimitError ? error.retryAt : undefined;
+  return hostRateLimitRetryAt(error);
 }
 
 export const isHostRateLimit = (error: unknown): boolean => rateLimitRetryAt(error) !== undefined;

@@ -62,3 +62,29 @@ export interface ReadBudget {
   signal: AbortSignal;
   beforeRequest: () => void;
 }
+
+const HOST_RATE_LIMIT_BRAND = Symbol.for("agentx.host-rate-limit");
+
+/**
+ * P6: the neutral rate-limit signal. A code host that has told Rovara to slow down throws this, whichever host it is, with the time (milliseconds since the epoch) when asking again
+ * may succeed. Callers that bound their reads (a tracking pass, a merge observation) stop, keep what they have and try again at `retryAt`; they never read it as a failure of the
+ * change request. GitHub's own class (`GithubMergeRateLimitError`) is one of these.
+ */
+export class HostRateLimitError extends Error {
+  /** A brand that survives two copies of this module (a bundle and a test, a package built twice): `hostRateLimitRetryAt` reads it, not `instanceof`. */
+  readonly [HOST_RATE_LIMIT_BRAND] = true;
+  constructor(readonly retryAt: number, message = "The code host is rate limited.") {
+    if (!Number.isSafeInteger(retryAt) || retryAt < 1 || !Number.isFinite(new Date(retryAt).getTime())) {
+      throw new Error("The rate-limit retry time is invalid");
+    }
+    super(message);
+    this.name = "HostRateLimitError";
+  }
+}
+
+/** The time to try again, when `error` is a host's rate limit (of any host, from any copy of this module); undefined for every other error. */
+export function hostRateLimitRetryAt(error: unknown): number | undefined {
+  if (!(error instanceof Error) || (error as { [HOST_RATE_LIMIT_BRAND]?: unknown })[HOST_RATE_LIMIT_BRAND] !== true) return undefined;
+  const retryAt = (error as { retryAt?: unknown }).retryAt;
+  return typeof retryAt === "number" && Number.isSafeInteger(retryAt) && retryAt > 0 ? retryAt : undefined;
+}

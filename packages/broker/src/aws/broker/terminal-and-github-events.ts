@@ -4,11 +4,10 @@ import { type prepareTurnModelFallback, type prepareTaskModelFallback, joinTaskM
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, WorkflowFeedbackBundleSchema, type OrgId } from "@agentx/contracts";
+import { AgentXError, hostRateLimitRetryAt, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, WorkflowFeedbackBundleSchema, type OrgId } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { queryAllItems } from "../admin-reads.js";
 import { flushAuditEvents } from "../../audit/flush.js";
-import { GithubMergeRateLimitError } from "../../github-app.js";
 import { GithubWebhookRefusal, authorizeLinkedGithubWebhook, listDueGithubWebhookDeliveries, processGithubWebhookDelivery, reconcileTaskPullRequestFeedback, type ReceivedGithubWebhook } from "../github-webhooks.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import { deliverCodeMilestones } from "../../rovara-code/milestones.js";
@@ -41,7 +40,6 @@ import { describeFeedbackFixes } from "./pull-request-reconcile.js";
 import { githubScope, installOrgId, orgOfRecord, webhookRepositoryUrl } from "./scope-helpers.js";
 import { consumerRepositoryResolver } from "./consumer-hosts.js";
 import { changeRequestRef } from "../../rovara-code/host-port.js";
-import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
 import { taskOperationParts } from "./task-operations.js";
 import { latestChecksItem } from "./terminal-result.js";
 import { handleSpecPullRequestEvent } from "./spec-wiring.js";
@@ -598,7 +596,7 @@ async function automaticFeedbackRoundIsSound(dependencies: AwsBrokerDependencies
  * Track record: a fresh GitHub read of one of a task's pull requests (its checks and reviews, its merge commit and time, and a person's permission on its repository), for scoring a candidate's
  * samples. Undefined where the provider cannot read a pull request's status or a person's permission: what waits on it is then `code_host_unavailable`, never guessed.
  */
-function endedPullRequestReader(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, budget?: GithubMergeReadBudget): EndedPullRequestReader | undefined {
+export function endedPullRequestReader(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, budget?: GithubMergeReadBudget): EndedPullRequestReader | undefined {
   if (task.orgId === undefined) return undefined;
   const orgId = task.orgId;
   const resolve = consumerRepositoryResolver(dependencies);
@@ -613,12 +611,11 @@ function endedPullRequestReader(dependencies: AwsBrokerDependencies, task: Devel
     // samples wait for a later pass.
     const reads: GithubMergeReadBudget = budget ?? { signal: AbortSignal.timeout(OUTCOME_READ_SIGNAL_MS), beforeRequest: () => undefined };
     const status = await codeHost.changeRequestStatus(changeRequestRef(url, number), scope, reads);
-    // The merge commit and time: the budgeted GitHub merge observation reads them (a merged pull request on GitHub only; the port carries no merge time yet).
-    const github = dependencies.githubPullRequests;
-    const details = status.state === "merged" && codeHost.kind === GITHUB_HOST_KIND && github.getPullRequestMergeObservation !== undefined
-      ? await github.getPullRequestMergeObservation.call(github, url, number, reads, scope).catch(() => undefined) : undefined;
+    // The merge commit and time (P6, register SY-3): the host's own budgeted merge observation, whichever host it is. A host that cannot read it leaves the samples to wait.
+    const details = status.state === "merged" && codeHost.mergeObservation !== undefined
+      ? await codeHost.mergeObservation(changeRequestRef(url, number), scope, reads).catch(() => undefined) : undefined;
     return {
-      status, mergeCommit: details?.mergeCommit, mergedAt: details?.mergedAt,
+      status, mergeCommit: details?.mergeRevision, mergedAt: details?.mergedAt,
       permission: (login) => {
         const key = `${url}:${login.toLowerCase()}`;
         let found = permissions.get(key);
@@ -769,7 +766,8 @@ export async function reconcileWorkflowMergeRecoveryTask(
       number: selected.number,
     }, `merge-recovery-${taskId}`, { observationMode: "merge", budget, release: "queue" });
   } catch (error) {
-    if (error instanceof GithubMergeRateLimitError) return { kind: "RETRY", retryAt: error.retryAt, scope: "github-global" };
+    const limitedUntil = hostRateLimitRetryAt(error);
+    if (limitedUntil !== undefined) return { kind: "RETRY", retryAt: limitedUntil, scope: "github-global" };
     return retry();
   }
   const fresh = await stronglyRead<DeveloperTaskRecord>(dependencies, taskKey(taskId));

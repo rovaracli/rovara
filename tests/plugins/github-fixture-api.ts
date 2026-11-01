@@ -37,7 +37,7 @@ export class GitHubFixtureApi {
     const head = this.model.headRevisionOf(cr);
     return {
       number: Number(cr.id), node_id: `PR_node_${cr.id}`, html_url: this.model.crUrl(cr.id), state: cr.state === "open" ? "open" : "closed", merged: cr.state === "merged",
-      ...(cr.mergedBy === undefined ? {} : { merged_by: { login: cr.mergedBy } }),
+      ...(cr.mergedBy === undefined ? {} : { merged_by: { login: cr.mergedBy } }), ...(cr.mergedAt === undefined ? {} : { merged_at: cr.mergedAt }),
       draft: cr.draft, title: cr.title, body: cr.body === "" ? null : cr.body, merge_commit_sha: cr.mergeRevision ?? null,
       head: { ref: cr.sourceBranch, sha: head, repo: { full_name: FULL } }, base: { ref: cr.targetBranch, repo: { full_name: FULL } },
       mergeable_state: this.model.mergeableState(cr), mergeable: !cr.conflicts,
@@ -59,6 +59,10 @@ export class GitHubFixtureApi {
     return this.model.branches.get(ref);
   }
 
+  /** P6: when set, every request is answered 429 with this many seconds to wait, as GitHub does when a caller is limited. */
+  private limitedForSeconds: number | undefined;
+  limitReadsFor(seconds: number): void { this.limitedForSeconds = seconds; }
+
   /** The `expires_at` the next tokens carry: an hour from now by default, a given time, or none (null). */
   tokenExpiry: string | null | undefined;
 
@@ -67,6 +71,7 @@ export class GitHubFixtureApi {
     const method = init?.method ?? "GET";
     const path = decodeURIComponent(url.pathname);
     this.requests.push({ method, path });
+    if (this.limitedForSeconds !== undefined) return json(429, { message: "API rate limit exceeded" }, { "retry-after": String(this.limitedForSeconds) });
     const authorization = new Headers(init?.headers).get("authorization") ?? "";
     if (!/^Bearer \S+$/.test(authorization)) return json(401, { message: "Requires authentication" });
     if (url.origin === "https://actions-logs.example.test") return this.logBody(path);

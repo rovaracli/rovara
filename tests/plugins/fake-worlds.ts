@@ -22,6 +22,7 @@ export function codeHostWorldFor(host: FakeCodeHost): CodeHostWorld {
       ? { delivery: "d-1", event: "cr.opened", cr: event.id }
       : { delivery: "d-2", event: "push", branch: event.branch, revision: event.revision }),
     forgedDelivery: () => ({ ...fakeSignedDelivery({ delivery: "d-3", event: "cr.opened", cr: "1" }), headers: { "x-fake-signature": `sha256=${"0".repeat(64)}` } }),
+    limitReads: (retryAt) => { host.model.rateLimitedUntil = retryAt; },
   };
 }
 
