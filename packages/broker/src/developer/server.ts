@@ -59,7 +59,7 @@ import { adaptHttpApiEvent, ownerKeyForSubject, type HttpApiV2Event } from "../a
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
-import { NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
+import { NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, sameEmail, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "./identities.js";
 import {
   expiredInvitePage, joinDonePage, joinExpiredPage, maskEmail, openInvitePage, otherBrowserPage, unknownInvitePage, usedInvitePage, type PageSpec,
@@ -585,14 +585,27 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (slackUserId !== undefined) await deps.sso.slack.revoke(deps.singleOrgId, slackUserId);
   }
 
-  async function decideCompanySignInFor(method: DeveloperSignInMethod, identity: ProviderIdentity, developerId: string, occurrence: string): Promise<CompanySignIn> {
+  /**
+   * Whether the person is banned from the install's org and the sign-in carries no way back. An invite is the way back (accepting it clears the ban), so a sign-in with an invite
+   * that accepting would take is not refused here: it is one that exists, is not revoked, used or expired, is for this org, and (when written for an address) for this verified
+   * address, as resolveOrgOnSignIn judges it. Anything else, a forged or other-org invite included, leaves the person refused.
+   */
+  async function bannedWithoutInvite(identity: ProviderIdentity, developerId: string, inviteTokenHash: string | undefined): Promise<boolean> {
+    if (deps.singleOrgId === undefined || !await deps.orgs.isBanned(deps.singleOrgId, developerId)) return false;
+    if (inviteTokenHash === undefined) return true;
+    const invite = await deps.orgs.describeInviteByHash(inviteTokenHash);
+    const forThem = invite?.email === undefined || (identity.emailVerified === true && identity.email !== undefined && sameEmail(invite.email, identity.email));
+    return !(invite !== undefined && invite.state === "open" && invite.orgId === deps.singleOrgId && forThem);
+  }
+
+  async function decideCompanySignInFor(method: DeveloperSignInMethod, identity: ProviderIdentity, developerId: string, occurrence: string, inviteTokenHash?: string): Promise<CompanySignIn> {
     const current = await deps.orgs.orgForDeveloper(developerId);
     const audit = deps.audit === undefined ? {} : { audit: deps.audit };
     const outcome = await decideCompanySignIn({
       policy: deps.editionPolicy!, stores: deps.sso, method, orgId: deps.singleOrgId, identity, developerId, currentRole: current?.role, occurrence,
       auditAvailable: deps.audit !== undefined, nowMs: deps.now(),
       // A banned person is refused here, before an allowance or an "allowed" record is made for them; resolveOrgOnSignIn refuses the same person later for the other methods.
-      banned: deps.singleOrgId !== undefined && await deps.orgs.isBanned(deps.singleOrgId, developerId),
+      banned: await bannedWithoutInvite(identity, developerId, inviteTokenHash),
     });
     if (outcome.allow && outcome.breakGlass) {
       await recordAuditEventDurably(audit, outcome.event);
@@ -639,7 +652,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       const decisionId = link !== undefined && (link.unlinkedFrom === undefined || link.developerId === key) ? link.developerId : key;
       decidedFor = decisionId;
       const developerId = decisionId;
-      const decided = await decideCompanySignInFor(method, identity, decisionId, request.id);
+      const decided = await decideCompanySignInFor(method, identity, decisionId, request.id, request.inviteTokenHash);
       if (!decided.allow) {
         deps.log({ event: "signin.refused", method, reason: decided.reason, developerId });
         // A person the mapping no longer lets in loses their Slack access too (Enterprise foundations I-6).
