@@ -17,6 +17,7 @@ import { requiredEnvironment } from "./lambda.js";
 import { failActiveOperation } from "./outbox-failure.js";
 import { SessionManager, computeMeteringFromEnvironment, workspaceBinding } from "./sessions.js";
 import { expireIndexDays, indexSweepWanted } from "./index-expiry.js";
+import { expireLearningItems } from "../learning/sweep.js";
 import { sweepStuckSetupChecks } from "./setup-check-close.js";
 import { sweepStuckSetups } from "./stuck-setup.js";
 import { stuckCancelRetrier, sweepStuckCancels, type StuckCancelCandidate, type StuckCancelCompute, type StuckCancelSweepResult, type StuckCancelWorker } from "./stuck-cancels.js";
@@ -104,6 +105,8 @@ export interface ReconcilerDependencies {
   renewalAgeDays?: (now: Date) => Promise<number | undefined>;
   /** Spec 025 A6: deletes failure and usage index days older than 30 days; absent in tests that do not need it. */
   expireIndexDays?: (now: Date) => Promise<{ deleted: number }>;
+  /** v1.2 learning loop: deletes learning items past their 180 days where the table has no TTL (the same guard as `expireIndexDays`); absent in tests that do not need it. */
+  expireLearningItems?: (now: Date) => Promise<unknown>;
   now?: () => Date;
   log?: (entry: Record<string, unknown>) => void;
 }
@@ -249,6 +252,14 @@ export function createReconcilerHandler(dependencies: ReconcilerDependencies) {
         await dependencies.expireIndexDays(new Date(now));
       } catch (error) {
         log({ event: "reconciler.index_expiry_failed", errorName: error instanceof Error ? error.name : "unknown" });
+      }
+    }
+    // v1.2 learning loop: its own try, so a failed index expiry does not skip it. The error's name only is logged: the items hold correction text.
+    if (dependencies.expireLearningItems !== undefined) {
+      try {
+        await dependencies.expireLearningItems(new Date(now));
+      } catch (error) {
+        log({ event: "reconciler.learning_expiry_failed", errorName: error instanceof Error ? error.name : "unknown" });
       }
     }
 
@@ -627,7 +638,10 @@ export const handler = createReconcilerHandler({
   ...(process.env.WORKER_QUALIFIED_AMI_PARAMETER === undefined ? {} : { qualifiedWorkerAmi: () => readQualifiedWorkerAmi(ssm, process.env.WORKER_QUALIFIED_AMI_PARAMETER!) }),
   renewalAgeDays: (now) => readRenewalAgeDays(documentClient, tableName, now),
   ...(backstop.state === "on" ? { sweepUnwaitedTasks: unwaitedTaskSweep() } : {}),
-  ...(indexSweepWanted(process.env) ? { expireIndexDays: (now: Date) => expireIndexDays(documentClient, tableName, installOrgIdFromEnvironment(), now, (entry) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }))) } : {}),
+  ...(indexSweepWanted(process.env) ? {
+    expireIndexDays: (now: Date) => expireIndexDays(documentClient, tableName, installOrgIdFromEnvironment(), now, (entry) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }))),
+    expireLearningItems: (now: Date) => expireLearningItems(documentClient, tableName, installOrgIdFromEnvironment(), now, (entry) => console.log(JSON.stringify({ component: "session-reconciler", ...entry }))),
+  } : {}),
   emit(metrics) {
     console.log(JSON.stringify({
       _aws: {

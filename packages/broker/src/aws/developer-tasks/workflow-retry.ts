@@ -64,6 +64,7 @@ import {
 import { ciFixRetryKey, planCheckRetryKey, queueWorkflowCoding, retryCiFix, retryPlanCritique, retryWorkflowImplementation } from "./workflow-coding.js";
 import { type AutomaticRetry, automaticRetryDecision, queueWorkflowUnderstand } from "./workflow-starts.js";
 import { fedThroughUpdate, withCurrentThreadNotes } from "./thread-notes.js";
+import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 
 /**
  * Plan self-check: the planner's automatic second run. A plan that parsed but failed AgentX's own checks (or an answer that could
@@ -159,6 +160,8 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
         && canonicalJson(request.selectedProposedCheckIds) !== canonicalJson(keptProposedIds(policy)))) {
       throw agentXError("IDEMPOTENCY_CONFLICT", "this recovery cannot change the candidate or approved check selection");
     }
+    // An archived project takes no new work (f1beb9980: lifecycle restarts are refused; 48707cdb8: Rovara's own retry ends that dispatch on it): before the recovery reads or queues anything.
+    await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
     const recovery = await loadCommittedSourceRecovery(deps, access, request.expectedRevision);
     await queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow: task.workflow } }, {
       requestId: request.requestId,
@@ -179,6 +182,8 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
   if (task.workflow !== undefined && ((task.workflow.stage === "VERIFY" && task.workflow.state === "BLOCKED")
     || (workflowPublicationRetryable(task.workflow) && (task.workflow.pullRequests?.length ?? 0) === 0))) {
     const workflow = task.workflow;
+    // The checks run again as a new CHECKS run (or a native E2E round): an archived project takes no new work, whoever retries (Rovara's own retry ends that dispatch, 48707cdb8).
+    await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
     if (request.expectedRevision === undefined) {
       throw agentXError("CONFIG_INVALID", "refresh the task and include its current revision before retrying verification");
     }
@@ -366,8 +371,13 @@ export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, ca
       return retryTaskWorkflow(deps, caller, taskId, request.expectedRevision === undefined ? value : { ...(value as Record<string, unknown>), expectedRevision: fresh.workflow.revision }, true);
     }
   }
+  // An archived project takes no new work: a CI fix or branch sync Retry starts agent work, so it is refused before that branch is taken (not only after it).
+  if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED") await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   // Plan 6 Task 15: a CI fix that waited for a person (suggest), ran out of rounds or changed nothing goes on at the owner's Retry.
   if (task.workflow?.stage === "WAIT_FOR_MERGE" && task.workflow.state === "BLOCKED" && (isCiFixBlockReason(task.workflow.blockReason) || isBranchConflictAskReason(task.workflow.blockReason) || isBranchSyncGiveUpReason(task.workflow.blockReason))) return retryCiFix(deps, caller, access, request);
+  // A lifecycle restart is new agent work, unlike Continue or an existing workflow decision.
+  // Contributor intentionally checks only archive here; authorizeTaskAction owns the live role check.
+  await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   if (task.workflow?.stage === "IMPLEMENT" && task.workflow.state === "BLOCKED") return retryWorkflowImplementation(deps, caller, access, request);
   if (task.workflow?.stage === "UNDERSTAND" && task.workflow.state === "BLOCKED") return retryWorkflowUnderstand(deps, caller, access, request);
   if (task.workflow?.stage === "PLAN_CRITIQUE" && task.workflow.state === "BLOCKED") return retryPlanCritique(deps, caller, access, request);

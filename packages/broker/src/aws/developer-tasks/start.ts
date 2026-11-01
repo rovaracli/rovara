@@ -81,6 +81,17 @@ import { openTasksText, taskView } from "./task-view.js";
 import { runResultOf } from "./task-index.js";
 import { releaseFinishedTasksOf } from "./release.js";
 import { assertRepositoryHostsKnown } from "../../wiring/enterprise-identity.js";
+import { type CapturedTaskStop, captureTaskStopAdmission } from "../../org/task-stop-admission.js";
+import { type TaskFundingProofSchema, captureTaskFundingProof, fundingAuditItems, fundingRevisionCheck, taskFundingModelPool } from "../../org/task-stop-funding.js";
+import { type TransactItem, failedIndexes } from "../../agents/table-writes.js";
+import { budgetActorChecks, budgetActorRefused } from "../../agents/budget-authority.js";
+import { isDeepStrictEqual } from "node:util";
+import { requireAgentAccess } from "../../agents/access.js";
+import { resolveAgentForAutonomousRun } from "../../agents/roster.js";
+import { taskStartAgentAuthorityChecks } from "../../org/task-start-agent-authority.js";
+import { taskStartProjectAuthorityChecks } from "../../org/task-start-project-authority.js";
+import { taskStopWindowItems } from "../../org/task-stop-window.js";
+import { usdToWholeMicrodollars } from "../../org/budget-amount.js";
 
 export async function limitError(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, full: "member" | "organization", limits: WorkspaceLimits): Promise<AgentXError> {
   const open = await openTasksText(deps, caller.developerId);
@@ -373,10 +384,71 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   }
   // Plan 3, Task 34: with a model proxy a workflow task starts at its planning limit, a task with no workflow at the TASK estimate's run limit and an
   // agent-step run at the AGENT estimate's; a request can only lower it. Without a proxy nothing is limited, as before.
-  const startLimitUsd = deps.modelAccess === undefined ? undefined : await startingLimitUsd(deps, {
+  let startLimitUsd = deps.modelAccess === undefined ? undefined : await startingLimitUsd(deps, {
     project: request.project, asWorkflow: asWorkflow || settingUpDraft, workflowPath, prepared,
   });
   if (prepared !== undefined && startLimitUsd !== undefined) prepared = { ...prepared, ...runLimitsOf(startLimitUsd, run?.runLimitUsd, prepared.maxPerRunUsd) };
+  let fundingProof: ReturnType<typeof TaskFundingProofSchema.parse> | undefined;
+  let spendingStop: CapturedTaskStop | undefined;
+  let spendingScopeChecks: TransactItem[] = [];
+  // Every task captures once after its existing live principal checks and
+  // before monthly admission, workspace creation or key effects.
+  {
+    const authorizeSpendingAgent = async (agentId: NonNullable<typeof prepared>["ref"]["agentId"]): Promise<void> => {
+      if (deps.agentRuns === undefined) { if (run?.autonomous === true) throw budgetActorRefused(); return; }
+      if (run?.autonomous === true) {
+        if (prepared === undefined || prepared.ref.agentId !== agentId || typeof prepared.ref.version !== "number") throw budgetActorRefused();
+        await resolveAgentForAutonomousRun(deps.agentRuns, { orgId: deps.orgId, project: request.project, agentId, version: prepared.ref.version });
+      } else await requireAgentAccess(deps.agentRuns, caller, agentId, prepared?.ref.version === "draft" ? "edit" : "use");
+    };
+    try {
+      fundingProof = prepared?.modelPolicyPin === undefined || deps.agentRuns?.modelRouting === undefined ? undefined : await captureTaskFundingProof({ documentClient: deps.documentClient, tableName: deps.tableName, routing: deps.agentRuns.modelRouting, chatgpt: deps.agentRuns.stageChatgpt, now: () => deps.now() }, {
+    orgId: deps.orgId, project: request.project, models: taskFundingModelPool(prepared.modelPolicyPin, deps.agentRuns.modelRouting.rovaraGeography), ...(prepared.payer.kind === "member" ? { payerDeveloperId: prepared.payer.developerId } : {}),
+  }).catch(() => { throw agentXError("TASK_STOP_CONFIG_MISSING", "The funding sources could not be read. Try again."); });
+  if (fundingProof !== undefined && prepared !== undefined) {
+    if (prepared.modelPolicyPin?.sourcesRevision !== fundingProof.sourcesRevision) return refused(agentXError("TASK_STOP_CONFIG_INVALID", "The funding sources changed during admission."));
+    prepared = { ...prepared, fundingProof };
+  }
+      const pathLimitMicrousd = usdToWholeMicrodollars(startLimitUsd ?? prepared?.runLimitUsd ?? PER_TASK_BUDGET_USD);
+      const requestedMicrousd = run?.runLimitUsd === undefined ? undefined : usdToWholeMicrodollars(run.runLimitUsd);
+      const captured = fundingProof === undefined ? await captureTaskStopAdmission({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(),
+        requireScopeAccess: async input => {
+          const fresh = await deps.checkAccess(input.project);
+          await requireNewWorkAllowed(deps, deps.orgId, input.project, fresh.role, "task");
+          await authorizeSpendingAgent(input.agentId);
+        },
+      }, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project,
+        agentId: prepared?.ref.agentId ?? ROVARA_CODE_AGENT_ID, pathLimitMicrousd: pathLimitMicrousd ?? null,
+        ...(requestedMicrousd !== undefined ? { requestedMicrousd } : run?.runLimitUsd === undefined ? {} : { requestedMicrousd: null }),
+      }) : { kind: "disabled" as const };
+      if (captured.kind === "captured" || fundingProof !== undefined) {
+        spendingScopeChecks = await taskStartProjectAuthorityChecks(deps, { orgId: deps.orgId, developerId: caller.developerId, role: caller.orgRole, project: request.project }, async () => {
+          const fresh = await deps.checkAccess(request.project);
+          await requireNewWorkAllowed(deps, deps.orgId, request.project, fresh.role, "task");
+        });
+        if (deps.agentRuns !== undefined && prepared !== undefined) {
+          const agentId = prepared.ref.agentId, draft = prepared.ref.version === "draft";
+          spendingScopeChecks.push(...await taskStartAgentAuthorityChecks(deps, { orgId: deps.orgId, project: request.project, agentId, draft, process: prepared.ref.process === true, developerId: caller.developerId, role: caller.orgRole, ...(prepared.ref.draftRevision === undefined ? {} : { expectedDraftRevision: prepared.ref.draftRevision }) }, async () => {
+            if (deps.agentRuns === undefined) throw budgetActorRefused();
+            await authorizeSpendingAgent(agentId);
+          }, async () => {
+            if (deps.agentRuns === undefined) throw budgetActorRefused();
+            return deps.agentRuns.store.listShares(deps.orgId, agentId);
+          }));
+        }
+        if (captured.kind === "captured") {
+        const exactUsd = captured.effectiveStopMicrousd / 1_000_000;
+        if (usdToWholeMicrodollars(exactUsd) !== captured.effectiveStopMicrousd) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task stop can't be represented exactly. Ask an admin to review Spending.");
+        if (exactUsd === 0 && !paused) return refused(agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0."));
+        spendingStop = captured; startLimitUsd = exactUsd;
+        if (prepared !== undefined) prepared = { ...prepared, ...runLimitsOf(exactUsd, undefined, prepared.maxPerRunUsd) };
+        }
+      }
+    } catch (error) {
+      if (error instanceof AgentXError) return refused(error);
+      throw error;
+    }
+  }
   // What a coding run is asked: the text as sent, or the text with its context rendered and cut to the request limit (G3).
   const requestText = prepared?.runner === "coding" && request.input !== undefined ? codingRequestText(request.input, DEVELOPER_INSTRUCTIONS_MAX_BYTES) : request.instructions;
   // The budget comes first (ruling R23: soft caps, so this is a floor, not a promise): after the agent is resolved, before the limit's counters are read
@@ -416,9 +488,11 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const title = redactedTitle(request);
   // The run limit is the task's budget. A task keeps one when the proxy admitted it or the run limit is not the usual one (a lower limit, or 0).
   const budgetUsd = prepared?.runLimitUsd ?? startLimitUsd ?? PER_TASK_BUDGET_USD;
-  const keepsBudget = admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
+  const keepsBudget = spendingStop !== undefined || admitted !== undefined || (prepared !== undefined && budgetUsd !== PER_TASK_BUDGET_USD);
   const task: DeveloperTaskRecord = {
     ...taskKey(taskId), entityType: "DEVELOPER_TASK", taskId, orgId: deps.orgId,
+    ...(fundingProof === undefined ? {} : { fundingProof }),
+    ...(spendingStop === undefined ? {} : { spendingStop, spendingAdmission: { requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash } }),
     ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: caller.amr, developerName: caller.name,
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
@@ -464,12 +538,19 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   });
   // A paused run is prepared but not dispatched: the workspace and its prepare operation are written, the outbox item that sends the prepare is not.
   const noted = setupNote === undefined ? preparation.items : withFirstEvent(preparation.items, deps.tableName, setupNote, receivedAt);
-  const preparationItems = paused ? noted.filter((item) => (item.Put?.Item as { entityType?: unknown } | undefined)?.entityType !== "OUTBOX") : noted;
+  const preparedItems = paused ? noted.filter((item) => (item.Put?.Item as { entityType?: unknown } | undefined)?.entityType !== "OUTBOX") : noted;
+  const preparationItems = spendingStop === undefined ? preparedItems : preparedItems.map(item => item.Put?.Item?.entityType === "OPERATION"
+    ? { Put: { ...item.Put, Item: { ...item.Put.Item, spendingTaskId: taskId, spendingAdmission: task.spendingAdmission } } } : item);
   const items: TransactItems = [
     // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position (a paused run takes no slot).
     ...(paused ? [] : chargeItems(deps.tableName, charge, limits, taskId)),
     ...preparationItems,
+    ...(fundingProof === undefined ? [] : fundingAuditItems(deps.tableName, fundingProof, { taskId, occurrence: request.requestId, actor: { kind: "member", id: caller.developerId }, at: deps.now() })),
     putNew(deps.tableName, { ...task }),
+    ...(spendingStop === undefined ? [] : taskStopWindowItems(deps.tableName, {
+      orgId: deps.orgId, taskId, requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash,
+      project: request.project, agentId: spendingStop.agentId,
+    }, spendingStop, preparation.operationId, receivedAt, 0)),
     ...(share?.threadTs === undefined ? [] : [putNew(deps.tableName, {
       ...sharedTaskKey({ teamId: share.teamId, channelId: share.channelId, threadTs: share.threadTs }),
       entityType: "SHARED_TASK", taskId, workspaceId, ownerKey: task.ownerKey, developerId: task.developerId,
@@ -498,6 +579,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     // Plan 3, Task 15: the frozen recipe, the agent's task index, an agent-step run's state and (for startAgentRun) the run's request item.
     ...(prepared === undefined ? [] : runStartItems({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, {
       orgId: deps.orgId, taskId, createdAt: receivedAt, project: request.project, developerId: caller.developerId, prepared,
+      ...(spendingStop === undefined ? {} : { policySnapshotCaptured: true }),
       ...(run?.requestFingerprint === undefined ? {} : { request: { requestId: request.requestId, fingerprint: run.requestFingerprint } }),
       ...(sessionId === undefined ? {} : { sessionId }),
     })),
@@ -513,11 +595,30 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
       ...(codeBinding === undefined || codeBinding.kind === "slack_thread" ? [] : bindingItems({ tableName: deps.tableName }, deps.orgId, sessionId, codeBinding, receivedAt)),
     ]),
   ];
+  const spendingAuthorityIndexes = new Set<number>();
+  if (spendingStop !== undefined || fundingProof !== undefined) for (const guard of [...(fundingProof === undefined ? [] : [fundingRevisionCheck(deps.tableName, fundingProof)]), ...budgetActorChecks(deps.tableName, deps.orgId, { developerId: caller.developerId, role: caller.orgRole }), ...spendingScopeChecks]) {
+    const check = guard.ConditionCheck;
+    if (check?.Key === undefined) throw budgetActorRefused();
+    const checkKey = check.Key;
+    const index = items.findIndex(item => {
+      const action = item.Update ?? item.ConditionCheck;
+      return action?.Key?.pk === checkKey.pk && action?.Key?.sk === checkKey.sk;
+    });
+    if (index < 0) { spendingAuthorityIndexes.add(items.length); items.push(guard); continue; }
+    const item = items[index]!, action = item.Update ?? item.ConditionCheck!;
+    for (const [name, value] of Object.entries(check.ExpressionAttributeNames ?? {})) if (action.ExpressionAttributeNames?.[name] !== undefined && action.ExpressionAttributeNames[name] !== value) throw budgetActorRefused();
+    for (const [name, value] of Object.entries(check.ExpressionAttributeValues ?? {})) if (action.ExpressionAttributeValues?.[name] !== undefined && !isDeepStrictEqual(action.ExpressionAttributeValues[name], value)) throw budgetActorRefused();
+    const names = { ...action.ExpressionAttributeNames, ...check.ExpressionAttributeNames }, values = { ...action.ExpressionAttributeValues, ...check.ExpressionAttributeValues };
+    const combined = { ConditionExpression: action.ConditionExpression === undefined ? check.ConditionExpression : `(${action.ConditionExpression}) AND (${check.ConditionExpression})`, ...(Object.keys(names).length === 0 ? {} : { ExpressionAttributeNames: names }), ...(Object.keys(values).length === 0 ? {} : { ExpressionAttributeValues: values }) };
+    items[index] = item.Update === undefined ? { ConditionCheck: { ...item.ConditionCheck!, ...combined } } : { Update: { ...item.Update, ...combined } };
+    spendingAuthorityIndexes.add(index);
+  }
   if(prepared?.modelPolicyPin!==undefined&&items.length>90) throw agentXError("CONFIG_INVALID","The model admission exceeds the transaction limit.");
   try {
     await deps.actions.transact(items);
   } catch (error) {
     if (!isConditional(error)) throw error;
+    if (spendingStop !== undefined && [...(failedIndexes(error) ?? [])].some(index => spendingAuthorityIndexes.has(index))) return refused(budgetActorRefused());
     const conflict = paused ? undefined : await chargeFailure(deps, charge, taskId, error);
     // This task's own charge is there: the transaction committed and only its answer was lost.
     if (conflict === "already_charged") return returning({ taskId, payloadHash });

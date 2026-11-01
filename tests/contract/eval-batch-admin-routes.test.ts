@@ -1,3 +1,5 @@
+import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
+import { issuer } from "../support/slack-broker.js";
 // Spec 052 Task 5: the admin routes of eval batches (FR-001, FR-003, FR-009, FR-010). Each is behind
 // the administrator claim and the administrator membership of the channel's project.
 import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -192,4 +194,11 @@ describe("the administrator claim (spec 052 Task 5)", () => {
     // Nothing happened to the batch.
     expect(await call(handler, { method: "GET", path: `${base}/${batchId}`, user: administrator })).toMatchObject({ body: { batch: { status: "RUNNING" } } });
   });
+});
+
+it("M47 admin batch stores the authenticated requesting principal and org", async () => {
+  const h = await batchBroker();
+  const reply = await start(h.handler, batchFile, { orgId: "org_aaaaaaaaaaaaaaaaaaaa", developerId: "f".repeat(64) });
+  expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+  expect(h.db.find(row => row.entityType === "EVAL_BATCH")[0]).toMatchObject({ orgId: TEST_ORG, developerId: ownerKeyForSubject(issuer, administrator.subject), projectName: "payments" });
 });

@@ -38,7 +38,8 @@ export async function readTask(deps: DeveloperTaskRouteDependencies, caller: Dev
     task = await loadOwnedTask(deps, caller, taskId);
     loaded = undefined;
   }
-  const view = await taskView(deps, task, { events, details: true, ...(loaded === undefined ? {} : { loaded }) });
+  // `loadOwnedTask` has just proved the caller is the task's owner, so this view is built for the owner.
+  const view = await taskView(deps, task, { events, details: true, actor: "owner", ...(loaded === undefined ? {} : { loaded }) });
   await syncIndex(deps, task, view.status, view.updatedAt);
   return { task: view };
 }

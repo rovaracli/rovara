@@ -38,9 +38,14 @@ import { readObjectText } from "./plan-answers.js";
 import { describeFeedbackFixes } from "./pull-request-reconcile.js";
 import { githubScope, installOrgId, orgOfRecord, webhookRepositoryUrl } from "./scope-helpers.js";
 import { consumerRepositoryResolver } from "./consumer-hosts.js";
+import { changeRequestRef } from "../../rovara-code/host-port.js";
+import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
 import { taskOperationParts } from "./task-operations.js";
 import { latestChecksItem } from "./terminal-result.js";
 import { handleSpecPullRequestEvent } from "./spec-wiring.js";
+import { type EndedPullRequestReader, outcomeDepsOf, scoreMergedCandidate } from "../../rovara-code/outcome-hooks.js";
+import { canonicalJson } from "@agentx/contracts";
+import { requireTaskStopWindowContext, withAdmittedTaskSource } from "../../org/task-stop-window.js";
 
 /**
  * Spec 025 R3: the first instructions of a developer task, queued in the prepare's own result
@@ -53,8 +58,8 @@ async function queuedFirstTask(
   prepare: OperationRecord,
   pointer: DeveloperTaskPointerRecord & { pendingPrompt: string },
   now: string,
-): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems;turnAudit?:ReturnType<typeof prepareTurnModelFallback>;fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
-  const task = pointer.pendingWorkflowMode === "PLAN" ? await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId)) : undefined;
+): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems; admittedTask?: DeveloperTaskRecord; turnAudit?:ReturnType<typeof prepareTurnModelFallback>; fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
   const { operation, outbox, fence,fallback,modelChecks,turnAudit } = await taskOperationParts(dependencies, workspace, {
     requestId: pointer.firstRequestId,
     conversationId: pointer.conversationId,
@@ -65,7 +70,14 @@ async function queuedFirstTask(
     ...(pointer.pendingWorkflowMode === undefined ? { legacyTask: true } : {}),
     ...(task?.workflow?.reviewPhase === undefined ? {} : { workflowPhase: task.workflow.reviewPhase }),
   }, now);
+  if (prepare.spendingAdmission !== undefined || task?.spendingStop !== undefined || task?.spendingAdmission !== undefined) {
+    if (task === undefined || task.spendingStop === undefined || task.spendingAdmission === undefined || prepare.spendingTaskId !== task.taskId
+      || canonicalJson(prepare.spendingAdmission) !== canonicalJson(task.spendingAdmission)) throw agentXError("TASK_STOP_CONFIG_INVALID", "The preparation spending window changed.");
+    await requireTaskStopWindowContext(dependencies, task);
+    operation.spendingTaskId = task.taskId; operation.spendingAdmission = task.spendingAdmission;
+  }
   return {
+    ...(task?.spendingStop === undefined ? {} : { admittedTask: task }),
     ...(fallback===undefined?{}:{fallback}),
     ...(turnAudit===undefined?{}:{turnAudit}),
     workspaceUpdate: { Update: {
@@ -165,7 +177,8 @@ export async function sendTerminalResult(
     return terminalStatus;
   }
   try {
-    await send(boundedTurnAdmission(joinTaskModelFallback([...transactItems.filter((item) => item !== workspaceUpdate), queued.workspaceUpdate, ...queued.items],queued.fallback?.items??[])));
+    const queuedItems = boundedTurnAdmission(joinTaskModelFallback([...transactItems.filter((item) => item !== workspaceUpdate), queued.workspaceUpdate, ...queued.items],queued.fallback?.items??[]));
+    await send(queued.admittedTask === undefined ? queuedItems : withAdmittedTaskSource(dependencies.tableName, queued.admittedTask, queuedItems, "firstOperationWindow").items);
     if(queued.fallback?.event!==undefined)await flushAuditEvents(dependencies,[queued.fallback.event]);
     if(queued.turnAudit!==undefined)await flushAuditEvents(dependencies,[queued.turnAudit.event]);
   } catch (queueError) {
@@ -334,9 +347,19 @@ export async function completedTurnItems(
   return [{ Put: { TableName: table, Item: item, ConditionExpression: "attribute_not_exists(pk)" } }];
 }
 
+/** What every release of a finished task needs, the track record's fresh GitHub read included: the settle after a release is the same whichever path made the release. */
+export function releaseDependenciesOf(dependencies: AwsBrokerDependencies, settleUntil?: number) {
+  return {
+    tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient,
+    ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+    outcomeReader: (task: DeveloperTaskRecord) => endedPullRequestReader(dependencies, task),
+    ...(settleUntil === undefined ? {} : { outcomeSettleUntil: settleUntil }),
+  };
+}
+
 /** A finished workflow task gives back its workspace slot and its workspace (releaseFinishedTask); never throws. */
 export async function releaseIfFinished(dependencies: AwsBrokerDependencies, taskId: string): Promise<void> {
-  await releaseFinishedTaskQuietly({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) }, taskId);
+  await releaseFinishedTaskQuietly(releaseDependenciesOf(dependencies), taskId);
 }
 
 /** Refresh all linked PRs from the GitHub API before an owner decision (webhook payloads are hints only). */
@@ -482,6 +505,8 @@ export async function processGithubWorkflowEvent(
   const linked = await getItem<GithubWorkflowPullRequestRecord>(dependencies, githubWorkflowPullRequestKey(event.fullName, event.number));
   // A merge that finished the task gives back its slot and workspace (again for a redelivery, which changes nothing).
   if (linked !== undefined && options?.release !== "queue") await releaseIfFinished(dependencies, linked.taskId);
+  // Track record: after the release, which never waits on it, and never throwing.
+  if (linked !== undefined) await scoreMergedPullRequestOutcomes(dependencies, linked.taskId, linked.repositoryId, event.number, options?.budget);
   // Plan 6 Task 20: the merged milestone this save wrote is told to the registered handlers now; one that was not told is told again by the sweep.
   if (linked !== undefined && changed) {
     await deliverCodeMilestones({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, linked.taskId).catch((error: unknown) => {
@@ -504,6 +529,8 @@ export async function processGithubWorkflowEvent(
 const MERGE_RECOVERY_RETRY_MS = 5 * 60_000;
 /** What one run of the merge-recovery schedule may spend in all (the merge pass, then the tracking pass), inside the broker's 30-second timeout. */
 export const SWEEP_EVENT_BUDGET_MS = 26_000;
+/** What a pass over many finished tasks may spend settling their track record in all: well inside the sweep's event budget, which also has the rest of its work to do. */
+export const OUTCOME_SETTLE_PASS_MS = SWEEP_EVENT_BUDGET_MS - 20_000;
 
 async function stronglyRead<T>(dependencies: AwsBrokerDependencies, key: { pk: string; sk: string }): Promise<T | undefined> {
   const response = await dependencies.documentClient.send(new GetCommand({
@@ -557,12 +584,67 @@ async function automaticFeedbackRoundIsSound(dependencies: AwsBrokerDependencies
   return await planAutomaticFeedbackRound(routeDependencies, task) !== undefined;
 }
 
+/**
+ * Track record: a fresh GitHub read of one of a task's pull requests (its checks and reviews, its merge commit and time, and a person's permission on its repository), for scoring a candidate's
+ * samples. Undefined where the provider cannot read a pull request's status or a person's permission: what waits on it is then `code_host_unavailable`, never guessed.
+ */
+function endedPullRequestReader(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, budget?: GithubMergeReadBudget): EndedPullRequestReader | undefined {
+  if (task.orgId === undefined) return undefined;
+  const orgId = task.orgId;
+  const resolve = consumerRepositoryResolver(dependencies);
+  const permissions = new Map<string, Promise<"admin" | "write" | "read" | "none">>();
+  return async (repositoryId, number) => {
+    // The code host is the one the repository's record names (P5a), as the tracking pass reads it; an unknown kind is refused here, before anything is read.
+    const home = await resolve(task.project, task.startingRevision, repositoryId, orgId);
+    if (home === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
+    const { url, codeHost } = home;
+    const scope = githubScope(dependencies, orgId);
+    // Every read goes through the budgeted port (the tracking pass's own): the sweep's budget when there is one, else this read's own short signal. A spent budget refuses the read and the
+    // samples wait for a later pass.
+    const reads: GithubMergeReadBudget = budget ?? { signal: AbortSignal.timeout(OUTCOME_READ_SIGNAL_MS), beforeRequest: () => undefined };
+    const status = await codeHost.changeRequestStatus(changeRequestRef(url, number), scope, reads);
+    // The merge commit and time: the budgeted GitHub merge observation reads them (a merged pull request on GitHub only; the port carries no merge time yet).
+    const github = dependencies.githubPullRequests;
+    const details = status.state === "merged" && codeHost.kind === GITHUB_HOST_KIND && github.getPullRequestMergeObservation !== undefined
+      ? await github.getPullRequestMergeObservation.call(github, url, number, reads, scope).catch(() => undefined) : undefined;
+    return {
+      status, mergeCommit: details?.mergeCommit, mergedAt: details?.mergedAt,
+      permission: (login) => {
+        const key = `${url}:${login.toLowerCase()}`;
+        let found = permissions.get(key);
+        if (found === undefined) { found = codeHost.standing({ url }, { login }, scope, reads).then((read) => read.permission); permissions.set(key, found); }
+        return found;
+      },
+    };
+  };
+}
+/** How long one read of a pull request may take when no sweep budget bounds it. */
+const OUTCOME_READ_SIGNAL_MS = 8_000;
+
+/**
+ * Track record: a pull request the workflow now records as merged has its candidate's samples scored, from GitHub's answer read now, not from the tracking item. Only a version 2 task, and nothing
+ * is read once no sample of the candidate is open. A close is not scored here (it may be reopened; the task's end settles it). Best effort: it never throws.
+ */
+async function scoreMergedPullRequestOutcomes(dependencies: AwsBrokerDependencies, taskId: string, repositoryId: string, number: number, budget?: GithubMergeReadBudget): Promise<void> {
+  try {
+    const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+    const workflow = task?.workflow;
+    if (task === undefined || workflow === undefined || task.orgId === undefined || workflow.definitionVersion !== "1.1.0") return;
+    const ended = workflow.pullRequests?.find((entry) => entry.repositoryId === repositoryId && entry.number === number);
+    const read = endedPullRequestReader(dependencies, task, budget);
+    if (ended === undefined || ended.state !== "MERGED" || read === undefined) return;
+    await scoreMergedCandidate(outcomeDepsOf(dependencies), { taskId, orgId: task.orgId, project: task.project, agent: task.agent, workflow }, { candidateDigest: ended.candidateDigest, read, now: new Date().toISOString(), ...(budget === undefined ? {} : { signal: budget.signal }) });
+  } catch (error) {
+    console.log(JSON.stringify({ component: "broker", level: "warn", event: "outcomes.merge_failed", taskId, error: error instanceof Error ? error.name : "unknown" }));
+  }
+}
+
 /** What the tracking pass needs, or undefined where the GitHub provider cannot read a pull request's status (then no row is tracked). */
 function mergeTrackingDependencies(dependencies: AwsBrokerDependencies): Omit<MergeTrackingDependencies, "budget"> | undefined {
   const github = dependencies.githubPullRequests;
   if (github.getPullRequestStatus === undefined || github.getRepositoryPermission === undefined || github.markPullRequestReady === undefined || github.requestReviewers === undefined) return undefined;
   return {
-    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, outcomes: outcomeDepsOf(dependencies),
     // P5a: the code host (and the runner that reads its builds) is the one each repository's record names; everything a pass reads or does goes through that host's port.
     repository: consumerRepositoryResolver(dependencies),
     // How far Rovara may go on its own with this task's pull requests: what the task's frozen recipe says (a task with none is `prepare`; a recipe that cannot be read is `suggest`, so it asks first).

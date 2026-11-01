@@ -147,7 +147,7 @@ describe("the grant", () => {
 });
 
 describe("the mint port over the real mintOperationKey's input", () => {
-  const baseInput = { orgId: ORG, developerId: "dev_a", refId: "op-1", taskKeyIds: ["k0"], operationKeyIds: [] as string[], scopes: [{ kind: "org" }, { kind: "project", project: "svc" }] as never, tags: { agentId: "rovara-code", payerKind: "project", payerId: "svc", source: "x", origin: "e2e" } as never, keepEarlierKeys: true };
+  const baseInput = { guardRecord: ((items: readonly unknown[]) => [...items]) as never, recordOn: [{ key: { pk: "TASK#t", sk: "RECIPE" } }], orgId: ORG, developerId: "dev_a", refId: "op-1", taskKeyIds: ["k0"], operationKeyIds: [] as string[], scopes: [{ kind: "org" }, { kind: "project", project: "svc" }] as never, tags: { agentId: "rovara-code", payerKind: "project", payerId: "svc", source: "x", origin: "e2e" } as never, keepEarlierKeys: true };
   it("sets every limit to the round's cap, passes scopes, tags and the e2e alias, and says 'reserved' only with the ledger", async () => {
     const seen: Array<Record<string, unknown>> = [];
     const mintOperationKey = (_deps: unknown, input: Record<string, unknown>) => { seen.push(input); return Promise.resolve({ outcome: "minted" as const, key: "sk-0123456789abcdef", keyId: "k1", expiresAt: 5, maxBudgetUsd: 5.444 }); };
@@ -159,6 +159,23 @@ describe("the mint port over the real mintOperationKey's input", () => {
     const mintOperationKey = (() => Promise.resolve({ outcome: "raced" as const })) as never;
     expect(() => mintRoundKeyPort({ mintOperationKey, deps: {} as never, base: baseInput })).toThrow(RangeError);
     expect(() => mintRoundKeyPort({ mintOperationKey, deps: { ledger: {} } as never, base: { ...baseInput, scopes: [] } })).toThrow(RangeError);
+  });
+  it("cannot be built without the task-stop guard: fail closed until the guard is wired", () => {
+    const mintOperationKey = (() => Promise.resolve({ outcome: "raced" as const })) as never;
+    const unguarded = { ...baseInput, guardRecord: undefined };
+    expect(() => mintRoundKeyPort({ mintOperationKey, deps: { ledger: {} } as never, base: unguarded })).toThrow(/guardRecord/);
+  });
+  it("cannot be built with a guard but nothing to record the key on: the guard would never run", () => {
+    const mintOperationKey = (() => Promise.resolve({ outcome: "raced" as const })) as never;
+    const omitted = { ...baseInput, recordOn: undefined };
+    expect(() => mintRoundKeyPort({ mintOperationKey, deps: { ledger: {} } as never, base: omitted })).toThrow(/recordOn/);
+    expect(() => mintRoundKeyPort({ mintOperationKey, deps: { ledger: {} } as never, base: { ...baseInput, recordOn: [] } })).toThrow(/recordOn/);
+  });
+  it("hands the caller's guard to the mint, so the key is recorded through it", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const mintOperationKey = (_deps: unknown, input: Record<string, unknown>) => { seen.push(input); return Promise.resolve({ outcome: "raced" as const }); };
+    await mintRoundKeyPort({ mintOperationKey: mintOperationKey as never, deps: { ledger: {} } as never, base: baseInput })({ routeAlias: "e2e-nav", ttlSeconds: 600, capUsd: 1 });
+    expect(seen[0]!["guardRecord"]).toBe(baseInput.guardRecord);
   });
   it("a lost race is no key", async () => {
     const port = mintRoundKeyPort({ mintOperationKey: (() => Promise.resolve({ outcome: "raced" as const })), deps: { ledger: {} } as never, base: baseInput });

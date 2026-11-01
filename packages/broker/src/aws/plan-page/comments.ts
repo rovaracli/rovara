@@ -3,7 +3,7 @@
 // chip only for an item AgentX wrote. Text is redacted again here; the page escapes it (HTML) or sets it as text (script).
 import {
   ANSWER_STALE_MS, agentxAnswerCommentId, plannerReplyCommentId, redactText,
-  type CommentDocument, type CommentTarget, type TaskComment, type WorkflowArtifact,
+  type CommentDocument, type CommentTarget, type TaskComment, type TaskCommentLearning, type WorkflowArtifact,
 } from "@agentx/contracts";
 import { escapeHtml } from "../web-session.js";
 import type { PlanAnchor } from "./render-plan.js";
@@ -27,6 +27,8 @@ export interface PageCommentView {
   /** Which decision it was sent with (the stored `lockedBy.decision`). */
   sentWith?: "APPROVE" | "REQUEST_CHANGES";
   rev: number;
+  /** Only for a person with standing in the project, on a person's comment: whether it is already remembered (v1.2 learning loop). Absent for everyone else. */
+  learning?: TaskCommentLearning;
   /** A person's comment that asked AgentX, or was sent with Request changes: what became of the answer. */
   agentx?: "answering" | "answered" | "couldnt" | "not_answered" | "unavailable" | "skipped" | "sent_to_coding";
   /** AgentX's answer to an asked comment: the asker's name, from that stored comment (never from the answer). */

@@ -193,6 +193,8 @@ export interface CodeBuildRecord {
 }
 
 export interface AwsBrokerDependencies {
+  /** Injectable clock for funding evidence and its durable audit. */
+  now?: () => number;
   documentClient: DynamoDBDocumentClient;
   /** The Audit Ledger's outbox (named environments only); absent on a legacy install, where every audit function does nothing. */
   audit?: AuditRuntime;

@@ -111,6 +111,9 @@ export const AUDIT_ACTIONS = [
   "spend_request.resume_dropped",
   "budget.changed",
   "spend_policy.changed",
+  "spending.stop_admitted", "spending.stop_refused", "spending.stop_reached", "spending.stop_exempted",
+  "spending.policy_seeded",
+  "spending.policy_changed", "spending.policy_change_requested", "spending.policy_change_decided",
   "pull_request.opened",
   "pull_request.merged",
   "pull_request.merge_requested",
@@ -236,6 +239,16 @@ export const AUDIT_ACTIONS = [
   "sso.break_glass_used",
   "sso.group_mapping_changed",
   "sso.break_glass_changed",
+  // v1.2 learning loop: suggested rules and their decisions. Ids, counts, flags and fixed words only; never a correction's or a rule's text.
+  "rule.suggested",
+  "rule.accepted",
+  "rule.not_applied",
+  "rule.dismissed",
+  "rule.withdrawn",
+  "rule.rolled_back",
+  "rule.correction_remembered",
+  "project.learning_changed",
+  "rule.suggestions_set",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -301,6 +314,14 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "spend_request.resume_dropped": ["kind", "cause"],
   "budget.changed": ["scopeKind", "field", "fromCents", "toCents"],
   "spend_policy.changed": ["field", "from", "to"],
+  "spending.policy_changed": ["scopeKind", "revision", "requestId", "proposalId", "beforeKind", "afterKind", "beforeMicrousd", "afterMicrousd", "decision", "outcomeCode"],
+  "spending.policy_change_requested": ["scopeKind", "revision", "requestId", "proposalId", "beforeKind", "afterKind", "beforeMicrousd", "afterMicrousd", "decision", "outcomeCode"],
+  "spending.policy_change_decided": ["scopeKind", "revision", "requestId", "proposalId", "beforeKind", "afterKind", "beforeMicrousd", "afterMicrousd", "decision", "outcomeCode"],
+  "spending.stop_admitted": ["effectiveStopMicrousd", "approvalCapMicrousd", "policyDigest", "workKind", "admissionId"],
+  "spending.stop_exempted": ["sourceId", "sourceKind", "sourcesRevision", "payerDeveloperId", "connectionRevision"],
+  "spending.stop_refused": ["outcomeCode", "workKind", "admissionId", "sourceId", "sourceKind", "sourcesRevision"],
+  "spending.stop_reached": ["effectiveStopMicrousd", "approvalCapMicrousd", "policyDigest", "workKind", "admissionId"],
+  "spending.policy_seeded": ["mode", "source", "revision", "ceilingMicrousd", "outcome"],
   "pull_request.opened": ["number"],
   "pull_request.merged": ["number"],
   "pull_request.merge_requested": ["number", "method"],
@@ -426,6 +447,19 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "sso.break_glass_used": ["role", "sessionSeconds"],
   "sso.group_mapping_changed": ["fromVersion", "toVersion", "rules"],
   "sso.break_glass_changed": ["owners"],
+  // v1.2 learning loop. `stage` is a stage id, `sourceKinds` a comma-joined list of fixed words (`comment`, `send_back`, `pr_comment`), `outcome` is `published` or `awaiting_approval`,
+  // `approvalOutcome` is `declined`, `expired` or `failed`, `dismissKind` is a fixed word, `standing` is `member` or `outsider` and `op` is `remember` or `forget`.
+  "rule.suggested": ["suggestionId", "stage", "sourceCount", "sourceKinds", "lessSafe", "fromOnePerson"],
+  "rule.accepted": ["suggestionId", "ruleId", "stage", "processAgentId", "outcome", "processVersion", "approvalId", "edited", "lessSafe"],
+  "rule.not_applied": ["suggestionId", "ruleId", "approvalOutcome"],
+  "rule.dismissed": ["suggestionId", "stage", "dismissKind"],
+  // Rovara withdrew a suggestion whose sources went away (system actor); `cause` is a fixed word: forgotten, sources_gone, pr_capture_off, erased.
+  "rule.withdrawn": ["suggestionId", "stage", "cause"],
+  "rule.rolled_back": ["ruleId", "processAgentId", "processVersion"],
+  "rule.correction_remembered": ["correctionId", "stage", "standing", "op"],
+  "project.learning_changed": ["revision", "enabled", "selfConfirmedSoleOwner"],
+  // The company's master suggestions switch: `setting` and `previous` are `on` or `off`, `source` is `company`.
+  "rule.suggestions_set": ["setting", "previous", "source", "previousSource"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

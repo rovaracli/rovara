@@ -22,7 +22,7 @@ function setup() {
     now: () => clock.now,
     newOrgId: () => `org_${String(++counter).padStart(20, "0")}`,
   });
-  const metas = () => db.find((item) => item.sk === "META" && typeof item.pk === "string" && item.pk.startsWith("ORG#"));
+  const metas = () => db.find((item) => item.entityType === "ORG" && item.sk === "META" && typeof item.pk === "string" && item.pk.startsWith("ORG#"));
   return { db, clock, store, metas };
 }
 

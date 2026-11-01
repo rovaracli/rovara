@@ -248,6 +248,15 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/team-record/item-head.ts", "packages/broker/src/team-record/retention.ts", "packages/broker/src/team-record/scope-work.ts",
       "packages/broker/src/team-record/query.ts", "packages/broker/src/team-record/ingest.ts", "packages/broker/src/team-record/store.ts",
       "packages/contracts/src/team-record.ts", "infra/lib/team-record-table.ts",
+      // Track record (v1.2 slice 1): a pending outcome sample lasts a year, a scored one and its scored copy 180 days after the score; only outcomes.ts writes and reads them.
+      "packages/broker/src/rovara-code/outcomes.ts",
+      // Track record hooks: the small pointer item that says where a candidate's samples are (a task's `OUTCOME_KEYS#<round>` item) expires with the pending samples, a year after it is made.
+      "packages/broker/src/rovara-code/outcome-hooks.ts",
+      // v1.2 learning loop (B1): corrections, their source records, dismissed patterns and ended suggestions are kept 180 days, then deleted by the TTL (named environments) or by
+      // the learning sweep (a table without one). The contract names the field on the items, retention.ts judges it, store.ts writes it, sweep.ts reads it to delete. Nothing else may.
+      "packages/contracts/src/project-learning.ts", "packages/broker/src/learning/retention.ts", "packages/broker/src/learning/store.ts", "packages/broker/src/learning/sweep.ts",
+      // B6: a dismissed pattern carries the same 180-day expiry when Dismiss writes it.
+      "packages/broker/src/learning/decide.ts",
       // Intake own-write notes (a note that a write was ours, held one window plus an hour); asks (a question kept ASK_RETENTION_DAYS, its mention-index and expiry-index items, and the erase
       // pass that copies a record without the attribute); lessons (a source event's counter row, SOURCE_EVENT_TTL_DAYS). Each writes rows that are meant to expire, none a durable record.
       "packages/broker/src/intake/own-writes.ts", "packages/broker/src/agent-sessions/ask-store.ts", "packages/broker/src/agent-sessions/ask-erase.ts", "packages/broker/src/lessons/dynamo-store.ts",

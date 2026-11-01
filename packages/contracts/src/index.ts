@@ -24,7 +24,9 @@ export * from "./no-change-findings.js";
 export * from "./workflow-autofix.js";
 export * from "./rovara-code.js";
 export * from "./project-playbook.js";
+export * from "./project-learning.js";
 export * from "./how-we-work.js";
+export * from "./how-we-work-track-record.js";
 export * from "./rovara-code-node.js";
 export * from "./rovara-code-intent.js";
 export * from "./intake.js";
@@ -179,7 +181,7 @@ export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInvi
 export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
 
 // Lane A G1: pure finite stop calculation and exact display; no runtime admission.
-export { calculateTaskStop, TaskStopCalculationInputSchema, TaskStopMicrousdSchema, type TaskStopCalculation, type TaskStopBindingScope } from "./task-stop.js";
+export { calculateTaskStop, TaskStopAdmissionInputSchema, type TaskStopAdmissionInput, TaskStopCalculationInputSchema, TaskStopMicrousdSchema, type TaskStopCalculation, type TaskStopBindingScope } from "./task-stop.js";
 export { formatUsdMicrodollars } from "./money-format.js";
 
 // Lane A G1: current company ceiling read alias; other policy scopes are not loaded.
@@ -194,6 +196,7 @@ export { TaskStopAgentReadSchema, type TaskStopAgentRead } from "./task-stop-age
 // Lane A G1: versioned project intent, preserved but not set by legacy settings writes.
 export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy, TaskStopProjectReadSchema, type TaskStopProjectRead } from "./task-stop-project.js";
 export * from "./test-proof.js";
+export * from "./outcomes.js";
 
 // Proof and evidence (W4/W5): the evidence pack, decision cards, the test environment and service mocks.
 export * from "./evidence.js";
@@ -221,6 +224,7 @@ export * from "./app-allowed-websites.js";
 export * from "./stage-model-publish-refusal.js";
 export * from "./app-project-slack.js";
 
+export { TaskStopEditablePolicySchema, type TaskStopEditablePolicy, TaskStopPendingChangeSchema, TaskStopEditingContextSchema, TaskStopEditBodySchema, TaskStopDecisionBodySchema, TaskStopEditResultSchema, taskStopEditKind } from "./task-stop-editing.js";
 export * from "./app-service-status.js";
 
 // Learning v2 (L4): lesson text hygiene and the learnedContext payload.

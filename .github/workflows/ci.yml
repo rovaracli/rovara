@@ -60,7 +60,8 @@ jobs:
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     # Cloud runs on private 2 vCPU / 8 GB runners, about 1.6x slower than the public 4 vCPU ones.
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 15 }}
+    # The checks job's full-repository lint took 16 of its 27 minutes on 2026-10-31 and passed 30 once v1.2 landed; the private repo's runners get 45.
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 45 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:

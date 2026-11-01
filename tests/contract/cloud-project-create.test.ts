@@ -1,3 +1,5 @@
+import { capturingAuditDeps } from "../support/audit-capture.js";
+import { upgradeTaskStopProjectInheritance } from "../../packages/broker/src/org/task-stop-bootstrap.js";
 // Plan 2, Task 16 (replaces ruling R55): on a cloud install an owner or admin of an org creates a project from a repository its own GitHub
 // connection reaches, with POST /v1/app/projects (POST /v1/dev/projects is the same route). The project is registered through the admin
 // route's own registration code, as a new name in the org, and the creator is granted access like any developer.
@@ -7,7 +9,7 @@ import { z } from "zod";
 // The package the broker imports, not its source: the broker tests an error for that package's class.
 import { agentXError as packageError } from "@agentx/contracts";
 import {
-  githubInstallationKey, orgGithubInstallationKey, orgMetaKey, orgProjectCatalogKey, orgScoped, projectCreateRequestKey, projectMemberKey, projectMetaKey, projectRevisionKey,
+  orgSettingsKey, projectAiKey, githubInstallationKey, orgGithubInstallationKey, orgMetaKey, orgProjectCatalogKey, orgScoped, projectCreateRequestKey, projectMemberKey, projectMetaKey, projectRevisionKey,
   type GithubInstallationRecord, type OrgId, type OrgRole,
 } from "../../packages/contracts/src/index.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
@@ -62,6 +64,7 @@ async function cloudInstall(options: { roles?: Partial<Record<"maya" | "omar", O
   const orgOf = (who: Developer): OrgId => (who === OMAR ? OTHER_ORG : TEST_ORG);
   const harness = await createDeveloperTaskBroker({
     register: false,
+    audit: capturingAuditDeps(),
     orgResolver: async ({ developerId }) => (developerId === OMAR.developerId ? OTHER_ORG : TEST_ORG),
     brokerExtra: {
       cloud: true,
@@ -547,4 +550,21 @@ describe("cloudProjectDefaultsFromEnvironment", () => {
     expect(cloudProjectDefaultsFromEnvironment({ ...env, EC2_WORKER_LAUNCH_TEMPLATE_ID: "not-a-template" })).toBeUndefined();
     expect(cloudProjectDefaultsFromEnvironment({ ...env, EC2_WORKER_SUBNETS: "us-west-2a" })).toBeUndefined();
   });
+});
+
+it("real cloud project creation atomically seeds explicit task-stop inheritance", async () => {
+ const h = await cloudInstall();h.db.set({ ...orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, enrollment: { version: 1, state: "enabled" }, policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+ expect((await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).status).toBe(201);
+ expect(h.db.get(projectAiKey(TEST_ORG, "web"))).toMatchObject({ entityType: "PROJECT_AI", orgId: TEST_ORG, project: "web", revision: 1, projectPays: false, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+});
+it("a real registered legacy project with no PROJECT_AI can be upgraded without fixtures", async () => {
+ const h = await cloudInstall();expect((await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).status).toBe(201);const key = projectAiKey(TEST_ORG, "web");h.db.delete(key);
+ await upgradeTaskStopProjectInheritance({ documentClient: h.db, tableName: "state", now: Date.now }, { orgId: TEST_ORG, project: "web" });
+ expect(h.db.get(key)).toMatchObject({ orgId: TEST_ORG, project: "web", revision: 1, projectPays: false, taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+});
+it("Spending repairs a missing PROJECT_AI through the real project and authenticated routes", async () => {
+ const h = await cloudInstall();expect((await h.create(MAYA, { requestId: REQUEST, repository: "acme/web" })).status).toBe(201);const key = projectAiKey(TEST_ORG, "web");h.db.delete(key);
+ const view = await h.dev(MAYA, "GET", "/v1/app/org/task-stop-policy/projects/web/editing");expect(view.status).toBe(200);expect(view.body.sourceState).toBe("missing");
+ const applied = await h.dev(MAYA, "PUT", "/v1/app/org/task-stop-policy/projects/web", { requestId: randomUUID(), expectedRevision: view.body.revision, expectedPolicyDigest: view.body.sourceDigest, policy: { kind: "limited", stopMicrousd: 1234567 } });
+ expect(applied.status).toBe(200);expect(h.db.get(key)).toMatchObject({ revision: 1, orgId: TEST_ORG, project: "web", taskStopPolicy: { schemaVersion: 1, stopMicrousd: 1234567 } });
 });

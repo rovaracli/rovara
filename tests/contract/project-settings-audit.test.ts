@@ -152,7 +152,9 @@ describe("a project definition revision registered through the admin route", () 
     expect(factsOf(cap, "project.models_changed")).toEqual([{ revision: 1, approvedCount: 2, defaultChanged: true }, { revision: 2, approvedCount: 1, defaultChanged: false }]);
     expect(factsOf(cap, "project.checks_changed")).toHaveLength(1);
     await registerSlackProject(handler, { bind: false, revision: 3, models: { default: BALANCED, approved: [BALANCED] }, readiness: [cmd("test")] });
-    expect(cap.recorded()).toHaveLength(3);
+    // M47 adds one independent company-policy bootstrap event; these three events concern project revisions.
+    expect(cap.recordedBy("spending.policy_seeded")).toHaveLength(1);
+    expect(cap.recorded().filter(event => event.target.kind === "project")).toHaveLength(3);
     await registerSlackProject(handler, { bind: false, revision: 4, models: { default: BALANCED, approved: [BALANCED] }, readiness: [cmd("test"), cmd("build")] });
     expect(factsOf(cap, "project.checks_changed")).toEqual([{ revision: 1, requiredCount: 1, optionalCount: 0 }, { revision: 4, requiredCount: 2, optionalCount: 0 }]);
   });

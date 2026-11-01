@@ -1,6 +1,6 @@
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AUTO_FIX_DEFAULT_CAP_USD, WORKFLOW_AUTO_ACTION_LIMIT, autoFixDecision, classifyBlockedWorkflow, wholeTaskSpendUsd, workflowAutoFixCounts, workflowAutoSpendRefusal,
+  AgentXError, AUTO_FIX_DEFAULT_CAP_USD, WORKFLOW_AUTO_ACTION_LIMIT, autoFixDecision, classifyBlockedWorkflow, wholeTaskSpendUsd, workflowAutoFixCounts, workflowAutoSpendRefusal,
   type AutoFixAskReason, type AutoFixBlockCause, type AutoFixCode, type AutoFixDecision, type AutoFixFacts, type E2EScenarioResults, type GroupOriginalResult, type OriginalCodeResult, type WorkflowAutoSpend,
 } from "@agentx/contracts";
 import { AUTOFIX_ASK_GROUPS_MAX, AutoFixAskSchema, autoFixRetryReason, autoFixSendBackReason, type AutoFixAsk } from "../developer/autofix-messages.js";
@@ -208,10 +208,15 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
     return fresh.Item?.workflow?.revision === workflow.revision && fresh.Item.workflow.state === "BLOCKED" && fresh.Item.closedAt === undefined;
   };
   const moved = async (error: unknown): Promise<AutofixOutcome> => {
-    // The owner pressed first (the revision moved): theirs stands and nothing else is done. Any other failure is the caller's to retry.
+    // The owner pressed first (the revision moved): theirs stands and nothing else is done. An archive refusal ends this dispatch; other failures are the caller's to retry.
     if (!await blockedHere()) {
       log("RACE_LOST");
       return "STALE";
+    }
+    // Archive is a permanent refusal for this dispatch, not an infrastructure failure to retry.
+    if (error instanceof AgentXError && error.code === "PROJECT_ARCHIVED") {
+      log("NONE", { reason: "PROJECT_ARCHIVED" });
+      return "NONE";
     }
     throw error;
   };

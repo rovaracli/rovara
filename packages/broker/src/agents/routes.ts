@@ -1,3 +1,5 @@
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import type { OwnerFinancialTerms } from "../spend/owner-approval-terms.js";
 // Plan 3 Task 7: the app's routes to build, version, publish, share and update agents (`/v1/app/agents*`). Every body is strict and
 // carries a `requestId` (R18). Each route checks access first, with `requireAgentAccess`: an agent the caller can't see answers the
 // same 404 as one that doesn't exist. A change that decides which recipe runs and makes anything less safe answers
@@ -6,7 +8,8 @@ import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
-  AgentGuardrailsSchema,
+  AgentGuardrailsWriteSchema,
+  topUpKey,
   AgentPublishBodySchema as PublishBodySchema,
   AgentRollbackBodySchema as RollbackBodySchema,
   AgentBudgetBodySchema as BudgetBodySchema,
@@ -91,7 +94,6 @@ import type { ChainRunPorts } from "../chains/runner.js";
 import type { ChainViewPorts } from "../chains/view.js";
 import { suggestMaxPerRun, type RequestRunLimit } from "../spend/estimate.js";
 import { ownerShare, withBudgetFields } from "../spend/owner-total.js";
-import { readTopUp } from "../spend/top-ups.js";
 import { routeSpendRequest } from "../spend/routes.js";
 import { effectiveOwnerCap, isSpendRequestRoute, requestOwnerCap, routeSpendRequests, type SpendRequestHost } from "../spend/requests.js";
 import { isConnectionRoute, routeConnectionRequest, type ConnectionRouteDependencies } from "../connections/routes.js";
@@ -212,7 +214,7 @@ const ProjectAiBodySchema = z.object({
   memberAcceptRunLimitUpToUsd: Amount.nullable().optional(),
 }).strict();
 const SpendPolicyBodySchema = SpendPolicyFieldsSchema.partial().extend({ requestId: RequestIdSchema }).strict();
-const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsSchema.refine(value => usdToWholeMicrodollars(value.maxPerRunCeilingUsd) !== undefined, { path: ["maxPerRunCeilingUsd"], message: "must have at most 6 decimal places" }) }).strict();
+const GuardrailsBodySchema = z.object({ requestId: RequestIdSchema, expectedRevision: z.number().int().min(0), guardrails: AgentGuardrailsWriteSchema.refine(value => usdToWholeMicrodollars(value.maxPerRunCeilingUsd) !== undefined, { path: ["maxPerRunCeilingUsd"], message: "must have at most 6 decimal places" }) }).strict();
 
 export function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> {
   const parsed = schema.safeParse(body);
@@ -592,8 +594,8 @@ async function setArchived(deps: AgentRouteDependencies, caller: AgentCaller, ag
   // Unarchiving puts the agent's budget back in its owner's total; an archived agent's budget counted for no one.
   const current = await deps.store.get(caller.orgId, agentId);
   const unarchived = current === undefined || current.status !== "archived"
-    ? await deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark)
-    : await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { status: "active" }), { op: "unarchive" }, mark, (options) => deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark, options));
+    ? await deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark, { actor: { developerId: caller.developerId, role: caller.orgRole }, ...(current === undefined ? {} : { manageSnapshot: current }) })
+    : await holdingCap(deps, caller, agentId, current, withBudgetFields(current, { status: "active" }), { op: "unarchive" }, mark, (options) => deps.store.unarchive(caller.orgId, agentId, caller.developerId, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: current }));
   if (unarchived instanceof StatusReply) return unarchived;
   return { agent: customView(unarchived, access) };
 }
@@ -825,14 +827,24 @@ export async function holdingOwnerCap<T>(
     const [from, to] = [await survivor(ownerShare(before)), await survivor(ownerShare(after))];
     // Fix round 2 (N-1): its top-up for the month goes with it to an owner it newly counts for.
     const topUpScope: BudgetScope = subject.kind === "agent" ? { kind: "agent", agentId: subject.agentId } : { kind: "chain", chainId: subject.chainId };
-    const carried = to !== undefined && from?.owner !== to.owner ? await readTopUp(deps, caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), topUpScope) : 0;
-    return ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
+    let carried = 0, carriedSource: OwnerFinancialTerms["carriedSource"];
+    if (to !== undefined && from?.owner !== to.owner) {
+      const key = topUpKey(caller.orgId, new Date(deps.now()).toISOString().slice(0, 7), topUpScope);
+      const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> };
+      if (response.Item !== undefined && usdToWholeMicrodollars(response.Item.amountUsd) === undefined) throw agentXError("CONFIG_INVALID", "The carried monthly amount could not be read. Review Spending before retrying.");
+      carried = response.Item === undefined ? 0 : response.Item.amountUsd as number;
+      carriedSource = { key, exists: response.Item !== undefined, fields: response.Item ?? {} };
+    }
+    const checked = await ownerBudgetRefusal(deps, caller.orgId, from, to, (owner) => effectiveOwnerCap(deps, caller.orgId, owner), carried);
+    if ("over" in checked && checked.over.ownerFinancialTerms !== undefined && carriedSource !== undefined) checked.over.ownerFinancialTerms = { ...checked.over.ownerFinancialTerms, carriedSource };
+    if ("ownerCap" in checked && carriedSource !== undefined) checked.ownerCap.carriedSource = carriedSource;
+    return checked;
   };
-  const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number }): Promise<StatusReply> => {
+  const ask = async (over: { owner: string; wouldBeUsd: number; capUsd: number; ownerFinancialTerms?: OwnerFinancialTerms }): Promise<StatusReply> => {
     const newOwner = change.op === "set_owner" ? (change.owner.kind === "member" ? change.owner.developerId : change.accountable?.developerId) : change.op === "set_accountable" ? change.accountable.developerId : undefined;
     const monthly = ownerShare(after)?.usd || undefined; // a $0 base has no new limit to name
     const { record, message } = await requestOwnerCap(deps, {
-      orgId: caller.orgId, ...(subject.kind === "agent" ? { agentId: subject.agentId } : { chainId: subject.chainId }), requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, change, request: mark,
+      orgId: caller.orgId, ...(subject.kind === "agent" ? { agentId: subject.agentId } : { chainId: subject.chainId }), requestedBy: caller.developerId, owner: over.owner, wouldBeUsd: over.wouldBeUsd, capUsd: over.capUsd, ownerFinancialTerms: over.ownerFinancialTerms, change, request: mark, before,
       ...(monthly === undefined ? {} : { newLimitUsd: monthly }), ...(newOwner === undefined ? {} : { newOwner }),
     });
     return new StatusReply(202, { status: "NEEDS_ADMIN_APPROVAL", spendRequestId: record.spendRequestId, message });

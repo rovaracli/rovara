@@ -82,6 +82,13 @@ describe("the broker's grant to assume a customer's CloudWatch role", () => {
     }
   });
 
+  it("turns on the company admin console in the web app for a cloud environment only, and no placeholder page", () => {
+    const featuresOf = (template: Template) => Object.entries(template.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)
+      .find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))![1].Properties.Environment?.Variables?.["WEB_FEATURES"];
+    expect(featuresOf(cloud)).toBe("admin");
+    for (const template of [stack({ cloud: false }), Template.fromStack(new ControlPlaneStack(new App(), "WebFeaturesLegacy"))]) expect(featuresOf(template)).toBeUndefined();
+  });
+
   it("does not exist on a named environment without the cloud, nor on the legacy install", () => {
     for (const template of [stack({ cloud: false }), Template.fromStack(new ControlPlaneStack(new App(), "AssumeCwLegacy"))]) {
       expect(assumesOf(template)).toEqual([]);

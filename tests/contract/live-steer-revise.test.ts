@@ -52,7 +52,8 @@ import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, type Developer 
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/index.js";
+import { orgMemberKey, orgRemovedKey, projectMetaKey } from "../../packages/contracts/src/index.js";
+import { SLACK_PROJECT_ARCHIVED } from "../../packages/broker/src/aws/slack-refusals.js";
 import { reviseTaskPlan, type RevisePlanHost } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";
 import { REVISE_PLAN_REFUSALS } from "../../packages/broker/src/agent-sessions/live-steer-revise.js";
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";
@@ -374,6 +375,38 @@ describe("Revise the plan, on the task page", () => {
 });
 
 describe("Revise the plan, as every other planning start behaves", () => {
+  const archive = (s: Awaited<ReturnType<typeof codingStoppedForLiveChange>>) => {
+    const key = projectMetaKey(TEST_ORG, "payments");
+    s.harness.db.set({ ...s.harness.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
+  };
+
+  it("an archived project takes no new work: the page's press is refused, nothing is planned, and the task and the message do not change", async () => {
+    const s = await codingStoppedForLiveChange();
+    archive(s);
+    const before = structuredClone(taskRow(s.harness, s.taskId));
+    const messageBefore = structuredClone(s.messageRow());
+    const refused = await s.press(MAYA);
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ error: { code: "PROJECT_ARCHIVED" } });
+    expect(taskRow(s.harness, s.taskId)).toEqual(before);
+    expect(s.messageRow()).toEqual(messageBefore);
+    expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
+  });
+
+  it("an archived project takes no new work: the Slack press is refused too, and no planning run starts", async () => {
+    const s = await codingStoppedForLiveChange({ slack: true });
+    archive(s);
+    const before = structuredClone(taskRow(s.harness, s.taskId));
+    const event = { source: "agentx.slack-ingress", action: "workflow-revise-plan", taskId: s.taskId, thread: s.thread, userId: MAYA.slackUserId, requestId: randomUUID(), expectedRevision: workflowOf(s.harness, s.taskId).revision };
+    const reply = await s.harness.handler(event);
+    // Told to the presser privately, as every expected refusal is: 200 `refused`, never a failed save.
+    expect(reply.statusCode).toBe(200);
+    expect(JSON.parse(reply.body)).toMatchObject({ refused: true, message: SLACK_PROJECT_ARCHIVED });
+    expect(taskRow(s.harness, s.taskId)).toEqual(before);
+    expect(operations(s.harness, s.workspaceId).find((item) => item.requestId === event.requestId)).toBeUndefined();
+    expect(operations(s.harness, s.workspaceId).filter((item) => item.workflowMode === "PLAN")).toHaveLength(1);
+  });
+
   it("I1/R60: when the task's owner has been removed from the organization, the press is refused, nothing is planned, and the task ends creator_removed (the mark only the removed-owner guard writes)", async () => {
     const s = await codingStoppedForLiveChange();
     await s.harness.db.send(new (await import("@aws-sdk/lib-dynamodb")).DeleteCommand({ TableName: "state", Key: orgMemberKey(TEST_ORG, MAYA.developerId) }));

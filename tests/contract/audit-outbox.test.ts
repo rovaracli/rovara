@@ -79,6 +79,19 @@ async function commitAction(h: Harness, event: AuditEventInput, key = "ACTION#1"
   }));
 }
 
+it("delivers the M47 system policy seed through the transactional outbox without changing its facts", async () => {
+  const h = harness();
+  const event = builders.auditTaskStopPolicySeeded({ orgId: ORG, actor: { kind: "system", id: "rovara" }, occurredAt: "2026-10-20T11:59:00.000Z",
+    occurrence: "bootstrap-v1", source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: 100_000_000 });
+  await commitAction(h, event, "TASK_STOP_SEED#1");
+  expect(pendingItems(h.db).map(item => item.event)).toEqual([event]);
+  await flushAuditEvents(h.deps, [event]);
+  expect(pendingItems(h.db)).toEqual([]);
+  expect(h.sqs.queue.map(message => AuditEventInputSchema.parse(JSON.parse(message.body)))).toEqual([event]);
+  expect(event).toMatchObject({ actor: { kind: "system", id: "rovara" }, action: "spending.policy_seeded",
+    facts: { source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: 100_000_000 } });
+});
+
 describe("the pending item", () => {
   it("is one unconditional Put of the plan's shape, in the shard of the event id", () => {
     const h = harness();
@@ -763,6 +776,11 @@ describe("I4: the builders", () => {
     ["auditProcessPublished", (occurrence) => builders.auditProcessPublished({ ...base, occurrence, details, agentId: "agt_1", version: 2, safety: "safe", selfConfirmedSoleOwner: false })],
     ["auditProcessRolledBack", (occurrence) => builders.auditProcessRolledBack({ ...base, occurrence, details, agentId: "agt_1", fromVersion: 3, toVersion: 2, safety: "safe" })],
     ["auditPlaybookDefaultProcessChanged", (occurrence) => builders.auditPlaybookDefaultProcessChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, processKind: "builtin" })],
+    ["auditTaskStopPolicyChange (changed)", (occurrence) => builders.auditTaskStopPolicyChange({ ...base, details, occurrence, action: "spending.policy_changed", scopeKind: "company", revision: 2, requestId: "11111111-1111-4111-8111-111111111111", before: { kind: "limited", stopMicrousd: 1234567 }, after: { kind: "rovara_estimate" } })],
+    ["auditTaskStopPolicyChange (requested)", (occurrence) => builders.auditTaskStopPolicyChange({ ...base, details, occurrence, action: "spending.policy_change_requested", scopeKind: "company", revision: 2, requestId: "11111111-1111-4111-8111-111111111111", before: { kind: "limited", stopMicrousd: 1234567 }, after: { kind: "rovara_estimate" } })],
+    ["auditTaskStopPolicyChange (decided)", (occurrence) => builders.auditTaskStopPolicyChange({ ...base, details, occurrence, action: "spending.policy_change_decided", scopeKind: "company", revision: 2, requestId: "11111111-1111-4111-8111-111111111111", before: { kind: "limited", stopMicrousd: 1234567 }, after: { kind: "rovara_estimate" } })],
+    ["auditTaskStopDecision", (occurrence) => builders.auditTaskStopDecision({ ...base, details, occurrence, action: "spending.stop_admitted", taskId: "11111111-1111-4111-8111-111111111111", admissionId: "22222222-2222-4222-8222-222222222222", effectiveStopMicrousd: 1234567, approvalCapMicrousd: 100000000, policyDigest: "a".repeat(64) })],
+    ["auditTaskStopPolicySeeded", (occurrence) => builders.auditTaskStopPolicySeeded({ ...base, details, actor: { kind: "system", id: "rovara" }, occurrence, source: "bootstrap", mode: "rovara_estimate", revision: 1, ceilingMicrousd: 100_000_000 })],
     ["auditCompanyChangeAppliedToProject", (occurrence) => builders.auditCompanyChangeAppliedToProject({ ...base, occurrence, details, projectName: "Secret Project", changeRevision: 5, settingCount: 2 })],
     // Test environment: a tier change records the tier and how many less-safe fields it turned on
     ["auditProjectTestEnvChanged", (occurrence) => builders.auditProjectTestEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 3, tier: "preview", lessSafeCount: 1 })],
@@ -787,6 +805,16 @@ describe("I4: the builders", () => {
     ["auditDiagnosisProposalRaised", (occurrence) => builders.auditDiagnosisProposalRaised({ ...base, occurrence, details, diagnosisId: "diag_1", proposalKind: "settings_change", approvalId: "appr_1" })],
     ["auditDiagnosisSupportEscalated", (occurrence) => builders.auditDiagnosisSupportEscalated({ ...base, occurrence, details, diagnosisId: "diag_1", errorKind: "task" })],
     ["auditDiagnosisBundlePrepared", (occurrence) => builders.auditDiagnosisBundlePrepared({ ...base, occurrence, details, diagnosisId: "diag_1", errorKind: "task" })],
+    // v1.2 learning loop (B7)
+    ["auditRuleSuggested", (occurrence) => builders.auditRuleSuggested({ ...base, occurrence, details, projectName: "Secret Project", suggestionId: "sug_1", stage: "build", sourceCount: 2, sourceKinds: "comment,send_back", lessSafe: false, fromOnePerson: false })],
+    ["auditRuleAccepted", (occurrence) => builders.auditRuleAccepted({ ...base, occurrence, details, projectName: "Secret Project", suggestionId: "sug_1", ruleId: "rul_1", stage: "build", processAgentId: "agt_1", outcome: "published", processVersion: 4, edited: true, lessSafe: false })],
+    ["auditRuleNotApplied", (occurrence) => builders.auditRuleNotApplied({ ...base, occurrence, details, projectName: "Secret Project", suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "declined" })],
+    ["auditRuleDismissed", (occurrence) => builders.auditRuleDismissed({ ...base, occurrence, details, projectName: "Secret Project", suggestionId: "sug_1", stage: "build", dismissKind: "wrong" })],
+    ["auditRuleWithdrawn", (occurrence) => builders.auditRuleWithdrawn({ ...base, occurrence, details, projectName: "Secret Project", suggestionId: "sug_1", stage: "build", cause: "forgotten" })],
+    ["auditRuleRolledBack", (occurrence) => builders.auditRuleRolledBack({ ...base, occurrence, details, projectName: "Secret Project", ruleId: "rul_1", processAgentId: "agt_1", processVersion: 5 })],
+    ["auditRuleCorrectionRemembered", (occurrence) => builders.auditRuleCorrectionRemembered({ ...base, occurrence, details, projectName: "Secret Project", correctionId: "cor_1", stage: "build", standing: "member", op: "remember" })],
+    ["auditProjectLearningChanged", (occurrence) => builders.auditProjectLearningChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, enabled: true, selfConfirmedSoleOwner: false })],
+    ["auditRuleSuggestionsSet", (occurrence) => builders.auditRuleSuggestionsSet({ ...base, occurrence, details, setting: "on", previous: "off", source: "company" })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
@@ -834,6 +862,17 @@ describe("I4: the builders", () => {
     expect(selection.facts).toStrictEqual({ surface: "cli", cleared: true });
     const company = builders.auditCompanyChangeAppliedToProject({ ...base, occurrence: "p1", projectName: "web", changeRevision: 5, settingCount: 0 });
     expect(company.facts).toStrictEqual({ changeRevision: 5, settingCount: 0 });
+  });
+
+  it("the learning events target the project by name, carry only their fixed facts, and an accepted rule differs from one awaiting approval", () => {
+    const accepted = (outcome: "published" | "awaiting_approval") => builders.auditRuleAccepted({ ...base, occurrence: "rul_1", projectName: "web", suggestionId: "sug_1", ruleId: "rul_1", stage: "build", processAgentId: "agt_1", outcome, edited: false, lessSafe: true });
+    expect(accepted("published")).toMatchObject({ action: "rule.accepted", target: { kind: "project", name: "web" }, facts: { outcome: "published", edited: false, lessSafe: true } });
+    expect(accepted("published").facts).not.toHaveProperty("processVersion");
+    expect(accepted("published").eventId).not.toBe(accepted("awaiting_approval").eventId);
+    const remembered = (op: "remember" | "forget") => builders.auditRuleCorrectionRemembered({ ...base, occurrence: "cor_1", projectName: "web", correctionId: "cor_1", stage: "build", standing: "member", op });
+    expect(remembered("remember").eventId).not.toBe(remembered("forget").eventId);
+    const notApplied = builders.auditRuleNotApplied({ ...base, occurrence: "rul_1", projectName: "web", suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "expired" });
+    expect(notApplied.facts).toStrictEqual({ suggestionId: "sug_1", ruleId: "rul_1", approvalOutcome: "expired" });
   });
 
   it("the id also depends on the pinned parts: the decision, the terminal status", () => {

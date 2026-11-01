@@ -470,8 +470,9 @@ describe("the audit record", () => {
   it("the operator writes the canonical binding and operator audit in one transaction", async () => {
     const audit = capturingAuditDeps(), h = await world({ audit }), seen = recordTransactions(h);
     await bindChannel(h.handler, NEW_CHANNEL);
-    const audited = seen.filter(transaction => transaction.some(isPending));expect(audited).toHaveLength(1);
-    expect(audited[0]!.some(item => item.Put?.Item?.entityType === "SLACK_BINDING")).toBe(true);
+    const audited = seen.filter(transaction => transaction.some(isPending));expect(audited).toHaveLength(2);
+    expect(audited.filter(transaction => transaction.some(item => item.Put?.Item?.entityType === "TASK_STOP_SEED"))).toHaveLength(1);
+    expect(audited.filter(transaction => transaction.some(item => item.Put?.Item?.entityType === "SLACK_BINDING"))).toHaveLength(1);
     expect(audit.recordedBy("slack_channel.bound").filter(event => event.related?.includes(NEW_CHANNEL))).toMatchObject([{ orgId: TEST_ORG, actor: { kind: "operator" }, target: { kind: "project", name: "payments" } }]);expect(audit.pending()).toEqual([]);
   });
 

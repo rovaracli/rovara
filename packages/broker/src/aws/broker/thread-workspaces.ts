@@ -34,6 +34,7 @@ import { developerRequested, getDefaultWorkspace, getMembership, getThreadWorksp
 import { resolveSlackThreadKey } from "./scope-helpers.js";
 import { MEMBERSHIP_PREPARATION_ATTEMPTS, membershipMovedSince, membershipPreparationItem, newWorkspacePreparation, metaPrepareOf, requireSlackRequesterMayWork, slackRequesterRole } from "./workspace-preparation.js";
 import { connectorTypeContext } from "./workspace-routes.js";
+import { OUTCOME_SETTLE_PASS_MS, releaseDependenciesOf } from "./terminal-and-github-events.js";
 
 /** The close preflight's operation, worker invocation and outbox item: the Slack close's and a developer task's. */
 function closeOperationParts(
@@ -1179,7 +1180,7 @@ async function healSlackMemberSlots(dependencies: AwsBrokerDependencies, orgId: 
     const key = slackMemberLimitKey(orgId, requester.teamId, requester.userId);
     const member = await getItem<{ count?: number }>(dependencies, key);
     if ((member?.count ?? 0) < effective.memberWorkspaceLimit) return;
-    await releaseFinishedTasksOf({ tableName: dependencies.tableName, actions: developerTaskActions(dependencies), documentClient: dependencies.documentClient, ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }) }, key);
+    await releaseFinishedTasksOf(releaseDependenciesOf(dependencies, Date.now() + OUTCOME_SETTLE_PASS_MS), key);
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "developer.finished_task_heal_failed", error: error instanceof Error ? error.name : "unknown" }));
   }

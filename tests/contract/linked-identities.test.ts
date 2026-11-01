@@ -32,7 +32,7 @@ async function signIn(h: Harness, method: "cloud" | "github" | "oidc", who: stri
   return { claims: claimsOf(exchanged.body.access_token), token: String(exchanged.body.access_token), location };
 }
 const members = (h: Harness, orgId: unknown) => h.state.find((item) => item.pk === orgPk(orgId as OrgId) && String(item.sk).startsWith("MEMBER#"));
-const orgsMade = (h: Harness) => h.state.find((item) => item.sk === "META" && String(item.pk).startsWith("ORG#org_"));
+const orgsMade = (h: Harness) => h.state.find((item) => item.entityType === "ORG" && item.sk === "META" && String(item.pk).startsWith("ORG#org_"));
 
 beforeEach(() => { vi.useFakeTimers({ now: T0, toFake: ["Date"] }); });
 afterEach(() => { vi.useRealTimers(); });

@@ -2,7 +2,7 @@
 // the workflow, the planning run and the spec's record move together or not at all; a repeat of the press is the same press; and nothing is built until the owner approves the revised plan.
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import type { SpecState } from "../../packages/broker/src/spec/state.js";
-import { projectMemberKey } from "@agentx/contracts";
+import { projectMemberKey, projectMetaKey } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { MAYA, OMAR, grantProject } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -68,6 +68,43 @@ describe("Re-plan after the spec changed", () => {
     const reply = await t.press();
     expect(reply.status).toBeGreaterThanOrEqual(400);
     expect(t.record().workflow.stage).toBe("REVIEW");
+  });
+});
+
+describe("an archived project takes no new work", () => {
+  const archive = (t: Awaited<ReturnType<typeof editedSpecTask>>) => {
+    const key = projectMetaKey(TEST_ORG, "payments");
+    t.db.set({ ...t.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
+  };
+  const outbox = (t: Awaited<ReturnType<typeof editedSpecTask>>) => t.db.find((item) => item.entityType === "OUTBOX").length;
+
+  it("refuses Re-plan, and no planning run starts", async () => {
+    const t = await editedSpecTask();
+    archive(t);
+    const before = t.record();
+    const runs = outbox(t);
+    const reply = await t.press();
+    expect(reply.status, JSON.stringify(reply.body)).toBe(409);
+    expect(reply.body).toMatchObject({ error: { code: "PROJECT_ARCHIVED" } });
+    expect(t.record()).toEqual(before);
+    expect(outbox(t)).toBe(runs);
+    expect((await t.store.load(t.taskId)).state?.editPrompt?.status).toBe("open");
+  });
+
+  it("refuses a spec Retry, and no spec write starts", async () => {
+    const t = await editedSpecTask();
+    const { state } = await t.store.load(t.taskId);
+    const failed = { ...state!, revision: state!.revision + 1, status: "failed", attempt: 1, failure: { code: "publish_failed", at: NOW }, editPrompt: undefined } as SpecState;
+    await t.db.send(new PutCommand({ TableName: "state", Item: failed }));
+    archive(t);
+    const before = t.record();
+    const runs = outbox(t);
+    const reply = await t.dev(MAYA, "POST", `/v1/app/tasks/${t.taskId}/spec/retry`);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(409);
+    expect(reply.body).toMatchObject({ error: { code: "PROJECT_ARCHIVED" } });
+    expect(t.record()).toEqual(before);
+    expect(outbox(t)).toBe(runs);
+    expect((await t.store.load(t.taskId)).state).toMatchObject({ status: "failed", revision: failed.revision });
   });
 });
 

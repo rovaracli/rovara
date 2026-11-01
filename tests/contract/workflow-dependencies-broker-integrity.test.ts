@@ -5,7 +5,7 @@ import { taskGraphDigest, type WorkItemProgressV1 } from "../../packages/contrac
 import { executeSerialWorkflowDependencies } from "../../packages/worker/src/workflow-dependencies.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
-import { agentSessionKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, projectMetaKey } from "../../packages/contracts/src/index.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 const passingChecks = () => ({ status: "verified", source: "project", preambleVersion: "1", preambleSha256: "c".repeat(64),
@@ -617,6 +617,21 @@ describe("broker work-breakdown callback integrity", () => {
     });
     expect(calls).toEqual(setup.graph.items.map((item) => item.id));
     expect(resumed.progress.filter((entry) => entry.state === "IMPLEMENTED").map((entry) => entry.itemId)).toEqual(setup.graph.items.map((item) => item.id));
+  });
+
+  it("refuses the retained-source recovery on an archived project, and nothing is queued", async () => {
+    const setup = await approvedGraph(true, 1);
+    const { blocked } = await blockedForRecovery(setup);
+    const key = projectMetaKey(TEST_ORG, "payments");
+    setup.harness.db.set({ ...setup.harness.db.get(key.pk, key.sk), ...key, entityType: "PROJECT_META", name: "payments", status: "archived" });
+    const before = structuredClone(setup.harness.db.get(`DEVTASK#${setup.taskId}`, "META"));
+    const operations = setup.operations().length;
+    const requestId = randomUUID();
+    const response = await setup.harness.dev(MAYA, "POST", `/v1/dev/tasks/${setup.taskId}/workflow/retry`, { requestId, expectedRevision: blocked.revision, instructions: "Finalize the retained source." });
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body.error).toMatchObject({ code: "PROJECT_ARCHIVED" });
+    expect(setup.harness.db.get(`DEVTASK#${setup.taskId}`, "META")).toEqual(before);
+    expect(setup.operations()).toHaveLength(operations);
   });
 
   it("recovers a required-E2E missing-export block by finalizing the exact retained graph tree", async () => {

@@ -1,4 +1,6 @@
+import { taskStopBootstrapItems } from "./task-stop-bootstrap.js";
 import { clearProjectAllowedDomainProposals } from "./project-allowed-domains-cleanup.js";
+import { clearTrackRecordData } from "./track-record-cleanup.js";
 import { approvalGrantChange, approvalCompanyChange } from "./approval-membership.js";
 import { clearWorkingBranchSaveReceipts } from "./project-working-branch-receipt-cleanup.js";
 import { budgetDocumentFence } from "./budget-snapshot.js";
@@ -10,7 +12,7 @@ import { takeRateAt } from "../developer/page-comments.js";
 // invite is accepted in one transaction with the membership writes, so a refused acceptance never
 // burns the invite. Invite tokens are stored only as SHA-256 hashes.
 import { randomBytes, randomUUID } from "node:crypto";
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   MEMBER_GRANT_SK_PREFIX,
   AgentXError,
@@ -18,7 +20,6 @@ import {
   InviteCreateReceiptSchema,
   agentXError,
   LAST_OWNER_MESSAGE,
-  builtinSettingsKey,
   currentBuiltinVersion,
   ROVARA_CODE_V2_FOR_NEW_ORGS,
   developerOrgKey,
@@ -236,13 +237,16 @@ export class OrgStore {
   async ensureOrg(orgId: OrgId, name: string): Promise<void> {
     const org: OrgRecord = { orgId, name, createdAt: this.iso(), createdBy: "system", plan: "team" };
     try {
-      await this.input.documentClient.send(new PutCommand({
-        TableName: this.input.tableName,
-        Item: { ...orgMetaKey(orgId), entityType: "ORG", ...org },
-        ConditionExpression: NOT_EXISTS,
-      }));
+      await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: [
+        this.put(orgMetaKey(orgId), "ORG", org as unknown as Item),
+        ...taskStopBootstrapItems(this.input.tableName, orgId, this.input.now()),
+      ] }));
     } catch (error) {
-      if (errorName(error) !== "ConditionalCheckFailedException") throw error;
+      const failed = failedIndexes(error);
+      // Only an already-existing organization is an idempotent replay. A seed
+      // collision on an otherwise missing org is a real failure, not success.
+      if (failed?.has(0) && await this.get(orgMetaKey(orgId)) !== undefined) return;
+      throw error;
     }
   }
 
@@ -265,7 +269,7 @@ export class OrgStore {
         ...this.membershipItems({ orgId, developerId: input.developerId, role: "owner", email: input.email, joinedAt }),
         ...this.pendingFor(event),
         // Plan 6: when the flag is on, a new org runs Rovara Code version 2 from its first task, as an explicit pin. Otherwise (and for an org with no settings item) it stays on version 1 until an admin adopts 2.
-        ...((this.input.rovaraCodeV2ForNewOrgs ?? ROVARA_CODE_V2_FOR_NEW_ORGS) ? [this.put(builtinSettingsKey(orgId, "rovara-code"), "BUILTIN_AGENT_SETTINGS", { pinnedVersion: currentBuiltinVersion("rovara-code"), updatedBy: input.developerId, updatedAt: joinedAt })] : []),
+        ...taskStopBootstrapItems(this.input.tableName, orgId, this.input.now(), (this.input.rovaraCodeV2ForNewOrgs ?? ROVARA_CODE_V2_FOR_NEW_ORGS) ? { codePin: { version: currentBuiltinVersion("rovara-code"), by: input.developerId } } : {}),
       ],
       (failed) => (failed.has(2) || failed.has(3) ? alreadyInOrg() : undefined),
     );
@@ -570,7 +574,7 @@ export class OrgStore {
    * `closedAt` is set and the sole member removed without a ban. `emails` are the leaving person's email pointers, which must go so an invite
    * to another org can index them. The org's TRIAL_GITHUB claim stays. Safe to run again after a stop part-way.
    */
-  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; /** Deletes the org's triggers, their activity and their notices (Plan 4 Task 18); absent where there are none. */ clearTriggers?: (orgId: OrgId) => Promise<void>; /** Turns off the org's event hooks, takes their lookups away and schedules their secrets' deletion (Plan 4 Task 19); absent where there are none. */ clearHooks?: (orgId: OrgId) => Promise<void>; /** Takes the org's company AI sources out of the model proxy and deletes their record (Task 24b); absent where there are none. */ releaseModelSources?: (orgId: OrgId) => Promise<void>; /** Deletes the org's live index, work entries, devices and change feeds and shortens the rest of its sessions to 30 days (Plan 5 Task 21); absent where there are none. */ clearSessions?: (orgId: OrgId) => Promise<void>; /** Asks the org's running work to stop once its triggers and hooks are cleared (Plan 5 Task 21, review M-6); best effort: a failure is logged and never stops the close. */ stopWork?: (orgId: OrgId) => Promise<void>; emails?: string[]; /** Recorded as the actor of `org.closed`. Default: the sole owner. */ by?: AuditActor }): Promise<void> {
+  async closeOrg(orgId: OrgId, deps: { archiveProjects: (orgId: OrgId) => Promise<void>; clearEgress: (orgId: OrgId) => Promise<void>; clearConnections?: (orgId: OrgId) => Promise<void>; /** Deletes the org's triggers, their activity and their notices (Plan 4 Task 18); absent where there are none. */ clearTriggers?: (orgId: OrgId) => Promise<void>; /** Turns off the org's event hooks, takes their lookups away and schedules their secrets' deletion (Plan 4 Task 19); absent where there are none. */ clearHooks?: (orgId: OrgId) => Promise<void>; /** Takes the org's company AI sources out of the model proxy and deletes their record (Task 24b); absent where there are none. */ releaseModelSources?: (orgId: OrgId) => Promise<void>; /** Deletes the org's live index, work entries, devices and change feeds and shortens the rest of its sessions to 30 days (Plan 5 Task 21); absent where there are none. */ clearSessions?: (orgId: OrgId) => Promise<void>; /** Asks the org's running work to stop once its triggers and hooks are cleared (Plan 5 Task 21, review M-6); best effort: a failure is logged and never stops the close. */ stopWork?: (orgId: OrgId) => Promise<void>; /** Starts the v1.2 learning loop's clean-up walk, which deletes every learning item of every project of the org (design 3.5); best effort and bounded: a failure is logged and never stops the close, and a walk left running is finished later (`resumeLearningWalks`). Absent where there is no learning. */ clearLearning?: (orgId: OrgId) => Promise<void>; emails?: string[]; /** Recorded as the actor of `org.closed`. Default: the sole owner. */ by?: AuditActor }): Promise<void> {
     const members = await this.listMembers(orgId);
     if (members.length > 1 || members.some((member) => member.role !== "owner")) throw coded("LAST_OWNER", LAST_OWNER_MESSAGE);
     const meta = await this.get(orgMetaKey(orgId));
@@ -588,6 +592,7 @@ export class OrgStore {
     // Mandatory before teardown/final close: failures retain closingAt so a fresh close resumes bounded cleanup.
     await clearWorkingBranchSaveReceipts(this.input, orgId);
     await clearProjectAllowedDomainProposals(this.input, orgId);
+    await clearTrackRecordData(this.input, orgId);
     for (const binding of await this.queryPartition(orgPk(orgId), "GITHUB_INSTALLATION#")) {
       const installationId = Number(String(binding.sk).slice("GITHUB_INSTALLATION#".length));
       await this.deleteIfOurs(githubInstallationKey(installationId), orgId);
@@ -612,6 +617,12 @@ export class OrgStore {
     }
     await deps.releaseModelSources?.(orgId);
     await deps.clearSessions?.(orgId);
+    // Learning data holds people's words: the company's walk starts now. The close does not wait for it to finish (reads refuse a closed company anyway); the error's name only is logged.
+    try {
+      await deps.clearLearning?.(orgId);
+    } catch (error) {
+      console.log(JSON.stringify({ component: "broker", level: "warn", event: "org_close.clear_learning_failed", orgId, error: errorName(error) ?? "unknown" }));
+    }
     const [sole] = members;
     if (sole === undefined) return;
     await this.deleteMemberData(orgId, sole.developerId, true);

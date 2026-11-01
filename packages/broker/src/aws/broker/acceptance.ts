@@ -28,6 +28,7 @@ import { taskOperationParts } from "./task-operations.js";
 import { latestChecksItem } from "./terminal-result.js";
 import { attributedBody, requesterOf } from "./thread-workspaces.js";
 import { requireSlackRequesterMayWork } from "./workspace-preparation.js";
+import { newTaskStopWindowReference, requireTaskStopWindowContext, withAdmittedTaskSource } from "../../org/task-stop-window.js";
 
 export async function acceptTask(
   dependencies: AwsBrokerDependencies,
@@ -111,6 +112,16 @@ export async function acceptTask(
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
     ...(options.agentRun === undefined ? {} : { agentRun: options.agentRun }),
   }, now);
+  let dispatchExtras = extra(publicOperation(operation));
+  const taskPointer = await getItem<DeveloperTaskPointerRecord>(dependencies, taskPointerKey(workspaceId));
+  const admittedTask = taskPointer === undefined ? undefined : await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskPointer.taskId));
+  if (admittedTask !== undefined && (admittedTask.spendingStop !== undefined || admittedTask.spendingAdmission !== undefined)) {
+    await requireTaskStopWindowContext(dependencies, admittedTask);
+    const reference = newTaskStopWindowReference(dispatchExtras, admittedTask) ?? admittedTask.spendingAdmission;
+    if (reference === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task admission reference is unavailable.");
+    operation.spendingTaskId = admittedTask.taskId; operation.spendingAdmission = reference;
+    dispatchExtras = withAdmittedTaskSource(dependencies.tableName, admittedTask, dispatchExtras, "operationWindow").items;
+  }
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: boundedTurnAdmission(joinTaskModelFallback([
       { Update: {
@@ -129,7 +140,7 @@ export async function acceptTask(
       { Put: { TableName: dependencies.tableName, Item: options.firstEvent === undefined ? operation : { ...operation, eventSequence: 1 }, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: outbox, ConditionExpression: "attribute_not_exists(pk)" } },
       { Put: { TableName: dependencies.tableName, Item: { ...idempotencyKey, entityType: "IDEMPOTENCY", operationId: operation.id, payloadHash: requestHash }, ConditionExpression: "attribute_not_exists(pk)" } },
-      ...extra(publicOperation(operation)),
+      ...dispatchExtras,
       // Last, so the caller's extra items keep their positions in a cancellation's reasons.
       ...(options.firstEvent === undefined ? [] : [{ Put: {
         TableName: dependencies.tableName,

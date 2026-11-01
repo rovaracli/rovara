@@ -4,7 +4,7 @@
 // `OwnerBudgets` ledger, so a person's agent budgets and chain budgets are one monthly total. Every multi-item write is one transaction, so a
 // refused write leaves nothing behind. A published version pins every agent step to a number; publishing checks again, inside its transaction,
 // that each pinned agent version and built-in pin is still what validation saw.
-import { budgetActorChecks, budgetActorRefused } from "../agents/budget-authority.js";
+import { unarchiveActorChecks, budgetActorChecks, budgetActorRefused } from "../agents/budget-authority.js";
 import { createHash } from "node:crypto";
 import {
   sameJsonContent,
@@ -510,17 +510,32 @@ export class ChainStore extends OwnedStore<ChainId, ChainRecord, ChainVersion, C
   }
 
   private async setStatus(orgId: OrgId, chainId: ChainId, status: "active" | "archived", by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<ChainRecord> {
+    const actorChecks = status === "active" ? unarchiveActorChecks(this.input.tableName, orgId, by, request, options) : [];
     const chain = await this.require(orgId, chainId);
-    if (chain.status === status) return chain;
+    const sourceGuard = (a: Aliases) => `${budgetGuard(chain)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(chain.updatedAt)}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`}`;
+    if (chain.status === status) {
+      if (status === "active") {
+        const actorStart = 1;
+        await this.commit(...withOverride([
+          this.update(chainKey(orgId, chainId, "META"), { set: { status }, when: sourceGuard }),
+          ...actorChecks,
+        ], failed => [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : budgetConflict(), options, { tableName: this.input.tableName, orgId, by }), request, chain);
+      }
+      return chain;
+    }
     const updatedAt = this.iso();
     const changed: ChainRecord = { ...chain, status, updatedAt };
-    // An archived chain counts for no one; unarchiving puts its budget back in its owner's total, held to the cap when one is given.
     const totals = await this.totalsFor(orgId, chain, changed, options.ownerCap);
-    await this.commit(...withOverride([
-      this.update(chainKey(orgId, chainId, "META"), { set: { status, updatedAt }, when: budgetGuard(chain) }),
+    const ownItems = [
+      this.update(chainKey(orgId, chainId, "META"), { set: { status, updatedAt }, when: sourceGuard }),
       ...totals.items,
       this.event(orgId, chainId, status === "archived" ? "archived" : "unarchived", by, overrideDetail(options)),
-    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by }), request, changed);
+    ];
+    const actorStart = ownItems.length;
+    const [items, refuse] = withOverride([...ownItems, ...actorChecks], failed =>
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed),
+    options, { tableName: this.input.tableName, orgId, by });
+    await this.commit(items, refuse, request, changed);
     return changed;
   }
 

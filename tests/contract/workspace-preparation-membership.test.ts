@@ -1,3 +1,5 @@
+import { fakeModelAccess } from "../support/fake-model-access.js";
+import { orgSettingsKey } from "@agentx/contracts";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { projectMemberKey, orgMetaKey } from "@agentx/contracts";
@@ -232,4 +234,16 @@ describe("a Slack thread's first workspace and the thread owner's project member
     expect(seen.transactions()).toBe(3);
     expect(broker.db.find((row) => row.entityType === "WORKSPACE" && row.projectName === "payments")).toEqual([]);
   });
+});
+
+it("M47 admin workspace preparation refuses enrolled work without a dollar admission basis", async () => {
+  const access = fakeModelAccess(), h = await createDeveloperTaskBroker({ brokerExtra: { modelAccess: { access, proxyUrl: "http://internal-proxy.example.test:4000" } } });
+  h.db.set({ ...orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1,
+    policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 0 } }, enrollment: { version: 1, state: "enabled" } });
+  const reply = await call(h.handler, { method: "POST", path: "/v1/admin/workspaces/prepare", user: FIRST,
+    body: { requestId: randomUUID(), projectName: "payments", projectRevision: 1, ownerSubject: NEW_DEVELOPER_SUBJECT } });
+  expect(reply.status, JSON.stringify(reply.body)).toBe(409);expect(reply.body.error).toMatchObject({ code: "TASK_STOP_CONFIG_MISSING" });
+  expect(h.db.find(row => row.entityType === "WORKSPACE" || row.entityType === "OPERATION")).toHaveLength(0);
+  expect(h.db.find(row => row.entityType === "DEVELOPER_TASK")).toHaveLength(0);
+  expect(access.mintedKeys()).toHaveLength(0);
 });

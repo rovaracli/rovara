@@ -69,7 +69,7 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks/thread-notes.ts", "answerIntentFromReply", "caller-actor", "taskOwnerKey()"],
   ["rovara-code/questions.ts", "answerIntentOnSession", "caller-actor", "taskOwnerKey()"],
   // the test proof is read from the task's own object prefix (`private/<ownerKey>/<workspace>/<operation>/`): the task's principal, never changes
-  ["developer/test-proof-lines.ts", "loadTestProofLines", "principal", ".ownerKey"],
+  ["developer/test-proof-lines.ts", "newestBoundProof", "principal", ".ownerKey"],
   ["rovara-code/test-proof-reader.ts", "loadTestProof", "principal", ".ownerKey"],
   // Plan 6 Task 13: the object prefix of the task's own diff artifact (`ownArtifactKey`): the task's principal, never changes
   ["aws/developer-tasks/task-view.ts", "candidateChangedFiles", "principal", ".ownerKey"],
@@ -94,7 +94,7 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks/task-answer-context.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-answer-context.ts", "commentAnswerSection", "principal", ".ownerKey"],
   ["aws/developer-tasks/close.ts", "finishTaskClose>closing", "index", ".developerId"],
-  ["aws/developer-tasks/release.ts", "releaseFinishedTask>rest", "index", ".developerId"],
+  ["aws/developer-tasks/release.ts", "releaseFinishedTaskNow>rest", "index", ".developerId"],
   ["aws/developer-tasks/share.ts", "shareItems", "index", ".developerId"],
   ["aws/developer-tasks/share.ts", "shareIdempotencyKey", "principal", ".ownerKey"],
   ["developer/page-comments.ts", "loadDocumentVersion", "principal", ".ownerKey"],
@@ -142,6 +142,7 @@ const ROWS: readonly Row[] = [
   // C55: the pull request footer names the identity the workspace was prepared for (as it always did); when its display name is an email address, the GitHub login that same person linked stands in for it (a stored identity, read only to find that login)
   ["aws/broker/thread-workspaces.ts", "attributedBody", "history", ".developerId"],
   ["aws/broker/model-access.ts", "handleModelAccess>loadScope", "money", ".developerId"],
+  ["aws/broker/model-access.ts", "handleModelAccess>loadScope", "authority", ".developerId@2"],
   ["aws/broker/workflow-e2e-verification.ts", "workflowE2EPresentationDetailed", "principal", ".ownerKey"],
   ["aws/broker/feedback-and-codebuild.ts", "currentWorkflowFeedbackApproval", "principal", ".ownerKey"],
   ["aws/broker/feedback-and-codebuild.ts", "readFeedbackBundlesForCritic", "principal", ".ownerKey*2"],

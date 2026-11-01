@@ -1,3 +1,5 @@
+import { nativeSnapshotConditions } from "../org/native-snapshot-conditions.js";
+import { pinOwnerFinancialChecks, type OwnerFinancialTerms } from "./owner-approval-terms.js";
 // The one monthly total each person's agent and chain budgets count against (R65), as one implementation for both. The total is a counter
 // (`OWNER_AGENT_BUDGET#<developer>`) that the agent store and the chain store change in the same transaction as the item whose budget moves, so
 // it can't drift from the budgets it adds up. Each store registers a source that adds up its own budgets; the counter is built from every source
@@ -8,6 +10,7 @@ import type { OwnedKind } from "../agents/owned-store.js";
 import { NOT_EXISTS, coded, errorName, type Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetOwnerOf, ownerShare, ownerTotalItems, type BudgetSubject, type OwnerShare, type OwnerTotalSeen } from "./owner-total.js";
 import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "../agents/budget-authority.js";
+import { pinSourceWrite, staleApproval, type ApprovalSource } from "./approval-source.js";
 import { cleanUsd } from "./top-ups.js";
 
 /**
@@ -18,6 +21,7 @@ export interface OwnerCap {
   usd: number;
   policyRevision: number;
   seen?: OwnerTotalSeen;
+  carriedSource?: OwnerFinancialTerms["carriedSource"];
 }
 
 /** What a refusal by the cap carries, so the route can answer in words with the figures as they are now (`isOwnerCapRefusal`). */
@@ -39,6 +43,10 @@ export interface OverrideCap {
   /** The actual deciding actor; supplied only by the approval handler. */
   actor: BudgetActor;
   spendRequestId: string;
+  source?: ApprovalSource;
+  /** Current destination membership; never a replacement for the deciding actor. */
+  destinationChecks?: TransactItem[];
+  financialChecks?: TransactItem[];
   items: TransactItem[];
   /** The error when one of `items` is refused (the request was decided meanwhile). */
   closed: () => Error;
@@ -49,11 +57,15 @@ export function withOverride(items: TransactItem[], refuse: (failed: Set<number>
   const override = options.overrideCap;
   if (override === undefined) return [items, refuse];
   if (override.actor === undefined || override.actor.developerId !== scope.by) throw budgetActorRefused();
+  const sourceIndex = override.source === undefined ? undefined : pinSourceWrite(items, override.source);
+  const financialIndexes = pinOwnerFinancialChecks(items, override.financialChecks ?? []);
   const checks = budgetActorChecks(scope.tableName, scope.orgId, override.actor);
-  const actorStart = items.length, start = actorStart + checks.length;
-  return [[...items, ...checks, ...override.items], (failed) => (
-    [...failed].some(index => index >= actorStart && index < start) ? budgetActorRefused()
-      : [...failed].some(index => index >= start && index < start + override.items.length) ? override.closed() : refuse(failed)
+  const destinationChecks = (override.destinationChecks ?? []).filter(item => !checks.some(actor => actor.ConditionCheck?.Key?.pk === item.ConditionCheck?.Key?.pk && actor.ConditionCheck?.Key?.sk === item.ConditionCheck?.Key?.sk));
+  const actorStart = items.length, destinationStart = actorStart + checks.length, start = destinationStart + destinationChecks.length;
+  return [[...items, ...checks, ...destinationChecks, ...override.items], (failed) => (
+    [...failed].some(index => index >= actorStart && index < destinationStart) ? budgetActorRefused()
+      : [...failed].some(index => index >= destinationStart && index < start) ? staleApproval()
+      : [...failed].some(index => index >= start && index < start + override.items.length) ? override.closed() : financialIndexes.some(index => failed.has(index)) || (sourceIndex !== undefined && failed.has(sourceIndex)) ? staleApproval() : refuse(failed)
   )];
 }
 
@@ -230,11 +242,14 @@ export class OwnerBudgets {
         },
       });
     }
+    const carried = cap?.carriedSource, carriedAt = carried === undefined ? undefined : items.length;
+    if (carried !== undefined) items.push(...nativeSnapshotConditions(this.input.tableName, [carried.key], [carried.exists ? carried.fields : undefined], ["amountUsd"]));
     return {
       items,
       classify: (failed) => {
         // The item changed since it was read: that is the answer, whatever the counters make of the old figures.
         if (failed.has(0)) return { kind: "entity" };
+        if (carriedAt !== undefined && failed.has(carriedAt + 1)) return { kind: "totals" };
         if (policyAt !== undefined && failed.has(policyAt + 1)) return { kind: "policy" };
         const capped = counters.capped.find((index) => failed.has(index + 1));
         if (capped !== undefined) return { kind: "cap", owner: counters.owners[capped]! };

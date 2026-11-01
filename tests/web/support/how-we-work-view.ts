@@ -3,6 +3,14 @@ export const LAYER = "agt_cccccccccccccccccccc";
 type Mark = { source: "rovara" | "company" | "project"; locked: boolean; lockedBy?: "company" | "rovara" };
 const inherited: Mark = { source: "rovara", locked: false }, project: Mark = { source: "project", locked: false }, company: Mark = { source: "company", locked: true, lockedBy: "company" }, rovaraLock: Mark = { source: "rovara", locked: true, lockedBy: "rovara" };
 const value = <T>(entry: T, mark: Mark = inherited) => ({ value: entry, ...mark });
+/** One stage record as the broker sends it (counts only). */
+export const record = (claim: string, held: number, notHeld: number, over: Record<string, unknown> = {}) => ({ claim, held, notHeld, closedUnmerged: 0, noOutcome: 0, unreviewedMerges: 0, windowDays: 30, capped: false, enough: true, ...over });
+/** The records of the plan check, the review (code and security) and the tests. */
+export const stageRecords: Record<string, unknown[]> = {
+ plan_critic: [record("plan_ready", 14, 3)],
+ review: [record("review_pass:CRITIC", 9, 1, { closedUnmerged: 2, unreviewedMerges: 3 }), record("review_pass:SECURITY", 4, 2, { enough: false })],
+ check: [record("proves_change", 14, 2)],
+};
 function stage(id: string, name: string, kind: string, parts: { model?: ReturnType<typeof value>; instructions?: ReturnType<typeof value>[]; note?: boolean; tools?: ReturnType<typeof value>; readOnly?: boolean; checked?: ReturnType<typeof value>[]; evidence?: ReturnType<typeof value>[]; approves?: ReturnType<typeof value>[]; different?: ReturnType<typeof value> } = {}) {
  return { id, name, kind, who: { model: parts.model ?? value(null), thinking: value(null), differentCompanyFrom: parts.different ?? value([]) }, knows: { instructions: parts.instructions ?? [], ...(parts.note ? { note: HOW_WE_WORK_REVIEWER_NOTE } : {}) }, may: { tools: parts.tools ?? value(null), readOnly: parts.readOnly ?? false }, checked: { items: parts.checked ?? [] }, evidence: { items: parts.evidence ?? [] }, approves: { items: parts.approves ?? [] } };
 }

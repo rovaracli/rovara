@@ -76,6 +76,7 @@ import { taskView, workspaceReads } from "./task-view.js";
 import { decideTaskWorkflow } from "./decide.js";
 import { retryTaskWorkflow } from "./workflow-retry.js";
 import { specHoldOf } from "./spec-wiring.js";
+import { commentLearningFlags } from "../../learning/comment-flags.js";
 
 /**
  * Whether Merge may be pressed now, for the words a page or message uses about a Rovara Code (version 2) task that waits for its merge; undefined for any other task, for one with nothing
@@ -267,6 +268,8 @@ export async function getTaskPageState(deps: DeveloperTaskRouteDependencies, cal
   });
   const counter = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: commentCounterKey(taskId), ConsistentRead: true })) as { Item?: { seq?: unknown } };
   const permissions = pageAccess(access, await projectWorkAllowed(deps, task, caller));
+  // v1.2 learning loop: only for a person with standing in the project; absent for everyone else, and when it can't be worked out in time.
+  const flags = await commentLearningFlags(deps, { caller, access }, taskId, []);
   return {
     revision: workflow?.revision ?? 0, waiting: workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && task.closedAt === undefined,
     stage: taskPageStep(workflow, task.closedAt !== undefined), documents, commentSeq: typeof counter.Item?.seq === "number" ? counter.Item.seq : 0,
@@ -274,6 +277,7 @@ export async function getTaskPageState(deps: DeveloperTaskRouteDependencies, cal
     canComment: permissions.canComment, canSuggest: permissions.canSuggest, canDecide: permissions.canDecide,
     canAsk: permissions.canAsk && await commentAnswersAvailable(deps, task),
     canManagePeople: capabilities.canManagePeople, canTakeOwnership: capabilities.canTakeOwnership,
+    ...(flags === undefined ? {} : { canRemember: flags.canRemember }),
     ...(taskViewRecord?.e2ePresentation === undefined ? {} : { e2ePresentation: taskViewRecord.e2ePresentation }),
   };
 }
@@ -291,10 +295,16 @@ const commentViewContext = (deps: DeveloperTaskRouteDependencies, actor: PageAct
  * version (names and "you" only), so an open page can refresh both. Suggestions that cannot be worked out are left out
  * (logged); comments still answer.
  */
-export async function listPageComments(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<{ comments: PageCommentView[]; suggestions: PageSuggestionListing[] }> {
+export async function listPageComments(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<{ comments: PageCommentView[]; suggestions: PageSuggestionListing[]; canRemember?: boolean }> {
   const actor = await pageActor(deps, caller, taskId);
   const stored = await listTaskComments(deps, taskId);
-  const comments = pageCommentViews(stored, { ...commentViewContext(deps, actor), ...await replyLookups(deps, actor.task, stored) });
+  const views = pageCommentViews(stored, { ...commentViewContext(deps, actor), ...await replyLookups(deps, actor.task, stored) });
+  // v1.2 learning loop: which comments are remembered, for a person with standing only. A read that fails leaves `learning` off and the page is served.
+  const flags = await commentLearningFlags(deps, { caller, access: actor }, taskId, stored.filter((comment) => comment.author.kind === "person").map((comment) => comment.commentId));
+  const comments = flags?.learning === undefined ? views : views.map((view) => {
+    const learning = flags.learning!.get(view.id);
+    return learning === undefined ? view : { ...view, learning };
+  });
   let suggestions: PageSuggestionListing[] = [];
   try {
     suggestions = (await currentSuggestions(deps, actor.task)).map((suggestion) => ({
@@ -303,7 +313,7 @@ export async function listPageComments(deps: DeveloperTaskRouteDependencies, cal
   } catch (error) {
     log(deps, { event: "developer.task_page_suggestions_unavailable", taskId, errorName: error instanceof Error ? error.name : "unknown" });
   }
-  return { comments, suggestions };
+  return { comments, suggestions, ...(flags === undefined ? {} : { canRemember: flags.canRemember }) };
 }
 
 /** What is worked out from one stored document for a planner's reply: which claim cites each comment, and its claim IDs. */

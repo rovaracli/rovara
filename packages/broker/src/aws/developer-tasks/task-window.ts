@@ -6,6 +6,11 @@ import type { DeveloperCaller } from "../developer-routes.js";
 import { appendOperationEvent } from "../operation-events.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { CLOSED_TASK, CLOSING_TASK, NEVER_STARTED, iso, log } from "./common.js";
+import { Aliases } from "../../agents/table-writes.js";
+import { type CapturedTaskStop } from "../../org/task-stop-admission.js";
+import { type SpendingAdmissionReference } from "@agentx/contracts";
+import { taskMaxPerRunForAdmission } from "../../org/task-stop-window.js";
+import { usdToWholeMicrodollars } from "../../org/budget-amount.js";
 
 /**
  * What continue and a pull request need before they touch the workspace: an open task that got
@@ -117,7 +122,27 @@ export function refuseAutomaticWhilePaused(task: DeveloperTaskRecord): void {
 }
 
 /** The task's update in a Continue: the new cap window (R38) and, Task 32, the removal of a stale mid-run pause; nothing when neither applies. */
-export function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, baseline: number | undefined): TransactItems {
+export function windowAndPauseUpdate(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, baseline: number | undefined, admission?: CapturedTaskStop, reference?: SpendingAdmissionReference): TransactItems {
+  if (admission !== undefined) {
+    const a = new Aliases(), values: Record<string, unknown> = { ":now": iso(deps), ":stop": admission, ":cap": admission.effectiveStopMicrousd / 1_000_000 };
+    const sets = ["updatedAt = :now", "budgetUsd = :cap", "spendingStop = :stop"], removes: string[] = [];
+    if (reference === undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task admission reference is unavailable.");
+    sets.push("spendingAdmission = :admission"); values[":admission"] = reference;
+    if (baseline !== undefined) { sets.push("budgetBaselineUsd = :baseline"); values[":baseline"] = baseline; }
+    if (staleBudgetPause(task)) removes.push("budgetPause");
+    const maxPerRun = taskMaxPerRunForAdmission(admission);
+    if (maxPerRun !== undefined) {
+      const exactMaxUsd = maxPerRun / 1_000_000;
+      if (usdToWholeMicrodollars(exactMaxUsd) !== maxPerRun) throw agentXError("TASK_STOP_CONFIG_INVALID", "The task per-run stop cannot be represented exactly.");
+      sets.push("maxPerRunUsd = :taskStop"); values[":taskStop"] = exactMaxUsd;
+    } else if (task.maxPerRunUsd !== undefined) removes.push("maxPerRunUsd");
+    const conditions = ["attribute_exists(pk)", "attribute_not_exists(closedAt)"];
+    for (const field of ["orgId", "project", "agent", "payer", "developerId", "ownerKey", "budgetUsd", "maxPerRunUsd", "budgetBaselineUsd", "spendingStop", "spendingAdmission"] as const) {
+      const value = task[field]; conditions.push(value === undefined ? `attribute_not_exists(${a.name(field)})` : `${a.name(field)} = ${a.value(value)}`);
+    }
+    return [{ Update: { TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: `SET ${sets.join(", ")}${removes.length === 0 ? "" : ` REMOVE ${removes.join(", ")}`}`,
+      ConditionExpression: conditions.join(" AND "), ExpressionAttributeNames: a.names, ExpressionAttributeValues: { ...values, ...a.values } } }];
+  }
   const removes = staleBudgetPause(task) ? " REMOVE budgetPause" : "";
   if (baseline === undefined && removes === "") return [];
   return [{ Update: {

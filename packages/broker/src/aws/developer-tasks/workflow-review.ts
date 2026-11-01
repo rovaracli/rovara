@@ -67,6 +67,7 @@ import {
   workflowWithCurrentGraphOperation,
 } from "./workflow-inputs.js";
 import { promptTagId, sendBackProblemsPromptSection } from "./thread-notes.js";
+import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 
 export async function startTaskWorkflowReview(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "workflow-review");
@@ -88,6 +89,8 @@ export async function startTaskWorkflowReview(deps: DeveloperTaskRouteDependenci
   if (!retrying && request.expectedRevision !== undefined && request.expectedRevision !== workflow.revision) {
     throw agentXError("IDEMPOTENCY_CONFLICT", "the review request is stale; refresh the task and try again");
   }
+  // Contributor intentionally checks only archive here; authorizeTaskAction owns the live role check.
+  await requireNewWorkAllowed(deps, deps.orgId, task.project, "contributor", "task");
   await actionableWorkspace(deps, task);
   try {
     await queueWorkflowReview(deps, task, { ...workflow, candidate: workflow.candidate }, request.requestId, request.instructions, access, caller);

@@ -2,7 +2,7 @@
 // what was written, and a fake clock. The batch broker tests keep their own copy of this setup.
 import { vi, type Mock } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, type ModelIdentifier } from "@agentx/contracts";
+import { orgMetaKey, agentXError, type ModelIdentifier } from "@agentx/contracts";
 import { withEvalBatches, type EvalBatchDependencies } from "../../packages/broker/src/aws/eval-batch.js";
 import {
   handleSwebenchCallback,
@@ -54,6 +54,8 @@ export interface Harness {
 
 export async function harness(options: { maxConcurrentEvals?: number; maxCostUsd?: number } = {}): Promise<Harness> {
   const db = new FakeDynamoDb();
+  // M47 taskless evals carry trusted scope even before enrollment.
+  db.set({ ...orgMetaKey("org_aaaaaaaaaaaaaaaaaaaa"), orgId: "org_aaaaaaaaaaaaaaaaaaaa", entityType: "ORG" });
   const objects = new Map<string, string>();
   const s3Send = vi.fn(async (command: { input: { Key?: string; Body?: string } }) => {
     if (command.input.Key !== undefined) objects.set(command.input.Key, String(command.input.Body));
@@ -94,7 +96,7 @@ export async function harness(options: { maxConcurrentEvals?: number; maxCostUsd
   await putSwebenchChannel(dependencies, TEAM, CHANNEL, { maxCostUsd: options.maxCostUsd ?? 10 });
   const approved: ModelIdentifier[] = [cheap, dear];
   const context: SwebenchSlackContext = {
-    thread, requester, projectName: "payments",
+    orgId: "org_aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64), thread, requester, projectName: "payments",
     projectModel: async (requested) => {
       const found = approved.find((model) => model.provider === requested?.provider && model.modelId === requested.modelId);
       if (found === undefined) throw agentXError("CONFIG_INVALID", `model ${requested?.provider}/${requested?.modelId} is not approved for this project`);

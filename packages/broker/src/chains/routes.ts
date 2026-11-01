@@ -376,9 +376,9 @@ async function setArchived(deps: ChainRouteDependencies, caller: AgentCaller, ch
   }
   // Unarchiving puts the chain's budget back in its owner's one monthly total, held to the cap like any other raise of it.
   const unarchived = chain.status !== "archived"
-    ? await deps.chains.unarchive(chain.orgId, chain.chainId, caller.developerId, mark)
+    ? await deps.chains.unarchive(chain.orgId, chain.chainId, caller.developerId, mark, { actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: chain })
     : await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { status: "active" }), { op: "unarchive" }, mark,
-      (options) => deps.chains.unarchive(chain.orgId, chain.chainId, caller.developerId, mark, options));
+      (options) => deps.chains.unarchive(chain.orgId, chain.chainId, caller.developerId, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: chain }));
   if (unarchived instanceof StatusReply) return unarchived;
   return { chain: chainView(unarchived, access) };
 }

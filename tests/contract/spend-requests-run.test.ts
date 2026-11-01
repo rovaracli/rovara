@@ -1,3 +1,4 @@
+import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 // Plan 3 Task 32: run-limit, planning and max-per-run requests that resume in place, and the owner-cap requests of agent budget changes. A run that reached
 // one of its own limits asks the person who may raise it (`spendApprovers`, read live); the approval raises the limit in the same transaction that ends the
 // request, and the task goes on where it stopped: a plain task with a system Continue, a workflow task with its stage's retry, an agent-step run with the same
@@ -13,11 +14,11 @@ import { runSpendSweep, settlementBudgets, SETTLEMENT_BUDGETS_MS } from "../../p
 import { supersedeKeys, finalizeKey } from "../../packages/broker/src/spend/ledger.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import {
-  DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
+  defaultSpendPolicy, ownerBudgetKey, orgSettingsKey, DEFAULT_AGENT_GUARDRAILS, ROVARA_CODE_AGENT_ID, agentGuardrailsKey, OWNER_ANSWER_HOURS, SPEND_RESUME_INSTRUCTIONS, WORKFLOW_BLOCK_REASONS, TRIAL_LIMITS_R49,
   modelKeyKey, openSpendRequestsKey, orgMemberKey, orgRemovedKey, spendCounterKey, spendRequestKey, suggestedTopUpUsd,
 } from "@agentx/contracts";
 import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MAYA, OMAR } from "../support/developer-task-broker.js";
+import { MAYA, OMAR, seedMembership } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { call } from "../support/slack-broker.js";
@@ -994,12 +995,14 @@ describe("fix round 1 (the Task 32 review)", () => {
       expect(t.ownerTotal(MAYA)).toBe(101);
     });
 
-    it("a merge rewrites the ids inside the stored change, and the approval gives the agent to the survivor", async () => {
+    it("a merge rewrites routing but expires approval of the original counted owner figures", async () => {
       const { t, agentId, id } = await heldTransfer();
       await onMembersMerged(t.deps(), { orgId: TEST_ORG, survivorId: CARL.developerId, duplicateId: OMAR.developerId });
       expect(recordOf(t, id)).toMatchObject({ status: "PENDING", newOwner: { developerId: CARL.developerId }, change: { op: "set_owner", owner: { kind: "member", developerId: CARL.developerId } } });
-      await t.decide(DEB, id);
-      expect(t.agentItem(agentId)!.owner).toEqual({ kind: "member", developerId: CARL.developerId });
+      const before = t.agentItem(agentId), totalBefore = t.ownerTotal(CARL);
+      await expect(t.decide(DEB, id)).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+      expect(recordOf(t, id)).toMatchObject({ status: "EXPIRED", endedBecause: "figures_changed" });
+      expect(t.agentItem(agentId)).toEqual(before); expect(t.ownerTotal(CARL)).toBe(totalBefore);
     });
   });
 
@@ -1114,7 +1117,7 @@ describe("fix round 1 (the Task 32 review)", () => {
       expect(t.meta(run.taskId).maxPerRunUsd).toBe(9);
     });
 
-    it("the org's only owner or admin may raise their own run's stop", async () => {
+    it("the unenrolled org's only owner retains legacy per-run decision", async () => {
       const t = await setup({ secondAdmin: false });
       const agentId = await t.agentOf(TRIAGE, { by: ADA, name: "Ada's looker" });
       await t.setBudget(ADA, agentId, { maxPerRunUsd: 4 });
@@ -1122,7 +1125,7 @@ describe("fix round 1 (the Task 32 review)", () => {
       await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": 25 });
       await t.pauseAndEnd(run, { kind: "max_per_run", taskId: run.taskId });
       const request = t.requestOf(run.taskId, "max_per_run")[0]!;
-      await t.decide(ADA, request.spendRequestId);
+      expect((await t.decide(ADA, request.spendRequestId)).spendRequest.status).toBe("APPROVED");
       expect(t.meta(run.taskId).maxPerRunUsd).toBe(9);
     });
   });
@@ -1394,4 +1397,36 @@ describe("a removal in an org with no owner left", () => {
     await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: DEB.developerId, by: ADA.developerId });
     expect(recordOf()).toEqual(before);
   });
+});
+
+for (const drift of ["unchanged", "total_before", "policy_before", "counter_commit"] as const) it(`M47 existing counted-move confirmation retains original base figures: ${drift}`, async () => {
+  const t = await setup();
+  const first = await t.budgeted(50, ADA); await t.budgeted(40, ADA); await t.budgeted(30, OMAR);
+  await onMemberRemoved(t.deps(), { orgId: TEST_ORG, developerId: OMAR.developerId, by: ADA.developerId });
+  const record = t.requests().find(item => item.change?.op === "confirm_move")!;
+  expect(record).toBeDefined(); expect(t.ownerTotal(ADA)).toBe(120);
+  if (drift === "total_before") expect((await t.setBudget(ADA, first, { monthlyUsd: 49 })).status).toBe(200);
+  if (drift === "policy_before") t.db.set({ ...orgSettingsKey(TEST_ORG, "SPEND_POLICY"), orgId: TEST_ORG, ...defaultSpendPolicy(), revision: 1, ownerAgentBudgetCapUsd: 99 });
+  const key = ownerBudgetKey(TEST_ORG, ADA.developerId), send = t.db.send.bind(t.db); let raced = false;
+  t.db.send = async command => {
+    if (drift === "counter_commit" && !raced && command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => item.Update?.Key?.pk === spendRequestKey(TEST_ORG, record.spendRequestId).pk && Object.values(item.Update.ExpressionAttributeValues ?? {}).includes("APPROVED"))) {
+      raced = true; const counter = t.db.get(key)!; t.db.set({ ...counter, totalUsd: 119, version: Number(counter.version) + 1 });
+    }
+    return send(command);
+  };
+  const before = t.agentItem(first), decision = t.decide(DEB, record.spendRequestId);
+  if (drift === "unchanged") expect((await decision).spendRequest.status).toBe("APPROVED");
+  else await expect(decision).rejects.toMatchObject({ code: "SPENDING_APPROVAL_STALE" });
+  expect(t.agentItem(first)).toEqual(before); expect(t.ownerTotal(ADA)).toBe(drift === "total_before" || drift === "counter_commit" ? 119 : 120);
+  if (drift === "counter_commit") expect(raced).toBe(true);
+});
+
+for (const role of ["owner", "admin"] as const) for (const kind of ["run_limit", "max_per_run"] as const) it(`an unenrolled sole ${role} retains legacy self-decision for ${kind}`, async () => {
+ const t = await setup({ secondAdmin: false });seedMembership(t.db, ADA.developerId, { orgId: TEST_ORG, role });
+ const agentId = await t.agentOf(TRIAGE, { by: ADA, name: `Own stop ${role} ${kind}` });await t.setBudget(ADA, agentId, { maxPerRunUsd: 4 });
+ const run = kind === "run_limit" ? await t.plainTask(ADA) : await t.runOf(agentId, { who: ADA });
+ await t.set(run.taskId, "SET budgetUsd = :limit", { ":limit": kind === "run_limit" ? 4 : 25 });
+ await t.pauseAndEnd(run, kind === "max_per_run" ? { kind: "max_per_run", taskId: run.taskId } : undefined);
+ const request = t.requestOf(run.taskId, kind)[0]!;expect(request).toBeDefined();const before = t.meta(run.taskId);
+ expect((await decideSpendRequest(t.deps(), t.caller(ADA, role), request.spendRequestId, { requestId: randomUUID(), decision: "APPROVE" })).spendRequest.status).toBe("APPROVED");expect(t.meta(run.taskId)).not.toEqual(before);
 });

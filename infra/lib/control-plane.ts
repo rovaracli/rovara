@@ -331,6 +331,9 @@ export class ControlPlaneStack extends Stack {
       // The ARN is not passed: the role has a fixed name, so the broker builds it from AGENTX_ENV in the environment's role path, and only where this flag is set (the same condition as the grant above), so its
       // environment stays under Lambda's 4 KB.
       broker.addEnvironment("AGENTX_CLOUD", "true");
+      // The web app's company admin console (Settings: models, people, budgets, health, how we work) is shown only where the broker lists "admin" in
+      // WEB_FEATURES (app-nav/nav.ts; owners and admins only). The other names (usage, chains, describe) are placeholder pages and stay off.
+      broker.addEnvironment("WEB_FEATURES", "admin");
     }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
@@ -1249,6 +1252,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("autofix", signInParameters.autofixEnabled.valueAsString);
       // Live steer kill switch, a packed setting (two bytes of key, one of value; never a variable of its own). Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("liveSteer", signInParameters.liveSteerEnabled.valueAsString);
+      // v1.2 learning loop: the install default of the company's master suggestions switch, a packed setting. Off unless the operator sets the parameter.
+      brokerSettings.add("learningSuggestionsDefault", signInParameters.learningSuggestionsDefault.valueAsString);
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context

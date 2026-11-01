@@ -30,6 +30,8 @@ export interface DeveloperSignInParameters {
   autofixEnabled: CfnParameter;
   /** Live steer: a person's message to a running step. "0" (the default) keeps every message a note; "1" turns it on. Turn it on only after the dispatcher, publisher, broker and the worker image carrying task.liveSteer.v1 are deployed. */
   liveSteerEnabled: CfnParameter;
+  /** v1.2 learning loop: whether a company that never chose gets suggested rules (the install-wide default of its master switch). Off unless an operator turns it on. */
+  learningSuggestionsDefault: CfnParameter;
 }
 
 /** Declared on the stack itself, so the parameter names are exactly these. */
@@ -54,6 +56,7 @@ export function developerSignInParameters(stack: Stack): DeveloperSignInParamete
     planSelfCheckEnabled: new CfnParameter(stack, "PlanSelfCheckEnabled", { type: "String", default: "true", allowedValues: ["true", "false"], description: "Whether every coding plan is checked before the owner sees it, and the planner asked again once when the check finds a fixable problem (agentx config set planSelfCheck.enabled false turns it off; it also turns off checking the plan against the current app)" }),
     autofixEnabled: new CfnParameter(stack, "AutofixEnabled", { type: "String", default: "true", allowedValues: ["true", "false"], description: "Whether Rovara sends blocked checks or reviews back to coding by itself, before any pull request exists (agentx config set autofix.enabled false turns it off)" }),
     liveSteerEnabled: new CfnParameter(stack, "LiveSteerEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: a person's message to a running step is given to it live (only after the dispatcher, publisher, broker and worker image that carry live steer are deployed); 0: every message waits as a note for the next step (agentx config set liveSteer.enabled 1)" }),
+    learningSuggestionsDefault: new CfnParameter(stack, "LearningSuggestionsDefault", { type: "String", default: "off", allowedValues: ["on", "off"], description: "Whether a company that has not chosen gets suggested rules from Rovara's learning (on) or only has its corrections collected (off). A company's own choice always wins. Off unless an operator turns it on" }),
     mcpConfirmElicitation: new CfnParameter(stack, "McpConfirmElicitation", { type: "String", default: "enabled", allowedValues: ["enabled", "disabled"], description: "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button (or the CLI)" }),
   };
 }

@@ -151,11 +151,12 @@ it("publishes a strict partial DTO without start permission or implicit locks/li
   expect(schema.safeParse(result.body).success).toBe(true);
   for (const extra of [{ enforcement: "active" }, { locks: "unlocked" }, { projectLifecycle: "active" }, { calculation: "resolved" }, { paidStartAllowed: true }, { settingsRevision: 1 }]) expect(schema.safeParse({ ...result.body, ...extra }).success).toBe(false);
 });
-for (const method of ["POST", "PUT", "DELETE"]) it(`has no project ${method} setter`, async () => {
-  const f = fixture();
-  try { expect(await routeDeveloperRequest(f.deps, { method, path, headers: {}, requestId: "no-write", body: "{}" }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" })).toBeUndefined(); }
-  catch (error) { if (!(error instanceof AgentXError)) throw error; expect(errorStatus(error.code)).toBe(404); }
-  expect(f.db.commandNames()).toHaveLength(0);
+for (const method of ["POST", "PUT", "DELETE"]) it(method === "PUT" ? "requires native identity and reviewed terms before a project policy PUT" : `has no project ${method} setter`, async () => {
+  const f = fixture();let status: number;
+  try { const result = await routeDeveloperRequest(f.deps, { method, path, headers: {}, requestId: "no-write", body: "{}" }, new URL(path, "https://cell.example"), { caller: f.caller, csrf: "" });status = result === undefined ? 404 : 200; }
+  catch (error) { if (!(error instanceof AgentXError)) throw error;status = errorStatus(error.code); }
+  expect(status).toBe(method === "PUT" ? 403 : 404);
+  expect(f.db.commandNames().every(name => name === "GetCommand")).toBe(true);expect(f.db.commandNames()).not.toContain("TransactWriteCommand");
 });
 
 it("reads an actually committed AI revision instead of its eventual prior version", async () => {
@@ -203,4 +204,12 @@ it("keeps an archived project's source readable without claiming lifecycle or st
 it("refuses unsupported locks on the default-only company source instead of assuming unlocked", async () => {
   const f = fixture(); f.policy(1, { policy: { schemaVersion: 1, defaultStopMicrousd: 1, locks: { project: false, agent: false } } });
   expect((await f.call()).status).toBe(503);
+});
+
+it("reads explicit project inheritance under a seeded typed company estimate", async () => {
+  const f = fixture();
+  f.policy(0, { policy: { schemaVersion: 2, defaultPolicy: { kind: "rovara_estimate" } } });
+  f.ai({ taskStopPolicy: { schemaVersion: 2, kind: "inherit" } });
+  expect(await f.call()).toMatchObject({ status: 200, body: { projectOverride: { kind: "inherit" }, sourceKind: "project_ai", settingsRevision: 1, calculation: "unavailable", enforcement: "not_connected" } });
+  expect(f.db.transactions()).toHaveLength(0);
 });

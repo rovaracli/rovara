@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { AGENT_STEP_KINDS, CODING_STEP_KINDS, INSTRUCTIONS_MAX_BYTES, MAX_RECIPE_STEPS } from "./agent-recipe.js";
 import { forwardReader } from "./forward-reader.js";
+import { HowWeWorkTrackRecordsSchema } from "./how-we-work-track-record.js";
 
 /** Where a value comes from. */
 export const HowWeWorkSourceSchema = z.enum(["rovara", "company", "project"]);
@@ -72,6 +73,11 @@ export const HowWeWorkStageSchema = z
     checked: z.object({ items: markedLines }).strict(),
     evidence: z.object({ items: markedLines }).strict(),
     approves: z.object({ items: markedLines }).strict(),
+    /**
+     * What the stage has earned in the last 30 days (v1.2 track record): the plan check, the review (one record for code review, one for security review) and the tests carry it. Left out when it
+     * could not be read: the card then shows no record, never a zero. The PR risk claim is never part of it.
+     */
+    trackRecord: HowWeWorkTrackRecordsSchema.optional(),
   })
   .strict();
 export type HowWeWorkStage = z.infer<typeof HowWeWorkStageSchema>;

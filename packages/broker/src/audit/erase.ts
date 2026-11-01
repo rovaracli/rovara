@@ -100,7 +100,16 @@ export interface AuditEraseDeps extends AuditDeps {
   log: (entry: Record<string, unknown>) => void;
   /** Deletes the org's export files (they hold details in plaintext). Rejects if it could not. */
   purgeExports: (orgId: OrgId) => Promise<void>;
+  /**
+   * v1.2 learning loop: clears the person's learning data in every project of the org (corrections' text and GitHub id, open suggestions that hold their words). Called after the tombstone, on
+   * a repeat of the request as well (the walk resumes). Rejects if it could not. REQUIRED: a production wiring that forgets it must fail to build, not skip a person's data. A test
+   * that has no learning passes `noLearningToErase`.
+   */
+  eraseLearning: (orgId: OrgId, developerId: string) => Promise<unknown>;
 }
+
+/** For a test with no learning data: the hook that erases nothing. */
+export const noLearningToErase = async (): Promise<void> => undefined;
 
 export interface AuditEraseRequest {
   orgId: OrgId;
@@ -180,6 +189,15 @@ export async function eraseAuditSubject(deps: AuditEraseDeps, request: AuditEras
   } catch (error) {
     deps.log({ event: "audit.erase_exports_failed", level: "error", orgId, error: errorName(error) });
     throw agentXError("RUNTIME_UNAVAILABLE", "The details are erased, but the export files could not be cleared just now. Send the same request again.");
+  }
+  try {
+    // A missing hook is a wiring mistake: it fails here, loudly, and never reads as "nothing to erase".
+    if (typeof deps.eraseLearning !== "function") throw new Error("the learning erase hook is not wired");
+    await deps.eraseLearning(orgId, developerId);
+  } catch (error) {
+    // The error's name only: the learning items hold correction text.
+    deps.log({ event: "audit.erase_learning_failed", level: "error", orgId, error: errorName(error) });
+    throw agentXError("RUNTIME_UNAVAILABLE", "The details are erased, but their suggested-rule data could not be cleared just now. Send the same request again.");
   }
   return result;
 }

@@ -12,6 +12,11 @@ export const AgentXErrorCodeSchema = z.enum([
   "WORKSPACE_BUSY",
   "IDEMPOTENCY_CONFLICT",
   "RUNTIME_UNAVAILABLE",
+  "SPENDING_APPROVAL_STALE",
+  "TASK_STOP_ZERO",
+  "TASK_STOP_CONFIG_MISSING",
+  "TASK_STOP_CONFIG_INVALID",
+  "TASK_STOP_APPROVAL_ABOVE_CEILING",
   "OPERATION_INTERRUPTED",
   "CONVERSATION_STATE_LOST",
   "CALLBACK_FORBIDDEN",
@@ -86,6 +91,13 @@ export const AgentXErrorCodeSchema = z.enum([
   "PLAYBOOK_STALE",
   "PROCESS_SELF_CONFIRM",
   "PROCESS_IN_USE",
+  // v1.2 learning loop (B6): a rule cannot be accepted or removed right now.
+  "LEARNING_LAYER_BUSY",
+  "LEARNING_RULES_FULL",
+  "LEARNING_SOURCES_GONE",
+  // The company's master suggestions switch: a stale revision of the switch, and a suggestion decision while it is off.
+  "LEARNING_SETTINGS_CHANGED",
+  "LEARNING_SUGGESTIONS_OFF",
 ]);
 
 export const CSRF_STALE_MESSAGE = "Your sign-in changed in another tab. Trying again.";
@@ -131,6 +143,9 @@ export class AgentXError extends Error {
 }
 
 export function errorStatus(code: AgentXErrorCode): number {
+  if (code === "TASK_STOP_ZERO") return 409;
+  if (code === "SPENDING_APPROVAL_STALE") return 409;
+  if (code === "TASK_STOP_CONFIG_MISSING" || code === "TASK_STOP_CONFIG_INVALID" || code === "TASK_STOP_APPROVAL_ABOVE_CEILING") return 409;
   if (code === "AUTH_REQUIRED") return 401;
   // The sign-in is valid but too old, or the wrong kind, for this change: 403, so a client does not treat it as a sign-in that ended.
   if (code === "CSRF_STALE" || code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED" || code === "SESSION_LEVEL_REQUIRED" || code === "LOCAL_AGENT_NOT_ALLOWED" || code === "PROCESS_SELF_CONFIRM") return 403;

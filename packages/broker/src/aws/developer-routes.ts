@@ -4,6 +4,8 @@ import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./develop
 import { getInstallInfo } from "./developer-routes/install.js";
 import { isSsoRoute, routeSsoRequest } from "./developer-routes/sso.js";
 import { specOwnerChoice } from "./developer-tasks/spec-wiring.js";
+import "../org/task-stop-unpriced.js";
+import "../org/task-stop-editing.js";
 import "../org/service-status.js";
 import "../model-selection/company-prepare.js";
 import "../model-selection/company-approval.js";
@@ -89,6 +91,7 @@ import "../chains/view-ports.js";
 import "../realtime/sink.js";
 import "../agent-sessions/routes.js";
 import "../agent-sessions/lifecycle.js";
+import "../learning/cleanup.js";
 import "../agent-sessions/stop.js";
 import "../agent-sessions/access.js";
 import "../devices/routes.js";
@@ -97,6 +100,9 @@ import "../agents/runs.js";
 import "../rovara-code/routes.js";
 import "../rovara-code/code-settings.js";
 import "../playbook/project-process.js";
+import "../learning/capture-comment.js";
+import "../learning/routes.js";
+import "../learning/settings-routes.js";
 import "../playbook/routes.js";
 import "../rovara-code/merge.js";
 import "../rovara-code/setup-draft.js";
@@ -257,6 +263,11 @@ export {
   authenticateDeveloperSessionId,
   developerClaims,
 } from "./developer-routes/authentication.js";
+import { LEARNING_PATH, routeLearning } from "../learning/routes.js";
+import { LEARNING_SETTINGS_PATH, routeLearningSettings } from "../learning/settings-routes.js";
+import { clearArchivedProjectLearning } from "./developer-routes/project-archive-setup.js";
+import { forgetTaskComment, rememberTaskComment } from "../learning/capture-comment.js";
+import { getTaskStopEditing, writeTaskStopEditing } from "../org/task-stop-editing.js";
 export { projectMembersOf, projectsWithPolicy } from "./developer-routes/project-list.js";
 export { checkProjectAccess } from "./developer-routes/project-access.js";
 export { agentRunStarterOf, codeIntentDependenciesOf, developerTaskRouteDependencies } from "./developer-routes/dependencies.js";
@@ -272,6 +283,14 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Reject token callers before authentication or any project/proposal lookup.
   if (/^\/v1\/app\/projects\/[^/]+\/allowed-websites(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for allowed websites.");
+  }
+  // v1.2 learning (the view and the writes: Remember, Forget, Accept, Dismiss, Reopen, Remove) is browser-only. Refused here, before authentication or any read, so a token learns nothing about a suggestion or rule.
+  if (/^\/v1\/app\/projects\/[^/]+\/learning(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
+    throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
+  }
+  // The company's master suggestions switch is browser-only too: no token, CLI or Slack path reads or changes it.
+  if (url.pathname === LEARNING_SETTINGS_PATH && authenticated?.caller.browserSession !== true) {
+    throw agentXError("FORBIDDEN", "Use a live browser session for learning changes.");
   }
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
   if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
@@ -318,6 +337,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
           editComment: (caller, taskId, input) => editPageComment(routeDeps(caller), caller, taskId, input),
           deleteComment: (caller, taskId, input) => deletePageComment(routeDeps(caller), caller, taskId, input),
           setSuggestion: (caller, taskId, input) => setPageSuggestion(routeDeps(caller), caller, taskId, input),
+          rememberComment: (caller, taskId, commentId) => rememberTaskComment(routeDeps(caller), caller, taskId, commentId, { audit: deps.agents?.audit }),
+          forgetComment: (caller, taskId, commentId) => forgetTaskComment(routeDeps(caller), caller, taskId, commentId, { audit: deps.agents?.audit }),
           decide: (caller, taskId, input) => decideOnPage(routeDeps(caller), caller, taskId, input),
           retryApplicationRound: (caller, taskId, input) => retryApplicationRoundOnPage(routeDeps(caller), caller, taskId, input),
           // Wire lane D (MD-1): the owner's choice on a spec on hold (the same function as POST /v1/app/tasks/{id}/spec/{choice}).
@@ -444,7 +465,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     try { name = decodeURIComponent(reviewedArchiveRoute[1]!); } catch { throw agentXError("NOT_FOUND", "That project is unavailable in this company."); }
     if (!AgentXNameSchema.safeParse(name).success) throw agentXError("NOT_FOUND", "That project is unavailable in this company.");
     if (request.method === "GET") return readReviewedProjectArchiveAppPreview(deps, caller, name);
-    return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps) }, caller, name, jsonBody(request));
+    return archiveProjectReviewedWithEffects({ ...deps, egress: egressDepsOf(deps), clearLearning: (orgId, project) => clearArchivedProjectLearning(deps, orgId, project) }, caller, name, jsonBody(request));
   }
   // Lane B reviewed restore; existing browser auth/CSRF runs before this method/path pair.
   const reviewedRestoreRoute = /^\/v1\/app\/projects\/([^/]+)\/(restore-preview|reviewed-restore)$/.exec(url.pathname);
@@ -528,6 +549,18 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "GET" && howWeWorkRoute !== null) {
     return getProjectHowWeWork({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents?.store, projectFor: (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName) }, caller, howWeWorkRoute[1]!);
   }
+  if (url.pathname === LEARNING_SETTINGS_PATH && (request.method === "GET" || request.method === "PUT")) {
+    return routeLearningSettings({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, audit: deps.agents?.audit }, caller, request.method, () => jsonBody(request));
+  }
+  // v1.2 learning loop: Remember and Forget (more routes are added to learning/routes.ts by later steps).
+  if (LEARNING_PATH.test(url.pathname)) {
+    const projectFor = (who: DeveloperCaller, rawName: string) => projectRoleForRoute(deps, who, rawName);
+    const learned = await routeLearning({
+      task: developerTaskRouteDependencies(deps, caller), projectFor, audit: deps.agents?.audit,
+      ...(deps.agents === undefined ? {} : { decide: { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, store: deps.agents.store, audit: deps.agents.audit, approvals: deps.agents, projectFor } }),
+    }, caller, request.method, url, () => jsonBody(request));
+    if (learned !== undefined) return learned;
+  }
   const specChoice = SPEC_CHOICE_ROUTE.exec(url.pathname);
   if (request.method === "POST" && specChoice !== null) return routeSpecChoice(deps, caller, specChoice[1]!, specChoice[2]!);
   const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
@@ -574,6 +607,13 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "GET" && (url.pathname === "/v1/dev/org" || url.pathname === "/v1/app/org")) return getOrganization(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/invites") return listOrganizationInvites(deps, caller, url);
+  const spendingEditing = /^\/v1\/app\/org\/task-stop-policy(?:\/projects\/([^/]+))?(?:\/(editing|decisions))?$/.exec(url.pathname);
+  if (spendingEditing !== null) {
+    const project = spendingEditing[1] === undefined ? undefined : decodeURIComponent(spendingEditing[1]);
+    if (request.method === "GET" && spendingEditing[2] === "editing") return getTaskStopEditing(deps, caller, project);
+    if (request.method === "PUT" && spendingEditing[2] === undefined) return writeTaskStopEditing(deps, caller, project, jsonBody(request));
+    if (request.method === "POST" && spendingEditing[2] === "decisions") return writeTaskStopEditing(deps, caller, project, jsonBody(request), true);
+  }
   // Lane A G1: no policy write, default inference or paid-start permission.
   if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-ceiling") return getTaskStopCeiling(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/org/task-stop-policy") return getTaskStopCompany(deps, caller);

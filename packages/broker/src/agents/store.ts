@@ -4,9 +4,9 @@
 // write leaves nothing behind. An agent builds on another by a pinned version (`BaseRef`): the base moving
 // on changes nothing until the agent's owner takes the update. `resolveAgent` follows those pins down to a
 // built-in version or the empty recipe and applies each layer's overlay on the way back up.
+import { unarchiveActorChecks, budgetActorChecks, budgetActorRefused, type BudgetActor } from "./budget-authority.js";
 import {modelAuthorityRefused} from "../model-selection/authority.js";
 import {parseStageModelApprovalProof,type StageModelApprovalProof} from "../model-selection/approval-proof.js";
-import { budgetActorChecks, budgetActorRefused, type BudgetActor } from "./budget-authority.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -78,6 +78,9 @@ export { REQUEST_MEMORY_DAYS, type RequestMark };
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 
 export interface AgentRecord {
+  /** Present after the reviewed task-stop seed; absent legacy metadata is never guessed. */
+  stopKind?: "inherit" | "limited";
+  revision?: number;
   orgId: OrgId;
   agentId: AgentId;
   name: string;
@@ -129,6 +132,8 @@ export { MAX_SHARE_CHANGES_PER_SAVE, type AgentShareLevel, type AgentShareRecord
 export { isOwnerCapRefusal, type OwnerCap } from "../spend/owner-budgets.js";
 
 export interface BuiltinSettings {
+  stopKind?: "inherit" | "limited";
+  revision?: number;
   pinnedVersion: number;
   monthlyBudgetUsd?: number;
   maxPerRunUsd?: number;
@@ -462,6 +467,8 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
       latestVersion: 0,
       draftRevision: 1,
+      revision: 1,
+      stopKind: "inherit",
       status: "active",
       createdBy: input.createdBy,
       createdAt: now,
@@ -728,24 +735,34 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
 
   private async setStatus(orgId: OrgId, agentId: AgentId, status: "active" | "archived", by: string, request?: RequestMark, options: BudgetWriteOptions = {}): Promise<AgentRecord> {
     if (isBuiltinAgentId(agentId)) throw coded("CONFIG_INVALID", `${this.builtins.name(agentId)} is built in and can't be archived`);
+    const actorChecks = status === "active" ? unarchiveActorChecks(this.input.tableName, orgId, by, request, options) : [];
     const agent = await this.require(orgId, agentId);
-    if (agent.status === status) return agent;
+    const sourceGuard = (a: Aliases) => `${budgetGuard(agent)(a)}${status !== "active" ? "" : ` AND ${a.name("updatedAt")} = ${a.value(agent.updatedAt)} AND ${agent.maxPerRunUsd === undefined ? `attribute_not_exists(${a.name("maxPerRunUsd")})` : `${a.name("maxPerRunUsd")} = ${a.value(agent.maxPerRunUsd)}`}${options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(a)}`}`}`;
+    if (agent.status === status) {
+      if (status === "active") {
+        const actorStart = 1;
+        await this.commit(...withOverride([
+          this.update(agentKey(orgId, agentId, "META"), { set: { status }, when: sourceGuard }),
+          ...actorChecks,
+        ], failed => [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : budgetConflict(), options, { tableName: this.input.tableName, orgId, by }), request, agent);
+      }
+      return agent;
+    }
     const updatedAt = this.iso();
     const changed: AgentRecord = { ...agent, status, updatedAt };
-    // An archived agent counts for no one; unarchiving puts its budget back in its owner's total, held to the cap when one is given.
     const totals = await this.totalsFor(orgId, agent, changed, options.ownerCap);
-    const [items, refuse] = withOverride([
-      this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: budgetGuard(agent) }),
+    const ownItems = [
+      this.update(agentKey(orgId, agentId, "META"), { set: { status, updatedAt }, when: sourceGuard }),
       ...totals.items,
       this.event(orgId, agentId, status === "archived" ? "archived" : "unarchived", by, overrideDetail(options)),
-    ], totals.refuse, options, { tableName: this.input.tableName, orgId, by });
+    ];
+    const actorStart = ownItems.length;
+    const [items, refuse] = withOverride([...ownItems, ...actorChecks], failed =>
+      [...failed].some(index => index >= actorStart && index < actorStart + actorChecks.length) ? budgetActorRefused() : totals.refuse(failed),
+    options, { tableName: this.input.tableName, orgId, by });
     const checks = options.checks;
-    // The caller's checks come last, so their indexes start after the write's own items.
-    await this.commit(
-      [...items, ...(checks?.items ?? [])],
-      (failed) => (checks !== undefined && [...failed].some((index) => index >= items.length) ? checks.refused() : refuse(failed)),
-      request, changed,
-    );
+    await this.commit([...items, ...(checks?.items ?? [])], failed =>
+      checks !== undefined && [...failed].some(index => index >= items.length) ? checks.refused() : refuse(failed), request, changed);
     return changed;
   }
 
@@ -795,11 +812,18 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
       current = await this.require(orgId, agentId);
       key = agentKey(orgId, agentId, "META");
     }
+    let taskStopMetadata: { stopKind: "inherit" | "limited"; revision: number } | undefined;
+    if (budget.maxPerRunUsd !== undefined && current.stopKind !== undefined) {
+      if (!Number.isSafeInteger(current.revision) || current.revision === undefined || current.revision < 1 || current.revision >= Number.MAX_SAFE_INTEGER
+        || current.stopKind !== (current.maxPerRunUsd === undefined ? "inherit" : "limited")) throw coded("TASK_STOP_CONFIG_INVALID", "The agent spending setting is invalid. Ask an admin to repair it before editing the stop.");
+      taskStopMetadata = { stopKind: budget.maxPerRunUsd === null ? "inherit" : "limited", revision: current.revision + 1 };
+      Object.assign(set, taskStopMetadata);
+    }
     if (options.expectedMaxPerRunUsd !== undefined && options.expectedMaxPerRunUsd !== (current.maxPerRunUsd ?? null)) throw budgetConflict();
     const monthlyBudgetUsd = typeof budget.monthlyUsd === "number" ? budget.monthlyUsd : budget.monthlyUsd === null ? undefined : current.monthlyBudgetUsd;
     const maxPerRunUsd = typeof budget.maxPerRunUsd === "number" ? budget.maxPerRunUsd : budget.maxPerRunUsd === null ? undefined : current.maxPerRunUsd;
     const { monthlyBudgetUsd: _monthly, maxPerRunUsd: _perRun, ...others } = current; // eslint-disable-line @typescript-eslint/no-unused-vars -- replaced below
-    const written = { ...others, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }), updatedAt, ...(isBuiltinAgentId(agentId) ? { updatedBy: by } : {}) };
+    const written = { ...others, ...taskStopMetadata, ...(monthlyBudgetUsd === undefined ? {} : { monthlyBudgetUsd }), ...(maxPerRunUsd === undefined ? {} : { maxPerRunUsd }), updatedAt, ...(isBuiltinAgentId(agentId) ? { updatedBy: by } : {}) };
     const totals = await this.totalsFor(orgId, current, written, options.ownerCap);
     const event = this.newEvent(orgId, agentId, "budget_changed", by, { ...withoutUndefined(detail), ...overrideDetail(options) });
     const audit = await this.audited(() => agentBudgetEvents({
@@ -811,7 +835,11 @@ export class AgentStore extends OwnedStore<AgentId, AgentRecord, AgentVersion, A
         const field = aliases.name("maxPerRunUsd");
         const perRun = current.maxPerRunUsd === undefined ? `attribute_not_exists(${field})` : `${field} = ${aliases.value(current.maxPerRunUsd)}`;
         const manage = options.manageSnapshot === undefined ? "" : ` AND ${budgetGuard(options.manageSnapshot)(aliases)}`;
-        return `${budgetGuard(current)(aliases)} AND ${perRun}${manage}`;
+        const metadata = budget.maxPerRunUsd === undefined ? "" : ["stopKind", "revision"].map(field => {
+          const value = field === "stopKind" ? current.stopKind : current.revision;
+          return value === undefined ? ` AND attribute_not_exists(${aliases.name(field)})` : ` AND ${aliases.name(field)} = ${aliases.value(value)}`;
+        }).join("");
+        return `${budgetGuard(current)(aliases)} AND ${perRun}${metadata}${manage}`;
       } }),
       ...totals.items,
       event.item,

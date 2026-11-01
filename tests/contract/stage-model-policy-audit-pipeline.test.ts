@@ -5,7 +5,7 @@ import {processAuditBatch} from "../../packages/broker/src/audit/appender-handle
 import {appendEvent} from "../../packages/broker/src/audit/appender.js";
 import {AuditKeyring} from "../../packages/broker/src/audit/keyring.js";
 import {readAuditRecords} from "../../packages/broker/src/audit/reader.js";
-import {eraseAuditSubject} from "../../packages/broker/src/audit/erase.js";
+import {eraseAuditSubject,noLearningToErase} from "../../packages/broker/src/audit/erase.js";
 import {TableScopedDynamoDb} from "../support/table-scoped-dynamodb.js";
 import {FakeKms} from "../support/fake-kms.js";
 import {FakeAuditSqs} from "../support/fake-audit-sqs.js";
@@ -25,7 +25,7 @@ it.each([auditModelPolicyChanged,auditModelPolicyLockSet,auditModelPolicyLockRem
  const stored=db.find("ledger",row=>String(row.sk).startsWith("SEQ#"));
  expect(JSON.stringify(stored)).not.toContain("ERASABLE_POLICY_PERSON");expect(JSON.stringify(stored)).not.toContain("private@example.test");
  const audit={sqs:sqs.client,queueUrl:"https://sqs.test/intake.fifo",documentClient:db.client,tableName:"state",now,log};
- await eraseAuditSubject({documentClient:db.client,keysTable:"keys",tableName:"state",audit,now,log,purgeExports:async()=>{}},{orgId,developerId:person,by:{kind:"operator",id:auditOperatorId("https://staff.test","operator")},reason:"Approved erasure",requestId:"erase-policy-person"});
+ await eraseAuditSubject({documentClient:db.client,keysTable:"keys",tableName:"state",audit,now,log,purgeExports:async()=>{},eraseLearning:noLearningToErase},{orgId,developerId:person,by:{kind:"operator",id:auditOperatorId("https://staff.test","operator")},reason:"Approved erasure",requestId:"erase-policy-person"});
  const after=await readAuditRecords(deps,orgId);
  expect(after.records[0]!.record).toEqual(before.records[0]!.record);
  expect(JSON.stringify(after)).not.toContain("ERASABLE_POLICY_PERSON");expect(JSON.stringify(after)).not.toContain("private@example.test");

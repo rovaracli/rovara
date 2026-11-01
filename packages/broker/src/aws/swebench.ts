@@ -1,11 +1,20 @@
+import { auditPendingItem } from "../audit/outbox.js";
+import { AuditEventInputSchema, auditEventId } from "@agentx/contracts";
+import type { TransactItem } from "../agents/table-writes.js";
+import { captureTaskStopEvalAdmission } from "../org/task-stop-admission.js";
+import { usdToWholeMicrodollars } from "../org/budget-amount.js";
+import { budgetActorChecks } from "../agents/budget-authority.js";
+import { taskStartProjectAuthorityChecks } from "../org/task-start-project-authority.js";
+import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 // Spec 043: SWE-bench runs from Slack. The broker records each run, holds it a slot under the
 // deployment's limit on concurrent runs (spec 052), writes the run's launch file, starts the eval
 // state machine, and applies the runner's callbacks. The Slack service polls the run and posts to
 // the thread; the broker never holds a Slack token (D11).
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import {
+  OrgIdSchema, OrgRoleSchema, orgMemberKey, projectMetaKey, calculateTaskStop,
   SWEBENCH_COST_CEILING_DEFAULT_USD,
   SWEBENCH_RUN_TIME_LIMIT_SECONDS,
   SWEBENCH_TERMINAL_STATUSES,
@@ -93,6 +102,9 @@ export interface SwebenchStartOptions {
 
 /** The Slack context a service route acts in: the thread, its requester and the channel's project. */
 export interface SwebenchSlackContext {
+  /** Trusted server context, never copied from the request body. */
+  orgId?: string;
+  developerId?: string;
   thread: SlackThread;
   requester: SlackRequester;
   projectName: string;
@@ -209,13 +221,37 @@ export async function startSwebenchRun(
   const runnerFeatures = runnerImage === deployment.runnerImage ? deployment.runnerFeatures : options.runnerFeatures ?? [];
   // The record says what the runner was given: no level when the runner image cannot parse one.
   const model = modelSelectionFor(await context.projectModel(request.model) ?? deployment.defaultModel, runnerFeatures);
+  const pathLimitMicrousd = usdToWholeMicrodollars(options.maxCostUsd ?? channel.maxCostUsd);
+  const parsedOrg = OrgIdSchema.safeParse(context.orgId);
+  if (!parsedOrg.success) throw agentXError("TASK_STOP_CONFIG_MISSING", "The eval company scope is missing.");
+  const orgId = parsedOrg.data;
+  if (context.developerId === undefined) throw agentXError("TASK_STOP_CONFIG_MISSING", "The eval requesting principal is missing.");
+  const snapshot = await captureTaskStopEvalAdmission({ ...dependencies, now: () => now(dependencies).getTime(), requireScopeAccess: async () => { await context.projectModel(request.model); } },
+    { orgId, developerId: context.developerId, project: context.projectName, agentScope: "none_eval", pathLimitMicrousd });
+  let authority: TransactItem[] = [];
+  if (snapshot.kind === "captured") {
+    const member = await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: orgMemberKey(orgId, context.developerId), ConsistentRead: true }));
+    const role = OrgRoleSchema.parse(member.Item?.role);
+    const actor = { orgId, developerId: context.developerId, role, project: context.projectName };
+    authority = [...budgetActorChecks(dependencies.tableName, orgId, actor), ...await taskStartProjectAuthorityChecks(dependencies, actor,
+      async () => {
+        await requireNativeProjectWorkRole(dependencies, { project: context.projectName }, { orgId, developerId: context.developerId!, orgRole: role });
+        const project = await dependencies.documentClient.send(new GetCommand({ TableName: dependencies.tableName, Key: projectMetaKey(orgId, context.projectName), ConsistentRead: true }));
+        if (project.Item !== undefined && (project.Item.status !== "active" || project.Item.archivedAt !== undefined)) throw agentXError("FORBIDDEN", "This project is archived; new eval work cannot start.");
+      })];
+    if (snapshot.effectiveStopMicrousd === 0) throw agentXError("TASK_STOP_ZERO", "Work can't start: the effective spending stop is $0.");
+  }
   const createdAt = now(dependencies).toISOString();
   const run: SwebenchRun = SwebenchRunSchema.parse({
     runId,
+    ...(context.orgId === undefined ? {} : { orgId: context.orgId }),
+    projectName: context.projectName,
+    ...(context.developerId === undefined ? {} : { developerId: context.developerId }),
     dataset: request.dataset,
     instanceId: request.instanceId,
     model,
-    maxCostUsd: options.maxCostUsd ?? channel.maxCostUsd,
+    maxCostUsd: snapshot.kind === "captured" ? snapshot.effectiveStopMicrousd / 1_000_000 : options.maxCostUsd ?? channel.maxCostUsd,
+    ...(snapshot.kind === "captured" ? { spendingStop: snapshot } : {}),
     thread: context.thread,
     requestedBy: context.requester,
     status: "STARTING",
@@ -231,6 +267,7 @@ export async function startSwebenchRun(
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({
       TransactItems: [
+        ...authority,
         { Put: { TableName: dependencies.tableName, Item: { ...swebenchRunKey(runId), entityType: "SWEBENCH_RUN", projectName: context.projectName, ...run }, ConditionExpression: "attribute_not_exists(pk)" } },
         {
           Update: {
@@ -252,10 +289,16 @@ export async function startSwebenchRun(
             ConditionExpression: "attribute_not_exists(pk)",
           },
         },
+        ...(snapshot.kind !== "captured" ? [] : [{ Put: { TableName: dependencies.tableName, ConditionExpression: "attribute_not_exists(pk)",
+          Item: auditPendingItem(AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_admitted", runId), orgId,
+            action: "spending.stop_admitted", actor: { kind: "member", id: context.developerId }, target: { kind: "project", name: context.projectName }, occurredAt: createdAt,
+            facts: { workKind: "eval", admissionId: runId, effectiveStopMicrousd: snapshot.effectiveStopMicrousd, approvalCapMicrousd: snapshot.approvalCapMicrousd, policyDigest: snapshot.policyDigest } }), Date.parse(createdAt)) } }]),
       ],
     }));
   } catch (error) {
     if (!isConditionFailure(error)) throw error;
+    const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+    if (reasons?.slice(0, authority.length).some(reason => reason.Code === "ConditionalCheckFailed")) throw agentXError("FORBIDDEN", "Your eval start authority changed.");
     // A concurrent delivery of the same request, or no free slot.
     const raced = await readRun(dependencies, runId);
     if (raced !== undefined) return { outcome: "STARTED", run: raced };
@@ -289,6 +332,14 @@ export async function startSwebenchRun(
       Body: JSON.stringify(launch),
       ContentType: "application/json",
     }));
+    // Accepted numeric stops remain pinned; live authority is rechecked at actual dispatch.
+    if (authority.length > 0) {
+      try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: authority })); }
+      catch (error) {
+        if (isConditionFailure(error)) throw agentXError("FORBIDDEN", "Your eval start authority changed.");
+        throw error;
+      }
+    }
     const subnets = deployment.settings.subnetIds;
     const execution = await dependencies.startExecution({
       stateMachineArn: deployment.settings.stateMachineArn,
@@ -443,7 +494,7 @@ export async function handleSwebenchCallback(
   }
   const result = SwebenchRunResultSchema.parse(body);
   await finishRun(dependencies, runId, result.outcome === "GRADED"
-    ? { status: "SUCCEEDED", result }
+    ? { status: "SUCCEEDED", result, stopReached: result.stopReason === "cost_ceiling" }
     : { status: "FAILED", error: result.error, ...(result.usage === undefined ? {} : { usage: result.usage }) });
   const ended = (await readRun(dependencies, runId)) ?? run;
   if (dependencies.onRunEnded !== undefined && SWEBENCH_TERMINAL_STATUSES.has(ended.status)) {
@@ -466,7 +517,7 @@ export async function handleSwebenchCallback(
 async function finishRun(
   dependencies: SwebenchDependencies,
   runId: string,
-  outcome: { status: "SUCCEEDED"; result: unknown } | { status: "FAILED"; error: string; usage?: unknown },
+  outcome: { status: "SUCCEEDED"; result: unknown; stopReached?: boolean } | { status: "FAILED"; error: string; usage?: unknown },
 ): Promise<void> {
   const at = now(dependencies).toISOString();
   const values: Record<string, unknown> = { ":status": outcome.status, ":now": at };
@@ -493,10 +544,23 @@ async function finishRun(
       ExpressionAttributeValues: values,
     },
   };
+  const reachedItems: TransactItem[] = [];
+  if (outcome.status === "SUCCEEDED" && outcome.stopReached === true) {
+    const run = await readRun(dependencies, runId), snapshot = run?.spendingStop;
+    if (run !== undefined && snapshot !== undefined) {
+      endRun.Update.ConditionExpression = `(${endRun.Update.ConditionExpression}) AND orgId = :stopOrg AND projectName = :stopProject AND maxCostUsd = :stopCap AND spendingStop = :stopSnapshot`;
+      Object.assign(values, { ":stopOrg": snapshot.orgId, ":stopProject": snapshot.project, ":stopCap": run.maxCostUsd, ":stopSnapshot": snapshot });
+      const event = AuditEventInputSchema.parse({ eventId: auditEventId("spending.stop_reached", runId), orgId: snapshot.orgId, action: "spending.stop_reached",
+        actor: { kind: "system", id: "rovara" }, target: { kind: "project", name: snapshot.project }, occurredAt: at,
+        facts: { workKind: "eval", admissionId: runId, effectiveStopMicrousd: snapshot.effectiveStopMicrousd, approvalCapMicrousd: snapshot.approvalCapMicrousd, policyDigest: snapshot.policyDigest } });
+      reachedItems.push({ Put: { TableName: dependencies.tableName, Item: auditPendingItem(event, Date.parse(at)), ConditionExpression: "attribute_not_exists(pk)" } });
+    }
+  }
   for (let attempt = 1; ; attempt += 1) {
     try {
       await dependencies.documentClient.send(new TransactWriteCommand({
         TransactItems: [
+          ...reachedItems,
           endRun,
           { Delete: { TableName: dependencies.tableName, Key: swebenchSlotKey(runId), ConditionExpression: "attribute_exists(pk)" } },
           {
@@ -519,7 +583,7 @@ async function finishRun(
       const current = await readRun(dependencies, runId);
       if (current === undefined) throw agentXError("NOT_FOUND", "SWE-bench run not found");
       if (SWEBENCH_TERMINAL_STATUSES.has(current.status)) return;
-      if (await get(dependencies, swebenchSlotKey(runId)) === undefined) return endRunWithoutSlot(dependencies, runId, endRun);
+      if (await get(dependencies, swebenchSlotKey(runId)) === undefined) return endRunWithoutSlot(dependencies, runId, endRun, reachedItems);
       // Spec 052 Ruling 3: retryable. The runner treats any other 4xx but 429 as final and would
       // drop a graded result; the broker's catch-all would answer this cancellation 400.
       if (attempt >= RELEASE_ATTEMPTS) throw agentXError("RUNTIME_UNAVAILABLE", "the run's eval slot could not be released; try again shortly");
@@ -532,10 +596,11 @@ async function finishRun(
  * The migration case: a run that holds no slot started under the one-run lock. It is ended with that
  * lock deleted, as before spec 052, and the counter is left as it is.
  */
-async function endRunWithoutSlot(dependencies: SwebenchDependencies, runId: string, endRun: { Update: Record<string, unknown> }): Promise<void> {
+async function endRunWithoutSlot(dependencies: SwebenchDependencies, runId: string, endRun: { Update: Record<string, unknown> }, reachedItems: TransactItem[] = []): Promise<void> {
   try {
     await dependencies.documentClient.send(new TransactWriteCommand({
       TransactItems: [
+        ...reachedItems,
         endRun as never,
         {
           Delete: {
@@ -844,7 +909,26 @@ export async function readRun(dependencies: SwebenchDependencies, runId: string)
   const item = await get(dependencies, swebenchRunKey(runId));
   if (item === undefined) return undefined;
   // The state machine records the EC2 instance as ec2InstanceId; the run's instanceId is SWE-bench's.
-  return SwebenchRunSchema.parse(withoutKeys(item, ["pk", "sk", "entityType", "projectName", "cancelRequestedBy", "ec2InstanceId", "executionArn"]));
+  let run: SwebenchRun;
+  try { run = SwebenchRunSchema.parse(withoutKeys(item, ["pk", "sk", "entityType", "cancelRequestedBy", "ec2InstanceId", "executionArn"])); }
+  catch (error) {
+    if (item.spendingStop !== undefined) throw agentXError("TASK_STOP_CONFIG_INVALID", "The recorded eval spending admission is invalid.");
+    throw error;
+  }
+  const snapshot = run.spendingStop;
+  if (snapshot !== undefined) {
+    const calculated = calculateTaskStop(snapshot.calculationInput);
+    const digest = createHash("sha256").update(JSON.stringify([snapshot.orgId, snapshot.project, null, snapshot.sourceRevisions, snapshot.calculationInput])).digest("hex");
+    if (snapshot.orgId !== run.orgId || snapshot.project !== run.projectName || run.developerId === undefined
+      || snapshot.calculationInput.agentStop.kind !== "inherit" || digest !== snapshot.policyDigest
+      || calculated.kind !== "resolved" || !("approvalCapMicrousd" in calculated)
+      || calculated.effectiveStopMicrousd !== snapshot.effectiveStopMicrousd || calculated.approvalCapMicrousd !== snapshot.approvalCapMicrousd
+      || JSON.stringify(calculated.bindingScopes) !== JSON.stringify(snapshot.bindingScopes)
+      || usdToWholeMicrodollars(run.maxCostUsd) !== snapshot.effectiveStopMicrousd) {
+      throw agentXError("TASK_STOP_CONFIG_INVALID", "The recorded eval spending admission changed.");
+    }
+  }
+  return run;
 }
 
 async function get(dependencies: SwebenchDependencies, key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> {
