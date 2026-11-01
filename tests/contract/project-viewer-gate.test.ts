@@ -50,6 +50,22 @@ describe("Slack requester role: one shared rule for ingress and service routes",
     h.db.delete(orgMemberKey(TEST_ORG, guestId));
   };
 
+  it("a ban row refuses with REMOVED_FROM_ORG under any id in the walk, even one that has a member record", async () => {
+    const cases: Array<[string, (h: Harness) => void]> = [
+      // The Slack id's own record and a ban row (an invite would have cleared the ban).
+      ["own record", (h) => { seedMembership(h.db, guestId, { orgId: TEST_ORG, role: "member" }); h.db.set({ ...orgBanKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId }); }],
+      ["merged survivor", (h) => { seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" }); mergedAway(h); h.db.set({ ...orgBanKey(TEST_ORG, survivor), orgId: TEST_ORG, developerId: survivor }); }],
+      ["relinked developer", (h) => { seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" }); relinkedTo(h, survivor); h.db.set({ ...orgBanKey(TEST_ORG, survivor), orgId: TEST_ORG, developerId: survivor }); }],
+    ];
+    for (const [how, arrange] of cases) {
+      const h = await withKit();
+      arrange(h);
+      const refused = await serviceCall(h.handler, thread, GUEST, "POST", "/v1/service/threads/workspace/prepare", { requestId: randomUUID() });
+      expect(refused.status, how).toBe(403);
+      expect(refused.body.error, how).toMatchObject({ code: "REMOVED_FROM_ORG" });
+    }
+  });
+
   it("a removed member and a banned member are refused", async () => {
     for (const row of [orgRemovedKey(TEST_ORG, guestId), orgBanKey(TEST_ORG, guestId)]) {
       const h = await withKit();

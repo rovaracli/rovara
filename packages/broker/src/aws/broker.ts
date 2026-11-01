@@ -4584,6 +4584,8 @@ async function requireSlackRequesterRule(dependencies: AwsBrokerDependencies, or
       if (await getItem(dependencies, key) !== undefined) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
     }
   };
+  // A ban row under ANY id the person answers to refuses, even when that id or the survivor has a member record: an invite clears a ban, so one that is still there is live.
+  for (const id of [...ids, ...formerIds]) if (await getItem(dependencies, orgBanKey(orgId, id)) !== undefined) throw agentXError("REMOVED_FROM_ORG", REMOVED_FROM_ORG_MESSAGE);
   for (const id of formerIds) if (await getItem(dependencies, orgMemberKey(orgId, id)) === undefined) await refuseIfRemoved(id);
   let role: OrgRole | undefined;
   for (const id of ids) {
