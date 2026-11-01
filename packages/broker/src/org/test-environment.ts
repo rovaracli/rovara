@@ -151,7 +151,7 @@ export async function proposeTestEnvironment(
 }
 
 /** Reads a stored proposal's body, checking that it still hashes to its own key. Undefined when there is none or it has expired. */
-async function readProposal(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<TestEnvironmentBody | undefined> {
+export async function readProposal(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<TestEnvironmentBody | undefined> {
   const item = await read(deps, proposalKey(orgId, project, digest));
   if (item === undefined) return undefined;
   const expires = item[INDEX_EXPIRY_ATTRIBUTE];
@@ -182,6 +182,13 @@ export async function recordTestEnvProveReport(deps: TestEnvDeps, input: { orgId
     throw error;
   }
   return { proved: testEnvIsProved(report.data, digest) };
+}
+
+/** The stored Prove report for a proposal's digest, read again through the contract (a damaged item reads as none, never as proved). */
+export async function readTestEnvProveReport(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<ReturnType<typeof TestEnvProveReportSchema.parse> | undefined> {
+  const item = await read(deps, proveKey(orgId, project, digest));
+  const parsed = item === undefined ? undefined : TestEnvProveReportSchema.safeParse(item.report);
+  return parsed?.success === true ? parsed.data : undefined;
 }
 
 /** The newest approved environment, or the one at `revision`. Undefined when the project has none. A stored item that does not read back as what was approved throws: a damaged approval is never read as "none". */

@@ -56,4 +56,6 @@ export const WORKER_IMPLEMENTED_FEATURES = [
   "task.diagnosis.v1",
   // Proof and evidence (wire-proof): a CHECKS run writes evidence-raw.json when the invocation carries `evidenceCapture` (verification/evidence-raw.ts).
   "task.evidenceCapture.v1",
+  // Test environment (wire-testenv): a setup draft run that is told `testEnvDetect` also reports the environment the detectors would propose (test-env-detect.ts).
+  "task.testEnvDetect.v1",
 ] as const satisfies readonly WorkerInvocationFeature[];

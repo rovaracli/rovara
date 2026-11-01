@@ -253,6 +253,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/triggers/poll-intake.ts", "packages/broker/src/intake/store.ts", "packages/broker/src/intake/notices.ts",
       // Test environment (proof and evidence): a requested change's proposal and prove report, the full-suite follow-up run rows, the nightly slot claims, locks and baseline history.
       "packages/broker/src/org/test-environment.ts", "packages/broker/src/rovara-code/full-suite-followup.ts", "packages/broker/src/test-env/nightly.ts",
+      // Test environment (wire-testenv): the draft environment a setup draft run reported, kept as long as a proposal is (a week).
+      "packages/broker/src/test-env/draft.ts",
       // Rovara Code: the used marker of a setup consent; decision cards: the evidence-opened marker and a decided card's record (400 days); live steer: the outbox row of a steer message.
       "packages/broker/src/rovara-code/setup-consent.ts", "packages/broker/src/decisions/store.ts", "packages/broker/src/agent-sessions/live-steer.ts",
       // Team record (Enterprise): its own table, with its own TTL on the same attribute name (infra/lib/team-record-table.ts); rows leave the hot table a grace period after `hotExpiresAt` so the archiver can copy them first.

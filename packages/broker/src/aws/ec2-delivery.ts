@@ -14,6 +14,7 @@ import {
   GROUNDING_CHECKS_FEATURE,
   DIAGNOSIS_WORKER_FEATURE,
   EVIDENCE_CAPTURE_FEATURE,
+  TEST_ENV_DETECT_FEATURE,
   OWNER_REDIRECT_FEATURE,
   PLAN_DRY_RUN_FEATURE,
   E2E_APPLICATION_ADMISSION_SCHEMA_V2,
@@ -387,6 +388,10 @@ async function forWorkerFeatures(
   }
   // Proof and evidence: a run that is asked to gather the checks' test reports is never sent to a worker that does not list it (an older worker's strict parse would refuse the field), and the field is never dropped.
   if (invocation.kind === "task" && invocation.payload.evidenceCapture === true && !features.includes(EVIDENCE_CAPTURE_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  // Test environment: a setup draft that is asked to run the environment detectors is never sent to a worker that does not list it (an older worker's strict parse would refuse the field), and the field is never dropped.
+  if (invocation.kind === "task" && invocation.payload.testEnvDetect === true && !features.includes(TEST_ENV_DETECT_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Meta repo lane D: the spec write mode and the spec publication are never dropped for an older worker, which would not know the mode or would publish without the files.
