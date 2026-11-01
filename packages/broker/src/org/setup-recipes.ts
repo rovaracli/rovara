@@ -12,10 +12,12 @@
 // Not wired: no route, no table, no switch (`sp`, SH36). The store is an interface (`SetupRecipeStore`); the DynamoDB adapter and the routes are wiring (see the lane report). Everything is keyed by the company id the caller
 // proves; nothing is read across companies. Nothing here touches the egress list: a recipe's `approvedHosts` are RECORDS of what the admin approved; making them company allow-list entries goes through the egress change plan.
 import {
-  OrgIdSchema, RelativeWorkspacePathSchema, SetupRecipeBodySchema, SetupRecipeIdSchema, agentXError, recipeFits, recipeNamesRepository, setupFingerprint, setupRecipeDigest,
+  OrgIdSchema, RelativeWorkspacePathSchema, SetupRecipeBodySchema, canonicalJson, redactSecrets, SetupRecipeIdSchema, agentXError, recipeFits, recipeNamesRepository, setupFingerprint, setupRecipeDigest,
   type OrgId, type ProjectCommand, type SetupFingerprintInput, type SetupRecipeBody, type TestEnvironmentBody,
 } from "@agentx/contracts";
 import { createHash } from "node:crypto";
+import { isFreshSignIn, type SessionRecord } from "../developer/store.js";
+import { decideSecondPersonApproval, type ApprovalDecision, type ApprovalDecisionInput } from "./second-person-approval.js";
 import { z } from "zod";
 
 // ---- bounds
@@ -24,15 +26,16 @@ export const SETUP_RECIPES_MAX_PER_ORG = 200;
 /** Recipes waiting for an admin, at most (a maintainer cannot fill the admin's queue without bound). */
 export const SETUP_RECIPES_MAX_PROPOSED = 50;
 export const SETUP_RECIPE_SCOPE_MAX_PROJECTS = 100;
-/** A fresh sign-in counts for this long (the same ten minutes as a decision's). */
-export const SETUP_RECIPE_FRESH_SIGN_IN_SECONDS = 600;
-const CLOCK_SKEW_SECONDS = 30;
 
 const projectHash = (orgId: string, project: string): string => createHash("sha256").update(`${orgId}\n${project}`, "utf8").digest("hex").slice(0, 32);
 const DeveloperId = z.string().regex(/^[a-f0-9]{64}$/u);
 const ProjectName = z.string().min(1).max(200).regex(/^[^\p{Cc}\p{Cf}]+$/u);
 
 // ---- records
+/**
+ * "Offer only to these projects" (Q11). WIRING NOTE: the list holds the project NAMES as the test callers give them; at wiring it must hold project IDs, so a renamed project or one with the same name in
+ * another company cannot inherit or lose an offer. `recipeOfferedTo` compares the string it is given with the list; pass the id then.
+ */
 export const RecipeScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("company") }).strict(),
   /** "Offer only to these projects": a plain list of project names, not a team. */
@@ -62,7 +65,7 @@ export interface StoredRecipe {
   updatedAt: string;
 }
 
-export type RecipeAuditAction = "recipe_proposed" | "recipe_created" | "recipe_approved" | "recipe_revoked" | "recipe_scope_changed" | "locks_changed";
+export type RecipeAuditAction = "recipe_proposed" | "recipe_created" | "recipe_approved" | "recipe_revoked" | "recipe_scope_changed" | "locks_changed" | "locks_change_proposed" | "locks_change_approved";
 /** What the audit ledger gets: ids, digests and fixed words only. Never the recipe's text. */
 export interface RecipeAuditEntry {
   action: RecipeAuditAction;
@@ -73,12 +76,28 @@ export interface RecipeAuditEntry {
   recipeId?: string;
   revision?: number;
   bodyDigest?: string;
+  /** Locks actions: the digests of the locks before and after, and whether the change loosened them. */
+  previousDigest?: string;
+  nextDigest?: string;
+  loosened?: boolean;
+  /** Locks approval: how the second-person rule was met. */
+  approvalMode?: ApprovalDecision["mode"];
+  /**
+   * The membership generation the decision was made against. WIRING: the adapter commits with `secondPersonMembershipCondition(membershipVersion)` on the org META in the same transaction, and pins both
+   * people's live member/developer/grant records, as `second-person-approval.ts` requires.
+   */
+  membershipVersion?: number;
 }
 
 export interface SetupRecipeStore {
   getRecipe(orgId: OrgId, recipeId: string): Promise<StoredRecipe | undefined>;
-  /** All recipes of the company, at most `limit`. */
-  listRecipes(orgId: OrgId, limit: number): Promise<StoredRecipe[]>;
+  /**
+   * The company's recipes, at most `limit`, only those in `statuses` when given. The filter matters: revoked recipes are kept as history and must not hide the live ones from the cap.
+   * DynamoDB adapter notes (wiring): (1) the cap is enforced by an org counter item of live (proposed + approved) recipes, incremented with a condition in the SAME transaction as the new recipe, because a
+   * count-then-write races; (2) the dedupe of a repeated proposal is a deterministic key (project hash + body digest) written with `attribute_not_exists`, not a list scan; (3) `listRecipes` pages with
+   * `LastEvaluatedKey` and never returns a partial page as if it were everything. The in-memory store used in tests has none of these races.
+   */
+  listRecipes(orgId: OrgId, limit: number, statuses?: readonly RecipeStatus[]): Promise<StoredRecipe[]>;
   /** Writes `next` and the audit entry together or neither, only while the stored revision is `expectedRevision` (null: no row yet). False when the row changed meanwhile. */
   commitRecipe(next: StoredRecipe, expectedRevision: number | null, audit: RecipeAuditEntry): Promise<boolean>;
   getLocks(orgId: OrgId): Promise<StoredLocks | undefined>;
@@ -110,10 +129,39 @@ export const CompanySetupLocksSchema = z.object({
   nightlyHealthOn: z.literal(true).optional(),
   /** New hosts are approved by an admin, never by a maintainer. */
   hostApprover: z.literal("admin").optional(),
+  /**
+   * Turns OFF the sole-owner exception for loosening these locks (owner, 2026-11-01, "One-admin companies"). Absent means the exception is ON: a company whose only eligible admin is the proposer may approve
+   * their own loosening after the 24 hour cool-off. With this set, a loosening always needs a second, different admin. Removing this lock is itself a loosening.
+   */
+  noSoleOwnerException: z.literal(true).optional(),
 }).strict();
 export type CompanySetupLocks = z.infer<typeof CompanySetupLocksSchema>;
 
-export interface StoredLocks { orgId: OrgId; revision: number; locks: CompanySetupLocks; updatedBy: string; updatedAt: string }
+/** A change that LOOSENS the locks waits here for a different admin (owner choice A, the 2026-10-31 tier-0 rule applied to locks). */
+export interface PendingLocksChange { locks: CompanySetupLocks; digest: string; proposedBy: string; proposedAt: string }
+export interface StoredLocks { orgId: OrgId; revision: number; locks: CompanySetupLocks; updatedBy: string; updatedAt: string; pending?: PendingLocksChange }
+
+const locksDigest = (locks: CompanySetupLocks | undefined): string => createHash("sha256").update(canonicalJson(locks ?? {}), "utf8").digest("hex");
+
+/**
+ * Whether `next` is looser than `prev` for any field: a lock removed, a limit raised or removed, a lock turned off (`setupAgentOff`, `hostsOnlyFromCompanyList`, `nightlyHealthOn`), the image list widened or
+ * removed, or `hostApprover` going from admin back to maintainer. With nothing set before, nothing can loosen.
+ */
+export function isLoosening(prev: CompanySetupLocks | undefined, next: CompanySetupLocks): boolean {
+  if (prev === undefined) return false;
+  for (const flag of ["setupAgentOff", "hostsOnlyFromCompanyList", "nightlyHealthOn", "hostApprover", "noSoleOwnerException"] as const) if (prev[flag] !== undefined && next[flag] === undefined) return true;
+  for (const key of LIMIT_KEYS) {
+    const before = prev.limits?.[key];
+    const after = next.limits?.[key];
+    if (before !== undefined && (after === undefined || after > before)) return true;
+  }
+  if (prev.devcontainerImages !== undefined) {
+    if (next.devcontainerImages === undefined) return true;
+    const allowed = new Set(prev.devcontainerImages);
+    if (next.devcontainerImages.some((image) => !allowed.has(image))) return true;
+  }
+  return false;
+}
 
 /** The setup settings a project has, as far as locks reach. */
 export interface ProjectSetupSettings {
@@ -156,14 +204,23 @@ export function applyCompanyLocks(project: ProjectSetupSettings, locks: CompanyS
 export interface RecipeCaller {
   orgId: OrgId;
   developerId: string;
-  /** The time of the person's fresh sign-in, as the broker's verified session says (never a client claim). Required for every admin action. */
-  freshSignInAt?: string | undefined;
+  /** The caller's session (the route's authenticated `DeveloperCaller.sessionId`). Freshness is read from the stored session, never from the request. */
+  sessionId: string;
 }
 
 export interface SetupRecipeDeps {
   store: SetupRecipeStore;
   /** Live company owner or admin, read now (wire `requireLiveCompanyAdmin`). Throws FORBIDDEN. */
   requireAdmin(caller: { orgId: OrgId; developerId: string }): Promise<void>;
+  /**
+   * Every name the repositories go by (full names `owner/name`, short names, directory names), read by the broker from its own records: the project's when `project` is given, the whole company's when not.
+   * The request never supplies this list. An empty list for a project refuses the share (a project with no repository has no setup to share).
+   */
+  repositoryNamesOf(orgId: OrgId, project?: string): Promise<readonly string[]>;
+  /** The server-side evidence `decideSecondPersonApproval` needs (complete membership history, owners, eligible admins, the last loss of an eligible person), read by the broker, never from the request. */
+  approvalEvidence(orgId: OrgId): Promise<Omit<ApprovalDecisionInput, "proposerId" | "approverId" | "nowMs">>;
+  /** The stored session record of the caller (`SESSION#<id>`), or undefined. Wire the same read as `requireFreshSignInForExport`. */
+  readSession(sessionId: string): Promise<Pick<SessionRecord, "authTime" | "developerId" | "revokedAt"> | undefined>;
   /** The caller may maintain this project (wire the project role check). Throws FORBIDDEN. */
   requireProjectMaintainer(caller: { orgId: OrgId; developerId: string }, project: string): Promise<void>;
   /** Hosts a company must never approve (IP literals, pastes, shorteners, raw object storage, the production deny list): the host-ask list of SH12. */
@@ -182,21 +239,26 @@ function validCaller(caller: RecipeCaller): void {
   if (!OrgIdSchema.safeParse(caller.orgId).success || !DeveloperId.safeParse(caller.developerId).success) throw forbidden();
 }
 
-/** Admin now, then a sign-in no older than ten minutes. The admin check comes first and reads nothing else. */
+/**
+ * Admin now, then a stored session of the SAME person, not revoked, whose interactive sign-in is fresh by the platform's one rule (`isFreshSignIn`). The admin check comes first and reads nothing else.
+ */
 async function requireFreshAdmin(deps: SetupRecipeDeps, caller: RecipeCaller): Promise<void> {
   validCaller(caller);
   await deps.requireAdmin({ orgId: caller.orgId, developerId: caller.developerId });
-  const at = caller.freshSignInAt === undefined ? Number.NaN : Date.parse(caller.freshSignInAt);
-  const age = (deps.now().getTime() - at) / 1000;
-  if (!Number.isFinite(age) || age > SETUP_RECIPE_FRESH_SIGN_IN_SECONDS || age < -CLOCK_SKEW_SECONDS) throw reauth();
+  const session = typeof caller.sessionId === "string" && caller.sessionId.length > 0 && caller.sessionId.length <= 200 ? await deps.readSession(caller.sessionId) : undefined;
+  if (session === undefined || session.developerId !== caller.developerId || session.revokedAt !== undefined || !isFreshSignIn(session, deps.now().getTime())) throw reauth();
 }
 
 const iso = (deps: SetupRecipeDeps): string => deps.now().toISOString();
 
-/** Parses a body, refuses a host the host-ask list refuses, and refuses a body that names the repositories it came from. */
+/** Whether redaction would change anything in the body: a credential in a URL, a flag value, a key-shaped string. A recipe is shared text, so it must hold none. */
+const holdsSecret = (body: SetupRecipeBody): boolean => canonicalJson(redactSecrets(body)) !== canonicalJson(body);
+
+/** Parses a body, refuses a credential, refuses a host the host-ask list refuses, and refuses a body that names the repositories it came from. */
 function checkedBody(deps: SetupRecipeDeps, input: unknown, repositoryNames: readonly string[]): SetupRecipeBody {
   const parsed = SetupRecipeBodySchema.safeParse(input);
   if (!parsed.success) throw invalid("That recipe is not valid. Check its commands, hosts and image.");
+  if (holdsSecret(parsed.data)) throw invalid("A recipe cannot hold a password, token or key.");
   if (parsed.data.approvedHosts.some((host) => deps.isHostRefused(host))) throw invalid("A recipe cannot approve that kind of host.");
   if (recipeNamesRepository(parsed.data, repositoryNames)) throw invalid("A recipe cannot name a repository. Remove the name and share again.");
   return parsed.data;
@@ -224,9 +286,12 @@ async function load(deps: SetupRecipeDeps, caller: RecipeCaller, recipeId: strin
   return found;
 }
 
+const LIVE: readonly RecipeStatus[] = ["proposed", "approved"];
+
 async function ensureRoom(deps: SetupRecipeDeps, orgId: OrgId, status: RecipeStatus): Promise<StoredRecipe[]> {
-  const all = await deps.store.listRecipes(orgId, SETUP_RECIPES_MAX_PER_ORG + 1);
-  if (all.length >= SETUP_RECIPES_MAX_PER_ORG) throw invalid("This company has reached its limit of setup recipes. Revoke one first.");
+  // Revoked recipes are history: only the live ones (proposed and approved) count toward the cap.
+  const all = await deps.store.listRecipes(orgId, SETUP_RECIPES_MAX_PER_ORG + 1, LIVE);
+  if (all.length >= SETUP_RECIPES_MAX_PER_ORG) throw invalid("This company has reached its limit of live setup recipes. Revoke one first.");
   if (status === "proposed" && all.filter((recipe) => recipe.status === "proposed").length >= SETUP_RECIPES_MAX_PROPOSED) throw invalid("Too many recipes are waiting for an admin. Ask an admin to review them.");
   return all;
 }
@@ -235,8 +300,6 @@ async function ensureRoom(deps: SetupRecipeDeps, orgId: OrgId, status: RecipeSta
 
 export interface ProposeInput {
   project: string;
-  /** Every name the project's repositories go by (full names, short names, directories): the body is refused if it holds one. */
-  repositoryNames: readonly string[];
   body: unknown;
   scope?: RecipeScope;
 }
@@ -250,7 +313,9 @@ export async function proposeRecipe(deps: SetupRecipeDeps, caller: RecipeCaller,
   const project = ProjectName.safeParse(input.project);
   if (!project.success) throw invalid("Name the project to share from.");
   await deps.requireProjectMaintainer({ orgId: caller.orgId, developerId: caller.developerId }, project.data);
-  const body = checkedBody(deps, input.body, input.repositoryNames);
+  const names = await deps.repositoryNamesOf(caller.orgId, project.data);
+  if (names.length === 0) throw invalid("That project has no repository to share a setup from.");
+  const body = checkedBody(deps, input.body, names);
   const scope = RecipeScopeSchema.safeParse(input.scope ?? { kind: "company" });
   if (!scope.success) throw invalid("That project list is not valid.");
   const digest = setupRecipeDigest(body);
@@ -263,9 +328,10 @@ export async function proposeRecipe(deps: SetupRecipeDeps, caller: RecipeCaller,
 }
 
 /** An admin writes a recipe directly: it is approved by the same act (company admin, fresh sign-in). */
-export async function createRecipeAsAdmin(deps: SetupRecipeDeps, caller: RecipeCaller, input: { repositoryNames?: readonly string[]; body: unknown; scope?: RecipeScope }): Promise<StoredRecipe> {
+export async function createRecipeAsAdmin(deps: SetupRecipeDeps, caller: RecipeCaller, input: { body: unknown; scope?: RecipeScope }): Promise<StoredRecipe> {
   await requireFreshAdmin(deps, caller);
-  const body = checkedBody(deps, input.body, input.repositoryNames ?? []);
+  // Checked against every repository name of the company, read here: an admin's recipe is as generic as a maintainer's.
+  const body = checkedBody(deps, input.body, await deps.repositoryNamesOf(caller.orgId));
   const scope = RecipeScopeSchema.safeParse(input.scope ?? { kind: "company" });
   if (!scope.success) throw invalid("That project list is not valid.");
   await ensureRoom(deps, caller.orgId, "approved");
@@ -321,7 +387,7 @@ export interface OfferedRecipe { recipeId: string; revision: number; bodyDigest:
  */
 export async function offeredRecipes(deps: Pick<SetupRecipeDeps, "store">, input: { orgId: OrgId; project: string; repository: SetupFingerprintInput }): Promise<OfferedRecipe[]> {
   if (!OrgIdSchema.safeParse(input.orgId).success) return [];
-  const [recipes, locks] = await Promise.all([deps.store.listRecipes(input.orgId, SETUP_RECIPES_MAX_PER_ORG), deps.store.getLocks(input.orgId)]);
+  const [recipes, locks] = await Promise.all([deps.store.listRecipes(input.orgId, SETUP_RECIPES_MAX_PER_ORG, ["approved"]), deps.store.getLocks(input.orgId)]);
   const images = locks?.orgId === input.orgId ? locks.locks.devcontainerImages : undefined;
   return recipes
     .filter((recipe) => recipe.orgId === input.orgId && recipe.status === "approved" && recipeOfferedTo(recipe, input.project) && recipeFits(recipe.body, input.repository)
@@ -333,7 +399,7 @@ export async function offeredRecipes(deps: Pick<SetupRecipeDeps, "store">, input
 /** The hosts the admin has approved through recipes, as a sorted set: what SH30 may show as "already approved by your company". Not an allow-list change (that goes through the egress plan). */
 export async function companyApprovedHosts(deps: Pick<SetupRecipeDeps, "store">, orgId: OrgId): Promise<string[]> {
   if (!OrgIdSchema.safeParse(orgId).success) return [];
-  const recipes = await deps.store.listRecipes(orgId, SETUP_RECIPES_MAX_PER_ORG);
+  const recipes = await deps.store.listRecipes(orgId, SETUP_RECIPES_MAX_PER_ORG, ["approved"]);
   return [...new Set(recipes.filter((recipe) => recipe.orgId === orgId && recipe.status === "approved").flatMap((recipe) => recipe.body.approvedHosts))].sort();
 }
 
@@ -344,17 +410,55 @@ export async function readCompanyLocks(deps: Pick<SetupRecipeDeps, "store">, org
   return found?.orgId === orgId ? found : undefined;
 }
 
+export type SetLocksResult = { status: "applied"; locks: StoredLocks } | { status: "needs_second_admin"; locks: StoredLocks };
+
 /**
- * Sets the company's locks (admin, fresh sign-in, against the revision the admin saw). A lock only ever makes PROJECTS stricter (`applyCompanyLocks`); the admin may remove or relax a lock the same way they set it.
+ * Sets the company's locks (admin, fresh sign-in, against the revision the admin saw). A change that only makes projects STRICTER applies at once. A change that LOOSENS anything (`isLoosening`) does not apply: it is
+ * stored as a pending change, and a DIFFERENT admin with a fresh sign-in approves it with `approveLocksChange` (owner choice A, the safer default until the owner says otherwise: the 2026-10-31 rule that any
+ * loosening of an approval setting needs a second person). Any applied change clears a pending one, and a new loosening proposal replaces it.
  */
-export async function setCompanyLocks(deps: SetupRecipeDeps, caller: RecipeCaller, input: { locks: unknown; expectedRevision: number | null }): Promise<StoredLocks> {
+export async function setCompanyLocks(deps: SetupRecipeDeps, caller: RecipeCaller, input: { locks: unknown; expectedRevision: number | null }): Promise<SetLocksResult> {
   await requireFreshAdmin(deps, caller);
-  const locks = CompanySetupLocksSchema.safeParse(input.locks);
-  if (!locks.success) throw invalid("Those company locks are not valid.");
+  const parsed = CompanySetupLocksSchema.safeParse(input.locks);
+  if (!parsed.success) throw invalid("Those company locks are not valid.");
   const current = await readCompanyLocks(deps, caller.orgId);
   if ((current?.revision ?? null) !== input.expectedRevision) throw stale();
-  const next: StoredLocks = { orgId: caller.orgId, revision: (current?.revision ?? 0) + 1, locks: locks.data, updatedBy: caller.developerId, updatedAt: iso(deps) };
-  if (!await deps.store.commitLocks(next, current?.revision ?? null, auditOf(deps, caller, "locks_changed", "fresh_sign_in"))) throw stale();
+  const now = iso(deps);
+  const revision = (current?.revision ?? 0) + 1;
+  const previousDigest = locksDigest(current?.locks);
+  const nextDigest = locksDigest(parsed.data);
+  const loosened = isLoosening(current?.locks, parsed.data);
+  if (loosened && current !== undefined) {
+    const next: StoredLocks = { ...current, revision, updatedBy: caller.developerId, updatedAt: now, pending: { locks: parsed.data, digest: nextDigest, proposedBy: caller.developerId, proposedAt: now } };
+    if (!await deps.store.commitLocks(next, current.revision, { ...auditOf(deps, caller, "locks_change_proposed", "fresh_sign_in"), revision, previousDigest, nextDigest, loosened: true })) throw stale();
+    return { status: "needs_second_admin", locks: next };
+  }
+  const next: StoredLocks = { orgId: caller.orgId, revision, locks: parsed.data, updatedBy: caller.developerId, updatedAt: now };
+  if (!await deps.store.commitLocks(next, current?.revision ?? null, { ...auditOf(deps, caller, "locks_changed", "fresh_sign_in"), revision, previousDigest, nextDigest, loosened: false })) throw stale();
+  return { status: "applied", locks: next };
+}
+
+/**
+ * Approves the pending loosening the admin saw (pinned to the row's revision and the change's digest; fresh sign-in; live admin). The approver must be a DIFFERENT eligible admin than the proposer, EXCEPT through the
+ * existing sole-owner exception (`decideSecondPersonApproval`): the proposer is the only eligible person and nobody eligible left or was removed in the last 24 hours, else SOLE_OWNER_COOL_OFF (with `availableAt`) or
+ * SECOND_PERSON_REQUIRED. When the company has set `noSoleOwnerException`, the exception is not available at all. The audit entry says which way the rule was met.
+ */
+export async function approveLocksChange(deps: SetupRecipeDeps, caller: RecipeCaller, input: { expectedRevision: number; expectedDigest: string }): Promise<StoredLocks> {
+  await requireFreshAdmin(deps, caller);
+  const current = await readCompanyLocks(deps, caller.orgId);
+  if (current?.pending === undefined) throw agentXError("CHANGE_STALE", "There is no company lock change waiting for approval.");
+  if (current.revision !== input.expectedRevision || current.pending.digest !== input.expectedDigest || locksDigest(current.pending.locks) !== current.pending.digest) throw stale();
+  const proposerId = current.pending.proposedBy;
+  if (proposerId === caller.developerId && current.locks.noSoleOwnerException === true) throw Object.assign(agentXError("FORBIDDEN", "Another admin must approve a change that loosens company locks."), { soleOwner: { available: false, availableAt: null, reasonCode: "EXCEPTION_OFF" } });
+  const evidence = await deps.approvalEvidence(caller.orgId);
+  const decision = decideSecondPersonApproval({ ...evidence, proposerId, approverId: caller.developerId, nowMs: deps.now().getTime() });
+  const revision = current.revision + 1;
+  const next: StoredLocks = { orgId: caller.orgId, revision, locks: current.pending.locks, updatedBy: caller.developerId, updatedAt: iso(deps) };
+  const entry: RecipeAuditEntry = {
+    ...auditOf(deps, caller, "locks_change_approved", "fresh_sign_in"), revision, previousDigest: locksDigest(current.locks), nextDigest: current.pending.digest, loosened: true,
+    approvalMode: decision.mode, membershipVersion: decision.membershipVersion,
+  };
+  if (!await deps.store.commitLocks(next, current.revision, entry)) throw stale();
   return next;
 }
 

@@ -20,7 +20,7 @@ export function memorySetupRecipeStore(): MemorySetupRecipeStore {
     recipes,
     failNextCommit() { failNext = true; },
     getRecipe: (orgId, recipeId) => Promise.resolve(recipes.get(key(orgId, recipeId))),
-    listRecipes: (orgId: OrgId, limit) => Promise.resolve([...recipes.values()].filter((recipe) => recipe.orgId === orgId).slice(0, limit)),
+    listRecipes: (orgId: OrgId, limit, statuses) => Promise.resolve([...recipes.values()].filter((recipe) => recipe.orgId === orgId && (statuses === undefined || statuses.includes(recipe.status))).slice(0, limit)),
     commitRecipe(next, expectedRevision, entry) {
       if (failNext) { failNext = false; return Promise.resolve(false); }
       const current = recipes.get(key(next.orgId, next.recipeId));
